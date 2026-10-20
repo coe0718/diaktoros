@@ -64,6 +64,10 @@ class RunScope:
     # A CI-fix turn (#306): the host handed the fixer a failed check, not a verdict. Its push needs
     # no changes-requested review at the head, and its review request none either. Host-built.
     ci_fix: bool = False
+    # An adjudicator's turn (#1112): the run id of the shadow review its prompt showed ('' when
+    # it showed none), recorded with its ruling so a later shadow review is never read as
+    # overruled by it. None: not an adjudicator scope. Host-built, like every field here.
+    shadow_run: str | None = None
 
 
 # What a reviewer that could not see the whole change reads when it tries to approve (#93, #110).
@@ -900,7 +904,8 @@ class RunBroker:
         self._used = True
         supervisor = Supervisor(self.scope.ledger_db, create=False)
         recorded = supervisor.record_ruling(self.scope.run_id, self.scope.repo,
-                                            self.scope.number, self.scope.head, verdict, body)
+                                            self.scope.number, self.scope.head, verdict, body,
+                                            shadow_run=self.scope.shadow_run)
         self.completed = True
         try:
             _deliver_ruling(self._loop, self.scope, supervisor, recorded["turn_key"], verdict, body)

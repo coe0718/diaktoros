@@ -36,9 +36,9 @@ class Base(fg.Base):
         run_supervisor.Supervisor(self.db)
         self.n = 0
 
-    def shadow(self, verdict, body="F1: a.py:1: leaks the token", head=fg.HEAD):
+    def shadow(self, verdict, body="F1: a.py:1: leaks the token", head=fg.HEAD, at=None):
         self.n += 1
-        now = time.time() + self.n
+        now = time.time() + self.n if at is None else at
         with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,state,attempts,turn_key,"
                         "created,updated) VALUES(?,?,?,?,?,?,?,0,?,?,?)",
@@ -136,6 +136,82 @@ class Hold(Base):
         self.assertFalse(gate.shadow_overruled(self.loop, dispute, fg.HEAD, db=self.db))
         self.assertFalse(gate.shadow_overruled(self.loop, self.mark_escalated(), "b" * 40,
                                                db=self.db))
+
+
+class Between(Base):
+    """#1112: a second shadow review that lands during the adjudicator's turn, before its ruling
+    row is written, was not shown to it, so its ACCEPT must not overrule that review. Driven
+    through the real launch (``_prepare_launch``, which reads the review it shows and puts its
+    run id in the broker scope) and the real broker ``ruling`` operation."""
+
+    def claim(self):
+        """The adjudicator's launch, as the worker does it; returns its broker scope."""
+        from diaktoros import gh, ci, issue_facts
+        from diaktoros.run_supervisor import pr_facts
+        marker = self.mark_escalated(status="awaiting-adjudication")
+        sup = run_supervisor.Supervisor(self.db)
+        sup.enqueue(f"{fg.REPO}:7:{fg.HEAD}:adjudicator:breach:1", fg.REPO, 7, fg.HEAD,
+                    "adjudicator", turn_key="breach:1")
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("UPDATE runs SET state='running', owner='w', launch_intent=? "
+                        "WHERE seat='adjudicator'", (time.time(),))
+        row = sup.get(f"{fg.REPO}:7:{fg.HEAD}:adjudicator:breach:1")
+        turn = run_supervisor._Turn(row["id"], "w", 60, row=row, loop=self.loop)
+        pr = {**fg.LIVE, "head": {"sha": fg.HEAD, "ref": "fix-7"}}
+        with mock.patch.object(gh, "api", return_value=pr), \
+                mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
+                mock.patch.object(issue_facts, "section", return_value=""), \
+                mock.patch.object(ci, "read", return_value=None), \
+                mock.patch.object(ci, "section", return_value=""), \
+                mock.patch.object(pr_facts, "pr_record", return_value="RECORD"), \
+                mock.patch.object(pr_facts, "adjudication_state",
+                                  return_value=("ok", {"reviews": list(APPROVED),
+                                                       "marker": marker})):
+            launch = sup._prepare_launch(turn)
+        return launch, row
+
+    def rule(self, scope, verdict="ACCEPT"):
+        from diaktoros import broker_ipc, config, observer
+        raw = b'{"operation":"ruling"}'
+        request = {"operation": "ruling", "verdict": verdict, "body": "style, not defects"}
+        with mock.patch.object(config, "by_repo", return_value=self.loop), \
+                mock.patch.object(observer, "notify", return_value=True):
+            server = broker_ipc.RunBroker(self.loop, scope, self.st.dir)
+            return server._ruling(raw, request)
+
+    def test_a_second_review_during_the_turn_is_not_overruled_by_its_accept(self):
+        self.shadow("REQUEST_CHANGES", body="F1: the first review", at=time.time() - 100)
+        launch, _row = self.claim()
+        self.assertIn("F1: the first review", launch.prompt)
+        # The review its prompt showed is on the scope, so the ruling records it.
+        self.assertEqual(getattr(launch.scope, "shadow_run", None), "s1")
+        self.shadow("REQUEST_CHANGES", body="F2: lands mid-turn", at=time.time())
+        self.assertEqual(self.rule(launch.scope), {"accepted": True})
+        marker = self.st.breach_get(7)
+        held, _note = gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)
+        self.assertIn("waiting for its ruling", held)            # s2 was never shown
+        self.assertFalse(gate.shadow_overruled(self.loop, marker, fg.HEAD, db=self.db))
+        # ...and the sweep sends s2 for a ruling of its own, as the next round.
+        from diaktoros import gh
+        with mock.patch.object(gh, "pr", return_value=fg.LIVE), \
+                mock.patch.object(gate.observer, "notify"), \
+                mock.patch.object(gate, "wake_adjudicator", return_value=True) as wake:
+            outcome = gate.shadow_escalation(self.loop, self.st, 7, fg.HEAD, APPROVED, db=self.db)
+        self.assertEqual((outcome, [c.args[3] for c in wake.call_args_list]), ("new", [2]))
+
+    def test_an_accept_of_the_review_it_was_shown_still_overrules_it(self):
+        self.shadow("REQUEST_CHANGES", at=time.time() - 100)
+        launch, _row = self.claim()
+        self.assertEqual(self.rule(launch.scope), {"accepted": True})
+        marker = self.st.breach_get(7)
+        self.assertEqual(gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)[0], "")
+        self.assertTrue(gate.shadow_overruled(self.loop, marker, fg.HEAD, db=self.db))
+
+    def test_a_ruling_from_before_the_column_reads_by_time(self):
+        self.shadow("REQUEST_CHANGES")
+        marker = self.mark_escalated()
+        self.ruled("ACCEPT")                                     # shadow_run NULL
+        self.assertEqual(gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)[0], "")
 
 
 class Eligibility(Base):

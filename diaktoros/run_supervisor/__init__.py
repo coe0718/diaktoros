@@ -57,7 +57,10 @@ CREATE TABLE IF NOT EXISTS rulings (
  verdict TEXT NOT NULL, body TEXT NOT NULL, created REAL NOT NULL,
  observer TEXT NOT NULL DEFAULT 'pending', notice TEXT NOT NULL DEFAULT 'pending',
  notice_delivered REAL, comment TEXT NOT NULL DEFAULT 'pending',
- comment_id INTEGER, comment_error TEXT, updated REAL NOT NULL
+ comment_id INTEGER, comment_error TEXT, updated REAL NOT NULL,
+ -- The shadow review (shadow_reviews.run_id) the adjudicator was shown (#1112); '' when it was
+ -- shown none, NULL on a ruling from before this column (those fall back to the time rule).
+ shadow_run TEXT
 );
 -- The fixer's one answers comment per run (#52): 'posting' is committed before the POST, so a
 -- lost response is 'uncertain' and never replayed. head is the pushed head it was posted at.
@@ -1261,6 +1264,8 @@ class Supervisor(records.LedgerRecords):
                             "DEFAULT 'uncertain'")
                 con.execute('ALTER TABLE disputes ADD COLUMN comment_id INTEGER')
                 con.execute('ALTER TABLE disputes ADD COLUMN comment_error TEXT')
+            if 'shadow_run' not in {r[1] for r in con.execute('PRAGMA table_info(rulings)')}:
+                con.execute('ALTER TABLE rulings ADD COLUMN shadow_run TEXT')   # #1112
             for column, alter, follow in _MIGRATIONS:
                 if column not in {r[1] for r in con.execute('PRAGMA table_info(runs)')}:
                     con.execute(alter)
@@ -3131,7 +3136,16 @@ class Supervisor(records.LedgerRecords):
             final = (row['retries'] or 0) + 1 >= MAX_RETRIES
             change = (pr_facts.pr_change(loop, prompt_row, final=final)
                       if prompt_row['seat'] in ('reviewer', 'fixer') else None)
-            prompt = turn_prompts.isolated_prompt(loop, prompt_row, reviews, marker, change)
+            # A shadow escalation's ruling answers the shadow review read HERE (#1112): the
+            # prompt shows it and the scope records its run id, from one read, so a later
+            # review landing during the turn is never taken as shown.
+            shadow, extra = None, {}
+            if (row['seat'] == 'adjudicator'
+                    and ((marker or {}).get('escalated') or {}).get('by') == 'shadow'):
+                shadow = turn_prompts.newest_shadow_review(row)
+                extra = {'shadow': shadow}
+            prompt = turn_prompts.isolated_prompt(loop, prompt_row, reviews, marker, change,
+                                                  **extra)
         except ValueError as exc:
             if str(exc) in ('fixer answers unreadable', 'PR unreadable') \
                     or str(exc).startswith('PR files unreadable'):
@@ -3144,7 +3158,9 @@ class Supervisor(records.LedgerRecords):
         self.record_view(turn.run_id, turn.owner, partial)
         scope = broker_ipc.RunScope(row["repo"], row["pr"], row["head"],
                                     prompt_row["seat"], head["ref"], row['id'],
-                                    str(self.db), row['generation'], partial_view=partial)
+                                    str(self.db), row['generation'], partial_view=partial,
+                                    shadow_run=((shadow[0] if shadow else '')
+                                                if row['seat'] == 'adjudicator' else None))
         if row['seat'] == 'adjudicator':
             from .. import state as state_mod
             # Last step before launch: mark the breach as being ruled on. Anyone else's

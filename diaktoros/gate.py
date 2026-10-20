@@ -190,6 +190,30 @@ def shadow_sampled(loop: dict, number: int, head: str) -> bool:
 SHADOW_OPEN = ("pending", "waiting", "claimed", "launching", "running")
 
 
+def _rulings_at(con, repo: str, number: int, head: str, turn_key: str | None = None) -> list:
+    """The rulings at a head, newest first, as ``(verdict, created, shadow_run)``; ``turn_key``
+    narrows to one round. A ledger from before ``rulings.shadow_run`` (#1112) reads NULL for it."""
+    import sqlite3
+    where = "repo=? AND pr=? AND head=?" + (" AND turn_key=?" if turn_key is not None else "")
+    args = (repo, number, head, *(() if turn_key is None else (turn_key,)))
+    try:
+        return con.execute(f"SELECT verdict, created, shadow_run FROM rulings WHERE {where} "
+                           "ORDER BY created DESC", args).fetchall()
+    except sqlite3.OperationalError:
+        return con.execute(f"SELECT verdict, created, NULL FROM rulings WHERE {where} "
+                           "ORDER BY created DESC", args).fetchall()
+
+
+def ruling_answers(ruling, review_run: str, review_created: float) -> bool:
+    """Whether a ruling (a ``_rulings_at`` row) answers this shadow review (#1112): the one its
+    prompt showed, by run id. A ruling from before that was recorded (NULL) falls back to the
+    time rule: made after the review. One rule for the hold and for the escalation check."""
+    shown = ruling[2]
+    if shown is None:
+        return float(ruling[1]) > float(review_created)
+    return str(shown) == str(review_run)
+
+
 def shadow_hold(loop: dict, number: int, head: str, db=None,
                 marker: dict | None = None) -> tuple[str, str]:
     """``(hold, note)`` for a PR head under ``shadow.escalate`` (#1004), read-only.
@@ -216,8 +240,9 @@ def shadow_hold(loop: dict, number: int, head: str, db=None,
             return f"the run ledger is unreadable, so the shadow review at {short} is unknown", ""
         try:
             try:
-                review = con.execute("SELECT verdict, created FROM shadow_reviews WHERE repo=? "
-                                     "AND pr=? AND head=? ORDER BY created DESC LIMIT 1",
+                review = con.execute("SELECT verdict, created, run_id FROM shadow_reviews "
+                                     "WHERE repo=? AND pr=? AND head=? "
+                                     "ORDER BY created DESC LIMIT 1",
                                      (loop["repo"], number, head)).fetchone()
             except sqlite3.OperationalError:
                 review = None              # a ledger from before shadow reviews: none recorded
@@ -225,13 +250,13 @@ def shadow_hold(loop: dict, number: int, head: str, db=None,
                               "AND seat='shadow' ORDER BY created DESC, updated DESC LIMIT 1",
                               (loop["repo"], number, head)).fetchone()
             try:
-                # A ruling answers the shadow review it was shown: only one made after the
-                # newest shadow review counts (review on #1103: a later dissent at the same head
-                # must not read as already overruled).
-                ruling = con.execute("SELECT verdict FROM rulings WHERE repo=? AND pr=? AND "
-                                     "head=? AND created>? ORDER BY created DESC LIMIT 1",
-                                     (loop["repo"], number, head,
-                                      float(review[1]) if review is not None else -1.0)).fetchone()
+                # A ruling answers the shadow review it was shown (#1112: its run id, not the
+                # time it landed): a later dissent at the same head, even one that landed during
+                # the adjudicator's turn, is not overruled by it (reviews on #1103).
+                ruling = None
+                if review is not None:
+                    ruling = next((r for r in _rulings_at(con, loop["repo"], number, head)
+                                   if ruling_answers(r, review[2], review[1])), None)
             except sqlite3.OperationalError:
                 ruling = None
             pending = con.execute(
@@ -309,23 +334,22 @@ def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) 
         if con is None:
             return "ledger unreadable"
         try:
-            row = con.execute("SELECT verdict, created FROM shadow_reviews WHERE repo=? AND "
-                              "pr=? AND head=? ORDER BY created DESC LIMIT 1",
+            row = con.execute("SELECT verdict, created, run_id FROM shadow_reviews WHERE repo=? "
+                              "AND pr=? AND head=? ORDER BY created DESC LIMIT 1",
                               (loop["repo"], number, head)).fetchone()
             # The ruling on this marker's round, if it is in.
-            ruled = con.execute("SELECT created FROM rulings WHERE repo=? AND pr=? AND head=? "
-                                "AND turn_key=? ORDER BY created DESC LIMIT 1",
-                                (loop["repo"], number, head,
-                                 f"breach:{marker.get('rounds')}")).fetchone() if mine else None
+            ruled = next(iter(_rulings_at(con, loop["repo"], number, head,
+                                          f"breach:{marker.get('rounds')}")), None) if mine else None
         finally:
             con.close()
     except (sqlite3.Error, OSError):
         return "ledger unreadable"
     if row is None or str(row[0]) != "REQUEST_CHANGES":
         return "shadow agrees"
-    if ruled is not None and float(row[1]) > float(ruled[0]):
+    if ruled is not None and not ruling_answers(ruled, row[2], row[1]):
         # #1111: the shadow dissented again after its ruling (a re-review at the head). That
-        # ruling answered an older review, so this one goes for its own, as the next round.
+        # ruling answered an older review (#1112: by run id, so one that landed during the
+        # adjudicator's turn counts), so this one goes for its own, as the next round.
         reason = (f"the shadow review requested changes again at {head[:7]} after the "
                   "adjudicator's ruling: rule on its new findings")
         rounds = int(marker.get("rounds") or 0)
