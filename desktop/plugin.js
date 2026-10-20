@@ -44,7 +44,7 @@ let rest = null
 let storage = null
 let disposeRegistration = null
 // Server-owned query namespaces only. In particular, never invalidate the client focus handoff.
-const SERVER_QUERIES = ['now', 'overview', 'loops', 'pr', 'stats', 'settings', 'hooks', 'health']
+const SERVER_QUERIES = ['now', 'overview', 'loops', 'pr', 'stats', 'settings', 'hooks', 'health', 'records']
 // The status chip reports the loop it highlights and the page must open that loop, but the SDK
 // hands a route's render no location. Both halves live in this one file and share the app's query
 // cache, so the chip writes the loop here and the page observes it: the handoff works when the
@@ -1037,6 +1037,73 @@ function Settings() {
   ] }) })
 }
 
+// Local records are intentionally not live policy/CI verdicts. Validate every nested row
+// before caching; unavailable placeholders can never masquerade as verified empty history.
+function validateRecords(data, loop) {
+  const object = settingsObject
+  const number = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1e15
+  const count = value => Number.isSafeInteger(value) && number(value)
+  const sha = value => typeof value === 'string' && /^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})?$/.test(value)
+  const category = (value, choices) => choices.includes(value)
+  const label = value => typeof value === 'string' && value.length > 0 && value.length <= 100 &&
+    !/[\x00-\x1f]|gh[pousr]_|github_pat_|sk-|:\/\/|^\/|\/home\/|\/etc\/|\\\\/i.test(value)
+  if (!object(data) || data.loop !== loop || typeof data.repo !== 'string' || !data.repo || !number(data.read_at)) throw invalidResponse('records')
+  for (const kind of ['failures', 'broker', 'main_ci']) {
+    const s = data[kind]
+    if (!object(s) || !category(s.status, ['available', 'missing', 'unreadable']) || !Array.isArray(s.items) || s.items.length > 50 ||
+      !(s.status === 'available' ? s.reason === 'recorded' : !s.items.length && (s.status === 'missing' ? s.reason === 'not_recorded' :
+        category(s.reason, ['malformed', 'unsafe_file', 'read_failed', 'too_large'])))) throw invalidResponse('records')
+    for (const row of s.items) {
+      if (!object(row)) throw invalidResponse('records')
+      const valid = kind === 'failures' ? typeof row.id === 'string' && /^(?:[a-f0-9]{16}|ledger-[a-f0-9]{12})$/.test(row.id) &&
+        category(row.gate, ['gate_reviewer', 'gate_fixer', 'gate_adjudicator', 'ledger', 'unknown']) &&
+        category(row.kind, ['crash', 'timeout', 'stopped', 'incomplete', 'deferred', 'ledger', 'unknown']) &&
+        (row.pr === null || count(row.pr)) && sha(row.head) && number(row.first_at) && number(row.last_at) && count(row.attempts) && count(row.redrives) :
+        kind === 'broker' ? number(row.at) && count(row.pr) && sha(row.head) &&
+          category(row.role, ['reviewer', 'fixer', 'triage', 'adjudicator', 'issue_fixer', 'review_only_update', 'unknown']) &&
+          category(row.operation, ['review', 'push', 'answers', 'labels', 'comment', 'open_pr', 'request_review', 'issue_comment', 'file_issue', 'ruling_comment', 'issue_branch', 'update_branch', 'unknown']) &&
+          category(row.phase, ['recorded', 'attempt', 'reconciled', 'unknown']) &&
+          category(row.outcome, ['recorded', 'published', 'not_published', 'unknown', 'published_pr_unverified']) :
+          sha(row.green) && sha(row.notified) && Array.isArray(row.required_checks) && row.required_checks.length <= 50 && row.required_checks.every(label)
+      if (!valid) throw invalidResponse('records')
+    }
+    if (kind === 'main_ci' && s.status === 'available' && s.items.length !== 1) throw invalidResponse('records')
+  }
+  return data
+}
+
+function Records({ loop }) {
+  const query = useQuery({ queryKey: [ID, 'records', loop || ''], enabled: !!loop,
+    queryFn: async () => validateRecords(await call('/records?loop=' + encodeURIComponent(loop)), loop),
+    staleTime: 30000, refetchInterval: 30000 })
+  const state = useViewState(query, false, 60000)
+  const data = query.data?.loop === loop ? query.data : null
+  const reason = { malformed: 'malformed record', unsafe_file: 'unsafe file type', read_failed: 'read failed', too_large: 'read bound exceeded' }
+  const group = (key, title, description, empty, render) => {
+    const s = data?.[key]
+    return jsxs('article', { className: 'min-w-0 rounded-md border border-(--ui-stroke-secondary) p-4', children: [
+      jsx('h3', { className: 'm-0 text-sm font-medium', children: title }),
+      jsx('p', { className: 'my-2 text-xs text-(--ui-text-secondary)', children: description }),
+      !s ? null : s.status !== 'available' ? jsx(Muted, { text: s.status === 'missing' ? 'Missing · not recorded. No empty history verified.' : 'Unreadable · ' + (reason[s.reason] || 'read failed') + '. No empty history verified.' }) :
+        !s.items.length ? jsx(Muted, { text: empty }) : jsxs('div', { className: 'flex min-w-0 flex-col gap-2', children: [
+          s.items.length === 50 ? jsx(Muted, { text: 'Showing at most 50 recent records; older records may be omitted.' }) : null,
+          s.items.map((item, index) => jsx('div', { className: 'min-w-0 break-words border-t border-(--ui-stroke-secondary) pt-2 text-xs', children: render(item) }, index))] })
+    ] }, key)
+  }
+  return jsx(Section, { title: 'Local loop records', children: jsxs('div', { role: 'region', 'aria-label': 'Local loop records', className: 'flex min-w-0 flex-col gap-4', children: [
+    jsx(Muted, { text: 'Read-only · ' + (loop || 'No loop selected') + '. Bounded local artifacts; no GitHub reads. Raw errors, payloads and credentials are withheld.' }),
+    jsx(QueryStatus, { query, state: !loop ? 'unavailable' : state, label: 'Local records' }),
+    group('failures', 'Unresolved gate failures', 'Failures to finish, not quiet gate declines. Includes repository-matched fallback records. Failure kind is the safe reason category.', 'No unresolved failures in the read stores.', item =>
+      item.gate + ' · ' + item.kind + ' · ' + (item.pr ? '#' + item.pr : 'No PR') + (item.head ? ' @ ' + item.head.slice(0, 7) : '') + ' · ' + item.attempts + ' attempts · ' + item.redrives + ' re-drives · Last failure: ' + clock(item.last_at)),
+    group('broker', 'Broker write audit', 'Recorded writes and push attempts, not a complete authorization-decision log. Attempts do not prove publication. Latest appends first; only the bounded tail is read.', 'No audit entries in the bounded read.', item =>
+      item.role + ' · ' + item.operation + ' · #' + item.pr + ' · ' + item.phase + ' · ' + item.outcome + (item.head ? ' @ ' + item.head.slice(0, 7) : '') + ' · ' + clock(item.at)),
+    group('main_ci', 'Main CI · local memory', 'Remembered watchdog heads, not current main CI. Their order and age are not recorded; no live check conclusions are implied.', '', item => jsxs('div', { className: 'flex min-w-0 flex-col gap-2', children: [
+      jsx('div', { children: 'Last recorded green: ' + (item.green ? item.green.slice(0, 7) : 'Not recorded') }),
+      jsx('div', { children: 'Last red notice: ' + (item.notified ? item.notified.slice(0, 7) : 'Not recorded') }),
+      jsx('div', { children: 'Required checks (configured): ' + (item.required_checks.length ? item.required_checks.join(', ') : 'No explicit checks; host uses all checks') })] }))
+  ] }) })
+}
+
 // Hook status is host-owned; unknown never means paused, and the confirmation is opaque.
 function validateHooks(data, loop, write = false) {
   const object = data && typeof data === 'object' && !Array.isArray(data)
@@ -1589,6 +1656,7 @@ function Page() {
     children: [
       header,
       body,
+      jsx(Records, { loop }),
       jsx(Settings, {}),
       retryDialog,
       openPr && openPr.loop === loop

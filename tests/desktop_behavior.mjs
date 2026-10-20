@@ -8,6 +8,7 @@ import test from 'node:test'
 const source = await readFile(new URL('../desktop/plugin.js', import.meta.url), 'utf8')
 // Pinned from real stats.collect with a missing disposable ledger; Python checks equality.
 const settingsFixture = JSON.parse(await readFile(new URL('./fixtures/desktop_settings.json', import.meta.url), 'utf8'))
+const recordsWriterFixture = JSON.parse(await readFile(new URL('./fixtures/desktop_records.json', import.meta.url), 'utf8'))
 const noLedgerStats = JSON.parse(await readFile(new URL('./fixtures/desktop_no_ledger_stats.json', import.meta.url), 'utf8'))
 
 // One loop of an /overview read, for synthetic fixtures. needs_you defaults to its uncertain run
@@ -73,6 +74,7 @@ async function harness({ cachedAge = null, queryClient: realQueryClient = null }
   queries.stats = good({ turns: {} })
   queries.health = good({ checks: [], counts: {}, offline: true })
   queries.settings = good(structuredClone(settingsFixture))
+  queries.records = good(recordsFixture())
   if (cachedAge !== null) cacheRows.push({ queryKey: ['diaktoros', 'now', 'seeded'],
     state: { data: queries.now.data, dataUpdatedAt: time - cachedAge, status: 'success' } })
   const element = (type, props, key) => ({ type, props: props || {}, key })
@@ -230,6 +232,69 @@ async function harness({ cachedAge = null, queryClient: realQueryClient = null }
     } }
 }
 
+
+function recordsFixture() { return structuredClone(recordsWriterFixture) }
+
+const recordsRegion = h => [h.flatten(h.tree()).find(n => n.props?.['aria-label'] === 'Local loop records')].filter(Boolean)
+test('records: selected local history distinguishes failures, audit attempts and remembered CI', async () => {
+  const h = await harness(); h.queries.records = h.good(recordsFixture()); h.render('page')
+  const region = recordsRegion(h); assert.ok(region)
+  const text = h.text(region)
+  for (const re of [/fixture-loop/, /Unresolved gate failures/, /not quiet gate declines/, /timeout/, /#651/, /Broker write audit/, /attempt.*unknown/, /not a complete authorization-decision log/, /Last recorded green/, /Last red notice/, /Required checks.*tests/, /not current main CI/]) assert.match(text, re)
+  assert.equal(h.options.records.refetchInterval, 30000)
+  assert.equal(h.options.records.staleTime, 30000)
+  assert.equal(h.options.records.queryKey[2], 'fixture-loop')
+  assert.equal(h.buttons(region).length, 1)
+  assert.equal(h.buttons(region)[0].props.children, 'Retry')
+  h.respond(recordsFixture()); await h.options.records.queryFn()
+  assert.equal(h.calls.at(-1), '/records?loop=fixture-loop')
+  h.dispose()
+})
+
+test('records: nested malformed and wrong-loop responses never enter the cache', async () => {
+  const h = await harness(); h.queries.records = h.good(recordsFixture()); h.render('page')
+  for (const mutate of [d => { d.loop = 'other' }, d => { d.failures.items = [null] },
+    d => { d.broker.items[0].at = -1 }, d => { d.main_ci.items[0].required_checks = [null] },
+    d => { d.failures.status = 'missing' }, d => { d.main_ci.items[0].green = '/private/token' },
+    d => { d.failures.items[0].attempts = true }, d => { d.broker.items[0].outcome = 'allowed' },
+    d => { d.failures.reason = '/home/private ghp_secret' }]) {
+    const data = recordsFixture(); mutate(data); h.respond(data)
+    await assert.rejects(h.options.records.queryFn(), /Invalid records response/)
+  }
+  h.dispose()
+})
+
+test('records: missing unreadable empty and retained stale are distinct without transport details', async () => {
+  const h = await harness(); const d = recordsFixture()
+  d.failures = { status: 'available', reason: 'recorded', items: [] }
+  d.broker = { status: 'missing', reason: 'not_recorded', items: [] }
+  d.main_ci = { status: 'unreadable', reason: 'malformed', items: [] }
+  h.queries.records = h.good(d); h.render('page')
+  let text = h.text(recordsRegion(h))
+  for (const re of [/No unresolved failures in the read stores/, /Missing.*not recorded/, /Unreadable.*malformed/]) assert.match(text, re)
+  h.advance(60000, -3600000)
+  assert.match(h.text(recordsRegion(h)), /stale/i)
+  h.queries.records = { ...h.fail(d), error: new Error('/home/private ghp_secret') }; h.render('page')
+  assert.doesNotMatch(h.text(recordsRegion(h)), /home\/private|ghp_secret/)
+  h.queries.records = { ...h.fail(undefined), error: new Error('/private/token') }; h.render('page')
+  assert.match(h.text(recordsRegion(h)), /unavailable/i)
+  h.dispose(); assert.equal(h.timerCount(), 0)
+})
+
+test('records: loop switching binds queries and removal never substitutes history', async () => {
+  const h = await harness(); h.queries.records = h.good(recordsFixture())
+  h.queries.loops = h.good({ loops: [{ id: 'fixture-loop' }, { id: 'other-loop' }] })
+  h.queryFor(['diaktoros', 'records', 'fixture-loop'], h.good(recordsFixture()))
+  h.render('page'); assert.match(h.text(recordsRegion(h)), /timeout/)
+  h.buttons(h.tree()).find(b => b.props.children === 'other-loop').props.onClick()
+  assert.equal(h.options.records.queryKey[2], 'other-loop')
+  assert.doesNotMatch(h.text(recordsRegion(h)), /timeout/)
+  assert.match(h.text(recordsRegion(h)), /loading/i)
+  h.queries.loops = h.good({ loops: [{ id: 'fixture-loop' }] }); h.render('page')
+  assert.equal(h.options.records.queryKey[2], 'other-loop')
+  assert.doesNotMatch(h.text(recordsRegion(h)), /timeout/)
+  h.dispose()
+})
 
 // #646: exercise the registered pane without mounting the page or its action components.
 const PANE = 'right-now-pane'
@@ -1859,7 +1924,7 @@ test('socket: one registration validates hints, excludes client focus and cleans
   assert.equal(h.calls.length, 1)
   const filter = h.calls[0]
   assert.equal(JSON.stringify(filter.queryKey), '["diaktoros"]')
-  for (const kind of ['now', 'overview', 'loops', 'pr', 'stats', 'settings', 'hooks', 'health']) {
+  for (const kind of ['now', 'overview', 'loops', 'pr', 'stats', 'settings', 'hooks', 'health', 'records']) {
     assert.equal(filter.predicate({ queryKey: ['diaktoros', kind, 'loop', 647] }), true)
   }
   for (const kind of ['focus', 'unknown', 'actions']) {

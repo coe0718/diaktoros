@@ -64,6 +64,12 @@ def now(loop: str | None = None):
     return _answer(desktop_api.now_view, loop)
 
 
+@router.get("/records")
+def records(loop: str | None = None):
+    """Read-only bounded local artifacts; deliberately no live CI or authorization probe."""
+    return _answer(desktop_api.records_view, loop)
+
+
 @router.get("/overview")
 def overview():
     return _answer(desktop_api.overview_view)

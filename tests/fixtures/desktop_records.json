@@ -1,0 +1,8 @@
+{
+  "loop": "fixture-loop",
+  "repo": "fixture/repo",
+  "read_at": 1800000000,
+  "failures": {"status": "available", "reason": "recorded", "items": [{"id": "bc1eae16c0f85d30", "gate": "gate_reviewer", "kind": "timeout", "pr": 651, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "first_at": 1800000000, "last_at": 1800000000, "attempts": 1, "redrives": 0}]},
+  "broker": {"status": "available", "reason": "recorded", "items": [{"at": 1800000000, "pr": 651, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "role": "fixer", "operation": "push", "phase": "attempt", "outcome": "unknown"}]},
+  "main_ci": {"status": "available", "reason": "recorded", "items": [{"green": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "notified": "cccccccccccccccccccccccccccccccccccccccc", "required_checks": ["tests"]}]}
+}
