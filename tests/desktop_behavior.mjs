@@ -344,8 +344,7 @@ test('records: retry is executable only for a readable selected identity', async
 
 test('records: observer and watchdog nested memory is validated and disclosed', async () => {
   const h = await harness(); h.render('page'); const d = recordsFixture()
-  d.observer = { status: 'available', reason: 'recorded', items: [{ event: 'approved', number: 651, head: 'a'.repeat(40), status: 'delivered', at: 100, attempts: 1, issue: false }] }
-  d.watchdog = { status: 'available', reason: 'recorded', items: [{ kind: 'sweep', at: 100 }, { kind: 'head_history', pr: 651, head: 'b'.repeat(40), observed_at: null, at: 100 }, { kind: 'stall', pr: 651, head7: 'abcdef0', category: 'reviewer_missing', at: 100 }] }
+  // The shared fixture is asserted equal to production projections of real writers in Python.
   h.respond(d); h.queries.records = h.good(await h.options.records.queryFn()); h.render('page')
   for (const re of [/Observer.*local feed/, /Recorded status: delivered/, /not independent proof of delivery/, /Watchdog.*local memory/, /not live running or health/, /Cooldown stamp/, /head_history/]) assert.match(h.text(recordsRegion(h)), re)
   for (const mutate of [x => { x.observer.items[0].status = 'sent' }, x => { x.observer.items[0].attempts = true }, x => { x.observer.items[0].issue = 'false' }, x => { x.watchdog.items[0].at = -1 }, x => { x.watchdog.items[1].observed_at = 'private' }, x => { x.watchdog.items[2].category = '/home/private' }, x => { x.watchdog.items[2].head7 = 'abcdefg' }, x => { x.observer = null }]) {

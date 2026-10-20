@@ -441,6 +441,8 @@ class Records(unittest.TestCase):
             safe_push._audit(self.loop, {'repo': self.loop['repo'], 'pr': 651, 'old_head': 'a' * 40,
                                         'role': 'fixer', 'operation': 'push', 'phase': 'attempt'})
             self.main()
+            self.notice(number=651, receipt=(True, '', False))
+            self.watch()
             actual = desktop_api.records_view('fixture-loop')
         expected = json.loads((Path(__file__).parent / 'fixtures/desktop_records.json').read_text())
         self.assertEqual(actual, expected)
