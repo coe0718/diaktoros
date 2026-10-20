@@ -361,7 +361,9 @@ minute) can therefore lose triage turns. Two things cover it:
   with no label from `triage.labels` (or `triage.fix_label`) and **no triage row in the run
   ledger**. It skips an issue newer than 5 minutes (the delivery may still come) or older than 3
   days (a backlog from before the loop is not triaged in bulk), and queues at most 10 per sweep,
-  oldest first. `status` lists them as `late: issue #N triage queued late: the webhook delivery
+  oldest first. The listing is read newest first and is bounded to 5 pages of 100 (open pull
+  requests share it); past that the sweep still queues from the newest ones it read and raises
+  an alert that older issues in the window were not checked. `status` lists them as `late: issue #N triage queued late: the webhook delivery
   was missed`. The sweep needs the same private runtime the gate does, and changes nothing for a
   loop without `triage`.
 - **Doctor.** `gate:rate_limit` reads the gateway's `rate_limit` and warns below 60. Raise it in

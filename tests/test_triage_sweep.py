@@ -55,12 +55,14 @@ class Sweep(fg.Base):
             return self.sup.submit(f"{loop['repo']}:{number}:{head}:{seat}:{turn_key}",
                                    loop["repo"], number, head, seat, turn_key=turn_key)
 
-    def sweep(self, issues):
+    def sweep(self, issues, read=None):
+        # ``read`` replaces the listing stub: pass ``gh.open_issues_read`` to run the real one.
         with mock.patch.object(watchdog, "TEST", True), \
              mock.patch.object(gate, "hooks_armed", return_value=True), \
              mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
              mock.patch.object(gh, "open_prs", return_value=[]), \
-             mock.patch.object(gh, "open_issues_read", return_value=(issues, "")), \
+             mock.patch.object(gh, "open_issues_read",
+                               read or mock.Mock(return_value=(issues, ""))), \
              mock.patch.object(gate, "isolated_supervisor", return_value=self.sup), \
              mock.patch.object(gate, "enqueue_isolated", side_effect=self.fake_enqueue), \
              mock.patch.object(watchdog, "retry_pending_breaches"), \
@@ -117,6 +119,30 @@ class Sweep(fg.Base):
         self.enqueued.clear()
         self.sweep(many)
         self.assertEqual(self.enqueued, [])
+
+    def test_a_saturated_listing_still_queues_the_newest_and_alerts(self):
+        # #1037: past gh.MAX_ISSUE_PAGES the sweep queued nothing and said nothing. Driven
+        # through watchdog.sweep_loop with the real gh.open_issues_read over stubbed pages.
+        seen = []
+
+        def fetch(loop, path, *args, **kwargs):
+            seen.append(path)
+            if "&page=" not in path:          # newest page: 99 PRs and the one missed issue
+                return [issue(900 + n, pr=True) for n in range(99)] + [issue(7)], None
+            return [issue(5000 + n, pr=True) for n in range(gh.REVIEW_PAGE_SIZE)], None
+
+        real = gh.open_issues_read
+        with mock.patch.object(gh, "fetch", side_effect=fetch):
+            lines = self.sweep(None, read=real)
+        self.assertIn("direction=desc", seen[0])
+        self.assertEqual(len(seen), gh.MAX_ISSUE_PAGES)
+        self.assertEqual([e[1] for e in self.enqueued], [7])
+        self.assertTrue(any("older issues" in line and "not checked" in line
+                            for line in lines), lines)
+
+    def test_a_whole_listing_raises_no_incomplete_alert(self):
+        lines = self.sweep([issue(7)])
+        self.assertEqual([line for line in lines if "not checked" in line], [])
 
     def test_a_loop_without_triage_reads_no_issues(self):
         self.loop = config.load_id("one")

@@ -459,11 +459,14 @@ def reviews_read(loop: dict, number: int,
 
 
 def _read_pages(loop: dict, path: str, what: str, max_pages: int,
-                login: str | None = None) -> tuple[list[dict] | None, str]:
+                login: str | None = None,
+                keep_partial: bool = False) -> tuple[list[dict] | None, str]:
     """Every page of a ``per_page=100`` listing, or ``(None, reason)`` — never a prefix of it.
 
     A failed, malformed or oversized page anywhere makes the whole listing unknown: the caller
-    would otherwise read "the first N items" as "all of them".
+    would otherwise read "the first N items" as "all of them". With ``keep_partial`` a listing
+    that is merely past the page bound returns the pages read *and* the reason (an incomplete
+    listing the caller must say is incomplete); a failed or malformed page is still unknown.
     """
     result: list[dict] = []
     for page in range(1, max_pages + 1):
@@ -477,7 +480,8 @@ def _read_pages(loop: dict, path: str, what: str, max_pages: int,
         result.extend(items)
         if len(items) < REVIEW_PAGE_SIZE:
             return result, ""
-    return None, f"{what} listing exceeds {max_pages} full pages"
+    reason = f"{what} listing exceeds {max_pages} full pages"
+    return (result, reason) if keep_partial else (None, reason)
 
 
 # Issue comments on a PR, read in full for the seats' records (the fixer's answers, #52).
@@ -562,13 +566,17 @@ MAX_ISSUE_PAGES = 5
 
 
 def open_issues_read(loop: dict, since: str) -> tuple[list[dict] | None, str]:
-    """Open issues and PRs updated since ``since`` (ISO-8601), or ``(None, reason)`` (#849).
+    """Open issues and PRs updated since ``since`` (ISO-8601), newest first (#849, #1037).
 
-    GitHub's issues listing includes pull requests (they carry ``pull_request``); the caller
-    filters them. Bounded to a few pages: a listing past them is unknown, never a prefix.
+    GitHub's issues listing includes pull requests (they carry ``pull_request``) and cannot be
+    filtered of them; the caller filters. Bounded to ``MAX_ISSUE_PAGES`` pages, read newest
+    first so a burst (the case the recovery sweep exists for) stays reachable. A listing past
+    the bound returns the pages read *and* a reason: ``(issues, reason)`` is an incomplete
+    listing the caller must report; ``(None, reason)`` is unreadable; ``(issues, "")`` is whole.
     """
-    path = f"/repos/{loop['repo']}/issues?state=open&sort=created&direction=asc&since={since}&per_page=100"
-    return _read_pages(loop, path, "open issue", MAX_ISSUE_PAGES)
+    path = (f"/repos/{loop['repo']}/issues?state=open&sort=created&direction=desc"
+            f"&since={since}&per_page=100")
+    return _read_pages(loop, path, "open issue", MAX_ISSUE_PAGES, keep_partial=True)
 
 
 def request_review(loop: dict, number: int, login: str | None = None, as_login: str | None = None):

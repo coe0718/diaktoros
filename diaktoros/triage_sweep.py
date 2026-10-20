@@ -12,7 +12,9 @@ request, author in ``triage.authors``, no label from ``triage.labels``), it has 
 run ledger in any state, it is no newer than ``GRACE_S`` (the gate may still be on its way) and no
 older than ``HORIZON_S`` (a backlog from before the loop was armed is not triaged in bulk). An
 issue a maintainer already sent to the fixer (``triage.fix_label``) is left alone as well. At most
-``PER_SWEEP`` are queued per sweep, oldest first; the rest wait for the next one.
+``PER_SWEEP`` are queued per sweep, oldest first; the rest wait for the next one. The listing is newest first and bounded
+(``gh.MAX_ISSUE_PAGES`` pages, pull requests included): past the bound the sweep works on the
+newest issues it read and returns an alert line saying the older ones were not checked (#1037).
 """
 from __future__ import annotations
 
@@ -57,12 +59,17 @@ def sweep(loop: dict, st, now: float | None = None) -> list[str]:
     if issues is None:
         log(f"triage sweep: open issues unreadable: {gh.one_line(error)}")
         return []
+    lines: list[str] = []
+    if error:                             # past the page bound: the newest were read, older not
+        log(f"triage sweep: open issues incomplete: {gh.one_line(error)}")
+        lines.append(f"⚠️ Diaktoros [{loop['id']}] triage recovery sweep read only the newest "
+                     f"{len(issues)} open issues/PRs ({gh.one_line(error)}); older issues "
+                     "inside the sweep window were not checked")
     try:
         queued = gate.isolated_supervisor(loop).seat_numbers(loop["repo"], "triage")
     except Exception as exc:              # no private runtime / ledger: the gate cannot enqueue either
         log(f"triage sweep: run ledger unavailable: {type(exc).__name__}: {exc}")
-        return []
-    lines: list[str] = []
+        return lines
     for number in candidates(loop, issues, queued, now)[:PER_SWEEP]:
         try:
             outcome = gate.enqueue_isolated(loop, "triage", number, config.TRIAGE_HEAD,
