@@ -225,9 +225,13 @@ def shadow_hold(loop: dict, number: int, head: str, db=None,
                               "AND seat='shadow' ORDER BY created DESC, updated DESC LIMIT 1",
                               (loop["repo"], number, head)).fetchone()
             try:
+                # A ruling answers the shadow review it was shown: only one made after the
+                # newest shadow review counts (review on #1103: a later dissent at the same head
+                # must not read as already overruled).
                 ruling = con.execute("SELECT verdict FROM rulings WHERE repo=? AND pr=? AND "
-                                     "head=? ORDER BY created DESC LIMIT 1",
-                                     (loop["repo"], number, head)).fetchone()
+                                     "head=? AND created>? ORDER BY created DESC LIMIT 1",
+                                     (loop["repo"], number, head,
+                                      float(review[1]) if review is not None else -1.0)).fetchone()
             except sqlite3.OperationalError:
                 ruling = None
             pending = con.execute(
@@ -276,9 +280,8 @@ def shadow_overruled(loop: dict, marker, head: str, db=None) -> bool:
     m = marker if isinstance(marker, dict) else {}
     if str(m.get("head") or "") != head or (m.get("escalated") or {}).get("by") != SHADOW_ESCALATION:
         return False
-    from .run_supervisor import ruling_at
-    return ruling_at(db or config.host_path("ledger"), loop["repo"], int(m.get("pr") or 0),
-                     head) == "ACCEPT"
+    held, _note = shadow_hold(loop, int(m.get("pr") or 0), head, db=db, marker=m)
+    return not held and "overruled the shadow review" in _note
 
 
 def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) -> str:
@@ -316,7 +319,10 @@ def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) 
         return "already"
     reason = (f"the shadow review requested changes at {head[:7]} while the reviewer approved "
               "it: rule on the shadow review's findings")
-    return breach(loop, st, number, head, len(verdicts(reviews, loop)), reason,
+    # Rounds count the verdicts at the head, the approval included: a breach turn needs one at
+    # least (its turn key, ``breach:<rounds>``), and an approved head has no blocking verdict.
+    rounds = max(1, len(verdicts(reviews, loop)) + 1)
+    return breach(loop, st, number, head, rounds, reason,
                   escalated={"by": SHADOW_ESCALATION, "at": now_iso(), "reason": reason})
 
 

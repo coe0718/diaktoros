@@ -76,7 +76,9 @@ class Trigger(Base):
         outcome, breach = self.escalate()
         self.assertEqual(outcome, "new")
         args, kwargs = breach.call_args
-        self.assertEqual((args[2], args[3], args[4]), (7, fg.HEAD, 0))   # PR, head, no blocks
+        # PR, head, and rounds of at least 1: the breach turn key is breach:<rounds>, and the
+        # adjudicator's eligibility refuses rounds < 1 (shadow review of #1103).
+        self.assertEqual((args[2], args[3], args[4]), (7, fg.HEAD, 1))
         self.assertEqual(kwargs["escalated"]["by"], gate.SHADOW_ESCALATION)
         self.mark_escalated()
         self.assertEqual(self.escalate()[0], "already")
@@ -113,6 +115,17 @@ class Hold(Base):
         self.assertEqual(held, "")
         self.assertIn("overruled the shadow review", note)
 
+    def test_an_accept_never_overrules_a_newer_shadow_review(self):
+        # Review on #1103 (F2): a ruling answers the review it was shown; a newer dissent at the
+        # same head is not overruled by it.
+        self.shadow("REQUEST_CHANGES")
+        marker = self.mark_escalated()
+        self.ruled("ACCEPT")
+        self.assertEqual(self.hold(marker)[0], "")
+        self.shadow("REQUEST_CHANGES")                      # a re-review dissents again
+        self.assertIn("waiting for its ruling", self.hold(marker)[0])
+        self.assertFalse(gate.shadow_overruled(self.loop, marker, fg.HEAD, db=self.db))
+
     def test_another_escalation_or_head_is_not_this_shadows(self):
         self.shadow("REQUEST_CHANGES")
         self.ruled("ACCEPT")
@@ -123,6 +136,61 @@ class Hold(Base):
         self.assertFalse(gate.shadow_overruled(self.loop, dispute, fg.HEAD, db=self.db))
         self.assertFalse(gate.shadow_overruled(self.loop, self.mark_escalated(), "b" * 40,
                                                db=self.db))
+
+
+class Eligibility(Base):
+    """The adjudicator's own claim check (``pr_facts.adjudication_state``), not a mock: the
+    shadow review of #1103 found every shadow escalation was superseded there before it could
+    rule (rounds 0, approved at the head, a review-only author)."""
+
+    def state(self, reviews, author="fixer", marker_by="shadow", rounds=1):
+        from diaktoros import gh
+        from diaktoros.run_supervisor import pr_facts
+        marker = self.mark_escalated(by=marker_by, status="awaiting-adjudication")
+        marker["rounds"] = rounds
+        self.st.breach.parent.mkdir(parents=True, exist_ok=True)
+        state_mod._atomic_write(self.st.breach, {f"{fg.REPO}#7": marker})
+        pr = {**fg.LIVE, "head": {"sha": fg.HEAD, "ref": "fix-7"}, "user": {"login": author}}
+        row = {"repo": fg.REPO, "pr": 7, "head": fg.HEAD, "seat": "adjudicator",
+               "turn_key": f"breach:{rounds}", "id": "r1", "created": time.time()}
+        loop = {**self.loop, "review_only": ["boss"]}
+        with mock.patch.object(gh, "api", return_value=pr), \
+                mock.patch.object(gh, "reviews", return_value=list(reviews)), \
+                mock.patch.object(pr_facts, "effective_reviews",
+                                  side_effect=lambda loop, row, reviews, db=None: reviews):
+            return pr_facts.adjudication_state(loop, row)[0]
+
+    def test_a_shadow_escalation_on_an_approved_head_is_eligible(self):
+        self.assertEqual(self.state(APPROVED), "ok")
+        self.assertEqual(self.state(APPROVED, author="boss"), "ok")     # review-only author
+
+    def test_other_escalations_keep_their_rules(self):
+        changes = [{**APPROVED[0], "state": "CHANGES_REQUESTED"}]
+        self.assertEqual(self.state(APPROVED, marker_by="dispute"), "superseded")
+        self.assertEqual(self.state(changes, marker_by="dispute"), "ok")
+        self.assertEqual(self.state(changes), "superseded")      # the approval is gone: moot
+        self.assertEqual(self.state(APPROVED, author="boss", marker_by="dispute"), "superseded")
+        self.assertEqual(self.state(APPROVED, rounds=0), "superseded")
+
+    def test_the_trigger_and_the_claim_agree_end_to_end(self):
+        # The trigger's real breach marker, then the real claim check on it.
+        from diaktoros import gh
+        self.shadow("REQUEST_CHANGES")
+        with mock.patch.object(gh, "pr", return_value=fg.LIVE), \
+                mock.patch.object(gate, "wake_adjudicator", return_value=True), \
+                mock.patch.object(gate.observer, "notify"):
+            self.assertEqual(gate.shadow_escalation(self.loop, self.st, 7, fg.HEAD, APPROVED,
+                                                    db=self.db), "new")
+        marker = self.st.breach_get(7)
+        from diaktoros.run_supervisor import pr_facts
+        pr = {**fg.LIVE, "head": {"sha": fg.HEAD, "ref": "fix-7"}}
+        row = {"repo": fg.REPO, "pr": 7, "head": fg.HEAD, "seat": "adjudicator",
+               "turn_key": f"breach:{marker['rounds']}", "id": "r1", "created": time.time()}
+        with mock.patch.object(gh, "api", return_value=pr), \
+                mock.patch.object(gh, "reviews", return_value=list(APPROVED)), \
+                mock.patch.object(pr_facts, "effective_reviews",
+                                  side_effect=lambda loop, row, reviews, db=None: reviews):
+            self.assertEqual(pr_facts.adjudication_state(self.loop, row)[0], "ok")
 
 
 class Explain(Base):
