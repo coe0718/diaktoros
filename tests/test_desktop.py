@@ -550,7 +550,7 @@ class Health(unittest.TestCase):
         called.assert_not_called()
 
 
-DASHBOARD_ROUTES = {"/loops", "/stats", "/now", "/overview", "/pr", "/health", "/settings", "/hooks", "/actions"}
+DASHBOARD_ROUTES = {"/loops", "/stats", "/now", "/overview", "/pr", "/health", "/settings", "/hooks", "/actions", "/records"}
 # Confirmed writes only: retry, hook pause/resume, and host-owned one-shot escalation.
 # Review/drain previews are refusals until the core can bind a safe identity.
 DASHBOARD_WRITE_ROUTES = {"/retry", "/hooks", "/actions"}
@@ -750,7 +750,7 @@ class Surface(unittest.TestCase):
         # replaced the operator's Node with a stub). Require reported tests, no failures, and a
         # named test.
         ok = re.findall(r"^ok \d+ - ", done.stdout, re.M)
-        self.assertGreaterEqual(len(ok), 152, done.stdout[-4000:])
+        self.assertGreaterEqual(len(ok), 160, done.stdout[-4000:])
         # #646 must exercise the independently registered pane, not only the existing page.
         for name in (
             "pane: independent registration docks below workspace at a bounded height",
@@ -774,6 +774,7 @@ class Surface(unittest.TestCase):
         # The drawer's truncation wording (#821): the named proof that a cut list says so.
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: the drawer says when its turns and rulings are the newest of more, and only then$")
         self.assertIn("palette only: unseen successful cache read expires", done.stdout)
+        self.assertRegex(done.stdout, r"(?m)^ok \d+ - records: nested malformed and wrong-loop responses never enter the cache$")
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed here")
     def test_it_parses_as_an_es_module(self):

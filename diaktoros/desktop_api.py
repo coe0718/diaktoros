@@ -7,7 +7,9 @@ reasons and, per row, whether a retry would re-arm it, ``overview`` is that same
 every configured loop at once (for the status chip and the cross-loop block), ``pr`` adds the
 host's own "what moves it" line (``run_supervisor.next_step``) plus what the ledger recorded,
 ``health`` is ``doctor``'s checks with the network reads left unprobed, and ``settings`` is the
-plugin-level form and each loop's effective answers. Never a turn's output, never a run's error
+plugin-level form and each loop's effective answers. ``records`` reads bounded local unresolved
+failure records, broker history and the watchdog's main-CI memory (not live CI).
+Never a turn's output, never a run's error
 text. ``hooks`` reads GitHub hook state with an opaque confirmation; ``hooks_action`` calls
 the shared ``arm_action`` owner used by CLI ``arm`` to pause/resume, then reads actual state.
 ``action_view`` previews per-target one-shot eligibility; ``action_perform_view`` invokes
@@ -23,7 +25,13 @@ its PR read is unavailable.
 """
 from __future__ import annotations
 
+import errno
+import json
+import math
+import os
 import pathlib
+import re
+import stat
 import time
 
 from . import (arm_action, config, doctor, findings, gate_decisions, pacing, retry_action, route_intent,
@@ -193,6 +201,217 @@ def _loop(loop_id: str | None) -> dict:
         names = [loop["id"] for loop in found] + [f"{bad} (unreadable)" for bad, _ in unreadable]
         raise NotFound("name a loop: " + (", ".join(names) or "none"))
     return found[0]
+
+
+# Local diagnostic artifacts are not safe to pass through their permissive CLI readers:
+# those readers intentionally fall back to empty and use unbounded read_text(). Reuse their
+# path owners and writer contracts, but keep this admission/read/validation boundary explicit.
+RECORDS_MAX = 50
+RECORDS_BYTES = 256 * 1024
+
+
+class _RecordRead(Exception):
+    def __init__(self, reason):
+        self.reason = reason
+
+
+def _record_bytes(path, *, tail=False):
+    """No-follow at EVERY component, nonblocking, regular files only, bounded bytes.
+
+    A JSONL tail may start mid-line; discard that fragment, never a complete malformed line.
+    No locks (writers atomically replace JSON and append JSONL), no directory enumeration.
+    """
+    path = pathlib.Path(path).absolute()
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in path.parts[1:-1]:
+            if part in ('.', '..'):
+                raise _RecordRead('unsafe_file')
+            nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW |
+                          os.O_NONBLOCK, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+        leaf = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        try:
+            info = os.fstat(leaf)
+            if not stat.S_ISREG(info.st_mode):
+                raise _RecordRead('unsafe_file')
+            if not tail and info.st_size > RECORDS_BYTES:
+                raise _RecordRead('too_large')
+            start = max(0, info.st_size - RECORDS_BYTES) if tail else 0
+            raw = os.pread(leaf, RECORDS_BYTES + (0 if tail else 1), start)
+            if len(raw) > RECORDS_BYTES:
+                raise _RecordRead('too_large')
+            if start:
+                # A previous byte determines whether the first line is complete.
+                if os.pread(leaf, 1, start - 1) != b'\n':
+                    if b'\n' not in raw:
+                        raise _RecordRead('too_large')
+                    raw = raw.split(b'\n', 1)[1]
+            return raw
+        finally:
+            os.close(leaf)
+    except FileNotFoundError:
+        raise _RecordRead('not_recorded') from None
+    except OSError as exc:
+        reason = 'unsafe_file' if exc.errno in (errno.ELOOP, errno.ENOTDIR) else 'read_failed'
+        raise _RecordRead(reason) from None
+    finally:
+        os.close(fd)
+
+
+def _record_section(reader):
+    try:
+        return {'status': 'available', 'reason': 'recorded', 'items': reader()}
+    except _RecordRead as exc:
+        return {'status': 'missing' if exc.reason == 'not_recorded' else 'unreadable',
+                'reason': exc.reason, 'items': []}
+    except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
+        return {'status': 'unreadable', 'reason': 'malformed', 'items': []}
+    except Exception:
+        return {'status': 'unreadable', 'reason': 'read_failed', 'items': []}
+
+
+def _record_json(path):
+    return json.loads(_record_bytes(path))
+
+
+def _record_number(value, *, integer=False, nullable=False):
+    if nullable and value is None:
+        return None
+    if (type(value) not in ((int,) if integer else (int, float)) or
+            value < 0 or value > 10**15 or not math.isfinite(value)):
+        raise ValueError('number')
+    return value
+
+
+def _record_sha(value):
+    if not isinstance(value, str) or (value and not re.fullmatch(r'(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})', value)):
+        raise ValueError('head')
+    return value
+
+
+def _record_enum(value, allowed):
+    if not isinstance(value, str):
+        raise ValueError('category')
+    return value if value in allowed else 'unknown'
+
+
+def _record_failures(loop):
+    from . import gate_failures
+    owners = [gate_failures.loop_ledger(loop), gate_failures.fallback_ledger()]
+    found, present = {}, False
+    for index, owner in enumerate(owners):
+        try:
+            data = _record_json(owner.path)
+        except _RecordRead as exc:
+            if exc.reason == 'not_recorded':
+                continue
+            raise
+        present = True
+        if not isinstance(data, dict) or len(data) > 1000:
+            raise ValueError('entries')
+        for key, entry in data.items():
+            if (not isinstance(entry, dict) or not key or key.startswith('_') or
+                    type(entry.get('resolved')) is not bool):
+                raise ValueError('entry')
+            if entry['resolved']:
+                continue
+            # Fallback belongs to many loops: never leak a different repository's failures.
+            if index and entry.get('repo') != loop['repo']:
+                continue
+            if not re.fullmatch(r'(?:[0-9a-f]{16}|ledger-[0-9a-f]{12})', key):
+                raise ValueError('identity')
+            item = {'id': key,
+                    'gate': _record_enum(entry.get('gate'),
+                                         ('gate_reviewer', 'gate_fixer', 'gate_adjudicator', 'ledger')),
+                    'kind': _record_enum(entry.get('kind'),
+                                         ('crash', 'timeout', 'stopped', 'incomplete', 'deferred', 'ledger')),
+                    'pr': _record_number(entry.get('pr'), integer=True, nullable=True),
+                    'head': _record_sha(entry.get('head', '')),
+                    'first_at': _record_number(entry.get('first_at')),
+                    'last_at': _record_number(entry.get('last_at')),
+                    'attempts': _record_number(entry.get('attempts'), integer=True),
+                    'redrives': _record_number(entry.get('redrives', 0), integer=True)}
+            found.setdefault(key, item)
+    if not present:
+        raise _RecordRead('not_recorded')
+    return sorted(found.values(), key=lambda item: (item['last_at'], item['id']), reverse=True)[:RECORDS_MAX]
+
+
+def _record_broker(loop):
+    raw = _record_bytes(config.state_dir(loop) / 'broker-audit.jsonl', tail=True)
+    if raw and not raw.endswith(b'\n'):
+        raise ValueError('incomplete append')
+    rows = []
+    for line in raw.splitlines():
+        if not line.strip():
+            raise ValueError('empty audit line')
+        entry = json.loads(line)
+        if not isinstance(entry, dict) or not isinstance(entry.get('repo'), str):
+            raise ValueError('audit')
+        if entry['repo'] != loop['repo']:
+            continue
+        rows.append({'at': _record_number(entry.get('at')),
+                     'pr': _record_number(entry.get('pr'), integer=True),
+                     'head': _record_sha(entry.get('head', entry.get('old_head', ''))),
+                     'role': _record_enum(entry.get('role'),
+                                          ('reviewer', 'fixer', 'triage', 'adjudicator', 'issue_fixer',
+                                           'review_only_update')),
+                     'operation': _record_enum(entry.get('operation'),
+                                               ('review', 'push', 'answers', 'labels', 'comment',
+                                                'open_pr', 'request_review', 'issue_comment',
+                                                'file_issue', 'ruling_comment', 'issue_branch',
+                                                'update_branch')),
+                     'phase': _record_enum(entry.get('phase', 'recorded'),
+                                           ('recorded', 'attempt', 'reconciled')),
+                     'outcome': _record_enum(entry.get('outcome', 'recorded' if 'phase' not in entry
+                                                       else 'unknown'),
+                                             ('recorded', 'published', 'not_published', 'unchanged', 'unknown',
+                                              'published_pr_unverified'))})
+    # File order, not wall clock, identifies the latest append (clocks can go backward).
+    return list(reversed(rows[-RECORDS_MAX:]))
+
+
+def _record_main_ci(loop):
+    from . import main_check
+    data = _record_json(config.state_dir(loop) / main_check.FILE)
+    if not isinstance(data, dict) or not data or not set(data) <= {'green', 'notified'}:
+        raise ValueError('main memory')
+    if (any(not data[key] for key in data) or
+            ('required_checks' in loop and not isinstance(loop['required_checks'], list))):
+        raise ValueError('main configuration')
+    required = config.required_checks(loop)
+    if len(required) > RECORDS_MAX:
+        raise _RecordRead('too_large')
+    # Check names are configuration labels, not prose/error text. Never expose paths, URLs,
+    # credential-shaped values or controls, even in hand-edited configuration.
+    for name in required:
+        if (not isinstance(name, str) or not name or len(name) > 100 or
+                any(ord(c) < 32 for c in name) or
+                re.search(r'gh[pousr]_|github_pat_|sk-|://|^/|/home/|/etc/|\\\\', name)):
+            raise ValueError('required checks')
+    return [{'green': _record_sha(data.get('green', '')),
+             'notified': _record_sha(data.get('notified', '')),
+             'required_checks': required}]
+
+
+def records_view(loop_id: str | None) -> dict:
+    """Bounded LOCAL records only; no GitHub reads, tokens, bodies or raw failure text.
+
+    Main-CI is the watchdog's recorded green/notified heads, not current CI conclusions.
+    A quiet gate decline has no failure record; these are unresolved failures only.
+    """
+    if loop_id is not None and (not isinstance(loop_id, str) or not loop_id or len(loop_id) > 200):
+        raise BadRequest('A valid loop id is required.')
+    try:
+        loop = _loop(loop_id)
+    except Exception:
+        raise NotFound('Loop configuration unavailable.') from None
+    sections = {'failures': _record_section(lambda: _record_failures(loop)),
+                'broker': _record_section(lambda: _record_broker(loop)),
+                'main_ci': _record_section(lambda: _record_main_ci(loop))}
+    return {'loop': loop['id'], 'repo': loop['repo'], 'read_at': time.time(), **sections}
 
 
 def stats_view(loop_id: str | None, since: str = "7d") -> dict:
