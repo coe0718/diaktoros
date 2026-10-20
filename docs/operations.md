@@ -223,6 +223,12 @@ Verify the configured check name and workflow: a missing check is not itself a d
 REQUEST_CHANGES verdict in the same turn can still be submitted. Checks still running do
 not block an approval. With `review_after_ci` on, a review waits up to an hour for checks to
 finish before starting.
+A **failed** required check on a **review-only** PR holds its review, with nothing spent and
+no time limit, whether or not `review_after_ci` is on (#1110). No fixer will push to it, so a
+verdict that only said "CI failed" would spend a round of the cap and close that head to
+re-review. The review starts once the check passes at the same head (re-run it on GitHub) or a
+new head is pushed. The `ci_failed` notice says so. A fixer's red PR is still reviewed, because
+the verdict is how the fixer hears of it (with `fix_ci` on, the fixer takes it first).
 
 ### What every review body needs
 

@@ -240,6 +240,8 @@ def sweep(loop: dict, st, prs: list, log=lambda _msg: None) -> None:
         nxt = (f"the fixer takes the failure ({why})" if action == "queue" else
                f"the reviewer: {why}" if action == "review" else
                "this head's CI-fix turn is already queued or spent" if can_fix else
+               "you: re-run the failed check(s) or push — the review waits for green, since no "
+               "fixer takes a review-only PR" if author in config.review_only(loop) else
                "you (CI fixes are off for this loop, or this is not a fixer's PR)")
         observer.notify(loop, st, "ci_failed", number, head, identity="ci_failed",
                         outcome=outcome[:400], next_turn=nxt)

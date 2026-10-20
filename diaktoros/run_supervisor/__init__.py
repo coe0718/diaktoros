@@ -2679,8 +2679,9 @@ class Supervisor(records.LedgerRecords):
         ro_turn = self._pacing_hold(turn, provider, account)
         if turn.error:
             return
-        if row['seat'] == 'reviewer' and time.time() - row['created'] < CI_WAIT_MAX_S:
-            self._ci_hold(turn)
+        if row['seat'] == 'reviewer':
+            # Past CI_WAIT_MAX_S only a red head with no fixer still holds (#1110).
+            self._ci_hold(turn, expired=time.time() - row['created'] >= CI_WAIT_MAX_S)
             if turn.error:
                 return
         if row['seat'] == SHADOW:
@@ -2784,12 +2785,16 @@ class Supervisor(records.LedgerRecords):
             return False
         return ro_turn
 
-    def _ci_hold(self, turn: _Turn) -> None:
+    def _ci_hold(self, turn: _Turn, expired: bool = False) -> None:
         """A reviewer turn held for CI, nothing spent (sets ``turn.error``). A cancelled check
         (#363) holds every review: the broker would refuse its APPROVE, so the turn could only
         spend tokens. Running checks hold it only with review_after_ci (#241), even beside a
-        failed one. A failed check holds only while the fixer takes it first (#539); otherwise
-        the review says why."""
+        failed one. A failed check holds while the fixer takes it first (#539), and on a
+        review-only PR, which no fixer pushes to, it holds until the checks pass (a rerun) or a
+        new head supersedes it (#1110): a verdict that only says "CI failed" would spend a round
+        and close the head to re-review. Otherwise (a fixer's PR) the review says why, which is
+        how the fixer hears of it. ``expired``: past ``CI_WAIT_MAX_S`` only that red hold
+        remains."""
         from .. import ci, ci_fix, config, gh
         row, loop = turn.row, turn.loop
         # A PR that conflicts with its base gets no pull_request CI from GitHub, so the
@@ -2798,7 +2803,7 @@ class Supervisor(records.LedgerRecords):
         queued = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}',
                         login=loop["read_token"])
         # A closed or draft PR is left to the eligibility checks below, which supersede it.
-        if _conflicts_at_head(queued, row["head"]):
+        if not expired and _conflicts_at_head(queued, row["head"]):
             base = queued.get("base")
             base = str(base.get("ref") or "") if isinstance(base, dict) else ""
             turn.paced_until = time.time() + CI_POLL_S
@@ -2806,6 +2811,11 @@ class Supervisor(records.LedgerRecords):
                           f"{base or 'its base'} — GitHub runs no CI on it")[:600]
             self.held_for_ci = True
             return
+        author = (str(((queued.get("user") or {}).get("login")) or "")
+                  if isinstance(queued, dict) else "")
+        review_only = author.lower() in config.review_only(loop)
+        if expired and not review_only:
+            return                      # past the wait, a fixer's PR is reviewed, CI or not
         after_ci = config.review_after_ci(loop)
         # Only the required checks hold it, when the loop names them (#368).
         checks = ci.gating(ci.read(loop, row['head']), config.required_checks(loop))
@@ -2813,17 +2823,18 @@ class Supervisor(records.LedgerRecords):
         # lasts, whatever review_after_ci says (queued right here, not left to the next
         # sweep): no review verdict is spent on code that does not build. Budget spent, or this head's turn
         # done without a new head: the reviewer reviews it.
-        author = (str(((queued.get("user") or {}).get("login")) or "")
-                  if isinstance(queued, dict) else "")
-        fixing = bool(checks is not None and checks.failed
+        fixing = bool(checks is not None and checks.failed and not expired
                       and ci_fix.fixer_first(loop, number=row['pr'], head=row['head'],
                                              author=author, failed=checks.failed,
                                              db=self.db, log=util.log))
+        red = bool(checks is not None and checks.failed and review_only)
+        if expired and not red:
+            return
         # #374: a failure releases the cancelled/missing holds only (the review would
         # otherwise go unreported); the pending wait survives it, so one review names
         # every failure once CI finishes.
         if checks is not None and (
-                fixing
+                fixing or red
                 or (not checks.failed and (checks.cancelled or checks.missing))
                 or (after_ci and checks.pending)):
             # Nothing spent: no model call, no daily turn, no retry. This worker stays
@@ -2832,9 +2843,14 @@ class Supervisor(records.LedgerRecords):
             turn.error = (f"{CI_HOLD} on {row['head'][:7]} — "
                           + (f"{len(checks.cancelled)} check(s) cancelled, re-run them on "
                              f"GitHub ({ci._names(checks.cancelled[:5])})"
-                             if checks.cancelled else
+                             if checks.cancelled and not red else
                              f"{len(checks.failed)} check(s) failed, the fixer is taking them first"
                              if fixing else
+                             f"{len(checks.failed)} required check(s) failed "
+                             f"({ci._names(checks.failed[:5])}) — no fixer takes a review-only "
+                             "PR: the review starts when they pass (re-run them on GitHub) or a "
+                             "new head is pushed"
+                             if red else
                              f"{len(checks.missing)} required check(s) never reported "
                              f"({ci._names(checks.missing[:5])}); check the name"
                              if checks.missing else
