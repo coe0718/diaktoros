@@ -213,6 +213,40 @@ class Between(Base):
         self.ruled("ACCEPT")                                     # shadow_run NULL
         self.assertEqual(gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)[0], "")
 
+    def drop_column(self):
+        """The rulings table as a ledger from before #1112 has it: no shadow_run column."""
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("ALTER TABLE rulings DROP COLUMN shadow_run")
+            self.assertNotIn("shadow_run", {r[1] for r in con.execute("PRAGMA table_info(rulings)")})
+
+    def test_a_ledger_without_the_column_is_read_by_time(self):
+        # gate._rulings_at's OperationalError fallback: no column reads as NULL (time rule).
+        self.shadow("REQUEST_CHANGES")
+        marker = self.mark_escalated()
+        self.ruled("ACCEPT")
+        self.drop_column()
+        held, note = gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)
+        self.assertEqual(held, "")
+        self.assertIn("overruled the shadow review", note)
+        self.shadow("REQUEST_CHANGES")                           # a newer dissent still holds
+        self.assertIn("waiting for its ruling",
+                      gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)[0])
+
+    def test_the_migration_adds_the_column_so_an_old_ledger_can_record_a_ruling(self):
+        # A ledger created before #1112: the launch happened, then the file is upgraded by a
+        # create=True Supervisor, then the broker records the ruling with the run id it was shown.
+        self.shadow("REQUEST_CHANGES", at=time.time() - 100)
+        launch, _row = self.claim()
+        self.drop_column()
+        run_supervisor.Supervisor(self.db)                       # the migration under test
+        with closing(sqlite3.connect(self.db)) as con:
+            self.assertIn("shadow_run", {r[1] for r in con.execute("PRAGMA table_info(rulings)")})
+        self.assertEqual(self.rule(launch.scope), {"accepted": True})
+        with closing(sqlite3.connect(self.db)) as con:
+            self.assertEqual(con.execute("SELECT shadow_run FROM rulings").fetchall(), [("s1",)])
+        marker = self.st.breach_get(7)
+        self.assertTrue(gate.shadow_overruled(self.loop, marker, fg.HEAD, db=self.db))
+
 
 class Eligibility(Base):
     """The adjudicator's own claim check (``pr_facts.adjudication_state``), not a mock: the
