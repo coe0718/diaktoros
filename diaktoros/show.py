@@ -210,6 +210,14 @@ def _rows(loop: dict) -> list[_Row]:
                 continue
             if key == "concurrency" and seat in ("reviewer", "fixer"):
                 continue
+            if key == "concurrency" and seat in ("shadow", "triage"):
+                # Also a settings-form field (#1007): one row, under the form's name. No loop
+                # default reaches these seats, so the value is the seat's own or 1.
+                own = (seats.get(seat) or {}).get("concurrency") not in (None, "")
+                schema(f"{seat}_concurrency", ("seats", seat, "concurrency"),
+                       config.seat_concurrency(loop, seat),
+                       derived="" if own else "the default, 1 (serialized)")
+                continue
             value = (seats.get(seat) or {}).get(key)
             if key == "turn_budget_s" and seat in ("reviewer", "fixer"):
                 plain(f"seats.{seat}.turn_budget_s", ("seats", seat, key),

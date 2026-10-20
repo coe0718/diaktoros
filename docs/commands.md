@@ -369,6 +369,8 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
 | `--reviewer-daily-tokens` | `REVIEWER_DAILY_TOKENS` |  | most tokens the reviewer may spend per day; once spent the next turn waits for midnight (0 = none) (default: the plugin setting) |
 | `--shadow-daily-tokens` | `SHADOW_DAILY_TOKENS` |  | most tokens shadow reviews may spend per day; once spent the next waits for midnight (0 = none) (default: the plugin setting) |
+| `--shadow-concurrency` | `SHADOW_CONCURRENCY` |  | shadow reviews that may run at once, >= 1 (default: the plugin setting, else 1) |
+| `--triage-concurrency` | `TRIAGE_CONCURRENCY` |  | issue triages that may run at once, >= 1 (default: the plugin setting, else 1) |
 | `--fixer-daily-tokens` | `FIXER_DAILY_TOKENS` |  | most tokens the fixer (and issue fixes) may spend per day (0 = none) (default: the plugin setting) |
 | `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day: refused here, a new loop has no fix label; set it with `triage --fix-daily-turns N` (0 = ignore) |
 | `--source` | `SOURCE` |  | runtime file's source path (default: detected) |
@@ -443,6 +445,8 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--concurrency` | `CONCURRENCY` |  | default PRs per seat at once: 1 = serialized (default: 1, from the plugin settings). Above 1 needs --clone, because each run then gets its own clone. Override per seat with --reviewer-concurrency / --fixer-concurrency. |
 | `--reviewer-concurrency` | `REVIEWER_CONCURRENCY` |  | PRs the reviewer may work at once (overrides --concurrency; default: the loop's, settings 1) |
 | `--fixer-concurrency` | `FIXER_CONCURRENCY` |  | PRs the fixer may work at once (overrides --concurrency; default: the loop's, settings 1) |
+| `--shadow-concurrency` | `SHADOW_CONCURRENCY` |  | shadow reviews that may run at once, >= 1 (the shadow seat's own value: --concurrency does not reach it) (default: the plugin setting, else 1) |
+| `--triage-concurrency` | `TRIAGE_CONCURRENCY` |  | issue triages that may run at once, >= 1 (the triage seat's own value: --concurrency does not reach it) (default: the plugin setting, else 1) |
 | `--base` | `BASE` | `main` | the branch PRs target; only PRs against it are reviewed |
 | `--clone` | `CLONE` |  | local clone the runs may use |
 | `--root` | `ROOT` (repeatable) |  | a directory reviews may clean (repeatable) |
@@ -550,6 +554,8 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--concurrency` | `CONCURRENCY` |  | default PRs per seat at once (1 = serialized; above 1 needs a clone, since each run gets its own) |
 | `--reviewer-concurrency` | `REVIEWER_CONCURRENCY` |  | how many PRs the reviewer may work at once |
 | `--fixer-concurrency` | `FIXER_CONCURRENCY` |  | how many PRs the fixer may work at once |
+| `--shadow-concurrency` | `SHADOW_CONCURRENCY` |  | how many shadow reviews may run at once (>= 1; only the shadow seat's own value: the loop default does not reach it) |
+| `--triage-concurrency` | `TRIAGE_CONCURRENCY` |  | how many issue triages may run at once (>= 1; only the triage seat's own value: the loop default does not reach it) |
 | `--cap` | `CAP` |  | verdicts allowed before adjudication |
 | `--clone` | `CLONE` |  | local clone the runs isolate from |
 | `--base` | `BASE` |  | base branch the loop watches |
