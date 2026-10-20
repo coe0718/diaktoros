@@ -1064,7 +1064,7 @@ function validateRecords(data, loop) {
           category(row.operation, ['review', 'push', 'answers', 'labels', 'comment', 'open_pr', 'request_review', 'issue_comment', 'file_issue', 'ruling_comment', 'issue_branch', 'update_branch', 'unknown']) &&
           category(row.phase, ['recorded', 'attempt', 'reconciled', 'unknown']) &&
           category(row.outcome, ['recorded', 'published', 'not_published', 'unchanged', 'unknown', 'published_pr_unverified']) :
-          sha(row.green) && sha(row.notified) && Array.isArray(row.required_checks) && row.required_checks.length <= 50 && row.required_checks.every(label)
+          sha(row.green) && sha(row.notified) && !!(row.green || row.notified) && Array.isArray(row.required_checks) && row.required_checks.length <= 50 && row.required_checks.every(label)
       if (!valid) throw invalidResponse('records')
     }
     if (kind === 'main_ci' && s.status === 'available' && s.items.length !== 1) throw invalidResponse('records')

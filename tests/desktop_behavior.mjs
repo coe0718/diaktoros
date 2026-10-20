@@ -257,7 +257,8 @@ test('records: nested malformed and wrong-loop responses never enter the cache',
     d => { d.broker.items[0].at = -1 }, d => { d.main_ci.items[0].required_checks = [null] },
     d => { d.failures.status = 'missing' }, d => { d.main_ci.items[0].green = '/private/token' },
     d => { d.failures.items[0].attempts = true }, d => { d.broker.items[0].outcome = 'allowed' },
-    d => { d.failures.reason = '/home/private ghp_secret' }]) {
+    d => { d.failures.reason = '/home/private ghp_secret' },
+    d => { d.main_ci.items[0].green = ''; d.main_ci.items[0].notified = '' }]) {
     const data = recordsFixture(); mutate(data); h.respond(data)
     await assert.rejects(h.options.records.queryFn(), /Invalid records response/)
   }
