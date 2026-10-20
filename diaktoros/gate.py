@@ -287,8 +287,9 @@ def shadow_overruled(loop: dict, marker, head: str, db=None) -> bool:
 def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) -> str:
     """Send a head for a ruling when the shadow review disagrees with the reviewer's approval
     (#1004 part 2): ``shadow.escalate`` on, the reviewer's effective verdict at the head
-    APPROVED, and the newest shadow review there REQUEST_CHANGES. Once per head (the breach
-    marker dedups); ``gate.breach``'s outcome, or why nothing was sent."""
+    APPROVED, and the newest shadow review there REQUEST_CHANGES. Once per shadow review: the
+    breach marker dedups, and a dissent newer than the head's ruling goes as the next round
+    (#1111). ``gate.breach``'s outcome, or why nothing was sent."""
     if not config.shadow_escalate(loop):
         return "off"
     if not loop.get("adjudicator", {}).get("route"):
@@ -300,21 +301,39 @@ def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) 
         return "not approved"
     import sqlite3
     from . import run_supervisor
+    marker = st.breach_get(number)
+    mine = (isinstance(marker, dict) and marker.get("head") == head
+            and (marker.get("escalated") or {}).get("by") == SHADOW_ESCALATION)
     try:
         con = run_supervisor.read_only_connect(db or run_supervisor.production_ledger())
         if con is None:
             return "ledger unreadable"
         try:
-            row = con.execute("SELECT verdict FROM shadow_reviews WHERE repo=? AND pr=? AND "
-                              "head=? ORDER BY created DESC LIMIT 1",
+            row = con.execute("SELECT verdict, created FROM shadow_reviews WHERE repo=? AND "
+                              "pr=? AND head=? ORDER BY created DESC LIMIT 1",
                               (loop["repo"], number, head)).fetchone()
+            # The ruling on this marker's round, if it is in.
+            ruled = con.execute("SELECT created FROM rulings WHERE repo=? AND pr=? AND head=? "
+                                "AND turn_key=? ORDER BY created DESC LIMIT 1",
+                                (loop["repo"], number, head,
+                                 f"breach:{marker.get('rounds')}")).fetchone() if mine else None
         finally:
             con.close()
     except (sqlite3.Error, OSError):
         return "ledger unreadable"
     if row is None or str(row[0]) != "REQUEST_CHANGES":
         return "shadow agrees"
-    marker = st.breach_get(number)
+    if ruled is not None and float(row[1]) > float(ruled[0]):
+        # #1111: the shadow dissented again after its ruling (a re-review at the head). That
+        # ruling answered an older review, so this one goes for its own, as the next round.
+        reason = (f"the shadow review requested changes again at {head[:7]} after the "
+                  "adjudicator's ruling: rule on its new findings")
+        rounds = int(marker.get("rounds") or 0)
+        if not st.breach_reopen(number, head, rounds, reason):
+            return "already"
+        outcome = breach(loop, st, number, head, rounds + 1, reason,
+                         escalated={"by": SHADOW_ESCALATION, "at": now_iso(), "reason": reason})
+        return "new" if outcome == "retry" else outcome     # breach() delivers the re-armed one
     # A wake that failed leaves the marker delivery-pending: retry it here, since the sweep's
     # own delivery retry skips approved heads and every shadow escalation is at one.
     retry = (isinstance(marker, dict) and marker.get("status") == "delivery-pending"

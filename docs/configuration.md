@@ -444,6 +444,8 @@ prompt says the head is approved and includes the shadow review as host-recorded
 - **REJECT** (or RESPEC) keeps the hold, and the decision is yours. A later version hands upheld
   findings to the fixer.
 
+If a later shadow review at the same head requests changes again after the ruling, that review goes for a ruling of its own.
+
 Without an adjudicator, the hold just waits for you.
 
 It reviews only code CI has passed, which is stricter than the reviewer. It waits, with nothing

@@ -211,6 +211,57 @@ class Eligibility(Base):
         self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")
 
 
+class Again(Base):
+    """#1111 (review on #1103): after the ruling, a newer shadow dissent at the same head goes
+    for its own ruling, as the next round, instead of waiting on one nothing would request."""
+
+    def escalate(self):
+        from diaktoros import gh
+        with mock.patch.object(gh, "pr", return_value=fg.LIVE), \
+                mock.patch.object(gate.observer, "notify"), \
+                mock.patch.object(gate, "wake_adjudicator", return_value=True) as wake:
+            outcome = gate.shadow_escalation(self.loop, self.st, 7, fg.HEAD, APPROVED, db=self.db)
+        return outcome, [c.args[3] for c in wake.call_args_list]
+
+    def claim(self, rounds):
+        from diaktoros import gh
+        from diaktoros.run_supervisor import pr_facts
+        row = {"repo": fg.REPO, "pr": 7, "head": fg.HEAD, "seat": "adjudicator",
+               "turn_key": f"breach:{rounds}", "id": "r1", "created": time.time()}
+        pr = {**fg.LIVE, "head": {"sha": fg.HEAD, "ref": "fix-7"}}
+        with mock.patch.object(gh, "api", return_value=pr), \
+                mock.patch.object(gh, "reviews", return_value=list(APPROVED)), \
+                mock.patch.object(pr_facts, "effective_reviews",
+                                  side_effect=lambda loop, row, reviews, db=None: reviews):
+            return pr_facts.adjudication_state(self.loop, row)[0]
+
+    def test_a_dissent_after_the_ruling_goes_for_the_next_one(self):
+        self.shadow("REQUEST_CHANGES")
+        self.assertEqual(self.escalate(), ("new", [1]))
+        self.assertIsNotNone(self.st.breach_start(7, fg.HEAD, 1))   # the adjudicator's turn
+        self.ruled("ACCEPT")                                        # turn key breach:1
+        self.assertEqual(self.escalate(), ("already", []))          # no newer dissent
+        self.assertEqual(gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db,
+                                          marker=self.st.breach_get(7))[0], "")
+        self.shadow("REQUEST_CHANGES")                              # a re-review dissents
+        self.assertEqual(self.escalate(), ("new", [2]))
+        marker = self.st.breach_get(7)
+        self.assertEqual((marker["rounds"], marker["status"]), (2, "awaiting-adjudication"))
+        self.assertIn("again", marker["reason"])
+        self.assertEqual(self.claim(2), "ok")                       # its own turn is claimable
+        self.assertEqual(self.claim(1), "superseded")
+        self.assertEqual(self.escalate(), ("already", []))          # once per dissent
+        self.assertIn("waiting for its ruling",
+                      gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db, marker=marker)[0])
+
+    def test_a_ruling_still_out_is_not_doubled(self):
+        self.shadow("REQUEST_CHANGES")
+        self.escalate()
+        self.st.breach_start(7, fg.HEAD, 1)
+        self.shadow("REQUEST_CHANGES")              # lands while the first ruling is out
+        self.assertEqual(self.escalate(), ("already", []))
+        self.assertEqual(self.st.breach_get(7)["rounds"], 1)
+
 class Retry(Base):
     """A failed adjudicator wake is retried by the next check (#1103's shadow review): the
     sweep's delivery retry skips approved heads, and every shadow escalation is at one."""
