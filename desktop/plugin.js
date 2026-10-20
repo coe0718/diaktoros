@@ -42,6 +42,9 @@ const HEALTH_STALE_MS = 600000
 // Set in register(), cleared on dispose: components reach the backend through them.
 let rest = null
 let storage = null
+let disposeRegistration = null
+// Server-owned query namespaces only. In particular, never invalidate the client focus handoff.
+const SERVER_QUERIES = ['now', 'overview', 'loops', 'pr', 'stats', 'settings', 'hooks', 'health']
 // The status chip reports the loop it highlights and the page must open that loop, but the SDK
 // hands a route's render no location. Both halves live in this one file and share the app's query
 // cache, so the chip writes the loop here and the page observes it: the handoff works when the
@@ -1622,6 +1625,9 @@ export default {
   name: 'Diaktoros',
   defaultEnabled: false,
   register(ctx) {
+    // Hosts normally dispose before reloading; also make a repeated register safe in this module.
+    disposeRegistration?.()
+    let disposed = false
     rest = ctx.rest
     storage = ctx.storage
     const cache = queryClient.getQueryCache()
@@ -1631,12 +1637,27 @@ export default {
       if (event.type === 'added' || event.type === 'updated') observeFreshness(event.query)
     })
     cache.findAll({ queryKey: [ID] }).forEach(observeFreshness)
-    ctx.onDispose(() => {
+    // The SDK owns reconnect/backoff and is a no-op on OAuth remotes. Polling remains enabled.
+    // The server sends this same hint on every connect, repairing changes missed while offline.
+    // No view data comes over the socket: active observers re-read their validated REST queries.
+    const closeSocket = ctx.socket('/events', message => {
+      if (disposed || !message || typeof message !== 'object' || Array.isArray(message) ||
+          message.event !== 'invalidate' || message.version !== 1 || Object.keys(message).length !== 2) return
+      queryClient.invalidateQueries({ queryKey: [ID],
+        predicate: query => SERVER_QUERIES.includes(query.queryKey[1]) })
+    })
+    const dispose = () => {
+      if (disposed) return
+      disposed = true
+      closeSocket()
       unsubscribe()
       freshness = new WeakMap()
       rest = null
       storage = null
-    })
+      if (disposeRegistration === dispose) disposeRegistration = null
+    }
+    disposeRegistration = dispose
+    ctx.onDispose(dispose)
     ctx.registerMany([
       { id: 'right-now-pane', area: 'panes', title: 'Diaktoros · Right now',
         data: { placement: 'bottom', dock: { pane: 'workspace', pos: 'bottom' }, height: '200px' },

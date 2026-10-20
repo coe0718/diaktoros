@@ -21,7 +21,7 @@ function overview(...loops) {
   return { loops, read_at: 1800000000 }
 }
 
-async function harness({ cachedAge = null } = {}) {
+async function harness({ cachedAge = null, queryClient: realQueryClient = null } = {}) {
   const registrations = []
   const queries = {}
   // Opt-in exact keys let selection tests model independent TanStack cache entries.
@@ -82,7 +82,7 @@ async function harness({ cachedAge = null } = {}) {
   Object.assign(sdk, {
     PALETTE_AREA: 'palette', ROUTES_AREA: 'routes', SIDEBAR_NAV_AREA: 'nav', STATUSBAR_AREAS: { right: 'status' },
     host: { notify: n => notices.push(n), navigate: p => navigations.push(p) },
-    queryClient: {
+    queryClient: realQueryClient || {
       getQueryCache: () => cache,
       invalidateQueries: args => calls.push(args),
       // The focus handoff the chip writes and the page observes; a real cache write notifies
@@ -138,7 +138,13 @@ async function harness({ cachedAge = null } = {}) {
   let hookResult = () => Promise.reject(new Error('fixture hook result not configured'))
   const retryCalls = []
   let retryResult = { ok: false, error: new Error('fixture retry not configured') }
-  module.namespace.default.register({
+  const sockets = []
+  const pluginContext = {
+    socket: (path, callback) => {
+      const socket = { path, callback, closed: 0 }
+      sockets.push(socket)
+      return () => { socket.closed++ }
+    },
     rest: (path, opts) => {
       if (path === '/actions' && opts?.method === 'POST') { actionCalls.push(opts); return actionResult() }
       if (path === '/hooks' && opts?.method === 'POST') { hookCalls.push(opts); return hookResult() }
@@ -151,7 +157,8 @@ async function harness({ cachedAge = null } = {}) {
     },
     storage: { get: key => store.get(key), set: (key, value) => { storageWrites.push({ key, value }); store.set(key, value) } },
     onDispose: fn => disposers.push(fn), registerMany: rows => registrations.push(...rows)
-  })
+  }
+  module.namespace.default.register(pluginContext)
   const resolve = node => {
     if (Array.isArray(node)) return node.flatMap(resolve)
     if (node == null || node === false) return []
@@ -186,7 +193,8 @@ async function harness({ cachedAge = null } = {}) {
   const fail = data => ({ ...good(data), isError: true, error: new Error('fixture backend offline') })
   const loading = () => ({ ...good(undefined), isLoading: true, isFetching: true })
   return { queries, options, calls, notices, navigations, store, good, fail, loading,
-    registrations, queryReads, storageWrites,
+    registrations, queryReads, storageWrites, sockets, disposers,
+    registerAgain: () => module.namespace.default.register(pluginContext),
     queryFor: (key, query) => { scopedKinds.add(key[1]); keyedQueries.set(JSON.stringify(key), query) },
     actionCalls, actionResult: fn => { actionResult = fn },
     hookCalls, hookResult: fn => { hookResult = fn },
@@ -221,6 +229,7 @@ async function harness({ cachedAge = null } = {}) {
       }
     } }
 }
+
 
 // #646: exercise the registered pane without mounting the page or its action components.
 const PANE = 'right-now-pane'
@@ -1831,3 +1840,164 @@ test('actions: malformed GET success is rejected before confirmation; raw reason
   await previewAction(h, actionPlan({ eligible: false, confirmation: null, reason: '/private/token ghp_secret' }))
   assert.doesNotMatch(h.text(h.tree()), /private\/token|ghp_secret/)
 })
+
+// #647: execute the actual registration/callback; transport fixtures deliver already-parsed SDK frames.
+const invalidation = () => ({ event: 'invalidate', version: 1 })
+test('socket: one registration validates hints, excludes client focus and cleans up late callbacks', async () => {
+  const h = await harness()
+  assert.equal(h.sockets.length, 1)
+  assert.equal(h.sockets[0].path, '/events')
+  h.render(PANE)
+  h.render('page')
+  h.render('status')
+  assert.equal(h.sockets.length, 1, 'mounts never create transports')
+  for (const message of [null, [], 'invalidate', {}, { event: 'other', version: 1 },
+    { event: 'invalidate', version: 2 }, { event: 'invalidate', version: '1' },
+    { ...invalidation(), data: { runs: [] } }]) h.sockets[0].callback(message)
+  assert.equal(h.calls.length, 0)
+  h.sockets[0].callback(invalidation())
+  assert.equal(h.calls.length, 1)
+  const filter = h.calls[0]
+  assert.equal(JSON.stringify(filter.queryKey), '["diaktoros"]')
+  for (const kind of ['now', 'overview', 'loops', 'pr', 'stats', 'settings', 'hooks', 'health']) {
+    assert.equal(filter.predicate({ queryKey: ['diaktoros', kind, 'loop', 647] }), true)
+  }
+  for (const kind of ['focus', 'unknown', 'actions']) {
+    assert.equal(filter.predicate({ queryKey: ['diaktoros', kind] }), false)
+  }
+  assert.equal(h.options.now.refetchInterval, 30000)
+  assert.equal(h.options.overview.refetchInterval, 30000)
+  h.dispose()
+  h.sockets[0].callback(invalidation())
+  h.dispose()
+  assert.equal(h.calls.length, 1)
+  assert.equal(h.sockets[0].closed, 1)
+  assert.equal(h.listenerCount(), 0)
+  assert.equal(h.timerCount(), 0)
+})
+
+test('socket: re-register closes the previous subscription and old disposal cannot clear the new REST', async () => {
+  const h = await harness()
+  const oldDispose = h.disposers[0]
+  h.registerAgain()
+  assert.equal(h.sockets.length, 2)
+  assert.equal(h.sockets[0].closed, 1)
+  assert.equal(h.listenerCount(), 1)
+  h.sockets[0].callback(invalidation())
+  assert.equal(h.calls.length, 0)
+  oldDispose()
+  h.sockets[1].callback(invalidation())
+  assert.equal(h.calls.length, 1)
+  h.render(PANE)
+  h.respond(stalled([]))
+  await h.options.now.queryFn()
+  assert.equal(h.calls.at(-1), '/now?loop=fixture-loop')
+  h.dispose()
+  assert.equal(h.sockets[1].closed, 1)
+})
+
+// Optional dependency acceptance mode, in addition to the dependency-free component suite:
+// DIAKTOROS_QUERY_CORE=/absolute/path/to/@tanstack/query-core/build/modern/index.js
+// The protected verification wrapper supplies the installed desktop's actual TanStack package.
+if (process.env.DIAKTOROS_QUERY_CORE) {
+  // Model a browser for QueryObserver's built-in polling, not a plugin-owned timer/transport.
+  globalThis.window = {}
+  const { QueryClient, QueryObserver } = await import(process.env.DIAKTOROS_QUERY_CORE)
+  delete globalThis.window
+  const settle = async client => {
+    for (let i = 0; i < 200 && client.isFetching(); i++) await new Promise(resolve => setTimeout(resolve, 5))
+    assert.equal(client.isFetching(), 0, 'REST refresh settled')
+  }
+  test('socket real TanStack: shared page and pane refresh once through REST, reconnect repairs missed changes', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
+    const h = await harness({ queryClient: client })
+    const subscriptions = []
+    try {
+      h.render(PANE)
+      const pane = h.options.now
+      h.render('page')
+      const page = h.options.now
+      assert.equal(JSON.stringify(page.queryKey), JSON.stringify(pane.queryKey))
+      assert.equal(page.staleTime, pane.staleTime)
+      assert.equal(page.refetchInterval, pane.refetchInterval)
+      h.respond({ ...stalled([]), counts: { pending: 1 } })
+      const pageObserver = new QueryObserver(client, page)
+      const paneObserver = new QueryObserver(client, pane)
+      subscriptions.push(pageObserver.subscribe(() => {}), paneObserver.subscribe(() => {}))
+      await settle(client)
+      const path = '/now?loop=fixture-loop'
+      assert.equal(h.calls.filter(call => call === path).length, 1)
+      assert.equal(pageObserver.getCurrentResult().data, paneObserver.getCurrentResult().data)
+      const focus = { loop: 'keep-selection' }
+      client.setQueryData(['diaktoros', 'focus'], focus)
+      client.setQueryData(['other-plugin', 'now'], { keep: true })
+      client.setQueryData(['diaktoros', 'pr', 'other-loop', 647], { cached: true })
+      const first = pageObserver.getCurrentResult().data
+      // Server's initial connection event invalidates an already-fresh mounted query.
+      h.respond({ ...stalled([]), counts: { pending: 2 } })
+      h.sockets[0].callback(invalidation())
+      await settle(client)
+      assert.equal(h.calls.filter(call => call === path).length, 2)
+      assert.equal(pageObserver.getCurrentResult().data.counts.pending, 2)
+      assert.notEqual(pageObserver.getCurrentResult().data, first)
+      assert.equal(pageObserver.getCurrentResult().data, paneObserver.getCurrentResult().data)
+      assert.equal(client.getQueryData(['diaktoros', 'focus']), focus)
+      assert.equal(client.getQueryState(['diaktoros', 'focus']).isInvalidated, false)
+      assert.equal(client.getQueryState(['other-plugin', 'now']).isInvalidated, false)
+      assert.equal(client.getQueryState(['diaktoros', 'pr', 'other-loop', 647]).isInvalidated, true)
+      // SDK reconnect is synthetic here: no messages during downtime; same callback on re-open.
+      h.respond({ ...stalled([]), counts: { pending: 3 } })
+      assert.equal(pageObserver.getCurrentResult().data.counts.pending, 2)
+      h.sockets[0].callback(invalidation())
+      await settle(client)
+      assert.equal(h.calls.filter(call => call === path).length, 3)
+      assert.equal(paneObserver.getCurrentResult().data.counts.pending, 3)
+      const freshMount = new QueryObserver(client, pane)
+      subscriptions.push(freshMount.subscribe(() => {}))
+      await settle(client)
+      assert.equal(h.calls.filter(call => call === path).length, 3, 'fresh extra mount does not duplicate reads')
+      h.dispose()
+      h.sockets[0].callback(invalidation())
+      await settle(client)
+      assert.equal(h.calls.filter(call => call === path).length, 3)
+    } finally {
+      subscriptions.forEach(unsubscribe => unsubscribe())
+      h.dispose()
+      client.clear()
+    }
+  })
+
+  for (const mode of ['OAuth no-op', 'disconnected']) {
+    test(`socket real TanStack: ${mode} retains built-in polling`, async t => {
+      t.mock.timers.enable({ apis: ['setInterval'] })
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
+      const h = await harness({ queryClient: client })
+      let unsubscribe
+      try {
+        h.render(PANE)
+        const opts = h.options.now
+        assert.equal(opts.refetchInterval, 30000)
+        h.respond({ ...stalled([]), counts: { pending: 1 } })
+        const observer = new QueryObserver(client, opts)
+        unsubscribe = observer.subscribe(() => {})
+        await settle(client)
+        if (mode === 'disconnected') {
+          h.sockets[0].callback(invalidation())
+          await settle(client)
+        }
+        const before = h.calls.length
+        h.respond({ ...stalled([]), counts: { pending: 4 } })
+        t.mock.timers.tick(30000)
+        await settle(client)
+        assert.equal(h.calls.length, before + 1)
+        assert.equal(observer.getCurrentResult().data.counts.pending, 4)
+        assert.equal(h.sockets.length, 1, 'no plugin reconnect or polling transport')
+      } finally {
+        unsubscribe?.()
+        h.dispose()
+        client.clear()
+        t.mock.timers.reset()
+      }
+    })
+  }
+}
