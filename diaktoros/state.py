@@ -979,6 +979,18 @@ class LoopState:
             self._save_strict(self.dir / "late-triage.json",
                               {str(n): data[n] for n in newest})
 
+    def late_triage_resolve(self, numbers) -> list[int]:
+        """Drop the entries for ``numbers`` (triage ran since); return those that were noted."""
+        with self.locked():
+            data = self.late_triage()
+            gone = sorted(n for n in set(numbers) if n in data)
+            if gone:
+                for n in gone:
+                    del data[n]
+                self._save_strict(self.dir / "late-triage.json",
+                                  {str(n): data[n] for n in data})
+            return gone
+
     def _said_claim(self, name: str, number: int) -> bool:
         """Record ``number`` in the one-time-notice ledger ``name``; True only for the caller that
         recorded it. The check and the write are one step under the lock. A claim that did not reach

@@ -1398,11 +1398,14 @@ class Supervisor(records.LedgerRecords):
         with self._connect() as con:
             return runs_view(con, repo, pr)
 
-    def seat_numbers(self, repo: str, seat: str) -> set[int]:
-        """Every PR/issue number with a ledger row for ``seat``, in any state (read-only)."""
+    def seat_numbers(self, repo: str, seat: str, state: str | None = None) -> set[int]:
+        """Every PR/issue number with a ledger row for ``seat`` (read-only): in any state, or
+        only in ``state`` when given."""
+        query, args = 'SELECT DISTINCT pr FROM runs WHERE repo=? AND seat=?', [repo, seat]
+        if state is not None:
+            query, args = query + ' AND state=?', [*args, state]
         with self._connect() as con:
-            return {int(row['pr']) for row in con.execute(
-                'SELECT DISTINCT pr FROM runs WHERE repo=? AND seat=?', (repo, seat))}
+            return {int(row['pr']) for row in con.execute(query, args)}
 
     def record_dependencies(self, run_id: str, owner: str, text: str) -> None:
         """The owning worker's note of its turn's dependency prefetch (#51), bounded and printable.
