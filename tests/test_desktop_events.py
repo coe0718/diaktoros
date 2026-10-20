@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest import mock
@@ -321,8 +322,17 @@ class Socket(unittest.TestCase):
         db.execute('CREATE TABLE turns (id INTEGER)')
         db.commit()
         manager = events.DesktopEvents(events.FileSnapshot(home, directory), interval=.01)
+        disconnected = threading.Event()
+
+        async def observed_app(scope, receive, send):
+            try:
+                await app(scope, receive, send)
+            finally:
+                if scope['type'] == 'websocket':
+                    disconnected.set()
+
         with mock.patch.dict(sys.modules, {"hermes_cli.web_server": server}), \
-                mock.patch.object(events, "for_app", return_value=manager), TestClient(app) as client:
+                mock.patch.object(events, "for_app", return_value=manager), TestClient(observed_app) as client:
             for suffix in ("", "?token=wrong"):
                 with self.assertRaises(WebSocketDisconnect):
                     with client.websocket_connect("/api/plugins/diaktoros/events" + suffix):
@@ -337,13 +347,23 @@ class Socket(unittest.TestCase):
             self.assertIsNone(manager.task)
             app.state.auth_required = False
             for _ in range(2):
+                disconnected.clear()
                 with client.websocket_connect("/api/plugins/diaktoros/events?token=fixture-only-session-token") as ws:
                     self.assertEqual(ws.receive_json(), {"event": "invalidate", "version": 1})
+                    scanner = manager.task
+                    self.assertIsNotNone(scanner)
                     db.execute('INSERT INTO turns VALUES (1)')
                     db.commit()
                     self.assertEqual(ws.receive_json(), {"event": "invalidate", "version": 1})
                     (state / 'hold.json').write_text('{"held": true}')
                     self.assertEqual(ws.receive_json(), {"event": "invalidate", "version": 1})
+                    # TestClient.__exit__ sends disconnect then immediately cancels
+                    # its AnyIO scope: that races the route's async finally/join.
+                    # Observe graceful ASGI completion BEFORE permitting scope cancel,
+                    # not merely zero subscribers while the scanner is still joining.
+                    ws.close()
+                    self.assertTrue(disconnected.wait(5), 'socket route did not finish teardown')
+                    self.assertTrue(scanner.done())
                 self.assertIsNone(manager.task)
                 self.assertFalse(manager.subscribers)
 
