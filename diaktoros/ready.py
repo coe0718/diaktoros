@@ -115,6 +115,9 @@ def assess(loop: dict, st, pr: dict, reviews, ci_state, detail: dict | None) -> 
             marker if isinstance(marker, dict) else {}, head) in {"awaiting-adjudication",
                                                                   "adjudicating"}:
         why.append("escalated: parked awaiting adjudication")
+    shadow_held, _note = gate.shadow_hold(loop, number, head)          # #1004
+    if shadow_held:
+        why.append("shadow review: " + shadow_held)
     # The hold blocks only while the fresh review is still owed. ``reviews`` above are already the
     # host-receipted post-boundary ones, so an approval found there ends the hold's veto, as in
     # the gates (#791). An unreadable review list never counts as approved.

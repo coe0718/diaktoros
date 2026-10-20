@@ -183,6 +183,54 @@ def shadow_sampled(loop: dict, number: int, head: str) -> bool:
     return int.from_bytes(digest[:8], "big") % every == 0
 
 
+# A shadow run in one of these states may still record its review at the head (#1004).
+SHADOW_OPEN = ("pending", "waiting", "claimed", "launching", "running", "uncertain")
+
+
+def shadow_hold(loop: dict, number: int, head: str, db=None) -> tuple[str, str]:
+    """``(hold, note)`` for a PR head under ``shadow.escalate`` (#1004), read-only.
+
+    ``hold`` (it is not ready to merge) while the shadow review of this head is still running,
+    or once it requested changes; an unreadable ledger holds too (unknown is not ready). ``note``
+    only, never a hold, when there is no shadow review of this head to wait for: none was queued
+    (sampled out, or queued before escalate was on) or its run ended without one, so a failed
+    shadow never parks a PR for good. ``("", "")`` with escalate off."""
+    if not config.shadow_escalate(loop):
+        return "", ""
+    import sqlite3
+    from . import run_supervisor
+    short = str(head)[:7]
+    try:
+        con = run_supervisor.read_only_connect(db or run_supervisor.production_ledger())
+        if con is None:
+            return f"the run ledger is unreadable, so the shadow review at {short} is unknown", ""
+        try:
+            try:
+                review = con.execute("SELECT verdict FROM shadow_reviews WHERE repo=? AND pr=? "
+                                     "AND head=? ORDER BY created DESC LIMIT 1",
+                                     (loop["repo"], number, head)).fetchone()
+            except sqlite3.OperationalError:
+                review = None              # a ledger from before shadow reviews: none recorded
+            run = con.execute("SELECT state FROM runs WHERE repo=? AND pr=? AND head=? AND "
+                              "seat='shadow' ORDER BY updated DESC, created DESC LIMIT 1",
+                              (loop["repo"], number, head)).fetchone()
+        finally:
+            con.close()
+    except Exception as exc:
+        return (f"the run ledger is unreadable ({type(exc).__name__}), so the shadow review at "
+                f"{short} is unknown"), ""
+    if review is not None:
+        if str(review[0]) == "REQUEST_CHANGES":
+            return (f"the shadow review requested changes at {short} — it holds the PR until "
+                    "you decide (`hermes dk explain --pr N` shows its findings)"), ""
+        return "", ""
+    if run is not None and run[0] in SHADOW_OPEN:
+        return f"waiting on the shadow review at {short} ({run[0]})", ""
+    if run is None:
+        return "", f"no shadow review was queued for {short}: nothing to wait for"
+    return "", f"the shadow run at {short} ended {run[0]} without a review: nothing to wait for"
+
+
 def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: str = "") -> str:
     """Queue a shadow review beside a newly queued reviewer turn (#218), when the loop has a
     shadow profile and this head is sampled. Best effort and silent: a shadow is never part of
@@ -734,7 +782,9 @@ def explain_facts(loop: dict, number: int) -> dict:
         except Exception:
             ro_conflict = None
     hold, hold_error = pr_hold.read(loop, number)      # #477
+    shadow = shadow_hold(loop, number, head) if isinstance(head, str) and head else ("", "")
     return {"review_only_conflict": ro_conflict, "hold": hold, "hold_error": hold_error,
+            "shadow_hold": shadow,
             "pr": pr, "pr_error": pr_error, "reviews": reviews, "reviews_error": reviews_error,
             "armed": armed, "armed_error": armed_error, "read_at": time.time(),
             "chain": chain, "parent_readiness": readiness,
@@ -797,6 +847,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     are reported in ``blockers``. Unknowns stay unknown: an unreadable review list is never
     rendered as "0 verdicts".
     """
+    shadow_held, shadow_note = facts.get("shadow_hold") or ("", "")      # #1004
     now = float(facts.get("read_at") or time.time())
     pr = facts.get("pr") if isinstance(facts.get("pr"), dict) else None
     reviews = facts.get("reviews") if isinstance(facts.get("reviews"), list) else None
@@ -1007,6 +1058,8 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             if author and author not in config.reviewed_authors(loop):
                 blockers.append(f"the author {author} is not one of this loop's fixers "
                                 f"({', '.join(loop['fixers'])}) or review-only authors")
+            if shadow_held:
+                blockers.append(f"shadow review: {shadow_held}")
             if ruled:
                 blockers.append(f"ruled: the adjudicator ruled {ruled} at head {short}; the "
                                 "decision is yours")
@@ -1276,6 +1329,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         "github": local.get("github", "no failed GitHub call recorded"),
         "gate_decisions": [gate_decisions.line(e) for e in gate_decisions.for_pr(loop, number)],
         "gate_failures": gate_failed, "blockers": blockers, "next": {"kind": kind, "action": action},
+        "shadow": {"hold": shadow_held, "note": shadow_note},
     }
 
 

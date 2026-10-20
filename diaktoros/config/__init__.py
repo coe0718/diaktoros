@@ -963,8 +963,15 @@ def shadow_every(loop: dict) -> int:
             else DEFAULT_SHADOW_EVERY)
 
 
+def shadow_escalate(loop: dict) -> bool:
+    """Whether a shadow review holds the PR (#1004): no ready-to-merge while the shadow review of
+    the head is still running, or after it requested changes. Off unless the loop opts in."""
+    return (loop.get("shadow") or {}).get("escalate") is True
+
+
 def normalize_shadow(raw, where: str) -> dict:
-    """The ``shadow`` block (#218): ``profile`` (required to turn it on) and ``every``, or ``{}``.
+    """The ``shadow`` block (#218): ``profile`` (required to turn it on), ``every`` and
+    ``escalate`` (#1004), or ``{}``.
 
     A shadow review is a second reviewer model in no-write mode: it never posts, so it needs no
     route, login or token, only the profile its model and account come from. Its limits
@@ -973,8 +980,8 @@ def normalize_shadow(raw, where: str) -> dict:
     """
     if raw in (None, {}):
         return {}
-    if not isinstance(raw, dict) or not set(raw) <= {"profile", "every"}:
-        raise ConfigError(f"{where}: shadow may only hold 'profile' and 'every'")
+    if not isinstance(raw, dict) or not set(raw) <= {"profile", "every", "escalate"}:
+        raise ConfigError(f"{where}: shadow may only hold 'profile', 'every' and 'escalate'")
     profile = str(raw.get("profile") or "").strip()
     if not profile:
         raise ConfigError(f"{where}: shadow.profile is required (the Hermes profile shadow "
@@ -989,6 +996,14 @@ def normalize_shadow(raw, where: str) -> dict:
             raise ConfigError(f"{where}: shadow.every must be a whole number, {low}-{high} "
                               f"(1 = every reviewer turn), got {every!r}")
         shadow["every"] = every
+    if raw.get("escalate") not in (None, ""):
+        if not isinstance(raw["escalate"], bool):
+            raise ConfigError(f"{where}: shadow.escalate must be true or false, "
+                              f"got {raw['escalate']!r}")
+        if raw["escalate"] and shadow.get("every", DEFAULT_SHADOW_EVERY) != 1:
+            raise ConfigError(f"{where}: shadow.escalate needs shadow.every 1: a head the "
+                              "sampling skips would have no second review to hold it")
+        shadow["escalate"] = raw["escalate"]
     return shadow
 
 

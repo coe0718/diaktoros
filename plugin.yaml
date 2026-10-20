@@ -210,6 +210,11 @@ config_schema:
     type: str
     default: ""
     description: "How often a reviewer turn also gets a shadow review, 1-1000 (1 = every one). Blank = not set here: the loop keeps its own value (default 5)"
+  shadow_escalate:
+    label: "Shadow review holds the PR"
+    type: str
+    default: ""
+    description: "on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004). Needs shadow every = 1. Blank = not set here: the loop keeps its own value (default: off)"
   human_paths:
     label: "Human-only paths (comma-separated globs)"
     type: str
