@@ -673,7 +673,7 @@ def check_ci_fix_cap(value, where: str) -> int | None:
 
 
 def ci_fix_cap(loop: dict) -> int:
-    """CI-fix turns one PR gets before a red head goes to the reviewer (#539)."""
+    """CI-fix turns one PR gets before a red head waits for you (#539)."""
     value = loop.get("ci_fix_cap")
     ok = isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= CI_FIX_CAP_MAX
     return value if ok else CI_FIX_CAP_DEFAULT

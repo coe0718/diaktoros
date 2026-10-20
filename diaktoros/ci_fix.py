@@ -3,7 +3,7 @@
 With ``fix_ci`` on, a red head goes to the fixer before the reviewer (#539): the reviewer's
 pre-launch hold queues its turn at once, and the watchdog's sweep is the backstop. The turn is
 keyed by the head, so a flaky job cannot loop it. CI-fix turns have their own budget,
-``ci_fix_cap`` per PR, outside the verdict cap; once it is spent the reviewer reviews the red head.
+``ci_fix_cap`` per PR, outside the verdict cap; once it is spent the red head waits for you (#1110).
 The worker re-reads CI right before launch and hands the fixer the failing jobs' log tails as
 data. The edge it never crosses: re-running jobs, editing workflows (the broker refuses
 ``.github/``), merging.
@@ -68,13 +68,14 @@ def decide(loop: dict, *, used: int) -> tuple[str, str]:
     """``("queue", "CI fix N of CAP")`` or ``("review", why)`` for a red head (#539).
 
     CI fixes have their own budget, ``ci_fix_cap`` per PR, outside the reviewer's verdict cap:
-    ``used`` is this PR's earlier CI-fix turns. Once it is spent, a red head goes to the reviewer,
-    whose one review (a verdict) looks for why the fixes did not take.
+    ``used`` is this PR's earlier CI-fix turns. Once it is spent, a red head waits for a person:
+    its review is held until the checks pass or a new head is pushed (#1110), since a verdict
+    that only says "CI failed" would spend a round of the cap.
     """
     cap = config.ci_fix_cap(loop)
     if used >= cap:
-        return "review", (f"CI-fix budget spent ({used} of {cap}): the reviewer reviews the "
-                          "red head")
+        return "review", (f"CI-fix budget spent ({used} of {cap}): re-run the failed "
+                          "check(s) or push — the review waits for green")
     return "queue", f"CI fix {used + 1} of {cap}"
 
 
@@ -85,7 +86,8 @@ def fixer_first(loop: dict, *, number: int, head: str, author: str, failed: list
 
     True while a CI-fix turn for this head is pending or running, or one was just queued. False
     once this head's turn has finished without a new head (the fixer found nothing to push), or
-    the budget is spent: the reviewer then reviews it, so a red head is never left unreviewed.
+    the budget is spent: the review then waits for green or a new head (#1110), and the
+    ``ci_failed`` notice tells the operator.
     """
     if not failed or not fixable(loop, author):
         return False
@@ -238,8 +240,10 @@ def sweep(loop: dict, st, prs: list, log=lambda _msg: None) -> None:
         if link:
             outcome += f" — {link}"
         nxt = (f"the fixer takes the failure ({why})" if action == "queue" else
-               f"the reviewer: {why}" if action == "review" else
+               f"you: {why}" if action == "review" else
                "this head's CI-fix turn is already queued or spent" if can_fix else
+               "you: re-run the failed check(s) or push — the review waits for green, since no "
+               "fixer takes a review-only PR" if author in config.review_only(loop) else
                "you (CI fixes are off for this loop, or this is not a fixer's PR)")
         observer.notify(loop, st, "ci_failed", number, head, identity="ci_failed",
                         outcome=outcome[:400], next_turn=nxt)

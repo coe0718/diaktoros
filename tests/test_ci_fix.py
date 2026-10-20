@@ -225,7 +225,8 @@ class Sweep(unittest.TestCase):
         notices, queued = self.run_sweep(rows=[{"head": f"o{i}", "state": "succeeded"}
                                                for i in range(3)])
         self.assertEqual(queued, [])
-        self.assertIn("the reviewer: CI-fix budget spent (3 of 3)", notices[0][1]["next_turn"])
+        self.assertIn("you: CI-fix budget spent (3 of 3)", notices[0][1]["next_turn"])
+        self.assertIn("the review waits for green", notices[0][1]["next_turn"])
 
 
 class Hold(unittest.TestCase):
