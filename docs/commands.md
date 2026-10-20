@@ -349,7 +349,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--observer-profile` | `OBSERVER_PROFILE` |  | Hermes profile whose chat gets the loop's notices |
 | `--adjudicator-profile` | `ADJUDICATOR_PROFILE` |  | Hermes profile that rules when a PR's verdict cap is spent; turns adjudication on (blank: off) (default: the plugin setting) |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000 (default: the plugin setting, else the review cap) |
-| `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head goes to the reviewer, 1-10 (default: the plugin setting, else 3) |
+| `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10 (default: the plugin setting, else 3) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000 (default: the plugin setting, else no cap) |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting) |
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting) |
@@ -473,7 +473,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name for a maintainer; needs unattended fixer pushes (default off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default on) |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000 (default: the plugin setting, else the review cap) |
-| `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head goes to the reviewer, 1-10 (default: the plugin setting, else 3) |
+| `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10 (default: the plugin setting, else 3) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000 (default: the plugin setting, else no cap) |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting) |
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting) |
@@ -565,7 +565,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer (needs unattended fixer pushes), or stop |
 | `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name (other than their tests and docs) for a maintainer, or stop; needs unattended fixer pushes |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000; 0 = the review cap |
-| `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head goes to the reviewer, 1-10; 0 = the default (3) |
+| `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10; 0 = the default (3) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000; 0 = no cap |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated); replaces the list (one of `--review-only`, `--no-review-only`) |
 | `--no-review-only` |  |  | clear the review-only list (one of `--review-only`, `--no-review-only`) |

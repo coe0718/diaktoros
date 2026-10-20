@@ -2789,12 +2789,12 @@ class Supervisor(records.LedgerRecords):
         """A reviewer turn held for CI, nothing spent (sets ``turn.error``). A cancelled check
         (#363) holds every review: the broker would refuse its APPROVE, so the turn could only
         spend tokens. Running checks hold it only with review_after_ci (#241), even beside a
-        failed one. A failed check holds while the fixer takes it first (#539), and on a
+        failed one. A failed check holds while the fixer takes it first (#539); then, and on a
         review-only PR, which no fixer pushes to, it holds until the checks pass (a rerun) or a
         new head supersedes it (#1110): a verdict that only says "CI failed" would spend a round
-        and close the head to re-review. Otherwise (a fixer's PR) the review says why, which is
-        how the fixer hears of it. ``expired``: past ``CI_WAIT_MAX_S`` only that red hold
-        remains."""
+        and close the head to re-review. Only where CI fixes are off for a fixer's PR does the
+        review run, since it is how the fixer hears of the failure. ``expired``: past
+        ``CI_WAIT_MAX_S`` only that red hold remains."""
         from .. import ci, ci_fix, config, gh
         row, loop = turn.row, turn.loop
         # A PR that conflicts with its base gets no pull_request CI from GitHub, so the
@@ -2814,20 +2814,22 @@ class Supervisor(records.LedgerRecords):
         author = (str(((queued.get("user") or {}).get("login")) or "")
                   if isinstance(queued, dict) else "")
         review_only = author.lower() in config.review_only(loop)
-        if expired and not review_only:
-            return                      # past the wait, a fixer's PR is reviewed, CI or not
+        # Red CI no review answers: no fixer pushes here, or the fixer's CI fixes are done.
+        holdable = review_only or ci_fix.fixable(loop, author)
+        if expired and not holdable:
+            return                      # past the wait, only that red hold remains
         after_ci = config.review_after_ci(loop)
         # Only the required checks hold it, when the loop names them (#368).
         checks = ci.gating(ci.read(loop, row['head']), config.required_checks(loop))
         # #306/#539/#579: a red head goes to the fixer first while its CI-fix budget
         # lasts, whatever review_after_ci says (queued right here, not left to the next
         # sweep): no review verdict is spent on code that does not build. Budget spent, or this head's turn
-        # done without a new head: the reviewer reviews it.
+        # done without a new head: it waits for green or a new head, like a review-only PR's (#1110).
         fixing = bool(checks is not None and checks.failed and not expired
                       and ci_fix.fixer_first(loop, number=row['pr'], head=row['head'],
                                              author=author, failed=checks.failed,
                                              db=self.db, log=util.log))
-        red = bool(checks is not None and checks.failed and review_only)
+        red = bool(checks is not None and checks.failed and holdable and not fixing)
         if expired and not red:
             return
         # #374: a failure releases the cancelled/missing holds only (the review would
@@ -2847,8 +2849,10 @@ class Supervisor(records.LedgerRecords):
                              f"{len(checks.failed)} check(s) failed, the fixer is taking them first"
                              if fixing else
                              f"{len(checks.failed)} required check(s) failed "
-                             f"({ci._names(checks.failed[:5])}) — no fixer takes a review-only "
-                             "PR: the review starts when they pass (re-run them on GitHub) or a "
+                             f"({ci._names(checks.failed[:5])}) — "
+                             + ("no fixer takes a review-only PR" if review_only else
+                                "the fixer's CI fixes are done")
+                             + ": the review starts when they pass (re-run them on GitHub) or a "
                              "new head is pushed"
                              if red else
                              f"{len(checks.missing)} required check(s) never reported "

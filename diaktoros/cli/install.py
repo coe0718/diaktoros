@@ -1058,7 +1058,7 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                            "for `review --another-round`, 1-1000 (default: the plugin "
                            "setting, else the review cap)")
     init.add_argument("--ci-fix-cap", default=None, metavar="N",
-                      help="CI-fix turns per PR before a red head goes to the reviewer, 1-10 "
+                      help="CI-fix turns per PR before a red head waits for you, 1-10 "
                            "(default: the plugin setting, else 3)")
     init.add_argument("--review-only-daily", default=None, metavar="N",
                       help="reviewer turns a day on review-only PRs, 1-1000 (default: the "
@@ -1153,7 +1153,7 @@ def add_setup(sub) -> None:  # noqa: ANN001
                             "for `review --another-round`, 1-1000 (default: the plugin "
                             "setting, else the review cap)")
     first.add_argument("--ci-fix-cap", default=None, metavar="N",
-                       help="CI-fix turns per PR before a red head goes to the reviewer, 1-10 "
+                       help="CI-fix turns per PR before a red head waits for you, 1-10 "
                             "(default: the plugin setting, else 3)")
     first.add_argument("--review-only-daily", default=None, metavar="N",
                        help="reviewer turns a day on review-only PRs, 1-1000 (default: the "

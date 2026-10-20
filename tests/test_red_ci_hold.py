@@ -4,7 +4,8 @@ On a review-only PR the reviewer used to review a red head anyway: its verdict o
 failed", spent a round of the cap, and closed the head to re-review, so a flaky check that passed
 on a rerun left nothing but an empty commit. Now the turn is held, nothing spent, until the checks
 pass at the same head (a rerun) or a new head supersedes it, past the CI wait as well. A fixer's
-PR is unchanged: the review is how the fixer hears of red CI.
+PR is held the same way once its CI fixes are done; only with CI fixes off is it reviewed red,
+since that review is how the fixer hears of the failure.
 """
 from __future__ import annotations
 
@@ -59,7 +60,23 @@ class Hold(sm.Base):
                 seen, row = self.review(GREEN)
                 self.assertEqual((seen["role"], row[0]), ("reviewer", "succeeded"))
 
-    def test_a_fixers_red_head_is_still_reviewed(self):
+    def test_a_fixers_red_head_is_held_once_its_ci_fixes_are_done(self):
+        # The CI-fix budget spent, or this head's CI-fix turn ended without a new head.
+        on = {"fix_ci": True, "unattended_fixer_push": True, "fixers": ["fix"]}
+        for rows in ([{"head": f"o{i}", "state": "succeeded"} for i in range(3)],
+                     [{"head": sm.HEAD, "state": "succeeded"}]):
+            for wait in (3600, 0):
+                with self.subTest(rows=len(rows), wait=wait), \
+                        mock.patch.object(ci_fix, "rows", return_value=rows), \
+                        mock.patch.object(run_supervisor, "CI_WAIT_MAX_S", wait):
+                    seen, row = self.review(RED, author="fix", **on)
+                    self.assertEqual((seen, row[0]), ({}, "waiting"))
+                    self.assertIn("the fixer's CI fixes are done", row[1])
+        with mock.patch.object(ci_fix, "rows", return_value=rows):
+            seen, row = self.review(GREEN, author="fix", **on)
+        self.assertEqual((seen["role"], row[0]), ("reviewer", "succeeded"))
+
+    def test_a_fixers_red_head_is_still_reviewed_with_ci_fixes_off(self):
         # fix_ci off: the review is how the fixer hears of red CI.
         seen, row = self.review(RED, author="fix")
         self.assertEqual((seen["role"], row[0]), ("reviewer", "succeeded"))

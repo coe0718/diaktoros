@@ -1832,7 +1832,7 @@ def add_set(sub) -> None:  # noqa: ANN001
                         help="verdicts the reviewer gives one review-only PR before it waits "
                              "for `review --another-round`, 1-1000; 0 = the review cap")
     change.add_argument("--ci-fix-cap", default=None, metavar="N",
-                        help="CI-fix turns per PR before a red head goes to the reviewer, "
+                        help="CI-fix turns per PR before a red head waits for you, "
                              "1-10; 0 = the default (3)")
     change.add_argument("--review-only-daily", default=None, metavar="N",
                         help="reviewer turns a day on review-only PRs, 1-1000; 0 = no cap")

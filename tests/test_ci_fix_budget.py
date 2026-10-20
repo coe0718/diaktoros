@@ -98,15 +98,16 @@ class ReviewerHold(sm.Worker):
         self.assertIn("the fixer is taking them first", row[1])
         self.assertEqual(queued, [{"turn_key": ci_fix.KEY}])
 
-    def test_without_review_after_ci_a_spent_budget_still_gets_its_review(self):
-        seen, row, queued = self.review_turn(rows=[{"head": f"o{i}", "state": "succeeded"}
-                                                   for i in range(3)], after_ci=False)
-        self.assertEqual((seen.get("role"), row[0], queued), ("reviewer", "succeeded", []))
-
-    def test_once_the_budget_is_spent_the_reviewer_reviews_the_red_head(self):
-        seen, row, queued = self.review_turn(rows=[{"head": f"o{i}", "state": "succeeded"}
-                                           for i in range(3)])
-        self.assertEqual((seen.get("role"), row[0], queued), ("reviewer", "succeeded", []))
+    def test_once_the_budget_is_spent_the_red_head_waits_for_green(self):
+        # #1110: a verdict that only says "CI failed" would spend a round; the review waits for
+        # a re-run that passes or a new head, with review_after_ci on or off.
+        for after_ci in (True, False):
+            with self.subTest(after_ci=after_ci):
+                seen, row, queued = self.review_turn(
+                    rows=[{"head": f"o{i}", "state": "succeeded"} for i in range(3)],
+                    after_ci=after_ci)
+                self.assertEqual((seen, row[0], queued), ({}, "waiting", []))
+                self.assertIn("the fixer's CI fixes are done", row[1])
 
 
 class History(unittest.TestCase):

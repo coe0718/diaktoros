@@ -223,12 +223,12 @@ Verify the configured check name and workflow: a missing check is not itself a d
 REQUEST_CHANGES verdict in the same turn can still be submitted. Checks still running do
 not block an approval. With `review_after_ci` on, a review waits up to an hour for checks to
 finish before starting.
-A **failed** required check on a **review-only** PR holds its review, with nothing spent and
-no time limit, whether or not `review_after_ci` is on (#1110). No fixer will push to it, so a
-verdict that only said "CI failed" would spend a round of the cap and close that head to
-re-review. The review starts once the check passes at the same head (re-run it on GitHub) or a
-new head is pushed. The `ci_failed` notice says so. A fixer's red PR is still reviewed, because
-the verdict is how the fixer hears of it (with `fix_ci` on, the fixer takes it first).
+A **failed** required check holds the review, with nothing spent and no time limit, whether or
+not `review_after_ci` is on, on a **review-only** PR and on a fixer's PR once its CI fixes are
+done (#1110). A verdict that only said "CI failed" would spend a round of the cap and close
+that head to re-review. The review starts once the check passes at the same head (re-run it on
+GitHub) or a new head is pushed. The `ci_failed` notice says so. Only a fixer's PR with
+`fix_ci` off is still reviewed red, because that verdict is how the fixer hears of it.
 
 ### What every review body needs
 
@@ -269,9 +269,9 @@ CI fixes have their own budget, `ci_fix_cap` CI-fix turns per PR (default 3, acr
 heads), outside the reviewer's verdict cap (#539). A red head goes to the fixer first,
 whether or not `review_after_ci` is on (#579): the reviewer's turn is held and its CI-fix turn queued at once, so no
 review verdict is spent on code that does not build. Once the budget is spent, or the head's
-CI-fix turn ended without a new head, the reviewer reviews the red head (that review counts
-as a verdict) to find why the fixes did not take; it is told so and given the failing jobs'
-logs. While the fixer has a red head, the watchdog does not call the reviewer's silence a stall. The first review after any CI-fix commits
+CI-fix turn ended without a new head, the review waits for you (#1110): it starts once the
+checks pass at that head (a re-run) or a new head is pushed, and the `ci_failed` notice says
+so. While the fixer has a red head, the watchdog does not call the reviewer's silence a stall. The first review after any CI-fix commits
 is shown them, with the test files each changed, and blocks one that weakened, skipped or
 removed a test. `explain` shows `CI fixes N/CAP`. Normal fixer capacity, pacing, checks and
 push safety still apply. See [configuration](configuration.md#write-policy-and-attribution)
