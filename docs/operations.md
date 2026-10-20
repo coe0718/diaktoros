@@ -738,6 +738,39 @@ The page shows:
   intent or ruling on record) has no button: inspect the PR and reconcile from the CLI. A moved
   head is refused rather than retried, and a fixer run is only offered while unattended fixer
   pushes are on, with the command that turns them on as its hover reason..
+- **Local loop records:** bounded local artifacts for the selected loop, served by
+  `GET /records?loop=...` with no GitHub calls or mutations:
+  - **Unresolved gate failures:** recorded failures to finish (including repository-matched
+    fallback records), not quiet gate declines. Safe failure kind, gate, PR/head, attempts,
+    re-drives and first/last timestamps are returned; the page shows the last timestamp.
+  - **Broker write audit:** role, operation, PR/head, time, phase and outcome. This is not a
+    complete authorization/refusal log. An attempt is not proof of publication; reconciled
+    `unchanged` remains distinct. Newest appends first from the bounded JSONL tail.
+  - **Main CI · local memory:** remembered green and red-notice heads plus configured required
+    check names. No current CI conclusions, age or chronology are recorded by this artifact.
+  - **Observer · local feed:** event, optional target/head, recorded status, attempts and time.
+    Digests may have no single target; report/main notices may use zero. `delivered` is recorded
+    delivery memory, not independent proof that a notification arrived. Queued, digesting,
+    pending, failed and uncertain remain distinct. Bodies, destinations and delivery IDs are
+    withheld; this is not the full observer message history.
+  - **Watchdog · local memory:** recorded sweep time, retained PR heads/per-head history with
+    first-observed (possibly unknown) and last-seen times, and stall cooldown stamps with safe
+    reason categories. These are neither live running/health nor current stall verdicts.
+    Cooldown keys contain only seven head characters and are not joined to current heads.
+    Queue/lock alert keys, arbitrary branch names and watchdog log prose are omitted.
+
+  Each section distinguishes missing, unreadable and successfully read empty memory. Reads
+  admit regular files only, without following any symlink component or blocking on FIFOs;
+  artifacts are limited to 256 KiB and returned sections to the newest 50 rows. Observer entries
+  and each watchdog map admit at most 1,000 entries. At 50 rows the page warns that older rows
+  may be omitted; no total/full-history claim is made. Malformed complete JSONL lines and
+  unfinished appends are unreadable, not silently empty. Raw payloads, errors, credentials,
+  private prose and host paths are not returned. A successful snapshot is not an atomic
+  cross-file read. Loading, unavailable and retained stale data remain explicit; a 60-second
+  elapsed deadline expires successful reads. The records query shares the server cache/socket
+  invalidation and 30-second polling fallback. The first displayed loop stays selected through
+  discovery reorder/removal; without a readable selected identity the page says not read and
+  offers no records Retry. No other surface's Retry behavior changes.
 - **Seat turns** for the last 24 hours, 7 days or 30 days: the run ledger's half of
   [`stats`](commands.md#stats).
 - **Health:** [`doctor`](commands.md#doctor)'s checks for this loop. It opens **offline**: the
@@ -758,7 +791,7 @@ It refreshes every 30–60 seconds. Both halves ship **off**:
 2. **The Desktop half:** turn on **Diaktoros** under **Capabilities → Plugins**.
 
 The backend (`dashboard/plugin_api.py`, mounted at `/api/plugins/diaktoros/` behind the
-gateway's own auth) has nine GET routes: `loops`, `stats`, `now`, `overview`, `pr`, `health`, `settings`, `hooks` and `actions`.
+gateway's own auth) has ten GET routes: `loops`, `stats`, `now`, `overview`, `pr`, `health`, `settings`, `hooks`, `actions` and `records`.
 They read the loop's config, the run ledger and — for `health` — the installation's own files,
 without mutating loop state. `settings` returns the plugin form's schema and effective values plus
 each loop's effective seats, budgets and flags, so the Desktop form can render what a loop runs

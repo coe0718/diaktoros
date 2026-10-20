@@ -1048,7 +1048,7 @@ function validateRecords(data, loop) {
   const label = value => typeof value === 'string' && value.length > 0 && value.length <= 100 &&
     !/[\x00-\x1f]|gh[pousr]_|github_pat_|sk-|:\/\/|^\/|\/home\/|\/etc\/|\\\\/i.test(value)
   if (!object(data) || data.loop !== loop || typeof data.repo !== 'string' || !data.repo || !number(data.read_at)) throw invalidResponse('records')
-  for (const kind of ['failures', 'broker', 'main_ci']) {
+  for (const kind of ['failures', 'broker', 'main_ci', 'observer', 'watchdog']) {
     const s = data[kind]
     if (!object(s) || !category(s.status, ['available', 'missing', 'unreadable']) || !Array.isArray(s.items) || s.items.length > 50 ||
       !(s.status === 'available' ? s.reason === 'recorded' : !s.items.length && (s.status === 'missing' ? s.reason === 'not_recorded' :
@@ -1064,6 +1064,12 @@ function validateRecords(data, loop) {
           category(row.operation, ['review', 'push', 'answers', 'labels', 'comment', 'open_pr', 'request_review', 'issue_comment', 'file_issue', 'ruling_comment', 'issue_branch', 'update_branch', 'unknown']) &&
           category(row.phase, ['recorded', 'attempt', 'reconciled', 'unknown']) &&
           category(row.outcome, ['recorded', 'published', 'not_published', 'unchanged', 'unknown', 'published_pr_unverified']) :
+        kind === 'observer' ? category(row.event, ['opened', 'handoff', 'verdict', 'approved', 'escalation', 'ruling', 'stall', 'closed', 'triaged', 'fixing', 'fixed', 'failed', 'held', 'conflict', 'ci_failed', 'updated', 'main_red', 'stale_approval', 'human_paths', 'ready_set', 'digest', 'report', 'unknown']) &&
+          (row.number === null || count(row.number)) && sha(row.head) && number(row.at) && count(row.attempts) && (row.issue === null || typeof row.issue === 'boolean') &&
+          category(row.status, ['queued', 'digesting', 'pending', 'delivered', 'failed', 'uncertain', 'unknown']) :
+        kind === 'watchdog' ? number(row.at) && (row.kind === 'sweep' ||
+          (count(row.pr) && row.pr > 0 && (category(row.kind, ['head', 'head_history']) ? sha(row.head) && (row.observed_at === null || number(row.observed_at)) :
+            row.kind === 'stall' && typeof row.head7 === 'string' && /^[a-fA-F0-9]{7}$/.test(row.head7) && category(row.category, ['reviewer_missing', 'fixer_missing', 'awaiting_adjudication', 'adjudicating', 'fixer_push_disabled', 'missing_escalation', 'disputed', 'unknown'])))) :
           sha(row.green) && sha(row.notified) && !!(row.green || row.notified) && Array.isArray(row.required_checks) && row.required_checks.length <= 50 && row.required_checks.every(label)
       if (!valid) throw invalidResponse('records')
     }
@@ -1084,7 +1090,7 @@ function Records({ loop, known }) {
     return jsxs('article', { className: 'min-w-0 rounded-md border border-(--ui-stroke-secondary) p-4', children: [
       jsx('h3', { className: 'm-0 text-sm font-medium', children: title }),
       jsx('p', { className: 'my-2 text-xs text-(--ui-text-secondary)', children: description }),
-      !s ? null : s.status !== 'available' ? jsx(Muted, { text: s.status === 'missing' ? 'Missing · not recorded. No empty history verified.' : 'Unreadable · ' + (reason[s.reason] || 'read failed') + '. No empty history verified.' }) :
+      !s ? null : s.status !== 'available' ? jsx(Muted, { text: s.status === 'missing' ? 'Missing · not recorded. History not read; no empty-history claim.' : 'Unreadable · ' + (reason[s.reason] || 'read failed') + '. History not read; no empty-history claim.' }) :
         !s.items.length ? jsx(Muted, { text: empty }) : jsxs('div', { className: 'flex min-w-0 flex-col gap-2', children: [
           s.items.length === 50 ? jsx(Muted, { text: 'Showing at most 50 recent records; older records may be omitted.' }) : null,
           s.items.map((item, index) => jsx('div', { className: 'min-w-0 break-words border-t border-(--ui-stroke-secondary) pt-2 text-xs', children: render(item) }, index))] })
@@ -1092,7 +1098,7 @@ function Records({ loop, known }) {
   }
   return jsx(Section, { title: 'Local loop records', children: jsxs('div', { role: 'region', 'aria-label': 'Local loop records', className: 'flex min-w-0 flex-col gap-4', children: [
     jsx(Muted, { text: 'Read-only · ' + (loop || 'No loop selected') + '. Bounded local artifacts; no GitHub reads. Raw errors, payloads and credentials are withheld.' }),
-    jsx(QueryStatus, { query, state: !loop || !known ? 'unavailable' : state, label: 'Local records' }),
+    loop && known ? jsx(QueryStatus, { query, state, label: 'Local records' }) : jsx(Muted, { text: 'Local records: unavailable · no readable selected identity; records not read.' }),
     loop && !known ? jsx(Muted, { text: 'Selected loop is not readable in current discovery; records not read.' }) : null,
     group('failures', 'Unresolved gate failures', 'Failures to finish, not quiet gate declines. Includes repository-matched fallback records. Failure kind is the safe reason category.', 'No unresolved failures in the read stores.', item =>
       item.gate + ' · ' + item.kind + ' · ' + (item.pr ? '#' + item.pr : 'No PR') + (item.head ? ' @ ' + item.head.slice(0, 7) : '') + ' · ' + item.attempts + ' attempts · ' + item.redrives + ' re-drives · Last failure: ' + clock(item.last_at)),
@@ -1101,7 +1107,13 @@ function Records({ loop, known }) {
     group('main_ci', 'Main CI · local memory', 'Remembered watchdog heads, not current main CI. Their order and age are not recorded; no live check conclusions are implied.', '', item => jsxs('div', { className: 'flex min-w-0 flex-col gap-2', children: [
       jsx('div', { children: 'Last recorded green: ' + (item.green ? item.green.slice(0, 7) : 'Not recorded') }),
       jsx('div', { children: 'Last red notice: ' + (item.notified ? item.notified.slice(0, 7) : 'Not recorded') }),
-      jsx('div', { children: 'Required checks (configured): ' + (item.required_checks.length ? item.required_checks.join(', ') : 'No explicit checks; host uses all checks') })] }))
+      jsx('div', { children: 'Required checks (configured): ' + (item.required_checks.length ? item.required_checks.join(', ') : 'No explicit checks; host uses all checks') })] })),
+    group('observer', 'Observer · local feed', 'Recorded notices and delivery memory, not independent proof of delivery. Digests may have no single target. Bodies, destinations and delivery identifiers are withheld.', 'No entries in the read observer memory.', item =>
+      item.event + ' · ' + (item.number ? (item.issue ? 'Issue #' : '#') + item.number : 'No single target') + (item.head ? ' @ ' + item.head.slice(0, 7) : '') + ' · Recorded status: ' + item.status + ' · ' + item.attempts + ' attempts · Recorded at: ' + clock(item.at)),
+    group('watchdog', 'Watchdog · local memory', 'Sweep stamps, retained heads and stall cooldown memory; not live running or health, nor current stalls. Cooldown heads have only seven characters and are not joined to current heads. Queue/lock keys and log prose are omitted.', 'No sweep, head or stall marks in the read memory.', item =>
+      item.kind === 'sweep' ? 'Last recorded sweep: ' + clock(item.at) : item.kind === 'stall' ?
+        'Stall memory · #' + item.pr + ' @ ' + item.head7 + ' · ' + item.category + ' · Cooldown stamp: ' + clock(item.at) :
+        item.kind + ' · #' + item.pr + (item.head ? ' @ ' + item.head.slice(0, 7) : '') + ' · First observed: ' + (item.observed_at === null ? 'Not recorded' : clock(item.observed_at)) + ' · Last seen: ' + clock(item.at))
   ] }) })
 }
 

@@ -322,6 +322,39 @@ test('records: loop switching binds queries and removal never substitutes histor
   h.dispose()
 })
 
+test('records: retry is executable only for a readable selected identity', async () => {
+  const h = await harness(); h.render('page')
+  const retry = h.buttons(recordsRegion(h))[0]
+  assert.equal(retry.props.children, 'Retry')
+  retry.props.onClick(); assert.ok(h.calls.length > 0)
+  h.queries.loops = h.good({ loops: [{ id: 'other-loop' }] }); h.render('page')
+  const before = h.calls.length
+  for (const button of h.buttons(recordsRegion(h))) button.props.onClick?.()
+  assert.equal(h.buttons(recordsRegion(h)).length, 0)
+  assert.equal(h.calls.length, before)
+  h.queries.loops = h.good({ loops: [{ id: 'fixture-loop', unreadable: true }] }); h.render('page')
+  assert.equal(h.buttons(recordsRegion(h)).length, 0)
+  assert.equal(h.options.records.enabled, false)
+  h.dispose()
+  const empty = await harness(); empty.queries.loops = empty.good({ loops: [] }); empty.render('page')
+  assert.equal(empty.buttons(recordsRegion(empty)).length, 0)
+  assert.equal(empty.calls.length, 0)
+  empty.dispose()
+})
+
+test('records: observer and watchdog nested memory is validated and disclosed', async () => {
+  const h = await harness(); h.render('page'); const d = recordsFixture()
+  d.observer = { status: 'available', reason: 'recorded', items: [{ event: 'approved', number: 651, head: 'a'.repeat(40), status: 'delivered', at: 100, attempts: 1, issue: false }] }
+  d.watchdog = { status: 'available', reason: 'recorded', items: [{ kind: 'sweep', at: 100 }, { kind: 'head_history', pr: 651, head: 'b'.repeat(40), observed_at: null, at: 100 }, { kind: 'stall', pr: 651, head7: 'abcdef0', category: 'reviewer_missing', at: 100 }] }
+  h.respond(d); h.queries.records = h.good(await h.options.records.queryFn()); h.render('page')
+  for (const re of [/Observer.*local feed/, /Recorded status: delivered/, /not independent proof of delivery/, /Watchdog.*local memory/, /not live running or health/, /Cooldown stamp/, /head_history/]) assert.match(h.text(recordsRegion(h)), re)
+  for (const mutate of [x => { x.observer.items[0].status = 'sent' }, x => { x.observer.items[0].attempts = true }, x => { x.observer.items[0].issue = 'false' }, x => { x.watchdog.items[0].at = -1 }, x => { x.watchdog.items[1].observed_at = 'private' }, x => { x.watchdog.items[2].category = '/home/private' }, x => { x.watchdog.items[2].head7 = 'abcdefg' }, x => { x.observer = null }]) {
+    const bad = structuredClone(d); mutate(bad); h.respond(bad)
+    await assert.rejects(h.options.records.queryFn(), /Invalid records response/)
+  }
+  h.dispose()
+})
+
 // #646: exercise the registered pane without mounting the page or its action components.
 const PANE = 'right-now-pane'
 const nowKey = loop => ['diaktoros', 'now', loop]

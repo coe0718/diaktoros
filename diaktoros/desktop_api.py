@@ -8,8 +8,8 @@ every configured loop at once (for the status chip and the cross-loop block), ``
 host's own "what moves it" line (``run_supervisor.next_step``) plus what the ledger recorded,
 ``health`` is ``doctor``'s checks with the network reads left unprobed, and ``settings`` is the
 plugin-level form and each loop's effective answers. ``records`` reads bounded local unresolved
-failure records, broker history and the watchdog's main-CI memory (not live CI).
-Never a turn's output, never a run's error
+failure records, broker history, observer delivery memory and watchdog sweep/head/stall/main-CI
+memory (not live health or CI). Never a turn's output, never a run's error
 text. ``hooks`` reads GitHub hook state with an opaque confirmation; ``hooks_action`` calls
 the shared ``arm_action`` owner used by CLI ``arm`` to pause/resume, then reads actual state.
 ``action_view`` previews per-target one-shot eligibility; ``action_perform_view`` invokes
@@ -396,10 +396,108 @@ def _record_main_ci(loop):
              'required_checks': required}]
 
 
+def _record_observer(loop):
+    from . import observer
+    data = _record_json(config.state_dir(loop) / 'observations.json')
+    if not isinstance(data, dict) or not isinstance(data.get('entries'), dict):
+        raise ValueError('observer entries')
+    if len(data['entries']) > 1000:
+        raise _RecordRead('too_large')
+    rows = []
+    for entry in data['entries'].values():
+        if not isinstance(entry, dict):
+            raise ValueError('observer entry')
+        number = entry.get('number')
+        # Digests have no single number; reports and main notices use zero.
+        number = None if number in ('', None) else _record_number(number, integer=True)
+        issue = entry.get('issue')
+        if issue is not None and type(issue) is not bool:
+            raise ValueError('observer issue')
+        rows.append({'event': _record_enum(entry.get('event'), (*observer.EVENTS, 'digest', 'report')),
+                     'number': number, 'head': _record_sha(entry.get('head', '')),
+                     'status': _record_enum(entry.get('status'),
+                                           ('queued', 'digesting', 'pending', 'delivered',
+                                            'failed', 'uncertain')),
+                     'at': _record_number(entry.get('at')),
+                     'attempts': _record_number(entry.get('attempts'), integer=True),
+                     'issue': issue})
+    # No key/identity, summary, outcome, destination, message, URL or delivery id escapes.
+    return sorted(rows, key=lambda row: row['at'], reverse=True)[:RECORDS_MAX]
+
+
+def _record_watchdog(loop):
+    """A small projection of sweep memory, NOT daemon health or a current stall verdict.
+
+    Arbitrary queue/lock alert keys and base branch names are deliberately not projected.
+    Cooldown keys contain only seven head characters, so never join them to a current head.
+    """
+    from datetime import datetime
+    data = _record_json(config.state_dir(loop) / 'watchdog.json')
+    if not isinstance(data, dict):
+        raise ValueError('watchdog memory')
+    rows = []
+    if 'last_run' in data:
+        stamp = data['last_run']
+        if (not isinstance(stamp, str) or not re.fullmatch(
+                r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)', stamp)):
+            raise ValueError('sweep timestamp')
+        rows.append({'kind': 'sweep', 'at': _record_number(
+            datetime.fromisoformat(stamp.replace('Z', '+00:00')).timestamp())})
+    for source, kind in (('heads', 'head'), ('head_history', 'head_history')):
+        entries = data.get(source, {})
+        if not isinstance(entries, dict):
+            raise ValueError('watchdog heads')
+        if len(entries) > 1000:
+            raise _RecordRead('too_large')
+        heads = []
+        for key, entry in entries.items():
+            number = key.split(':', 1)[0] if source == 'head_history' else key
+            if not re.fullmatch(r'[1-9][0-9]{0,14}', number) or not isinstance(entry, dict):
+                raise ValueError('watchdog head')
+            heads.append({'kind': kind, 'pr': _record_number(int(number), integer=True),
+                          'head': _record_sha(entry['sha']),
+                          'observed_at': _record_number(entry['observed_at'], nullable=True),
+                          'at': _record_number(entry['last_seen_at'])})
+        rows.extend(sorted(heads, key=lambda row: row['at'], reverse=True)[:RECORDS_MAX])
+    alerts = data.get('alerts', {})
+    if not isinstance(alerts, dict):
+        raise ValueError('watchdog alerts')
+    if len(alerts) > 1000:
+        raise _RecordRead('too_large')
+    stalls = []
+    for key, stamp in alerts.items():
+        at = _record_number(stamp)
+        if key.startswith(('queue:', 'lock:')):
+            continue
+        match = re.fullmatch(r'([1-9][0-9]{0,14}):([0-9a-fA-F]{7}):(.{1,24})', key)
+        if not match:
+            raise ValueError('watchdog stall key')
+        raw_kind = match[3]
+        category = 'unknown'
+        for prefix, label in (('reviewer never posted', 'reviewer_missing'),
+                              ('fixer never pushed', 'fixer_missing'),
+                              ('parked awaiting adjudica', 'awaiting_adjudication'),
+                              ('adjudicating ', 'adjudicating'),
+                              ('fixer held — unattended', 'fixer_push_disabled'),
+                              ('# verdicts, no approval', 'missing_escalation'),
+                              ('disputed ', 'disputed')):
+            if raw_kind.startswith(prefix):
+                category = label
+                break
+        stalls.append({'kind': 'stall', 'pr': _record_number(int(match[1]), integer=True),
+                       'head7': match[2], 'category': category, 'at': at})
+    rows.extend(sorted(stalls, key=lambda row: row['at'], reverse=True)[:RECORDS_MAX])
+    # A global cap keeps the combined response bounded as well as each source above.
+    return sorted(rows, key=lambda row: row['at'], reverse=True)[:RECORDS_MAX]
+
+
 def records_view(loop_id: str | None) -> dict:
     """Bounded LOCAL records only; no GitHub reads, tokens, bodies or raw failure text.
 
     Main-CI is the watchdog's recorded green/notified heads, not current CI conclusions.
+    Observer statuses are recorded claims/receipts, not independently verified chat delivery.
+    Watchdog heads may be retained after a PR disappears; stall marks are cooldown memory,
+    not current stalls or evidence that a watchdog process is healthy. No log prose is read.
     A quiet gate decline has no failure record; these are unresolved failures only.
     """
     if loop_id is not None and (not isinstance(loop_id, str) or not loop_id or len(loop_id) > 200):
@@ -410,7 +508,9 @@ def records_view(loop_id: str | None) -> dict:
         raise NotFound('Loop configuration unavailable.') from None
     sections = {'failures': _record_section(lambda: _record_failures(loop)),
                 'broker': _record_section(lambda: _record_broker(loop)),
-                'main_ci': _record_section(lambda: _record_main_ci(loop))}
+                'main_ci': _record_section(lambda: _record_main_ci(loop)),
+                'observer': _record_section(lambda: _record_observer(loop)),
+                'watchdog': _record_section(lambda: _record_watchdog(loop))}
     return {'loop': loop['id'], 'repo': loop['repo'], 'read_at': time.time(), **sections}
 
 
