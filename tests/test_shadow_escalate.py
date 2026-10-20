@@ -129,7 +129,7 @@ class Hold(unittest.TestCase):
         held, note = self.hold()                              # none queued
         self.assertEqual(held, "")
         self.assertIn("no shadow review was queued", note)
-        for state in ("failed", "cancelled", "succeeded"):    # ended without a review
+        for state in ("failed", "cancelled", "succeeded", "uncertain"):   # ended without one
             with self.subTest(state=state):
                 self.shadow_run(state)
                 held, note = self.hold()
@@ -181,6 +181,25 @@ import test_fixer_gating as fg  # noqa: E402
 
 
 class ExplainBlocker(fg.Base):
+    def approved_facts(self, hold):
+        verdict = {"id": 9, "state": "APPROVED", "commit_id": fg.HEAD,
+                   "submitted_at": "2026-01-01T00:00:00Z", "user": {"login": "reviewer", "id": 2}}
+        return {"pr": fg.LIVE, "reviews": [verdict], "armed": True, "read_at": 0,
+                "shadow_hold": (hold, "")}
+
+    def test_explain_never_recommends_merging_a_held_approved_head(self):
+        # Shadow review of #1097 (F2): the blocker was listed, but `next` still said "approved; a
+        # human merges it".
+        held = gate.explain(self.loop, self.st, 7, self.approved_facts(
+            "the shadow review requested changes at aaaaaaa"))
+        self.assertEqual(held["next"]["kind"], "operator")
+        self.assertIn("do not merge", held["next"]["action"])
+        waiting = gate.explain(self.loop, self.st, 7, self.approved_facts(
+            "waiting on the shadow review at aaaaaaa (running)"))
+        self.assertEqual(waiting["next"]["kind"], "wait")
+        free = gate.explain(self.loop, self.st, 7, self.approved_facts(""))
+        self.assertIn("a human merges it", free["next"]["action"])
+
     def test_a_held_head_is_an_explain_blocker(self):
         facts = {"pr": fg.LIVE, "reviews": [], "armed": True, "read_at": 0,
                  "shadow_hold": ("the shadow review requested changes at aaaaaaa", "")}

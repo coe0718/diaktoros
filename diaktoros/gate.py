@@ -183,8 +183,11 @@ def shadow_sampled(loop: dict, number: int, head: str) -> bool:
     return int.from_bytes(digest[:8], "big") % every == 0
 
 
-# A shadow run in one of these states may still record its review at the head (#1004).
-SHADOW_OPEN = ("pending", "waiting", "claimed", "launching", "running", "uncertain")
+# A shadow run in one of these states may still record its review at the head (#1004):
+# ``record_shadow`` writes only for a live (launching/running) run. ``uncertain`` is terminal
+# (an expired lease, a post-write quarantine) and never records one, so it is not open: holding
+# on it would park the PR for good (shadow review of #1097, F1).
+SHADOW_OPEN = ("pending", "waiting", "claimed", "launching", "running")
 
 
 def shadow_hold(loop: dict, number: int, head: str, db=None) -> tuple[str, str]:
@@ -1179,6 +1182,16 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         kind = "operator"
         action = (f"your decision: {stale_line} — do not merge head {short}; re-run the check "
                   "or push a fix")
+    elif approved and shadow_held:
+        # #1004: the shadow review holds this approved head (shadow review of #1097, F2): never
+        # recommend merging it while the hold stands.
+        if shadow_held.startswith("waiting on"):
+            kind = "wait"
+            action = f"{shadow_held} — head {short} is approved but held until it lands"
+        else:
+            kind = "operator"
+            action = (f"your decision: {shadow_held} — do not merge head {short} until you have "
+                      "read its findings")
     elif approved:
         kind = "none"
         action = f"nothing — head {short} is approved; a human merges it"

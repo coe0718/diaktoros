@@ -327,6 +327,19 @@ def cmd_init(args) -> int:
             print(f"refused: --observer-weekly-report: {exc}")
             return 2
 
+    # Shadow reviews (#218, #1004): the flags win, else the plugin settings. Built before the
+    # loop dict so a bad value is a refusal, not a traceback.
+    try:
+        shadow = settings_form.shadow_block(
+            {}, (args.shadow_profile if getattr(args, "shadow_profile", None) is not None
+                 else settings_form._form_value(d, "shadow_profile")),
+            (args.shadow_every if getattr(args, "shadow_every", None) is not None
+             else settings_form._form_value(d, "shadow_every")), "init",
+            escalate=(args.shadow_escalate if getattr(args, "shadow_escalate", None) is not None
+                      else settings_form._form_value(d, "shadow_escalate"))) or {}
+    except config.ConfigError as exc:
+        print(f"refused: {exc}")
+        return 2
     raw = {
         "id": args.id or args.repo.split("/")[-1],
         "repo": args.repo, "base": args.base, "cap": args.cap,
@@ -343,14 +356,8 @@ def cmd_init(args) -> int:
         },
         "adjudicator": ({"route": args.adjudicator_route, "profile": adjudicator_profile}
                         if args.adjudicator_route else {}),
-        # Shadow reviews (#218): the flags win, else the plugin settings.
-        "shadow": settings_form.shadow_block(
-            {}, (args.shadow_profile if getattr(args, "shadow_profile", None) is not None
-                 else settings_form._form_value(d, "shadow_profile")),
-            (args.shadow_every if getattr(args, "shadow_every", None) is not None
-             else settings_form._form_value(d, "shadow_every")), "init",
-            escalate=(args.shadow_escalate if getattr(args, "shadow_escalate", None) is not None
-                      else settings_form._form_value(d, "shadow_escalate"))) or {},
+        # Shadow reviews (#218): the flags win, else the plugin settings (built above).
+        "shadow": shadow,
         "skill": args.skill,
         "tokens": tokens, "read_token": args.read_token,
         "clone": args.clone, "roots": args.root or [],

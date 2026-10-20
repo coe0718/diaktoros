@@ -427,7 +427,8 @@ A shadow turn gets the reviewer's prompt and change view at that head, minus any
 
 **Holding the PR (`shadow.escalate`, #1004).** Off by default. With it on, a PR is **not ready
 to merge** while the shadow review of its head is still running, or after that review requested
-changes. `hermes dk ready`, the ready notice and `explain` say which. It needs `shadow.every: 1`,
+changes. `hermes dk ready` and `explain` say which (and `explain` won't recommend merging it);
+the ready-set notice leaves it out of the set. It needs `shadow.every: 1`,
 because a head the sampling skips would have no second review to hold it. A head with no shadow
 review to wait for is never held: one queued before escalate was on, or a shadow run that ended
 without a review (`explain` notes it). An unreadable run ledger holds, because unknown isn't
