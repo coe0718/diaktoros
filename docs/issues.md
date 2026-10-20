@@ -362,7 +362,8 @@ minute) can therefore lose triage turns. Two things cover it:
   ledger**. It skips an issue newer than 5 minutes (the delivery may still come) or older than 3
   days (a backlog from before the loop is not triaged in bulk), and queues at most 10 per sweep,
   oldest first. `status` lists them as `late: issue #N triage queued late: the webhook delivery
-  was missed`. The sweep needs the same private runtime the gate does, and changes nothing for a
+  was missed`, until that issue's triage run has succeeded (the next sweep then drops the line;
+  a failed, cancelled or still-running one stays listed). The sweep needs the same private runtime the gate does, and changes nothing for a
   loop without `triage`.
 - **Doctor.** `gate:rate_limit` reads the gateway's `rate_limit` and warns below 60. Raise it in
   the gateway's `config.yaml` (`platforms.webhook.extra.rate_limit: 120`) and restart that
