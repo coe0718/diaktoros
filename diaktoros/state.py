@@ -155,19 +155,24 @@ def _inflight_live(value, now: float, ttl_s: float) -> bool:
 
 
 DELIVERY_LEASE_S = 60.0
+# How far *ahead* of the reader's clock a ``delivery_at`` may be and still hold the lease: modest
+# skew (an NTP step, a suspend/resume, two processes off by milliseconds) must not release a
+# delivery that is in flight. Anything further ahead is a bad stamp and holds nothing (#942).
+DELIVERY_SKEW_S = 30.0
 
 
 def _delivery_in_flight(marker: dict, now: float | None = None) -> bool:
     """Whether a breach marker's delivery lease is still live: it holds an attempt token stamped
-    within the last ``DELIVERY_LEASE_S`` seconds. A stamp that is missing, junk or *ahead* of the
-    clock holds nothing, so a bad ``delivery_at`` can never wedge the retry on ``already``."""
+    within the last ``DELIVERY_LEASE_S`` seconds. A stamp up to ``DELIVERY_SKEW_S`` *ahead* of the
+    clock still holds (clock skew); a stamp that is missing, junk or further ahead holds nothing,
+    so a bad ``delivery_at`` can never wedge the retry on ``already``."""
     if not marker.get("delivery_token"):
         return False
     at = _clock(marker.get("delivery_at"))
     if at is None:
         return False
     age = (time.time() if now is None else now) - at
-    return 0 <= age < DELIVERY_LEASE_S
+    return -DELIVERY_SKEW_S <= age < DELIVERY_LEASE_S
 
 
 def _mapping(raw) -> dict:
