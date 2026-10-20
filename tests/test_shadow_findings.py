@@ -124,6 +124,36 @@ class Retention(unittest.TestCase):
         answer, server = Snapshot.approve(self)
         self.assertTrue(answer.get("ok"), answer)
 
+    def test_a_second_enqueue_in_the_gap_before_submit_cannot_evict_the_first_snapshot(self):
+        """299 open snapshots; B's enqueue starts while A's run is not yet in the ledger."""
+        import threading
+        from diaktoros.run_supervisor import Supervisor
+        loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
+        st = state_mod.state_for(loop)
+        self.fill(st, st.SHADOW_FINDINGS_KEPT - 1)
+        db = self.ledger(*[(1000 + i, "waiting") for i in range(st.SHADOW_FINDINGS_KEPT - 1)])
+        sup = Supervisor(db, fixture_mode=True)
+        sup._spawn = lambda: None
+        seen = {}
+        second = threading.Thread(target=lambda: seen.update(
+            b=gate.enqueue_shadow(loop, sup, 8, ts.HEAD)))
+        real_submit = sup.submit
+
+        def submit_a(*args, **kwargs):
+            if not second.is_alive() and not seen:
+                second.start()              # B arrives after A's snapshot, before A's row
+                second.join(0.5)            # unfixed, B finishes here and evicts A's snapshot
+            return real_submit(*args, **kwargs)
+
+        sup.submit = submit_a
+        with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=db):
+            a = gate.enqueue_shadow(loop, sup, 7, ts.HEAD)
+            second.join(30)
+        self.assertEqual(a, "enqueued")
+        self.assertEqual(seen.get("b"), "enqueued")
+        self.assertEqual(st.shadow_findings_get(7, ts.HEAD), {})      # A's run is open: kept
+        self.assertEqual(st.shadow_findings_get(8, ts.HEAD), {})
+
     def test_no_snapshot_no_shadow(self):
         loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
         supervisor = mock.Mock()

@@ -383,19 +383,28 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
         # the real review of this head may change meanwhile (#218, #1013).
         try:
             st = state_mod.state_for(loop)
-            try:
-                keep = shadow_open_heads()
-            except Exception as exc:
-                keep = None                  # unknown open runs: evict nothing
-                log(f"#{number}: shadow runs unreadable, no snapshot evicted: "
-                    f"{type(exc).__name__}: {exc}")
-            st.shadow_findings_put(number, head, st.findings_get(number), keep)
         except Exception as exc:
             log(f"#{number}: shadow findings snapshot not kept, shadow not queued: "
                 f"{type(exc).__name__}: {exc}")
             return "no snapshot"
-        return supervisor.submit(delivery, loop["repo"], number, head, "shadow",
-                                 turn_key=turn_key, budget=config.turn_budget(loop, "shadow"))
+        # One state lock over the open-runs read, the snapshot write and the submit: a second
+        # enqueue cannot sample the ledger before this run is visible in it and then evict this
+        # snapshot as unused (#1013). The lock is reentrant.
+        with st.locked():
+            try:
+                try:
+                    keep = shadow_open_heads()
+                except Exception as exc:
+                    keep = None                  # unknown open runs: evict nothing
+                    log(f"#{number}: shadow runs unreadable, no snapshot evicted: "
+                        f"{type(exc).__name__}: {exc}")
+                st.shadow_findings_put(number, head, st.findings_get(number), keep)
+            except Exception as exc:
+                log(f"#{number}: shadow findings snapshot not kept, shadow not queued: "
+                    f"{type(exc).__name__}: {exc}")
+                return "no snapshot"
+            return supervisor.submit(delivery, loop["repo"], number, head, "shadow",
+                                     turn_key=turn_key, budget=config.turn_budget(loop, "shadow"))
     except Exception as exc:
         log(f"#{number}: shadow review not queued: {type(exc).__name__}: {exc}")
         return "error"
