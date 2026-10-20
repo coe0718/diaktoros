@@ -628,6 +628,38 @@ const hookButton = h => h.buttons(h.tree()).find(b => /^(Pause|Resume) webhook d
 const hookDialog = h => h.flatten(h.tree()).find(n => n.type === 'ConfirmDialog' && /webhook delivery/.test(n.props.title))
 const hookView = (overrides = {}) => ({ loop: 'fixture-loop', repo: 'fixture/repo', state: 'armed', eligible: true, confirmation: 'opaque-snapshot', reason: '', read_at: 1800000000, ...overrides })
 
+for (const [state, reason] of [
+  ['unknown', 'Hook state could not be verified.'],
+  ['unknown', 'Required loop hooks are missing.'],
+  ['unknown', 'Loop hooks are mixed or not correctly wired; inspect them first.'],
+  ['paused', 'Hooks are paused; repair hook wiring before resuming.'],
+  ['paused', 'All loop hooks are paused.'],
+  ['armed', 'All loop hooks are armed.'],
+]) {
+  test(`hooks: renders bounded ${state} reason: ${reason}`, async () => {
+    const h = await harness(); h.render('page')
+    h.respond(hookView({ state, reason, eligible: false, confirmation: null }))
+    h.queries.hooks = h.good(await h.options.hooks.queryFn())
+    h.render('page')
+    assert.ok(h.text(h.tree()).includes('Loop fixture-loop · ' + state + ' · ' + reason))
+    assert.equal(hookButton(h), undefined)
+    h.unmount()
+  })
+}
+
+for (const reason of ['/private/token.json ghp_SECRET', '<img src=x onerror=alert(1)>', 'Bearer SECRET', 'Unexpected transport failure']) {
+  test(`hooks: unrecognized reason is sanitized before cache: ${reason}`, async () => {
+    const h = await harness(); h.render('page')
+    h.respond(hookView({ state: 'unknown', reason, eligible: false, confirmation: null }))
+    const data = await h.options.hooks.queryFn()
+    assert.equal(data.reason, 'Hook state could not be verified.')
+    h.queries.hooks = h.good(data); h.render('page')
+    assert.ok(!h.text(h.tree()).includes(reason))
+    assert.ok(h.text(h.tree()).includes('unknown · Hook state could not be verified.'))
+    h.unmount()
+  })
+}
+
 for (const state of ['armed', 'paused']) {
   test(`hooks: ${state} confirms exact payload, no optimistic state, duplicate confirm blocked`, async () => {
     const h = await harness()

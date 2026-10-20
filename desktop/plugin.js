@@ -1128,7 +1128,12 @@ function validateHooks(data, loop, write = false) {
       (data.eligible && (data.state === 'unknown' || !data.repo || !data.confirmation)) ||
       (data.state === 'unknown' && data.confirmation !== null) ||
       (write && (typeof data.ok !== 'boolean' || !bounded(data.answer) || !data.answer))) throw invalidResponse('hooks')
-  return data
+  // Only arm_action.plan's fixed public categories may reach the page, never diagnostics.
+  const reasons = ['Hook state could not be verified.', 'Required loop hooks are missing.',
+    'Loop hooks are mixed or not correctly wired; inspect them first.',
+    'Hooks are paused; repair hook wiring before resuming.',
+    'All loop hooks are paused.', 'All loop hooks are armed.']
+  return { ...data, reason: reasons.includes(data.reason) ? data.reason : reasons[0] }
 }
 
 function HooksControl({ loop, discoveryCurrent }) {
@@ -1202,7 +1207,7 @@ function HooksControl({ loop, discoveryCurrent }) {
   return jsx(Section, { title: 'Webhook delivery', children: jsxs('div', {
     className: 'flex min-w-0 flex-col gap-2', children: [
       jsx(QueryStatus, { query: q, state: awaitingRead ? 'stale' : state, label: 'Webhook delivery' }),
-      jsx(Muted, { text: verified ? 'Loop ' + loop + ' · ' + (q.data?.state || 'unknown') : 'Current webhook delivery state unknown. Read status before changing it.' }),
+      jsx(Muted, { text: verified ? 'Loop ' + loop + ' · ' + (q.data?.state || 'unknown') + ' · ' + q.data.reason : 'Current webhook delivery state unknown. Read status before changing it.' }),
       jsx(Muted, { text: 'Pausing stops webhook delivery, not in-flight turns. The sweeper may recover events while hooks are paused; this is not a full execution stop.' }),
       allowed() && !busy.current ? jsx(Button, { size: 'xs', variant: 'ghost', onClick: ask,
         children: q.data.state === 'armed' ? 'Pause webhook delivery' : 'Resume webhook delivery' }) : null,
