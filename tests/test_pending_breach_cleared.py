@@ -108,6 +108,16 @@ class PendingBreachNoLongerHolds(fg.Base):
         self.retry()
         self.assertEqual(self.st.breach_get(7), {})
 
+    def test_a_slightly_future_delivery_stamp_is_still_in_flight(self):
+        # #942: modest clock skew must not let the retry clear a marker whose delivery is live.
+        marker = self.st.breach_get(7)
+        data = json.loads(Path(self.st.breach).read_text())
+        data[f"{fg.REPO}#7"] = {**marker, "delivery_token": "t", "delivery_at": time.time() + 5}
+        Path(self.st.breach).write_text(json.dumps(data))
+        self.set_cap(self.cap + 2)
+        self.retry()
+        self.assertEqual(self.st.breach_get(7)["status"], "delivery-pending")
+
     def test_the_stall_scan_no_longer_skips_a_marker_that_does_not_hold(self):
         # Reaches the scan with the marker still present (retry stubbed out): the head is
         # reported, not skipped as "a failed delivery".
