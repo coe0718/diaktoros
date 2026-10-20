@@ -323,10 +323,19 @@ test('records: loop switching binds queries and removal never substitutes histor
 })
 
 test('records: retry is executable only for a readable selected identity', async () => {
-  const h = await harness(); h.render('page')
+  // The Retry button must refetch the records query itself, for the selected loop —
+  // not just anything that reports a call. Replace the generic refetch stub with
+  // one that records the key it was reached through, so a different query (or a
+  // refetch with the wrong loop) fails the assertion instead of passing silently.
+  const refetched = []
+  const h = await harness()
+  h.queries.records = { ...h.good(recordsFixture()), refetch: () => refetched.push([...h.options.records.queryKey]) }
+  h.render('page')
   const retry = h.buttons(recordsRegion(h))[0]
   assert.equal(retry.props.children, 'Retry')
-  retry.props.onClick(); assert.ok(h.calls.length > 0)
+  retry.props.onClick()
+  assert.deepEqual(refetched, [['diaktoros', 'records', 'fixture-loop']])
+  assert.ok(!h.calls.some(call => call && call.queryKey), 'retry refetches the records query, it does not invalidate broadly')
   h.queries.loops = h.good({ loops: [{ id: 'other-loop' }] }); h.render('page')
   const before = h.calls.length
   for (const button of h.buttons(recordsRegion(h))) button.props.onClick?.()

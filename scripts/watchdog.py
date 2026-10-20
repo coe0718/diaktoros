@@ -120,7 +120,7 @@ def sweep_budget_spent(loop: dict, st: state_mod.LoopState, budget: float,
     record = {**record, "sweeps": sweeps, "since": since, "status": None, "login": login,
               "error": gh.one_line(f"the sweep ran out of its {budget:g}s budget "
                                    f"(reads slow or unanswered): {exc}", 200)}
-    cooldown = 0.0 if TEST else float(loop.get("cooldown_h", 6)) * 3600
+    cooldown = 0.0 if TEST else float(loop.get("cooldown_h") or 6) * 3600
     lines = []
     if sweeps >= READ_FAILURE_SWEEPS and alert_due(watch, "read:slow", now, cooldown):
         record["alerted"] = True
@@ -202,7 +202,7 @@ def _read_failed(loop: dict, watch: dict, now: float, who: str, error: str,
     """Count one failed sweep and alert on #54's cadence (401/403 at once, anything else after
     ``READ_FAILURE_SWEEPS`` sweeps in a row, re-raised every cooldown). ``(lines, alerted)``."""
     header = f"[{loop['id']}] {loop['repo']}"
-    cooldown = 0.0 if TEST else float(loop.get("cooldown_h", 6)) * 3600
+    cooldown = 0.0 if TEST else float(loop.get("cooldown_h") or 6) * 3600
     record = watch.get("github_read") if isinstance(watch.get("github_read"), dict) else {}
     sweeps = record["sweeps"] + 1 if type(record.get("sweeps")) is int else 1
     since = valid_clock(record.get("since"), now) or now
@@ -288,7 +288,7 @@ def read_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
     """
     lines: list[str] = []
     header = f"[{loop['id']}] {loop['repo']}"
-    cooldown = 0.0 if TEST else float(loop.get("cooldown_h", 6)) * 3600
+    cooldown = 0.0 if TEST else float(loop.get("cooldown_h") or 6) * 3600
     configured = str(loop.get("read_token") or "the read token")
     probe = gh.auth_probe(loop)
     who = (probe.data.get("login") if isinstance(probe.data, dict) else None) or configured
@@ -1113,8 +1113,8 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     # Per seat (#98): each seat's stall waits for its own whole turn, never another seat's.
     grace = {seat: 0.0 if TEST else config.stall_grace_s(loop, seat) / 60
              for seat in ("reviewer", "fixer")}
-    marker_grace = 0.0 if TEST else loop["marker_grace_min"]
-    cooldown = 0.0 if TEST else loop["cooldown_h"] * 3600
+    marker_grace = 0.0 if TEST else float(loop.get("marker_grace_min") or 60)
+    cooldown = 0.0 if TEST else float(loop.get("cooldown_h") or 6) * 3600
     breach = st.breach_all()
     alerts: list[tuple[int, str, str]] = []
     # The cooldown map (#77): ``marks`` is when each still-standing stall last alerted. A key is
