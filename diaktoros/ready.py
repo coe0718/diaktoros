@@ -111,11 +111,14 @@ def assess(loop: dict, st, pr: dict, reviews, ci_state, detail: dict | None) -> 
     if isinstance(held, dict):
         why.append(f"waiting for a person: {held.get('why') or 'touches human_paths'}")
     marker = st.breach_get(number)
-    if gate.escalated(marker, head) or gate.breach_delivery_status(
+    overruled = gate.shadow_overruled(loop, marker, head)        # #1004: ACCEPT, approval stands
+    if overruled:
+        pass
+    elif gate.escalated(marker, head) or gate.breach_delivery_status(
             marker if isinstance(marker, dict) else {}, head) in {"awaiting-adjudication",
                                                                   "adjudicating"}:
         why.append("escalated: parked awaiting adjudication")
-    shadow_held, _note = gate.shadow_hold(loop, number, head)          # #1004
+    shadow_held, _note = gate.shadow_hold(loop, number, head, marker=marker)   # #1004
     if shadow_held:
         why.append("shadow review: " + shadow_held)
     # The hold blocks only while the fresh review is still owed. ``reviews`` above are already the

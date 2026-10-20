@@ -1194,6 +1194,14 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             continue
         latest = gate.latest_effective_review_at_head(reviews, loop, head)
         if latest is not None and gh.review_state(latest) == "APPROVED":
+            # #1004: unless the shadow review disagrees, then it goes for a ruling (once per
+            # head; the shadow's own finish tries first, this is the backstop).
+            try:
+                if gate.shadow_escalation(loop, st, number, head, reviews) == "new":
+                    log(f"#{number} @ {head[:7]} shadow review disagrees with the approval: "
+                        "sent for a ruling")
+            except Exception as exc:
+                log(f"#{number} shadow escalation check failed: {type(exc).__name__}: {exc}")
             continue                              # approved at this head: the loop is done here
 
         at_head = (gate.changes_at_head(reviews, loop, head)
