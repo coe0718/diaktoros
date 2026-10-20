@@ -24,6 +24,18 @@ SETTINGS_SCHEMA: dict = {
                                             "its own sandbox."},
     "fixer_concurrency": {"label": "Fixes at once", "type": "int", "default": 1,
                           "description": "Fixes that may run at once; everything above this queues"},
+    "shadow_concurrency": {"label": "Shadow reviews at once", "type": "str", "default": "",
+                           "description": "Shadow reviews (#218) that may run at once, a whole "
+                                          "number >= 1; everything above this queues. Takes "
+                                          "effect only while the loop has a shadow profile. Blank "
+                                          "= not set here: the loop keeps its own value (default: "
+                                          "1, serialized)"},
+    "triage_concurrency": {"label": "Issue triages at once", "type": "str", "default": "",
+                           "description": "Issue triages that may run at once, a whole number "
+                                          ">= 1; everything above this queues. Takes effect only "
+                                          "while the loop has issue triage on. Blank = not set "
+                                          "here: the loop keeps its own value (default: 1, "
+                                          "serialized)"},
     "clone": {"label": "Clone path (required above 1)", "type": "str", "default": "",
               "description": "Local clone the runs isolate from — required above 1, because a "
                              "parallel run in a shared checkout produces wrong verdicts"},
@@ -426,6 +438,13 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
         if raw_tokens is not None:
             seats.setdefault(seat, {})["daily_tokens"] = config._check_daily_tokens(
                 config._form_int(raw_tokens), f"seats.{seat}.daily_tokens", "settings")
+    # The shadow and triage seats' own capacity: no loop default reaches them, so the form's value
+    # is written as the seat's own, with the loader's rule (>= 1).
+    for seat in ("shadow", "triage"):
+        raw_capacity = _form_value(settings, f"{seat}_concurrency")
+        if raw_capacity is not None:
+            seats.setdefault(seat, {})["concurrency"] = config.check_concurrency(
+                config._form_int(raw_capacity), f"seats.{seat}.concurrency", "settings")
     weekly = _form_value(settings, "observer_weekly_report")
     if weekly is not None and str(weekly).strip():
         observer = dict(loop_raw.get("observer") or {})

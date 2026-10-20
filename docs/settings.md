@@ -46,6 +46,8 @@ Defaults are for a fresh form; existing loops retain values when a field is abse
 | `cap` | int / `3` | Whole verdict count >= 2 | `cap`; at the cap, a configured adjudicator can rule. The cap counts verdicts, not pushes. |
 | `reviewer_concurrency` | int / `1` | Whole number >= 1 | Effective reviewer capacity; see inheritance below. Above 1 requires a nonblank clone. |
 | `fixer_concurrency` | int / `1` | Whole number >= 1 | Effective fixer capacity; above 1 requires a nonblank clone. Does not enable unattended pushes. |
+| `shadow_concurrency` | str / `""` | Whole number >= 1, or blank | `seats.shadow.concurrency`: shadow reviews that may run at once; the rest queue. Always the seat's own value, since the loop-level `concurrency` does not reach this seat. Takes effect only while the loop has a shadow profile. Blank keeps the loop's own value (default 1). |
+| `triage_concurrency` | str / `""` | Whole number >= 1, or blank | `seats.triage.concurrency`: issue triages that may run at once; the rest queue. Always the seat's own value (the loop default does not reach it). Takes effect only while the loop has issue triage on. Blank keeps the loop's own value (default 1). |
 | `clone` | str / `""` | Local clone path | `clone`; a blank form keeps the loop's clone. Actual checkout usability is a separate doctor/selftest check. |
 | `base` | str / `main` | Branch string | `base`; gates use it to select PR targets. The loader does not enforce full Git ref syntax. |
 | `grace_min` | int / `35` | Integer minutes; use positive values | `grace_min`; watchdog quiet-head grace is at least the relevant seat's full worst-case turn. No explicit positive range is enforced here. |
