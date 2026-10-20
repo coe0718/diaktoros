@@ -315,7 +315,11 @@ def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) 
     if row is None or str(row[0]) != "REQUEST_CHANGES":
         return "shadow agrees"
     marker = st.breach_get(number)
-    if escalated(marker, head):
+    # A wake that failed leaves the marker delivery-pending: retry it here, since the sweep's
+    # own delivery retry skips approved heads and every shadow escalation is at one.
+    retry = (isinstance(marker, dict) and marker.get("status") == "delivery-pending"
+             and (marker.get("escalated") or {}).get("by") == SHADOW_ESCALATION)
+    if escalated(marker, head) and not retry:
         return "already"
     reason = (f"the shadow review requested changes at {head[:7]} while the reviewer approved "
               "it: rule on the shadow review's findings")
@@ -1562,8 +1566,13 @@ def breach(loop: dict, st: state_mod.LoopState, number: int, head: str, rounds: 
         return (isinstance(current, dict) and current.get("number") == number
                 and current.get("state") == "open" and not current.get("draft")
                 and (current.get("base") or {}).get("ref") == loop["base"]
-                and ((current.get("user") or {}).get("login") or "").lower() in loop["fixers"]
+                and ((current.get("user") or {}).get("login") or "").lower() in authors
                 and (current.get("head") or {}).get("sha") == head)
+
+    # A shadow escalation rules on an approved head of any reviewed PR (#1004): a review-only
+    # author's too, which adjudication_state accepts for it. Every other one is a fixer's.
+    authors = (config.reviewed_authors(loop)
+               if (escalated or {}).get("by") == SHADOW_ESCALATION else set(loop["fixers"]))
 
     route = loop.get("adjudicator", {}).get("route")
     def observe_reserved(marker: dict) -> None:

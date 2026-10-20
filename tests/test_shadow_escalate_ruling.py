@@ -193,6 +193,53 @@ class Eligibility(Base):
             self.assertEqual(pr_facts.adjudication_state(self.loop, row)[0], "ok")
 
 
+    def test_a_review_only_authors_head_goes_for_a_ruling(self):
+        # breach()'s own live-head check, not just the claim's: a review-only PR's shadow
+        # escalation is written and woken, while other escalations stay the fixer's.
+        from diaktoros import gh
+        self.shadow("REQUEST_CHANGES")
+        loop = {**self.loop, "review_only": ["boss"]}
+        live = {**fg.LIVE, "user": {"login": "Boss"}}
+        with mock.patch.object(gh, "pr", return_value=live), \
+                mock.patch.object(gate, "wake_adjudicator", return_value=True) as wake, \
+                mock.patch.object(gate.observer, "notify"):
+            self.assertEqual(gate.breach(loop, self.st, 7, fg.HEAD, 1, "r",
+                                         escalated={"by": "dispute"}), "stale")
+            self.assertEqual(gate.shadow_escalation(loop, self.st, 7, fg.HEAD, APPROVED,
+                                                    db=self.db), "new")
+        wake.assert_called_once()
+        self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")
+
+
+class Retry(Base):
+    """A failed adjudicator wake is retried by the next check (#1103's shadow review): the
+    sweep's delivery retry skips approved heads, and every shadow escalation is at one."""
+
+    def test_a_failed_wake_is_sent_again(self):
+        from diaktoros import gh
+        self.shadow("REQUEST_CHANGES")
+        with mock.patch.object(gh, "pr", return_value=fg.LIVE), \
+                mock.patch.object(gate.observer, "notify"):
+            with mock.patch.object(gate, "wake_adjudicator", return_value=False):
+                self.assertEqual(gate.shadow_escalation(self.loop, self.st, 7, fg.HEAD,
+                                                        APPROVED, db=self.db), "new")
+            self.assertEqual(self.st.breach_get(7)["status"], "delivery-pending")
+            with mock.patch.object(gate, "wake_adjudicator", return_value=True) as wake:
+                self.assertEqual(gate.shadow_escalation(self.loop, self.st, 7, fg.HEAD,
+                                                        APPROVED, db=self.db), "retry")
+                self.assertEqual(gate.shadow_escalation(self.loop, self.st, 7, fg.HEAD,
+                                                        APPROVED, db=self.db), "already")
+        wake.assert_called_once()
+        self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")
+
+    def test_another_escalations_pending_wake_is_left_to_its_own_retry(self):
+        self.shadow("REQUEST_CHANGES")
+        self.mark_escalated(by="dispute", status="delivery-pending")
+        with mock.patch.object(gate, "breach") as breach:
+            self.assertEqual(gate.shadow_escalation(self.loop, self.st, 7, fg.HEAD, APPROVED,
+                                                    db=self.db), "already")
+        breach.assert_not_called()
+
 class Explain(Base):
     def report(self):
         facts = {"pr": fg.LIVE, "reviews": APPROVED, "armed": True, "read_at": 0,
