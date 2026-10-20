@@ -204,8 +204,10 @@ def plan(loop: dict, token_login: str | None = None) -> dict:
     """Read actual owned hooks; mixed/missing/unreadable is unknown, never a guessed pause.
 
     The private snapshot is consumed by confirmed_perform, never returned to the UI. Paused
-    means every owned hook was observed inactive; armed also needs every required seat's
-    correctly wired hook. Nothing is created, installed, drained or reconfigured here.
+    means every owned hook was observed inactive; armed means every owned hook is active,
+    not that its wiring is healthy. Pause needs verified ownership and complete coverage;
+    resume additionally needs every required seat's correctly wired hook. Nothing is created,
+    installed, drained or reconfigured here.
     """
     result = {'loop': loop['id'], 'repo': loop['repo'], 'state': 'unknown',
               'eligible': False, 'confirmation': None,
@@ -218,7 +220,10 @@ def plan(loop: dict, token_login: str | None = None) -> dict:
         own, _ = doctor.split_route_hooks(loop, hooks, wanted, ownership=True)
         exact, _ = doctor.split_route_hooks(loop, hooks, wanted, ownership=False)
         targets = {name: doctor.seat_route_target(loop, name) for name in wanted}
-        if not own or not seats or any(type(h.get('active')) is not bool for h in own):
+        if not own or not seats or any(
+                type(h.get('active')) is not bool or type(h.get('id')) is not int or
+                not isinstance(h.get('events'), list) or
+                any(not isinstance(event, str) for event in h['events']) for h in own):
             return result
         matched = {doctor.hook_route_name(h) for h in own}
         if not set(seats).issubset(matched):
@@ -234,8 +239,12 @@ def plan(loop: dict, token_login: str | None = None) -> dict:
             result['eligible'] = resume_ready
             result['reason'] = ('All loop hooks are paused.' if resume_ready else
                                 'Hooks are paused; repair hook wiring before resuming.')
-        elif all(h['active'] is True for h in own) and resume_ready:
-            result.update(state='armed', eligible=True, reason='All loop hooks are armed.')
+        elif all(h['active'] is True for h in own):
+            # Stopping delivery needs ownership, not wake readiness. Keep the wiring warning:
+            # active does not establish that any seat actually receives the intended events.
+            result.update(state='armed', eligible=True,
+                          reason=('All loop hooks are armed.' if resume_ready else
+                                  'All loop hooks are active; repair hook wiring before resuming.'))
         else:
             result['reason'] = 'Loop hooks are mixed or not correctly wired; inspect them first.'
         if result['eligible']:

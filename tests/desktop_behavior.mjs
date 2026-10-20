@@ -635,6 +635,7 @@ for (const [state, reason] of [
   ['paused', 'Hooks are paused; repair hook wiring before resuming.'],
   ['paused', 'All loop hooks are paused.'],
   ['armed', 'All loop hooks are armed.'],
+  ['armed', 'All loop hooks are active; repair hook wiring before resuming.'],
 ]) {
   test(`hooks: renders bounded ${state} reason: ${reason}`, async () => {
     const h = await harness(); h.render('page')
@@ -656,6 +657,46 @@ for (const reason of ['/private/token.json ghp_SECRET', '<img src=x onerror=aler
     h.queries.hooks = h.good(data); h.render('page')
     assert.ok(!h.text(h.tree()).includes(reason))
     assert.ok(h.text(h.tree()).includes('unknown · Hook state could not be verified.'))
+    h.unmount()
+  })
+}
+
+test('hooks: armed miswired reason survives validation, Pause confirms, paused miswired cannot Resume', async () => {
+  const h = await harness(); h.render('page')
+  const armedReason = 'All loop hooks are active; repair hook wiring before resuming.'
+  const pausedReason = 'Hooks are paused; repair hook wiring before resuming.'
+  h.respond(hookView({ reason: armedReason }))
+  const armed = await h.options.hooks.queryFn()
+  assert.equal(armed.reason, armedReason)
+  h.queries.hooks = h.good(armed); h.render('page')
+  assert.ok(h.text(h.tree()).includes('armed · ' + armedReason))
+  assert.equal(hookButton(h).props.children, 'Pause webhook delivery')
+  const paused = hookView({ state: 'paused', eligible: false, confirmation: null, reason: pausedReason })
+  h.hookResult(() => Promise.resolve({ ...paused, ok: true, answer: 'Paused and verified' }))
+  hookButton(h).props.onClick()
+  const dialog = hookDialog(h)
+  assert.equal(dialog.props.title, 'Pause webhook delivery?')
+  assert.equal(dialog.props.description, 'Pause webhook delivery for loop fixture-loop. Pausing stops GitHub webhook delivery, not in-flight turns. Paused hooks deliver no new events to queue. The sweeper may recover events even while paused. Resuming allows new webhook delivery; it does not restart completed turns.')
+  await dialog.props.onConfirm()
+  assert.equal(JSON.stringify(h.hookCalls), JSON.stringify([{ method: 'POST', body: { loop: 'fixture-loop', action: 'pause', confirmation: 'opaque-snapshot' } }]))
+  assert.match(h.text(h.tree()), /Backend verified webhook delivery paused/)
+  assert.equal(hookButton(h), undefined)
+  h.respond(paused)
+  const refreshed = await h.options.hooks.queryFn()
+  assert.equal(refreshed.reason, pausedReason)
+  h.queries.hooks = h.good(refreshed); h.render('page')
+  assert.ok(h.text(h.tree()).includes('paused · ' + pausedReason))
+  assert.equal(hookButton(h), undefined, 'repair is required before Resume can be offered')
+  await dialog.props.onConfirm()
+  assert.equal(h.hookCalls.length, 1, 'retained confirmation cannot resume paused miswired hooks')
+  h.unmount()
+})
+
+for (const reason of ['All loop hooks are active; repair hook wiring before resuming. ', 'all loop hooks are active; repair hook wiring before resuming.', 'All loop hooks are active; repair hook wiring before resuming. /private/token']) {
+  test(`hooks: reason allowlist rejects near-match: ${reason}`, async () => {
+    const h = await harness(); h.render('page')
+    h.respond(hookView({ reason }))
+    assert.equal((await h.options.hooks.queryFn()).reason, 'Hook state could not be verified.')
     h.unmount()
   })
 }

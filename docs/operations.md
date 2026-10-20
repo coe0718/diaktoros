@@ -802,7 +802,11 @@ runs, answers 409 with the host's own reason for anything that retry refuses (in
 that moved since the operator confirmed), and never calls GitHub or reads a token.
 `GET /hooks?loop=<id>` reads GitHub using `arm`'s default token resolution (the loop's
 mapped reader login, which must have hook-admin permission), returning armed, paused or unknown. Missing, mixed or
-unreadable hooks never mean paused. Only a fresh, eligible read offers Pause/Resume.
+unreadable hooks never mean paused. Eligibility is direction-specific: a complete, verified
+owned all-active set offers **Pause** even with wrong event/content type, URL slash or route
+binding; its public reason explicitly warns that wiring needs repair. Here armed describes
+observed hook activity, not healthy delivery or wake readiness. A paused miswired set does not
+offer **Resume** until its wiring is repaired. Only a fresh, eligible read offers a control.
 `POST /hooks` takes `{loop, action, confirmation}` (`action` is `pause` or `resume`). The
 confirmation names the loop and consequences; the host re-reads loop identity, route targets
 and hook identity/wiring/state, rejecting a stale confirmation with 409. It calls the same

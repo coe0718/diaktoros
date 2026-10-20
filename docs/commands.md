@@ -1035,6 +1035,11 @@ confirms every one is in the state you asked for. It edits the hooks as `--admin
 
 **Safety.** Omission of `--loop` affects every configured loop; prefer an exact id.
 Pause stops new hook deliveries, not already running turns. Arming is not fixer-push consent.
+Pause checks hook ownership, not whether the hook can wake its seat: owned hooks can be
+silenced even with wrong events, content type or route wiring. Resume still requires correct
+wiring. Desktop offers Pause only for a complete verified all-active owned set, with a repair
+warning when miswired; after pausing it withholds Resume until wiring is repaired. This does
+not change CLI exit codes or its explicit admin-token selection.
 Hook activity is read back, but a missing ping receipt within its bounded wait is a warning,
 not necessarily failure; exit 0 is not proof every gateway delivery was observed.
 

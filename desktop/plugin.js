@@ -1132,6 +1132,7 @@ function validateHooks(data, loop, write = false) {
   const reasons = ['Hook state could not be verified.', 'Required loop hooks are missing.',
     'Loop hooks are mixed or not correctly wired; inspect them first.',
     'Hooks are paused; repair hook wiring before resuming.',
+    'All loop hooks are active; repair hook wiring before resuming.',
     'All loop hooks are paused.', 'All loop hooks are armed.']
   return { ...data, reason: reasons.includes(data.reason) ? data.reason : reasons[0] }
 }

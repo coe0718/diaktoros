@@ -107,7 +107,10 @@ No token contents, paths, URLs or raw transport errors are returned. The opaque 
 confirmation binds loop config, route targets and owned hook IDs/wiring/state; the host
 re-reads these before writing and refuses a stale or unavailable confirmation with 409.
 Restarting the backend invalidates old confirmations. Missing, mixed and unreadable states
-are unknown, never inferred paused. A partial write/readback or failed resume ping reports
+are unknown, never inferred paused. Pause requires verified ownership and a complete all-active
+hook set, not correct resume wiring; the armed miswired state carries an explicit repair warning,
+not a delivery-health claim. Resume of a paused miswired set remains refused. A partial
+write/readback or failed resume ping reports
 `ok:false`, retains truthful observed hook status and withholds automatic follow-up controls.
 Pausing stops webhook delivery, not running turns; sweeps may still recover events. This is
 not a global stop, drain, rollback or merge permission. Diaktoros never merges.

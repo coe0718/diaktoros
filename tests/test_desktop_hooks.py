@@ -9,6 +9,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
+from hermes_prereqs import skip_or_fail
 from diaktoros import arm_action, cli, config, desktop_api, gh
 from diaktoros.cli import common
 import test_arm_verify as arm_fixture
@@ -87,7 +88,7 @@ class HooksTests(HooksFixture):
 
     def test_unknown_never_offers_a_control(self):
         cases = ('mixed', 'missing', 'empty', 'malformed', 'unreadable', 'bad_listing',
-                 'bad_event', 'slashed', 'foreign')
+                 'foreign')
         for case in cases:
             with self.subTest(case=case):
                 fake = self.fake()
@@ -103,10 +104,6 @@ class HooksTests(HooksFixture):
                     fake.list_error = 'HTTP 403 /home/private/PAT ghp_SECRET'
                 elif case == 'bad_listing':
                     fake.hooks[1]['config'] = {}
-                elif case == 'bad_event':
-                    fake.hooks[1]['events'] = ['push']
-                elif case == 'slashed':
-                    fake.hooks[1]['config']['url'] += '/'
                 elif case == 'foreign':
                     fake.hooks[1]['config']['url'] = 'https://elsewhere/p/reviewer/webhooks/widgets-review'
                 view = self.view()
@@ -114,6 +111,109 @@ class HooksTests(HooksFixture):
                 self.assertFalse(view['eligible'])
                 self.assertIsNone(view['confirmation'])
                 self.assertNotIn('ghp_SECRET', json.dumps(view))
+                self.assert_no_writes(fake)
+
+    def miswire(self, fake, case):
+        if case == 'event':
+            fake.hooks[1]['events'] = ['push']
+        elif case == 'content_type':
+            fake.hooks[1]['config']['content_type'] = 'form'
+        elif case == 'slash':
+            fake.hooks[1]['config']['url'] += '/'
+        else:
+            self.write_registry({'widgets-review': 'other', 'widgets-fix': 'fixer'})
+
+    def test_active_miswired_plan_pause_readback_and_resume_refusal(self):
+        for case in ('event', 'content_type', 'slash', 'registry'):
+            with self.subTest(case=case):
+                self.write_registry({'widgets-review': 'reviewer', 'widgets-fix': 'fixer'})
+                fake = self.fake()
+                self.miswire(fake, case)
+                plan = arm_action.plan(config.load_id('widgets'))
+                self.assertEqual((plan['state'], plan['eligible']), ('armed', True))
+                self.assertEqual(plan['reason'],
+                                 'All loop hooks are active; repair hook wiring before resuming.')
+                self.assertRegex(plan['confirmation'], r'^[0-9a-f]{64}$')
+                self.assert_no_writes(fake)
+                with self.assertRaises(arm_action.StaleConfirmation):
+                    arm_action.confirmed_perform(config.load_id('widgets'), 'resume',
+                                                 plan['confirmation'])
+                self.assert_no_writes(fake)
+                result = self.act(plan)
+                self.assertTrue(result['ok'])
+                self.assertEqual(result['state'], 'paused')
+                self.assertFalse(result['eligible'])
+                self.assertIsNone(result['confirmation'])
+                self.assertEqual(result['reason'],
+                                 'Hooks are paused; repair hook wiring before resuming.')
+                self.assertEqual([fake.hooks[i]['active'] for i in (1, 2, 3)],
+                                 [False, False, True])
+                writes = [call for call in fake.calls if call[0] != 'GET']
+                self.assertEqual(writes, [('PATCH', '/repos/owner/widgets/hooks/1', 'reader'),
+                                          ('PATCH', '/repos/owner/widgets/hooks/2', 'reader')])
+                for hook_id in (1, 2):
+                    self.assertIn(('GET', f'/repos/owner/widgets/hooks/{hook_id}', 'reader'),
+                                  fake.calls)
+                with self.assertRaises(desktop_api.Conflict):
+                    self.act(plan, 'resume')
+                self.assertEqual(writes, [call for call in fake.calls if call[0] != 'GET'])
+                self.ping.assert_not_called()
+
+    def test_miswired_confirmation_still_binds_changed_hook_identity(self):
+        fake = self.fake()
+        self.miswire(fake, 'event')
+        before = self.view()
+        self.assertTrue(before['eligible'])
+        fake.hooks[10] = dict(fake.hooks.pop(1), id=10)
+        self.assertTrue(self.view()['eligible'])
+        with self.assertRaises(desktop_api.Conflict):
+            self.act(before)
+        self.assert_no_writes(fake)
+
+    def test_cli_miswired_pause_parity_and_resume_exit_codes(self):
+        for case in ('event', 'content_type', 'slash', 'registry'):
+            with self.subTest(case=case):
+                self.write_registry({'widgets-review': 'reviewer', 'widgets-fix': 'fixer'})
+                fake = self.fake()
+                self.miswire(fake, case)
+                self.assertTrue(self.view()['eligible'])
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc = cli.cmd_arm(argparse.Namespace(loop='widgets', pause=True,
+                                                        admin_token='owner'))
+                self.assertEqual(rc, 0)
+                self.assertFalse(self.view()['eligible'])
+                self.assertTrue(fake.hooks[3]['active'])
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc = cli.cmd_arm(argparse.Namespace(loop='widgets', pause=False,
+                                                        admin_token='owner'))
+                self.assertEqual(rc, 1)
+                self.assertFalse(fake.hooks[1]['active'])
+                self.ping.assert_not_called()
+
+    def test_miswired_partial_and_unreadable_readback_are_not_success(self):
+        for opts in ({'patch_error': {2: 'HTTP 403 /private/PAT'}},
+                     {'get_error': 'HTTP 502 /private/PAT'}, {'ignore_patch': True}):
+            with self.subTest(opts=opts):
+                fake = self.fake(**opts)
+                self.miswire(fake, 'event')
+                result = self.act(self.view())
+                self.assertFalse(result['ok'])
+                self.assertFalse(result['eligible'])
+                self.assertIsNone(result['confirmation'])
+                self.assertTrue(fake.hooks[3]['active'])
+                self.assertNotIn('/private/PAT', json.dumps(result))
+
+    def test_malformed_miswired_hook_reads_never_authorize_pause(self):
+        for field, value in (('active', None), ('events', None), ('events', 'push'),
+                             ('config', None), ('id', '1')):
+            with self.subTest(field=field, value=value):
+                fake = self.fake()
+                self.miswire(fake, 'event')
+                fake.hooks[1][field] = value
+                view = self.view()
+                self.assertEqual(view['state'], 'unknown')
+                self.assertFalse(view['eligible'])
+                self.assertIsNone(view['confirmation'])
                 self.assert_no_writes(fake)
 
     def test_paused_but_miswired_is_not_resumable(self):
@@ -308,9 +408,36 @@ class HooksTests(HooksFixture):
         self.assert_no_writes(fake)
 
 
-@unittest.skipUnless(importlib.util.find_spec('fastapi'), 'fastapi is not installed here')
+def require_hook_prereqs(test):
+    # The route imports Hermes lazily; absent top-level web prerequisites may skip only
+    # outside the strict lane. Broken/transitive imports below must still fail loudly.
+    for module in ('fastapi', 'httpx', 'hermes_cli'):
+        if importlib.util.find_spec(module) is None:
+            skip_or_fail(test, f'desktop hook integration needs {module} on this interpreter')
+
+
+class HookPrerequisites(unittest.TestCase):
+    def test_missing_prerequisite_optional_skip_or_strict_failure(self):
+        for required in (False, True):
+            for missing in ('fastapi', 'httpx', 'hermes_cli'):
+                with self.subTest(required=required, missing=missing), \
+                        patch('hermes_prereqs.REQUIRED', required), \
+                        patch.object(importlib.util, 'find_spec',
+                                     side_effect=lambda name: None if name == missing else object()):
+                    with self.assertRaisesRegex(AssertionError if required else unittest.SkipTest,
+                                                missing):
+                        HttpTests().client()
+
+    def test_available_prerequisites_do_not_skip(self):
+        for required in (False, True):
+            with patch('hermes_prereqs.REQUIRED', required), \
+                    patch.object(importlib.util, 'find_spec', return_value=object()):
+                require_hook_prereqs(self)
+
+
 class HttpTests(HooksFixture):
     def client(self):
+        require_hook_prereqs(self)
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         path = Path(__file__).resolve().parents[1] / 'dashboard' / 'plugin_api.py'
@@ -338,6 +465,28 @@ class HttpTests(HooksFixture):
         self.assertEqual(stale.status_code, 409, stale.text)
         self.assertLess(len(stale.text), 200)
         self.assertEqual(client.post('/hooks', json=payload).status_code, 404)
+
+    def test_http_miswired_pause_roundtrip_and_resume_refused(self):
+        fake = self.fake()
+        fake.hooks[1]['events'] = ['push']
+        client = self.client()
+        path = '/api/plugins/diaktoros/hooks'
+        before = client.get(path, params={'loop': 'widgets'}).json()
+        self.assertEqual((before['state'], before['eligible']), ('armed', True))
+        payload = dict(loop='widgets', action='resume', confirmation=before['confirmation'])
+        self.assertEqual(client.post(path, json=payload).status_code, 409)
+        self.assert_no_writes(fake)
+        payload['action'] = 'pause'
+        done = client.post(path, json=payload)
+        self.assertEqual(done.status_code, 200, done.text)
+        after = done.json()
+        self.assertTrue(after['ok'])
+        self.assertEqual((after['state'], after['eligible']), ('paused', False))
+        self.assertIsNone(after['confirmation'])
+        payload['action'] = 'resume'
+        self.assertEqual(client.post(path, json=payload).status_code, 409)
+        self.assertTrue(fake.hooks[3]['active'])
+        self.ping.assert_not_called()
 
     def test_http_malformed_and_unavailable_are_safe_422_or_409(self):
         fake = self.fake()
