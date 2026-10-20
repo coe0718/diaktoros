@@ -443,6 +443,14 @@ def cmd_init(args) -> int:
         if budget not in (0, "", None):
             raw["seats"].setdefault("shadow", {})["daily_tokens"] = config._check_daily_tokens(
                 budget, "seats.shadow.daily_tokens", "init")
+        # The shadow and triage seats' own capacity: the flag, else the form; blank = unset.
+        for seat in ("shadow", "triage"):
+            flag = getattr(args, f"{seat}_concurrency", None)
+            capacity = flag if flag is not None else config._form_int(
+                str(d.get(f"{seat}_concurrency") or "").strip())
+            if capacity not in ("", None):
+                raw["seats"].setdefault(seat, {})["concurrency"] = config.check_concurrency(
+                    capacity, f"seats.{seat}.concurrency", "init")
         flag = getattr(args, "fix_daily_turns", None)
         cap = flag if flag is not None else config._form_int(d["fix_daily_turns"].strip())
         if cap not in (0, ""):
@@ -837,6 +845,7 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
         argv.append("--acknowledge-branch-push")
     for flag in ("reviewer_max_steps", "fixer_max_steps", "reviewer_daily_tokens",
                  "fixer_daily_tokens", "shadow_daily_tokens", "fix_daily_turns",
+                 "shadow_concurrency", "triage_concurrency",
                  "review_only_cap", "review_only_daily", "ci_fix_cap"):
         if getattr(args, flag, None) is not None:
             argv.append(f"--{flag.replace('_', '-')}={getattr(args, flag)}")
@@ -973,6 +982,14 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
     init.add_argument("--fixer-concurrency", type=int, default=None,
                       help="PRs the fixer may work at once (overrides --concurrency; "
                            f"default: the loop's, settings {d['fixer_concurrency']})")
+    init.add_argument("--shadow-concurrency", type=int, default=None,
+                      help="shadow reviews that may run at once, >= 1 (the shadow seat's own "
+                           "value: --concurrency does not reach it) (default: the plugin "
+                           "setting, else 1)")
+    init.add_argument("--triage-concurrency", type=int, default=None,
+                      help="issue triages that may run at once, >= 1 (the triage seat's own "
+                           "value: --concurrency does not reach it) (default: the plugin "
+                           "setting, else 1)")
     init.add_argument("--base", default=d["base"],
                       help="the branch PRs target; only PRs against it are reviewed")
     init.add_argument("--clone", default=d["clone"], help="local clone the runs may use")
@@ -1204,6 +1221,12 @@ def add_setup(sub) -> None:  # noqa: ANN001
     first.add_argument("--shadow-daily-tokens", type=int, default=None,
                       help="most tokens shadow reviews may spend per day; once spent the next waits "
                            "for midnight (0 = none) (default: the plugin setting)")
+    first.add_argument("--shadow-concurrency", type=int, default=None,
+                       help="shadow reviews that may run at once, >= 1 (default: the plugin "
+                            "setting, else 1)")
+    first.add_argument("--triage-concurrency", type=int, default=None,
+                       help="issue triages that may run at once, >= 1 (default: the plugin "
+                            "setting, else 1)")
     first.add_argument("--fixer-daily-tokens", type=int, default=None,
                        help="most tokens the fixer (and issue fixes) may spend per day "
                             "(0 = none) (default: the plugin setting)")

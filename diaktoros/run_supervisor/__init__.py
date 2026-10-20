@@ -1398,11 +1398,14 @@ class Supervisor(records.LedgerRecords):
         with self._connect() as con:
             return runs_view(con, repo, pr)
 
-    def seat_numbers(self, repo: str, seat: str) -> set[int]:
-        """Every PR/issue number with a ledger row for ``seat``, in any state (read-only)."""
+    def seat_numbers(self, repo: str, seat: str, state: str | None = None) -> set[int]:
+        """Every PR/issue number with a ledger row for ``seat`` (read-only): in any state, or
+        only in ``state`` when given."""
+        query, args = 'SELECT DISTINCT pr FROM runs WHERE repo=? AND seat=?', [repo, seat]
+        if state is not None:
+            query, args = query + ' AND state=?', [*args, state]
         with self._connect() as con:
-            return {int(row['pr']) for row in con.execute(
-                'SELECT DISTINCT pr FROM runs WHERE repo=? AND seat=?', (repo, seat))}
+            return {int(row['pr']) for row in con.execute(query, args)}
 
     def record_dependencies(self, run_id: str, owner: str, text: str) -> None:
         """The owning worker's note of its turn's dependency prefetch (#51), bounded and printable.
@@ -1880,13 +1883,34 @@ class Supervisor(records.LedgerRecords):
         """
         from .. import config
         with self._connect() as con:
-            first = con.execute('SELECT repo,seat FROM runs WHERE id=?', (run_id,)).fetchone()
+            first = con.execute('SELECT repo,seat,pr,head FROM runs WHERE id=?',
+                                (run_id,)).fetchone()
         fixer = first is not None and first['seat'] == 'fixer'
+        st = None
+        if first is not None and first['seat'] == SHADOW:
+            # A shadow is judged on the findings snapshot taken when it was queued (#1013), and
+            # one that has ended may have had it evicted. Hold the state lock from the check to
+            # the re-arm (state lock, then ledger: the order enqueue_shadow uses), so a put
+            # cannot evict the snapshot in between.
+            from .. import state as state_mod
+            try:
+                loop = config.by_repo(first['repo'])
+                st = state_mod.state_for(loop) if loop is not None else None
+            except config.ConfigError:
+                st = None
         # An issue fix publishes under the same push policy (and triage and a fix label, #980).
         issue_fix = first is not None and first['seat'] == 'issue_fixer'
-        with (config.push_policy_lock() if fixer or issue_fix else nullcontext()), \
+        shadow = first is not None and first['seat'] == SHADOW
+        with (st.locked() if st is not None else nullcontext()), \
+                (config.push_policy_lock() if fixer or issue_fix else nullcontext()), \
                 self._connect() as con:
             admitted, policy_off = None, ''
+            if shadow and (st is None
+                           or st.shadow_findings_get(first['pr'], first['head']) is None):
+                policy_off = ("refused: the findings snapshot this shadow was queued with is "
+                              "gone (evicted, or never taken), so it would be judged on the live "
+                              "findings ledger, which the real review may have changed (#1013); "
+                              "a new head gets a fresh shadow")
             if issue_fix:
                 try:
                     loop = config.by_repo(first['repo'])

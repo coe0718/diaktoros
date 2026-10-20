@@ -151,6 +151,36 @@ class Sweep(fg.Base):
         read.assert_not_called()
         self.assertEqual(self.enqueued, [])
 
+    def set_run_state(self, number, state):
+        with self.sup._connect() as con:
+            con.execute("UPDATE runs SET state=? WHERE seat='triage' AND pr=?", (state, number))
+
+    def status_out(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), \
+             mock.patch.object(operations, "_pinned_seat_notes", return_value=[]):
+            self.assertEqual(operations.cmd_status(mock.Mock(loop="one")), 0, out.getvalue())
+        return out.getvalue()
+
+    def test_a_late_triage_entry_is_dropped_once_its_triage_succeeded(self):
+        # #1038: the entry (and `status`'s "webhook delivery was missed") outlived the triage.
+        issues = [issue(7), issue(8), issue(9)]
+        self.sweep(issues)
+        self.assertEqual(sorted(self.st.late_triage()), [7, 8, 9])
+        self.set_run_state(7, "succeeded")
+        self.set_run_state(8, "failed")               # not resolved: stays noted
+        self.sweep(issues)                            # the watchdog sweep settles the entries
+        self.assertEqual(sorted(self.st.late_triage()), [8, 9])
+        text = self.status_out()
+        self.assertNotIn("issue #7 triage queued late", text)
+        self.assertIn("issue #8 triage queued late", text)
+        self.assertIn("issue #9 triage queued late", text)
+        self.set_run_state(8, "succeeded")
+        self.set_run_state(9, "succeeded")
+        self.sweep([])                                # even once the issue left the open list
+        self.assertEqual(self.st.late_triage(), {})
+        self.assertNotIn("triage queued late", self.status_out())
+
     def test_status_names_an_issue_the_sweep_queued_late(self):
         self.sweep([issue(7)])
         out = io.StringIO()

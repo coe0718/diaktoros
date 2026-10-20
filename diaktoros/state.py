@@ -979,6 +979,18 @@ class LoopState:
             self._save_strict(self.dir / "late-triage.json",
                               {str(n): data[n] for n in newest})
 
+    def late_triage_resolve(self, numbers) -> list[int]:
+        """Drop the entries for ``numbers`` (triage ran since); return those that were noted."""
+        with self.locked():
+            data = self.late_triage()
+            gone = sorted(n for n in set(numbers) if n in data)
+            if gone:
+                for n in gone:
+                    del data[n]
+                self._save_strict(self.dir / "late-triage.json",
+                                  {str(n): data[n] for n in data})
+            return gone
+
     def _said_claim(self, name: str, number: int) -> bool:
         """Record ``number`` in the one-time-notice ledger ``name``; True only for the caller that
         recorded it. The check and the write are one step under the lock. A claim that did not reach
@@ -1208,7 +1220,12 @@ class LoopState:
     # what the real review of the same head recorded meanwhile. First snapshot wins.
     SHADOW_FINDINGS_KEPT = 300
 
-    def shadow_findings_put(self, number: int, head: str, entry: dict) -> None:
+    def shadow_findings_put(self, number: int, head: str, entry: dict,
+                            keep: "set[tuple[int, str]] | None" = None) -> None:
+        """Keep the snapshot for this PR and head. Past ``SHADOW_FINDINGS_KEPT`` the oldest are
+        dropped, but never one in ``keep`` (the (number, head) of a shadow run that has not
+        ended: its broker would fall back to the live ledger, #1013). ``keep=None`` means the
+        caller could not tell which runs are open, so nothing is dropped."""
         with self.locked():
             path = self.dir / "shadow-findings.json"
             data = self._load(path, {})
@@ -1217,9 +1234,11 @@ class LoopState:
             if key in data:
                 return
             data[key] = {"entry": entry if isinstance(entry, dict) else {}, "at": time.time()}
-            if len(data) > self.SHADOW_FINDINGS_KEPT:
-                keep = sorted(data, key=lambda k: (data[k] or {}).get("at") or 0)
-                for old in keep[:len(data) - self.SHADOW_FINDINGS_KEPT]:
+            if keep is not None and len(data) > self.SHADOW_FINDINGS_KEPT:
+                held = {f"{n}:{h}" for n, h in keep} | {key}
+                oldest = sorted((k for k in data if k not in held),
+                                key=lambda k: (data[k] or {}).get("at") or 0)
+                for old in oldest[:len(data) - self.SHADOW_FINDINGS_KEPT]:
                     data.pop(old, None)
             self._save_strict(path, data)
 

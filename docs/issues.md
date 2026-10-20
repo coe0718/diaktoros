@@ -364,7 +364,8 @@ minute) can therefore lose triage turns. Two things cover it:
   oldest first. The listing is read newest first and is bounded to 5 pages of 100 (open pull
   requests share it); past that the sweep still queues from the newest ones it read and raises
   an alert that older issues in the window were not checked. `status` lists them as `late: issue #N triage queued late: the webhook delivery
-  was missed`. The sweep needs the same private runtime the gate does, and changes nothing for a
+  was missed`, until that issue's triage run has succeeded (the next sweep then drops the line;
+  a failed, cancelled or still-running one stays listed). The sweep needs the same private runtime the gate does, and changes nothing for a
   loop without `triage`.
 - **Doctor.** `gate:rate_limit` reads the gateway's `rate_limit` and warns below 60. Raise it in
   the gateway's `config.yaml` (`platforms.webhook.extra.rate_limit: 120`) and restart that

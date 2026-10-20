@@ -5,7 +5,9 @@ minute (30 unless set) and GitHub does not redeliver. A burst of ``issues.opened
 filed in a minute) therefore loses triage turns silently. The watchdog calls :func:`sweep`: it lists
 the open issues and queues the triage turn of each one the gate would have queued, through the same
 ``gate.enqueue_isolated`` call ``gate_triage.py`` makes, so the ledger's unique key still stops a
-second turn.
+second turn. A
+noted issue whose triage run later ``succeeded`` is dropped from the ``late-triage.json`` list
+that ``status`` prints; a failed, cancelled or still-active run stays noted.
 
 An issue is queued when ``run_supervisor.triage_blocker`` has nothing against it (open, not a pull
 request, author in ``triage.authors``, no label from ``triage.labels``), it has no triage row in the
@@ -70,6 +72,12 @@ def sweep(loop: dict, st, now: float | None = None) -> list[str]:
     except Exception as exc:              # no private runtime / ledger: the gate cannot enqueue either
         log(f"triage sweep: run ledger unavailable: {type(exc).__name__}: {exc}")
         return lines
+    # A late-queued triage that has since succeeded is no longer news: `status` reads this file.
+    try:
+        st.late_triage_resolve(st.late_triage().keys() & gate.isolated_supervisor(loop).seat_numbers(
+            loop["repo"], "triage", "succeeded"))
+    except Exception as exc:
+        log(f"triage sweep: late-triage cleanup failed: {type(exc).__name__}: {exc}")
     for number in candidates(loop, issues, queued, now)[:PER_SWEEP]:
         try:
             outcome = gate.enqueue_isolated(loop, "triage", number, config.TRIAGE_HEAD,

@@ -732,6 +732,13 @@ def cmd_set(args) -> int:
         if value is not None and value != config.seat_concurrency(loop, seat):
             seats[seat]["concurrency"] = value
             seat_changes[seat] = value
+    # The shadow and triage seats' own capacity: no loop default reaches them (seat_concurrency),
+    # so a value is always the seat's own. normalize refuses anything below 1, as the loader does.
+    for seat in ("shadow", "triage"):
+        value = getattr(args, f"{seat}_concurrency", None)
+        if value is not None and value != config.seat_concurrency(loop, seat):
+            seats.setdefault(seat, {})["concurrency"] = value
+            seat_changes[seat] = value
     budget_changes = {}
     for seat, value in (("reviewer", getattr(args, "reviewer_turn_budget", None)),
                          ("fixer", getattr(args, "fixer_turn_budget", None))):
@@ -850,7 +857,8 @@ def cmd_set(args) -> int:
         if adj_done:
             return 0
         print("nothing to change — pass at least one setting "
-              "(--concurrency, --reviewer-concurrency, --fixer-concurrency, --cap, --clone, "
+              "(--concurrency, --reviewer-concurrency, --fixer-concurrency, "
+              "--shadow-concurrency, --triage-concurrency, --cap, --clone, "
               "--turn-budget, "
               "--observer-profile, ...)")
         return 0
@@ -1155,7 +1163,7 @@ def _apply(args) -> int:
             changes.append((f"{section}.{key}", was, now))
     if (updated.get("clone") or "") != (loop.get("clone") or ""):
         changes.append(("clone", loop.get("clone") or "(none)", updated.get("clone") or "(none)"))
-    for seat in ("reviewer", "fixer"):
+    for seat in ("reviewer", "fixer", "shadow", "triage"):
         was, now = config.seat_concurrency(loop, seat), config.seat_concurrency(updated, seat)
         if was != now:
             changes.append((f"{seat} concurrency", was, now))
@@ -1796,6 +1804,12 @@ def add_set(sub) -> None:  # noqa: ANN001
                         help="how many PRs the reviewer may work at once")
     change.add_argument("--fixer-concurrency", type=int, default=None,
                         help="how many PRs the fixer may work at once")
+    change.add_argument("--shadow-concurrency", type=int, default=None,
+                        help="how many shadow reviews may run at once (>= 1; only the shadow "
+                             "seat's own value: the loop default does not reach it)")
+    change.add_argument("--triage-concurrency", type=int, default=None,
+                        help="how many issue triages may run at once (>= 1; only the triage "
+                             "seat's own value: the loop default does not reach it)")
     change.add_argument("--cap", type=int, help="verdicts allowed before adjudication")
     change.add_argument("--clone", help="local clone the runs isolate from")
     change.add_argument("--base", help="base branch the loop watches")

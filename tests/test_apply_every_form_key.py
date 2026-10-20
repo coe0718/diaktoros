@@ -28,6 +28,8 @@ PUSHES = {
     "cap": "4",
     "reviewer_concurrency": "2",
     "fixer_concurrency": "2",
+    "shadow_concurrency": "3",
+    "triage_concurrency": "2",
     "clone": lambda t: str(t.clone2),
     "base": "develop",
     "grace_min": "40",

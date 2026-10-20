@@ -45,6 +45,16 @@ config_schema:
     type: int
     default: 1
     description: "Fixes that may run at once; everything above this queues"
+  shadow_concurrency:
+    label: "Shadow reviews at once"
+    type: str
+    default: ""
+    description: "Shadow reviews (#218) that may run at once, a whole number >= 1; everything above this queues. Takes effect only while the loop has a shadow profile. Blank = not set here: the loop keeps its own value (default: 1, serialized)"
+  triage_concurrency:
+    label: "Issue triages at once"
+    type: str
+    default: ""
+    description: "Issue triages that may run at once, a whole number >= 1; everything above this queues. Takes effect only while the loop has issue triage on. Blank = not set here: the loop keeps its own value (default: 1, serialized)"
   clone:
     label: "Clone path (required above 1)"
     type: str
