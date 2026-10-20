@@ -2841,6 +2841,22 @@ class Supervisor(records.LedgerRecords):
                              f"{len(checks.pending)} check(s) still running or not reported"))[:600]
             self.held_for_ci = True
 
+    def _shadow_escalation(self, turn: _Turn) -> None:
+        """Right after a shadow review is recorded (#1004 part 2): if it disagrees with the
+        reviewer's approval at the head, send the head for a ruling now. Best effort: the
+        watchdog sweep makes the same check, so a failure here only delays it."""
+        from .. import gate, gh, state as state_mod, transition
+        row, loop = turn.row, turn.loop
+        if row is None or loop is None:
+            return
+        st = state_mod.state_for(loop)
+        reviews = transition.effective_reviews(loop, st, row['pr'], row['head'],
+                                               gh.reviews(loop, row['pr']))
+        outcome = gate.shadow_escalation(loop, st, row['pr'], row['head'], reviews, db=self.db)
+        if outcome == "new":
+            util.log(f"#{row['pr']} @ {row['head'][:7]} shadow review disagrees with the "
+                     "approval: sent for a ruling")
+
     def _shadow_ci_gate(self, turn: _Turn) -> None:
         """A shadow review follows the reviewer's CI rules, strictly (#218): it waits, nothing
         spent, while the PR conflicts or a required check is running, cancelled, missing or
@@ -3159,8 +3175,8 @@ class Supervisor(records.LedgerRecords):
             # What the shadow would have submitted (#218), recorded while the run is still live.
             submissions = observed.get('submissions') or []
             try:
-                if submissions:
-                    self.record_shadow(run_id, owner, submissions[-1])
+                if submissions and self.record_shadow(run_id, owner, submissions[-1]):
+                    self._shadow_escalation(turn)
             except Exception:
                 pass    # a lost record must not change how the turn ends
         state = self.complete_uncertain(

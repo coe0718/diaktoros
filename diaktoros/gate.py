@@ -190,7 +190,8 @@ def shadow_sampled(loop: dict, number: int, head: str) -> bool:
 SHADOW_OPEN = ("pending", "waiting", "claimed", "launching", "running")
 
 
-def shadow_hold(loop: dict, number: int, head: str, db=None) -> tuple[str, str]:
+def shadow_hold(loop: dict, number: int, head: str, db=None,
+                marker: dict | None = None) -> tuple[str, str]:
     """``(hold, note)`` for a PR head under ``shadow.escalate`` (#1004), read-only.
 
     ``hold`` (it is not ready to merge) once the newest shadow review of this head requested
@@ -223,6 +224,16 @@ def shadow_hold(loop: dict, number: int, head: str, db=None) -> tuple[str, str]:
             run = con.execute("SELECT state, created FROM runs WHERE repo=? AND pr=? AND head=? "
                               "AND seat='shadow' ORDER BY created DESC, updated DESC LIMIT 1",
                               (loop["repo"], number, head)).fetchone()
+            try:
+                # A ruling answers the shadow review it was shown: only one made after the
+                # newest shadow review counts (review on #1103: a later dissent at the same head
+                # must not read as already overruled).
+                ruling = con.execute("SELECT verdict FROM rulings WHERE repo=? AND pr=? AND "
+                                     "head=? AND created>? ORDER BY created DESC LIMIT 1",
+                                     (loop["repo"], number, head,
+                                      float(review[1]) if review is not None else -1.0)).fetchone()
+            except sqlite3.OperationalError:
+                ruling = None
             pending = con.execute(
                 f"SELECT state FROM runs WHERE repo=? AND pr=? AND head=? AND seat='shadow' AND "
                 f"state IN ({','.join('?' * len(SHADOW_OPEN))}) AND created>? "
@@ -235,6 +246,18 @@ def shadow_hold(loop: dict, number: int, head: str, db=None) -> tuple[str, str]:
         return (f"the run ledger is unreadable ({type(exc).__name__}), so the shadow review at "
                 f"{short} is unknown"), ""
     if review is not None and str(review[0]) == "REQUEST_CHANGES":
+        mine = isinstance(marker, dict) and str(marker.get("head") or "") == head and (
+            (marker.get("escalated") or {}).get("by") == SHADOW_ESCALATION)
+        verdict = str(ruling[0]) if ruling else ""
+        if mine and verdict == "ACCEPT":
+            # Part 2 (#1004): the adjudicator overruled it; the reviewer's approval stands.
+            return "", f"the adjudicator overruled the shadow review at {short} (ACCEPT)"
+        if mine and verdict:
+            return (f"the adjudicator ruled {verdict} on the shadow review at {short} — the "
+                    "decision is yours (`hermes dk explain --pr N` shows the findings)"), ""
+        if mine:
+            return (f"the shadow review requested changes at {short}; escalated to the "
+                    "adjudicator, waiting for its ruling"), ""
         return (f"the shadow review requested changes at {short} — it holds the PR until "
                 "you decide (`hermes dk explain --pr N` shows its findings)"), ""
     if pending is not None:
@@ -246,6 +269,84 @@ def shadow_hold(loop: dict, number: int, head: str, db=None) -> tuple[str, str]:
     if run is None:
         return "", f"no shadow review was queued for {short}: nothing to wait for"
     return "", f"the shadow run at {short} ended {run[0]} without a review: nothing to wait for"
+
+
+SHADOW_ESCALATION = "shadow"           # the breach marker's ``escalated.by`` for #1004
+
+
+def shadow_overruled(loop: dict, marker, head: str, db=None) -> bool:
+    """Whether this head's breach marker is a shadow escalation (#1004) the adjudicator
+    overruled (ACCEPT): the reviewer's approval stands, so it parks nothing any more."""
+    m = marker if isinstance(marker, dict) else {}
+    if str(m.get("head") or "") != head or (m.get("escalated") or {}).get("by") != SHADOW_ESCALATION:
+        return False
+    held, _note = shadow_hold(loop, int(m.get("pr") or 0), head, db=db, marker=m)
+    return not held and "overruled the shadow review" in _note
+
+
+def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) -> str:
+    """Send a head for a ruling when the shadow review disagrees with the reviewer's approval
+    (#1004 part 2): ``shadow.escalate`` on, the reviewer's effective verdict at the head
+    APPROVED, and the newest shadow review there REQUEST_CHANGES. Once per shadow review: the
+    breach marker dedups, and a dissent newer than the head's ruling goes as the next round
+    (#1111). ``gate.breach``'s outcome, or why nothing was sent."""
+    if not config.shadow_escalate(loop):
+        return "off"
+    if not loop.get("adjudicator", {}).get("route"):
+        return "no adjudicator"           # the hold stays; the decision is the operator's
+    if not isinstance(reviews, list):
+        return "reviews unreadable"
+    latest = latest_effective_review_at_head(reviews, loop, head)
+    if latest is None or gh.review_state(latest) != "APPROVED":
+        return "not approved"
+    import sqlite3
+    from . import run_supervisor
+    marker = st.breach_get(number)
+    mine = (isinstance(marker, dict) and marker.get("head") == head
+            and (marker.get("escalated") or {}).get("by") == SHADOW_ESCALATION)
+    try:
+        con = run_supervisor.read_only_connect(db or run_supervisor.production_ledger())
+        if con is None:
+            return "ledger unreadable"
+        try:
+            row = con.execute("SELECT verdict, created FROM shadow_reviews WHERE repo=? AND "
+                              "pr=? AND head=? ORDER BY created DESC LIMIT 1",
+                              (loop["repo"], number, head)).fetchone()
+            # The ruling on this marker's round, if it is in.
+            ruled = con.execute("SELECT created FROM rulings WHERE repo=? AND pr=? AND head=? "
+                                "AND turn_key=? ORDER BY created DESC LIMIT 1",
+                                (loop["repo"], number, head,
+                                 f"breach:{marker.get('rounds')}")).fetchone() if mine else None
+        finally:
+            con.close()
+    except (sqlite3.Error, OSError):
+        return "ledger unreadable"
+    if row is None or str(row[0]) != "REQUEST_CHANGES":
+        return "shadow agrees"
+    if ruled is not None and float(row[1]) > float(ruled[0]):
+        # #1111: the shadow dissented again after its ruling (a re-review at the head). That
+        # ruling answered an older review, so this one goes for its own, as the next round.
+        reason = (f"the shadow review requested changes again at {head[:7]} after the "
+                  "adjudicator's ruling: rule on its new findings")
+        rounds = int(marker.get("rounds") or 0)
+        if not st.breach_reopen(number, head, rounds, reason):
+            return "already"
+        outcome = breach(loop, st, number, head, rounds + 1, reason,
+                         escalated={"by": SHADOW_ESCALATION, "at": now_iso(), "reason": reason})
+        return "new" if outcome == "retry" else outcome     # breach() delivers the re-armed one
+    # A wake that failed leaves the marker delivery-pending: retry it here, since the sweep's
+    # own delivery retry skips approved heads and every shadow escalation is at one.
+    retry = (isinstance(marker, dict) and marker.get("status") == "delivery-pending"
+             and (marker.get("escalated") or {}).get("by") == SHADOW_ESCALATION)
+    if escalated(marker, head) and not retry:
+        return "already"
+    reason = (f"the shadow review requested changes at {head[:7]} while the reviewer approved "
+              "it: rule on the shadow review's findings")
+    # Rounds count the verdicts at the head, the approval included: a breach turn needs one at
+    # least (its turn key, ``breach:<rounds>``), and an approved head has no blocking verdict.
+    rounds = max(1, len(verdicts(reviews, loop)) + 1)
+    return breach(loop, st, number, head, rounds, reason,
+                  escalated={"by": SHADOW_ESCALATION, "at": now_iso(), "reason": reason})
 
 
 def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: str = "") -> str:
@@ -799,7 +900,12 @@ def explain_facts(loop: dict, number: int) -> dict:
         except Exception:
             ro_conflict = None
     hold, hold_error = pr_hold.read(loop, number)      # #477
-    shadow = shadow_hold(loop, number, head) if isinstance(head, str) and head else ("", "")
+    try:
+        breach_marker = state_mod.state_for(loop).breach_get(number)
+    except Exception:
+        breach_marker = None               # no marker read: an unruled hold, never an error
+    shadow = (shadow_hold(loop, number, head, marker=breach_marker)
+              if isinstance(head, str) and head else ("", ""))
     return {"review_only_conflict": ro_conflict, "hold": hold, "hold_error": hold_error,
             "shadow_hold": shadow,
             "pr": pr, "pr_error": pr_error, "reviews": reviews, "reviews_error": reviews_error,
@@ -995,6 +1101,10 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                                   or escalated(marker, head))
     # A ruling at this head ends adjudication: the marker stays, and the decision is a person's.
     ruled = _ruled(loop, number, head) if parked else None
+    if parked and ruled == "ACCEPT" and ((marker or {}).get("escalated") or {}).get(
+            "by") == SHADOW_ESCALATION:
+        # #1004: the adjudicator overruled the shadow review; the reviewer's approval stands.
+        parked, ruled = False, None
     # A dismissed verdict can lower the live count after a failed POST. The
     # watchdog only retries a pending marker while the cap remains spent.
     pending_delivery = (local["delivery_status"] == "delivery-pending"
@@ -1475,14 +1585,21 @@ def breach(loop: dict, st: state_mod.LoopState, number: int, head: str, rounds: 
         return (isinstance(current, dict) and current.get("number") == number
                 and current.get("state") == "open" and not current.get("draft")
                 and (current.get("base") or {}).get("ref") == loop["base"]
-                and ((current.get("user") or {}).get("login") or "").lower() in loop["fixers"]
+                and ((current.get("user") or {}).get("login") or "").lower() in authors
                 and (current.get("head") or {}).get("sha") == head)
+
+    # A shadow escalation rules on an approved head of any reviewed PR (#1004): a review-only
+    # author's too, which adjudication_state accepts for it. Every other one is a fixer's.
+    authors = (config.reviewed_authors(loop)
+               if (escalated or {}).get("by") == SHADOW_ESCALATION else set(loop["fixers"]))
 
     route = loop.get("adjudicator", {}).get("route")
     def observe_reserved(marker: dict) -> None:
         by = str((marker.get("escalated") or {}).get("by") or "operator")
         outcome = ((f"the fixer disputed the review at {marker['rounds']}/{loop['cap']} verdicts"
                     if by == "dispute" else
+                    "the shadow review requested changes at an approved head"
+                    if by == SHADOW_ESCALATION else
                     f"escalated by the operator at {marker['rounds']}/{loop['cap']} verdicts")
                    if marker.get("escalated") else
                    f"{marker['rounds']}/{loop['cap']} verdicts, no approval")

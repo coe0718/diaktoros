@@ -436,6 +436,18 @@ queued after the newest review of the head, such as a re-review, holds until it 
 an earlier approval. A run ledger that exists but can't be read holds, because unknown isn't ready. Set it with `set`/`init`/`setup --shadow-escalate on|off`, the settings form's *Shadow
 review holds the PR*, or the loop file.
 
+**The ruling.** With an adjudicator configured, a head where the reviewer **approved** and the
+shadow review **requested changes** is sent to the adjudicator once. The shadow's own finish
+sends it, and the watchdog sweep does too if the shadow finished before the reviewer. The ruling
+prompt says the head is approved and includes the shadow review as host-recorded data.
+- **ACCEPT** overrules it: the hold lifts, and `ready` and `explain` treat the approval as standing.
+- **REJECT** (or RESPEC) keeps the hold, and the decision is yours. A later version hands upheld
+  findings to the fixer.
+
+If a later shadow review at the same head requests changes again after the ruling, that review goes for a ruling of its own.
+
+Without an adjudicator, the hold just waits for you.
+
 It reviews only code CI has passed, which is stricter than the reviewer. It waits, with nothing
 spent, while the PR conflicts or a required check is running, cancelled, missing or unreadable,
 whatever `review_after_ci` says (the reviewer waits for running checks only with it on). It never

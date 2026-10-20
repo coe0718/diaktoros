@@ -376,8 +376,7 @@ Facts the host verified from GitHub immediately before this turn:
 
 - PR: {url}
 - head: `{head}` — exported, read-only, at `/work`
-- verdicts counted: **{round} of {cap}**, none an approval at this head — the budget is spent,
-  which is why this is a ruling and not another round
+- verdicts counted: **{round} of {cap}** — {situation}
 - reviewer: {reviewer_agent}; fixer: {fixer_agent}
 
 You run in a sandbox with no GitHub credentials and no network. The reviewer's verdicts and the

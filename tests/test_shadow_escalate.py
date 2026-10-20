@@ -188,7 +188,7 @@ class ReadyAndExplain(unittest.TestCase):
         self.add(1)
         self.add(2)
 
-        def hold(loop, number, head, db=None):
+        def hold(loop, number, head, db=None, marker=None):
             return (("waiting on the shadow review at " + head[:7] + " (running)", "")
                     if number == 2 else ("", ""))
         with mock.patch.object(gate, "shadow_hold", side_effect=hold):
@@ -248,7 +248,8 @@ class Wiring(unittest.TestCase):
                 mock.patch.object(gate, "hooks_read", return_value=(True, "")), \
                 mock.patch.object(gate, "shadow_hold", return_value=("held here", "")) as hold:
             facts = gate.explain_facts(mt.LOOP, 7)
-        hold.assert_called_once_with(mt.LOOP, 7, mt.HEAD)
+        self.assertEqual(hold.call_args.args, (mt.LOOP, 7, mt.HEAD))
+        self.assertIn("marker", hold.call_args.kwargs)        # part 2: rulings need the marker
         self.assertEqual(facts["shadow_hold"], ("held here", ""))
 
     def test_the_explain_command_prints_the_note(self):

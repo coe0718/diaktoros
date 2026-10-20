@@ -830,6 +830,25 @@ class LoopState:
             self._breach_save(data)
             return data[key]
 
+    def breach_reopen(self, number: int, head: str, rounds: int, reason: str) -> bool:
+        """Re-arm a ruled-on marker at ``head`` for a further ruling, as round ``rounds + 1``
+        (#1111: the shadow dissented again after the ruling). Compare-and-swap on this head,
+        round and ``adjudicating``, so one caller re-arms it; ``gate.breach`` then delivers the
+        new round's turn (its own turn key)."""
+        key = f"{self.loop['repo']}#{number}"
+        with self._breach_lock():
+            data = _mapping(self._load(self.breach, {}))
+            marker = data.get(key)
+            if (not isinstance(marker, dict) or marker.get("pr") != number
+                    or marker.get("head") != head or marker.get("rounds") != rounds
+                    or marker.get("status") != "adjudicating"):
+                return False
+            data[key] = {**{k: v for k, v in marker.items() if k != "adjudicating_at"},
+                         "rounds": rounds + 1, "reason": reason, "at": now_iso(),
+                         "status": "delivery-pending"}
+            self._breach_save(data)
+            return True
+
     def breach_all(self) -> dict:
         return _mapping(self._load(self.breach, {}))
 

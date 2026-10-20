@@ -46,7 +46,15 @@ def adjudication_state(loop: dict | None, row, ledger=None) -> tuple[str, dict]:
     if (pr.get('base') or {}).get('ref') != loop.get('base'):
         return 'superseded', {}
     author = ((pr.get('user') or {}).get('login') or '') if isinstance(pr.get('user'), dict) else ''
-    if not author or author.lower() not in set(loop.get('fixers') or ()):
+    marker = state_mod.state_for(loop).breach_get(row['pr'])
+    # #1004: a shadow escalation is a ruling on an APPROVED head (the shadow disagrees), and it
+    # is wanted on any PR the loop reviews, a review-only author's included. Every other
+    # escalation keeps its rules: a fixer's PR, not approved at the head, cap spent or escalated.
+    shadow = (isinstance(marker, dict) and marker.get('head') == row['head']
+              and (marker.get('escalated') or {}).get('by') == gate.SHADOW_ESCALATION)
+    from .. import config
+    allowed = set(config.reviewed_authors(loop)) if shadow else set(loop.get('fixers') or ())
+    if not author or author.lower() not in allowed:
         return 'superseded', {}
     # A retarget hold counts only receipted post-boundary verdicts: an old approval neither
     # supersedes the breach nor do old rounds make up its cap.
@@ -54,10 +62,12 @@ def adjudication_state(loop: dict | None, row, ledger=None) -> tuple[str, dict]:
     if not isinstance(reviews, list):
         return 'retry', {}
     latest = gate.latest_effective_review_at_head(reviews, loop, row['head'])
-    if latest is not None and gh.review_state(latest) == 'APPROVED':
+    approved = latest is not None and gh.review_state(latest) == 'APPROVED'
+    if approved != shadow and (approved or shadow):
+        # Approved at the head ends any ruling but a shadow one, which exists *because* it is
+        # approved; a shadow escalation whose approval is gone is moot (the reviewer blocks).
         return 'superseded', {}
     counted = gate.verdicts(reviews, loop)
-    marker = state_mod.state_for(loop).breach_get(row['pr'])
     # The operator's escalation (#459) holds this head for a ruling in place of a spent cap.
     if len(counted) < loop['cap'] and not gate.escalated(marker, row['head']):
         return 'superseded', {}
