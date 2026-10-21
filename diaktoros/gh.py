@@ -346,6 +346,20 @@ def failure_hint(status: int | None) -> str:
     return ""
 
 
+def principal(loop: dict, login: str, fetch=None) -> dict | None:
+    """Who ``login``'s credential authenticates as: GitHub's account object, or ``None`` when the
+    answer is not an object. The one place a seat or reader identity is resolved (#1163): today
+    ``GET /user`` with that login's token; a GitHub App identity will answer from its bot user
+    here instead, since an installation token cannot call ``/user``. ``fetch(path)`` is the
+    caller's own transport (a bounded read, a read that raises), so each caller keeps its exact
+    failure behaviour and its own checks on what comes back."""
+    if fetch is None:
+        def fetch(path):
+            return api(loop, path, login=login)
+    account = fetch("/user")
+    return account if isinstance(account, dict) else None
+
+
 def auth_probe(loop: dict) -> Response:
     """``GET /user`` as the read token: who it is, and (in the headers) when it expires."""
     return request(loop, "/user")
