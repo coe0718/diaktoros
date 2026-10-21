@@ -679,7 +679,7 @@ def health_view(loop_id: str | None, probe: bool = False, client_host: str | Non
 
     Offline by default: every check that would need the network — the gateway probe, the hooks,
     token expiry and scopes, the labels — reports itself unprobed instead of reaching out, so
-    opening the page fires no route and reads no token's meaning. ``probe`` runs the full set:
+    ``probe`` runs the full set — the Desktop page asks for it by default, from this machine only:
     it reads the loop's own tokens and makes a few GitHub reads, and it is refused for any caller
     that is not on this machine.
 

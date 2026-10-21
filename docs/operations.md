@@ -779,13 +779,14 @@ The page shows:
   offers no records Retry. No other surface's Retry behavior changes.
 - **Seat turns** for the last 24 hours, 7 days or 30 days: the run ledger's half of
   [`stats`](commands.md#stats).
-- **Health:** [`doctor`](commands.md#doctor)'s checks for this loop. It opens **offline**: the
-  gateway probe, the hooks, token expiry and scopes, and the labels report themselves unprobed
-  rather than reaching out. What is broken comes first, then what could not be read — an unprobed
-  check is not a passing one — and only then is there nothing to list. **Probe GitHub** runs the
-  full set with this loop's own tokens, from this machine only (a forwarded or non-local caller is
-  refused); *Re-check* re-runs whichever set is showing, and *Show all N* lists them. Seconds
-  either way (7.8s probed vs 5.1s offline on the live install), so it is read on demand.
+- **Health:** [`doctor`](commands.md#doctor)'s checks for this loop, including the GitHub half,
+  read automatically when the page opens: the selected loop requests the probed set with its own
+  tokens, from this machine only (a forwarded or non-local caller is refused). What is broken
+  comes first, then what could not be read — an unread check is not a passing one — and only then
+  is there nothing to list. The probed read is cached for ten minutes and is not polled, retried
+  or socket-invalidated; **Refresh GitHub** re-reads it on demand and *Show all N* lists them.
+  Seconds each way (7.8s probed vs 5.1s offline on the live install). See
+  [read diagnostics](desktop-read-diagnostics.md).
 
 The status chip raises a toast when the number of runs waiting on you **rises**. A reload is not
 news, so the first read of a session only records the baseline. Three palette rows (⌘K) open the
@@ -861,4 +862,12 @@ ledger outcomes through either caller. No action grants merge authority.
 the hook, expiry and scope checks the offline pass leaves unprobed. It is refused unless the caller
 is on this machine — a non-loopback peer, or any forwarding header at all (`Forwarded`,
 any `X-Forwarded-*` such as `-For`, `-Host` or `-Proto`, and `X-Real-IP`; present is what counts, so an empty one refuses
-too) gets 403 — because the dashboard is the surface Caddy exposes off-host. GitHub-side numbers stay with `stats --github`.
+too) gets 403 — because the dashboard is the surface Caddy exposes off-host. Desktop then
+requests validated offline health for that loop and discloses “GitHub not probed from this
+caller”. A transport failure or HTTP 503 also falls back, labeled “GitHub probe unavailable”
+(not evidence of a GitHub outage). Offline results show local checks only; unprobed checks are
+not passing. If both reads fail, the panel shows unavailable or retains last-good data with a
+bounded failure disclosure. Refresh GitHub explicitly retries the probe first. The stable
+per-loop ten-minute cache has no automatic retries, polling or socket invalidation; see
+[Desktop read diagnostics](desktop-read-diagnostics.md). GitHub-side numbers stay with
+`stats --github`.

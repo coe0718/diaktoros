@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
 import test from 'node:test'
 
-const source = await readFile(new URL('../desktop/plugin.js', import.meta.url), 'utf8')
+const source = await readFile(process.env.DIAKTOROS_PLUGIN_SOURCE || new URL('../desktop/plugin.js', import.meta.url), 'utf8')
 // Pinned from real stats.collect with a missing disposable ledger; Python checks equality.
 const settingsFixture = JSON.parse(await readFile(new URL('./fixtures/desktop_settings.json', import.meta.url), 'utf8'))
 const recordsWriterFixture = JSON.parse(await readFile(new URL('./fixtures/desktop_records.json', import.meta.url), 'utf8'))
@@ -64,6 +64,8 @@ async function harness({ cachedAge = null, queryClient: realQueryClient = null }
   const store = new Map()
   const focusWrites = []
   let response = {}
+  let readError = null
+  let readErrorPath = ''
   const good = data => ({ data, dataUpdatedAt: time, isError: false, isFetching: false,
     isLoading: false, refetch: () => calls.push('refetch') })
   queries.loops = good({ loops: [{ id: 'fixture-loop', repo: 'fixture/repo' }] })
@@ -155,7 +157,8 @@ async function harness({ cachedAge = null, queryClient: realQueryClient = null }
         return retryResult.ok ? Promise.resolve(retryResult.data) : Promise.reject(retryResult.error)
       }
       calls.push(path)
-      return Promise.resolve(response)
+      return readError && path.includes(readErrorPath) ? Promise.reject(readError)
+        : Promise.resolve(response)
     },
     storage: { get: key => store.get(key), set: (key, value) => { storageWrites.push({ key, value }); store.set(key, value) } },
     onDispose: fn => disposers.push(fn), registerMany: rows => registrations.push(...rows)
@@ -202,7 +205,8 @@ async function harness({ cachedAge = null, queryClient: realQueryClient = null }
     hookCalls, hookResult: fn => { hookResult = fn },
     retryCalls, retryAnswer: data => { retryResult = { ok: true, data } },
     retryFails: error => { retryResult = { ok: false, error } },
-    render, text, buttons, flatten, respond: value => { response = value },
+    render, text, buttons, flatten, respond: value => { response = value; readError = null },
+    readFails: (path, error = new Error('private transport fixture')) => { readErrorPath = path; readError = error },
     tree: () => currentTree, timerCount: () => timers.size,
     detail: () => registrations.find(r => r.id === 'open').data.detail(),
     cacheRead: (data = queries.now.data, row = cacheRows[0]) => {
@@ -1297,6 +1301,9 @@ for (const id of ['page', 'status']) {
     if (id === 'status') assert.doesNotMatch(h.text(h.tree()), /verified/)
     h.advance(120000, 0)
     assert.doesNotMatch(h.text(h.tree()), /verified-empty|No turns in this window/)
+    // Health legitimately owns one freshness wake-up; advance past its ten-minute read so
+    // every mounted expiry timer has fired before asserting none were left behind.
+    h.advance(600000, 0)
     assert.equal(h.timerCount(), 0)
     h.render(id)
     assert.doesNotMatch(h.text(h.tree()), /verified/)
@@ -2064,10 +2071,10 @@ test('socket: one registration validates hints, excludes client focus and cleans
   assert.equal(h.calls.length, 1)
   const filter = h.calls[0]
   assert.equal(JSON.stringify(filter.queryKey), '["diaktoros"]')
-  for (const kind of ['now', 'overview', 'loops', 'pr', 'stats', 'settings', 'hooks', 'health', 'records']) {
+  for (const kind of ['now', 'overview', 'loops', 'pr', 'stats', 'settings', 'hooks', 'records']) {
     assert.equal(filter.predicate({ queryKey: ['diaktoros', kind, 'loop', 647] }), true)
   }
-  for (const kind of ['focus', 'unknown', 'actions']) {
+  for (const kind of ['focus', 'unknown', 'actions', 'health']) {
     assert.equal(filter.predicate({ queryKey: ['diaktoros', kind] }), false)
   }
   assert.equal(h.options.now.refetchInterval, 30000)
@@ -2101,6 +2108,103 @@ test('socket: re-register closes the previous subscription and old disposal cann
   assert.equal(h.sockets[1].closed, 1)
 })
 
+function healthFixture(loop = 'fixture-loop') {
+  return { loop, repo: 'fixture/repo', offline: false, read_at: 1800000000,
+    checks: [{ name: 'tokens', status: 'verified', detail: 'Synthetic verified check', fix: '', paused: false }],
+    counts: { verified: 1 } }
+}
+
+for (const [failure, reason] of [[new Error('403: {"detail":"private caller"}'), 'caller'],
+  [new Error('private transport'), 'unreachable'], [new Error('503: {"detail":"private"}'), 'unreachable']]) {
+  test('health fallback retains validated local checks and honest disclosure: ' + failure.message, async () => {
+    const h = await harness(); h.render('page')
+    const offline = { ...healthFixture(), offline: true, checks: [
+      { name: 'local profile', status: 'mismatch', detail: 'Local profile requires attention', fix: '', paused: false },
+      { name: 'GitHub', status: 'unknown', detail: 'Not probed offline', fix: '', paused: false }
+    ], counts: { mismatch: 1, unknown: 1 } }
+    h.respond(offline); h.readFails('&probe=1', failure)
+    const data = await h.options.health.queryFn()
+    assert.equal(data.offline, true); assert.equal(data.probeFailure, reason)
+    assert.deepEqual(h.calls, ['/health?loop=fixture-loop&probe=1', '/health?loop=fixture-loop'])
+    h.queries.health = h.good(data); h.render('page')
+    const text = h.text(h.tree())
+    assert.match(text, /Local profile requires attention/)
+    assert.match(text, reason === 'caller' ? /GitHub not probed from this caller/ : /GitHub probe unavailable/)
+    assert.doesNotMatch(text, /Automatically read when this loop opens|private caller|private transport/)
+    h.dispose()
+  })
+}
+
+test('health fallback rejects malformed, wrong-loop and non-offline replies without inventing checks', async () => {
+  const h = await harness(); h.render('page')
+  for (const extra of [{ offline: false }, { loop: 'other' }, { checks: [null] }, { counts: {} }]) {
+    h.respond({ ...healthFixture(), offline: true, ...extra }); h.readFails('&probe=1', new Error('403: {}'))
+    await assert.rejects(h.options.health.queryFn(), { code: 'INVALID_RESPONSE' })
+  }
+  h.respond({ ...healthFixture(), offline: true })
+  await assert.rejects(h.options.health.queryFn(), { code: 'INVALID_RESPONSE' })
+  h.dispose()
+})
+
+test('health automatic selection uses stable probe identity and explicit bounded refresh policy', async () => {
+  const h = await harness()
+  h.render('page')
+  const opts = h.options.health
+  assert.equal(JSON.stringify(opts.queryKey), '["diaktoros","health","fixture-loop","probe"]')
+  assert.equal(opts.enabled, true)
+  assert.equal(opts.retry, false)
+  assert.equal(opts.retryOnMount, false)
+  assert.equal(opts.refetchInterval, false)
+  assert.equal(opts.refetchOnReconnect, false)
+  assert.equal(opts.staleTime, 600000)
+  h.respond(healthFixture())
+  await opts.queryFn()
+  assert.equal(h.calls.at(-1), '/health?loop=fixture-loop&probe=1')
+  assert.equal(h.buttons(h.tree()).some(b => b.props.children === 'Probe GitHub'), false)
+  h.dispose()
+})
+
+test('health rejects wrong-loop, malformed nested checks and dishonest counts', async () => {
+  const h = await harness(); h.render('page')
+  for (const extra of [{ loop: 'other' }, { checks: [null] }, { counts: { verified: 2 } },
+    { checks: [{ name: 'bad', status: 'verified' }] }, { read_at: -1 }]) {
+    h.respond({ ...healthFixture(), ...extra })
+    await assert.rejects(h.options.health.queryFn(), { code: 'INVALID_RESPONSE' })
+  }
+  h.dispose()
+})
+
+// Dependency-free proof that every read panel's Retry reaches the query's real REST path.
+// (The optional real-cache block below repeats this through a real QueryObserver.)
+const READ_LABELS = { health: 'Health', stats: 'Seat turns · 7d', settings: 'Settings',
+  records: 'Local records', hooks: 'Webhook delivery', overview: 'Across all loops' }
+const READ_ENDPOINTS = { health: '/health?loop=fixture-loop&probe=1',
+  stats: '/stats?since=7d&loop=fixture-loop', settings: '/settings',
+  records: '/records?loop=fixture-loop', hooks: '/hooks?loop=fixture-loop', overview: '/overview' }
+for (const kind of Object.keys(READ_ENDPOINTS)) {
+  test('read Retry invokes its own REST read (no click-only panel): ' + kind, async () => {
+    const h = await harness()
+    if (kind === 'overview') h.queries.loops = h.good({ loops: [{ id: 'fixture-loop' }, { id: 'other-loop' }] })
+    h.render('page')
+    h.respond(kind === 'health' ? healthFixture() : h.queries[kind].data)
+    h.queries[kind] = { ...h.good(undefined), isError: true, isLoading: false,
+      data: undefined, error: new Error('fixture backend offline'),
+      refetch: () => h.options[kind].queryFn() }
+    h.render('page')
+    const sentence = READ_LABELS[kind] + ': no verified data available.'
+    const regions = h.flatten(h.tree()).filter(n => typeof n === 'object' &&
+      h.text([n]).includes(sentence) && h.buttons([n]).some(b => b.props.children === 'Retry'))
+    assert.ok(regions.length >= 1, kind + ' renders its own Retry status')
+    const retry = h.buttons([regions.at(-1)]).filter(b => b.props.children === 'Retry')
+    assert.equal(retry.length, 1)
+    const before = h.calls.length
+    await retry[0].props.onClick()
+    assert.equal(h.calls.length, before + 1)
+    assert.equal(h.calls.at(-1), READ_ENDPOINTS[kind])
+    h.dispose()
+  })
+}
+
 // Optional dependency acceptance mode, in addition to the dependency-free component suite:
 // DIAKTOROS_QUERY_CORE=/absolute/path/to/@tanstack/query-core/build/modern/index.js
 // The protected verification wrapper supplies the installed desktop's actual TanStack package.
@@ -2113,6 +2217,124 @@ if (process.env.DIAKTOROS_QUERY_CORE) {
     for (let i = 0; i < 200 && client.isFetching(); i++) await new Promise(resolve => setTimeout(resolve, 5))
     assert.equal(client.isFetching(), 0, 'REST refresh settled')
   }
+  for (const [failure, reason] of [[new Error('403: {}'), 'caller'], [new Error('private transport'), 'unreachable']]) {
+    test('health real TanStack fallback dedupes concurrent observers and remount; manual refresh recovers: ' + reason, async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity } } })
+      const h = await harness({ queryClient: client }); const cleanups = []
+      try {
+        h.render('page'); const opts = h.options.health
+        h.respond({ ...healthFixture(), offline: true }); h.readFails('&probe=1', failure)
+        const a = new QueryObserver(client, opts), b = new QueryObserver(client, opts)
+        cleanups.push(a.subscribe(() => {}), b.subscribe(() => {})); await settle(client)
+        assert.equal(h.calls.length, 2, 'one probe plus one offline read across concurrent observers')
+        assert.equal(a.getCurrentResult().data.probeFailure, reason)
+        cleanups.splice(0).forEach(fn => fn())
+        const remount = new QueryObserver(client, opts)
+        cleanups.push(remount.subscribe(() => {})); await settle(client)
+        h.sockets[0].callback(invalidation()); await settle(client)
+        assert.equal(h.calls.length, 2, 'fresh remount and socket do not repeat either read')
+        h.queries.health = remount.getCurrentResult(); h.render('page')
+        h.respond(healthFixture())
+        await h.buttons(h.tree()).find(b => b.props.children === 'Refresh GitHub').props.onClick()
+        await settle(client)
+        assert.equal(h.calls.length, 3); assert.equal(h.calls.at(-1), '/health?loop=fixture-loop&probe=1')
+        assert.equal(remount.getCurrentResult().data.offline, false)
+        assert.equal(remount.getCurrentResult().data.probeFailure, null)
+        h.readFails('/health'); await remount.refetch()
+        assert.equal(h.calls.length, 5, 'both failed reads are bounded')
+        h.queries.health = remount.getCurrentResult(); h.render('page')
+        assert.match(h.text(h.tree()), /Health: showing last good data, not current status/)
+        assert.doesNotMatch(h.text(h.tree()), /private transport/)
+      } finally { cleanups.forEach(fn => fn()); h.dispose(); client.clear() }
+    })
+  }
+
+  test('health real TanStack: automatic observers dedupe, switch loop, preserve freshness and recover manually', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity } } })
+    const h = await harness({ queryClient: client })
+    const cleanups = []
+    try {
+      h.render('page'); h.respond(healthFixture())
+      const opts = h.options.health
+      const a = new QueryObserver(client, opts), b = new QueryObserver(client, opts)
+      cleanups.push(a.subscribe(() => {}), b.subscribe(() => {}))
+      await settle(client)
+      assert.equal(h.calls.filter(c => typeof c === 'string').length, 1)
+      assert.equal(h.calls[0], '/health?loop=fixture-loop&probe=1')
+      assert.equal(a.getCurrentResult().data, b.getCurrentResult().data)
+      const fresh = new QueryObserver(client, opts)
+      cleanups.push(fresh.subscribe(() => {})); await settle(client)
+      assert.equal(h.calls.length, 1, 'fresh mount shares result')
+      h.sockets[0].callback(invalidation()); await settle(client)
+      assert.equal(h.calls.length, 1, 'local socket never repeats doctor')
+      h.queries.loops = h.good({ loops: [{ id: 'fixture-loop' }, { id: 'other-loop' }] })
+      h.render('page'); h.buttons(h.tree()).find(b => b.props.children === 'other-loop').props.onClick()
+      const other = h.options.health
+      assert.equal(other.queryKey[2], 'other-loop')
+      h.respond(healthFixture('other-loop'))
+      const switched = new QueryObserver(client, other)
+      cleanups.push(switched.subscribe(() => {})); await settle(client)
+      assert.equal(h.calls.at(-1), '/health?loop=other-loop&probe=1')
+      h.readFails('/health'); await switched.refetch()
+      assert.equal(switched.getCurrentResult().isError, true)
+      assert.equal(switched.getCurrentResult().data.loop, 'other-loop', 'last good data retained')
+      // A failed read stays on screen as last-good + error; re-rendering the page does not
+      // launch another doctor sweep (the mounted observer already owns the query).
+      const count = h.calls.filter(c => c === '/health?loop=other-loop&probe=1').length
+      h.render('page')
+      assert.equal(h.calls.filter(c => c === '/health?loop=other-loop&probe=1').length, count)
+      h.queries.health = switched.getCurrentResult(); h.render('page')
+      const refresh = h.buttons(h.tree()).find(b => b.props.children === 'Refresh GitHub')
+      h.respond(healthFixture('other-loop')); await refresh.props.onClick(); await settle(client)
+      assert.equal(h.calls.at(-1), '/health?loop=other-loop&probe=1')
+      assert.equal(switched.getCurrentResult().isError, false)
+    } finally { cleanups.forEach(fn => fn()); h.dispose(); client.clear() }
+  })
+
+  const LABELS = { health: 'Health', stats: 'Seat turns · 7d', settings: 'Settings', records: 'Local records', hooks: 'Webhook delivery', overview: 'Across all loops' }
+  for (const [kind, endpoint] of Object.entries({ health: '/health?loop=fixture-loop&probe=1',
+    stats: '/stats?since=7d&loop=fixture-loop', settings: '/settings',
+    records: '/records?loop=fixture-loop', hooks: '/hooks?loop=fixture-loop', overview: '/overview' })) {
+    test('read Retry real REST endpoint: ' + kind, async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
+      const h = await harness({ queryClient: client }); let unsubscribe
+      try {
+        // The cross-loop block (and its own QueryStatus) only renders for more than one loop.
+        if (kind === 'overview') h.queries.loops = h.good({ loops: [{ id: 'fixture-loop' }, { id: 'other-loop' }] })
+        h.render('page'); const opts = h.options[kind]
+        h.readFails(endpoint.split('?')[0])
+        const observer = new QueryObserver(client, opts)
+        unsubscribe = observer.subscribe(() => {}); await settle(client)
+        assert.equal(observer.getCurrentResult().isError, true)
+        h.queries[kind] = observer.getCurrentResult(); h.render('page')
+        // Find THIS query's actual rendered Retry handler by result.refetch identity,
+        // not another panel's counter. Its handler invokes the real QueryObserver.
+        const result = h.queries[kind]
+        // Bind to this read's own QueryStatus sentence and its one Retry button; a shared
+        // call counter or another mounted panel's button must not satisfy the assertion.
+        const sentence = LABELS[kind] + ': no verified data available.'
+        // Smallest region that holds both the sentence and one Retry control.
+        const regions = h.flatten(h.tree()).filter(n => typeof n === 'object' &&
+          h.text([n]).includes(sentence) &&
+          h.buttons([n]).some(b => b.props.children === 'Retry'))
+        assert.ok(regions.length >= 1, kind + ' renders its own status region')
+        // Pre-order flatten: the deepest matching node is the status row itself, not an ancestor.
+        const region = regions.at(-1)
+        const retry = h.buttons([region]).filter(b => b.props.children === 'Retry')
+        assert.equal(retry.length, 1, kind + ' has exactly one Retry')
+        assert.equal(retry[0].props.children, 'Retry')
+        const before = h.calls.length
+        await retry[0].props.onClick(); await settle(client)
+        assert.equal(h.calls.length, before + (kind === 'health' ? 2 : 1))
+        assert.equal(h.calls[before], endpoint, 'Retry starts with the selected read, never another panel')
+        assert.equal(h.calls.at(-1), kind === 'health' ? '/health?loop=fixture-loop' : endpoint)
+        if (kind === 'health') assert.equal(h.calls.filter(c => c === '/health?loop=fixture-loop').length, 2)
+        assert.equal(h.calls.filter(c => c === endpoint).length, 2)
+        assert.equal(client.getQueryState(opts.queryKey).fetchStatus, 'idle')
+      } finally { unsubscribe?.(); h.dispose(); client.clear() }
+    })
+  }
+
   test('socket real TanStack: shared page and pane refresh once through REST, reconnect repairs missed changes', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
     const h = await harness({ queryClient: client })
