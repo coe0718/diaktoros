@@ -1621,6 +1621,30 @@ def check_fix_ci(loop: dict) -> Check:
                  f"(`hermes dk set --loop {lid} --ci-fix-cap N` to change, `--fix-ci off` to stop)")
 
 
+def base_requires_up_to_date(loop: dict) -> tuple[bool | None, str]:
+    """Whether the base requires branches to be up to date before merging (the setting that makes
+    GitHub report a PR ``behind``), read from its rulesets (plain read access) and its classic
+    branch protection (admin access). ``(True, "")``, ``(False, "")``, or ``(None, why)`` when
+    neither answer settles it."""
+    base = str(loop.get("base") or "main")
+    unread = []
+    rules = gh.request(loop, f"/repos/{loop['repo']}/rules/branches/{base}?per_page=100")
+    if rules.status != 404 and (rules.error or not isinstance(rules.data, list)):
+        unread.append(f"rulesets: {gh.one_line(rules.error or 'no rule list')}")
+    for rule in rules.data if isinstance(rules.data, list) else ():
+        params = rule.get("parameters") if isinstance(rule, dict) else None
+        if (isinstance(rule, dict) and rule.get("type") == "required_status_checks"
+                and isinstance(params, dict)
+                and params.get("strict_required_status_checks_policy") is True):
+            return True, ""
+    classic = gh.request(loop, f"/repos/{loop['repo']}/branches/{base}/protection/required_status_checks")
+    if classic.status != 404 and (classic.error or not isinstance(classic.data, dict)):
+        unread.append(f"classic branch protection: {gh.one_line(classic.error or 'no answer')}")
+    elif isinstance(classic.data, dict) and classic.data.get("strict") is True:
+        return True, ""
+    return (None, "; ".join(unread)) if unread else (False, "")
+
+
 def check_review_only_update(loop: dict, offline: bool = False) -> Check | None:
     """The host's merge pushes to a review-only author's branch (a branch the loop does not own):
     off is the default; on, the pushing token must be able to push to the repository."""
@@ -1649,10 +1673,25 @@ def check_review_only_update(loop: dict, offline: bool = False) -> Check | None:
                      "push would be refused",
                      f"give {login} write access to {loop['repo']}, or `hermes dk set --loop {lid} "
                      "--review-only-update off`")
+    strict, unread = base_requires_up_to_date(loop)
+    if strict is not True:
+        # Not a failure: the notice still goes out. Only the push can never fire (#504).
+        why = (f"{loop['base']} does not require branches to be up to date"
+               if strict is False else
+               f"could not read whether {loop['base']} requires branches to be up to date "
+               f"({unread})")
+        return Check("review-only-update", UNKNOWN,
+                     f"on — {login} can push to {loop['repo']}, but {why}: GitHub then never "
+                     "reports a PR as `behind`, a conflicting PR cannot be pushed, so the host "
+                     "pushes nothing and only the conflict notice applies",
+                     f"to let it push, require branches to be up to date before merging on "
+                     f"{loop['base']} (branch protection or a ruleset: 'strict required status "
+                     "checks')")
     return Check("review-only-update", VERIFIED,
                  f"on — {login} can push to {loop['repo']}; clean merges of {loop['base']} are "
-                 "pushed to same-repository review-only branches under a lease, never conflicts, "
-                 "workflow changes or forks")
+                 "pushed to same-repository review-only branches under a lease when GitHub "
+                 f"reports the PR `behind` ({loop['base']} requires up-to-date branches), never "
+                 "conflicts, workflow changes or forks")
 
 
 def check_attribution(loop: dict) -> Check:

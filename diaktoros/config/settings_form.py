@@ -177,7 +177,10 @@ SETTINGS_SCHEMA: dict = {
                                           "the author's same-repository branch, with a lease on the "
                                           "head it read (a push to a branch the loop does not own; "
                                           "needs unattended fixer pushes). Never resolves a real "
-                                          "conflict or a workflow change"},
+                                          "conflict or a workflow change. It pushes only a PR "
+                                          "GitHub reports as behind, which it does only when "
+                                          "the base requires branches to be up to date; "
+                                          "without that setting only the notice applies"},
     "required_checks": {"label": "Required CI checks (comma-separated)", "type": "str",
                         "default": "",
                         "description": "The check runs or status contexts that gate an approval, "

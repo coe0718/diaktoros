@@ -211,6 +211,8 @@ class LoopState:
         self.review_situations = self.dir / "review-situations.json"
         # The last GitHub call a gate (or anything else) could not make: last writer wins.
         self.github_reads = self.dir / "github-reads.json"
+        # What the host learned about a conflicted review-only PR at one (head, base sha) (#504).
+        self.review_only_conflicts = self.dir / "review-only-conflicts.json"
         self.log = self.dir / "watchdog.log"
 
     # -- raw ----------------------------------------------------------------
@@ -864,6 +866,27 @@ class LoopState:
 
     def watch_save(self, data: dict) -> None:
         self._save(self.watch_file, data)
+
+    # -- review-only conflict facts, one entry per PR (#504) ----------------
+
+    def review_only_conflict(self, number: int, head: str, base_sha: str, update: bool):
+        """``(facts, tried, retry)`` recorded for this PR at exactly this head, base sha and
+        ``review_only_update`` setting, or ``None`` when the host has to assess again. ``retry``:
+        the update stopped for a reason that is not a fact about the pair, so it is tried again."""
+        entry = _mapping(self._load(self.review_only_conflicts, {})).get(str(number))
+        if (not isinstance(entry, dict) or entry.get("head") != head
+                or entry.get("base") != base_sha or entry.get("update") is not update
+                or not isinstance(entry.get("facts"), dict)):
+            return None
+        return entry["facts"], str(entry.get("tried") or ""), entry.get("retry") is True
+
+    def review_only_conflict_set(self, number: int, head: str, base_sha: str, update: bool,
+                                 facts: dict, tried: str, retry: bool = False) -> None:
+        with self.locked():
+            data = _mapping(self._load(self.review_only_conflicts, {}))
+            data[str(number)] = {"head": head, "base": base_sha, "update": update,
+                                 "facts": facts, "tried": str(tried), "retry": retry}
+            self._save(self.review_only_conflicts, data)
 
     # -- PRs a maintainer holds (#477): {PR number: {"by", "at", "how"}} ------
 
