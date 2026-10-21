@@ -447,6 +447,8 @@ prompt says the head is approved and includes the shadow review as host-recorded
 
 If a later shadow review at the same head requests changes again after the ruling, that review goes for a ruling of its own.
 
+A ruling answers the shadow review its prompt showed, not whichever review is newest when the ruling lands: the host records that review's run id with the ruling (`rulings.shadow_run`), and the hold, `ready`, `explain` and the sweep's re-escalation all count an ACCEPT against that review only. A second shadow review that lands during the adjudicator's turn therefore stays held and is sent for its own ruling. A ruling recorded before this column existed has no run id and is matched by time, as before.
+
 Without an adjudicator, the hold just waits for you.
 
 It reviews only code CI has passed, which is stricter than the reviewer. It waits, with nothing
