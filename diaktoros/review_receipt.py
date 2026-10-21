@@ -207,7 +207,7 @@ def submit(loop, scope, ledger, verdict, body):
     reader = loop['read_token']
     if generation_for(gh.api(loop, path, login=reader), loop, scope.number, scope.head) != ledger.generation:
         raise ReceiptDenied('generation changed before POST')
-    principal = gh.api(loop, '/user', login=login)
+    principal = gh.principal(loop, login)
     if not isinstance(principal, dict) or type(principal.get('id')) is not int or principal['id'] <= 0 or str(principal.get('login', '')).casefold() != login.casefold():
         raise ReceiptDenied('reviewer identity changed')
     principal_id = principal['id']

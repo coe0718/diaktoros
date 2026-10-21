@@ -186,6 +186,25 @@ def _api(loop: dict, path: str, *, login: str, method: str = "GET", body=None) -
     return result
 
 
+# A fixer's git name: a user login, or a GitHub App's bot login (``name[bot]``, #1163).
+_GIT_NAME = re.compile(r"[A-Za-z0-9-]+(?:\[bot\])?")
+
+
+def _fixer_identity(loop: dict, login: str, *, invalid: str = "invalid fixer identity") -> dict:
+    """The authenticated fixer, as the git author of the commit it pushes: its login and GitHub's
+    noreply address for its numeric id. Resolved before attributing a commit; ``invalid`` is the
+    refusal for a login git would not take as a name."""
+    seat = gh.principal(loop, login, fetch=lambda path: _api(loop, path, login=login))
+    if (seat is None or not isinstance(seat.get("login"), str)
+            or seat["login"].casefold() != login.casefold()
+            or type(seat.get("id")) is not int or seat["id"] <= 0):
+        raise broker.BrokerDenied("fixer identity changed")
+    if not _GIT_NAME.fullmatch(seat["login"]):
+        raise broker.BrokerDenied(invalid)
+    return {"name": seat["login"],
+            "email": f"{seat['id']}+{seat['login']}@users.noreply.github.com"}
+
+
 # GitHub does not always serve a just-written ref at once (#522: a landed issue-fix branch read
 # back as 404, so the push was "unknown" and its PR never opened; the fixer's PR head lagged ~4s,
 # #360). A read that shows no ref, or the ref still at its old commit, is read again before the
@@ -618,14 +637,7 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
 
     check_ref()
     # Resolve the authenticated fixer before attributing the local commit.
-    seat = _api(loop, "/user", login=login)
-    if (not isinstance(seat.get("login"), str) or seat["login"].casefold() != login.casefold()
-            or type(seat.get("id")) is not int or seat["id"] <= 0):
-        raise broker.BrokerDenied("fixer identity changed")
-    identity = {"name": seat["login"],
-                "email": f"{seat['id']}+{seat['login']}@users.noreply.github.com"}
-    if not re.fullmatch(r"[A-Za-z0-9-]+", identity["name"]):
-        raise broker.BrokerDenied("invalid fixer identity")
+    identity = _fixer_identity(loop, login)
     # Refresh BOTH PR identity and branch immediately before ref mutation.
     broker.authorize(loop, repo=repo, number=number, head=head,
                      role=role, branch=branch, operation="push", require_verdict=verdict)
@@ -735,14 +747,7 @@ def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
     if branch != config.ISSUE_FIX_BRANCH.format(number=number):
         raise broker.BrokerDenied("unsafe branch ref")
     login = broker.authorize_issue_fix(loop, repo=repo, number=number)
-    seat = _api(loop, "/user", login=login)
-    if (not isinstance(seat.get("login"), str) or seat["login"].casefold() != login.casefold()
-            or type(seat.get("id")) is not int or seat["id"] <= 0):
-        raise broker.BrokerDenied("fixer identity changed")
-    identity = {"name": seat["login"],
-                "email": f"{seat['id']}+{seat['login']}@users.noreply.github.com"}
-    if not re.fullmatch(r"[A-Za-z0-9-]+", identity["name"]):
-        raise broker.BrokerDenied("invalid fixer identity")
+    identity = _fixer_identity(loop, login)
     ref_path = f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"
     receipt = {"repo": repo, "pr": number, "old_head": base, "branch": branch,
                "role": "issue_fixer", "login": login, "paths": [path for path, _ in files],
@@ -899,13 +904,7 @@ def update_branch(loop: dict, *, repo: str, number: int, head: str, branch: str,
             raise broker.BrokerDenied("PR author is not review-only")
 
     authorize()
-    seat = _api(loop, "/user", login=login)
-    if (not isinstance(seat.get("login"), str) or seat["login"].casefold() != login.casefold()
-            or type(seat.get("id")) is not int or seat["id"] <= 0
-            or not re.fullmatch(r"[A-Za-z0-9-]+", seat["login"])):
-        raise broker.BrokerDenied("fixer identity changed")
-    identity = {"name": seat["login"],
-                "email": f"{seat['id']}+{seat['login']}@users.noreply.github.com"}
+    identity = _fixer_identity(loop, login, invalid="fixer identity changed")
     ref = f"refs/heads/{branch}"
     ref_path = f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"
     receipt = {"repo": repo, "pr": number, "old_head": head, "branch": branch,

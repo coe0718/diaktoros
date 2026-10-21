@@ -94,7 +94,7 @@ def authorize(loop: dict, *, repo: str, number: int, head: str, role: str,
                 raise BrokerDenied(f"empty token for {identity}")
         except gh.GitHubError as exc:
             raise BrokerDenied(f"missing token for {identity}") from exc
-        account = gh.api(loop, "/user", login=identity)
+        account = gh.principal(loop, identity)
         if not isinstance(account, dict) or not isinstance(account.get("id"), int) or type(account.get("id")) is bool or not isinstance(account.get("login"), str) or account["login"].casefold() != identity.casefold():
             raise BrokerDenied("seat token principal cannot be verified")
         principals.append(account["id"])
@@ -345,7 +345,7 @@ def authorize_ruling_comment(loop: dict, *, repo: str, number: int, head: str,
                 raise BrokerDenied(f"empty token for {identity}")
         except gh.GitHubError as exc:
             raise BrokerDenied(f"missing token for {identity}") from exc
-        account = gh.api(loop, "/user", login=identity)
+        account = gh.principal(loop, identity)
         if (not isinstance(account, dict) or type(account.get("id")) is not int
                 or not isinstance(account.get("login"), str)
                 or account["login"].casefold() != identity.casefold()):
@@ -409,7 +409,7 @@ def authorize_triage(loop: dict, *, repo: str, number: int) -> str:
             raise BrokerDenied(f"empty token for {login}")
     except gh.GitHubError as exc:
         raise BrokerDenied(f"missing token for {login}") from exc
-    account = gh.api(loop, "/user", login=login)
+    account = gh.principal(loop, login)
     if (not isinstance(account, dict) or not isinstance(account.get("login"), str)
             or account["login"].casefold() != login.casefold()):
         raise BrokerDenied("token principal cannot be verified")
@@ -470,7 +470,7 @@ def authorize_issue_fix(loop: dict, *, repo: str, number: int) -> str:
             raise BrokerDenied(f"empty token for {fixer}")
     except gh.GitHubError as exc:
         raise BrokerDenied(f"missing token for {fixer}") from exc
-    account = gh.api(loop, "/user", login=fixer)
+    account = gh.principal(loop, fixer)
     if (not isinstance(account, dict) or not isinstance(account.get("login"), str)
             or account["login"].casefold() != fixer.casefold()):
         raise BrokerDenied("token principal cannot be verified")

@@ -112,7 +112,7 @@ def _identity(loop: dict, repo: str, number: int, head: str, ref: str, role: str
     # Distinct filenames are not distinct principals; verify every actual credential.
     for login in (reader, reviewer, fixer):
         assert isinstance(login, str)
-        user = _json(loop, "/user", login)
+        user = gh.principal(loop, login, fetch=lambda path, who=login: _json(loop, path, who))
         if not isinstance(user, dict) or not isinstance(user.get("login"), str) or user["login"].casefold() != login.casefold():
             raise FetchDenied("credential principal mismatch")
     assert isinstance(reader, str)
