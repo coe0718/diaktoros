@@ -109,18 +109,31 @@ class ReadRoutes(unittest.TestCase):
         (home / 'config.yaml').write_text('plugins:\n  enabled: [diaktoros]\n')
         script = '''
 import json
+from contextlib import closing
 from fastapi.testclient import TestClient
 from hermes_cli import web_server as server
 from diaktoros import run_supervisor
 run_supervisor.production_ledger = lambda: __import__('pathlib').Path(DB)
 paths = ['/loops', '/stats?loop=widgets', '/health?loop=widgets', '/settings',
          '/records?loop=widgets', '/hooks?loop=widgets', '/overview']
-with TestClient(server.app, base_url='http://127.0.0.1', raise_server_exceptions=False) as client:
+# This acceptance owns import-time mounting and authenticated HTTP reads, not the
+# host daemon lifecycle. Starting that lifecycle also boots provider discovery,
+# hosted rooms and local runtimes; those workers do not belong to these reads.
+assert not hasattr(server.app.state, 'event_lock')
+# closing() closes HTTPX resources without TestClient.__enter__ starting ASGI
+# lifespan. The actual app, middleware, plugin loader and request paths stay real.
+with closing(TestClient(server.app, base_url='http://127.0.0.1', raise_server_exceptions=False)) as client:
+    assert not hasattr(server.app.state, 'event_lock'), 'route fixture started host background services'
+    assert client.get('/api/plugins/diaktoros/loops').status_code == 401
+    assert client.get('/api/plugins/diaktoros/loops', headers={
+        server._SESSION_HEADER_NAME: 'invalid-fixture-token'}).status_code == 401
     results = []
     for path in paths:
         response = client.get('/api/plugins/diaktoros' + path,
             headers={server._SESSION_HEADER_NAME: server._SESSION_TOKEN})
         results.append([path, response.status_code, response.headers.get('content-type', '')])
+assert client.is_closed
+assert not hasattr(server.app.state, 'event_lock'), 'request started host background services'
 print('HOST_READS=' + json.dumps(results))
 '''
         env = dict(os.environ, HERMES_HOME=str(home), HOME=str(home),
