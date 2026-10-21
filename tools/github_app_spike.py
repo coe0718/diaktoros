@@ -7,7 +7,8 @@ pushes, reviews and requests reviewers there, then prints one JSON line per step
 are written up in docs/github-app-support.md.
 
     python3 tools/github_app_spike.py --repo OWNER/REPO \\
-        --app reader=ID --app reviewer=ID --app fixer=ID --keys ~/.hermes/dk-spike
+        --app reader=ID --app reviewer=ID --app fixer=ID --keys ~/.hermes/dk-spike \\
+        [--check-branch BRANCH]
 
 Standard library plus the ``openssl`` CLI (App JWTs are RS256). No key or token is ever printed:
 a token is described by its length, prefix and expiry only. The repository's ``main`` should be
@@ -42,8 +43,9 @@ def b64url(data: bytes) -> str:
 
 
 class Spike:
-    def __init__(self, repo: str, apps: dict, keys: str):
+    def __init__(self, repo: str, apps: dict, keys: str, check_branch: str = ""):
         self.repo, self.apps, self.keys = repo, apps, os.path.expanduser(keys)
+        self.check_branch = check_branch
         self.tokens: dict = {}
         self.slugs: dict = {}
 
@@ -264,6 +266,58 @@ def run(s: Spike) -> None:
         emit("deliveries", role=role, since_start=s.deliveries(role, t0))
     emit("deliveries_after_reviewer_requests", reader=s.deliveries("reader", t3, "pull_request"))
     emit("review_deliveries", reader=s.deliveries("reader", t2, "pull_request_review"))
+    if s.check_branch:
+        required_check(s, tag)
+
+
+def required_check(s: Spike, tag: str) -> None:
+    """Q9: a check run posted by the reviewer App as the merge gate. ``s.check_branch`` must
+    require the check ``diaktoros/review`` pinned to the reviewer App's id and no approvals, and
+    the reviewer App needs ``Checks: write``."""
+    def merge_state(number):
+        # GitHub answers UNKNOWN while it recomputes after a change: wait for a settled state.
+        got = None
+        for _ in range(10):
+            time.sleep(6)
+            data = s.graphql("query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r)"
+                             "{pullRequest(number:$n){mergeStateStatus}}}",
+                             {"o": s.repo.split("/")[0], "r": s.repo.split("/")[1], "n": number})
+            got = (((data or {}).get("repository") or {}).get("pullRequest") or {}).get(
+                "mergeStateStatus")
+            if got != "UNKNOWN":
+                break
+        return got
+
+    branch = f"spike-check-{tag}"
+    _, ref = s.gh("fixer", "GET", f"/repos/{s.repo}/git/ref/heads/{s.check_branch}")
+    s.gh("fixer", "POST", f"/repos/{s.repo}/git/refs",
+         {"ref": f"refs/heads/{branch}", "sha": ref["object"]["sha"]})
+    _, c = s.put_file("fixer", branch, f"def add(a, b):\n    return a + b  # {tag}\n", "Check test")
+    head = c["commit"]["sha"]
+    _, pr = s.gh("fixer", "POST", f"/repos/{s.repo}/pulls",
+                 {"title": f"Spike {tag}: required check", "head": branch, "base": s.check_branch})
+    number, states = pr["number"], {}
+    states["no_check"] = merge_state(number)
+    status, run = s.gh("reviewer", "POST", f"/repos/{s.repo}/check-runs",
+                       {"name": "diaktoros/review", "head_sha": head, "status": "in_progress",
+                        "output": {"title": "Review running", "summary": "Reviewing this head."}})
+    states["create_status"] = status
+    states["pending"] = merge_state(number)
+    s.gh("reviewer", "PATCH", f"/repos/{s.repo}/check-runs/{run['id']}",
+         {"status": "completed", "conclusion": "failure",
+          "output": {"title": "Changes requested", "summary": "A finding blocks."}})
+    states["failure"] = merge_state(number)
+    states["fixer_creates_check"] = s.gh("fixer", "POST", f"/repos/{s.repo}/check-runs",
+                                         {"name": "diaktoros/review", "head_sha": head,
+                                          "status": "completed", "conclusion": "success"})[0]
+    states["after_fixer_attempt"] = merge_state(number)
+    s.gh("reviewer", "PATCH", f"/repos/{s.repo}/check-runs/{run['id']}",
+         {"conclusion": "success", "output": {"title": "Approved", "summary": "At this head."}})
+    states["success"] = merge_state(number)
+    s.put_file("fixer", branch, f"def add(a, b):\n    return a + b  # {tag} v2\n", "New head")
+    time.sleep(10)
+    states["after_new_push"] = merge_state(number)
+    emit("required_check", pr=number, **states)
 
 
 def main(argv=None) -> int:
@@ -272,11 +326,14 @@ def main(argv=None) -> int:
     ap.add_argument("--app", action="append", default=[], metavar="ROLE=ID",
                     help="reader=ID, reviewer=ID and fixer=ID")
     ap.add_argument("--keys", required=True, help="directory holding one *ROLE*.pem per App")
+    ap.add_argument("--check-branch", default="",
+                    help="a base branch requiring the check diaktoros/review pinned to the "
+                         "reviewer App, with no required approvals: runs step Q9")
     args = ap.parse_args(argv)
     apps = dict(item.split("=", 1) for item in args.app)
     if set(apps) != set(ROLES):
         ap.error("give --app for exactly reader, reviewer and fixer")
-    run(Spike(args.repo, {k: int(v) for k, v in apps.items()}, args.keys))
+    run(Spike(args.repo, {k: int(v) for k, v in apps.items()}, args.keys, args.check_branch))
     return 0
 
 

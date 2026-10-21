@@ -14,10 +14,11 @@ the distinct accounts and tokens described in [Accounts](accounts.md).
   records every delivery, and the harness reads them back through each App's
   `GET /app/hook/deliveries` API, so no receiver was needed.
 - Permissions: reader — contents, pull requests, checks, commit statuses and issues, all read;
-  reviewer — contents read, pull requests read and write; fixer — contents and pull requests
-  read and write. Minted tokens for the reviewer and fixer also carried `issues: write`.
+  reviewer — contents read, pull requests and issues read and write (and checks write, for 9);
+  fixer — contents, pull requests and issues read and write. Both writers need issues: the
+  reviewer files issues and labels for triage; the fixer comments on issues it fixes.
 - [`tools/github_app_spike.py`](../tools/github_app_spike.py) repeats every step below on fresh
-  branches and prints one JSON line per step. It was run twice; both runs agreed.
+  branches and prints one JSON line per step. Each run agreed with the one before.
 
 ## Results
 
@@ -40,6 +41,32 @@ the PR (200). GitHub permissions cannot express "reviews only", so in App mode, 
 host broker decides which operations each seat may perform, and no App credential or token
 enters a seat's sandbox.
 
+## A merge gate that GitHub does enforce: a required check
+
+App reviews don't count for branch protection (4). A **check run** posted by the reviewer App
+does, when the branch requires it. Measured on a base branch that requires the check
+`diaktoros/review` **pinned to the reviewer App's id** (and no approvals), with the reviewer App
+given `Checks: write` (harness `--check-branch`):
+
+| # | State of `diaktoros/review` at the PR head | Merge state |
+| --- | --- | --- |
+| 9a | none yet | `BLOCKED` |
+| 9b | `in_progress` (pending) | `BLOCKED` |
+| 9c | `failure` | `BLOCKED` |
+| 9d | `failure`, plus a person's commit **status** of the same name set to `success` | `BLOCKED`: the pin to the App ignores it |
+| 9e | the fixer App tries to create the check (no `Checks` permission) | refused, 403; still `BLOCKED` |
+| 9f | `success` | `CLEAN` |
+| 9g | a new push after `success` | `BLOCKED`: the check belongs to the old commit |
+| 9h | the repository admin merges while the check is missing, with *include administrators* on | refused: "Required status check "diaktoros/review" is expected." |
+| 9i | the same with *include administrators* off | merged: admins can bypass |
+
+So a check that follows the loop's own merge gate (pending while a review or the shadow is out,
+failure on blocking changes, a shadow hold or a REJECT ruling, success only when approved at this
+exact head with nothing holding it) gives back a block the merge button honours, and a stricter
+one than the review alone: it covers everything `ready` knows and resets on every new head. With
+*include administrators* on, no one can click past it. It works in PAT mode as well (#753 already
+proposes posting turn state as a commit status).
+
 ## Recommendation: go, with a synchronize-based handoff
 
 The core loop works with App identities: PRs, pushes, exact-commit reviews and their webhooks all
@@ -48,8 +75,9 @@ loop depends on for safety:
 
 - **Reviewer requests (3):** replace with the `synchronize` event and the existing
   `hermes dk review`; the review-request paths stay PAT-only.
-- **Branch protection (4):** document that GitHub neither counts nor enforces the App's verdicts;
-  merging stays a person's decision, guided by `ready`.
+- **Branch protection (4):** GitHub neither counts nor enforces the App's reviews, but it does
+  enforce a required check pinned to the reviewer App (9). App mode posts `diaktoros/review`
+  from the loop's merge gate and setup offers to require it.
 
 Also carried into #1163: one designated App for events (5), numeric bot ids rather than logins
 (2, 7), opaque tokens (8), and the broker as the only enforcement of what each seat may do.
