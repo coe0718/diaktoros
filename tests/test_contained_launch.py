@@ -176,6 +176,7 @@ class ProductionLaunch(Base):
                 self.last_activity = activity
                 self.last_error = provider_error
                 seen["quota"] = k.get("quota")
+                seen["nudge_steps"] = k.get("nudge_steps")
 
             def __enter__(self):
                 self.directory.mkdir()
@@ -463,6 +464,32 @@ class ProductionLaunch(Base):
         self.assertEqual(self.caps("fixer"), (150, 187))
         self.assertEqual(self.caps("issue_fixer"), (150, 187))
         self.assertEqual(self.caps("adjudicator"), (40, 50))     # unset: its role default
+
+    def test_only_the_writing_seats_are_nudged_before_their_steps_run_out(self):
+        """#554: the turn's last stretch is spent telling the agent to submit what it has.
+
+        The role that gets it is decided here, by the host, when the turn's capability is
+        created: a reviewer and a fixer (and an issue fix, which runs as the fixer seat) hold one
+        write they lose by running out of steps. A ruling and a triage label are not nudged.
+        Removing the wiring leaves ``nudge_steps`` unset and the proxy nudges nobody.
+        """
+        self.loop["seats"] = {"reviewer": {"login": "rev", "max_steps": 40},
+                              "fixer": {"login": "fix", "max_steps": 150}}
+        for role, steps in (("reviewer", 40), ("fixer", 150), ("issue_fixer", 150),
+                            ("adjudicator", None), ("triage", None)):
+            with self.subTest(role=role):
+                seen = self.launch(role)
+                self.assertEqual(seen["nudge_steps"], steps)
+                # The same step cap the sandbox's own --max-turns carries.
+                entry = seen["kwargs"]["entry"]
+                hermes = entry[entry.index("/opt/venv/bin/hermes"):]
+                cap = int(hermes[hermes.index("--max-turns") + 1])
+                self.assertEqual(seen["nudge_steps"], None if steps is None else cap)
+        # The proxy's nudge falls exactly on the request five steps before the agent's cap.
+        self.assertEqual(trusted_turn.inference_proxy.nudge_request_at(40), 35)
+        self.assertEqual(set(trusted_turn.NUDGED_ROLES), {"reviewer", "fixer", "issue_fixer"})
+        self.assertEqual((trusted_turn.gets_nudge("reviewer"), trusted_turn.gets_nudge("triage")),
+                         (True, False))
 
     def test_a_budget_kill_keeps_the_output_and_the_agents_last_step(self):
         """Live #271: two budget kills reported only that the clock ran out. The sandbox's

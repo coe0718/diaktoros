@@ -557,5 +557,155 @@ memory:
                 thread.join()
 
 
+class SubmitNowNudge(unittest.TestCase):
+    """#554: a turn that reaches its step cap publishes nothing and is retried from scratch.
+
+    The proxy sees every model request of a turn, so the host spends the turn's last stretch on
+    one host-written message: submit what you have verified now, the rest under ``Not verified:``.
+    It arrives on the request five steps before the cap, exactly once, and a turn that finishes
+    early never sees it.
+    """
+
+    @staticmethod
+    def capability(test, mode='chat_completions', steps=None, quota=12):
+        """A real capability on a socket in front of a capturing upstream: ``(cap, seen, send)``."""
+        seen = []
+        contract = inference_proxy.contract_for(mode)
+
+        class Upstream(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_POST(self):
+                seen.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+                data = b'{"ok": true}'
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        upstream = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
+        thread = threading.Thread(target=upstream.serve_forever)
+        thread.start()
+
+        def done():
+            upstream.shutdown()
+            upstream.server_close()
+            thread.join()
+        test.addCleanup(done)
+        directory = tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'))
+        test.addCleanup(directory.cleanup)
+        cap = InferenceCapability(
+            Path(directory.name) / 'cap',
+            f'http://127.0.0.1:{upstream.server_port}{contract.upstream_suffix}',
+            'DUMMY_KEY', model='m', quota=quota, api_mode=mode, nudge_steps=steps)
+        test.addCleanup(cap.__exit__)
+
+        def send(body):
+            conn = _UnixHTTP(str(cap.socket_path))
+            try:
+                conn.request('POST', contract.local_path, body=json.dumps(body).encode())
+                response = conn.getresponse()
+                status = response.status
+                response.read()
+            finally:
+                conn.close()
+            return status
+        cap.__enter__()
+        return cap, seen, send
+
+    @staticmethod
+    def conversation(count: int = 1) -> dict:
+        messages = [{'role': 'user', 'content': 'review PR 7'}]
+        for step in range(count):
+            messages.append({'role': 'assistant', 'content': f'step {step}'})
+        return messages
+
+    def test_the_nudge_arrives_once_on_the_request_five_steps_before_the_cap(self):
+        cap, seen, send = self.capability(self, steps=12)     # nudge on request 7 of 12
+        for step in range(9):
+            self.assertEqual(send({'messages': self.conversation(step)}), 200)
+        nudged = [index + 1 for index, body in enumerate(seen)
+                  if any(inference_proxy.NUDGE in str(message.get('content'))
+                         for message in body['messages'])]
+        self.assertEqual(nudged, [7], [body['messages'][-1] for body in seen])
+        self.assertTrue(cap.nudged)
+        # It is one appended user message: the agent's own conversation is untouched, and the
+        # forced model and clamped output cap are still the host's.
+        last = seen[6]['messages']
+        self.assertEqual(last[:-1], self.conversation(6))
+        self.assertEqual(last[-1], {'role': 'user', 'content': inference_proxy.NUDGE})
+        self.assertEqual(seen[6]['model'], 'm')
+        self.assertIn('Not verified:', inference_proxy.NUDGE)
+
+    def test_a_turn_that_finishes_early_never_gets_it(self):
+        cap, seen, send = self.capability(self, steps=60)     # nudge on request 55
+        for step in range(8):
+            self.assertEqual(send({'messages': self.conversation(step)}), 200)
+        self.assertFalse([body for body in seen
+                          if inference_proxy.NUDGE in json.dumps(body)])
+        self.assertFalse(cap.nudged)
+
+    def test_a_judging_seat_is_never_nudged(self):
+        # The adjudicator's and triage's roles pass no step count: their turns are not nudged.
+        cap, seen, send = self.capability(self, steps=None)
+        for step in range(8):
+            self.assertEqual(send({'messages': self.conversation(step)}), 200)
+        self.assertFalse([body for body in seen
+                          if inference_proxy.NUDGE in json.dumps(body)])
+        self.assertFalse(cap.nudged)
+
+    def test_the_nudge_keeps_each_wire_modes_own_shape(self):
+        for mode in ('chat_completions', 'codex_responses', 'anthropic_messages'):
+            with self.subTest(mode=mode):
+                contract = inference_proxy.contract_for(mode)
+                messages = [{'role': 'user', 'content': 'review PR 7'},
+                            {'role': 'assistant', 'content': 'checking'}]
+                if mode == 'codex_responses':
+                    body = {'input': [{'type': 'message', 'role': 'user',
+                                       'content': [{'type': 'input_text', 'text': 'review PR 7'}]}]}
+                else:
+                    body = {'messages': messages}
+                nudged = json.loads(inference_proxy.nudge_body(json.dumps(body).encode(), contract))
+                if mode == 'codex_responses':
+                    self.assertEqual(nudged['input'][1]['content'],
+                                     [{'type': 'input_text', 'text': inference_proxy.NUDGE}])
+                    self.assertEqual(nudged['input'][0], body['input'][0])
+                else:
+                    self.assertEqual(nudged['messages'][:-1], messages)
+                    self.assertEqual(nudged['messages'][-1],
+                                     {'role': 'user', 'content': inference_proxy.NUDGE})
+        # A Messages turn carries tool results in its last user turn: the nudge joins it after
+        # them rather than opening a second user message the provider would have to merge.
+        contract = inference_proxy.contract_for('anthropic_messages')
+        body = {'messages': [{'role': 'user', 'content': 'review PR 7'},
+                             {'role': 'assistant', 'content': 'checking'},
+                             {'role': 'user', 'content': [
+                                 {'type': 'tool_result', 'tool_use_id': 't1', 'content': 'ok'}]}]}
+        nudged = json.loads(inference_proxy.nudge_body(json.dumps(body).encode(), contract))
+        self.assertEqual([block['type'] for block in nudged['messages'][-1]['content']],
+                         ['tool_result', 'text'])
+        self.assertEqual(len(nudged['messages']), 3)
+        # A request with no conversation to append to is left exactly as it came.
+        for empty in ({}, {'messages': 'none'}, {'input': None}):
+            self.assertIsNone(inference_proxy.nudge_body(json.dumps(empty).encode(), contract))
+
+    def test_the_nudge_request_is_five_before_the_cap_and_never_the_first(self):
+        self.assertEqual(inference_proxy.NUDGE_LEAD, 5)
+        self.assertEqual(inference_proxy.nudge_request_at(60), 55)
+        self.assertEqual(inference_proxy.nudge_request_at(12), 7)
+        # The smallest step setting (config.MAX_STEPS_RANGE) still has steps left to act on it.
+        from diaktoros import config
+        self.assertEqual(inference_proxy.nudge_request_at(config.MAX_STEPS_RANGE[0]), 3)
+
+    def test_nonsense_nudge_steps_are_refused(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as d:
+            for bad in (0, -1, True, '8', 1.5):
+                with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, 'nudge steps'):
+                    InferenceCapability(Path(d) / 'cap', f'http://localhost{PATH}',
+                                        'DUMMY_KEY', model='m', nudge_steps=bad)
+
+
 if __name__ == '__main__':
     unittest.main()
