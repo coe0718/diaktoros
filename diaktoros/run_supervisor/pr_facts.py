@@ -53,7 +53,11 @@ def adjudication_state(loop: dict | None, row, ledger=None) -> tuple[str, dict]:
     shadow = (isinstance(marker, dict) and marker.get('head') == row['head']
               and (marker.get('escalated') or {}).get('by') == gate.SHADOW_ESCALATION)
     from .. import config
-    allowed = set(config.reviewed_authors(loop)) if shadow else set(loop.get('fixers') or ())
+    operator = (isinstance(marker, dict) and marker.get('head') == row['head']
+                and (marker.get('escalated') or {}).get('by') == 'operator')
+    allowed = (set(config.reviewed_authors(loop)) if shadow else set(loop.get('fixers') or ()))
+    if operator:
+        allowed |= config.review_only(loop) | config.maintainers(loop)
     if not author or author.lower() not in allowed:
         return 'superseded', {}
     # A retarget hold counts only receipted post-boundary verdicts: an old approval neither
@@ -69,7 +73,7 @@ def adjudication_state(loop: dict | None, row, ledger=None) -> tuple[str, dict]:
         return 'superseded', {}
     counted = gate.verdicts(reviews, loop)
     # The operator's escalation (#459) holds this head for a ruling in place of a spent cap.
-    if len(counted) < loop['cap'] and not gate.escalated(marker, row['head']):
+    if len(counted) < loop['cap'] and not (gate.escalated(marker, row['head']) and (shadow or operator)):
         return 'superseded', {}
     if (not isinstance(marker, dict) or marker.get('pr') != row['pr']
             or marker.get('head') != row['head'] or marker.get('rounds') != rounds

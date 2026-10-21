@@ -27,6 +27,7 @@ from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 from scripts import gate_fixer, gate_reviewer  # noqa: E402
 
+
 HEAD = fg.HEAD
 OTHER = "c" * 40
 
@@ -67,6 +68,34 @@ class Base(fg.Base):
 
 
 class Command(Base):
+    def test_operator_can_escalate_review_only_pr_and_adjudicator_accepts_it(self):
+        self.loop = config.load_id("one")
+        path = config.config_dir() / "one.json"
+        data = json.loads(path.read_text())
+        data["review_only"] = ["owner-human"]
+        path.write_text(json.dumps(data))
+        self.loop = config.load_id("one")
+        self.live = {**fg.LIVE, "user": {"login": "Owner-Human"}}
+        rc, out, wake = self.escalate("person asks for ruling")
+        self.assertEqual(rc, 0, out)
+        wake.assert_called_once()
+        marker = self.st.breach_get(7)
+        self.assertEqual(marker["status"], "awaiting-adjudication")
+        self.assertEqual(marker["escalated"]["by"], "operator")
+
+        from diaktoros.run_supervisor import pr_facts
+        pr = {**self.live, "head": {"sha": HEAD, "ref": "review-only-7"}}
+        row = {"repo": fg.REPO, "pr": 7, "head": HEAD, "seat": "adjudicator",
+               "turn_key": "breach:1", "id": "ruling-1", "created": time.time()}
+        with mock.patch.object(gh, "api", return_value=pr), \
+                mock.patch.object(gh, "reviews", return_value=self.reviews), \
+                mock.patch.object(pr_facts, "effective_reviews", return_value=self.reviews):
+            self.assertEqual(pr_facts.adjudication_state(self.loop, row)[0], "ok")
+        from diaktoros.run_supervisor.turn_prompts import adjudication_situation
+        self.assertIn("operator asked for a ruling", adjudication_situation(marker))
+
+
+
     def test_an_escalation_parks_the_head_and_wakes_the_adjudicator(self):
         rc, out, wake = self.escalate("they disagree\non scope")
         self.assertEqual(rc, 0, out)
