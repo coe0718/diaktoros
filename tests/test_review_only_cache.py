@@ -112,6 +112,35 @@ class Cache(fg.Base):
         self.assertEqual((merge.call_count, pushed.call_count), (1, 1))
         self.assertEqual(self.notify.call_count, 0)     # behind, not conflicting: no notice
 
+    def test_a_stop_that_is_not_about_the_pair_is_tried_again(self):
+        # Shadow on #1151: pushes off, then on, at the same head and base tip.
+        self.set_push(False, update=True)
+        self.sweep(CLEAN)
+        with mock.patch.object(safe_push, "dry_merge",
+                               return_value=dry(conflicted=(), clean=True)) as merge, \
+             mock.patch.object(safe_push, "update_branch",
+                               return_value={"new_head": NEW_HEAD}) as pushed:
+            self.sweep(BEHIND)
+            self.assertEqual(pushed.call_count, 0)          # pushes are off: stopped
+            self.set_push(True, update=True)
+            self.sweep(BEHIND)
+        self.assertEqual((merge.call_count, pushed.call_count), (1, 1))   # dry merge kept
+
+    def test_a_refused_or_failed_push_is_tried_again_on_the_next_sweep(self):
+        self.set_push(True, update=True)
+        self.sweep(CLEAN)
+        for failure in (safe_push.broker.BrokerDenied("cannot verify live PR"),
+                        safe_push.PushFailure("push not verified")):
+            with self.subTest(failure=type(failure).__name__), \
+                    mock.patch.object(safe_push, "dry_merge",
+                                      return_value=dry(conflicted=(), clean=True)), \
+                    mock.patch.object(safe_push, "update_branch",
+                                      side_effect=[failure, {"new_head": NEW_HEAD}]) as pushed:
+                self.st.review_only_conflicts.unlink(missing_ok=True)
+                self.sweep(BEHIND)
+                self.sweep(BEHIND)
+                self.assertEqual(pushed.call_count, 2)
+
     def test_an_unreadable_base_tip_caches_nothing(self):
         self.sweep(CLEAN)
         self.tip = None

@@ -870,21 +870,22 @@ class LoopState:
     # -- review-only conflict facts, one entry per PR (#504) ----------------
 
     def review_only_conflict(self, number: int, head: str, base_sha: str, update: bool):
-        """``(facts, tried)`` recorded for this PR at exactly this head, base sha and
-        ``review_only_update`` setting, or ``None`` when the host has to assess again."""
+        """``(facts, tried, retry)`` recorded for this PR at exactly this head, base sha and
+        ``review_only_update`` setting, or ``None`` when the host has to assess again. ``retry``:
+        the update stopped for a reason that is not a fact about the pair, so it is tried again."""
         entry = _mapping(self._load(self.review_only_conflicts, {})).get(str(number))
         if (not isinstance(entry, dict) or entry.get("head") != head
                 or entry.get("base") != base_sha or entry.get("update") is not update
                 or not isinstance(entry.get("facts"), dict)):
             return None
-        return entry["facts"], str(entry.get("tried") or "")
+        return entry["facts"], str(entry.get("tried") or ""), entry.get("retry") is True
 
     def review_only_conflict_set(self, number: int, head: str, base_sha: str, update: bool,
-                                 facts: dict, tried: str) -> None:
+                                 facts: dict, tried: str, retry: bool = False) -> None:
         with self.locked():
             data = _mapping(self._load(self.review_only_conflicts, {}))
             data[str(number)] = {"head": head, "base": base_sha, "update": update,
-                                 "facts": facts, "tried": tried}
+                                 "facts": facts, "tried": str(tried), "retry": retry}
             self._save(self.review_only_conflicts, data)
 
     # -- PRs a maintainer holds (#477): {PR number: {"by", "at", "how"}} ------
