@@ -98,6 +98,50 @@ class ReadRoutes(unittest.TestCase):
                 self.assertEqual(response.status_code, 503, response.text[:200])
                 self.assertEqual(response.json(), {'detail': 'Desktop read unavailable; retry the read.'})
 
+    def write_cases(self):
+        # Match the route validators and positional operation arguments, not GET payloads.
+        head = 'a' * 40
+        confirmation = 'b' * 64
+        return (
+            ('/retry', 'retry_view',
+             {'loop': 'widgets', 'pr': 1, 'seat': 'reviewer', 'head': head},
+             ('widgets', 1, 'reviewer', head)),
+            ('/hooks', 'hooks_action_view',
+             {'loop': 'widgets', 'action': 'pause', 'confirmation': confirmation},
+             ('widgets', 'pause', confirmation)),
+            ('/actions', 'action_perform_view',
+             {'loop': 'widgets', 'action': 'escalate', 'pr': 1, 'seat': None,
+              'confirmation': confirmation},
+             ('widgets', 'escalate', 1, None, confirmation)),
+        )
+
+    def test_unexpected_post_exceptions_remain_generic_500_not_read_unavailable(self):
+        # A write may already have happened: the read boundary's retryable 503 would lie.
+        # TestClient must deliver the actual ASGI response, not re-raise the operation error.
+        secret = '/private/secret.pat bearer secret'
+        for path, name, payload, args in self.write_cases():
+            for error_type in (OSError, RuntimeError):
+                with self.subTest(path=path, error=error_type.__name__), mock.patch.object(
+                        desktop_api, name, side_effect=error_type(secret)) as operation:
+                    response = self.client.post('/api/plugins/diaktoros' + path, json=payload)
+                    operation.assert_called_once_with(*args)
+                    self.assertEqual(response.status_code, 500, response.text[:200])
+                    self.assertEqual(response.text, 'Internal Server Error')
+                    self.assertNotIn(secret, response.text)
+                    self.assertNotIn('Desktop read unavailable', response.text)
+
+    def test_explicit_post_http_refusals_keep_status_and_detail(self):
+        from fastapi import HTTPException
+        for path, name, payload, args in self.write_cases():
+            for status in (400, 403, 404, 409, 422):
+                with self.subTest(path=path, status=status), mock.patch.object(
+                        desktop_api, name, side_effect=HTTPException(
+                            status_code=status, detail='Confirmed write refused.')) as operation:
+                    response = self.client.post('/api/plugins/diaktoros' + path, json=payload)
+                    operation.assert_called_once_with(*args)
+                    self.assertEqual(response.status_code, status, response.text[:200])
+                    self.assertEqual(response.json(), {'detail': 'Confirmed write refused.'})
+
     def test_real_host_mount_and_authenticated_reads(self):
         if importlib.util.find_spec('hermes_cli') is None:
             skip_or_fail(self, 'Hermes is not installed')

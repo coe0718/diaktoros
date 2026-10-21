@@ -22,7 +22,7 @@ function overview(...loops) {
   return { loops, read_at: 1800000000 }
 }
 
-async function harness({ cachedAge = null, queryClient: realQueryClient = null } = {}) {
+async function harness({ cachedAge = null, queryClient: realQueryClient = null, HealthObserver = null } = {}) {
   const registrations = []
   const queries = {}
   // Opt-in exact keys let selection tests model independent TanStack cache entries.
@@ -40,13 +40,32 @@ async function harness({ cachedAge = null, queryClient: realQueryClient = null }
   const refs = []
   let refCursor = 0
   const timers = new Map()
-  let time = 1800000000000
+  let time = HealthObserver ? Date.now() : 1800000000000
   let elapsed = 0
   let timerId = 0
   let cursor = 0
   let effectCursor = 0
   let mountedId = null
   let currentTree = null
+  // Opt-in SDK adapter: the actual mounted Health calls production useHealth;
+  // its observer owns fetching/subscription/refetch, rather than extracting options
+  // and manually creating an observer after a mock component render.
+  let healthObserver = null
+  let unsubscribeHealth = null
+  let observerRenderQueued = false
+  const stopHealthObserver = () => {
+    unsubscribeHealth?.()
+    unsubscribeHealth = null
+    healthObserver = null
+  }
+  const observerChanged = () => {
+    if (observerRenderQueued) return
+    observerRenderQueued = true
+    queueMicrotask(() => {
+      observerRenderQueued = false
+      if (mountedId) render(mountedId)
+    })
+  }
   class FakeDate extends Date {
     constructor(...args) { super(...(args.length ? args : [time])) }
     static now() { return time }
@@ -98,6 +117,15 @@ async function harness({ cachedAge = null, queryClient: realQueryClient = null }
       const kind = opts.queryKey[1]
       options[kind] = opts
       queryReads.push(opts)
+      if (HealthObserver && kind === 'health') {
+        if (!healthObserver) {
+          healthObserver = new HealthObserver(realQueryClient, opts)
+          unsubscribeHealth = healthObserver.subscribe(observerChanged)
+        } else {
+          healthObserver.setOptions(opts)
+        }
+        return healthObserver.getCurrentResult()
+      }
       return scopedKinds.has(kind) ? keyedQueries.get(JSON.stringify(opts.queryKey)) || loading() : queries[kind]
     }
   })
@@ -224,8 +252,9 @@ async function harness({ cachedAge = null, queryClient: realQueryClient = null }
     emit, listenerCount: () => cacheListeners.size,
     focusWrites: () => focusWrites,
     pendingTimers: () => [...timers.values()].filter(timer => timer.at - elapsed === 60000).map(timer => timer.fn),
-    dispose: () => { effects.forEach(effect => effect.cleanup?.()); mountedId = null; disposers.forEach(fn => fn()) },
-    unmount: () => { effects.forEach(effect => effect.cleanup?.()); mountedId = null },
+    healthResult: () => healthObserver?.getCurrentResult(),
+    dispose: () => { stopHealthObserver(); effects.forEach(effect => effect.cleanup?.()); mountedId = null; disposers.forEach(fn => fn()) },
+    unmount: () => { stopHealthObserver(); effects.forEach(effect => effect.cleanup?.()); mountedId = null },
     moveWall: ms => { time += ms },
     advance: (ms, wallMs = ms) => {
       elapsed += ms
@@ -2205,9 +2234,9 @@ for (const kind of Object.keys(READ_ENDPOINTS)) {
   })
 }
 
-// Optional dependency acceptance mode, in addition to the dependency-free component suite:
-// DIAKTOROS_QUERY_CORE=/absolute/path/to/@tanstack/query-core/build/modern/index.js
-// The protected verification wrapper supplies the installed desktop's actual TanStack package.
+// Real-cache acceptance mode: tests/run_desktop_query_core.py supplies the locked
+// tests/query-core dependency and requires every named case below (no skips).
+// Direct developer opt-in also accepts DIAKTOROS_QUERY_CORE as an explicit ESM entry.
 if (process.env.DIAKTOROS_QUERY_CORE) {
   // Model a browser for QueryObserver's built-in polling, not a plugin-owned timer/transport.
   globalThis.window = {}
@@ -2217,6 +2246,64 @@ if (process.env.DIAKTOROS_QUERY_CORE) {
     for (let i = 0; i < 200 && client.isFetching(); i++) await new Promise(resolve => setTimeout(resolve, 5))
     assert.equal(client.isFetching(), 0, 'REST refresh settled')
   }
+  test('health real TanStack mounted page: adapter follows selection, fallback and Retry', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
+    const a = await harness({ queryClient: client, HealthObserver: QueryObserver })
+    const b = await harness({ queryClient: client, HealthObserver: QueryObserver })
+    const calls = () => [...a.calls, ...b.calls]
+    try {
+      a.respond(healthFixture()); b.respond(healthFixture())
+      a.render('page'); b.render('page'); await settle(client)
+      assert.deepEqual(calls(), ['/health?loop=fixture-loop&probe=1'], 'mounted pages launch one probe without extracted options')
+      assert.equal(a.healthResult().data, b.healthResult().data)
+      assert.deepEqual(Array.from(a.options.health.queryKey), ['diaktoros', 'health', 'fixture-loop', 'probe'])
+      assert.equal(a.options.health.staleTime, 600000)
+      assert.equal(a.options.health.refetchInterval, false)
+      assert.match(a.text(a.tree()), /Health/)
+      a.unmount(); a.render('page'); await settle(client)
+      a.render('page'); b.sockets[0].callback(invalidation()); await settle(client)
+      assert.equal(calls().length, 1, 'fresh actual remount, rerender and socket do not repeat probe')
+
+      a.queries.loops = a.good({ loops: [{ id: 'fixture-loop' }, { id: 'other-loop' }] })
+      a.render('page')
+      a.respond({ ...healthFixture('other-loop'), offline: true })
+      a.readFails('&probe=1', new Error('private transport'))
+      a.buttons(a.tree()).find(button => button.props.children === 'other-loop').props.onClick()
+      await settle(client)
+      assert.deepEqual(a.calls.slice(-2), ['/health?loop=other-loop&probe=1', '/health?loop=other-loop'])
+      assert.equal(a.healthResult().data.loop, 'other-loop')
+      assert.equal(a.healthResult().data.probeFailure, 'unreachable')
+      assert.doesNotMatch(a.text(a.tree()), /private transport/)
+      const count = calls().length
+      a.queries.loops = a.good({ loops: [{ id: 'other-loop' }] })
+      a.unmount(); a.render('page'); await settle(client)
+      assert.equal(calls().length, count, 'fresh fallback remount repeats neither request')
+
+      a.respond(healthFixture('other-loop'))
+      await a.buttons(a.tree()).find(button => button.props.children === 'Refresh GitHub').props.onClick()
+      await settle(client)
+      assert.equal(a.calls.at(-1), '/health?loop=other-loop&probe=1')
+      assert.equal(calls().length, count + 1)
+      assert.equal(a.healthResult().data.offline, false)
+      a.readFails('/health')
+      await a.buttons(a.tree()).find(button => button.props.children === 'Refresh GitHub').props.onClick()
+      await settle(client)
+      assert.equal(a.healthResult().isError, true)
+      const sentence = 'Health: showing last good data, not current status'
+      const region = a.flatten(a.tree()).filter(node => typeof node === 'object' &&
+        a.text([node]).includes(sentence) && a.buttons([node]).some(button => button.props.children === 'Retry')).at(-1)
+      assert.ok(region, 'observer notification rerenders the mounted Health error without injected result')
+      a.respond(healthFixture('other-loop'))
+      const before = calls().length
+      await a.buttons([region]).find(button => button.props.children === 'Retry').props.onClick()
+      await settle(client)
+      assert.equal(calls().length, before + 1)
+      assert.equal(a.calls.at(-1), '/health?loop=other-loop&probe=1')
+      assert.equal(a.healthResult().isError, false)
+      assert.doesNotMatch(a.text(a.tree()), /Health: showing last good data/)
+    } finally { a.dispose(); b.dispose(); client.clear() }
+  })
+
   for (const [failure, reason] of [[new Error('403: {}'), 'caller'], [new Error('private transport'), 'unreachable']]) {
     test('health real TanStack fallback dedupes concurrent observers and remount; manual refresh recovers: ' + reason, async () => {
       const client = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity } } })

@@ -46,13 +46,33 @@ The harness also validates fenced `hermes dk` command examples in README/docs/sk
 
 ```sh
 node --experimental-vm-modules --test tests/desktop_behavior.mjs
-# With the installed desktop's real cache (shared-query and REST-Retry acceptance):
-DIAKTOROS_QUERY_CORE=<hermes>/node_modules/@tanstack/query-core/build/modern/index.js \
-  node --experimental-vm-modules --test --test-reporter=tap tests/desktop_behavior.mjs
+# Required real-TanStack lane, with only its isolated locked test dependency:
+npm ci --ignore-scripts --no-audit --no-fund --prefix tests/query-core
+python tests/run_desktop_query_core.py
+python tests/leakguard.py -v test_desktop_query_core_runner
 node --input-type=module --check < desktop/plugin.js
 python tests/leakguard.py discover -v -s tests -p 'test_desktop.py'
 python tests/leakguard.py -v test_desktop_reads   # needs FastAPI/HTTPX (and Hermes for the mount case)
 ```
+
+The required `verticals` core job runs the **entire** Node suite through
+`tests/run_desktop_query_core.py` on Node 24. `tests/query-core/package-lock.json`
+locks only `@tanstack/query-core==5.101.2`, matching CI's `HERMES_PINNED` desktop
+lock; `npm ci --ignore-scripts` installs it without lifecycle scripts or the
+Hermes frontend/Electron dependency tree. Run the same two commands above from
+the plugin root in a disposable development checkout. Installation needs registry
+access; execution uses local fixtures only. The runner sets the ESM entry itself,
+ignores ambient package/plugin overrides and Node injection options, and requires
+202 executed passes (189 fixture + 13 named real-cache cases), zero skips/TODOs,
+and matching TAP plan/summary counts. A mounted-page SDK adapter connects the
+production Health/useHealth call directly to QueryObserver subscriptions: concurrent
+pages, fresh remounts, loop selection, fallback and Retry run without injecting a
+health result or extracting options to launch reads manually. Other SDK/React hooks
+remain synthetic; this is not a React DOM or Electron test. Missing packages, omitted
+real cases or count drift fail; update the explicit count deliberately when adding cases. The runner's
+unit tests use clearly synthetic TAP parser fixtures, not component-run evidence.
+The dependency-free command remains available for quick local checks, but alone
+is not required-lane acceptance.
 
 The Node harness executes the shipped plugin's registered page and chip with explicitly synthetic SDK/query fixtures. It tests loading, unavailable, stale cached data, successful empty reads, retry callbacks, summaries, and notifications; it is not a live backend or a browser layout test. Its independent elapsed-timer and wall clocks fire component expiry timers and hook-driven renders without a manual rerender, including a hung refresh, backward wall-clock changes, timestamp replacement, and unmount cleanup. It also checks malformed nested responses, safe error categories, and a missing-ledger payload pinned from real `stats.collect` output (the Python test verifies the same fixture against the collector and Desktop endpoint). `test_desktop.py` also runs this harness when Node is available. The VM module flag is required by this dependency-free harness, not by the Desktop plugin itself.
 
@@ -100,10 +120,10 @@ no live restart or install is part of development acceptance.
 
 `test_desktop_events.py` exercises real temporary SQLite WAL/state changes and
 FastAPI WebSocket admission/disconnect/cancellation. The Node behavior suite
-also supports real TanStack QueryClient/QueryObserver coverage when
-`DIAKTOROS_QUERY_CORE` points to its ESM entry: shared page/pane REST refresh,
-missed-change repair on reconnect, polling fallback and cleanup. Without that
-explicit dependency, those additional real-cache cases are not run. Neither
+also includes real TanStack QueryClient/QueryObserver coverage: shared page/pane
+REST refresh, missed-change repair on reconnect, polling fallback and cleanup.
+The required core lane supplies the locked ESM entry and rejects omitted or skipped
+real-cache cases. The direct dependency-free command omits those cases. Neither
 fixture suite establishes full Electron/native-grant integration.
 
 ### Boundary and regression suite
