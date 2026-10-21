@@ -279,11 +279,52 @@ function QueryStatus({ query, state, label, noLedger = false }) {
   })
 }
 
+// Validate the additive ledger contract before admitting it to the shared PR cache.
+// These are wire vocabulary/copy checks, not gate predicates or retry eligibility.
+function validHoldExplanation(value, head7) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const copy = {
+    external_write_guard: 'External write outcome requires inspection; never replay this run.',
+    run_waiting: 'Recorded run is waiting; the policy-specific reason is not structured yet.',
+    run_failed: 'Recorded run failed; inspect host eligibility before any operator action.',
+    run_cancelled: 'Recorded run was cancelled; inspect host eligibility before any operator action.',
+    unknown: 'The ledger does not establish a supported hold explanation.'
+  }
+  const keys = ['schema', 'reason_code', 'run_id', 'head', 'evidence_source', 'completeness',
+    'waiting_for', 'automatic_resume', 'next_eligible_start', 'operator_action', 'text']
+  if (Object.keys(value).length !== keys.length || keys.some(key => !Object.hasOwn(value, key)) ||
+      !Object.hasOwn(copy, value.reason_code) || value.schema !== 1 ||
+      value.evidence_source !== 'run_ledger' || value.completeness !== 'partial' ||
+      value.operator_action !== 'inspect' ||
+      !(value.run_id === null || (typeof value.run_id === 'string' && /^[0-9a-f]{32}$/.test(value.run_id))) ||
+      !(value.head === null || (typeof value.head === 'string' && /^[0-9a-f]{40}$/.test(value.head) && value.head.slice(0, 7) === head7)) ||
+      !['host_recheck', 'operator_inspection', 'unknown'].includes(value.waiting_for) ||
+      !['never', 'unknown'].includes(value.automatic_resume) ||
+      !(value.next_eligible_start === null || (typeof value.next_eligible_start === 'number' &&
+        Number.isFinite(value.next_eligible_start) && value.next_eligible_start >= 0 && value.next_eligible_start <= 253402300799)) ||
+      typeof value.text !== 'string' || value.text.length > 600) return false
+  if (value.reason_code === 'external_write_guard' && (value.waiting_for !== 'operator_inspection' ||
+      value.automatic_resume !== 'never' || value.next_eligible_start !== null)) return false
+  if (value.reason_code !== 'external_write_guard' && value.automatic_resume !== 'unknown') return false
+  if (value.reason_code === 'run_waiting' ? value.waiting_for !== 'host_recheck' :
+      value.reason_code !== 'external_write_guard' && (value.waiting_for !== 'unknown' || value.next_eligible_start !== null)) return false
+  const stamp = value.next_eligible_start === null ? 'unknown' :
+    new Date(value.next_eligible_start * 1000).toISOString().slice(0, 19) + 'Z'
+  return value.text === copy[value.reason_code] + ' Ledger only (partial). Waiting for: ' +
+    value.waiting_for.replaceAll('_', ' ') + '. Automatic resume: ' + value.automatic_resume +
+    '. Recorded earliest eligibility: ' + stamp + '. Operator action: inspect.'
+}
+
 function usePr(loop, pr) {
   return useQuery({
     queryKey: [ID, 'pr', loop, pr],
-    queryFn: () =>
-      call('/pr?pr=' + pr + (loop ? '&loop=' + encodeURIComponent(loop) : '')),
+    queryFn: async () => {
+      const data = await call('/pr?pr=' + pr + (loop ? '&loop=' + encodeURIComponent(loop) : ''))
+      if (!data || !Array.isArray(data.stuck) || data.stuck.length > 100 || data.stuck.some(run =>
+        !run || typeof run !== 'object' || (run.explanation !== undefined &&
+          !validHoldExplanation(run.explanation, run.head)))) throw invalidResponse('pr')
+      return data
+    },
     enabled: !!pr,
     staleTime: 15000
   })
@@ -532,6 +573,7 @@ function RunRow({ run, onOpen, onRetry }) {
 function Drawer({ loop, pr, onClose }) {
   const q = usePr(loop, pr)
   const d = q.data
+  const state = useViewState(q, false, 60000)
   const stuck = (d && d.stuck) || []
   const turns = (d && d.turns) || []
   const rulings = (d && d.rulings) || []
@@ -639,7 +681,9 @@ function Drawer({ loop, pr, onClose }) {
                   jsx('span', { className: 'text-(--ui-text-quaternary)', children: ago(run.since) })
                 ]
               }),
-              jsx('div', { className: 'pt-1 text-xs text-(--ui-text-secondary)', children: run.next })
+              jsx('div', { className: 'pt-1 text-xs text-(--ui-text-secondary)', children: run.next }),
+              jsx('div', { className: 'pt-2 break-words text-xs text-(--ui-text-tertiary)',
+                children: run.explanation ? run.explanation.text : 'Shared explanation unavailable (older backend).' })
             ]
           }, run.seat + run.head + run.state))
       })
@@ -668,11 +712,12 @@ function Drawer({ loop, pr, onClose }) {
             ]
           })
         }),
-        q.isError
+        q.isError && !d
           ? jsx(ErrorLine, { error: q.error, children: 'the loop backend did not answer' })
           : jsxs('div', {
               className: 'flex flex-col gap-5 pt-4',
               children: [
+                state === 'stale' ? jsx(QueryStatus, { query: q, state, label: 'PR ledger explanation' }) : null,
                 jsx(Pacing, { pacing: d && d.pacing }),
                 jsx(Section, { title: 'Why it is not moving', children: why }),
                 jsxs(Section, {

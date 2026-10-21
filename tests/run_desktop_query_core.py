@@ -12,7 +12,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "tests/query-core"
 QUERY_CORE_VERSION = "5.101.2"  # CI's HERMES_PINNED package-lock.json
-EXPECTED_TESTS = 202  # 189 fixture cases + 13 real-TanStack cases
+EXPECTED_TESTS = 205  # 192 fixture cases + 13 real-TanStack cases
 REQUIRED_REAL_TESTS = (
     *("health real TanStack fallback dedupes concurrent observers and remount; manual refresh recovers: " + reason
       for reason in ("caller", "unreachable")),

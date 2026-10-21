@@ -1019,12 +1019,63 @@ def describe_run(row: dict, loop_id: str = 'LOOP') -> str:
     text = (f"{row['seat']} #{row['pr']} @ {str(row['head'])[:7]} {row['state']}"
             + (f" ({row['turn_key']})" if row.get('turn_key') else '')
             + f" — {row['error'] or 'no reason recorded'}")
-    return f"{text}; {next_step(row, loop_id)}"
+    return f"{text}; {next_step(row, loop_id)}; {hold_explanation(row)['text']}"
+
+
+def hold_explanation(row: dict) -> dict:
+    """Safe, partial explanation of a runs_view artifact (#674, ledger slice only).
+
+    State and write evidence are host facts. Error prose is NOT a reason-code API:
+    CI, pacing, human and other policy reasons remain unknown here. A recorded
+    retry_at is an earliest recheck, never proof that the next turn will start.
+    This formatter neither grants retry eligibility nor reads or changes state.
+    """
+    raw_state = row.get('state')
+    state = raw_state if isinstance(raw_state, str) else ''
+    uncertain = state == 'uncertain' or row.get('write') is not None
+    code = {'waiting': 'run_waiting', 'failed': 'run_failed',
+            'cancelled': 'run_cancelled'}.get(state, 'unknown')
+    if 'write' not in row:
+        code = 'unknown'
+    if uncertain:
+        code = 'external_write_guard'
+    text = {
+        'external_write_guard': 'External write outcome requires inspection; never replay this run.',
+        'run_waiting': 'Recorded run is waiting; the policy-specific reason is not structured yet.',
+        'run_failed': 'Recorded run failed; inspect host eligibility before any operator action.',
+        'run_cancelled': 'Recorded run was cancelled; inspect host eligibility before any operator action.',
+        'unknown': 'The ledger does not establish a supported hold explanation.',
+    }[code]
+    due = row.get('retry_at')
+    # Bound to datetime's public epoch range as well as JSON's finite numeric domain.
+    due = (due if code == 'run_waiting' and type(due) in (int, float)
+           and 0 <= due <= 253402300799 else None)
+    head = row.get('head')
+    head = head if isinstance(head, str) and re.fullmatch(r'[0-9a-f]{40}', head) else None
+    run_id = row.get('id')
+    run_id = (run_id if isinstance(run_id, str)
+              and re.fullmatch(r'[0-9a-f]{32}', run_id) else None)
+    waiting = 'operator_inspection' if uncertain else 'host_recheck' if code == 'run_waiting' else 'unknown'
+    automatic = 'never' if uncertain else 'unknown'
+    due_text = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(due)) if due is not None else 'unknown'
+    text += (f" Ledger only (partial). Waiting for: {waiting.replace('_', ' ')}. "
+             f"Automatic resume: {automatic}. Recorded earliest eligibility: {due_text}. "
+             "Operator action: inspect.")
+    return {'schema': 1, 'reason_code': code, 'run_id': run_id, 'head': head,
+            'evidence_source': 'run_ledger', 'completeness': 'partial',
+            'waiting_for': waiting, 'automatic_resume': automatic,
+            'next_eligible_start': due, 'operator_action': 'inspect', 'text': text}
 
 
 def next_step(row: dict, loop_id: str = 'LOOP') -> str:
     """What moves a failed, waiting, uncertain or push-policy-cancelled ``runs_view`` row on
     (#53)."""
+    # Presentation must not recommend a reset/re-admission over durable write evidence.
+    # The admission policy is unchanged; Supervisor.retry remains authoritative.
+    if row.get('write') is not None and row['state'] in ('waiting', 'cancelled'):
+        return f"may have written ({row['write']}) — never replayed; inspect external state"
+    if row['state'] == 'uncertain' and row.get('write') is None:
+        return 'outcome uncertain — never replayed; inspect external state'
     if row['state'] == 'waiting' and str(row.get('error') or '').startswith('held: '):
         due = max(0, int((row['retry_at'] or 0) - time.time()))
         return (f"waits for the reset, no retry spent — starts in {due}s on the next event or "
