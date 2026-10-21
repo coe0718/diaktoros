@@ -63,7 +63,7 @@ Hermes frontend/Electron dependency tree. Run the same two commands above from
 the plugin root in a disposable development checkout. Installation needs registry
 access; execution uses local fixtures only. The runner sets the ESM entry itself,
 ignores ambient package/plugin overrides and Node injection options, and requires
-202 executed passes (189 fixture + 13 named real-cache cases), zero skips/TODOs,
+205 executed passes (192 fixture + 13 named real-cache cases), zero skips/TODOs,
 and matching TAP plan/summary counts. A mounted-page SDK adapter connects the
 production Health/useHealth call directly to QueryObserver subscriptions: concurrent
 pages, fresh remounts, loop selection, fallback and Retry run without injecting a
@@ -71,6 +71,8 @@ health result or extracting options to launch reads manually. Other SDK/React ho
 remain synthetic; this is not a React DOM or Electron test. Missing packages, omitted
 real cases or count drift fail; update the explicit count deliberately when adding cases. The runner's
 unit tests use clearly synthetic TAP parser fixtures, not component-run evidence.
+The additive ledger hold contract, its vocabulary and the remaining #674 integration
+work are documented in [Shared hold explanations](hold-explanations.md).
 The dependency-free command remains available for quick local checks, but alone
 is not required-lane acceptance.
 

@@ -1,0 +1,67 @@
+{
+  "run_waiting": {
+    "schema": 1,
+    "reason_code": "run_waiting",
+    "run_id": "00000000000000000000000000000001",
+    "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "evidence_source": "run_ledger",
+    "completeness": "partial",
+    "waiting_for": "host_recheck",
+    "automatic_resume": "unknown",
+    "next_eligible_start": 1234.0,
+    "operator_action": "inspect",
+    "text": "Recorded run is waiting; the policy-specific reason is not structured yet. Ledger only (partial). Waiting for: host recheck. Automatic resume: unknown. Recorded earliest eligibility: 1970-01-01T00:20:34Z. Operator action: inspect."
+  },
+  "run_failed": {
+    "schema": 1,
+    "reason_code": "run_failed",
+    "run_id": "00000000000000000000000000000001",
+    "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "evidence_source": "run_ledger",
+    "completeness": "partial",
+    "waiting_for": "unknown",
+    "automatic_resume": "unknown",
+    "next_eligible_start": null,
+    "operator_action": "inspect",
+    "text": "Recorded run failed; inspect host eligibility before any operator action. Ledger only (partial). Waiting for: unknown. Automatic resume: unknown. Recorded earliest eligibility: unknown. Operator action: inspect."
+  },
+  "run_cancelled": {
+    "schema": 1,
+    "reason_code": "run_cancelled",
+    "run_id": "00000000000000000000000000000001",
+    "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "evidence_source": "run_ledger",
+    "completeness": "partial",
+    "waiting_for": "unknown",
+    "automatic_resume": "unknown",
+    "next_eligible_start": null,
+    "operator_action": "inspect",
+    "text": "Recorded run was cancelled; inspect host eligibility before any operator action. Ledger only (partial). Waiting for: unknown. Automatic resume: unknown. Recorded earliest eligibility: unknown. Operator action: inspect."
+  },
+  "external_write_guard": {
+    "schema": 1,
+    "reason_code": "external_write_guard",
+    "run_id": "00000000000000000000000000000001",
+    "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "evidence_source": "run_ledger",
+    "completeness": "partial",
+    "waiting_for": "operator_inspection",
+    "automatic_resume": "never",
+    "next_eligible_start": null,
+    "operator_action": "inspect",
+    "text": "External write outcome requires inspection; never replay this run. Ledger only (partial). Waiting for: operator inspection. Automatic resume: never. Recorded earliest eligibility: unknown. Operator action: inspect."
+  },
+  "unknown": {
+    "schema": 1,
+    "reason_code": "unknown",
+    "run_id": "00000000000000000000000000000001",
+    "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "evidence_source": "run_ledger",
+    "completeness": "partial",
+    "waiting_for": "unknown",
+    "automatic_resume": "unknown",
+    "next_eligible_start": null,
+    "operator_action": "inspect",
+    "text": "The ledger does not establish a supported hold explanation. Ledger only (partial). Waiting for: unknown. Automatic resume: unknown. Recorded earliest eligibility: unknown. Operator action: inspect."
+  }
+}

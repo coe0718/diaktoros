@@ -736,7 +736,8 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
             created, _ = stamp.get(row["id"], (None, None))
             view["stuck"].append({"seat": row["seat"], "head": str(row["head"] or "")[:7],
                                   "state": row["state"], "since": created,
-                                  "next": run_supervisor.next_step(row, loop["id"])})
+                                  "next": run_supervisor.next_step(row, loop["id"]),
+                                  "explanation": run_supervisor.hold_explanation(row)})
         # The newest TURNS_MAX rows, shown oldest first: the latest turns are the ones that say
         # whether the PR is still moving. ``turns_total`` lets the page say the list is cut.
         view["turns_total"] = _count(con, "runs", repo, pr)

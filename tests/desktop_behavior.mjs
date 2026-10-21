@@ -9,6 +9,8 @@ const source = await readFile(process.env.DIAKTOROS_PLUGIN_SOURCE || new URL('..
 // Pinned from real stats.collect with a missing disposable ledger; Python checks equality.
 const settingsFixture = JSON.parse(await readFile(new URL('./fixtures/desktop_settings.json', import.meta.url), 'utf8'))
 const recordsWriterFixture = JSON.parse(await readFile(new URL('./fixtures/desktop_records.json', import.meta.url), 'utf8'))
+const holdWriterFixtures = JSON.parse(await readFile(new URL('./fixtures/desktop_hold_explanations.json', import.meta.url), 'utf8'))
+const holdWriterFixture = holdWriterFixtures.run_waiting
 const noLedgerStats = JSON.parse(await readFile(new URL('./fixtures/desktop_no_ledger_stats.json', import.meta.url), 'utf8'))
 
 // One loop of an /overview read, for synthetic fixtures. needs_you defaults to its uncertain run
@@ -265,6 +267,71 @@ async function harness({ cachedAge = null, queryClient: realQueryClient = null, 
     } }
 }
 
+
+async function holdDrawer() {
+  const h = await harness()
+  h.queries.now = h.good({ runs: [{ pr: 7, seat: 'reviewer', head: 'aaaaaaa', state: 'waiting', why: 'waiting' }],
+    counts: { waiting: 1 }, pacing: {}, available: true })
+  const data = { repo: 'fixture/repo', loop: 'fixture-loop', pr: 7, cap: 3,
+    stuck: [{ seat: 'reviewer', head: 'aaaaaaa', state: 'waiting', since: 1, next: 'Legacy host guidance.',
+      explanation: structuredClone(holdWriterFixture) }], turns: [], verdicts: {}, rulings: [], breach: null,
+    findings: [], decisions: [], read_at: 1800000000 }
+  h.queries.pr = h.good(data)
+  h.render('page')
+  h.buttons(h.tree()).find(n => h.text([n]).includes('#7')).props.onClick()
+  h.render('page')
+  return { h, data }
+}
+
+test('hold contract: actual backend fixture renders unchanged without granting an action', async () => {
+  const { h, data } = await holdDrawer()
+  assert.ok(h.text(h.tree()).includes(holdWriterFixture.text))
+  assert.match(h.text(h.tree()), /Ledger only \(partial\)/)
+  h.respond(data)
+  assert.equal(await h.options.pr.queryFn(), data)
+  for (const explanation of Object.values(holdWriterFixtures)) {
+    const next = structuredClone(data); next.stuck[0].explanation = explanation
+    h.respond(next); assert.equal(await h.options.pr.queryFn(), next)
+    h.queries.pr = h.good(next); h.render('page')
+    assert.ok(h.text(h.tree()).includes(explanation.text))
+  }
+  assert.equal(h.calls.at(-1), '/pr?pr=7&loop=fixture-loop')
+  assert.equal(h.retryCalls.length, 0)
+  const dialog = [h.flatten(h.tree()).find(n => n.type === 'Dialog')]
+  assert.equal(h.buttons(dialog).filter(n => h.text([n]) === 'Retry').length, 0)
+  h.dispose()
+})
+
+test('hold contract: malformed nested provenance identity actions and secret prose are rejected before cache', async () => {
+  const { h, data } = await holdDrawer()
+  for (const mutate of [e => { e.schema = 2 }, e => { e.reason_code = 'ci_passed' },
+    e => { e.run_id = '/home/private ghp_secret' }, e => { e.head = 'b'.repeat(40) },
+    e => { e.evidence_source = 'live_github' }, e => { e.completeness = 'complete' },
+    e => { e.waiting_for = '/private/token' }, e => { e.automatic_resume = 'yes' },
+    e => { e.next_eligible_start = -1 }, e => { e.next_eligible_start = NaN },
+    e => { e.next_eligible_start = true }, e => { e.operator_action = 'retry' },
+    e => { e.text = '/home/private ghp_secret' }, e => { e.extra = 'secret' }]) {
+    const broken = structuredClone(data); mutate(broken.stuck[0].explanation); h.respond(broken)
+    await assert.rejects(h.options.pr.queryFn(), /Invalid pr response/)
+  }
+  h.dispose()
+})
+
+test('hold contract: retained stale and legacy unknown stay explicit with no transport text', async () => {
+  const { h, data } = await holdDrawer()
+  h.queries.pr = { ...h.good(data), dataUpdatedAt: 1 }
+  h.render('page')
+  assert.match(h.text(h.tree()), /stale.*PR ledger explanation/i)
+  assert.ok(h.text(h.tree()).includes(holdWriterFixture.text))
+  h.queries.pr = { ...h.fail(data), error: new Error('/home/private ghp_secret') }
+  h.render('page')
+  assert.match(h.text(h.tree()), /stale/i)
+  assert.doesNotMatch(h.text(h.tree()), /home\/private|ghp_secret/)
+  const legacy = structuredClone(data); delete legacy.stuck[0].explanation
+  h.queries.pr = h.good(legacy); h.respond(legacy); await h.options.pr.queryFn(); h.render('page')
+  assert.match(h.text(h.tree()), /Shared explanation unavailable \(older backend\)/)
+  h.dispose(); assert.equal(h.timerCount(), 0)
+})
 
 function recordsFixture() { return structuredClone(recordsWriterFixture) }
 
