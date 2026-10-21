@@ -72,8 +72,8 @@ def adjudication_state(loop: dict | None, row, ledger=None) -> tuple[str, dict]:
         # approved; a shadow escalation whose approval is gone is moot (the reviewer blocks).
         return 'superseded', {}
     counted = gate.verdicts(reviews, loop)
-    # The operator's escalation (#459) holds this head for a ruling in place of a spent cap.
-    if len(counted) < loop['cap'] and not (gate.escalated(marker, row['head']) and (shadow or operator)):
+    # Any standing escalation holds this head for a ruling in place of a spent cap.
+    if len(counted) < loop['cap'] and not gate.escalated(marker, row['head']):
         return 'superseded', {}
     if (not isinstance(marker, dict) or marker.get('pr') != row['pr']
             or marker.get('head') != row['head'] or marker.get('rounds') != rounds
