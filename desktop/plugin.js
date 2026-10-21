@@ -293,10 +293,13 @@ function useHealth(loop) {
   return useQuery({
     queryKey: [ID, 'health', loop, 'probe'],
     queryFn: async () => {
-      const data = await call('/health?loop=' + encodeURIComponent(loop) + '&probe=1')
+      const path = '/health?loop=' + encodeURIComponent(loop)
+      // Validate each endpoint against its own contract. Never turn an unprobed answer
+      // into a successful probe, or accept another loop's local checks.
+      const validate = (data, offline) => {
       const object = value => value && typeof value === 'object' && !Array.isArray(value)
       if (!object(data) || data.loop !== loop || typeof data.repo !== 'string' ||
-          typeof data.offline !== 'boolean' || !Number.isFinite(data.read_at) || data.read_at < 0 ||
+          data.offline !== offline || !Number.isFinite(data.read_at) || data.read_at < 0 ||
           !Array.isArray(data.checks) || !object(data.counts) ||
           !data.checks.every(check => object(check) && typeof check.name === 'string' &&
             ['verified', 'skipped', 'mismatch', 'absent', 'unknown'].includes(check.status) &&
@@ -308,6 +311,19 @@ function useHealth(loop) {
       if (Object.keys(data.counts).length !== Object.keys(counts).length ||
           Object.keys(counts).some(status => counts[status] !== data.counts[status])) throw invalidResponse('health')
       return data
+      }
+      let probed
+      try {
+        probed = await call(path + '&probe=1')
+      } catch (error) {
+        const { status } = retryFailure(error)
+        // One bounded fallback, not a retry. Selection/auth refusals other than the
+        // local-only probe guard remain errors; never render transport error text.
+        if (status !== 0 && status !== 403 && status !== 503) throw error
+        const offline = validate(await call(path), true)
+        return { ...offline, probeFailure: status === 403 ? 'caller' : 'unreachable' }
+      }
+      return { ...validate(probed, false), probeFailure: null }
     },
     enabled: !!loop,
     // A full doctor read is automatic on page entry, not on each local poll/socket hint.
@@ -940,11 +956,17 @@ function Health({ loop }) {
             }) : null,
         jsx(Muted, {
           text: health.data && health.data.offline
-            ? 'This response came back offline: the gateway, the hooks, token expiry and scopes, ' +
+            ? (health.data.probeFailure === 'caller'
+                ? 'GitHub not probed from this caller. '
+                : health.data.probeFailure === 'unreachable'
+                  ? 'GitHub probe unavailable: the probe request could not be completed. '
+                  : '') + 'Local checks only. This response came back offline: the gateway, the hooks, token expiry and scopes, ' +
               'and the labels were left unprobed. Refresh GitHub asks again for the probed set with ' +
               'this loop’s own tokens, from this machine only; hermes dk doctor does the same in a ' +
               'terminal.'
-            : 'Automatically read when this loop opens, using its own tokens on this machine: the gateway, every hook with its latest ' +
+            : !health.data
+              ? 'No verified health data available yet. Local and GitHub checks are unavailable until a read succeeds. Refresh GitHub retries the selected loop.'
+              : 'Automatically read when this loop opens, using its own tokens on this machine: the gateway, every hook with its latest ' +
               'delivery and decision, token expiry and scopes, and the labels — the same set ' +
               'hermes dk doctor reads. Shared for ten minutes; Refresh GitHub checks again. Not polled.'
         })

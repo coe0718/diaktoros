@@ -775,6 +775,10 @@ class Surface(unittest.TestCase):
         # deduped, without polling or a retry storm, and a failed read's Retry hits REST.
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - health automatic selection uses stable probe identity and explicit bounded refresh policy$")
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - health rejects wrong-loop, malformed nested checks and dishonest counts$")
+        self.assertIn('health fallback retains validated local checks and honest disclosure: 403:', done.stdout)
+        self.assertIn('health fallback retains validated local checks and honest disclosure: private transport', done.stdout)
+        self.assertIn('health fallback retains validated local checks and honest disclosure: 503:', done.stdout)
+        self.assertRegex(done.stdout, r"(?m)^ok \d+ - health fallback rejects malformed, wrong-loop and non-offline replies without inventing checks$")
         for kind in ('health', 'stats', 'settings', 'records', 'hooks', 'overview'):
             self.assertRegex(done.stdout, rf"(?m)^ok \d+ - read Retry invokes its own REST read \(no click-only panel\): {kind}$")
         # Real-cache cases run only when DIAKTOROS_QUERY_CORE points at the installed desktop's

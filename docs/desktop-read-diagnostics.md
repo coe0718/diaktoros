@@ -35,23 +35,32 @@ and makes bounded GitHub reads. It never writes, never creates a PR or mutation,
 the doctor checks (names, statuses, bounded detail/fix lines and counts). Tokens and credential
 values are not part of the response; raw transport text is not rendered.
 
-The read is shared by every observer of the same loop and cached for ten minutes
-(`staleTime`). It has `retry: false`, no `refetchInterval`, no reconnect refetch, and it is
-excluded from the socket's invalidation namespace, so a 30-second local poll or an event hint
-cannot turn into a repeated doctor sweep. Switching loops binds a different stable key
-(`[diaktoros, health, <loop>, probe]`); a failed read keeps its last-good data and stays
-recoverable through the panel's Refresh GitHub or its status Retry, which re-request that exact
-loop. A first-load failure renders unavailable with a bounded error category — never an empty
-healthy install. Before caching, the response is rejected unless its `loop` matches the selection,
-every check has a known status plus string detail/fix/paused fields, `read_at` is valid, and the
-counts equal the checks actually returned.
+If the automatic probe is refused with **403**, the page requests the same loop's offline
+health (`GET /health?loop=<id>`) and discloses **GitHub not probed from this caller**. A remote
+caller therefore retains validated local installation checks without weakening the server's
+local-only credential boundary. A transport failure or HTTP 503 also attempts that offline
+read, with a **GitHub probe unavailable** disclosure: this means the probe could not be obtained,
+not that GitHub itself is down. Offline results are **local checks only**; network checks left
+unprobed are unknown, not passing. If both reads fail, the panel is unavailable (or retains
+last-good data with a bounded failure disclosure), never an empty healthy installation.
+
+The read and any validated offline fallback share one stable query key per loop
+(`[diaktoros, health, <loop>, probe]`) and a ten-minute `staleTime`. There is `retry: false`,
+no `refetchInterval`, no reconnect refetch, and no socket invalidation, so a 30-second local
+poll or an event hint cannot become a repeated doctor sweep. Refresh GitHub and status Retry
+explicitly retry the **probe first**, even after an offline fallback, for that same selected loop.
+Before caching either response, its `loop` must match the selection, every check must have a
+known status plus valid detail/fix/paused fields, `read_at` must be valid, and counts must equal
+the checks returned. A probed response must have `offline: false`; a fallback must have
+`offline: true`. The client records the fallback reason as `probeFailure: 'caller'` or
+`probeFailure: 'unreachable'`, without exposing raw errors or treating local checks as proof
+of GitHub reachability.
 
 The page does not currently re-scope server query keys by active profile/connection, so a
-profile switch can show another profile's cached health until it is refetched. This is a known
-unsupported mode, as is automatic probing when the loop is selected on a remote/OAuth connection:
-the route refuses a non-local probe (403) and the panel then shows unavailable rather than
-pretending the read happened. Health is not polled at all; there is no background refresh after
-the ten-minute freshness window (the panel marks it stale and offers Refresh GitHub).
+profile switch can show another profile's cached health until it is refetched. This remains a
+cache-scoping limitation; it is not a reason to discard remote callers' offline checks.
+Health is not polled at all; there is no background refresh after the ten-minute freshness
+window (the panel marks it stale and offers Refresh GitHub).
 
 ## Verified backend behavior
 
