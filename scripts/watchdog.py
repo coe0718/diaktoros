@@ -748,12 +748,23 @@ def act_on_conflicts(loop: dict, st: state_mod.LoopState,
             # with review_only_update on, a clean merge is pushed first, once, under a lease.
             tried = ""
             try:
-                facts = review_only_conflict.assess(loop, number, head,
-                                                    conflict_live.get(number) or {})
+                # The dry merge, and an attempt that stopped, are kept per (head, base tip): a
+                # sweep that sees the same pair again reads them instead of fetching (#504).
+                key = (number, head, tip or base_tip(loop) or "", config.review_only_update(loop))
+                cached = st.review_only_conflict(*key) if key[2] else None
+                if cached:
+                    facts, tried = cached
+                else:
+                    facts = review_only_conflict.assess(loop, number, head,
+                                                        conflict_live.get(number) or {})
                 if (conflict_live.get(number) or {}).get("mergeable_state") == "behind" \
                         and (facts["conflicted"] or facts["error"]):
                     continue                  # behind, not conflicting: nothing to say
-                pushed, tried = review_only_conflict.update(loop, number, head, facts)
+                pushed = ""
+                if not cached:
+                    pushed, tried = review_only_conflict.update(loop, number, head, facts)
+                    if not pushed and key[2] and "clean" in facts:   # the dry merge ran
+                        st.review_only_conflict_set(*key, facts, tried)
                 if pushed:
                     log(f"#{number} @ {head[:7]} merged {loop['base']} in: {pushed[:7]}")
                     observer.notify(loop, st, "updated", number, pushed, identity="updated",
