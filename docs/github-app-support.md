@@ -26,7 +26,7 @@ the distinct accounts and tokens described in [Accounts](accounts.md).
 | --- | --- | --- | --- |
 | 1 | Do the fixer App's PR and pushes send webhooks? | **Yes.** `pull_request` `opened` and `synchronize`, and `push`, with `sender` = `<fixer-slug>[bot]`, `type: Bot`. | The reviewer's trigger exists: a fixer push is a `synchronize`. |
 | 2 | Can the reviewer App submit real reviews at an exact commit? | **Yes.** `REQUEST_CHANGES` with an inline comment and `APPROVE`, both at the requested `commit_id`, by `<reviewer-slug>[bot]`, `type: Bot`. The `pull_request_review` `submitted` payload carries `review.state`, `review.user` (login, `type: Bot`, numeric id), `review.commit_id` and `installation`. | Verdicts and the fixer's trigger work as today. |
-| 3 | Can an App bot be requested as a reviewer? | **No, silently.** `POST …/requested_reviewers` with `<reviewer-slug>[bot]` or `<reviewer-slug>` answers **201**, but `requested_reviewers` stays empty and no `review_requested` event is sent. A human reviewer on the same PR is requested normally, and DELETE then POST fires `review_request_removed` and `review_requested`. | App mode must not use review requests at all: the 201 would read as success. The handoff is `synchronize`, plus `hermes dk review` by hand. |
+| 3 | Can an App bot be requested as a reviewer? | **No, silently.** `POST …/requested_reviewers` with `<reviewer-slug>[bot]` or `<reviewer-slug>` answers **201**, but `requested_reviewers` stays empty and no `review_requested` event is sent. A human reviewer on the same PR is requested normally, and DELETE then POST fires `review_request_removed` and `review_requested`. | App mode must not use review requests at all: the 201 would read as success. The host delivers the fixer's request to the reviewer gate itself (#1203); `hermes dk review` asks by hand. |
 | 4 | Does an App's review count for branch protection? | **No, either way.** After the App's `APPROVE` the PR stays `reviewDecision: REVIEW_REQUIRED`, `mergeStateStatus: BLOCKED`. Its `REQUEST_CHANGES` is not counted either. | GitHub will not block a merge on the reviewer's verdict, nor allow one on its approval. Only Diaktoros's own `ready` and `explain` say what may merge; the merge stays a person's. |
 | 5 | Does each App's webhook see the other Apps' activity? | **Yes, all of it.** With all three webhooks active, each recorded the same deliveries, so every event arrives three times. | One designated App receives events; the others keep their webhooks off. |
 | 6 | The reviewer App on a person's PR, and a push after its approval | The App's approval on a person's PR is accepted. After the person pushes, GitHub does **not** dismiss the App's approval, even with stale-approval dismissal on: it stays `APPROVED` at the old commit. | Fine for Diaktoros, which counts only a verdict at the exact head; never rely on GitHub dismissing it. |
@@ -73,8 +73,9 @@ The core loop works with App identities: PRs, pushes, exact-commit reviews and t
 behave as Diaktoros needs. The two native features that do not work for Apps are not ones the
 loop depends on for safety:
 
-- **Reviewer requests (3):** replace with the `synchronize` event and the existing
-  `hermes dk review`; the review-request paths stay PAT-only.
+- **Reviewer requests (3):** never sent for an App reviewer; the host delivers the fixer's
+  request to the reviewer gate itself (#1203), the watchdog's sweep backstops it, and
+  `hermes dk review` asks by hand.
 - **Branch protection (4):** GitHub neither counts nor enforces the App's reviews, but it does
   enforce a required check pinned to the reviewer App (9). App mode posts `diaktoros/review`
   from the loop's merge gate and setup offers to require it.
