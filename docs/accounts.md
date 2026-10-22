@@ -128,6 +128,27 @@ Seat logins/file paths move through plugin settings and `apply`; preview first w
 
 If the reader is changed, default hook-editing commands now act as the new reader. Give it hook write or explicitly pass a mapped `--admin-token "<admin-login>"` to each hook operation. Naming an admin does not bypass repository access checks.
 
+### A GitHub App identity instead of an account (in progress)
+
+A seat or the reader can be a GitHub App's bot instead of a person's account (#1163): register
+an App, install it on the repository only, keep its private key in a 0600 file, and map it by its
+bot login, App id and key path:
+
+```bash
+hermes dk init --repo owner/repo --reviewer "acme-reviewer[bot]" --fixer fix-bot \
+  --reviewer-profile critic --fixer-profile coder \
+  --read-token reader-bot --host https://gateway.example \
+  --token reader-bot=/abs/reader.pat --token fix-bot=/abs/fixer.pat \
+  --app "acme-reviewer[bot]=5416187:/abs/acme-reviewer.pem"
+```
+
+`setup --app` does the same and does not ask that login's token file; `set --read-token LOGIN --app
+LOGIN=ID:KEY` (or with `--adjudicator-login`) moves the reader or the adjudicator to an App, as
+`--token` does for a PAT. An identity has a PAT or an App, never both: mapping one replaces the
+other. The key never leaves the host and is never read by the CLI. What App bots can and cannot do
+on GitHub, and what is still to come (the settings form, `doctor`, the reviewer handoff and the
+merge check), is in [GitHub App support](github-app-support.md).
+
 ## Verify files, accounts and access
 
 ```bash

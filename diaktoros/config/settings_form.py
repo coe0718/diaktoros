@@ -529,6 +529,9 @@ def apply_seats(loop_raw: dict, settings: dict | None) -> dict:
     # Token files: each seat's login → the path the form names. The value is never read here; the
     # path is checked (``verify_token_settings``) before anything is written.
     tokens = dict(loop_raw.get("tokens") or {})
+    # A login the loop gives a GitHub App identity (#1163) keeps it: the form's token file for
+    # that seat is not mapped onto it (an identity has one credential, and the loop's is explicit).
+    app_logins = {str(k).lower() for k in loop_raw.get("apps") or {}}
     for seat in config.SEAT_KEYS:
         path = str((mapping.get(seat) or {}).get("token_file") or "")
         login = str(seats.get(seat, {}).get("login") or "")
@@ -536,7 +539,8 @@ def apply_seats(loop_raw: dict, settings: dict | None) -> dict:
             if not login:
                 raise config.ConfigError(f"{config.TOKEN_FILE_SETTINGS[seat]} is set but the {seat} seat has no "
                                   "login to map it to — set its login first")
-            _map_token(tokens, login, path)
+            if login.lower() not in app_logins:
+                _map_token(tokens, login, path)
     # The adjudicator's comment identity, like its profile, only lands on a loop that already has an
     # adjudicator route: a login alone cannot rule on anything.
     adj_login = str(adj_entry.get("login") or "")
@@ -550,7 +554,8 @@ def apply_seats(loop_raw: dict, settings: dict | None) -> dict:
             if not login:
                 raise config.ConfigError("adjudicator_token_file is set but no adjudicator login is — set "
                                   "adjudicator_login (a token file names nobody on its own)")
-            _map_token(tokens, login, adj_path)
+            if login.lower() not in app_logins:
+                _map_token(tokens, login, adj_path)
         seats["adjudicator"] = adj_seat
     if tokens != dict(loop_raw.get("tokens") or {}):
         raw["tokens"] = tokens

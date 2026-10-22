@@ -260,6 +260,12 @@ def cmd_init(args) -> int:
             print(f"refused: {exc}")
             return 2
         tokens[login] = path
+    apps = {}
+    for pair in getattr(args, "app", None) or []:
+        split = cli_common._split_app_pair(pair)
+        if split is None:
+            return 2
+        apps[split[0]] = split[1]
 
     # Token-file paths from the settings form are checked before anything else is: a path that is
     # relative, missing, not yours or group/world readable is refused by name, and never opened.
@@ -299,7 +305,7 @@ def cmd_init(args) -> int:
                        if login.lower() == configured_fixer.lower()), fixers[0]) if configured_fixer else fixers[0]
     adjudicator_profile = args.adjudicator_profile or d["adjudicator_profile"] or "default"
     # An explicit --token for a login wins over the form's path for it, as every explicit flag does.
-    mapped = {login.lower() for login in tokens}
+    mapped = {login.lower() for login in (*tokens, *apps)}   # an App identity takes no PAT
     for seat_login_, key in ((reviewer_seat, "reviewer_token_file"), (fixer_seat, "fixer_token_file")):
         if d[key] and seat_login_ and seat_login_.lower() not in mapped:
             tokens[seat_login_] = str(pathlib.Path(d[key]).expanduser())
@@ -360,6 +366,7 @@ def cmd_init(args) -> int:
         "shadow": shadow,
         "skill": args.skill,
         "tokens": tokens, "read_token": args.read_token,
+        **({"apps": apps} if apps else {}),
         "clone": args.clone, "roots": args.root or [],
         "state_dir": args.state_dir or str(config.default_state_dir(
             args.id or args.repo.split("/")[-1])),
@@ -766,12 +773,17 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     fixer = ask(args.fixer, "fixer GitHub login (the account that pushes fixes)", d["fixer_login"])
     reviewer_profile = ask(args.reviewer_profile, "reviewer's Hermes profile", d["reviewer_profile"])
     fixer_profile = ask(args.fixer_profile, "fixer's Hermes profile", d["fixer_profile"])
-    reviewer_file = ask(args.reviewer_token, f"token file for {reviewer or 'the reviewer'}",
-                        d["reviewer_token_file"])
-    fixer_file = ask(args.fixer_token, f"token file for {fixer or 'the fixer'}",
-                     d["fixer_token_file"])
+    # A login given a GitHub App identity (--app, #1163) has a key, not a PAT: no file is asked.
+    app_logins = {str(pair).split("=", 1)[0].strip().lower()
+                  for pair in (getattr(args, "app", None) or [])}
+    has_app = lambda login: bool(login) and login.lower() in app_logins  # noqa: E731
+    reviewer_file = "" if has_app(reviewer) else ask(
+        args.reviewer_token, f"token file for {reviewer or 'the reviewer'}", d["reviewer_token_file"])
+    fixer_file = "" if has_app(fixer) else ask(
+        args.fixer_token, f"token file for {fixer or 'the fixer'}", d["fixer_token_file"])
     reader = ask(args.read_token, "reader login (its own account; the gates read GitHub as it)")
-    reader_file = ask(args.read_token_file, f"token file for {reader or 'the reader'}")
+    reader_file = "" if has_app(reader) else ask(
+        args.read_token_file, f"token file for {reader or 'the reader'}")
     host = ask(args.host, "your gateway's webhook origin (https://…)", d["host"])
     observer = (args.observer_profile if args.observer_profile is not None else
                 _ask("Hermes profile whose chat gets the loop's notices (blank: none)", "",
@@ -805,6 +817,7 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
                         (admin, admin_file)):
         if login and file:
             argv.append(f"--token={login}={pathlib.Path(file).expanduser()}")
+    argv += [f"--app={pair}" for pair in (getattr(args, "app", None) or [])]
     if observer:
         argv.append(f"--observer-profile={observer}")
     if adjudicator:
@@ -999,6 +1012,8 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                            "~/.hermes/state/diaktoros/<id>; ~/.hermes/state/review-loops/<id> "
                            "is only a leftover until `migrate` moves it)")
     init.add_argument("--token", action="append", default=[], help="login=/path/to/pat (repeatable)")
+    init.add_argument("--app", action="append", default=[], metavar="LOGIN=APP_ID:KEY",
+                      help="a GitHub App identity instead of a PAT: <app-slug>[bot]=APP_ID:/abs/path/to/key.pem (repeatable; the key stays on the host, mode 0600)")
     init.add_argument("--read-token", default="",
                       help="required: login whose token reads GitHub — its own account, never "
                            "a seat or the adjudicator login (the four-identity rule)")
@@ -1158,6 +1173,10 @@ def add_setup(sub) -> None:  # noqa: ANN001
                        ("schedule", "watchdog interval (default 15m)"),
                        ("watchdog-deliver", "where watchdog alerts go (default local)")):
         first.add_argument(f"--{flag}", default="", help=what)
+    first.add_argument("--app", action="append", default=None, metavar="LOGIN=APP_ID:KEY",
+                       help="a GitHub App identity for a seat or the reader instead of a PAT: "
+                            "<app-slug>[bot]=APP_ID:/abs/path/to/key.pem (repeatable); that "
+                            "login's token file is then not asked for")
     first.add_argument("--admin-token", default=None,
                        help="hook admin login: the hooks are created (paused) as it")
     first.add_argument("--observer-profile", default=None,
