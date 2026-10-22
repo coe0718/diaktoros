@@ -459,7 +459,9 @@ def host_secret_paths(loop: dict, settings: dict, runtime_file: Path) -> list[st
             paths.append(str(Path(os.environ[var]).expanduser()))
     paths += [str(runtime_file), str(config.home() / ".env"),
               str(config.config_dir() / f"{loop['id']}.json")]
-    paths += [str(Path(str(raw)).expanduser()) for raw in (loop.get("tokens") or {}).values()]
+    # Every identity's credential file: PATs and GitHub App private keys (#1163) alike.
+    paths += [str(Path(str(raw)).expanduser()) for raw in config.credentials_map(loop).values()
+              if raw]
     return list(dict.fromkeys(paths))
 
 
@@ -1258,7 +1260,7 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
         timeout = config.turn_budget(loop, "reviewer")
     runtime_file = Path(runtime_file or runtime_path())
     redact = Redactor()
-    for raw in (loop.get("tokens") or {}).values():
+    for raw in config.credentials_map(loop).values():     # PATs and App keys (#1163)
         redact.add_file(raw)
     report = Report(out, redact)
     github_scope = ("GitHub: reads only, plus one write: --ping asks GitHub to ping each loop hook"

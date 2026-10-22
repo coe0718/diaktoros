@@ -23,7 +23,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import broker, config, gh, github_app, safe_push  # noqa: E402
+from diaktoros import (broker, config, gh, github_app, run_supervisor, safe_push,  # noqa: E402
+                       selftest, trusted_fetch)
 from diaktoros.config import credentials  # noqa: E402
 
 OPENSSL = shutil.which("openssl", path="/usr/bin:/bin:/usr/local/bin")
@@ -324,6 +325,92 @@ class Broker(Base):
         self.loop["tokens"]["fix"] = str(self.key)
         with self.assertRaisesRegex(broker.BrokerDenied, "distinct token files"):
             self.authorize()
+
+
+class EveryCredentialCheck(Broker):
+    """Each place that asks "is a credential mapped" or "are the files distinct" (shadow review
+    of #1177): an App identity passes it and reaches the step after it. Reverting a switch to
+    ``gh.credential_path`` / ``config.credentials_map`` brings back the mapping refusal."""
+
+    MAPPING = ("token mappings required", "triage token mapping required",
+               "distinct token files", "explicit seat and read token mappings required")
+
+    def assertPastMapping(self, call):
+        try:
+            got = call()
+        except (broker.BrokerDenied, trusted_fetch.FetchDenied) as exc:
+            self.assertFalse(any(m in str(exc) for m in self.MAPPING), str(exc))
+            return str(exc)
+        return got
+
+    def add_arbiter(self):
+        arbiter = self.root / "arbiter.pat"
+        arbiter.write_text("DUMMY_PAT_arbiter")
+        arbiter.chmod(0o600)
+        self.loop["tokens"]["arbiter"] = str(arbiter)
+        self.loop["seats"]["adjudicator"] = {"login": "arbiter"}
+
+    def test_the_ruling_comment_authorizer_takes_an_app_seat(self):
+        self.add_arbiter()
+        real = gh.api
+
+        def api(loop, path, method="GET", body=None, login=None):
+            if path == "/user" and login == "arbiter":
+                return {"login": "arbiter", "id": 4}
+            return real(loop, path, method=method, body=body, login=login)
+        with mock.patch.object(gh, "api", side_effect=api), \
+                mock.patch.object(gh, "reviews", return_value=[]):
+            got = self.assertPastMapping(lambda: broker.authorize_ruling_comment(
+                self.loop, repo=REPO, number=7, head=HEAD, branch="fix-7"))
+        self.assertNotIn("principal", str(got))
+
+    def test_the_triage_authorizer_takes_an_app_login(self):
+        self.loop["triage"] = {"route": "w-triage"}            # labels as the reviewer seat (App)
+        with mock.patch.object(run_supervisor, "triage_issue"):
+            self.assertEqual(self.assertPastMapping(
+                lambda: broker.authorize_triage(self.loop, repo=REPO, number=7)), BOT)
+
+    def test_the_issue_fix_authorizer_takes_an_app_seat(self):
+        with mock.patch.object(config, "issue_fixes_enabled", return_value=True), \
+                mock.patch.object(run_supervisor, "issue_fix_issue"), \
+                mock.patch.object(run_supervisor, "issue_fix_dependencies"):
+            self.assertEqual(self.assertPastMapping(
+                lambda: broker.authorize_issue_fix(self.loop, repo=REPO, number=7)), "fix")
+
+    def test_trusted_fetch_resolves_an_app_seat(self):
+        def bounded(loop, path, login, limit=None):
+            if path == "/user":
+                return {"login": login}
+            raise AssertionError(path)
+        with mock.patch.object(trusted_fetch, "_json", side_effect=bounded):
+            self.assertEqual(self.assertPastMapping(lambda: trusted_fetch._identity(
+                self.loop, REPO, 7, HEAD, "fix-7", "reviewer")), "read")
+
+    def test_update_branch_takes_an_app_fixer(self):
+        self.loop["apps"]["acme-fixer[bot]"] = {"app_id": 77, "key_file": str(self.key) + ".f"}
+        Path(str(self.key) + ".f").write_text("k")
+        self.loop["seats"]["fixer"] = {"login": "acme-fixer[bot]"}
+        with mock.patch.object(config, "review_only_update", return_value=True), \
+                mock.patch.object(config, "unattended_fixer_push_enabled", return_value=True):
+            why = self.assertPastMapping(lambda: safe_push.update_branch(
+                self.loop, repo=REPO, number=7, head=HEAD, branch="../bad"))
+        self.assertEqual(why, "unsafe branch ref")
+
+    def test_reader_problem_sees_an_app_readers_shared_key(self):
+        self.loop["apps"]["acme-reader[bot]"] = {"app_id": 9, "key_file": str(self.key)}
+        self.loop["read_token"] = "acme-reader[bot]"
+        from diaktoros.config import credentials as creds
+        self.assertIn("read the same token file", creds.reader_problem(self.loop))
+
+    def test_selftest_probes_and_redacts_app_keys(self):
+        with mock.patch("diaktoros.seat_model.secret_paths", return_value=[]):
+            paths = selftest.host_secret_paths(self.loop, {}, self.root / "runtime.json")
+        self.assertIn(str(self.key), paths)
+        redact = selftest.Redactor()
+        for raw in config.credentials_map(self.loop).values():
+            redact.add_file(raw)
+        whole = self.key.read_text().strip()
+        self.assertNotIn(whole, redact(f"leaked {whole}"))
 
 
 @unittest.skipUnless(Path("/usr/bin/git").exists(), "git is not installed here")
