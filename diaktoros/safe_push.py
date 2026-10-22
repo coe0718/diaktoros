@@ -314,11 +314,23 @@ def _isolated(loop: dict, login: str, identity: dict, remote: str | None):
         askpass = root / "askpass.py"
         askpass.write_text("#!/usr/bin/python3\n" + util.leak_guard_code(_ASKPASS))
         askpass.chmod(0o700)
+        token_file = gh.token_path(loop, login)
+        if token_file is None:
+            # A GitHub App identity (#1163) has a key, not a token file: the askpass reads a
+            # token minted for this operation, in this private directory, gone when it ends.
+            token_file = root / "token"
+            fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(fd, gh.token(loop, login).encode())
+            except gh.GitHubError as exc:
+                raise broker.BrokerDenied(f"fixer credential unavailable: {exc}") from None
+            finally:
+                os.close(fd)
         env = {"PATH": "/usr/bin:/bin", "HOME": temp, "XDG_CONFIG_HOME": temp,
                "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
                "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": str(askpass),
                "GIT_OPTIONAL_LOCKS": "0", "GIT_INDEX_FILE": str(root / "manifest.index"),
-               "DIAKTOROS_TOKEN_FILE": str(gh.token_path(loop, login)), "LC_ALL": "C",
+               "DIAKTOROS_TOKEN_FILE": str(token_file), "LC_ALL": "C",
                "GIT_AUTHOR_NAME": identity["name"], "GIT_AUTHOR_EMAIL": identity["email"],
                "GIT_COMMITTER_NAME": identity["name"], "GIT_COMMITTER_EMAIL": identity["email"]}
         util.leak_guard_env(env, pythonpath=False)   # the askpass loads it by path
@@ -877,7 +889,7 @@ def update_branch(loop: dict, *, repo: str, number: int, head: str, branch: str,
         raise broker.BrokerDenied("unattended fixer push disabled")
     login = config.seat_login(loop, "fixer")
     reader = loop.get("read_token")
-    if (not login or not reader or not gh.token_path(loop, login) or not gh.token_path(loop, reader)
+    if (not login or not reader or not gh.credential_path(loop, login) or not gh.credential_path(loop, reader)
             or login.casefold() == str(reader).casefold()):
         raise broker.BrokerDenied("explicit seat and read token mappings required")
     if not isinstance(branch, str) or len(branch) > 200 or not all(

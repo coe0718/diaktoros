@@ -75,14 +75,14 @@ def authorize(loop: dict, *, repo: str, number: int, head: str, role: str,
         raise BrokerDenied("operation not permitted for role")
     login = ((loop.get("seats") or {}).get(role) or {}).get("login")
     reader = loop.get("read_token")
-    if not login or not reader or not gh.token_path(loop, login) or not gh.token_path(loop, reader):
+    if not login or not reader or not gh.credential_path(loop, login) or not gh.credential_path(loop, reader):
         raise BrokerDenied("explicit seat and read token mappings required")
     seats = loop.get("seats") or {}
     reviewer = (seats.get("reviewer") or {}).get("login")
     fixer = (seats.get("fixer") or {}).get("login")
     if not reviewer or not fixer or len({reviewer, fixer, reader}) != 3:
         raise BrokerDenied("read, reviewer and fixer must use distinct identities")
-    mapped = [gh.token_path(loop, identity) for identity in (reader, reviewer, fixer)]
+    mapped = [gh.credential_path(loop, identity) for identity in (reader, reviewer, fixer)]
     if any(path is None for path in mapped):
         raise BrokerDenied("read, reviewer and fixer token mappings required")
     if len({path.resolve() for path in mapped if path is not None}) != 3:
@@ -333,7 +333,7 @@ def authorize_ruling_comment(loop: dict, *, repo: str, number: int, head: str,
     if (not all(isinstance(i, str) and i for i in identities)
             or len({i.casefold() for i in identities}) != 4):
         raise BrokerDenied("read, reviewer, fixer and adjudicator must use distinct identities")
-    mapped = [gh.token_path(loop, identity) for identity in identities]
+    mapped = [gh.credential_path(loop, identity) for identity in identities]
     if any(path is None for path in mapped):
         raise BrokerDenied("read, reviewer, fixer and adjudicator token mappings required")
     if len({path.resolve() for path in mapped if path is not None}) != 4:
@@ -402,7 +402,7 @@ def authorize_triage(loop: dict, *, repo: str, number: int) -> str:
     reader = str(loop.get("read_token") or "")
     if not login or login.casefold() == reader.casefold():
         raise BrokerDenied("no triage identity distinct from the reader")
-    if gh.token_path(loop, login) is None:
+    if gh.credential_path(loop, login) is None:
         raise BrokerDenied("triage token mapping required")
     try:
         if not gh.token(loop, login):
@@ -462,7 +462,7 @@ def authorize_issue_fix(loop: dict, *, repo: str, number: int) -> str:
     identities = (reader, reviewer, fixer)
     if not all(identities) or len({i.casefold() for i in identities}) != 3:
         raise BrokerDenied("read, reviewer and fixer must use distinct identities")
-    mapped = [gh.token_path(loop, identity) for identity in identities]
+    mapped = [gh.credential_path(loop, identity) for identity in identities]
     if any(path is None for path in mapped) or len({p.resolve() for p in mapped if p}) != 3:
         raise BrokerDenied("read, reviewer and fixer must use distinct token files")
     try:

@@ -12,7 +12,8 @@ The plugin settings form is *not* a source for a running loop: it supplies defau
 and `apply --loop` pushes it. A form value the loop does not hold is shown as a ``note``, never as
 the effective value, so `show` cannot say a setting is on when the loop would not act on it.
 
-Token values are never read: ``tokens`` rows show the file paths from the loop file.
+Token values are never read: ``tokens`` rows show the file paths from the loop file, and
+``apps`` rows the App ids and key paths, never a key.
 """
 from __future__ import annotations
 
@@ -176,6 +177,11 @@ def _rows(loop: dict) -> list[_Row]:
           "login the gates read GitHub as (the reader; never a seat)")
     plain("tokens", ("tokens",), {k: str(v) for k, v in tokens.items()},
           "login -> token file path (paths only; token values are never read)")
+    plain("apps", ("apps",),
+          {k: {"app_id": v.get("app_id"), "key_file": str(v.get("key_file"))}
+           for k, v in (loop.get("apps") or {}).items() if isinstance(v, dict)},
+          "GitHub App identities: bot login -> App id and private-key path (the key is never "
+          "read here)")
     plain("skill", ("skill",), loop.get("skill") or _UNSET, "plugin skill the seats load")
     plain("roots", ("roots",), list(loop.get("roots") or []),
           "directories cleanup prunes PR-named children of")
