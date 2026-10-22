@@ -125,6 +125,32 @@ class Continue(Base):
                             for line in lines), lines)
         self.assertFalse(any(line == "requested review of PR #5" for line in lines), lines)
 
+    def undelivered(self, api, kick, why):
+        # A failure path of the delivery: the PR cannot be read, or the delivery fails.
+        from diaktoros import review_kick
+        self.loop = {**self.loop, "apps": {self.loop["reviewer_seat"]: {"app_id": 1, "key_file": "/k"}},
+                     "tokens": {k: v for k, v in (self.loop.get("tokens") or {}).items()
+                                if k.lower() != self.loop["reviewer_seat"].lower()}}
+        self.prs = [self.pr(5)]
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE issue_fixes SET state='opened',pr_number=5")
+        effect = {"side_effect": kick} if isinstance(kick, Exception) else {"return_value": kick}
+        with mock.patch.object(gh, "api", return_value=api), \
+                mock.patch.object(review_kick, "kick", **effect):
+            ok, lines = continue_run.run(self.loop, self.sup, self.run_id)
+        self.assertTrue(ok, lines)
+        self.assertTrue(any(why in line and "the watchdog sweep will" in line
+                            for line in lines if "PR #5" in line), lines)
+
+    def test_an_unreadable_pr_says_the_watchdog_will_deliver_its_review(self):
+        self.undelivered(None, None, "could not read it")
+
+    def test_a_failed_delivery_says_the_watchdog_will(self):
+        self.undelivered(self.pr(5), False, "was not delivered")
+
+    def test_a_raising_delivery_says_the_watchdog_will(self):
+        self.undelivered(self.pr(5), RuntimeError("gateway down"), "was not delivered")
+
     def test_a_pat_reviewers_open_pr_is_still_requested(self):
         from diaktoros import review_kick
         self.prs = [self.pr(5)]
