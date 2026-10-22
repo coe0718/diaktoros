@@ -132,7 +132,26 @@ def token_path(loop: dict, login: str | None = None) -> pathlib.Path | None:
     return pathlib.Path(str(raw)).expanduser() if raw else None
 
 
+def credential_path(loop: dict, login: str | None = None) -> pathlib.Path | None:
+    """The file ``login``'s credential lives in: its PAT (``tokens``), or its GitHub App's
+    private key (``apps``, #1163). For "is a credential mapped" and "are two identities' files
+    distinct" only: the key file is never a token, and ``token_path`` stays PAT-only so nothing
+    reads a key as one."""
+    path = token_path(loop, login)
+    if path is not None:
+        return path
+    from . import github_app
+    return github_app.key_path(loop, login or loop.get("read_token"))
+
+
 def token(loop: dict, login: str | None = None) -> str:
+    """The token to send as ``login``: its PAT, or a minted installation token for an App
+    identity (``github_app``). Raises ``GitHubError`` without the credential in the message."""
+    name = login or loop.get("read_token")
+    if token_path(loop, name) is None:
+        from . import github_app
+        if github_app.is_app(loop, name):
+            return github_app.installation_token(loop, name)
     path = token_path(loop, login)
     if not path or not path.exists():
         raise GitHubError(f"no token file for {login or loop.get('read_token')!r} "
@@ -353,6 +372,10 @@ def principal(loop: dict, login: str, fetch=None) -> dict | None:
     here instead, since an installation token cannot call ``/user``. ``fetch(path)`` is the
     caller's own transport (a bounded read, a read that raises), so each caller keeps its exact
     failure behaviour and its own checks on what comes back."""
+    from . import github_app
+    if token_path(loop, login) is None and github_app.is_app(loop, login):
+        # An installation token cannot call /user: the App's bot user is the principal.
+        return github_app.principal(loop, login)
     if fetch is None:
         def fetch(path):
             return api(loop, path, login=login)
@@ -361,7 +384,13 @@ def principal(loop: dict, login: str, fetch=None) -> dict | None:
 
 
 def auth_probe(loop: dict) -> Response:
-    """``GET /user`` as the read token: who it is, and (in the headers) when it expires."""
+    """``GET /user`` as the read token: who it is, and (in the headers) when it expires. An App
+    reader (#1163) cannot call ``/user`` and has no expiry: its probe reads the loop's repository,
+    so a key that cannot mint a token still fails here."""
+    from . import github_app
+    reader = loop.get("read_token")
+    if token_path(loop, reader) is None and github_app.is_app(loop, reader):
+        return request(loop, f"/repos/{loop.get('repo')}")
     return request(loop, "/user")
 
 

@@ -60,8 +60,8 @@ def verify_adjudicator_token(loop: dict) -> None:
     """
     login = config.adjudicator_login(loop)
     if login:
-        check_token_file((loop.get("tokens") or {}).get(login),
-                         f"token file for the adjudicator login {login!r}")
+        check_token_file(config.credentials_map(loop).get(login),
+                         f"credential file for the adjudicator login {login!r}")
 
 
 def verify_token_settings(settings: dict | None) -> None:
@@ -100,7 +100,7 @@ def reader_problem(loop: dict) -> str:
     for role, login in others:
         if login and login.casefold() == reader.casefold():
             return f"the reader {reader!r} is also the {role}"
-    tokens = {str(k).casefold(): str(v or "") for k, v in (loop.get("tokens") or {}).items()}
+    tokens = {str(k).casefold(): v for k, v in config.credentials_map(loop).items()}
     mine = tokens.get(reader.casefold())
     if not mine:
         return ""
@@ -155,11 +155,22 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
             raise config.ConfigError(f"{where}: token file for {login!r} is empty ({path}) — an empty PAT "
                               "reads as an unauthenticated call, not as a loud failure")
 
+    # A GitHub App identity (#1163) has a private key, not a PAT: the key file must be there,
+    # private and non-empty; it is never read here.
+    for login, spec in sorted((loop.get("apps") or {}).items()):
+        raw_path = str((spec or {}).get("key_file") or "") if isinstance(spec, dict) else ""
+        problem = token_file_problem(raw_path) if raw_path else "no key_file given"
+        if not problem and config._path(raw_path).stat().st_size == 0:
+            problem = "it is empty"
+        if problem:
+            raise config.ConfigError(f"{where}: App key for {login!r}: {problem}")
+    tokens = {str(k).lower(): v for k, v in config.credentials_map(loop).items()}
+
     roles = set(roles or ())
     read_token = str(loop.get("read_token") or "").lower()
     if roles and read_token and read_token not in tokens:
-        raise config.ConfigError(f"{where}: read_token {read_token!r} has no entry in 'tokens' — the gates "
-                          "read GitHub as that login")
+        raise config.ConfigError(f"{where}: read_token {read_token!r} has no entry in 'tokens' "
+                          "or 'apps' — the gates read GitHub as that login")
 
     for seat in config.SEAT_KEYS:
         if seat not in roles:

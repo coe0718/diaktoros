@@ -214,6 +214,7 @@ DEFAULTS: dict = {
     "skill": "",
     "read_token": "",
     "tokens": {},
+    "apps": {},
     "clone": "",
     "roots": [],
     "concurrency": 1,         # runs allowed at once per seat; >1 requires isolation
@@ -828,10 +829,11 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
     if login.casefold() in others:
         raise ConfigError(f"{where}: seats.adjudicator.login {login!r} is also the reader, a seat "
                           f"or an allowlisted reviewer/fixer — {FOUR_IDENTITY_RULE}")
-    tokens = loop.get("tokens") or {}
+    tokens = credentials_map(loop)          # a PAT or an App key (#1163)
     if not tokens.get(login):
-        raise ConfigError(f"{where}: seats.adjudicator.login {login!r} has no entry in 'tokens' — "
-                          "an adjudicator identity without its own credential cannot comment")
+        raise ConfigError(f"{where}: seats.adjudicator.login {login!r} has no entry in 'tokens' "
+                          "or 'apps' — an adjudicator identity without its own credential cannot "
+                          "comment")
     mine = _path(tokens[login])
     for other, raw_path in tokens.items():
         if other == login or not raw_path:
@@ -1099,10 +1101,55 @@ def normalize_triage(raw, loop: dict, where: str) -> dict:
     if who == str(loop.get("read_token") or "").lower():
         raise ConfigError(f"{where}: triage would label as the reader {who!r} — the reader only "
                           f"reads; {FOUR_IDENTITY_RULE}")
-    if not {str(k).lower() for k in loop.get("tokens") or {}} & {who}:
+    if not {str(k).lower() for k in credentials_map(loop)} & {who}:
         raise ConfigError(f"{where}: no token mapped for the triage login {who!r} — add --token "
                           f"{who}=/path/to/pat (it needs issues: write on the repository)")
     return out
+
+
+APP_LOGIN = re.compile(r"[a-z0-9][a-z0-9-]{0,33}\[bot\]\Z")
+
+
+def check_apps(value, tokens: dict, where: str) -> dict:
+    """GitHub App identities (#1163): ``{"<slug>[bot]": {"app_id": N, "key_file": "/abs.pem"}}``.
+    The login is the App's bot login; an identity has a PAT (``tokens``) or an App, never both,
+    so which credential a seat uses is never a guess."""
+    if value in (None, {}):
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError(f"{where}: 'apps' must be an object of App bot logins")
+    out = {}
+    pats = {str(k).casefold() for k in tokens}
+    for login, spec in value.items():
+        name = str(login)
+        if not APP_LOGIN.match(name.lower()):
+            raise ConfigError(f"{where}: apps.{name}: an App identity is its bot login, "
+                              "'<app-slug>[bot]'")
+        if name.casefold() in pats:
+            raise ConfigError(f"{where}: {name!r} is in both 'tokens' and 'apps' — an identity "
+                              "uses one credential")
+        if not isinstance(spec, dict) or set(spec) - {"app_id", "key_file"}:
+            raise ConfigError(f"{where}: apps.{name} must be {{\"app_id\": N, \"key_file\": "
+                              "\"/abs/path.pem\"}}")
+        app_id = spec.get("app_id")
+        if type(app_id) is not int or app_id <= 0:
+            raise ConfigError(f"{where}: apps.{name}.app_id must be the App's numeric id")
+        key = str(spec.get("key_file") or "")
+        problem = relative_path_problem(key) if key else "no key_file given"
+        if problem:
+            raise ConfigError(f"{where}: apps.{name}.key_file: {problem}")
+        out[name] = {"app_id": app_id, "key_file": key}
+    return out
+
+
+def credentials_map(loop: dict) -> dict:
+    """Every identity's credential file: PAT files (``tokens``) and App private keys (``apps``).
+    For "has a credential" and "uses its own file" checks only; a key is never read as a token."""
+    found = {str(k): str(v or "") for k, v in (loop.get("tokens") or {}).items()}
+    for login, spec in (loop.get("apps") or {}).items():
+        if isinstance(spec, dict):
+            found.setdefault(str(login), str(spec.get("key_file") or ""))
+    return found
 
 
 def check_concurrency(value, what: str, where: str) -> int:
@@ -1529,6 +1576,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         problem = relative_path_problem(token_path)
         if problem:
             raise ConfigError(f"{where}: tokens.{login}: {problem}")
+    loop["apps"] = check_apps(loop.get("apps"), loop["tokens"], where)
     # The reader is named, never inferred: taking "the first token" would make whichever seat
     # happens to be listed first the account every gate reads GitHub as.
     loop["read_token"] = str(loop.get("read_token") or "").strip()
