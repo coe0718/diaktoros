@@ -75,6 +75,16 @@ class TriageVerb(unittest.TestCase):
         self.assertIn("issue fixes: off", out)
         self.assertIn("maintainers: owner (their comments reach both seats", out)
 
+    def test_a_bare_empty_fix_label_turns_fixes_off_and_keeps_the_maintainers(self):
+        # Shadow review of #1218: `triage --loop X --fix-label ''` alone, no --enable.
+        self.assertEqual(self.enable("--fix-label", "agent-fix", "--maintainer", "Owner")[0], 0)
+        rc, out = self.cli("triage", "--loop", LOOP_ID, "--fix-label", "")
+        self.assertEqual(rc, 0, out)
+        triage = config.load_id(LOOP_ID)["triage"]
+        self.assertNotIn("fix_label", triage)
+        self.assertEqual(triage["maintainers"], ["owner"])
+        self.assertIn("issue fixes: off", out)
+
     def test_a_maintainer_needs_no_fix_label_and_still_reaches_the_seats(self):
         rc, out = self.enable("--maintainer", "Owner")
         self.assertEqual(rc, 0, out)

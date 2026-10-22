@@ -1526,8 +1526,11 @@ _TRIAGE_CHANGE_FLAGS = ("profile", "author", "labels", "max_labels", "comment", 
 
 def _triage_change_flags(args) -> list[str]:
     """Option names given on the command line that change triage (not --loop/--dry-run)."""
+    # `--fix-label ''` is a change (it turns issue fixes off, #1217): its default is None, so
+    # an empty string can only have been given on purpose. Every other "" or [] is no change.
     return ["--" + name.replace("_", "-") for name in _TRIAGE_CHANGE_FLAGS
-            if getattr(args, name, None) not in (None, "", [])]
+            if getattr(args, name, None) not in (None, "", [])
+            or (name == "fix_label" and getattr(args, name, None) == "")]
 
 
 def _split_token_pair(pair: str) -> tuple[str, str] | None:
