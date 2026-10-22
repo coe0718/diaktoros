@@ -147,6 +147,68 @@ class Set(Base):
                              "--app", f"{BOT_READ}=x:{self.key('read')}"], "not a number")
 
 
+class SetReview(Base):
+    """The shadow review of #1191: what `set` writes for an App reader or adjudicator."""
+    BOT_ADJ = "acme-arbiter[bot]"
+
+    def install_app_reader(self):
+        rc, out = self.run_cli(self.app_argv(
+            reviewer=BOT_REV, reader=BOT_READ,
+            apps=[(BOT_READ, 1, self.key("read")), (BOT_REV, 2, self.key("rev"))],
+            tokens=[(tfs.FIX, self.pats["fix"])]))
+        self.assertEqual(rc, 0, out)
+
+    def test_moving_an_app_readers_key_onto_a_seats_key_is_refused(self):
+        self.install_app_reader()
+        seat_key = self.loop_json()["apps"][BOT_REV]["key_file"]
+        self.assert_refused(["set", "--loop", "widgets", "--read-token", BOT_READ,
+                             "--app", f"{BOT_READ}=1:{seat_key}"], "same token file")
+
+    def test_moving_an_app_readers_key_to_an_empty_file_is_refused(self):
+        self.install_app_reader()
+        empty = self.keys / "empty.pem"
+        empty.write_text("")
+        empty.chmod(0o600)
+        self.assert_refused(["set", "--loop", "widgets", "--read-token", BOT_READ,
+                             "--app", f"{BOT_READ}=1:{empty}"], "empty")
+
+    def test_set_prints_the_app_it_maps(self):
+        self.install_app_reader()
+        key = self.key("read2")
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--read-token", BOT_READ,
+                                "--app", f"{BOT_READ}=7:{key}"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"reader credential ({BOT_READ}): App 1, key ", out)
+        self.assertIn(f"→ App 7, key {key}", out)
+
+    def install_app_adjudicator(self):
+        rc, out = self.run_cli(self.app_argv(
+            "--adjudicator-route", "widgets-breach", "--adjudicator-profile", "arbiter",
+            "--adjudicator-login", self.BOT_ADJ,
+            reviewer=tfs.REV, apps=[(self.BOT_ADJ, 3, self.key("adj"))],
+            tokens=[(tfs.READER, self.pats["read"]), (tfs.REV, self.pats["rev"]),
+                    (tfs.FIX, self.pats["fix"])]))
+        self.assertEqual(rc, 0, out)
+
+    def test_changing_an_app_adjudicators_key_is_written(self):
+        self.install_app_adjudicator()
+        key = self.key("adj2")
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-login", self.BOT_ADJ,
+                                "--app", f"{self.BOT_ADJ}=3:{key}"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.loop_json()["apps"][self.BOT_ADJ]["key_file"], str(key))
+
+    def test_apply_keeps_an_app_adjudicator_and_says_the_form_file_is_not_applied(self):
+        self.install_app_adjudicator()
+        before = self.loop_json()["apps"]
+        rc, out = self.run_cli(["apply", "--loop", "widgets"],
+                               settings={"adjudicator_token_file": str(self.pats["adj"])})
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.loop_json()["apps"], before)
+        self.assertNotIn(self.BOT_ADJ, self.loop_json()["tokens"])
+        self.assertIn(f"adjudicator_token_file is not applied — {self.BOT_ADJ}", out)
+
+
 class ApplyAndShow(Base):
     def install_app_reader(self, extra_apps=()):
         rc, out = self.run_cli(self.app_argv(

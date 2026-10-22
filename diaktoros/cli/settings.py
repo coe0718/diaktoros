@@ -1028,15 +1028,16 @@ def cmd_set(args) -> int:
             print(f"  {seat} turn budget: {was}s → {value}s  (this seat only)")
     if read_after != read_before:
         print(f"  read_token: {read_before or '(none)'} → {read_after}")
-    if read_after and cli_common._token_ref(loop, read_after) != cli_common._token_ref(updated, read_after):
-        print(f"  reader token file ({read_after}): {cli_common._token_ref(loop, read_after) or '(none)'}"
-              f" → {cli_common._token_ref(updated, read_after)}")
+    if read_after and cli_common._credential_label(loop, read_after) != cli_common._credential_label(updated, read_after):
+        # A PAT path, or a GitHub App's id and key path (#1163) — never a value.
+        print(f"  reader credential ({read_after}): {cli_common._credential_label(loop, read_after) or '(none)'}"
+              f" → {cli_common._credential_label(updated, read_after)}")
     if adj_after != adj_before:
         shown = adj_after or "(none — rulings go to the operator only)"
         print(f"  adjudicator login: {adj_before or '(none)'} → {shown}")
-    if adj_after and cli_common._token_ref(loop, adj_after) != cli_common._token_ref(updated, adj_after):
-        print(f"  adjudicator token file ({adj_after}): {cli_common._token_ref(loop, adj_after) or '(none)'}"
-              f" → {cli_common._token_ref(updated, adj_after)}")
+    if adj_after and cli_common._credential_label(loop, adj_after) != cli_common._credential_label(updated, adj_after):
+        print(f"  adjudicator credential ({adj_after}): {cli_common._credential_label(loop, adj_after) or '(none)'}"
+              f" → {cli_common._credential_label(updated, adj_after)}")
     if updated.get("observer") != (loop.get("observer") or {}):
         print(f"  observer: {observer.describe(loop.get('observer') or {})} → "
               f"{observer.describe(updated.get('observer') or {})}")
@@ -1132,6 +1133,16 @@ def _apply(args) -> int:
         print(f"fix: hermes dk set --loop {updated['id']} --read-token {reader} "
               f"--token {reader}=/path/to/pat")
         return 2
+
+    # A form token file for a login the loop gives a GitHub App identity is not applied (the
+    # identity keeps its App, #1163): say so, rather than "matches" over it.
+    form = settings_form.settings_defaults(cli_common._SETTINGS)
+    for role, key in config.TOKEN_FILE_SETTINGS.items():
+        login = (config.adjudicator_login(updated) if role == "adjudicator"
+                 else config.seat_login(updated, role))
+        if str(form.get(key) or "").strip() and cli_common._app_ref(updated, login):
+            print(f"[{updated['id']}] note: the plugin settings' {key} is not applied — {login} "
+                  "is a GitHub App identity on this loop and keeps its App key")
 
     identity, touched = _seat_diffs(loop, updated)
     # The installed registry can drift independently of the loop and the form. Repair those

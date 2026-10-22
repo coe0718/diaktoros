@@ -142,7 +142,9 @@ hermes dk init --repo owner/repo --reviewer "acme-reviewer[bot]" --fixer fix-bot
   --app "acme-reviewer[bot]=5416187:/abs/acme-reviewer.pem"
 ```
 
-`setup --app` does the same and does not ask that login's token file; `set --read-token LOGIN --app
+`setup --app` does the same and does not ask that login's token file, but until `doctor` understands
+App identities (#1181) its doctor step reports them as missing tokens and setup stops there: use
+`init --app`, then `arm`, for now. `set --read-token LOGIN --app
 LOGIN=ID:KEY` (or with `--adjudicator-login`) moves the reader or the adjudicator to an App, as
 `--token` does for a PAT. An identity has a PAT or an App, never both: mapping one replaces the
 other. The key never leaves the host and is never read by the CLI. What App bots can and cannot do
