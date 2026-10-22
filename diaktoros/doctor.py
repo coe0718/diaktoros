@@ -509,7 +509,10 @@ def check_triage(loop: dict) -> list[Check]:
     checks = [_check_profile(config.seat_profile(loop, "triage"), "triage")]
     login = config.triage_login(loop)
     path = gh.token_path(loop, login) if login else None
-    if path is None or not path.is_file() or path.stat().st_size == 0:
+    from . import github_app
+    if path is None and login and github_app.is_app(loop, login):
+        checks.append(check_app_identity(loop, login, "credential:triage"))
+    elif path is None or not path.is_file() or path.stat().st_size == 0:
         checks.append(Check("credential:triage", ABSENT,
                             f"no nonempty token file mapped for the triage login {login or '?'}",
                             f"map one: `hermes dk set --loop {loop['id']} --token "
@@ -719,10 +722,43 @@ def _token_file_facts(path: pathlib.Path) -> str:
             f"private: {'yes' if private else 'no'})")
 
 
+def check_app_identity(loop: dict, login: str, name: str) -> Check:
+    """A GitHub App identity's credential (#1163): its private key file exists, is non-empty
+    and private, and this host can sign an App JWT. Metadata only: the key is never opened. Its
+    live principal and installation are checked by ``selftest`` and by the broker before each
+    write, as a PAT's identity is."""
+    from . import github_app
+    entry = github_app.entry(loop, login) or {}
+    path = github_app.key_path(loop, login)
+    app = f"GitHub App {entry.get('app_id')}"
+    if path is None:
+        return Check(name, ABSENT, f"{login}: {app} has no key_file",
+                     f"run `hermes dk set --loop {loop['id']} --app {login}=APP_ID:/abs/key.pem` "
+                     "(the reader or adjudicator), or `init --app` for a seat")
+    if not path.is_file() or path.stat().st_size == 0:
+        return Check(name, ABSENT, f"{login} → {app}, key {_token_file_facts(path)}: missing or empty",
+                     f"save the App's private key (Generate a private key, on the App's page) "
+                     f"to {path} and chmod 600 it")
+    problem = credentials.token_file_problem(str(path))
+    if problem:
+        return Check(name, MISMATCH, f"{login} → {app}, key {_token_file_facts(path)}: {problem}",
+                     f"chmod 600 {path} (and own it): an App key other users can read is the App")
+    kind, _tool = github_app.signer()
+    if not kind:
+        return Check(name, ABSENT, f"{login} → {app}: no way to sign an App JWT on this host",
+                     "install `cryptography` in the Hermes runtime venv, or the `openssl` command")
+    return Check(name, VERIFIED, f"{login} → {app}, key {_token_file_facts(path)}, signed with "
+                                 f"{kind} (installation and principal not checked here; selftest "
+                                 "and the broker check them)")
+
+
 def check_credential(loop: dict, seat: str) -> Check:
     """The gates use gh.token_path, not the profile's GH_TOKEN environment variable."""
     login = str(loop["seats"][seat].get("login") or "")
     tokens = loop.get("tokens") or {}
+    from . import github_app
+    if login and gh.token_path(loop, login) is None and github_app.is_app(loop, login):
+        return check_app_identity(loop, login, f"credential:{seat}")
     if login:
         path = gh.token_path(loop, login)
         if path and path.is_file() and path.stat().st_size > 0:
@@ -780,10 +816,16 @@ def check_adjudicator_identity(loop: dict) -> Check | None:
                          "set seats.adjudicator.login to its own account, or remove it for "
                          "operator-only rulings")
     path = gh.token_path(loop, login)
+    from . import github_app
+    if path is None and github_app.is_app(loop, login):
+        found = check_app_identity(loop, login, "credential:adjudicator")
+        if found.status != VERIFIED:
+            return found
+        path = github_app.key_path(loop, login)
     if path is None:
-        return Check("credential:adjudicator", ABSENT, f"no tokens entry for {login!r}",
-                     f"add --token {login}=/path/to/pat, or remove seats.adjudicator.login for "
-                     "operator-only rulings")
+        return Check("credential:adjudicator", ABSENT, f"no tokens or apps entry for {login!r}",
+                     f"add --token {login}=/path/to/pat (or --app {login}=APP_ID:/abs/key.pem), or "
+                     "remove seats.adjudicator.login for operator-only rulings")
     if not path.is_file() or path.stat().st_size == 0:
         return Check("credential:adjudicator", ABSENT,
                      f"{login} → {_token_file_facts(path)}: no nonempty token file",
@@ -795,7 +837,7 @@ def check_adjudicator_identity(loop: dict) -> Check | None:
                      f"chmod 600 {path} (and own it): the ruling identity needs a private "
                      "credential")
     for role, other in others.items():
-        theirs = gh.token_path(loop, other) if isinstance(other, str) and other else None
+        theirs = gh.credential_path(loop, other) if isinstance(other, str) and other else None
         try:
             shared = theirs is not None and theirs.exists() and path.samefile(theirs)
         except OSError:
@@ -838,11 +880,13 @@ def check_token(login: str, raw: str) -> Check:
 
 def check_tokens(loop: dict) -> list[Check]:
     tokens = loop.get("tokens") or {}
-    if not tokens:
+    apps = loop.get("apps") or {}
+    if not tokens and not apps:
         return [Check("tokens", ABSENT, "no token file is named for any login",
                       "run `hermes dk set --loop <id> --token <login>=/path/to/pat` (the gates read GitHub "
                       "through it; without one they go silent)")]
-    return [check_token(login, raw) for login, raw in sorted(tokens.items())]
+    return ([check_token(login, raw) for login, raw in sorted(tokens.items())]
+            + [check_app_identity(loop, login, f"app:{login}") for login in sorted(apps)])
 
 
 def check_read_token(loop: dict) -> Check:
@@ -850,17 +894,19 @@ def check_read_token(loop: dict) -> Check:
     if not name:
         return Check("read_token", ABSENT, "no login is named as the reader",
                      "run `hermes dk set --loop <id> --read-token <login> --token <login>=/path/to/pat`")
-    if name not in (loop.get("tokens") or {}):
+    if name not in config.credentials_map(loop):
         return Check("read_token", MISMATCH, f"read_token names {name!r}, which has no token file",
-                     f"run `hermes dk set --loop <id> --token {name}=/path/to/pat`: the gates read every PR "
-                     f"state as this login")
+                     f"run `hermes dk set --loop <id> --token {name}=/path/to/pat` (or --app "
+                     f"{name}=APP_ID:/abs/key.pem for a GitHub App reader): the gates read every "
+                     "PR state as this login")
     problem = credentials.reader_problem(loop)
     if problem:
         # The broker refuses every write while the reader is a seat, so a loop in this shape
         # installs, "passes", and then never posts a review.
         return Check("read_token", MISMATCH, f"{problem} — {config.FOUR_IDENTITY_RULE}",
                      credentials.reader_fix(loop))
-    return Check("read_token", VERIFIED, f"{name} (mapped in tokens; its own account and file)")
+    where = "apps, a GitHub App" if name not in (loop.get("tokens") or {}) else "tokens"
+    return Check("read_token", VERIFIED, f"{name} (mapped in {where}; its own account and file)")
 
 
 def _route_entry(data: dict, name: str) -> dict | None:
@@ -2191,6 +2237,13 @@ def check_token_expiry_scopes(loop: dict, offline: bool, now: float | None = Non
     """Per login: days to the token's expiry and the scopes its roles need (read-only GET /user)."""
     now = time.time() if now is None else now
     checks: list[Check] = []
+    # A GitHub App identity (#1163) has neither: its installation tokens are minted per use and
+    # its permissions are the App's, set on GitHub. Said, not silently skipped.
+    for login in sorted(loop.get("apps") or {}):
+        checks.append(Check(f"token-expiry:{login}", VERIFIED,
+                            "a GitHub App identity: installation tokens are minted per use, so "
+                            "there is no PAT expiry or scope to read (the App's permissions are "
+                            "set on GitHub)"))
     for login, roles in sorted(_token_roles(loop).items()):
         name = f"token-expiry:{login}"
         if offline:
