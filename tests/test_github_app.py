@@ -406,11 +406,44 @@ class EveryCredentialCheck(Broker):
         with mock.patch("diaktoros.seat_model.secret_paths", return_value=[]):
             paths = selftest.host_secret_paths(self.loop, {}, self.root / "runtime.json")
         self.assertIn(str(self.key), paths)
-        redact = selftest.Redactor()
-        for raw in config.credentials_map(self.loop).values():
-            redact.add_file(raw)
+        redact = selftest.redactor_for(self.loop)       # the one selftest.run prints through
         whole = self.key.read_text().strip()
         self.assertNotIn(whole, redact(f"leaked {whole}"))
+        self.assertNotIn("DUMMY_PAT_fix", redact("leaked DUMMY_PAT_fix"))
+        with mock.patch.object(selftest, "redactor_for", wraps=selftest.redactor_for) as made, \
+                mock.patch.object(selftest, "Report", side_effect=RuntimeError("stop")):
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                selftest.run(self.loop, runtime_file=self.root / "runtime.json")
+        made.assert_called_once_with(self.loop)
+
+    def test_a_sandbox_root_over_an_app_key_is_refused(self):
+        # The guard compares configured credential paths: a key configured inside the root the
+        # export is about to create is refused before anything is written there.
+        root = self.root / "sandbox"
+        self.loop["apps"][BOT]["key_file"] = str(root / "reviewer.pem")
+
+        def bounded(loop, path, login, limit=None):
+            if path == "/user":
+                return {"login": login}
+            raise AssertionError(f"read past the guard: {path}")
+        with mock.patch.object(trusted_fetch, "_json", side_effect=bounded), \
+                mock.patch.object(gh, "principal", side_effect=lambda loop, login, fetch=None:
+                                  {"login": login, "id": 1}), \
+                self.assertRaisesRegex(trusted_fetch.FetchDenied, "overlaps credential"):
+            trusted_fetch._stage(self.loop, repo=REPO, number=7, head=HEAD, ref="fix-7",
+                                 role="reviewer", sandbox_root=root)
+
+    def test_verify_adjudicator_token_checks_an_app_key(self):
+        from diaktoros.config import credentials as creds
+        arbiter = self.root / "arbiter.pem"
+        arbiter.write_text("k")
+        arbiter.chmod(0o600)
+        self.loop["apps"]["acme-arbiter[bot]"] = {"app_id": 3, "key_file": str(arbiter)}
+        self.loop["seats"]["adjudicator"] = {"login": "acme-arbiter[bot]"}
+        creds.verify_adjudicator_token(self.loop)
+        arbiter.chmod(0o644)
+        with self.assertRaisesRegex(config.ConfigError, "group/other"):
+            creds.verify_adjudicator_token(self.loop)
 
 
 @unittest.skipUnless(Path("/usr/bin/git").exists(), "git is not installed here")

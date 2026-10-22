@@ -451,6 +451,15 @@ def _work_root(loop: dict) -> Path:
     return root
 
 
+def redactor_for(loop: dict) -> "Redactor":
+    """The redactor every selftest line passes: it knows each identity's credential, PATs and
+    GitHub App private keys (#1163) alike, so none is ever printed."""
+    redact = Redactor()
+    for raw in config.credentials_map(loop).values():
+        redact.add_file(raw)
+    return redact
+
+
 def host_secret_paths(loop: dict, settings: dict, runtime_file: Path) -> list[str]:
     from . import seat_model
     paths = seat_model.secret_paths(loop, settings)
@@ -1259,9 +1268,7 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
     if timeout is None:
         timeout = config.turn_budget(loop, "reviewer")
     runtime_file = Path(runtime_file or runtime_path())
-    redact = Redactor()
-    for raw in config.credentials_map(loop).values():     # PATs and App keys (#1163)
-        redact.add_file(raw)
+    redact = redactor_for(loop)
     report = Report(out, redact)
     github_scope = ("GitHub: reads only, plus one write: --ping asks GitHub to ping each loop hook"
                     if ping else "GitHub: reads only, nothing is posted")
