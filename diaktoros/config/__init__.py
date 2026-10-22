@@ -1057,6 +1057,18 @@ def normalize_triage(raw, loop: dict, where: str) -> dict:
         if not isinstance(login, str) or login != login.strip() or not login:
             raise ConfigError(f"{where}: triage.login must be a GitHub login")
         out["login"] = login.lower()
+    # The maintainers are trusted for more than issue fixes (#1217): their comments reach both
+    # seats (#511), their re-request starts a fresh review (#375), they hold a PR (#477). So they
+    # stand on their own, with or without a fix label, and turning fixes off keeps them.
+    maintainers = raw.get("maintainers")
+    if maintainers not in (None, []):
+        if (not isinstance(maintainers, list)
+                or not all(isinstance(m, str) and m.strip() for m in maintainers)):
+            raise ConfigError(f"{where}: triage.maintainers must be a list of GitHub logins")
+        out["maintainers"] = sorted({m.strip().lower() for m in maintainers})
+    if raw.get("fix_daily_turns") not in (None, ""):
+        out["fix_daily_turns"] = _check_daily_turns(raw["fix_daily_turns"],
+                                                    "triage.fix_daily_turns", where)
     fix_label = raw.get("fix_label")
     if fix_label not in (None, ""):
         if (not isinstance(fix_label, str) or not TRIAGE_LABEL.fullmatch(fix_label)
@@ -1066,16 +1078,10 @@ def normalize_triage(raw, loop: dict, where: str) -> dict:
         if fix_label.casefold() in {x.casefold() for x in out["labels"]}:
             raise ConfigError(f"{where}: triage.fix_label must not be one of triage.labels — the "
                               "triage seat could then hand issues to the fixer itself")
-        maintainers = raw.get("maintainers")
-        if (not isinstance(maintainers, list) or not maintainers
-                or not all(isinstance(m, str) and m.strip() for m in maintainers)):
+        if not out.get("maintainers"):
             raise ConfigError(f"{where}: triage.fix_label needs triage.maintainers: the logins "
                               "whose applying it hands an issue to the fixer")
         out["fix_label"] = fix_label
-        out["maintainers"] = sorted({m.strip().lower() for m in maintainers})
-        if raw.get("fix_daily_turns") not in (None, ""):
-            out["fix_daily_turns"] = _check_daily_turns(raw["fix_daily_turns"],
-                                                        "triage.fix_daily_turns", where)
         auto = raw.get("auto_fix_labels")
         if auto not in (None, []):
             known = {x.casefold(): x for x in out["labels"]}
@@ -1092,9 +1098,6 @@ def normalize_triage(raw, loop: dict, where: str) -> dict:
                 raise ConfigError(f"{where}: triage.auto_fix_daily needs triage.auto_fix_labels")
             out["auto_fix_daily"] = _check_daily_turns(raw["auto_fix_daily"],
                                                        "triage.auto_fix_daily", where)
-    elif raw.get("maintainers") not in (None, []):
-        raise ConfigError(f"{where}: triage.maintainers only means something with "
-                          "triage.fix_label")
     elif (raw.get("auto_fix_labels") not in (None, [])
           or raw.get("auto_fix_daily") not in (None, "")):
         raise ConfigError(f"{where}: triage.auto_fix_labels and auto_fix_daily need "

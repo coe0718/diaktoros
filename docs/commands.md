@@ -771,7 +771,7 @@ may preserve activation; do not assume every update pauses a live hook.
 | `--login` | `LOGIN` |  | account that labels (default: the reviewer seat); needs issues: write, never the reader |
 | `--token` | `TOKEN` (repeatable) |  | login=/path/to/pat for --login (or --admin-token), if not mapped |
 | `--fix-label` | `FIX_LABEL` |  | a label a maintainer applies to hand an issue to the fixer (#214; needs unattended fixer pushes on); '' turns it off |
-| `--maintainer` | `MAINTAINER` (repeatable) |  | login whose applying --fix-label counts (repeatable) |
+| `--maintainer` | `MAINTAINER` (repeatable) |  | a maintainer's login (repeatable; '' clears the list): their comments reach both seats, their re-request starts a fresh review, and their applying --fix-label hands an issue to the fixer. Kept when --fix-label '' turns issue fixes off |
 | `--daily-turns` | `DAILY_TURNS` |  | at most this many triage turns per day (0 removes the cap) |
 | `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | at most this many issue-fix turns per day (0 = the default, 10); issue fixes are always capped |
 | `--auto-fix-label` | `AUTO_FIX_LABEL` (repeatable) |  | a triage label that hands an issue to the fixer without a maintainer (#232; repeatable; never P0-P2; '' clears the list) |
