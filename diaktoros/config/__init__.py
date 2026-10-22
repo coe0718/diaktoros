@@ -154,6 +154,11 @@ def seat_mapping(settings: dict | None) -> dict:
         token_key = TOKEN_FILE_SETTINGS.get(seat)
         if token_key and str(d.get(token_key) or "").strip():
             entry["token_file"] = str(d[token_key]).strip()
+        if seat in TOKEN_FILE_SETTINGS:
+            for field in ("app_id", "app_key_file"):
+                value = str(d.get(f"{seat}_{field}") or "").strip()
+                if value:
+                    entry[field] = value
         if entry:
             mapping[seat] = entry
     return mapping

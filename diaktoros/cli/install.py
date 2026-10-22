@@ -267,14 +267,6 @@ def cmd_init(args) -> int:
             return 2
         apps[split[0]] = split[1]
 
-    # Token-file paths from the settings form are checked before anything else is: a path that is
-    # relative, missing, not yours or group/world readable is refused by name, and never opened.
-    try:
-        credentials.verify_token_settings(cli_common._SETTINGS)
-    except config.ConfigError as exc:
-        print(f"config refused: {exc}")
-        return 2
-
     reviewer_profile = args.reviewer_profile or d["reviewer_profile"]
     fixer_profile = args.fixer_profile or d["fixer_profile"]
     fixers = [login for login in (args.fixer or []) if login] or (
@@ -304,11 +296,6 @@ def cmd_init(args) -> int:
     fixer_seat = next((login for login in fixers
                        if login.lower() == configured_fixer.lower()), fixers[0]) if configured_fixer else fixers[0]
     adjudicator_profile = args.adjudicator_profile or d["adjudicator_profile"] or "default"
-    # An explicit --token for a login wins over the form's path for it, as every explicit flag does.
-    mapped = {login.lower() for login in (*tokens, *apps)}   # an App identity takes no PAT
-    for seat_login_, key in ((reviewer_seat, "reviewer_token_file"), (fixer_seat, "fixer_token_file")):
-        if d[key] and seat_login_ and seat_login_.lower() not in mapped:
-            tokens[seat_login_] = str(pathlib.Path(d[key]).expanduser())
     explicit_adj = getattr(args, "adjudicator_login", None)
     adjudicator_login = (explicit_adj if explicit_adj is not None
                          else (d["adjudicator_login"] if args.adjudicator_route else "")).strip()
@@ -316,11 +303,29 @@ def cmd_init(args) -> int:
         print("--adjudicator-login needs --adjudicator-route: the comment identity only ever posts "
               "a ruling, and without a breach route nothing rules")
         return 2
-    if (adjudicator_login and d["adjudicator_token_file"]
-            and adjudicator_login.lower() not in mapped
-            and (not d["adjudicator_login"]
-                 or d["adjudicator_login"].lower() == adjudicator_login.lower())):
-        tokens[adjudicator_login] = str(pathlib.Path(d["adjudicator_token_file"]).expanduser())
+    # CLI credentials win; select and validate only effective form paths, as apply does.
+    explicit = {login.lower() for login in (*tokens, *apps)}
+    credential_form = {}
+    for role, login in (("reviewer", reviewer_seat), ("fixer", fixer_seat),
+                        ("adjudicator", adjudicator_login)):
+        if role == "adjudicator" and d["adjudicator_login"] and (
+                d["adjudicator_login"].lower() != login.lower()):
+            continue  # A form credential for another named adjudicator is not this CLI identity.
+        if login.lower() not in explicit:
+            for suffix in ("token_file", "app_id", "app_key_file"):
+                credential_form[f"{role}_{suffix}"] = d[f"{role}_{suffix}"]
+    credential_loop = {"tokens": tokens, "apps": apps,
+                       "seats": {"reviewer": {"login": reviewer_seat},
+                                 "fixer": {"login": fixer_seat},
+                                 "adjudicator": {"login": adjudicator_login}},
+                       "adjudicator": {"route": args.adjudicator_route}}
+    try:
+        credentials.verify_token_settings(credential_form, loop=credential_loop)
+        tokens, apps, _selected, _ignored = settings_form.select_credentials(
+            credential_loop, credential_form)
+    except config.ConfigError as exc:
+        print(f"config refused: {exc}")
+        return 2
     # The weekly report (#658): the flag wins over the form; the form's 'off' or blank is none.
     weekly_form = str(d["observer_weekly_report"]).strip()
     if (not getattr(args, "observer_weekly_report", "") and weekly_form.lower() not in ("", "off")

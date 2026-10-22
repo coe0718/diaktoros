@@ -135,6 +135,36 @@ config_schema:
     type: str
     default: ""
     description: "Absolute path (~ allowed) to the file holding the adjudicator login's GitHub PAT — the path only, never the token itself. Must be your own mode-600 regular file, not shared with any other login. Blank = not set here"
+  reviewer_app_id:
+    label: "Reviewer's GitHub App id"
+    type: "str"
+    default: ""
+    description: "Positive ASCII decimal App id, paired with this seat's App key file and bot login. Blank pair = not set here. A complete pair selects App, never PAT."
+  reviewer_app_key_file:
+    label: "Reviewer's App key file (path only)"
+    type: "str"
+    default: ""
+    description: "Absolute path (~ allowed) to your mode-600 regular private-key file; the path only, never the key itself. Set with the App id. Blank pair = not set here."
+  fixer_app_id:
+    label: "Fixer's GitHub App id"
+    type: "str"
+    default: ""
+    description: "Positive ASCII decimal App id, paired with this seat's App key file and bot login. Blank pair = not set here. A complete pair selects App, never PAT."
+  fixer_app_key_file:
+    label: "Fixer's App key file (path only)"
+    type: "str"
+    default: ""
+    description: "Absolute path (~ allowed) to your mode-600 regular private-key file; the path only, never the key itself. Set with the App id. Blank pair = not set here."
+  adjudicator_app_id:
+    label: "Adjudicator's GitHub App id"
+    type: "str"
+    default: ""
+    description: "Positive ASCII decimal App id, paired with this seat's App key file and bot login. Blank pair = not set here. A complete pair selects App, never PAT."
+  adjudicator_app_key_file:
+    label: "Adjudicator's App key file (path only)"
+    type: "str"
+    default: ""
+    description: "Absolute path (~ allowed) to your mode-600 regular private-key file; the path only, never the key itself. Set with the App id. Blank pair = not set here."
   reviewer_max_steps:
     label: "Reviewer's agent steps per turn"
     type: str

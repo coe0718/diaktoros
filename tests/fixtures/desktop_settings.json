@@ -129,6 +129,42 @@
         "default": "",
         "description": "Absolute path (~ allowed) to the file holding the adjudicator login's GitHub PAT \u2014 the path only, never the token itself. Must be your own mode-600 regular file, not shared with any other login. Blank = not set here"
       },
+      "reviewer_app_id": {
+        "label": "Reviewer's GitHub App id",
+        "type": "str",
+        "default": "",
+        "description": "Positive ASCII decimal App id, paired with this seat's App key file and bot login. Blank pair = not set here. A complete pair selects App, never PAT."
+      },
+      "reviewer_app_key_file": {
+        "label": "Reviewer's App key file (path only)",
+        "type": "str",
+        "default": "",
+        "description": "Absolute path (~ allowed) to your mode-600 regular private-key file; the path only, never the key itself. Set with the App id. Blank pair = not set here."
+      },
+      "fixer_app_id": {
+        "label": "Fixer's GitHub App id",
+        "type": "str",
+        "default": "",
+        "description": "Positive ASCII decimal App id, paired with this seat's App key file and bot login. Blank pair = not set here. A complete pair selects App, never PAT."
+      },
+      "fixer_app_key_file": {
+        "label": "Fixer's App key file (path only)",
+        "type": "str",
+        "default": "",
+        "description": "Absolute path (~ allowed) to your mode-600 regular private-key file; the path only, never the key itself. Set with the App id. Blank pair = not set here."
+      },
+      "adjudicator_app_id": {
+        "label": "Adjudicator's GitHub App id",
+        "type": "str",
+        "default": "",
+        "description": "Positive ASCII decimal App id, paired with this seat's App key file and bot login. Blank pair = not set here. A complete pair selects App, never PAT."
+      },
+      "adjudicator_app_key_file": {
+        "label": "Adjudicator's App key file (path only)",
+        "type": "str",
+        "default": "",
+        "description": "Absolute path (~ allowed) to your mode-600 regular private-key file; the path only, never the key itself. Set with the App id. Blank pair = not set here."
+      },
       "reviewer_max_steps": {
         "label": "Reviewer's agent steps per turn",
         "type": "str",
@@ -302,6 +338,12 @@
       "fixer_token_file": "",
       "adjudicator_login": "",
       "adjudicator_token_file": "",
+      "reviewer_app_id": "",
+      "reviewer_app_key_file": "",
+      "fixer_app_id": "",
+      "fixer_app_key_file": "",
+      "adjudicator_app_id": "",
+      "adjudicator_app_key_file": "",
       "reviewer_max_steps": "",
       "fixer_max_steps": "",
       "reviewer_daily_tokens": "",
@@ -350,6 +392,12 @@
       "fixer_token_file": "default",
       "adjudicator_login": "default",
       "adjudicator_token_file": "default",
+      "reviewer_app_id": "default",
+      "reviewer_app_key_file": "default",
+      "fixer_app_id": "default",
+      "fixer_app_key_file": "default",
+      "adjudicator_app_id": "default",
+      "adjudicator_app_key_file": "default",
       "reviewer_max_steps": "default",
       "fixer_max_steps": "default",
       "reviewer_daily_tokens": "default",
@@ -380,18 +428,27 @@
       "reviewer": {
         "profile": "review",
         "login": "",
+        "credential_kind": "none",
+        "app_id": "",
+        "key_file": "",
         "token_file": "",
         "set": true
       },
       "fixer": {
         "profile": "",
         "login": "",
+        "credential_kind": "none",
+        "app_id": "",
+        "key_file": "",
         "token_file": "",
         "set": false
       },
       "adjudicator": {
         "profile": "",
         "login": "",
+        "credential_kind": "none",
+        "app_id": "",
+        "key_file": "",
         "token_file": "",
         "set": false
       }
@@ -419,6 +476,9 @@
         "reviewer": {
           "profile": "review",
           "login": "review-bot",
+          "credential_kind": "pat",
+          "app_id": null,
+          "key_file": "",
           "token_file": "/synthetic/credentials/review.pat",
           "route": "review-route",
           "turn_budget_s": 900,
@@ -427,6 +487,9 @@
         "fixer": {
           "profile": "fix",
           "login": "fix-bot",
+          "credential_kind": "none",
+          "app_id": null,
+          "key_file": "",
           "token_file": "",
           "route": "fix-route",
           "turn_budget_s": 900,
@@ -435,6 +498,9 @@
         "adjudicator": {
           "profile": "default",
           "login": "",
+          "credential_kind": "none",
+          "app_id": null,
+          "key_file": "",
           "token_file": "",
           "route": "adjudicate-route",
           "turn_budget_s": 900,

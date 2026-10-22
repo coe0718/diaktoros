@@ -254,6 +254,15 @@ def group_plugin_settings() -> None:
               declared.get("label"), spec["label"])
         check(f"  {key}: has a description", bool(declared.get("description")), True)
 
+    app_form = {f"{role}_{suffix}": value for role in ("reviewer", "fixer", "adjudicator")
+                for suffix, value in (("app_id", "123"), ("app_key_file", "~/seat.pem"))}
+    for role in ("reviewer", "fixer", "adjudicator"):
+        check(f"  {role}: form exposes App id and key path as strings",
+              config.seat_mapping(app_form).get(role),
+              {"app_id": "123", "app_key_file": "~/seat.pem"})
+    check("no reader or admin App form keys",
+          any(key.startswith(("reader_app_", "admin_app_")) for key in settings_form.SETTINGS_SCHEMA), False)
+
     check("unset → schema defaults", settings_form.settings_defaults(None)["cap"],
           settings_form.SETTINGS_SCHEMA["cap"]["default"])
     tuned = settings_form.settings_defaults({"cap": 6, "reviewer_concurrency": "4"})

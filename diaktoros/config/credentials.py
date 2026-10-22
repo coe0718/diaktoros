@@ -64,13 +64,18 @@ def verify_adjudicator_token(loop: dict) -> None:
                          f"credential file for the adjudicator login {login!r}")
 
 
-def verify_token_settings(settings: dict | None) -> None:
-    """Every token-file path the settings form holds, checked before any write. Blank is skipped."""
-    from .settings_form import settings_defaults   # the form imports the core, not the reverse
-    d = settings_defaults(settings)
-    for key in config.TOKEN_FILE_SETTINGS.values():
-        if str(d.get(key) or "").strip():
-            check_token_file(d[key], key)
+def verify_token_settings(settings: dict | None, *, loop: dict | None = None) -> None:
+    """Check only selected form paths when a loop is known (#1197); metadata, never contents."""
+    from .settings_form import select_credentials, settings_defaults
+    if loop is not None:
+        _tokens, _apps, paths, _ignored = select_credentials(loop, settings)
+    else:
+        d = settings_defaults(settings)
+        keys = [*config.TOKEN_FILE_SETTINGS.values(),
+                *(f"{role}_app_key_file" for role in config.TOKEN_FILE_SETTINGS)]
+        paths = {key: d[key] for key in keys if str(d.get(key) or "").strip()}
+    for key, path in paths.items():
+        check_token_file(path, key)
 
 
 def _same_token_file(first, second) -> bool:
