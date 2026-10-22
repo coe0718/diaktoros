@@ -818,6 +818,39 @@ def check_identities(report: Report, loop: dict) -> bool:
                        "loop takes them from `init --reviewer/--reviewer-seat/--fixer`)")
             continue
         raw = (loop.get("tokens") or {}).get(login)
+        from . import github_app
+        if not raw and github_app.is_app(loop, login):
+            # A GitHub App identity (#1163): its key, then its live bot principal — minted and
+            # read with the App's own credentials, never GET /user.
+            check = doctor.check_app_identity(loop, login, name)
+            if check.status != doctor.VERIFIED:
+                ok = False
+                report.add(step, name, FAIL, check.detail, check.fix)
+                continue
+            files[role] = github_app.key_path(loop, login).resolve()
+            try:
+                account = gh.principal(loop, login)
+            except gh.GitHubError as exc:
+                account = None
+                why = str(exc)
+            else:
+                why = gh.last_error() or "no answer"     # e.g. the App is not installed here
+            if not isinstance(account, dict) or type(account.get("id")) is not int:
+                ok = False
+                report.add(step, name, FAIL, f"{login}: the App's bot could not be resolved ({why})",
+                           "check the App is installed on this repository and the key file is "
+                           "that App's private key")
+                continue
+            if str(account.get("login") or "").casefold() != login.casefold():
+                ok = False
+                report.add(step, name, FAIL,
+                           f"the key mapped to {login} belongs to {account.get('login')}",
+                           f"put {login}'s own App id and private key in apps")
+                continue
+            principals[role] = account["id"]
+            report.add(step, name, PASS, f"{account['login']} (id {account['id']}, GitHub App "
+                                         f"{account.get('app_id')})")
+            continue
         if not raw:
             ok = False
             report.add(step, name, FAIL, f"{login}: no token file mapped",

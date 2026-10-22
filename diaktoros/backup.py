@@ -85,7 +85,9 @@ def watchdog_job() -> dict | None:
 
 
 def token_paths(loop: dict) -> dict[str, str]:
-    return {str(login): str(path) for login, path in (loop.get("tokens") or {}).items()}
+    """Every identity's credential path: PAT files and GitHub App private keys (#1163). Paths
+    only, never contents; restore checks each is back before it writes the loop."""
+    return {str(login): str(path) for login, path in config.credentials_map(loop).items() if path}
 
 
 def create(out: pathlib.Path | None = None) -> pathlib.Path:
@@ -380,7 +382,7 @@ def missing_tokens(manifest: dict) -> list[str]:
         for login, path in sorted(tokens.items()):
             problem = credentials.token_file_problem(path)
             if problem:
-                out.append(f"{loop_id}: token file for {login} ({path}): {problem}")
+                out.append(f"{loop_id}: credential file for {login} ({path}): {problem}")
     return out
 
 
