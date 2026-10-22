@@ -94,6 +94,55 @@ class Doctor(AppLoop):
         self.assertIn("same token file as the reviewer", got.detail)
 
 
+class Live(AppLoop):
+    """doctor's live App check (shadow review of #1198): the key signs as this App and the App is
+    installed here, read with the App's JWT; no token minted."""
+
+    def live(self, app=None, installation=None, raises=None):
+        def as_app(loop, login, path, method="GET", body=None):
+            self.assertEqual(method, "GET")             # reads only
+            if raises:
+                raise raises
+            if path == "/app":
+                return gh.Response(app, "" if app else "HTTP 401", 200 if app else 401, {})
+            return gh.Response(installation, "" if installation else "HTTP 404 Not Found",
+                               200 if installation else 404, {})
+        with mock.patch.object(github_app, "_as_app", side_effect=as_app), \
+                mock.patch.object(github_app, "installation_token",
+                                  side_effect=AssertionError("doctor must not mint")):
+            return doctor.check_app_live(self.loop, BOT_REV, offline=False)
+
+    def test_an_installed_app_is_verified_with_its_installation(self):
+        got = self.live({"id": 2, "slug": "acme-reviewer"}, {"id": 173885357})
+        self.assertEqual(got.status, doctor.VERIFIED, got.detail)
+        self.assertIn("installed on acme/widgets (installation 173885357)", got.detail)
+
+    def test_an_app_not_installed_here_is_absent_with_the_install_fix(self):
+        got = self.live({"id": 2, "slug": "acme-reviewer"}, None)
+        self.assertEqual(got.status, doctor.ABSENT)
+        self.assertIn("not installed on acme/widgets", got.detail)
+        self.assertIn("Install App", got.fix)
+
+    def test_a_key_for_another_app_or_a_renamed_app_is_a_mismatch(self):
+        got = self.live({"id": 99, "slug": "other"}, {"id": 1})
+        self.assertEqual(got.status, doctor.MISMATCH)
+        self.assertIn("signs as App 99", got.detail)
+        got = self.live({"id": 2, "slug": "renamed"}, {"id": 1})
+        self.assertEqual(got.status, doctor.MISMATCH)
+        self.assertIn("renamed[bot]", got.detail)
+
+    def test_a_key_that_cannot_sign_or_answer_is_a_mismatch(self):
+        self.assertEqual(self.live(raises=github_app.AppError("signing failed")).status,
+                         doctor.MISMATCH)
+        self.assertEqual(self.live(None, None).status, doctor.MISMATCH)
+
+    def test_offline_says_not_probed_and_check_loop_runs_it_per_app(self):
+        self.assertEqual(doctor.check_app_live(self.loop, BOT_REV, offline=True).status,
+                         doctor.UNKNOWN)
+        names = {c.name for c in doctor.check_loop(self.loop, offline=True)}
+        self.assertTrue({f"app-live:{BOT_REV}", f"app-live:{BOT_READ}"} <= names, names)
+
+
 class Selftest(AppLoop):
     def identities(self, principal):
         report = selftest.Report(io.StringIO())
@@ -127,6 +176,11 @@ class Selftest(AppLoop):
         ok, rows = self.identities(not_installed)
         self.assertFalse(ok)
         self.assertIn("not installed", rows["github:reviewer"][3])
+        # The usual shape: gh.principal answers None and the reason is in gh.last_error().
+        with mock.patch.object(gh, "last_error", return_value="App X is not installed on acme/widgets"):
+            ok, rows = self.identities(lambda login: None)
+        self.assertFalse(ok)
+        self.assertIn("App X is not installed", rows["github:reviewer"][3])
 
 
 class Backup(AppLoop):

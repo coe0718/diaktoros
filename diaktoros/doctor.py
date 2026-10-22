@@ -748,8 +748,43 @@ def check_app_identity(loop: dict, login: str, name: str) -> Check:
         return Check(name, ABSENT, f"{login} → {app}: no way to sign an App JWT on this host",
                      "install `cryptography` in the Hermes runtime venv, or the `openssl` command")
     return Check(name, VERIFIED, f"{login} → {app}, key {_token_file_facts(path)}, signed with "
-                                 f"{kind} (installation and principal not checked here; selftest "
-                                 "and the broker check them)")
+                                 f"{kind} (the App and its installation: app-live:{login})")
+
+
+def check_app_live(loop: dict, login: str, offline: bool) -> Check:
+    """Whether a GitHub App identity works against GitHub (#1181): its key signs as *that* App
+    (``GET /app``: the id and the bot login match) and the App is installed on this repository
+    (``GET /repos/<repo>/installation``). Both are reads made with the App's own JWT; no token is
+    minted and nothing is written."""
+    from . import github_app
+    name = f"app-live:{login}"
+    if offline:
+        return Check(name, UNKNOWN, "not probed (--offline) — the App and its installation not read")
+    entry = github_app.entry(loop, login) or {}
+    try:
+        app = github_app._as_app(loop, login, "/app")
+        where = github_app._as_app(loop, login, f"/repos/{loop['repo']}/installation")
+    except github_app.AppError as exc:
+        return Check(name, MISMATCH, f"{login}: {exc}", "check the key file is this App's private key")
+    found = app.data if isinstance(app.data, dict) else {}
+    if not found:
+        return Check(name, MISMATCH, f"{login}: GET /app as the App failed ({app.error or 'no answer'})",
+                     "check the key file is the App's private key and the App id is right")
+    if found.get("id") != entry.get("app_id"):
+        return Check(name, MISMATCH, f"{login}: the key signs as App {found.get('id')} "
+                                     f"({found.get('slug')}), not App {entry.get('app_id')}",
+                     "put this App's own id and private key in apps")
+    if f"{found.get('slug')}[bot]".casefold() != login.casefold():
+        return Check(name, MISMATCH, f"{login}: App {entry.get('app_id')} is {found.get('slug')}[bot]",
+                     f"name the identity {found.get('slug')}[bot]")
+    installation = where.data.get("id") if isinstance(where.data, dict) else None
+    if type(installation) is not int:
+        return Check(name, ABSENT, f"{login}: App {found.get('slug')} is not installed on "
+                                   f"{loop['repo']} ({where.error or 'no installation'})",
+                     f"install the App on {loop['repo']} (its page → Install App → only this "
+                     "repository)")
+    return Check(name, VERIFIED, f"{login} is App {entry.get('app_id')} ({found.get('slug')}), "
+                                 f"installed on {loop['repo']} (installation {installation})")
 
 
 def check_credential(loop: dict, seat: str) -> Check:
@@ -2461,6 +2496,7 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     if identity:
         checks.append(identity)
     checks.extend(check_tokens(loop))
+    checks.extend(check_app_live(loop, login, offline) for login in sorted(loop.get("apps") or {}))
     checks.append(check_read_token(loop))
     checks.extend(check_routes(loop))
     checks.extend(check_gateway_scripts(loop))

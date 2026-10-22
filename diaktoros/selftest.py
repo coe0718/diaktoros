@@ -834,7 +834,7 @@ def check_identities(report: Report, loop: dict) -> bool:
                 account = None
                 why = str(exc)
             else:
-                why = "no answer"
+                why = gh.last_error() or "no answer"     # e.g. the App is not installed here
             if not isinstance(account, dict) or type(account.get("id")) is not int:
                 ok = False
                 report.add(step, name, FAIL, f"{login}: the App's bot could not be resolved ({why})",
