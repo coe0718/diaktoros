@@ -104,6 +104,38 @@ class Continue(Base):
         self.assertTrue(ok)
         self.assertEqual(self.writes, ["request_review"])
 
+    def test_an_app_reviewers_open_pr_gets_its_review_delivered_to_the_gate(self):
+        # #1211: the PR is already open, so its `opened` will not come again, and GitHub cannot
+        # request an App reviewer: continue delivers the review to the gate (review_kick).
+        from diaktoros import review_kick
+        self.loop = {**self.loop, "apps": {self.loop["reviewer_seat"]: {"app_id": 1, "key_file": "/k"}},
+                     "tokens": {k: v for k, v in (self.loop.get("tokens") or {}).items()
+                                if k.lower() != self.loop["reviewer_seat"].lower()}}
+        self.prs = [self.pr(5)]
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE issue_fixes SET state='opened',pr_number=5")
+        with mock.patch.object(gh, "api", return_value=self.pr(5)), \
+                mock.patch.object(review_kick, "kick", return_value=True) as kick:
+            ok, lines = continue_run.run(self.loop, self.sup, self.run_id)
+        self.assertTrue(ok, lines)
+        kick.assert_called_once()
+        _loop, pr, head, sender, _tag = kick.call_args.args
+        self.assertEqual((pr["number"], head, sender), (5, self.branch_sha, "fix"))
+        self.assertTrue(any("delivered the review of PR #5 to the reviewer gate" in line
+                            for line in lines), lines)
+        self.assertFalse(any(line == "requested review of PR #5" for line in lines), lines)
+
+    def test_a_pat_reviewers_open_pr_is_still_requested(self):
+        from diaktoros import review_kick
+        self.prs = [self.pr(5)]
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE issue_fixes SET state='opened',pr_number=5")
+        with mock.patch.object(review_kick, "kick") as kick:
+            ok, lines = continue_run.run(self.loop, self.sup, self.run_id)
+        self.assertTrue(ok)
+        kick.assert_not_called()
+        self.assertIn("requested review of PR #5", lines)
+
     def test_nothing_missing_writes_nothing(self):
         self.prs = [self.pr(5, requested_reviewers=[{"login": "review"}])]
         ok, _ = continue_run.run(self.loop, self.sup, self.run_id)

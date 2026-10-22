@@ -111,6 +111,24 @@ class Explain(AppSeat):
             self.skipTest(f"explain chose {report['next']['kind']} for these facts")
 
 
+class ExplainReviewOnly(AppSeat):
+    """#1211: the review-only author's next step names `hermes dk review` for an App reviewer."""
+
+    def test_the_authors_next_step_names_hermes_dk_review(self):
+        self.loop["review_only"] = ["boss"]
+        st = state_mod.state_for(self.loop)
+        live = {**self.fake.api(self.loop, f"/repos/{fa.REPO}/pulls/7"), "user": {"login": "boss"}}
+        head = live["head"]["sha"]
+        reviews = [{"id": 1, "state": "CHANGES_REQUESTED", "commit_id": head,
+                    "submitted_at": "2026-01-01T00:00:00Z", "user": {"login": "review", "id": 2}}]
+        facts = {"pr": live, "reviews": reviews, "armed": True, "read_at": 0,
+                 "shadow_hold": ("", "")}
+        report = gate.explain(self.loop, st, 7, facts)
+        self.assertEqual(report["next"]["kind"], "author-push", report["next"])
+        self.assertIn("hermes dk review --loop widgets --pr 7", report["next"]["action"])
+        self.assertNotIn("re-requests review", report["next"]["action"])
+
+
 class WatchdogBackstop(__import__("test_fixer_gating").Base):
     """The sweep delivers a quiet head's review to the gate in App mode: an App reviewer never
     shows as a pending requested reviewer, so #532's condition alone would never fire."""

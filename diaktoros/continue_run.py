@@ -18,6 +18,7 @@ import time
 from urllib.parse import quote
 
 from . import broker, config, gh
+from .util import log
 
 # What the ledger may say when a continue is meaningful (the row's state, not the run's).
 RESUMABLE = ("pushed", "opened", "uncertain")
@@ -151,6 +152,26 @@ def _claim(sup, run_id: str) -> bool:
                            (CLAIM, time.time(), run_id)).rowcount == 1
 
 
+def _deliver_review(loop: dict, pr: int, sender: str) -> str:
+    """Hand the reviewer gate the review GitHub cannot be asked for (an App reviewer, #1163);
+    the line to report. Best effort: the watchdog's sweep delivers a quiet head's review too."""
+    from . import review_kick
+    live = gh.api(loop, gh.pr_path(loop, pr), login=loop["read_token"])
+    head = ((live or {}).get("head") or {}).get("sha") if isinstance(live, dict) else None
+    if not head:
+        return (f"PR #{pr}: could not read it to start its review (the reviewer is a GitHub App, "
+                "which GitHub cannot request); the watchdog sweep will")
+    try:
+        sent = review_kick.kick(loop, live, head, sender, f"continue-review-{pr}")
+    except Exception as exc:
+        sent = False
+        log(f"#{pr} @ {head[:7]}: review start not delivered: {type(exc).__name__}: {exc}")
+    return (f"delivered the review of PR #{pr} to the reviewer gate (the reviewer is a GitHub "
+            "App, which GitHub cannot request)" if sent else
+            f"PR #{pr}: its review start was not delivered (the reviewer is a GitHub App); the "
+            "watchdog sweep will")
+
+
 def run(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
     """Inspect, then complete only the missing stages. ``(ok, lines)``; ok is False when the
     run stays quarantined or a write failed."""
@@ -188,7 +209,13 @@ def run(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
                 sup.issue_fix_status(run_id, "opened", pr_number=pr,
                                      error=f"continue: review request not confirmed: {exc}"[:300])
                 return False, lines + [f"review request not confirmed ({exc}); PR #{pr} is open"]
-            lines.append(f"requested review of PR #{pr}")
+            if config.reviewer_is_app(loop):
+                # GitHub cannot request an App reviewer (#1163), and this PR is already open, so
+                # its `opened` will not come again: deliver the review to the gate, as the broker
+                # does after a push (review_kick, #532).
+                lines.append(_deliver_review(loop, pr, login))
+            else:
+                lines.append(f"requested review of PR #{pr}")
     sup.issue_fix_status(run_id, "requested", pr_number=pr, new_head=new_head)
     if plan["run"]["state"] == "uncertain":
         try:
