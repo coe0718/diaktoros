@@ -294,7 +294,7 @@ class TokenFileSettingsTests(unittest.TestCase):
         self.assertEqual(data["seats"]["adjudicator"]["login"], ADJ)
         self.assertFalse(self.loop_file().with_name("other.json").exists())
         # A group-readable path in the form refuses a new loop too, by the setting's name.
-        self.assert_refused([*self.init_argv(), "--id", "other"], r"fixer_token_file: .*group",
+        self.assert_refused([*self.init_argv(tokens=False), "--id", "other"], r"fixer_token_file: .*group",
                             {"fixer_token_file": str(self.pat("loose", 0o644))})
         self.assert_no_leak()
 
@@ -339,7 +339,8 @@ class TokenFileSettingsTests(unittest.TestCase):
                 manifest[current][key.strip()] = value.strip().strip('"')
         self.assertEqual(sorted(manifest), sorted(settings_form.SETTINGS_SCHEMA))
         for key in ("reviewer_token_file", "fixer_token_file", "adjudicator_login",
-                    "adjudicator_token_file"):
+                    "adjudicator_token_file", *(f"{role}_{suffix}" for role in
+                    ("reviewer", "fixer", "adjudicator") for suffix in ("app_id", "app_key_file"))):
             spec = settings_form.SETTINGS_SCHEMA[key]
             self.assertEqual((spec["type"], spec["default"]), ("str", ""))
             self.assertEqual(manifest[key], {"label": spec["label"], "type": "str", "default": "",

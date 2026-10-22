@@ -8,6 +8,8 @@ import test from 'node:test'
 const source = await readFile(process.env.DIAKTOROS_PLUGIN_SOURCE || new URL('../desktop/plugin.js', import.meta.url), 'utf8')
 // Pinned from real stats.collect with a missing disposable ledger; Python checks equality.
 const settingsFixture = JSON.parse(await readFile(new URL('./fixtures/desktop_settings.json', import.meta.url), 'utf8'))
+const settingsMixedFixture = JSON.parse(await readFile(new URL('./fixtures/desktop_settings_mixed.json', import.meta.url), 'utf8'))
+const settingsAppFixture = JSON.parse(await readFile(new URL('./fixtures/desktop_settings_app.json', import.meta.url), 'utf8'))
 const recordsWriterFixture = JSON.parse(await readFile(new URL('./fixtures/desktop_records.json', import.meta.url), 'utf8'))
 const holdWriterFixtures = JSON.parse(await readFile(new URL('./fixtures/desktop_hold_explanations.json', import.meta.url), 'utf8'))
 const holdWriterFixture = holdWriterFixtures.run_waiting
@@ -1039,7 +1041,20 @@ test('settings: malformed nested successes rejected before caching', async () =>
     d => { d.loops[0].seats.reviewer.max_steps = -1 }, d => { d.loops[0].flags = [] },
     d => { delete d.loops[0].flags.fix_ci }, d => { d.loops[0].flags.cap = -1 },
     d => { delete d.loops[0].seats.reviewer }, d => { d.loops.push(d.loops[0]) },
-    d => { d.loops[0].seats.reviewer = null }, d => { d.read_at = 'now' }
+    d => { d.loops[0].seats.reviewer = null }, d => { d.read_at = 'now' },
+    d => { delete d.plugin.seats.reviewer.credential_kind },
+    d => { d.plugin.seats.reviewer.app_id = 123 },
+    d => { d.plugin.seats.reviewer.key_file = {} },
+    d => { d.plugin.seats.reviewer.credential_kind = 'app' },
+    d => { d.loops[0].seats.reviewer.credential_kind = 'guessed' },
+    d => { d.loops[0].seats.reviewer.app_id = '123' },
+    d => { d.loops[0].seats.reviewer.key_file = '/wrong-kind.pem' },
+    d => { d.loops[0].seats.reviewer.extra = 'unvalidated' },
+    ...[0, -1, '123', null, {}, true].map(appId => d => {
+      Object.assign(d.loops[0].seats.reviewer, { credential_kind: 'app', app_id: appId, token_file: '', key_file: '/synthetic/review.pem' })
+    }),
+    d => { Object.assign(d.loops[0].seats.reviewer, { credential_kind: 'app', app_id: 123, key_file: '/synthetic/review.pem' }) },
+    d => { Object.assign(d.loops[0].seats.reviewer, { credential_kind: 'app', app_id: 123, token_file: '', key_file: '' }) }
   ]
   for (const mutate of mutations) {
     const data = structuredClone(settingsFixture); mutate(data); h.respond(data)
@@ -1065,6 +1080,45 @@ test('settings: secrets and invalid token paths withheld, token budgets and vali
   assert.match(text, /~\/credentials\/seat.pat/)
   assert.match(text, /Invalid token path withheld/)
   assert.equal(h.buttons(h.tree()).some(button => /save|apply|merge/i.test(String(button.props.children))), false)
+})
+
+for (const [mode, fixture] of [['PAT', settingsFixture], ['mixed', settingsMixedFixture], ['App', settingsAppFixture]]) {
+  test('settings: real backend ' + mode + ' fixture validates and renders typed credentials', async () => {
+    const h = await harness()
+    h.respond(structuredClone(fixture))
+    h.render('page')
+    h.queries.settings = h.good(await h.options.settings.queryFn())
+    const text = h.text(h.render('page'))
+    for (const seat of Object.values(fixture.loops[0].seats)) {
+      assert.ok(text.includes('credential_kind ' + seat.credential_kind))
+      if (seat.credential_kind === 'app') {
+        assert.ok(text.includes('app_id ' + seat.app_id))
+        assert.ok(text.includes('key_file ' + seat.key_file))
+        assert.equal(seat.token_file, '')
+      } else if (seat.token_file) assert.ok(text.includes(seat.token_file))
+    }
+    assert.doesNotMatch(text, /BEGIN.*PRIVATE KEY|installation.token|Sensitive value withheld/)
+  })
+}
+
+test('settings: App key paths and dynamic schema are path-sensitive, not PEM or secret text', async () => {
+  const h = await harness()
+  const data = structuredClone(settingsFixture)
+  for (const [key, value] of Object.entries({ future_app_key_file: 'private-key-content', future_key_file: '-----BEGIN PRIVATE KEY-----\nprivate-pem\n-----END PRIVATE KEY-----', safe_app_key_file: '~/credentials/reviewer.pem' })) {
+    data.plugin.schema[key] = { label: key, description: '', type: 'str', default: value }
+    data.plugin.values[key] = value; data.plugin.sources[key] = 'set'
+  }
+  Object.assign(data.loops[0].seats.reviewer, { credential_kind: 'app', app_id: 12345, key_file: '/synthetic/review.pem', token_file: '' })
+  h.respond(data)
+  h.render('page')
+  h.queries.settings = h.good(await h.options.settings.queryFn())
+  const text = h.text(h.render('page'))
+  assert.match(text, /credential_kind app/)
+  assert.match(text, /app_id 12345/)
+  assert.match(text, /\/synthetic\/review.pem/)
+  assert.match(text, /~\/credentials\/reviewer.pem/)
+  assert.doesNotMatch(text, /private-key-content|private-pem|BEGIN PRIVATE KEY/)
+  assert.match(text, /Invalid key path withheld/)
 })
 
 test('palette only: unseen successful cache read expires despite backward wall clock', async () => {

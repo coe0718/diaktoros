@@ -1031,6 +1031,13 @@ function validateSettings(data) {
   const strings = value => Array.isArray(value) && value.every(item => typeof item === 'string')
   const fields = (value, keys) => object(value) && keys.every(key => typeof value[key] === 'string')
   const limit = value => Number.isSafeInteger(value) && value >= 0
+  const credential = (seat, form) => fields(seat, ['credential_kind', 'token_file', 'key_file']) &&
+    Object.keys(seat).every(key => ['profile', 'login', 'credential_kind', 'token_file', 'key_file', 'app_id',
+      ...(form ? ['set'] : ['route', 'turn_budget_s', 'max_steps'])].includes(key)) &&
+    ['none', 'pat', 'app'].includes(seat.credential_kind) && (form ?
+      typeof seat.app_id === 'string' && seat.credential_kind === (seat.app_id || seat.key_file ? 'app' : seat.token_file ? 'pat' : 'none') :
+      seat.credential_kind === 'app' ? Number.isSafeInteger(seat.app_id) && seat.app_id > 0 && !!seat.key_file && seat.token_file === '' :
+      seat.app_id === null && seat.key_file === '' && (seat.credential_kind === 'pat' ? !!seat.token_file : seat.token_file === ''))
   const p = data?.plugin
   if (!object(data) || !object(p) || typeof p.available !== 'boolean' || typeof p.reason !== 'string' ||
       !object(p.schema) || !object(p.values) || !object(p.sources) || !object(p.seats) ||
@@ -1047,7 +1054,7 @@ function validateSettings(data) {
     if (!valid(p.values[key]) || !valid(spec.default)) throw invalidResponse('settings')
   }
   if (!p.roles.every(role => Object.hasOwn(p.seats, role)) ||
-      !Object.values(p.seats).every(seat => fields(seat, ['profile', 'login', 'token_file']) && typeof seat.set === 'boolean')) throw invalidResponse('settings')
+      !Object.values(p.seats).every(seat => fields(seat, ['profile', 'login']) && credential(seat, true) && typeof seat.set === 'boolean')) throw invalidResponse('settings')
   const ids = new Set()
   for (const loop of data.loops) {
     if (!fields(loop, ['id', 'repo', 'base', 'reason']) || !loop.id || ids.has(loop.id) ||
@@ -1057,7 +1064,7 @@ function validateSettings(data) {
         typeof loop.flags.fix_ci !== 'boolean' || typeof loop.flags.fixer_check !== 'string' ||
         !limit(loop.flags.cap) || typeof loop.flags.base !== 'string')) throw invalidResponse('settings')
     if (!Object.values(loop.flags).every(settingsScalar) || !Object.values(loop.seats).every(seat =>
-      fields(seat, ['profile', 'login', 'token_file', 'route']) && limit(seat.turn_budget_s) && limit(seat.max_steps)) ||
+      fields(seat, ['profile', 'login', 'route']) && credential(seat, false) && limit(seat.turn_budget_s) && limit(seat.max_steps)) ||
       (!loop.error && !p.roles.every(role => Object.hasOwn(loop.seats, role)))) throw invalidResponse('settings')
   }
   return data
@@ -1069,9 +1076,10 @@ function settingsText(value) {
 }
 
 function settingValue(key, value) {
+  if (key === 'credential_kind' && ['none', 'pat', 'app'].includes(value)) return value
   if (/(?:password|secret|credential|api[_-]?key|access[_-]?token|^token$)/i.test(key)) return 'Sensitive value withheld'
-  if (/(?:^|_)token_file$/.test(key) && value !== '' &&
-      (typeof value !== 'string' || !/^(?:\/|~\/)[^\r\n]+$/.test(value))) return 'Invalid token path withheld'
+  if (/(?:^|_)(?:token_file|key_file)$/.test(key) && value !== '' &&
+      (typeof value !== 'string' || !/^(?:\/|~\/)[^\r\n]+$/.test(value))) return /key_file$/.test(key) ? 'Invalid key path withheld' : 'Invalid token path withheld'
   if (!settingsScalar(value)) return 'Unsupported structured value (withheld)'
   return value === '' || value === null ? 'Not set here' : settingsText(value)
 }
@@ -1104,7 +1112,7 @@ function Settings() {
             row('Schema default (reference)', settingValue(key, spec.default))] })
         ] }, key)) }),
       jsx('h3', { className: 'text-sm font-medium', children: 'Existing loops · effective settings' }),
-      jsx(Muted, { text: 'These are each loop’s own projected answers, not the plugin defaults above. Omitted settings, including shadow activation, are not reported as off. Token files are paths only; credentials are never read or displayed.' }),
+      jsx(Muted, { text: 'These are each loop’s own projected answers, not the plugin defaults above. Omitted settings, including shadow activation, are not reported as off. Token and App key files are paths only; credential contents are never read or displayed.' }),
       !query.data.loops.length ? jsx(Muted, { text: 'No loops returned in this settings read.' }) : null,
       query.data.loops.map(loop => jsxs('article', { className: 'min-w-0 rounded-md border border-(--ui-stroke-secondary) p-4', children: [
         jsx('h4', { className: 'break-words text-sm font-medium', children: settingsText(loop.id) + (loop.repo ? ' · ' + settingsText(loop.repo) : '') }),

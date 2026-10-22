@@ -116,6 +116,10 @@ def _rows(loop: dict) -> list[_Row]:
         match = {str(k).lower(): v for k, v in tokens.items()}.get(login.lower()) if login else None
         app = {str(k).lower(): v for k, v in (loop.get("apps") or {}).items()}.get(
             login.lower()) if login and not match else None
+        for field, app_field in (("app_id", "app_id"), ("app_key_file", "key_file")):
+            schema(f"{role}_{field}", ("apps",),
+                   (app.get(app_field) if isinstance(app, dict) else None) or _UNSET,
+                   note="a path, never the key" if field == "app_key_file" and app else "")
         if isinstance(app, dict):
             # A GitHub App identity (#1163) has no token file: say what it has instead.
             schema(key, ("apps",), _UNSET,

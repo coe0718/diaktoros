@@ -24,6 +24,24 @@ class ShowTests(_Base):
         missing = set(settings_form.SETTINGS_SCHEMA) - set(rows)
         self.assertFalse(missing, f"settings schema keys `show` does not list: {sorted(missing)}")
 
+    def test_app_schema_rows_are_effective_id_and_key_metadata(self):
+        from test_token_file_settings import REV
+        self.install()
+        raw = self.loop_json()
+        bot = "review-seat[bot]"
+        raw["reviewers"] = [bot]
+        raw["reviewer_seat"] = bot
+        raw["seats"]["reviewer"]["login"] = bot
+        raw["tokens"].pop(REV)
+        raw["apps"] = {bot: {"app_id": 42, "key_file": str(self.pats["rev"])}}
+        self.loop_file().write_text(json.dumps(raw))
+        rc, out = self.run_cli(["show", "--loop", "widgets", "--json"])
+        self.assertEqual(rc, 0, out)
+        rows = {row["name"]: row for row in json.loads(out)["settings"]}
+        self.assertEqual(rows["reviewer_app_id"]["value"], 42)
+        self.assertEqual(rows["reviewer_app_key_file"]["value"], str(self.pats["rev"]))
+        self.assertNotIn(SENTINEL, json.dumps(rows))
+
     def test_every_loop_key_is_shown(self):
         rows = self.rows()
         covered = {n.split(".")[0] for n in rows}

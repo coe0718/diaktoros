@@ -29,7 +29,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import config, desktop_api  # noqa: E402
+from diaktoros import config, desktop_api, gh  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 
 # A settings store carrying a credential-shaped value, to prove the projection never returns it.
@@ -152,6 +152,18 @@ class SettingsView(unittest.TestCase):
         self.assertEqual(view["seats"]["fixer"]["token_file"], "")
         self.assertFalse(view["seats"]["fixer"]["set"])
 
+    def test_form_credential_choices_are_distinct_from_effective_loop_metadata(self):
+        for entry, expected in (
+            ({}, {"credential_kind": "none", "app_id": "", "key_file": "", "token_file": ""}),
+            ({"token_file": "~/seat.pat"}, {"credential_kind": "pat", "app_id": "", "key_file": "", "token_file": "~/seat.pat"}),
+            ({"app_id": "123", "app_key_file": "~/seat.pem"},
+             {"credential_kind": "app", "app_id": "123", "key_file": "~/seat.pem", "token_file": ""}),
+            ({"app_id": "123"}, {"credential_kind": "app", "app_id": "123", "key_file": "", "token_file": ""}),
+            ({"app_key_file": "~/seat.pem"}, {"credential_kind": "app", "app_id": "", "key_file": "~/seat.pem", "token_file": ""}),
+        ):
+            with self.subTest(entry=entry):
+                self.assertEqual(desktop_api._form_credential(entry), expected)
+
     # ---- unavailable is not a clean default ------------------------------------------
 
     def test_an_unreadable_store_is_unavailable_with_a_reason_not_a_default(self):
@@ -225,6 +237,27 @@ class SettingsView(unittest.TestCase):
         fixture = json.loads((ROOT / "tests/fixtures/desktop_settings.json").read_text())
         self.assertEqual(actual, fixture)
 
+    def test_app_browser_fixtures_match_real_loader_projection(self):
+        for name, roles in (("mixed", ("reviewer",)), ("app", ("reviewer", "fixer", "adjudicator"))):
+            with self.subTest(name=name):
+                self._install([])
+                body = json.loads(json.dumps(LOOP))
+                body["apps"] = {}
+                for index, role in enumerate(roles, 1):
+                    login = role + "-app[bot]"
+                    old_login = body["seats"][role]["login"]
+                    del body["tokens"][old_login]
+                    body["seats"][role]["login"] = login
+                    if role != "adjudicator":
+                        body["reviewers" if role == "reviewer" else "fixers"] = [login]
+                    body["apps"][login] = {"app_id": 12000 + index,
+                                           "key_file": "/synthetic/credentials/" + role + ".pem"}
+                self.write_loop("alpha", **body)
+                with mock.patch.object(desktop_api.time, "time", return_value=1800000000):
+                    actual = desktop_api.settings_view()
+                fixture = json.loads((ROOT / ("tests/fixtures/desktop_settings_" + name + ".json")).read_text())
+                self.assertEqual(actual, fixture)
+
     def test_each_loop_reports_its_own_effective_answers(self):
         self._install([])
         self.write_loop("good")
@@ -251,6 +284,37 @@ class SettingsView(unittest.TestCase):
         self.assertEqual(seats["reviewer"]["token_file"], "/x/vex.pat")
         self.assertEqual(seats["fixer"]["token_file"], "/x/drey.pat")
         self.assertEqual(seats["adjudicator"]["token_file"], "/x/tuck.pat")
+
+    def test_app_seats_project_typed_credentials_without_reading_keys(self):
+        self._install([])
+        tokens = {key: value for key, value in LOOP["tokens"].items() if key != "vex-coe"}
+        seats_config = json.loads(json.dumps(LOOP["seats"]))
+        seats_config["reviewer"]["login"] = "review-app[bot]"
+        self.write_loop("mixed", tokens=tokens, seats=seats_config, reviewers=["review-app[bot]"],
+                        apps={"review-app[bot]": {"app_id": 12345, "key_file": "/synthetic/review.pem"}})
+        loaded = config.load_id("mixed")
+        self.assertEqual(config.credentials_map(loaded)["review-app[bot]"], "/synthetic/review.pem")
+        with mock.patch.object(gh, "token", side_effect=AssertionError("credential read")), \
+             mock.patch("diaktoros.github_app.installation_token", side_effect=AssertionError("mint")):
+            seats = desktop_api.settings_view()["loops"][0]["seats"]
+        self.assertEqual(seats["reviewer"]["credential_kind"], "app")
+        self.assertEqual(seats["reviewer"]["app_id"], 12345)
+        self.assertEqual(seats["reviewer"]["key_file"], "/synthetic/review.pem")
+        self.assertEqual(seats["reviewer"]["token_file"], "")
+        self.assertEqual(seats["fixer"]["credential_kind"], "pat")
+        self.assertIsNone(seats["fixer"]["app_id"])
+        self.assertEqual(seats["fixer"]["key_file"], "")
+        self.assertEqual(seats["fixer"]["token_file"], "/x/drey.pat")
+        self.assertEqual(desktop_api._seat_credential(loaded, "")["credential_kind"], "none")
+
+    def test_credential_lookup_prefers_exact_then_case_insensitive_mapping(self):
+        raw = {"tokens": {"PAT": "/x/upper.pat", "pat": "/x/exact.pat"},
+               "apps": {"BOT[bot]": {"app_id": 7, "key_file": "/x/bot.pem"}}}
+        self.assertEqual(desktop_api._seat_credential(raw, "pat")["token_file"], "/x/exact.pat")
+        self.assertEqual(desktop_api._seat_credential(raw, "PaT")["token_file"], "/x/upper.pat")
+        app = desktop_api._seat_credential(raw, "bot[bot]")
+        self.assertEqual(app, {"credential_kind": "app", "app_id": 7,
+                               "key_file": "/x/bot.pem", "token_file": ""})
 
     def test_a_loop_reports_the_flags_its_file_actually_sets(self):
         """Under the names a loop carries: ``fix_ci`` — a page reading ``ci_fix`` shows off forever."""

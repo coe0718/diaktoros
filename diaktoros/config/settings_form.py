@@ -101,6 +101,42 @@ SETTINGS_SCHEMA: dict = {
                                               "never the token itself. Must be your own mode-600 "
                                               "regular file, not shared with any other login. "
                                               "Blank = not set here"},
+    "reviewer_app_id": {"label": "Reviewer's GitHub App id",
+                              "type": "str", "default": "",
+                              "description": (
+                                  "Positive ASCII decimal App id, paired with this seat's App key file and bot "
+                                  'login. Blank pair = not set here. A complete pair selects App, never PAT.'
+                              )},
+    "reviewer_app_key_file": {"label": "Reviewer's App key file (path only)",
+                              "type": "str", "default": "",
+                              "description": (
+                                  'Absolute path (~ allowed) to your mode-600 regular private-key file; the path '
+                                  'only, never the key itself. Set with the App id. Blank pair = not set here.'
+                              )},
+    "fixer_app_id": {"label": "Fixer's GitHub App id",
+                              "type": "str", "default": "",
+                              "description": (
+                                  "Positive ASCII decimal App id, paired with this seat's App key file and bot "
+                                  'login. Blank pair = not set here. A complete pair selects App, never PAT.'
+                              )},
+    "fixer_app_key_file": {"label": "Fixer's App key file (path only)",
+                              "type": "str", "default": "",
+                              "description": (
+                                  'Absolute path (~ allowed) to your mode-600 regular private-key file; the path '
+                                  'only, never the key itself. Set with the App id. Blank pair = not set here.'
+                              )},
+    "adjudicator_app_id": {"label": "Adjudicator's GitHub App id",
+                              "type": "str", "default": "",
+                              "description": (
+                                  "Positive ASCII decimal App id, paired with this seat's App key file and bot "
+                                  'login. Blank pair = not set here. A complete pair selects App, never PAT.'
+                              )},
+    "adjudicator_app_key_file": {"label": "Adjudicator's App key file (path only)",
+                              "type": "str", "default": "",
+                              "description": (
+                                  'Absolute path (~ allowed) to your mode-600 regular private-key file; the path '
+                                  'only, never the key itself. Set with the App id. Blank pair = not set here.'
+                              )},
     "reviewer_max_steps": {"label": "Reviewer's agent steps per turn", "type": "str", "default": "",
                            "description": "Agent steps one reviewer turn may take, 8-200. Blank = "
                                           "not set here: the loop keeps its own value or the "
@@ -526,40 +562,75 @@ def apply_seats(loop_raw: dict, settings: dict | None) -> dict:
     if adj_profile and adjudicator.get("route"):
         adjudicator["profile"] = adj_profile
         raw["adjudicator"] = adjudicator
-    # Token files: each seat's login → the path the form names. The value is never read here; the
-    # path is checked (``verify_token_settings``) before anything is written.
-    tokens = dict(loop_raw.get("tokens") or {})
-    # A login the loop gives a GitHub App identity (#1163) keeps it: the form's token file for
-    # that seat is not mapped onto it (an identity has one credential, and the loop's is explicit).
-    app_logins = {str(k).lower() for k in loop_raw.get("apps") or {}}
-    for seat in config.SEAT_KEYS:
-        path = str((mapping.get(seat) or {}).get("token_file") or "")
-        login = str(seats.get(seat, {}).get("login") or "")
-        if path:
-            if not login:
-                raise config.ConfigError(f"{config.TOKEN_FILE_SETTINGS[seat]} is set but the {seat} seat has no "
-                                  "login to map it to — set its login first")
-            if login.lower() not in app_logins:
-                _map_token(tokens, login, path)
-    # The adjudicator's comment identity, like its profile, only lands on a loop that already has an
-    # adjudicator route: a login alone cannot rule on anything.
+    # The adjudicator identity is inert until the loop has a route to rule through.
     adj_login = str(adj_entry.get("login") or "")
-    adj_path = str(adj_entry.get("token_file") or "")
-    if adjudicator.get("route") and (adj_login or adj_path):
-        adj_seat = dict(seats.get("adjudicator") or {})
-        if adj_login:
-            adj_seat["login"] = adj_login
-        login = str(adj_seat.get("login") or "")
-        if adj_path:
-            if not login:
-                raise config.ConfigError("adjudicator_token_file is set but no adjudicator login is — set "
-                                  "adjudicator_login (a token file names nobody on its own)")
-            if login.lower() not in app_logins:
-                _map_token(tokens, login, adj_path)
-        seats["adjudicator"] = adj_seat
+    if adjudicator.get("route") and adj_login:
+        seats.setdefault("adjudicator", {})["login"] = adj_login
+    tokens, apps, _selected, _ignored = select_credentials(raw, settings)
     if tokens != dict(loop_raw.get("tokens") or {}):
         raw["tokens"] = tokens
+    if apps != dict(loop_raw.get("apps") or {}):
+        raw["apps"] = apps
     return raw
+
+
+def select_credentials(loop: dict, settings: dict | None) -> tuple[dict, dict, dict, dict]:
+    """Select effective form credentials before checking paths; never open a credential.
+
+    Return tokens, apps, selected setting paths, and ignored PAT settings. Blank pairs preserve
+    the loop; partial App pairs refuse. An existing App never becomes a PAT implicitly. With
+    an explicit App pair, a PAT path matching the existing mapping is stale (not a second
+    choice); a new/different PAT path is conflicting intent and refuses. Without an App pair,
+    a PAT field targeting an existing App is stale even if missing (#1197).
+    """
+    mapping = config.seat_mapping(settings)
+    tokens = dict(loop.get("tokens") or {})
+    apps = {k: dict(v) for k, v in (loop.get("apps") or {}).items()}
+    selected, ignored = {}, {}
+    for role, token_key in config.TOKEN_FILE_SETTINGS.items():
+        if role == "adjudicator" and not (loop.get("adjudicator") or {}).get("route"):
+            continue
+        entry = mapping.get(role) or {}
+        login = str(entry.get("login") or (config.adjudicator_login(loop) if role == "adjudicator"
+                                           else config.seat_login(loop, role)))
+        path = str(entry.get("token_file") or "")
+        app_id = str(entry.get("app_id") or "")
+        key_file = str(entry.get("app_key_file") or "")
+        if bool(app_id) != bool(key_file):
+            raise config.ConfigError(f"{role}_app_id and {role}_app_key_file must be set together")
+        if not (path or app_id):
+            continue
+        if not login:
+            raise config.ConfigError(f"{token_key} or {role}_app_id is set but no {role} login is "
+                                     "available — set its login first (no adjudicator login "
+                                     "means the ruling has no comment identity)")
+        existing_pat = next((v for k, v in tokens.items() if k.lower() == login.lower()), "")
+        existing_app = next((v for k, v in apps.items() if k.lower() == login.lower()), None)
+        if app_id:
+            if not app_id.isascii() or not app_id.isdecimal() or int(app_id) <= 0:
+                raise config.ConfigError(f"{role}_app_id must be a positive ASCII decimal App id")
+            requested_app = {"app_id": int(app_id), "key_file": str(config._path(key_file))}
+            unchanged_app = existing_app == requested_app
+            inherited_pat = existing_pat and config._path(path) == config._path(existing_pat)
+            if path and not (inherited_pat or unchanged_app):
+                raise config.ConfigError(f"{token_key} conflicts with {role}_app_id / "
+                                         f"{role}_app_key_file — choose PAT or App, not both")
+            if path:
+                ignored[token_key] = login
+            for key in list(tokens):
+                if key.lower() == login.lower():
+                    del tokens[key]
+            for key in list(apps):
+                if key.lower() == login.lower():
+                    del apps[key]
+            apps[login] = {"app_id": int(app_id), "key_file": str(config._path(key_file))}
+            selected[f"{role}_app_key_file"] = key_file
+        elif existing_app:
+            ignored[token_key] = login
+        else:
+            _map_token(tokens, login, path)
+            selected[token_key] = path
+    return tokens, apps, selected, ignored
 
 
 def _map_token(tokens: dict, login: str, path: str) -> None:
