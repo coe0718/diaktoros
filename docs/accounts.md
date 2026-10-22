@@ -147,9 +147,12 @@ identity's key file (present, private, never opened) and the host's JWT signer; 
 it to its bot user. `set --read-token LOGIN --app
 LOGIN=ID:KEY` (or with `--adjudicator-login`) moves the reader or the adjudicator to an App, as
 `--token` does for a PAT. An identity has a PAT or an App, never both: mapping one replaces the
-other. The key never leaves the host and is never read by the CLI. What App bots can and cannot do
-on GitHub, and what is still to come (the settings form, the reviewer handoff and the merge
-check), is in [GitHub App support](github-app-support.md).
+other. The key never leaves the host and is never read by the CLI. GitHub cannot request an App bot
+as a reviewer, so when the reviewer is an App the host delivers the fixer's request to the
+reviewer gate itself; to ask for a review by hand, use `hermes dk review --loop ID --pr N`
+(a review request on GitHub does nothing for it). What App bots can and cannot do on GitHub, and
+what is still to come (the `diaktoros/review` merge check), is in
+[GitHub App support](github-app-support.md).
 
 ## Verify files, accounts and access
 

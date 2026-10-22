@@ -1147,6 +1147,15 @@ def check_apps(value, tokens: dict, where: str) -> dict:
     return out
 
 
+def reviewer_is_app(loop: dict) -> bool:
+    """Whether the reviewer seat is a GitHub App identity (#1163). GitHub cannot request an App
+    bot as a reviewer (a request answers 201 and does nothing, docs/github-app-support.md), so the
+    handoff to it is delivered to the reviewer gate by the host instead."""
+    seat = str(loop.get("reviewer_seat") or "").lower()
+    pats = {str(k).lower() for k in loop.get("tokens") or {}}
+    return bool(seat) and seat not in pats and seat in {str(k).lower() for k in loop.get("apps") or {}}
+
+
 def credentials_map(loop: dict) -> dict:
     """Every identity's credential file: PAT files (``tokens``) and App private keys (``apps``).
     For "has a credential" and "uses its own file" checks only; a key is never read as a token."""
