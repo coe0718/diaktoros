@@ -196,6 +196,12 @@ def perform(loop: dict, *, repo: str, number: int, head: str, role: str,
         seat = loop.get("reviewer_seat")
         if not seat or seat != ((loop.get("seats") or {}).get("reviewer") or {}).get("login"):
             raise BrokerDenied("reviewer seat mapping missing or inconsistent")
+        from . import config
+        if config.reviewer_is_app(loop):
+            # GitHub ignores a review request for an App bot (#1163): authorized and audited as
+            # a request, and the caller delivers it to the reviewer gate itself.
+            _audit(loop, repo, number, head, branch, role, operation, login)
+            return {"handoff": "gate", "requested_reviewer": seat}
         path = f"/repos/{repo}/pulls/{number}/requested_reviewers"
         payload = {"reviewers": [seat]}
     result, why = _write(loop, path, method="POST", body=payload, login=login)
@@ -503,6 +509,10 @@ def request_issue_pr_review(loop: dict, *, repo: str, pr: int, login: str) -> No
     """Ask the loop's reviewer seat to review the issue fix's PR, as the fixer (the handoff)."""
     from . import config
     reviewer = config.seat_login(loop, "reviewer")
+    if config.reviewer_is_app(loop):
+        # An App reviewer cannot be requested (#1163); the PR's `opened` wakes the reviewer gate.
+        _audit(loop, repo, pr, "", "", "issue_fixer", "request_review", login)
+        return
     result, why = _write(loop, f"/repos/{repo}/pulls/{pr}/requested_reviewers", method="POST",
                     login=login, body={"reviewers": [reviewer]})
     if not isinstance(result, dict) or type(result.get("number")) is not int:

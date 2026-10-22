@@ -1328,7 +1328,10 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             # rules and the ledger's dedup decide, so a held or queued review is not doubled.
             # A same-head transition hold (a retarget) starts its own one fresh review under its
             # turn key; a pending request is not delivered across it.
-            if (review_kick.already_requested(loop, pr) and kicks.get(str(number)) != head
+            # An App reviewer (#1163) never shows as requested: its handoff is always the
+            # host's, so a head with no verdict and no run is delivered the same way.
+            if ((review_kick.already_requested(loop, pr) or config.reviewer_is_app(loop))
+                    and kicks.get(str(number)) != head
                     and not boundary
                     and head_postdates_arming and (TEST or mins >= KICK_AFTER_MIN)):
                 try:

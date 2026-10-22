@@ -687,12 +687,16 @@ class RunBroker:
             # CI-fix push) makes GitHub send no event. Read that before the request, and if so
             # deliver the gate the event GitHub will not.
             pending = None
-            if after_push:
+            # An App reviewer (#1163) is never requested on GitHub: the request is always
+            # delivered to the reviewer gate by the host, as for #532.
+            app_reviewer = operation == "request_review" and config.reviewer_is_app(self._loop)
+            if after_push or app_reviewer:
                 try:
                     from . import gh, review_kick
                     live = gh.api(self._loop, gh.pr_path(self._loop, self.scope.number),
                                   login=self._loop["read_token"])
-                    pending = live if review_kick.already_requested(self._loop, live) else None
+                    pending = (live if isinstance(live, dict) and (
+                        app_reviewer or review_kick.already_requested(self._loop, live)) else None)
                 except Exception:
                     pending = None
             result = broker.perform(self._loop, repo=self.scope.repo, number=self.scope.number,
@@ -1131,8 +1135,11 @@ class RunBroker:
             sent = False
             log(f"#{self.scope.number} @ {head[:7]}: review start not delivered: "
                 f"{type(exc).__name__}: {exc}")
-        log(f"#{self.scope.number} @ {head[:7]}: reviewer was already requested, so GitHub sends "
-            f"no event — {'delivered the review request to the gate' if sent else 'the watchdog will start it'}")
+        why = ("the reviewer is a GitHub App, which GitHub cannot request"
+               if config.reviewer_is_app(self._loop) else
+               "reviewer was already requested, so GitHub sends no event")
+        log(f"#{self.scope.number} @ {head[:7]}: {why} — "
+            f"{'delivered the review request to the gate' if sent else 'the watchdog will start it'}")
 
     def _hold_issue_fix(self, supervisor, outcome: str) -> None:
         """An issue-fix write whose outcome is unknown holds its run ``uncertain`` (#522), as the

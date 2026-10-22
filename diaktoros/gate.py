@@ -1396,7 +1396,10 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                   f"`hermes dk review --loop {loop['id']} --pr {number} --another-round`")
     elif review_only and at_head:
         kind = "author-push"
-        action = (f"the author {author} pushes a fix and re-requests review of the new head — a "
+        ask = (f"runs `hermes dk review --loop {loop['id']} --pr {number}` (a GitHub App reviewer "
+               "cannot be requested on GitHub)" if config.reviewer_is_app(loop) else
+               "re-requests review of the new head")
+        action = (f"the author {author} pushes a fix and {ask} — a "
                   f"review-only PR has no fixer, but its verdicts are capped at "
                   f"{config.review_only_cap(loop)} (`review_only_cap`, default the loop's "
                   f"`cap`); a maintainer's `--another-round` lifts it once reached")
@@ -1487,9 +1490,12 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         kind = "review-request"
         detail = ("a fresh PR also wakes the reviewer on opened / ready_for_review, so re-driving "
                   "that event is the other way in" if not spent else "a push alone wakes nobody")
-        action = (f"the fixer asks for review of head {short}: gh api -X POST "
-                  f"repos/{repo}/pulls/{number}/requested_reviewers -f "
-                  f"'reviewers[]={loop['reviewer_seat']}' — {detail}")
+        action = ((f"ask for review of head {short}: `hermes dk review --loop {loop['id']} --pr "
+                   f"{number}` — the reviewer is a GitHub App, which GitHub cannot request")
+                  if config.reviewer_is_app(loop) else
+                  (f"the fixer asks for review of head {short}: gh api -X POST "
+                   f"repos/{repo}/pulls/{number}/requested_reviewers -f "
+                   f"'reviewers[]={loop['reviewer_seat']}' — {detail}"))
 
     if pr is None:
         state_line = "unknown — the PR itself could not be read"
