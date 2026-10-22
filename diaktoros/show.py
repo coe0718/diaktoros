@@ -114,6 +114,14 @@ def _rows(loop: dict) -> list[_Row]:
         login = config.seat_login(loop, role) if role != "adjudicator" \
             else config.adjudicator_login(loop)
         match = {str(k).lower(): v for k, v in tokens.items()}.get(login.lower()) if login else None
+        app = {str(k).lower(): v for k, v in (loop.get("apps") or {}).items()}.get(
+            login.lower()) if login and not match else None
+        if isinstance(app, dict):
+            # A GitHub App identity (#1163) has no token file: say what it has instead.
+            schema(key, ("apps",), _UNSET,
+                   note=f"a GitHub App identity: App {app.get('app_id')}, key "
+                        f"{app.get('key_file')} (a path, never the key)")
+            continue
         schema(key, ("tokens",), match or _UNSET,
                note="a path, never the token" if match else "")
     for role in config.SEAT_KEYS:

@@ -345,6 +345,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--admin-token-file` | `ADMIN_TOKEN_FILE` |  | hook admin's token file |
 | `--schedule` | `SCHEDULE` |  | watchdog interval (default 15m) |
 | `--watchdog-deliver` | `WATCHDOG_DELIVER` |  | where watchdog alerts go (default local) |
+| `--app` | `LOGIN=APP_ID:KEY` (repeatable) |  | a GitHub App identity for a seat or the reader instead of a PAT: <app-slug>[bot]=APP_ID:/abs/path/to/key.pem (repeatable); that login's token file is then not asked for |
 | `--admin-token` | `ADMIN_TOKEN` |  | hook admin login: the hooks are created (paused) as it |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | Hermes profile whose chat gets the loop's notices |
 | `--adjudicator-profile` | `ADJUDICATOR_PROFILE` |  | Hermes profile that rules when a PR's verdict cap is spent; turns adjudication on (blank: off) (default: the plugin setting) |
@@ -452,6 +453,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--root` | `ROOT` (repeatable) |  | a directory reviews may clean (repeatable) |
 | `--state-dir` | `STATE_DIR` |  | where this loop keeps its state files (default: ~/.hermes/state/diaktoros/<id>; ~/.hermes/state/review-loops/<id> is only a leftover until `migrate` moves it) |
 | `--token` | `TOKEN` (repeatable) |  | login=/path/to/pat (repeatable) |
+| `--app` | `LOGIN=APP_ID:KEY` (repeatable) |  | a GitHub App identity instead of a PAT: <app-slug>[bot]=APP_ID:/abs/path/to/key.pem (repeatable; the key stays on the host, mode 0600) |
 | `--read-token` | `READ_TOKEN` |  | required: login whose token reads GitHub — its own account, never a seat or the adjudicator login (the four-identity rule) |
 | `--skill` | `SKILL` |  | skill the seats are told to load. A plugin-provided skill is qualified, e.g. diaktoros:review-loop |
 | `--adjudicator-route` | `ADJUDICATOR_ROUTE` |  | route name for the adjudicator (e.g. <id>-breach): setting it turns adjudication on when the verdict cap is spent |
@@ -605,6 +607,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--adjudicator` | `off` |  | turn adjudication off: removes the route and the block (breach markers and rulings stay in the ledger) |
 | `--read-token` | `READ_TOKEN` |  | the login the gates read GitHub as — its own account, never a seat or the adjudicator login (the four-identity rule); map a new login with --token LOGIN=/path |
 | `--token` | `TOKEN` (repeatable) |  | LOGIN=/path/to/pat for the --read-token or --adjudicator-login login only (a path, never the token) |
+| `--app` | `LOGIN=APP_ID:KEY` (repeatable) |  | <app-slug>[bot]=APP_ID:/abs/path/to/key.pem: a GitHub App identity for the --read-token or --adjudicator-login login only, instead of a PAT (the key stays on the host, mode 0600) |
 | `--observer-route` | `OBSERVER_ROUTE` |  | route the observer feed delivers through |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | profile that owns the observer destination |
 | `--observer-deliver` | `OBSERVER_DELIVER` |  | where the gateway delivers the feed (telegram, discord, ...) |
