@@ -10,7 +10,8 @@ all schema fields show their type, description, effective plugin value and sourc
 reference defaults. Existing loops have a separate projected seat/flag view; omitted settings
 (such as shadow activation) are not inferred to be off. This page has no save or apply action.
 An unavailable settings store shows reference defaults only, while failed refreshes retain the
-last good read with a stale disclosure. Token-file fields display paths, never file contents.
+last good read with a stale disclosure. PAT and App-key fields display paths, never file contents. Each seat explicitly distinguishes
+PAT token files from App ids and private-key paths; a PEM path is never a token file.
 Editing remains in the native Capabilities → Plugins form and the checked CLI operations below.
 
 ## Contents
@@ -28,7 +29,7 @@ Editing remains in the native Capabilities → Plugins form and the checked CLI 
 
 | Surface | Owns | How changes take effect |
 | --- | --- | --- |
-| Plugin settings form | Numeric defaults, gateway/clone defaults, working-seat identities and token paths, optional adjudicator identity, attribution, the weekly report's time | `init`/`setup` consume effective defaults for a new loop; `apply` overlays explicitly stored nonblank fields on one named loop. |
+| Plugin settings form | Numeric defaults, gateway/clone defaults, working-seat identities and PAT/App paths, optional adjudicator identity, attribution, the weekly report's time | `init`/`setup` consume effective defaults for a new loop; `apply` overlays explicitly stored nonblank fields on one named loop. |
 | Per-loop JSON | Repository, allowlists, routes, seats, consent policy, observer/triage and all effective loop settings | Use `set`, `triage`, `fixer-push`, or a carefully reviewed manual edit plus route reconciliation. See [Configuration](configuration.md). |
 | Private runtime JSON | Host Hermes/Python/Rust paths and optional model overrides | `setup` detects/writes it; workers resolve models through the runtime. See [Configuration](configuration.md). |
 
@@ -64,6 +65,12 @@ Defaults are for a fresh form; existing loops retain values when a field is abse
 | `fixer_token_file` | str / `""` | Owned private regular file; absolute path or `~` path | Maps the effective fixer login into `tokens`; path only, blank keeps mapping. |
 | `adjudicator_login` | str / `""` | Optional fourth GitHub login distinct from reader, seats and their allowlists | `seats.adjudicator.login`, only with an adjudicator route; adds a PR comment identity for rulings. Without it rulings remain operator/ledger output. |
 | `adjudicator_token_file` | str / `""` | Owned private regular file; absolute path or `~` path, not shared with another login | Maps the optional adjudicator comment login into `tokens`, only with an adjudicator route. Needs an effective adjudicator login. |
+| `reviewer_app_id` | str / `""` | Positive ASCII decimal App id, paired with key path | Selects an App for the effective login; blank pair preserves mapping. |
+| `reviewer_app_key_file` | str / `""` | Owned private regular file; absolute or `~` path, paired with App id | Maps `apps[login].key_file`; metadata only, never key contents. Adjudicator requires an existing route. |
+| `fixer_app_id` | str / `""` | Positive ASCII decimal App id, paired with key path | Selects an App for the effective login; blank pair preserves mapping. |
+| `fixer_app_key_file` | str / `""` | Owned private regular file; absolute or `~` path, paired with App id | Maps `apps[login].key_file`; metadata only, never key contents. Adjudicator requires an existing route. |
+| `adjudicator_app_id` | str / `""` | Positive ASCII decimal App id, paired with key path | Selects an App for the effective login; blank pair preserves mapping. |
+| `adjudicator_app_key_file` | str / `""` | Owned private regular file; absolute or `~` path, paired with App id | Maps `apps[login].key_file`; metadata only, never key contents. Adjudicator requires an existing route. |
 | `review_after_ci` | bool / `false` | Boolean; CLI reader also recognizes boolean words | `review_after_ci`: a review waits while the head's checks are still running (up to an hour), then starts with their results. |
 | `fix_ci` | bool / `false` | Boolean; CLI reader also recognizes boolean words | `fix_ci`: a failed required check on a fixer's PR becomes one fixer turn per head. Only takes effect with `unattended_fixer_push` on; `doctor` reports a mismatch otherwise. |
 | `review_only` | str / `""` | Comma-separated GitHub logins; at most 50 unique, none a fixer or a reviewer | `review_only`: their PRs are reviewed, never fixed; a verdict goes back to the author, with no adjudication. Verdicts are capped by `review_only_cap`. |
@@ -152,8 +159,8 @@ be in `reviewers`, the fixer in `fixers`. The form moves `reviewer_seat` with th
 so the route and counted verdict selector remain aligned. Display names already supplied by
 the loop are preserved rather than treated as identities.
 
-All nonblank token-file fields are checked before init/apply computation, even if a particular
-adjudicator setting would otherwise not land. Metadata validation expands `~`, requires an
+Only selected effective credential paths are checked before init/apply writes; ignored stale
+PAT fields on App seats cannot refuse the push, even when their files are missing. Metadata validation expands `~`, requires an
 absolute path, follows symlinks, and rejects missing files, directories, foreign ownership
 and **any** group/other permission bit. A mode-0600 file is the recommended shape; the rule is
 not exactly “must equal 0600.” It does not open the file during this metadata check.
@@ -164,11 +171,33 @@ Tokens are not printed. Live `/user` checks belong to selftest and the write bro
 file paths and claimed login strings do not prove distinct actual GitHub principals.
 See [Accounts](accounts.md) and [Security](security.md).
 
-A token-file change is an identity change for busy-seat checking, just like a profile/login move.
+A credential-kind, App-id or key/token-path change is an identity change for busy-seat checking,
+just like a profile/login move.
 A form token path without an effective login is refused. Adjudicator profile/login/token fields
 land only with an existing adjudicator route; no adjudicator route is created from these fields.
 Blank cannot clear a saved identity: for the optional comment login, `set --adjudicator-login ""`
 is the explicit clearing path.
+
+### Selecting an App credential
+
+For reviewer, fixer and optional adjudicator, set the existing login plus both App fields.
+An App id is positive ASCII decimal; the key is an absolute (or `~/`) private-key path.
+The App-id/key pair must be complete: a partial pair refuses, while a blank pair preserves
+the loop’s current mapping. A complete pair selects `apps` and removes all case-variant
+`tokens` entries for that target login.
+
+Do not supply two credential choices: a simultaneous PAT path and App pair refuses unless
+the PAT path matches the existing PAT mapping or the App tuple already matches the loop,
+in which case it is stale data, not a new App choice.
+Clear the PAT form field when selecting App. With no App pair, a PAT field for an existing
+App login is ignored with a note; it never silently migrates App to PAT. To intentionally
+return a working seat to PAT, review the per-loop credential mapping separately.
+
+The reader has no App form fields: use `set --read-token LOGIN --app LOGIN=APP_ID:/abs/key.pem`.
+Hook admin remains PAT-only; App hook administration is unproven (#1196). Provisioning Apps,
+installations, permissions and webhooks is separate. These fields do not request App bots
+as reviewers, add required checks, or change branch protection; #1163 remains in progress.
+The Desktop inspection is GET-only and does not open PEMs or mint credentials.
 
 ## Preview and apply
 

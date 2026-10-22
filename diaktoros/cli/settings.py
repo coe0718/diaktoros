@@ -68,9 +68,10 @@ def _seat_diffs(was: dict, now: dict) -> tuple[list[tuple[str, object, object]],
     # identity change, owed the same in-flight check. Paths only — the file is never opened here.
     for role in ("reviewer", "fixer"):
         login = config.seat_login(now, role)
-        before, after = cli_common._token_ref(was, login), cli_common._token_ref(now, login)
+        before, after = cli_common._credential_label(was, login), cli_common._credential_label(now, login)
         if before != after:
-            diffs.append((f"{role} token file ({login})", before or "(none)", after or "(none)"))
+            label = "credential" if cli_common._app_ref(was, login) or cli_common._app_ref(now, login) else "token file"
+            diffs.append((f"{role} {label} ({login})", before or "(none)", after or "(none)"))
             touched.add(role)
     # The adjudicator's comment identity has no run of its own to strand: it is reported, and
     # validated, but it does not rebind a route.
@@ -78,9 +79,10 @@ def _seat_diffs(was: dict, now: dict) -> tuple[list[tuple[str, object, object]],
     if login_before != login_after:
         diffs.append(("adjudicator login", login_before or "(none)", login_after or "(none)"))
     if login_after:
-        before, after = cli_common._token_ref(was, login_after), cli_common._token_ref(now, login_after)
+        before, after = cli_common._credential_label(was, login_after), cli_common._credential_label(now, login_after)
         if before != after:
-            diffs.append((f"adjudicator token file ({login_after})", before or "(none)",
+            label = "credential" if cli_common._app_ref(was, login_after) or cli_common._app_ref(now, login_after) else "token file"
+            diffs.append((f"adjudicator {label} ({login_after})", before or "(none)",
                           after or "(none)"))
     return diffs, touched
 
@@ -1109,8 +1111,8 @@ def _apply(args) -> int:
         return 2
 
     try:
-        # Token-file paths first: a bad path is refused by name before anything is computed.
-        credentials.verify_token_settings(cli_common._SETTINGS)
+        # Select before stat: stale PAT fields for App seats are not effective paths (#1197).
+        credentials.verify_token_settings(cli_common._SETTINGS, loop=loop)
         updated = config.normalize(settings_form.apply_settings(loop, cli_common._SETTINGS))
     except config.ConfigError as exc:
         print(f"settings refused: {exc}")
@@ -1142,7 +1144,7 @@ def _apply(args) -> int:
                  else config.seat_login(updated, role))
         if str(form.get(key) or "").strip() and cli_common._app_ref(updated, login):
             print(f"[{updated['id']}] note: the plugin settings' {key} is not applied — {login} "
-                  "is a GitHub App identity on this loop and keeps its App key")
+                  "is a GitHub App identity on this loop (stale PAT setting; App selected)")
 
     identity, touched = _seat_diffs(loop, updated)
     # The installed registry can drift independently of the loop and the form. Repair those
@@ -1159,7 +1161,7 @@ def _apply(args) -> int:
         credentials.verify_seats(updated, rebinding)
         adj = config.adjudicator_login(updated)
         if adj and (adj != config.adjudicator_login(loop)
-                    or cli_common._token_ref(loop, adj) != cli_common._token_ref(updated, adj)):
+                    or cli_common._credential_label(loop, adj) != cli_common._credential_label(updated, adj)):
             credentials.verify_adjudicator_token(updated)
             credentials.verify_credentials(updated)
         if rebinding:
@@ -1439,6 +1441,9 @@ def cmd_settings(args) -> int:
         print(f"  {role:<12} profile {profile:<20} {cell}[{'set' if entry else 'blank'}]")
         # The path only, never the file: this is where the login's PAT is read from at use time.
         print(f"  {'':<12} token file {entry.get('token_file') or '(blank)'}")
+        if role in config.TOKEN_FILE_SETTINGS:
+            print(f"  {'':<12} App id {entry.get('app_id') or '(blank)'}, "
+                  f"key file {entry.get('app_key_file') or '(blank)'}")
     adjudicator_note = ("the adjudicator lands only on a loop that already has an adjudicator "
                         "route; its login is optional — a fourth account the ruling is also posted "
                         "as — and it never pushes or reviews; route names stay per repository")
