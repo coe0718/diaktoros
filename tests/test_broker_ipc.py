@@ -99,6 +99,16 @@ class BrokerIPCTests(unittest.TestCase):
         self.assertNotIn("DUMMY_SECRET", audit)
         self.assertNotIn("DUMMY_SECRET", str(self.send(server, self.review())))
 
+    def test_a_review_refreshes_the_merge_check_and_a_refused_one_does_not(self):
+        # #1163 M2b: the verdict is in, so the check follows it now, not at the next sweep.
+        from diaktoros import merge_check
+        server = self.start()
+        with mock.patch.object(merge_check, "refresh_quietly") as refresh:
+            self.assertFalse(self.send(server, {**self.review(), "verdict": "MAYBE"})["ok"])
+            refresh.assert_not_called()
+            self.assertTrue(self.send(server, self.review())["ok"])
+        refresh.assert_called_once_with(self.loop, 7)
+
     def test_linked_issue_review_without_requirements_is_refused_then_resubmittable(self):
         # #511: through the real request path, for a PR that closes an issue.
         server = self.start()

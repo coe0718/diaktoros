@@ -536,5 +536,18 @@ class CallSites(Base):
         hook.assert_not_called()
 
 
+    def test_the_shadows_finish_refreshes_the_merge_check(self):
+        import test_shadow as ts
+        from diaktoros import merge_check
+        turn = ts.ProductionTurn("run")
+        turn.setUp()
+        self.addCleanup(turn.doCleanups)
+        with mock.patch.object(run_supervisor.Supervisor, "_shadow_escalation"), \
+                mock.patch.object(merge_check, "refresh_quietly") as refresh:
+            turn.run_shadow([{"verdict": "REQUEST_CHANGES", "body": "F1: a.py:1: x",
+                              "authorized": True, "denial": ""}])
+        refresh.assert_called_once()
+        self.assertEqual(refresh.call_args.args[1], 8)               # the shadowed PR
+
 if __name__ == "__main__":
     unittest.main()

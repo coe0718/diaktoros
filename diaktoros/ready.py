@@ -57,6 +57,22 @@ def _changed_since_listing(pr: dict, detail: dict) -> list[str]:
 PENDING, FAILURE, GITHUB, OUTSIDE = "pending", "failure", "github", "outside"
 
 
+# A required check that has not reported yet is pending this long after its head is first seen:
+# a workflow takes a moment to create its check runs after a push (shadow review of #1225).
+MISSING_GRACE_S = 15 * 60
+
+
+def _past_start_grace(st, number, head: str) -> bool:
+    """Whether the head has been seen long enough that a missing required check is not just one
+    still starting. A head the watchdog has not recorded yet (or an unreadable record) is not."""
+    import time
+    entry = (st.watch().get("heads") or {}).get(str(number)) if isinstance(st.watch(), dict) else None
+    if not isinstance(entry, dict) or entry.get("sha") != head:
+        return False
+    seen = entry.get("observed_at")
+    return isinstance(seen, (int, float)) and time.time() - seen >= MISSING_GRACE_S
+
+
 def assess(loop: dict, st, pr: dict, reviews, ci_state, detail: dict | None) -> list[str]:
     """Why one open PR is not ready to merge; ``[]`` when nothing excludes it.
 
@@ -112,7 +128,8 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
                 if names]
         # A required check that never reported is for the operator (a misnamed or dropped
         # workflow, ci.approval_refusal): nothing ends that wait on its own.
-        add(FAILURE if gating.failed or gating.cancelled or gating.missing else PENDING,
+        add(FAILURE if gating.failed or gating.cancelled
+            or (gating.missing and _past_start_grace(st, number, head)) else PENDING,
             "required checks not green — " + "; ".join(bits))
 
     if not isinstance(detail, dict):
@@ -145,7 +162,9 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
             marker if isinstance(marker, dict) else {}, head) in {"awaiting-adjudication",
                                                                   "adjudicating"}:
         # Waiting for the ruling; once it is in, the decision is the operator's.
-        add(FAILURE if gate._ruled(loop, number, head) else PENDING,
+        # With no adjudicator route no ruling ever comes: a person decides (shadow, #1225).
+        add(FAILURE if (gate._ruled(loop, number, head)
+                        or not (loop.get("adjudicator") or {}).get("route")) else PENDING,
             "escalated: parked awaiting adjudication")
     shadow_kind, shadow_held, _note = gate.shadow_state(loop, number, head, marker=marker)
     if shadow_held:
@@ -229,15 +248,12 @@ def build_kinds(loop: dict, st, prs: list[dict],
     return out, {n: e["why"] for n, e in info.items()}
 
 
-def collect(loop: dict, st) -> tuple[list[dict], list[dict], str]:
-    """Read GitHub once per open PR and build the queue; the last item is a listing error."""
-    prs, error = gh.open_prs_read(loop)
-    if prs is None:
-        return [], [], error or "open PR listing unreadable"
+def _reads(loop: dict, prs: list) -> dict:
+    """GitHub, once per open PR: its reviews, CI, single-PR read and changed files."""
     reads: dict = {}
     for pr in prs:
-        number = pr.get("number")
-        head = (pr.get("head") or {}).get("sha") or ""
+        number = pr.get("number") if isinstance(pr, dict) else None
+        head = (pr.get("head") or {}).get("sha") or "" if isinstance(pr, dict) else ""
         if not isinstance(number, int) or not head:
             continue
         reviews, _ = gh.reviews_read(loop, number)
@@ -246,8 +262,26 @@ def collect(loop: dict, st) -> tuple[list[dict], list[dict], str]:
         reads[number] = {"reviews": reviews, "ci": ci.read(loop, head), "detail": detail,
                          "files": ([str(f.get("filename")) for f in files if isinstance(f, dict)]
                                    if isinstance(files, list) else None)}
-    ready, excluded = build(loop, st, prs, reads)
+    return reads
+
+
+def collect(loop: dict, st) -> tuple[list[dict], list[dict], str]:
+    """Read GitHub once per open PR and build the queue; the last item is a listing error."""
+    prs, error = gh.open_prs_read(loop)
+    if prs is None:
+        return [], [], error or "open PR listing unreadable"
+    ready, excluded = build(loop, st, prs, _reads(loop, prs))
     return ready, excluded, ""
+
+
+def collect_kinds(loop: dict, st) -> tuple[list[dict], dict[int, list[tuple[str, str]]], str]:
+    """``(open PRs, {number: reasons with kinds}, listing error)``: ``collect``'s reads and
+    judgement, kept per PR for the merge check (#1163 M2b)."""
+    prs, error = gh.open_prs_read(loop)
+    if prs is None:
+        return [], {}, error or "open PR listing unreadable"
+    _ready, kinds = build_kinds(loop, st, prs, _reads(loop, prs))
+    return [p for p in prs if isinstance(p, dict) and isinstance(p.get("number"), int)], kinds, ""
 
 
 FILE = "ready-set.json"

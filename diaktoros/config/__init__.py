@@ -236,6 +236,7 @@ DEFAULTS: dict = {
     "unattended_fixer_push": False,  # per-repository; never inherited from plugin settings
     "attribution": True,      # sign what the loop posts (#197); false turns footer and trailer off
     "review_after_ci": False,  # hold a review while the head's checks are still running (#241)
+    "merge_check": "auto",     # post the diaktoros/review merge check: auto|on|off (#1163 M2b)
     "fix_ci": False,          # hand a red required check on a fixer's PR to the fixer (#306)
     "fixer_check": "",        # one command fixer turns always run before publishing; "" = none
     "required_checks": [],    # the checks that gate an approval (#368); [] = every check gates
@@ -1503,6 +1504,9 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     loop["required_checks"] = check_required_checks(loop["required_checks"], where)
     loop["human_paths"] = check_human_paths(loop["human_paths"], where)
     loop["generated"] = check_generated(loop["generated"], where)
+    if loop.get("merge_check") not in MERGE_CHECK_MODES:
+        raise ConfigError(f"{where}: 'merge_check' must be one of {', '.join(MERGE_CHECK_MODES)} "
+                          "(auto: on when the reviewer is a GitHub App)")
     if type(loop["review_after_ci"]) is not bool:
         raise ConfigError(f"{where}: 'review_after_ci' must be a JSON boolean (true holds a "
                           "review until the head's checks finish)")
@@ -1861,6 +1865,17 @@ def fixer_scope_lock(loop: dict) -> bool:
 def review_only_update(loop: dict) -> bool:
     """Whether the host may push a clean merge of the base into a review-only PR. Off unless set."""
     return loop.get("review_only_update") is True
+
+
+MERGE_CHECK_MODES = ("auto", "on", "off")
+
+
+def merge_check_on(loop: dict) -> bool:
+    """Whether the host posts the ``diaktoros/review`` merge check (#1163 M2b): ``on``, or ``auto``
+    with a GitHub App reviewer (whose approvals GitHub never counts, so the check is the block). A
+    PAT loop opts in with ``on`` and gets a commit status (which branch protection cannot pin)."""
+    mode = loop.get("merge_check") or "auto"
+    return mode == "on" or (mode == "auto" and reviewer_is_app(loop))
 
 
 def review_after_ci(loop: dict) -> bool:

@@ -389,6 +389,8 @@ def cmd_init(args) -> int:
         # The checks CI always runs, which a fixer running only its touched tests would miss.
         "fixer_check": (d["fixer_check"] if getattr(args, "fixer_check", None) is None
                         else args.fixer_check),
+        "merge_check": (getattr(args, "merge_check", None)
+                        or str(d.get("merge_check") or "").strip().lower() or "auto"),
         # The checks that gate an approval (#368); none named = every check gates.
         "required_checks": (config.split_check_names(d["required_checks"])
                             if getattr(args, "required_check", None) is None
@@ -828,6 +830,8 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     if adjudicator:
         argv += [f"--adjudicator-route={loop_id}-breach", f"--adjudicator-profile={adjudicator}"]
     argv.append(f"--fixer-check={check}")
+    if getattr(args, "merge_check", None):
+        argv.append(f"--merge-check={args.merge_check}")
     required = (args.required_check if args.required_check is not None else
                 config.split_check_names(_ask(
                     "the CI checks that must pass before an approval, comma-separated, exactly as "
@@ -1114,6 +1118,8 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                       help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     init.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
                       help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting)")
+    init.add_argument("--merge-check", choices=("auto", "on", "off"), default=None,
+                      help="post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off")
     init.add_argument("--fixer-check", default=None,
                       help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
     init.add_argument("--turn-budget", type=int, default=d["turn_budget_s"],
@@ -1213,6 +1219,8 @@ def add_setup(sub) -> None:  # noqa: ANN001
                        help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     first.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
                        help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting)")
+    first.add_argument("--merge-check", choices=("auto", "on", "off"), default=None,
+                       help="post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off")
     first.add_argument("--fixer-check", default=None,
                        help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
     first.add_argument("--review-only-update", choices=("on", "off"), default=None,

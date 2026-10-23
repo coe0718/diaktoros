@@ -3294,6 +3294,9 @@ class Supervisor(records.LedgerRecords):
             try:
                 if submissions and self.record_shadow(run_id, owner, submissions[-1]):
                     self._shadow_escalation(turn)
+                    if turn.loop is not None:              # #1163: the shadow's verdict is in
+                        from .. import merge_check
+                        merge_check.refresh_quietly(turn.loop, turn.row['pr'])
             except Exception:
                 pass    # a lost record must not change how the turn ends
         state = self.complete_uncertain(

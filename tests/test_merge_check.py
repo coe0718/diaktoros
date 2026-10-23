@@ -76,9 +76,21 @@ class Kinds(KindsBase):
                          ready.FAILURE)
         self.assertEqual(self.kind_of("required checks", ci_state=ci.CIState(pending=["tests"])),
                          ready.PENDING)
-        # A required check that never reported is for the operator, not a wait that ends.
+        # A required check that never reported is for the operator, not a wait that ends — once
+        # the head has been seen long enough for its workflow to have started (shadow, #1225).
+        self.assertEqual(self.kind_of("never reported", ci_state=ci.CIState(passed=["lint"])),
+                         ready.PENDING)                         # head not seen yet: starting
+        import time
+        self.st.watch_save({"heads": {"7": {"sha": HEAD, "observed_at": time.time() - 60}}})
+        self.assertEqual(self.kind_of("never reported", ci_state=ci.CIState(passed=["lint"])),
+                         ready.PENDING)                         # a minute in: still starting
+        self.st.watch_save({"heads": {"7": {"sha": HEAD,
+                                            "observed_at": time.time() - ready.MISSING_GRACE_S - 1}}})
         self.assertEqual(self.kind_of("never reported", ci_state=ci.CIState(passed=["lint"])),
                          ready.FAILURE)
+        self.st.watch_save({"heads": {"7": {"sha": "b" * 40, "observed_at": 1.0}}})
+        self.assertEqual(self.kind_of("never reported", ci_state=ci.CIState(passed=["lint"])),
+                         ready.PENDING)                         # an older head's record: not this one
 
     def test_a_conflict_fails_and_githubs_other_verdicts_are_set_apart(self):
         self.assertEqual(self.kind_of("conflicts", detail={**CLEAN, "mergeable": False,
@@ -109,6 +121,9 @@ class Kinds(KindsBase):
             "pr": 7, "head": HEAD, "rounds": 3, "cap": 3, "reason": "r", "at": "now",
             "status": "awaiting-adjudication"}})
         with mock.patch.object(gate, "_ruled", return_value=None):
+            # No adjudicator route: no ruling ever comes, so a person decides (shadow, #1225).
+            self.assertEqual(self.kind_of("escalated"), ready.FAILURE)
+            self.loop["adjudicator"] = {"route": "w-breach"}
             self.assertEqual(self.kind_of("escalated"), ready.PENDING)
         with mock.patch.object(gate, "_ruled", return_value="REJECT"):
             self.assertEqual(self.kind_of("escalated"), ready.FAILURE)
@@ -230,6 +245,147 @@ class SelfExclusion(unittest.TestCase):
             state = ci.read(loop, HEAD)
         self.assertEqual((state.passed, state.failed, state.pending), (["tests"], [], []))
         self.assertTrue(ci.gating(state, ["tests"]).green)
+
+
+class Accessor(unittest.TestCase):
+    def test_auto_follows_the_reviewer_identity_and_on_off_override_it(self):
+        from diaktoros import config
+        pat = {"reviewer_seat": "rev", "tokens": {"rev": "/t"}}
+        app = {"reviewer_seat": "r[bot]", "apps": {"r[bot]": {"app_id": 1, "key_file": "/k"}}}
+        for loop, mode, on in ((pat, None, False), (pat, "auto", False), (pat, "on", True),
+                               (app, None, True), (app, "auto", True), (app, "off", False),
+                               (pat, "off", False)):
+            with self.subTest(loop=loop["reviewer_seat"], mode=mode):
+                self.assertIs(config.merge_check_on({**loop, "merge_check": mode}), on)
+
+
+class Posting(unittest.TestCase):
+    """``post`` and ``refresh`` against a faked ``gh.api`` and ``ready.collect_kinds``."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.loop = {"id": "w", "repo": "acme/widgets", "reviewer_seat": "r[bot]",
+                     "apps": {"r[bot]": {"app_id": 1, "key_file": "/k"}},
+                     "seats": {"reviewer": {"login": "r[bot]"}},
+                     "state_dir": str(pathlib.Path(tmp.name) / "state")}
+        self.st = state_mod.state_for(self.loop)
+        self.calls, self.fail = [], False
+        self.prs = [{"number": 7, "head": {"sha": HEAD}}]
+        self.kinds = {7: [(ready.PENDING, "review not yet posted")]}
+
+        def api(loop, path, method="GET", body=None, login=None):
+            self.calls.append((path, method, body, login))
+            if self.fail:
+                return None
+            if "/check-runs" in path:
+                return {"id": int(path.rsplit("/", 1)[1]) if method == "PATCH" else 55}
+            return {"context": body["context"]}
+        for patch in (mock.patch.object(gh, "api", side_effect=api),
+                      mock.patch.object(gh, "last_error", return_value="HTTP 403"),
+                      mock.patch.object(ready, "collect_kinds",
+                                        side_effect=lambda *a: (self.prs, self.kinds, ""))):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def refresh(self, **kw):
+        return merge_check.refresh(self.loop, self.st, **kw)
+
+    def memory(self):
+        return self.st._load(self.st.dir / merge_check.FILE, {})
+
+    def test_an_app_reviewer_posts_a_check_run_then_updates_it(self):
+        self.assertEqual(self.refresh(), 1)
+        [(path, method, body, login)] = self.calls
+        self.assertEqual((path, method, login), ("/repos/acme/widgets/check-runs", "POST", "r[bot]"))
+        self.assertEqual((body["name"], body["head_sha"], body["status"]),
+                         ("diaktoros/review", HEAD, "in_progress"))
+        self.assertNotIn("conclusion", body)
+        self.assertEqual(self.memory()["7"]["run_id"], 55)
+        self.kinds = {7: []}
+        self.assertEqual(self.refresh(), 1)
+        path, method, body, _ = self.calls[1]
+        self.assertEqual((path, method), ("/repos/acme/widgets/check-runs/55", "PATCH"))
+        self.assertEqual((body["status"], body["conclusion"], body["output"]["title"]),
+                         ("completed", "success", "Ready to merge"))
+        self.assertNotIn("head_sha", body)
+        self.assertEqual(len(self.calls), 2)          # updated, not duplicated
+
+    def test_a_new_head_gets_a_new_check_run(self):
+        self.refresh()
+        self.prs = [{"number": 7, "head": {"sha": "b" * 40}}]
+        self.refresh()
+        self.assertEqual([c[:2] for c in self.calls],
+                         [("/repos/acme/widgets/check-runs", "POST")] * 2)
+        self.assertEqual(self.calls[1][2]["head_sha"], "b" * 40)
+
+    def test_an_unchanged_state_is_not_rewritten(self):
+        self.assertEqual(self.refresh(), 1)
+        self.assertEqual(self.refresh(), 0)
+        self.assertEqual(len(self.calls), 1)
+        self.kinds = {7: [(ready.PENDING, "review not yet posted"), (ready.GITHUB, "blocked")]}
+        self.assertEqual(self.refresh(), 0)           # GitHub's blocked does not count
+
+    def test_a_pat_loop_that_opted_in_posts_a_commit_status(self):
+        self.loop.update(reviewer_seat="rev", apps={}, tokens={"rev": "/t"}, merge_check="on",
+                         seats={"reviewer": {"login": "rev"}})
+        self.kinds = {7: [(ready.FAILURE, "changes requested at this head " + "x" * 300)]}
+        self.assertEqual(self.refresh(), 1)
+        [(path, method, body, login)] = self.calls
+        self.assertEqual((path, method, login), (f"/repos/acme/widgets/statuses/{HEAD}", "POST", "rev"))
+        self.assertEqual((body["state"], body["context"]), ("failure", "diaktoros/review"))
+        self.assertTrue(body["description"].startswith(
+            "Not mergeable: changes requested at this head xxx"), body["description"])
+        self.assertLessEqual(len(body["description"]), merge_check.STATUS_DESCRIPTION_MAX)
+        self.assertNotIn("run_id", self.memory()["7"])
+
+    def test_off_reads_and_writes_nothing(self):
+        for loop in ({**self.loop, "merge_check": "off"},
+                     {**self.loop, "reviewer_seat": "rev", "apps": {}, "tokens": {"rev": "/t"}}):
+            with self.subTest(loop.get("merge_check")):
+                self.assertEqual(merge_check.refresh(loop, self.st), 0)
+        ready.collect_kinds.assert_not_called()
+        self.assertEqual(self.calls, [])
+
+    def test_a_pr_outside_the_loop_gets_no_check(self):
+        self.kinds = {7: [(ready.OUTSIDE, "not opened by the loop's fixer")]}
+        self.assertEqual(self.refresh(), 0)
+        self.assertEqual(self.calls, [])
+
+    def test_an_unreadable_listing_writes_nothing(self):
+        ready.collect_kinds.side_effect = lambda *a: ([], {}, "open PRs unreadable")
+        logged = []
+        self.assertEqual(self.refresh(log=logged.append), 0)
+        self.assertEqual(self.calls, [])
+        self.assertIn("open PRs unreadable", logged[0])
+
+    def test_a_failed_write_is_not_recorded_and_is_retried(self):
+        self.fail = True
+        logged = []
+        self.assertEqual(self.refresh(log=logged.append), 0)
+        self.assertEqual(self.memory(), {})
+        self.assertIn("HTTP 403", logged[0])
+        self.fail = False
+        self.assertEqual(self.refresh(), 1)
+
+    def test_only_limits_the_prs_and_closed_prs_are_pruned(self):
+        self.prs.append({"number": 8, "head": {"sha": "c" * 40}})
+        self.kinds[8] = []
+        self.assertEqual(self.refresh(only={8}), 1)
+        self.assertEqual(list(self.memory()), ["8"])
+        self.prs = [{"number": 7, "head": {"sha": HEAD}}]
+        self.assertEqual(self.refresh(), 1)
+        self.assertEqual(list(self.memory()), ["7"])
+
+    def test_refresh_quietly_never_raises(self):
+        from diaktoros import util
+        with mock.patch.object(merge_check, "refresh", side_effect=RuntimeError("boom")), \
+                mock.patch.object(util, "log") as log:
+            merge_check.refresh_quietly(self.loop, 7)
+        self.assertIn("boom", log.call_args.args[0])
+        with mock.patch.object(merge_check, "refresh") as refresh:
+            merge_check.refresh_quietly(self.loop, 7)
+        self.assertEqual(refresh.call_args.kwargs["only"], {7})
 
 
 if __name__ == "__main__":

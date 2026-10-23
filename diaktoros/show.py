@@ -165,6 +165,12 @@ def _rows(loop: dict) -> list[_Row]:
             rows[-1].note = "on, but inert: needs unattended fixer pushes (hermes dk fixer-push)"
     if loop["fix_ci"] and not config.unattended_fixer_push_enabled(loop):
         rows[-1].note = "on, but inert: needs unattended fixer pushes (hermes dk fixer-push)"
+    posting = config.merge_check_on(loop)
+    schema("merge_check", ("merge_check",), loop.get("merge_check") or "auto", on=posting,
+           off=("nothing is posted" if loop.get("merge_check") == "off" else
+                "the reviewer uses a PAT: `on` posts a commit status"),
+           note=("" if not posting else "a check run from the reviewer App"
+                 if config.reviewer_is_app(loop) else "a commit status from the reviewer's PAT"))
     schema("attribution", ("attribution",), bool(loop["attribution"]), on=bool(loop["attribution"]),
            off="nothing the loop posts is signed")
     schema("required_checks", ("required_checks",), list(loop.get("required_checks") or []),
