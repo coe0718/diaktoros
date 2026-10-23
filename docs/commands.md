@@ -1212,9 +1212,13 @@ A new head (someone pushes) supersedes the escalation.
 hermes dk escalate --loop "<loop-id>" --pr 12 --reason "the fix and the finding disagree on scope"
 ```
 
-It's refused unless the loop has an adjudicator, and only for an open, ready PR by a fixer that
-has at least one verdict, isn't approved at its head, isn't already awaiting a ruling and has no
-turn running. Exit `1` means it was refused, and the line says why.
+It's refused unless the loop has an adjudicator, and only for an open, ready PR by a fixer,
+review-only author or configured maintainer that has at least one verdict, isn't approved at its head,
+isn't already awaiting a ruling and has no turn running. For review-only and maintainer PRs this is
+always a person's explicit request; the ruling is advice to the operator, and the loop never pushes
+to or merges that branch.
+The review-only verdict cap still waits for `review --another-round`; it does not automatically
+escalate. Exit `1` means it was refused, and the line says why.
 
 <!-- flags:escalate -->
 | flag | value | default | what it does |
