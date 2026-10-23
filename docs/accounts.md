@@ -48,6 +48,7 @@ The plugin uses token files and Python REST calls; **`gh auth login` is not requ
 | Fixer | Classic `repo` for collaborator seat | `contents: write`, `pull_requests: write` |
 | Adjudicator comment login | Classic `repo` for collaborator | `pull_requests: write` |
 | Hook admin | Classic `repo` or `admin:repo_hook`, or fine-grained owner token | `repository_hooks: write` (Webhooks: Read and write) |
+| Ruleset admin (`protect`, setup step 5) | Classic `repo` on an account with admin access to the repository | `administration: write` (Administration: Read and write) |
 | Reader with issue automation | Add issue-reading access | Add `issues: read` |
 | Triage account | Classic `repo` covers issue writes | Add `issues: write` |
 | Issue fixer | Classic `repo` covers issue/branch/PR operations | `contents: write`, `pull_requests: write`, `issues: write` |

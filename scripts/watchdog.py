@@ -1081,6 +1081,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                                   "base": previous.get("base"),
                                   "base_sha": previous.get("base_sha"),
                                   "observed_at": valid_clock(previous.get("observed_at"), now),
+                                  "first_seen_at": valid_clock(previous.get("first_seen_at"), now),
                                   "last_seen_at": last_seen}
     for pr in prs:
         if not isinstance(pr, dict):
@@ -1111,7 +1112,9 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             new_pr = epoch(pr.get("created_at")) >= int(watch["armed_since"])
             current_heads[key] = {"sha": head, "base": base, "base_sha": base_sha, "observed_at":
                                   now if previous or (not first_sweep and new_pr) else None,
-                                  "last_seen_at": now}
+                                  # When the loop first saw this head, whatever the PR's age: the
+                                  # merge check's missing-check grace starts here (#1236).
+                                  "first_seen_at": now, "last_seen_at": now}
     watch["heads"] = current_heads
     st.watch_save(watch)                 # persist observations even if review reads fail
     retry_pending_breaches(loop, st, prs, pr_failures)

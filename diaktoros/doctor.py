@@ -50,7 +50,7 @@ import time
 from datetime import datetime
 from urllib.parse import urlsplit
 
-from . import config, gh, isolation, observer, route_intent, routes
+from . import ci, config, gh, isolation, observer, route_intent, routes
 from .config import host_guards
 from .config import credentials
 
@@ -2398,6 +2398,7 @@ def check_branch_protection(loop: dict, offline: bool) -> Check | None:
         have |= {str(c) for c in classic.data.get("contexts") or []}
         have |= {str(c.get("context")) for c in classic.data.get("checks") or []
                  if isinstance(c, dict)}
+    have.discard(ci.MERGE_CHECK)       # the loop's own check: never a CI check (merge-check, #1163)
     if len(unread) == 2:
         return Check("branch-protection", UNKNOWN,
                      f"could not read the required checks of {base}: {'; '.join(unread)}",
@@ -2414,6 +2415,46 @@ def check_branch_protection(loop: dict, offline: bool) -> Check | None:
         parts.append(f"not read: {unread[0]}")
     return Check("branch-protection", UNKNOWN, "; ".join(parts),
                  f"align `required_checks` with the required status checks of {base}")
+
+
+def check_merge_check(loop: dict, offline: bool) -> Check | None:
+    """The base's protection against the ``diaktoros/review`` merge check (#1163 M2c): required
+    (in App mode pinned to the reviewer App) when the loop posts it, never required when it does
+    not, and no required approvals in App mode (GitHub never counts the App's). None when the loop
+    does not post the check and nothing requires it."""
+    from . import protection
+    lid = shlex.quote(str(loop.get("id") or "<id>"))
+    posting = config.merge_check_on(loop)
+    if offline:
+        return (Check("merge-check", UNKNOWN, "not probed (--offline)") if posting else None)
+    found = protection.read(loop)
+    if not found.known:
+        if not posting:
+            return None
+        return Check("merge-check", UNKNOWN,
+                     f"could not read {loop['base']}'s protection: {'; '.join(found.unread)}",
+                     f"check by hand that {loop['base']} requires {ci.MERGE_CHECK} "
+                     "(repo settings → rules)")
+    blocking, warnings, facts = protection.problems(loop, found)
+    if not (blocking or warnings or facts):
+        return None
+    protect = f"hermes dk protect --loop {lid} --admin-token LOGIN"
+    require = f"`{protect}`"
+    if blocking:
+        fix = (f"`hermes dk set --loop {lid} --merge-check on`, or `{protect} --remove` (it "
+               "removes only the loop's own ruleset)" if not posting else
+               f"{require} for the reviewer App's requirement, and remove the other one in repo "
+               "settings → rules")
+        return Check("merge-check", MISMATCH, "; ".join(blocking + warnings + facts), fix)
+    if warnings:
+        fixes = []
+        if any("approving review" in w for w in warnings):
+            fixes.append(f"turn required approvals off on {loop['base']} (repo settings → rules), "
+                         "or keep them and approve every PR yourself")
+        if any(ci.MERGE_CHECK in w and "approving" not in w for w in warnings):
+            fixes.append(require)
+        return Check("merge-check", UNKNOWN, "; ".join(warnings + facts), "; ".join(fixes))
+    return Check("merge-check", VERIFIED, "; ".join(facts))
 
 
 UPSTREAM_REPO = "coe0718/diaktoros"
@@ -2471,7 +2512,8 @@ def check_plugin_version(loop: dict, offline: bool = False) -> Check:
 def check_environment(loop: dict, offline: bool) -> list[Check]:
     """The GitHub-side contract: token expiry and scopes, triage labels, branch protection."""
     checks = check_token_expiry_scopes(loop, offline)
-    for extra in (check_labels(loop, offline), check_branch_protection(loop, offline)):
+    for extra in (check_labels(loop, offline), check_branch_protection(loop, offline),
+                  check_merge_check(loop, offline)):
         if extra:
             checks.append(extra)
     return checks

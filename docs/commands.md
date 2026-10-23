@@ -90,6 +90,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | move to a renamed plugin or repository | [`migrate`](#migrate) |
 | back up an install, or restore one | [`backup`](#backup), [`restore`](#restore) |
 | turn the loop on or off | [`arm`](#arm) |
+| make the merge button wait for the loop's verdict | [`protect`](#protect) |
 | change a setting | [`set`](#set), [`apply`](#apply), [`settings`](#settings) |
 | see every setting a loop has, its value and where it came from | [`show`](#show) |
 | let the fixer push on its own | [`fixer-push`](#fixer-push) |
@@ -285,7 +286,7 @@ measured from the review run's creation to its receipt.
 
 ### setup
 
-A first install in one command, and the easiest way to start. It walks through five steps, each
+A first install in one command, and the easiest way to start. It walks through six steps, each
 using the same code as the command named in it:
 
 1. **Runtime paths.** It finds the Hermes checkout, its virtualenv, the Python installation and a
@@ -299,7 +300,11 @@ using the same code as the command named in it:
 3. **The watchdog.** It schedules the shared watchdog job, only if it is missing.
 4. **Checks.** It runs [`doctor`](#doctor) and [`selftest --no-model`](#selftest). Any ❌ stops it
    here, with the fix line above.
-5. **Arm.** Only after a clean pass, and only if you say yes (the question defaults to no).
+5. **The merge check.** Only when the loop posts `diaktoros/review` (an App reviewer, or
+   `merge_check` `on`) and the base does not require it yet: it offers [`protect`](#protect)
+   (the question defaults to no; `--protect` says yes). Declining keeps going: the check is
+   posted, but the merge button ignores it until it is required.
+6. **Arm.** Only after a clean pass, and only if you say yes (the question defaults to no).
 
 ```bash
 hermes dk setup --repo "<owner>/<repository>"
@@ -332,6 +337,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--id` | `ID` |  | loop id (default: the repository name) |
 | `--yes` |  |  | no questions: the flags and the plugin settings are the answers, and every confirmation is yes (arming still needs --arm) |
 | `--dry-run` |  |  | show every step, write nothing |
+| `--protect` |  |  | require the diaktoros/review merge check on the base (the loop's own ruleset; `hermes dk protect`) when the loop posts it |
 | `--arm` |  |  | arm the hooks after a clean doctor and selftest |
 | `--reviewer` | `REVIEWER` |  | reviewer GitHub login |
 | `--fixer` | `FIXER` |  | fixer GitHub login |
@@ -1061,6 +1067,36 @@ not necessarily failure; exit 0 is not proof every gateway delivery was observed
 | `--loop` | `LOOP` |  | loop id (default: every configured loop) |
 | `--pause` |  |  | pause instead of arming |
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose token can edit the repo's hooks (default: the reader) |
+<!-- /flags -->
+
+### protect
+
+Makes the base branch require the `diaktoros/review` merge check, so the merge button honours the
+loop's verdict (#1163). It adds one ruleset of the loop's own, named `diaktoros/review`, beside
+whatever protection the base already has, and never edits another rule. With a GitHub App
+reviewer the requirement is pinned to that App, so no one else's status of the same name counts;
+a PAT reviewer's commit status cannot be pinned. The ruleset has no bypass: no one, admins
+included, merges a PR until the check is green. `--remove` deletes that ruleset and nothing else.
+
+```bash
+hermes dk protect --loop "<loop-id>" --admin-token "<admin-login>"
+hermes dk protect --loop "<loop-id>" --admin-token "<admin-login>" --remove
+```
+
+It refuses a loop that does not post the check (requiring it would block every PR). The login
+needs admin access to the repository (classic `repo`, or Administration: write). GitHub never
+counts a GitHub App's approval, so with an App reviewer a base that still requires approvals
+needs a person's approval on every PR. `protect` and `doctor` say so; turning required approvals
+off is yours to do, in repo settings → rules. `doctor`'s `merge-check` line reads the base
+either way.
+
+<!-- flags:protect -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` | **required** | loop id |
+| `--admin-token` | `ADMIN_TOKEN` |  | login whose token can manage rulesets (admin access; default: the reader) |
+| `--remove` |  |  | delete the loop's ruleset instead; nothing else is touched |
+| `--dry-run` |  |  | print what would be written, write nothing |
 <!-- /flags -->
 
 ---

@@ -926,7 +926,9 @@ def cmd_setup(args) -> int:
             return 2
         if args.dry_run:
             print("\n3. would schedule the shared watchdog job (if missing)\n"
-                  "4. would run doctor and selftest --no-model\n5. would arm only when asked")
+                  "4. would run doctor and selftest --no-model\n5. would offer to require the "
+                  "diaktoros/review merge check, when the loop posts it\n6. would arm only when "
+                  "asked")
             return 0
         if not _agree("Install this loop?", True, interactive, True):
             print("setup stopped: nothing installed")
@@ -955,7 +957,9 @@ def cmd_setup(args) -> int:
               f"re-run `hermes dk setup --repo {shlex.quote(repo)}` — it keeps what is done")
         return 1
 
-    print("\n5. Arm")
+    _setup_merge_check(args, config.load_id(loop_id), admin, interactive)
+
+    print("\n6. Arm")
     if not (args.arm or _agree("Arm the repo hooks now? The loop goes live.", False,
                                interactive, False)):
         print(f"   not armed. When ready: hermes dk arm --loop {loop_id}"
@@ -967,6 +971,37 @@ def cmd_setup(args) -> int:
     print("\nsetup complete: the loop is live" if rc == 0 else
           "\narm was not confirmed — see above; re-running setup is safe")
     return rc
+
+
+def _setup_merge_check(args, loop: dict, admin: str, interactive: bool) -> None:
+    """Step 5 (#1163 M2c): when the loop posts ``diaktoros/review`` and the base does not require
+    it yet, offer the loop's own ruleset. Never blocks setup: the check is still posted, and
+    doctor keeps saying the base does not require it."""
+    from .. import protection
+    if not config.merge_check_on(loop):
+        return
+    print("\n5. The merge check")
+    found = protection.read(loop, admin or None)
+    lid = loop["id"]
+    command = f"hermes dk protect --loop {lid}" + (f" --admin-token {admin}" if admin else "")
+    if found.known and found.required:
+        print(f"   ✅ {loop['base']} already requires {protection.RULESET_NAME} (doctor above "
+              "says whether it is pinned)")
+        return
+    if not (args.protect or _agree(
+            f"Require {protection.RULESET_NAME} on {loop['base']}? No one, admins included, "
+            "merges a PR until the loop's check is green.", False, interactive, False)):
+        print(f"   not required: the check is posted, but the merge button ignores it. "
+              f"When ready: {command}")
+        return
+    done, line = protection.require(loop, admin or None)
+    print(f"   {'✅' if done else '❌'} {line}")
+    if not done:
+        print(f"   re-run it when the login has admin access: {command}")
+    elif protection.reviewer_app_id(loop) and found.approvals:
+        print(f"   ⚠️  {loop['base']} still requires {found.approvals} approving review(s); "
+              "GitHub never counts the reviewer App's, so turn them off in repo settings → "
+              "rules, or approve every PR yourself")
 
 
 # -- the parser for this module's commands (#676 step 7) --------------------------------------
@@ -1170,6 +1205,9 @@ def add_setup(sub) -> None:  # noqa: ANN001
                        help="no questions: the flags and the plugin settings are the answers, "
                             "and every confirmation is yes (arming still needs --arm)")
     first.add_argument("--dry-run", action="store_true", help="show every step, write nothing")
+    first.add_argument("--protect", action="store_true",
+                       help="require the diaktoros/review merge check on the base (the loop's "
+                            "own ruleset; `hermes dk protect`) when the loop posts it")
     first.add_argument("--arm", action="store_true",
                        help="arm the hooks after a clean doctor and selftest")
     for flag, what in (("reviewer", "reviewer GitHub login"), ("fixer", "fixer GitHub login"),
