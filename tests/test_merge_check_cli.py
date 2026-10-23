@@ -76,5 +76,26 @@ class MergeCheckCli(Base):
         self.assertNotIn("off — the reviewer uses a PAT", out)
 
 
+    def test_required_checks_refuses_the_loops_own_check_on_every_path(self):
+        # #1233: the loop never reads its own check as CI, so requiring it would refuse every
+        # approval.
+        from diaktoros import ci
+        self.assertEqual(config.MERGE_CHECK_NAME, ci.MERGE_CHECK)
+        for names in (["diaktoros/review"], ["tests", "Diaktoros/Review "]):
+            with self.subTest(names), self.assertRaisesRegex(config.ConfigError, "branch"):
+                config.check_required_checks(names, "loop")
+        self.assertEqual(config.check_required_checks(["diaktoros/review-lint"], "loop"),
+                         ["diaktoros/review-lint"])
+        self.assertEqual(self.init()[0], 0)
+        before = LOOP_FILE.read_bytes()
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--required-check", "tests",
+                           "--required-check", "diaktoros/review")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("branch", out)
+        rc, out = self.cli("apply", "--loop", LOOP_ID,
+                           settings={"required_checks": "diaktoros/review"})
+        self.assertNotEqual(rc, 0, out)
+        self.assertEqual(LOOP_FILE.read_bytes(), before)
+
 if __name__ == "__main__":
     unittest.main()

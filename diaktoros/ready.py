@@ -64,13 +64,19 @@ MISSING_GRACE_S = 15 * 60
 
 def _past_start_grace(st, number, head: str) -> bool:
     """Whether the head has been seen long enough that a missing required check is not just one
-    still starting. A head the watchdog has not recorded yet (or an unreadable record) is not."""
+    still starting. A head the watchdog has not recorded yet (or an unreadable record) is not. A
+    head already open when the loop was armed has no ``observed_at`` (#1232): its grace runs from
+    ``armed_since``, the earliest the loop could have seen it."""
     import time
-    entry = (st.watch().get("heads") or {}).get(str(number)) if isinstance(st.watch(), dict) else None
+    watch = st.watch()
+    entry = (watch.get("heads") or {}).get(str(number)) if isinstance(watch, dict) else None
     if not isinstance(entry, dict) or entry.get("sha") != head:
         return False
     seen = entry.get("observed_at")
-    return isinstance(seen, (int, float)) and time.time() - seen >= MISSING_GRACE_S
+    if seen is None:
+        seen = watch.get("armed_since")
+    return (isinstance(seen, (int, float)) and not isinstance(seen, bool)
+            and time.time() - seen >= MISSING_GRACE_S)
 
 
 def assess(loop: dict, st, pr: dict, reviews, ci_state, detail: dict | None) -> list[str]:

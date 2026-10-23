@@ -91,6 +91,10 @@ def post(loop: dict, number: int, head: str, state: str, summary: str,
                           body={k: v for k, v in body.items() if k != "head_sha"}, login=login)
             if isinstance(done, dict) and done.get("id") == run_id:
                 return run_id, ""
+            if not gh.last_error().startswith("HTTP 404"):
+                # #1230: only a run that is gone gets a new one; any other failure is retried on
+                # the next refresh, so a head never carries two runs of the check.
+                return run_id, gh.last_error() or "check run not updated"
         done = gh.api(loop, f"/repos/{repo}/check-runs", method="POST", body=body, login=login)
         if isinstance(done, dict) and type(done.get("id")) is int:
             return done["id"], ""

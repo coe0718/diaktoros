@@ -451,6 +451,9 @@ REQUIRED_CHECKS_MAX = 50
 REQUIRED_CHECK_NAME_MAX = 100
 
 
+MERGE_CHECK_NAME = "diaktoros/review"     # ci.MERGE_CHECK (config imports nothing from ci)
+
+
 def check_required_checks(value, where: str) -> list[str]:
     """The operator's required checks (#368): unique, printable, one-line names, exactly as GitHub
     shows them; [] means every check gates. Host-owned: never read from a PR."""
@@ -465,6 +468,10 @@ def check_required_checks(value, where: str) -> list[str]:
         raise ConfigError(f"{where}: 'required_checks' must be at most {REQUIRED_CHECKS_MAX} "
                           f"unique names, each one printable line of 1-{REQUIRED_CHECK_NAME_MAX} "
                           "characters")
+    if any(name.lower() == MERGE_CHECK_NAME for name in names):
+        # #1233: the loop never reads its own check as CI, so requiring it refuses every approval.
+        raise ConfigError(f"{where}: 'required_checks' cannot name {MERGE_CHECK_NAME}, the loop's "
+                          "own merge check; require it in the base branch's protection instead")
     return names
 
 

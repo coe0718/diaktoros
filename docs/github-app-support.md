@@ -72,7 +72,9 @@ proposes posting turn state as a commit status).
 watchdog sweep, only when the head, state or summary changes; the summary lists what holds the
 head. GitHub's own `blocked` is not counted (with the check required, GitHub reports `blocked`
 *because* the check is not green). A required check that has not reported for 15 minutes after the
-head was seen counts as a failure, not a wait. An escalated head with no adjudicator route is a
+head was seen (or, for a head already open when the loop was armed, since arming) counts as a
+failure, not a wait. Don't list `diaktoros/review` in `required_checks`: the loop never reads its
+own check as CI, so `required_checks` refuses it. An escalated head with no adjudicator route is a
 failure (a person decides). A PAT loop can opt in with `merge_check: on` and gets a commit
 status, which branch protection cannot pin to one identity. To make it the block, require
 `diaktoros/review` on the base branch, choosing the reviewer App as its source.

@@ -92,6 +92,24 @@ class Kinds(KindsBase):
         self.assertEqual(self.kind_of("never reported", ci_state=ci.CIState(passed=["lint"])),
                          ready.PENDING)                         # an older head's record: not this one
 
+    def test_a_head_open_at_arming_ages_its_grace_from_armed_since(self):
+        # #1232: the watchdog records no observed_at for a head it found at arming.
+        import time
+        for armed, kind in ((time.time() - ready.MISSING_GRACE_S - 1, ready.FAILURE),
+                            (time.time() - 60, ready.PENDING), (None, ready.PENDING),
+                            (True, ready.PENDING)):
+            with self.subTest(armed=armed):
+                self.st.watch_save({"armed_since": armed,
+                                    "heads": {"7": {"sha": HEAD, "observed_at": None}}})
+                self.assertEqual(self.kind_of("never reported",
+                                              ci_state=ci.CIState(passed=["lint"])), kind)
+
+    def test_the_grace_reads_the_watch_record_once(self):
+        # #1231
+        with mock.patch.object(self.st, "watch", wraps=self.st.watch) as watch:
+            ready._past_start_grace(self.st, 7, HEAD)
+        self.assertEqual(watch.call_count, 1)
+
     def test_a_conflict_fails_and_githubs_other_verdicts_are_set_apart(self):
         self.assertEqual(self.kind_of("conflicts", detail={**CLEAN, "mergeable": False,
                                                            "mergeable_state": "dirty"}),
@@ -318,6 +336,27 @@ class Posting(unittest.TestCase):
         self.assertEqual([c[:2] for c in self.calls],
                          [("/repos/acme/widgets/check-runs", "POST")] * 2)
         self.assertEqual(self.calls[1][2]["head_sha"], "b" * 40)
+
+    def test_a_failed_update_is_retried_and_only_a_vanished_run_is_replaced(self):
+        # #1230: a PATCH that fails for any reason but 404 must not leave a second run on the head.
+        self.refresh()
+        self.kinds = {7: []}
+        self.fail = True
+        logged = []
+        self.assertEqual(self.refresh(log=logged.append), 0)
+        self.assertEqual([c[1] for c in self.calls], ["POST", "PATCH"])   # no second POST
+        self.assertEqual(self.memory()["7"]["state"], "pending")         # not recorded: retried
+        gh.last_error.return_value = "HTTP 404 Not Found"
+        self.assertEqual(self.refresh(), 0)                             # still failing: the POST too
+        self.assertEqual([c[1] for c in self.calls], ["POST", "PATCH", "PATCH", "POST"])
+        self.fail = False
+        self.calls.clear()
+        with mock.patch.object(gh, "api", side_effect=lambda loop, path, method="GET", body=None,
+                               login=None: self.calls.append((path, method)) or (
+                                   None if method == "PATCH" else {"id": 56})):
+            self.assertEqual(self.refresh(), 1)                         # the run is gone: a new one
+        self.assertEqual([c[1] for c in self.calls], ["PATCH", "POST"])
+        self.assertEqual(self.memory()["7"]["run_id"], 56)
 
     def test_an_unchanged_state_is_not_rewritten(self):
         self.assertEqual(self.refresh(), 1)
