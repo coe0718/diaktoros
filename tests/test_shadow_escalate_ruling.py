@@ -436,7 +436,7 @@ class Ready(Base):
         from diaktoros import ready
         self.mark_escalated()
         pr = {**fg.LIVE, "user": {"login": "fixer"}}
-        with mock.patch.object(gate, "shadow_hold", return_value=("", "")), \
+        with mock.patch.object(gate, "shadow_state", return_value=("", "", "")), \
                 mock.patch.object(ready.gate_failures, "open_for", return_value=[]):
             with mock.patch.object(gate, "shadow_overruled", return_value=False):
                 parked = ready.assess(self.loop, self.st, pr, APPROVED, None, None)

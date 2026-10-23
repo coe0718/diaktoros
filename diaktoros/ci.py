@@ -69,6 +69,11 @@ def _runner_shutdown(loop: dict, run_id) -> bool:
     return False
 
 
+# The loop's own merge check (#1163 M2b): the host posts it from ``ready``, so it is never one
+# of the head's CI checks — reading it back would gate the check on itself.
+MERGE_CHECK = "diaktoros/review"
+
+
 def read(loop: dict, head: str) -> CIState | None:
     """The head's CI state, or None when it cannot be read (a failed or malformed reply).
 
@@ -85,6 +90,8 @@ def read(loop: dict, head: str) -> CIState | None:
             if not isinstance(run, dict):
                 return None
             name = _name(run.get("name"))
+            if name == MERGE_CHECK:
+                continue
             if name not in latest or (run.get("id") or 0) > (latest[name].get("id") or 0):
                 latest[name] = run
         total = reply.get("total_count")
@@ -115,6 +122,8 @@ def read(loop: dict, head: str) -> CIState | None:
             state.passed.append(name)
     for entry in statuses:
         name = _name(entry.get("context"))
+        if name == MERGE_CHECK:
+            continue
         value = entry.get("state")
         (state.failed if value in FAILED_STATUSES else
          state.pending if value == "pending" else state.passed).append(name)
