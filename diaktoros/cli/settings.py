@@ -1502,6 +1502,11 @@ def _triage_lines(loop: dict) -> list[str]:
                 f" — OFF until unattended fixer pushes are on: "
                 f"{config.fixer_push_enable_command(loop)}")) if triage.get("fix_label")
             else "  issue fixes: off (--fix-label LABEL --maintainer LOGIN turns them on)",
+            ("  maintainers: " + ", ".join(triage["maintainers"])
+             + " (their comments reach both seats; their re-request starts a fresh review)")
+            if triage.get("maintainers") else
+            "  maintainers: none — no one's comments reach the seats, and no re-request starts a "
+            "fresh review (--maintainer LOGIN)",
             _auto_offer_line(triage)]
 
 
@@ -1521,8 +1526,11 @@ _TRIAGE_CHANGE_FLAGS = ("profile", "author", "labels", "max_labels", "comment", 
 
 def _triage_change_flags(args) -> list[str]:
     """Option names given on the command line that change triage (not --loop/--dry-run)."""
+    # `--fix-label ''` is a change (it turns issue fixes off, #1217): its default is None, so
+    # an empty string can only have been given on purpose. Every other "" or [] is no change.
     return ["--" + name.replace("_", "-") for name in _TRIAGE_CHANGE_FLAGS
-            if getattr(args, name, None) not in (None, "", [])]
+            if getattr(args, name, None) not in (None, "", [])
+            or (name == "fix_label" and getattr(args, name, None) == "")]
 
 
 def _split_token_pair(pair: str) -> tuple[str, str] | None:
@@ -1633,15 +1641,20 @@ def cmd_triage(args) -> int:
     login = args.login or current.get("login")
     if login:
         block["login"] = login
+    # The maintainers and the issue-fix daily cap stand on their own (#1217): turning issue
+    # fixes off (--fix-label '') keeps them. --maintainer '' clears the list.
+    wanted = [m for m in args.maintainer or [] if m.strip()]
+    maintainers = (wanted if wanted else [] if args.maintainer else current.get("maintainers") or [])
+    if maintainers:
+        block["maintainers"] = maintainers
+    # The issue-fix daily cap (#247); omitted keeps the current one, 0 the default.
+    fix_cap = (current.get("fix_daily_turns") if args.fix_daily_turns is None
+               else args.fix_daily_turns or None)
+    if fix_cap:
+        block["fix_daily_turns"] = fix_cap
     fix_label = current.get("fix_label") if args.fix_label is None else args.fix_label
     if fix_label:
         block["fix_label"] = fix_label
-        block["maintainers"] = args.maintainer or current.get("maintainers") or []
-        # The issue-fix daily cap (#247); omitted keeps the current one, 0 the default.
-        fix_cap = (current.get("fix_daily_turns") if args.fix_daily_turns is None
-                   else args.fix_daily_turns or None)
-        if fix_cap:
-            block["fix_daily_turns"] = fix_cap
         # Automatic hand-off (#232): omitted keeps the current list, an empty value clears it.
         auto = (current.get("auto_fix_labels") if args.auto_fix_label is None
                 else [x for x in args.auto_fix_label if x])
@@ -2085,7 +2098,10 @@ def add_triage(sub) -> None:  # noqa: ANN001
                         help="a label a maintainer applies to hand an issue to the fixer "
                              "(#214; needs unattended fixer pushes on); '' turns it off")
     triage.add_argument("--maintainer", action="append", default=[],
-                        help="login whose applying --fix-label counts (repeatable)")
+                        help="a maintainer's login (repeatable; '' clears the list): their "
+                             "comments reach both seats, their re-request starts a fresh review, "
+                             "and their applying --fix-label hands an issue to the fixer. Kept "
+                             "when --fix-label '' turns issue fixes off")
     triage.add_argument("--daily-turns", type=int, default=None,
                         help="at most this many triage turns per day (0 removes the cap)")
     triage.add_argument("--fix-daily-turns", type=int, default=None,

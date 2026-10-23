@@ -526,6 +526,14 @@ def check_triage(loop: dict) -> list[Check]:
         checks.append(Check("credential:triage", VERIFIED,
                             f"{login} → {_token_file_facts(path)} · authors "
                             f"{', '.join(triage['authors'])} · {len(triage['labels'])} labels"))
+    # #1217: with no maintainers, no comment reaches the seats and no re-request starts a review.
+    names = sorted(config.maintainers(loop))
+    checks.append(Check("triage:maintainers", VERIFIED,
+                        f"{', '.join(names)} (their comments reach both seats)") if names else
+                  Check("triage:maintainers", UNKNOWN,
+                        "no maintainers: no one's PR or issue comments reach the seats, and no "
+                        "re-request starts a fresh review",
+                        f"run `hermes dk triage --loop {loop['id']} --maintainer <login>`"))
     return checks
 
 

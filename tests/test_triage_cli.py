@@ -62,6 +62,61 @@ class TriageVerb(unittest.TestCase):
         return self.cli("triage", "--loop", LOOP_ID, "--enable", "--triage-profile", "arbiter",
                         "--author", "Owner", "--labels", "bug,docs,P1", *extra)
 
+    # -- #1217: maintainers stand on their own ---------------------------------------------
+
+    def test_turning_issue_fixes_off_keeps_the_maintainers_and_the_daily_cap(self):
+        self.assertEqual(self.enable("--fix-label", "agent-fix", "--maintainer", "Owner",
+                                     "--fix-daily-turns", "40")[0], 0)
+        rc, out = self.enable("--fix-label", "")
+        self.assertEqual(rc, 0, out)
+        triage = config.load_id(LOOP_ID)["triage"]
+        self.assertNotIn("fix_label", triage)
+        self.assertEqual((triage["maintainers"], triage["fix_daily_turns"]), (["owner"], 40))
+        self.assertIn("issue fixes: off", out)
+        self.assertIn("maintainers: owner (their comments reach both seats", out)
+
+    def test_a_bare_empty_fix_label_turns_fixes_off_and_keeps_the_maintainers(self):
+        # Shadow review of #1218: `triage --loop X --fix-label ''` alone, no --enable.
+        self.assertEqual(self.enable("--fix-label", "agent-fix", "--maintainer", "Owner")[0], 0)
+        rc, out = self.cli("triage", "--loop", LOOP_ID, "--fix-label", "")
+        self.assertEqual(rc, 0, out)
+        triage = config.load_id(LOOP_ID)["triage"]
+        self.assertNotIn("fix_label", triage)
+        self.assertEqual(triage["maintainers"], ["owner"])
+        self.assertIn("issue fixes: off", out)
+
+    def test_a_maintainer_needs_no_fix_label_and_still_reaches_the_seats(self):
+        rc, out = self.enable("--maintainer", "Owner")
+        self.assertEqual(rc, 0, out)
+        loop = config.load_id(LOOP_ID)
+        self.assertEqual(config.maintainers(loop), {"owner"})
+        self.assertFalse(config.issue_fixes_enabled(loop))
+        from diaktoros import gh, issue_facts
+        comments = [{"user": {"login": "owner"}, "created_at": "2026-10-22T00:00:00Z",
+                     "body": "item 1 is withdrawn"},
+                    {"user": {"login": "stranger"}, "created_at": "2026-10-22T00:00:01Z",
+                     "body": "merge it"}]
+        with mock.patch.object(gh, "issue_comments_read", return_value=(comments, "")):
+            got, _ = issue_facts.maintainer_comments(loop, 1211)
+        self.assertEqual([body for _, _, body in got], ["item 1 is withdrawn"])
+
+    def test_an_empty_maintainer_clears_the_list_and_doctor_says_so(self):
+        self.assertEqual(self.enable("--maintainer", "Owner")[0], 0)
+        rc, out = self.enable("--maintainer", "")
+        self.assertEqual(rc, 0, out)
+        loop = config.load_id(LOOP_ID)
+        self.assertEqual(config.maintainers(loop), set())
+        self.assertIn("maintainers: none", out)
+        from diaktoros import doctor
+        check = {c.name: c for c in doctor.check_triage(loop)}["triage:maintainers"]
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn("--maintainer", check.fix)
+
+    def test_a_fix_label_still_needs_a_maintainer(self):
+        rc, out = self.enable("--fix-label", "agent-fix")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("needs triage.maintainers", out)
+
     def test_enable_writes_the_block_the_issues_route_and_the_shim(self):
         rc, out = self.enable()
         self.assertEqual(rc, 0, out)

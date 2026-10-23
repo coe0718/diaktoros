@@ -86,11 +86,15 @@ class Config(Base):
         off = config.normalize({**self.raw, "unattended_fixer_push": False})
         self.assertFalse(config.issue_fixes_enabled(off))
         for name, change in (("no maintainers", {"maintainers": []}),
-                             ("label triage could apply", {"fix_label": "docs"}),
-                             ("maintainers without a label", {"fix_label": "",
-                                                              "maintainers": ["x"]})):
+                             ("label triage could apply", {"fix_label": "docs"})):
             with self.subTest(name), self.assertRaises(config.ConfigError):
                 config.normalize({**self.raw, "triage": {**self.raw["triage"], **change}})
+        # #1217: maintainers stand on their own; without a label they keep the loop's trust
+        # (comments to the seats, re-requests, holds), and issue fixes are simply off.
+        paused = config.normalize({**self.raw, "triage": {**self.raw["triage"], "fix_label": "",
+                                                          "maintainers": ["X"]}})
+        self.assertEqual(config.maintainers(paused), {"x"})
+        self.assertFalse(config.issue_fixes_enabled(paused))
 
     def test_the_issue_fixer_is_the_fixer_seat(self):
         self.assertEqual(config.seat_profile(self.loop, "issue_fixer"), "coder")
