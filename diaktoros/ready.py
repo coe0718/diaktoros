@@ -51,9 +51,9 @@ def _changed_since_listing(pr: dict, detail: dict) -> list[str]:
 # The kinds of reason ``assess_kinds`` gives (#1163 M2b), for the ``diaktoros/review`` merge check:
 # PENDING can still clear on its own (a review, the shadow, CI or a ruling still out, or a read
 # that failed and is retried); FAILURE needs a change or a person (changes requested, red CI, a
-# conflict, a hold, a ruling the operator decides). GITHUB is GitHub's own merge verdict other
-# than a conflict: with the merge check required it reads ``blocked`` *because* the check is not
-# green, so the check never counts it (it would wait on itself). OUTSIDE: not a loop PR.
+# conflict, a hold, a ruling the operator decides). GITHUB is GitHub's ``blocked``: with the merge
+# check required GitHub reads ``blocked`` *because* the check is not green, so the check never
+# counts it (it would wait on itself). OUTSIDE: not a loop PR.
 PENDING, FAILURE, GITHUB, OUTSIDE = "pending", "failure", "github", "outside"
 
 
@@ -110,7 +110,9 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
                 (("failed:", gating.failed), ("cancelled:", gating.cancelled),
                  ("still running:", gating.pending), ("never reported:", gating.missing))
                 if names]
-        add(FAILURE if gating.failed or gating.cancelled else PENDING,
+        # A required check that never reported is for the operator (a misnamed or dropped
+        # workflow, ci.approval_refusal): nothing ends that wait on its own.
+        add(FAILURE if gating.failed or gating.cancelled or gating.missing else PENDING,
             "required checks not green — " + "; ".join(bits))
 
     if not isinstance(detail, dict):
@@ -122,7 +124,10 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
         if detail.get("mergeable") is False or mstate == "dirty":
             add(FAILURE, "not mergeable: conflicts with its base")
         elif mstate not in MERGEABLE_STATES:
-            add(GITHUB, f"not mergeable: GitHub reports {mstate or 'no merge state yet'}")
+            # Only ``blocked`` is GitHub reflecting the rules (the merge check among them) back:
+            # ``behind`` needs an update, and an unknown or uncomputed state is not decided yet.
+            add(GITHUB if mstate == "blocked" else FAILURE if mstate == "behind" else PENDING,
+                f"not mergeable: GitHub reports {mstate or 'no merge state yet'}")
 
     try:
         for entry in gate_failures.open_for(loop, number):
@@ -172,17 +177,30 @@ def build(loop: dict, st, prs: list[dict], reads: dict) -> tuple[list[dict], lis
     unreadable). Each ready entry is ``{"number","title","after":[...],"note"}``; each excluded
     one is ``{"number","title","why":[...]}``.
     """
+    out, kinds = build_kinds(loop, st, prs, reads)
+    titles = {p["number"]: str(p.get("title") or "")[:80] for p in prs
+              if isinstance(p, dict) and isinstance(p.get("number"), int)}
+    excluded = [{"number": n, "title": titles.get(n, ""), "why": [text for _k, text in why]}
+                for n, why in sorted(kinds.items()) if why]
+    return out, excluded
+
+
+def build_kinds(loop: dict, st, prs: list[dict],
+                reads: dict) -> tuple[list[dict], dict[int, list[tuple[str, str]]]]:
+    """``(ready in merge order, {number: reasons with their kind})`` for every open PR: ``build``'s
+    whole judgement, the stacking and merge-order reasons included, for the merge check (#1163)."""
     open_prs = [p for p in prs if isinstance(p, dict) and isinstance(p.get("number"), int)]
     by_branch = {(p.get("head") or {}).get("ref"): p["number"] for p in open_prs
                  if (p.get("head") or {}).get("ref")}
     info: dict[int, dict] = {}
     for pr in open_prs:
         number, read = pr["number"], reads.get(pr["number"]) or {}
-        why = assess(loop, st, pr, read.get("reviews"), read.get("ci"), read.get("detail"))
+        why = assess_kinds(loop, st, pr, read.get("reviews"), read.get("ci"), read.get("detail"))
         base = (pr.get("base") or {}).get("ref")
         parent = by_branch.get(base) if base and base != loop["base"] else None
         if base and base != loop["base"] and parent is None:
-            why.append(f"stacked on {base}, which is not an open PR branch: base unverified")
+            why.append((PENDING, f"stacked on {base}, which is not an open PR branch: base "
+                                 "unverified"))
         info[number] = {"number": number, "title": str(pr.get("title") or "")[:80], "why": why,
                         "_parent": parent, "files": read.get("files")}
     # A stacked PR is ready only once its parent is; parents are judged first (shallowest first).
@@ -190,9 +208,9 @@ def build(loop: dict, st, prs: list[dict], reads: dict) -> tuple[list[dict], lis
         entry = info[number]
         parent = entry["_parent"]
         if parent is not None and info[parent]["why"]:
-            entry["why"].append(f"stacked on #{parent}, which is not ready")
+            entry["why"].append((PENDING, f"stacked on #{parent}, which is not ready"))
         if entry["files"] is None and not entry["why"]:
-            entry["why"].append("changed files unreadable: merge order unknown")
+            entry["why"].append((PENDING, "changed files unreadable: merge order unknown"))
     ready = sorted((e for e in info.values() if not e["why"]),
                    key=lambda e: (_depth(info, e["number"]), e["number"]))
     out: list[dict] = []
@@ -208,9 +226,7 @@ def build(loop: dict, st, prs: list[dict], reads: dict) -> tuple[list[dict], lis
             "then re-check this one" for n, f in shared)
         out.append({"number": entry["number"], "title": entry["title"],
                     "after": after, "note": note})
-    excluded = [{"number": e["number"], "title": e["title"], "why": e["why"]}
-                for e in sorted(info.values(), key=lambda e: e["number"]) if e["why"]]
-    return out, excluded
+    return out, {n: e["why"] for n, e in info.items()}
 
 
 def collect(loop: dict, st) -> tuple[list[dict], list[dict], str]:

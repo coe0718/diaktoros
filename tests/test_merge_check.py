@@ -27,7 +27,9 @@ def review(state):
             "user": {"login": "rev", "id": 7}}
 
 
-class Kinds(unittest.TestCase):
+class KindsBase(unittest.TestCase):
+    """The fixture only (no tests), shared by Kinds and Stacked."""
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -55,6 +57,8 @@ class Kinds(unittest.TestCase):
         self.assertEqual(len(found), 1, self.kinds(**kw))
         return found[0]
 
+
+class Kinds(KindsBase):
     def test_a_clean_approved_head_has_no_reasons_and_assess_matches(self):
         self.assertEqual(self.kinds(), [])
         self.assertEqual(ready.assess(self.loop, self.st, self.pr, [review("APPROVED")],
@@ -72,6 +76,9 @@ class Kinds(unittest.TestCase):
                          ready.FAILURE)
         self.assertEqual(self.kind_of("required checks", ci_state=ci.CIState(pending=["tests"])),
                          ready.PENDING)
+        # A required check that never reported is for the operator, not a wait that ends.
+        self.assertEqual(self.kind_of("never reported", ci_state=ci.CIState(passed=["lint"])),
+                         ready.FAILURE)
 
     def test_a_conflict_fails_and_githubs_other_verdicts_are_set_apart(self):
         self.assertEqual(self.kind_of("conflicts", detail={**CLEAN, "mergeable": False,
@@ -79,6 +86,14 @@ class Kinds(unittest.TestCase):
                          ready.FAILURE)
         self.assertEqual(self.kind_of("GitHub reports blocked",
                                       detail={**CLEAN, "mergeable_state": "blocked"}), ready.GITHUB)
+        # Shadow review of #1225: only blocked is GitHub reflecting the check back.
+        self.assertEqual(self.kind_of("GitHub reports behind",
+                                      detail={**CLEAN, "mergeable_state": "behind"}), ready.FAILURE)
+        for mstate in ("unknown", None):
+            with self.subTest(mstate=mstate):
+                self.assertEqual(self.kind_of("GitHub reports", detail={**CLEAN,
+                                                                        "mergeable_state": mstate}),
+                                 ready.PENDING)
 
     def test_holds_and_failures_need_a_person(self):
         self.st.human_hold_set(7, HEAD, "touches human_paths")
@@ -109,6 +124,62 @@ class Kinds(unittest.TestCase):
                                       detail={**CLEAN, "draft": True}), ready.PENDING)
         self.assertEqual(self.kind_of("not one of this loop", user={"login": "stranger"}),
                          ready.OUTSIDE)
+
+
+class Stacked(KindsBase):
+    """Shadow review of #1225: build's own reasons reach the check (``build_kinds``)."""
+
+    def test_a_stacked_pr_on_a_parent_that_is_not_ready_is_pending(self):
+        parent = {**self.pr, "number": 1, "head": {"sha": "b" * 40, "ref": "b1"}}
+        child = {**self.pr, "number": 2, "base": {"ref": "b1"}, "head": {"sha": HEAD, "ref": "b2"}}
+        reads = {1: {"reviews": [], "ci": ci.CIState(passed=["tests"]),
+                     "detail": {**CLEAN, "number": 1, "head": {"sha": "b" * 40}}, "files": ["a"]},
+                 2: {"reviews": [{**review("APPROVED")}], "ci": ci.CIState(passed=["tests"]),
+                     "detail": {**CLEAN, "number": 2, "base": {"ref": "b1"}}, "files": ["b"]}}
+        out, kinds = ready.build_kinds(self.loop, self.st, [parent, child], reads)
+        self.assertEqual(out, [])
+        self.assertIn((ready.PENDING, "stacked on #1, which is not ready"), kinds[2])
+        self.assertEqual(merge_check.decide(kinds[2])[0], merge_check.PENDING)
+        _ready, excluded = ready.build(self.loop, self.st, [parent, child], reads)
+        self.assertEqual({e["number"]: e["why"] for e in excluded}[2],
+                         ["stacked on #1, which is not ready"])
+
+
+class ShadowKinds(__import__("test_shadow_escalate_ruling").Base):
+    """Shadow review of #1225 (F1): ``gate.shadow_state``'s kinds on a real run ledger."""
+
+    def state(self):
+        import test_fixer_gating as fg
+        return gate.shadow_state(self.loop, 7, fg.HEAD, db=self.db, marker=self.st.breach_get(7))
+
+    def test_a_shadow_hold_not_escalated_is_a_failure(self):
+        self.shadow("REQUEST_CHANGES")
+        self.assertEqual(self.state()[0], "failure")
+
+    def test_escalated_and_waiting_is_pending_and_a_ruling_against_it_is_a_failure(self):
+        self.shadow("REQUEST_CHANGES")
+        self.mark_escalated()
+        self.assertEqual(self.state()[0], "pending")
+        self.ruled("REJECT")
+        self.assertEqual(self.state()[0], "failure")
+
+    def test_an_accept_or_an_approving_shadow_holds_nothing(self):
+        self.shadow("REQUEST_CHANGES")
+        self.mark_escalated()
+        self.ruled("ACCEPT")
+        self.assertEqual(self.state()[:2], ("", ""))
+
+    def test_a_shadow_still_running_is_pending(self):
+        import sqlite3
+        import time
+        from contextlib import closing
+        import test_fixer_gating as fg
+        self.shadow("APPROVE")
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,state,attempts,turn_key,"
+                        "created,updated) VALUES('later','dl',?,7,?,'shadow','running',0,'tl',?,?)",
+                        (fg.REPO, fg.HEAD, time.time() + 100, time.time() + 100))
+        self.assertEqual(self.state()[0], "pending")
 
 
 class Decide(unittest.TestCase):

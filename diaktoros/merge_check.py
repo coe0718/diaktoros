@@ -12,9 +12,11 @@ from the reviewer's PAT): this module reads and decides, it writes nothing.
 * **pending**: everything left can still clear on its own — a review, the shadow, CI or a ruling
   still out, a draft, or a read that failed and will be retried.
 
-GitHub's own merge verdict other than a conflict (``blocked`` and the like) never counts: with this
-check required, GitHub reports ``blocked`` *because* the check is not green yet, and counting that
-would keep the check from ever turning green. A PR outside the loop gets no check at all.
+GitHub's ``blocked`` never counts: with this check required, GitHub reports ``blocked`` *because*
+the check is not green yet, and counting that would keep the check from ever turning green. (Its
+other verdicts do: a conflict or ``behind`` needs a change, an uncomputed state is pending.) The
+per-PR reasons come from ``ready.build_kinds``, stacking included. A PR outside the loop gets no
+check at all.
 """
 from __future__ import annotations
 
