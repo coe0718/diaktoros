@@ -45,6 +45,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from diaktoros import review_only_conflict  # noqa: E402
+from diaktoros import merge_check  # noqa: E402
 from diaktoros import review_kick  # noqa: E402
 from diaktoros import (  # noqa: E402
     ci_fix,
@@ -1431,6 +1432,10 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         ready.sweep(loop, st, log)            # #654: one notice when the ready-to-merge set changes
     except Exception as exc:
         log(f"ready sweep failed: {type(exc).__name__}: {exc}")
+    try:
+        merge_check.refresh(loop, st, log=log)    # #1163: the diaktoros/review check, every head
+    except Exception as exc:
+        log(f"merge check failed: {type(exc).__name__}: {exc}")
     conflicts += recheck_unknown(loop, unknown, conflict_live)
     act_on_conflicts(loop, st, conflicts, conflict_live)
     if observer.retry(loop, st):

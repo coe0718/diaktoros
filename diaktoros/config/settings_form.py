@@ -261,6 +261,13 @@ SETTINGS_SCHEMA: dict = {
                                    "push or issue-fix PR, besides the tests it touched: the "
                                    "checks CI always runs (chain several with &&). At most "
                                    "500 characters, one line. Blank = not set here"},
+    "merge_check": {"label": "Post the diaktoros/review merge check", "type": "str", "default": "",
+                    "description": "auto, on or off. The check mirrors whether the loop would "
+                                   "merge the head (green only when approved and nothing holds "
+                                   "it); make it required in branch protection for a block the "
+                                   "merge button honours. auto: on when the reviewer is a GitHub "
+                                   "App (a check run), off for a PAT reviewer (on: a commit "
+                                   "status). Blank = not set here"},
     "review_after_ci": {"label": "Review after CI finishes", "type": "bool", "default": False,
                         "description": "On: a review waits while the head's checks are still "
                                        "running (up to an hour), then starts with their results. "
@@ -436,6 +443,8 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
         overlaid["attribution"] = d["attribution"]
     if _form_value(settings, "review_after_ci") is not None:
         overlaid["review_after_ci"] = d["review_after_ci"]
+    if str(d.get("merge_check") or "").strip():
+        overlaid["merge_check"] = str(d["merge_check"]).strip().lower()
     if _form_value(settings, "fix_ci") is not None:
         overlaid["fix_ci"] = d["fix_ci"]
     if _form_value(settings, "fixer_scope_lock") is not None:

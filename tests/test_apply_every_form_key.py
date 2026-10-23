@@ -74,6 +74,7 @@ PUSHES = {
     "generated": "docs/commands.md=python3 tests/commands_doc.py --write",
     "fixer_check": "python3 tests/run_tests.py",
     "review_after_ci": True,
+    "merge_check": "on",
     "fix_ci": True,
     "fixer_scope_lock": True,
     "attribution": False,

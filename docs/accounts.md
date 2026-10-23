@@ -44,7 +44,7 @@ The plugin uses token files and Python REST calls; **`gh auth login` is not requ
 | --- | --- | --- |
 | Owner-reader | Fine-grained selected-repo token is appropriate | `contents: read`, `pull_requests: read`, `repository_hooks: read`, `checks: read`, `statuses: read` |
 | Separate collaborator reader | Classic `repo`; cannot administer the owner's hooks, so hook state is **unknown**, not paused | Read-only fine-grained credentials can be used where the account/resource-owner model supports them |
-| Reviewer | Collaborator seats commonly require classic `repo` | `pull_requests: write` |
+| Reviewer | Collaborator seats commonly require classic `repo` | `pull_requests: write`; add `statuses: write` with `merge_check` `on` (a PAT reviewer's commit status) |
 | Fixer | Classic `repo` for collaborator seat | `contents: write`, `pull_requests: write` |
 | Adjudicator comment login | Classic `repo` for collaborator | `pull_requests: write` |
 | Hook admin | Classic `repo` or `admin:repo_hook`, or fine-grained owner token | `repository_hooks: write` (Webhooks: Read and write) |
@@ -151,8 +151,9 @@ other. The key never leaves the host and is never read by the CLI. GitHub cannot
 as a reviewer, so when the reviewer is an App the host delivers the fixer's request to the
 reviewer gate itself; to ask for a review by hand, use `hermes dk review --loop ID --pr N`
 (a review request on GitHub does nothing for it). What App bots can and cannot do on GitHub, and
-what is still to come (the `diaktoros/review` merge check), is in
-[GitHub App support](github-app-support.md).
+how the `diaktoros/review` merge check stands in for the review GitHub does not count, is in
+[GitHub App support](github-app-support.md). The reviewer App needs **Checks: write** to post that
+check (`merge_check`, on by default for an App reviewer).
 
 ## Verify files, accounts and access
 

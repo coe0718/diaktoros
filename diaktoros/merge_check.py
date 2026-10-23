@@ -54,3 +54,115 @@ def title(state: str) -> str:
     """The one-line title GitHub shows next to the check."""
     return {SUCCESS: "Ready to merge", FAILURE: "Not mergeable",
             PENDING: "Waiting"}.get(state, "Waiting")
+
+
+# -- posting (M2b-2) ---------------------------------------------------------------------------
+#
+# The host posts the state with the reviewer seat's credential: a check run when the reviewer is a
+# GitHub App (it needs Checks: write; branch protection can pin the check to that App), else a
+# commit status (the reviewer's PAT needs repo:status; it cannot be pinned). One record per PR in
+# the loop's state dir keeps a write to a real change: a new head, state or summary.
+
+FILE = "merge-check.json"
+STATUS_DESCRIPTION_MAX = 140    # GitHub's commit-status description limit
+
+
+def _digest(state: str, summary: str) -> str:
+    import hashlib
+    return hashlib.sha256(f"{state}\n{summary}".encode()).hexdigest()[:16]
+
+
+def post(loop: dict, number: int, head: str, state: str, summary: str,
+         run_id: int | None = None) -> tuple[int | None, str]:
+    """Write one check (``(run id, "")``) or commit status (``(None, "")``) for ``head``; on a failed
+    write ``(run_id, why)``. A check run already posted for this head is updated, not duplicated."""
+    from . import config, gh
+    login = config.seat_login(loop, "reviewer")
+    repo = loop["repo"]
+    if config.reviewer_is_app(loop):
+        body = {"name": NAME, "head_sha": head,
+                "output": {"title": title(state), "summary": summary}}
+        if state == PENDING:
+            body["status"] = "in_progress"
+        else:
+            body.update(status="completed", conclusion=state)
+        if run_id:
+            done = gh.api(loop, f"/repos/{repo}/check-runs/{run_id}", method="PATCH",
+                          body={k: v for k, v in body.items() if k != "head_sha"}, login=login)
+            if isinstance(done, dict) and done.get("id") == run_id:
+                return run_id, ""
+        done = gh.api(loop, f"/repos/{repo}/check-runs", method="POST", body=body, login=login)
+        if isinstance(done, dict) and type(done.get("id")) is int:
+            return done["id"], ""
+        return run_id, gh.last_error() or "check run not written"
+    reasons = [line[2:] for line in summary.splitlines() if line.startswith("- ")]
+    first = reasons[0] if reasons else summary.splitlines()[0] if summary else ""
+    body = {"state": state, "context": NAME,             # a status shows one line: the first reason
+            "description": (f"{title(state)}: {first}" if first else title(state))
+            [:STATUS_DESCRIPTION_MAX]}
+    done = gh.api(loop, f"/repos/{repo}/statuses/{head}", method="POST", body=body, login=login)
+    if isinstance(done, dict) and done.get("context") == NAME:
+        return None, ""
+    return None, gh.last_error() or "commit status not written"
+
+
+def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None) -> int:
+    """Post the merge check for every open loop PR (or those in ``only``) whose state changed since
+    it was last posted; the number written. Nothing is read or written while the check is off. An
+    unreadable PR listing writes nothing (never a guess)."""
+    from . import config
+    if not config.merge_check_on(loop):
+        return 0
+    prs, kinds, error = ready.collect_kinds(loop, st)
+    if error:
+        log(f"merge check not refreshed: {error}")
+        return 0
+    path = st.dir / FILE
+    written = 0
+    for pr in prs:
+        number = pr["number"]
+        head = (pr.get("head") or {}).get("sha") or ""
+        if not head or (only is not None and number not in only):
+            continue
+        state, summary = decide(kinds.get(number) or [])
+        if state is None:
+            continue                                   # not a loop PR: no check
+        digest = _digest(state, summary)
+        with st.locked():
+            memory = st._load(path, {})
+            memory = memory if isinstance(memory, dict) else {}
+            last = memory.get(str(number)) if isinstance(memory.get(str(number)), dict) else {}
+        if last.get("head") == head and last.get("digest") == digest:
+            continue
+        run_id = last.get("run_id") if last.get("head") == head else None
+        run_id, why = post(loop, number, head, state, summary, run_id=run_id)
+        if why:
+            log(f"#{number} @ {head[:7]}: merge check not posted ({why})")
+            continue
+        with st.locked():
+            memory = st._load(path, {})
+            memory = memory if isinstance(memory, dict) else {}
+            memory[str(number)] = {"head": head, "state": state, "digest": digest,
+                                   **({"run_id": run_id} if run_id else {})}
+            open_numbers = {str(p["number"]) for p in prs}
+            memory = {k: v for k, v in memory.items() if k in open_numbers}
+            st._save(path, memory)
+        written += 1
+        log(f"#{number} @ {head[:7]}: merge check {state}")
+    return written
+
+
+def refresh_quietly(loop: dict, number: int | None = None) -> None:
+    """``refresh`` after an event (a verdict, a shadow review, a ruling): best effort, never raises;
+    the watchdog's sweep refreshes every open PR anyway."""
+    try:
+        from . import state as state_mod
+        from .util import log
+        refresh(loop, state_mod.state_for(loop), only=None if number is None else {number},
+                log=log)
+    except Exception as exc:              # a check that could not be posted never fails the event
+        try:
+            from .util import log
+            log(f"merge check refresh failed: {type(exc).__name__}: {exc}")
+        except Exception:
+            pass

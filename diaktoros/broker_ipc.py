@@ -711,6 +711,8 @@ class RunBroker:
                 findings.record(self._loop, self.scope.number, self.scope.head, body)
             except Exception:
                 pass  # the review is already written; state is best effort
+            from . import merge_check
+            merge_check.refresh_quietly(self._loop, self.scope.number)   # #1163: a new verdict
         self.completed = True
         return result
 
@@ -916,6 +918,8 @@ class RunBroker:
         except Exception:
             # Already durable, and the operator outbox reports it regardless.
             pass
+        from . import merge_check
+        merge_check.refresh_quietly(self._loop, self.scope.number)       # #1163: a ruling
         return {"accepted": True}
 
 

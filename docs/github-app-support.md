@@ -67,6 +67,16 @@ one than the review alone: it covers everything `ready` knows and resets on ever
 *include administrators* on, no one can click past it. It works in PAT mode as well (#753 already
 proposes posting turn state as a commit status).
 
+**As built (#1163 M2b):** the host posts this check with the reviewer App, on by default
+(`merge_check: auto`). It is written after every verdict, shadow review and ruling, and on every
+watchdog sweep, only when the head, state or summary changes; the summary lists what holds the
+head. GitHub's own `blocked` is not counted (with the check required, GitHub reports `blocked`
+*because* the check is not green). A required check that has not reported for 15 minutes after the
+head was seen counts as a failure, not a wait. An escalated head with no adjudicator route is a
+failure (a person decides). A PAT loop can opt in with `merge_check: on` and gets a commit
+status, which branch protection cannot pin to one identity. To make it the block, require
+`diaktoros/review` on the base branch, choosing the reviewer App as its source.
+
 ## Recommendation: go, with a synchronize-based handoff
 
 The core loop works with App identities: PRs, pushes, exact-commit reviews and their webhooks all
@@ -78,7 +88,8 @@ loop depends on for safety:
   `hermes dk review` asks by hand.
 - **Branch protection (4):** GitHub neither counts nor enforces the App's reviews, but it does
   enforce a required check pinned to the reviewer App (9). App mode posts `diaktoros/review`
-  from the loop's merge gate and setup offers to require it.
+  from the loop's merge gate (#1163 M2b, the `merge_check` setting); requiring it in branch
+  protection is still a step you take by hand until setup offers it.
 
 Also carried into #1163: one designated App for events (5), numeric bot ids rather than logins
 (2, 7), opaque tokens (8), and the broker as the only enforcement of what each seat may do.

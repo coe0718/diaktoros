@@ -249,7 +249,8 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
     open; a ledger that exists but cannot be read holds too (unknown is not ready). ``note``
     only, never a hold, when there is nothing to wait for: no ledger yet, no shadow run queued
     (sampled out, or queued before escalate was on), or runs that ended without a review, so a
-    failed shadow never parks a PR for good. ``("", "")`` with escalate off."""
+    failed shadow never parks a PR for good. ``("", "", "")`` with escalate off; ``shadow_hold`` is
+    the ``(hold, note)`` view of it."""
     if not config.shadow_escalate(loop):
         return "", "", ""
     import sqlite3

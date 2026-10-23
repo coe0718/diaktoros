@@ -63,6 +63,15 @@ class ReadyNotice(unittest.TestCase):
             watchdog.sweep_loop(loop, self.st)
         return [n for n in self.notices if n[0][2] == "ready_set"]
 
+    def test_the_sweep_refreshes_the_merge_check(self):
+        # #1163 M2b: the backstop that posts the check whatever event hook was missed.
+        with mock.patch.object(watchdog.merge_check, "refresh") as refresh:
+            self.sweep([5])
+        refresh.assert_called_once()
+        self.assertIs(refresh.call_args.args[0], self.loop)
+        with mock.patch.object(watchdog.merge_check, "refresh", side_effect=RuntimeError("x")):
+            self.sweep([5])                          # a failure never stops the sweep
+
     def test_first_set_is_recorded_silently(self):
         self.assertEqual(self.sweep([5, 7]), [])
 
