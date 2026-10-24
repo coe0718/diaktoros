@@ -2443,8 +2443,8 @@ def check_merge_check(loop: dict, offline: bool) -> Check | None:
     if blocking:
         fix = (f"`hermes dk set --loop {lid} --merge-check on`, or `{protect} --remove` (it "
                "removes only the loop's own ruleset)" if not posting else
-               f"{require} for the reviewer App's requirement, and remove the other one in repo "
-               "settings → rules")
+               f"{require} (it rewrites the loop's own ruleset for this reviewer), and remove "
+               "any other requirement of the check in repo settings → rules")
         return Check("merge-check", MISMATCH, "; ".join(blocking + warnings + facts), fix)
     if warnings:
         fixes = []
@@ -2453,6 +2453,9 @@ def check_merge_check(loop: dict, offline: bool) -> Check | None:
                          "or keep them and approve every PR yourself")
         if any(ci.MERGE_CHECK in w and "approving" not in w for w in warnings):
             fixes.append(require)
+        if any(w.startswith("could not read") for w in warnings):
+            fixes.append(f"check {loop['base']} by hand in repo settings → rules, or let a "
+                         "reader with admin access read it")
         return Check("merge-check", UNKNOWN, "; ".join(warnings + facts), "; ".join(fixes))
     return Check("merge-check", VERIFIED, "; ".join(facts))
 

@@ -151,6 +151,27 @@ class Doctor(Fake):
         self.assertEqual(c.status, doctor.VERIFIED)
         self.assertIn("cannot be pinned", c.detail)
 
+    def test_a_pat_reviewer_cannot_meet_a_pinned_requirement(self):
+        # Shadow review of #1237: a ruleset pinned while the reviewer was an App, kept after the
+        # seat moved to a PAT, blocks every PR; doctor said verified.
+        for sources in ((42,), (APP,), (None, 42)):
+            with self.subTest(sources=sources):
+                self.rules = requires(*sources)
+                c = self.check(pat_loop(merge_check="on"))
+                self.assertEqual(c.status, doctor.MISMATCH)
+                self.assertIn("never satisfies it", c.detail)
+                self.assertIn("hermes dk protect", c.fix)
+
+    def test_a_half_read_base_is_never_verified(self):
+        # #1238: required approvals live in the read that failed.
+        self.rules, self.classic = requires(APP), "forbidden"
+        c = self.check(app_loop())
+        self.assertEqual(c.status, doctor.UNKNOWN)
+        self.assertIn("could not read classic branch protection", c.detail)
+        self.assertIn("by hand", c.fix)
+        self.rules, self.classic = None, None                 # rulesets unread, classic 404
+        self.assertEqual(self.check(pat_loop(merge_check="on")).status, doctor.UNKNOWN)
+
     def test_offline_and_unreadable(self):
         self.assertEqual(self.check(app_loop(), offline=True).status, doctor.UNKNOWN)
         self.assertEqual(self.calls, [])

@@ -182,11 +182,20 @@ def problems(loop: dict, found: Protection) -> tuple[list[str], list[str], list[
         else:
             facts.append(f"{base} requires {ci.MERGE_CHECK} from the reviewer App ({app_id})")
     else:
-        facts.append(f"{base} requires {ci.MERGE_CHECK} (a commit status from the reviewer's "
-                     "PAT: it cannot be pinned)")
+        pinned = sorted({s for s in found.sources if s is not None})
+        if pinned:
+            # A commit status is never an App's check run, so a pin can never be met (shadow
+            # review of #1237: a ruleset `protect` wrote while the reviewer was an App).
+            blocking.append(f"{base} requires {ci.MERGE_CHECK} from App "
+                            f"{', '.join(map(str, pinned))}, and the reviewer's PAT posts a "
+                            "commit status, which never satisfies it: every PR stays blocked")
+        else:
+            facts.append(f"{base} requires {ci.MERGE_CHECK} (a commit status from the "
+                         "reviewer's PAT: it cannot be pinned)")
     if app_id and found.approvals:
         warnings.append(f"{base} requires {found.approvals} approving review(s), and GitHub never "
                         "counts the reviewer App's: every PR also needs a person's approval")
     if found.unread:
-        facts.append(f"not read: {found.unread[0]}")
+        # #1238: half the base is unknown (required approvals among it), so never verified.
+        warnings.append(f"could not read {found.unread[0]}: what it requires is unknown")
     return blocking, warnings, facts
