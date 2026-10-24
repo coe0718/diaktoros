@@ -158,6 +158,45 @@ def cmd_arm(args) -> int:
     return 0
 
 
+def cmd_protect(args) -> int:
+    """Require the ``diaktoros/review`` merge check on the loop's base (#1163 M2c), as the loop's
+    own ruleset, or remove that ruleset. Exit 0 when GitHub confirms, 1 when it refuses."""
+    import json
+    from .. import protection
+    try:
+        loop = config.load_id(args.loop)
+    except config.ConfigError as exc:
+        print(f"cannot protect: {exc}")
+        return 2
+    lid = loop["id"]
+    if not args.remove and not config.merge_check_on(loop):
+        print(f"[{lid}] this loop does not post {protection.RULESET_NAME} (merge_check is "
+              f"{loop.get('merge_check') or 'auto'}, reviewer {loop.get('reviewer_seat')}): "
+              "requiring it would block every PR. Turn it on first: "
+              f"hermes dk set --loop {lid} --merge-check on")
+        return 2
+    login = args.admin_token or None
+    if args.dry_run:
+        if args.remove:
+            print(f"[{lid}] would delete ruleset {protection.RULESET_NAME!r} on {loop['repo']}, "
+                  "if it exists; nothing else")
+        else:
+            print(f"[{lid}] would create or update ruleset {protection.RULESET_NAME!r} on "
+                  f"{loop['repo']}:\n{json.dumps(protection.ruleset_body(loop), indent=2)}")
+        return 0
+    done, line = (protection.remove if args.remove else protection.require)(loop, login)
+    print(f"[{lid}] {line}")
+    if done and not args.remove:
+        found = protection.read(loop, login)
+        if protection.reviewer_app_id(loop) and found.approvals:
+            print(f"[{lid}] {loop['base']} still requires {found.approvals} approving review(s), "
+                  "which the reviewer App never satisfies: turn them off in repo settings → "
+                  "rules, or approve every PR yourself")
+        print(f"[{lid}] no one, admins included, can merge past it; "
+              f"`hermes dk protect --loop {lid} --remove` takes it away")
+    return 0 if done else 1
+
+
 # -- the parser for this module's commands (#676 step 7) --------------------------------------
 
 
@@ -226,3 +265,18 @@ def add_arm(sub) -> None:  # noqa: ANN001
     arm.add_argument("--admin-token", default="",
                      help="login whose token can edit the repo's hooks (default: the reader)")
     arm.set_defaults(func=cmd_arm)
+
+
+def add_protect(sub) -> None:  # noqa: ANN001
+    """The ``protect`` subcommand's parser, registered by ``cli.register_cli`` (#1163 M2c)."""
+    protect = sub.add_parser("protect", help="Require the diaktoros/review merge check on the "
+                                             "loop's base branch (a ruleset of its own)")
+    protect.add_argument("--loop", required=True, help="loop id")
+    protect.add_argument("--admin-token", default="",
+                         help="login whose token can manage rulesets (admin access; default: "
+                              "the reader)")
+    protect.add_argument("--remove", action="store_true",
+                         help="delete the loop's ruleset instead; nothing else is touched")
+    protect.add_argument("--dry-run", action="store_true",
+                         help="print what would be written, write nothing")
+    protect.set_defaults(func=cmd_protect)

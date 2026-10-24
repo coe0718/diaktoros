@@ -76,8 +76,12 @@ head was seen (or, for a head already open when the loop was armed, since arming
 failure, not a wait. Don't list `diaktoros/review` in `required_checks`: the loop never reads its
 own check as CI, so `required_checks` refuses it. An escalated head with no adjudicator route is a
 failure (a person decides). A PAT loop can opt in with `merge_check: on` and gets a commit
-status, which branch protection cannot pin to one identity. To make it the block, require
-`diaktoros/review` on the base branch, choosing the reviewer App as its source.
+status, which branch protection cannot pin to one identity. To make it the block, run
+`hermes dk protect --loop ID --admin-token LOGIN` (#1163 M2c): it adds a ruleset of the loop's
+own that requires `diaktoros/review`, pinned to the reviewer App, with no bypass. `doctor`'s
+`merge-check` line says whether the base requires the check and from which App, and flags a base
+that still requires approvals (an App's never count, so each PR would need a person's), and one
+that requires the check while the loop does not post it, or from an App that is not the reviewer (a PAT reviewer's commit status never satisfies a pinned check): every PR would stay blocked. A base it could only half read is never reported as verified.
 
 ## Recommendation: go, with a synchronize-based handoff
 
@@ -90,8 +94,8 @@ loop depends on for safety:
   `hermes dk review` asks by hand.
 - **Branch protection (4):** GitHub neither counts nor enforces the App's reviews, but it does
   enforce a required check pinned to the reviewer App (9). App mode posts `diaktoros/review`
-  from the loop's merge gate (#1163 M2b, the `merge_check` setting); requiring it in branch
-  protection is still a step you take by hand until setup offers it.
+  from the loop's merge gate (#1163 M2b, the `merge_check` setting); `hermes dk protect` (or
+  setup's step 5) requires it, pinned to the reviewer App, and `doctor` checks it (M2c).
 
 Also carried into #1163: one designated App for events (5), numeric bot ids rather than logins
 (2, 7), opaque tokens (8), and the broker as the only enforcement of what each seat may do.

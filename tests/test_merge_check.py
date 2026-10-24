@@ -104,6 +104,24 @@ class Kinds(KindsBase):
                 self.assertEqual(self.kind_of("never reported",
                                               ci_state=ci.CIState(passed=["lint"])), kind)
 
+    def test_the_grace_runs_from_the_first_sighting_and_ignores_bad_clocks(self):
+        # #1236: a draft opened before arming and marked ready later is new to the loop then;
+        # #1235: a corrupt or future clock never ends the grace early.
+        import time
+        now, old = time.time(), time.time() - ready.MISSING_GRACE_S - 1
+        for entry, armed, kind in (
+                ({"first_seen_at": now - 60}, old, ready.PENDING),         # just seen: starting
+                ({"first_seen_at": old}, now - 60, ready.FAILURE),
+                ({"first_seen_at": now + 3600}, old, ready.FAILURE),       # bad: falls back
+                ({"observed_at": float("inf"), "first_seen_at": now - 60}, old, ready.PENDING),
+                ({}, now + 3600, ready.PENDING), ({}, float("nan"), ready.PENDING),
+                ({}, -5, ready.PENDING)):
+            with self.subTest(entry=entry, armed=armed):
+                self.st.watch_save({"armed_since": armed, "heads": {"7": {
+                    "sha": HEAD, "observed_at": None, **entry}}})
+                self.assertEqual(self.kind_of("never reported",
+                                              ci_state=ci.CIState(passed=["lint"])), kind)
+
     def test_the_grace_reads_the_watch_record_once(self):
         # #1231
         with mock.patch.object(self.st, "watch", wraps=self.st.watch) as watch:
