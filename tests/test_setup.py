@@ -259,6 +259,19 @@ class Setup(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.ran, ["doctor", "selftest", "arm"])
 
+    def test_the_merge_check_step_runs_after_the_checks_and_before_arming(self):
+        # #1163 M2c: step 5 offers the loop's ruleset; it never stops setup.
+        from diaktoros.cli import install as cli_install
+        seen = []
+        with patch.object(cli_install, "_setup_merge_check",
+                          side_effect=lambda args, loop, admin, interactive: (
+                              self.ran.append("merge-check"),
+                              seen.append((args.protect, loop["id"], interactive)))):
+            rc, out = self.setup_cli(*self.flags("--arm", "--protect"))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.ran, ["doctor", "selftest", "merge-check", "arm"])
+        self.assertEqual(seen, [(True, LOOP_ID, False)])
+
     def test_a_broken_path_is_repaired_and_the_model_overrides_kept(self):
         override = {"model": "m", "upstream": "https://api.example/v1/chat/completions",
                     "key_file": "/k"}

@@ -62,21 +62,32 @@ PENDING, FAILURE, GITHUB, OUTSIDE = "pending", "failure", "github", "outside"
 MISSING_GRACE_S = 15 * 60
 
 
+def _clock(value, now: float) -> float | None:
+    """A persisted clock, or ``None`` when it is corrupt or in the future (#1235): the
+    watchdog's ``valid_clock`` rule, so a bad value never ends a grace early."""
+    import math
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) and 0 < value <= now else None
+
+
 def _past_start_grace(st, number, head: str) -> bool:
     """Whether the head has been seen long enough that a missing required check is not just one
-    still starting. A head the watchdog has not recorded yet (or an unreadable record) is not. A
-    head already open when the loop was armed has no ``observed_at`` (#1232): its grace runs from
-    ``armed_since``, the earliest the loop could have seen it."""
+    still starting. A head the watchdog has not recorded yet (or an unreadable record) is not.
+    The grace runs from when the watchdog first saw the head (#1236: a draft opened before arming
+    and marked ready later is new to the loop then), else, for a record older than that field,
+    from ``armed_since`` (#1232)."""
     import time
+    now = time.time()
     watch = st.watch()
     entry = (watch.get("heads") or {}).get(str(number)) if isinstance(watch, dict) else None
     if not isinstance(entry, dict) or entry.get("sha") != head:
         return False
-    seen = entry.get("observed_at")
-    if seen is None:
-        seen = watch.get("armed_since")
-    return (isinstance(seen, (int, float)) and not isinstance(seen, bool)
-            and time.time() - seen >= MISSING_GRACE_S)
+    for value in (entry.get("observed_at"), entry.get("first_seen_at"), watch.get("armed_since")):
+        seen = _clock(value, now)
+        if seen is not None:
+            return now - seen >= MISSING_GRACE_S
+    return False
 
 
 def assess(loop: dict, st, pr: dict, reviews, ci_state, detail: dict | None) -> list[str]:
@@ -149,8 +160,14 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
         elif mstate not in MERGEABLE_STATES:
             # Only ``blocked`` is GitHub reflecting the rules (the merge check among them) back:
             # ``behind`` needs an update, and an unknown or uncomputed state is not decided yet.
-            add(GITHUB if mstate == "blocked" else FAILURE if mstate == "behind" else PENDING,
-                f"not mergeable: GitHub reports {mstate or 'no merge state yet'}")
+            said = f"not mergeable: GitHub reports {mstate or 'no merge state yet'}"
+            if mstate == "blocked" and config.reviewer_is_app(loop):
+                # #1163 M2c: GitHub never counts an App's approval, so a base that still requires
+                # approvals blocks every PR until a person approves; doctor reads the base.
+                said += (" (the reviewer is a GitHub App, whose approvals GitHub never counts: "
+                        "a base that requires approvals needs a person's; `hermes dk doctor` "
+                        "reads it)")
+            add(GITHUB if mstate == "blocked" else FAILURE if mstate == "behind" else PENDING, said)
 
     try:
         for entry in gate_failures.open_for(loop, number):

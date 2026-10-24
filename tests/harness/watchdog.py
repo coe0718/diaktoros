@@ -369,6 +369,13 @@ def group_watchdog() -> None:
     heads = load_state("watchdog.json")["heads"]
     check("first-seen old PR is baseline", heads["7"]["observed_at"], None)
     check("post-arm new PR gets observed clock", heads["9"]["observed_at"] is not None, True)
+    # #1236: the merge check's grace needs when the loop first saw a head, whatever its PR's age.
+    first_seen = heads["7"].get("first_seen_at")
+    check("first-seen old PR records its first sighting",
+          isinstance(first_seen, float) and time.time() - first_seen < 600, True)
+    run("watchdog.py", None, "--loop", "widgets", extra_env=normal)
+    check("an unchanged head keeps its first sighting",
+          load_state("watchdog.json")["heads"]["7"].get("first_seen_at"), first_seen)
 
     reset(prs={"7": old})
     state_file("watchdog.json").write_text(json.dumps({"armed_since": time.time() - 7200}))
