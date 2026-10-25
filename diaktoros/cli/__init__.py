@@ -97,6 +97,7 @@ from .reports import (
 from .settings import (
     cmd_apply,
     cmd_fixer_push,
+    cmd_identity,
     cmd_set,
     cmd_settings,
     cmd_show,
@@ -168,6 +169,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         cli_checks.add_corpus(sub)
         cli_reports.add_models(sub)
         cli_settings.add_set(sub)
+        cli_settings.add_identity(sub)
         cli_settings.add_apply(sub)
         cli_settings.add_settings(sub)
         cli_settings.add_show(sub)

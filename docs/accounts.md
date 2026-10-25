@@ -171,6 +171,27 @@ token):
 After adding a permission, accept it on the App's installation (GitHub asks the owner first);
 until then the App's tokens do not carry it.
 
+### Moving an existing loop to GitHub Apps
+
+An installed loop moves one identity at a time with [`hermes dk identity`](commands.md#identity),
+keeping every open PR's history:
+
+1. Register the Apps (permissions above) and install each on the loop's repository only. Keep
+   each private key in a 0600 file.
+2. For each identity, a dry run, then the move, then `doctor`:
+   `hermes dk identity --loop ID --seat reader --app "<slug>[bot]=APP_ID:/abs/key.pem" --dry-run`
+   (then without `--dry-run`); the same for `--seat fixer`, `--seat reviewer` and, with an
+   adjudicator, `--seat adjudicator`.
+3. After the reviewer moves, require the merge check (`hermes dk protect --loop ID --admin-token
+   LOGIN`) and turn required approvals off on the base, since GitHub never counts an App's
+   approval.
+4. An App can be the hook admin too (Webhooks and Administration: Read and write), so no PAT
+   is left: `hermes dk arm --loop ID --admin-token <reader-slug>[bot]` re-arms the hooks as it.
+5. Once no open PR still needs the old logins' verdicts or authorship, remove them from
+   `reviewers`/`fixers` and their PAT files from `tokens`.
+
+Each step is reversible the same way: `hermes dk identity … --pat LOGIN=/abs/path`.
+
 ## Verify files, accounts and access
 
 ```bash
