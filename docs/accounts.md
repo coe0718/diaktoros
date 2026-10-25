@@ -133,7 +133,11 @@ If the reader is changed, default hook-editing commands now act as the new reade
 
 A seat or the reader can be a GitHub App's bot instead of a person's account (#1163): register
 an App, install it on the repository only, keep its private key in a 0600 file, and map it by its
-bot login, App id and key path:
+bot login, App id and key path.
+
+`hermes dk create-apps --owner <you> --loop <id>` registers them for you, one click each in your
+browser, with the permissions below, and writes each key at mode 600 ([`create-apps`](commands.md#create-apps)).
+It prints the install links and the commands that map the Apps. To map one by hand:
 
 ```bash
 hermes dk init --repo owner/repo --reviewer "acme-reviewer[bot]" --fixer fix-bot \
