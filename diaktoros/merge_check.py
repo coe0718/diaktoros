@@ -161,7 +161,7 @@ def mark_pending(loop: dict, st, number: int, head: str, why: str) -> bool:
     shows the check at once, not after the first refresh. One write, no PR listing, so it is cheap
     enough for a gate; the next ``refresh`` decides the real state and updates the same run.
     Best effort: True only when it wrote."""
-    from . import config
+    from . import config, gh
     try:
         if not config.merge_check_on(loop) or not head:
             return False
@@ -172,7 +172,8 @@ def mark_pending(loop: dict, st, number: int, head: str, why: str) -> bool:
             last = memory.get(str(number))
         if isinstance(last, dict) and last.get("head") == head:
             return False                               # already posted for this head
-        summary = "In progress: nothing needs a change yet.\n\n- " + why
+        # Only what is known without reading the PR: the next refresh gives the real reasons.
+        summary = f"Waiting: {why}. The full check follows once the loop reads this head."
         run_id, failed = post(loop, number, head, PENDING, summary)
         if failed:
             return False
@@ -184,8 +185,10 @@ def mark_pending(loop: dict, st, number: int, head: str, why: str) -> bool:
                                    **({"run_id": run_id} if run_id else {})}
             st._save(path, memory)
         return True
-    except Exception:
-        return False                    # never changes what the gate decided
+    except (Exception, gh.GateBudgetExceeded):
+        # Never changes what the gate decided (shadow review of #1249): the turn is already armed,
+        # so a gate budget spent on this extra write must not end the gate as a failure.
+        return False
 
 
 def refresh_quietly(loop: dict, number: int | None = None) -> None:

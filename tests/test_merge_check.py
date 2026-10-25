@@ -449,6 +449,7 @@ class Posting(unittest.TestCase):
         self.assertEqual((path, method, body["status"]), ("/repos/acme/widgets/check-runs",
                                                           "POST", "in_progress"))
         self.assertIn("review queued", body["output"]["summary"])
+        self.assertNotIn("nothing needs a change", body["output"]["summary"])   # shadow, #1249
         self.assertFalse(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "again"))
         self.assertEqual(len(self.calls), 1)                          # once per head
         self.kinds = {7: []}
@@ -462,8 +463,27 @@ class Posting(unittest.TestCase):
         self.fail = True
         self.assertFalse(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "x"))
         self.assertEqual(self.memory(), {})
-        with mock.patch.object(merge_check, "post", side_effect=RuntimeError("boom")):
-            self.assertFalse(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "x"))
+        for error in (RuntimeError("boom"), gh.GateBudgetExceeded("budget spent")):
+            with self.subTest(error=type(error).__name__), \
+                    mock.patch.object(merge_check, "post", side_effect=error):
+                self.assertFalse(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "x"))
+
+    def test_a_spent_gate_budget_in_the_pending_mark_still_ends_the_gate_accepted(self):
+        # Shadow review of #1249: GateBudgetExceeded is a BaseException, so it escaped the gate
+        # after the turn was armed, as a gate failure with no recorded decision.
+        from diaktoros import util
+        st, recorded = mock.Mock(), []
+        st.queue_items.return_value = {}
+        with mock.patch.object(gate, "enqueue_isolated", return_value="enqueued"), \
+                mock.patch.object(merge_check, "post",
+                                  side_effect=gh.GateBudgetExceeded("budget spent")), \
+                mock.patch.object(util, "_DECISION_RECORDER",
+                                  lambda reason, decision: recorded.append((decision, reason))), \
+                mock.patch("sys.stdout", new_callable=__import__("io").StringIO), \
+                self.assertRaises(SystemExit) as caught:
+            gate.block_pr_agent(self.loop, self.st, "reviewer", 7, HEAD)
+        self.assertEqual(caught.exception.code, 0)
+        self.assertEqual(recorded, [("accepted", "reviewer turn enqueued")])
 
     def test_the_gate_marks_pending_only_for_a_scheduled_review(self):
         st = mock.Mock()
