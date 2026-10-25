@@ -1244,7 +1244,7 @@ def check_hook_signatures(report: Report, loop: dict, *, ping: bool = False,
     hooks, error = gh.hooks_read(loop, loop.get("read_token"))
     if hooks is None:
         report.add(step, "hooks:signature", WARN, f"cannot read the repo's hooks ({error})",
-                   "give the read token hook read access (`read:repo_hook`, or `repo`)")
+                   config.reader_access_fix(loop, "hooks"))
         return
     from . import route_intent
     names = {name: seat for seat, name in ((s, str(route_intent.routes_of(loop).get(s) or ""))
