@@ -42,6 +42,33 @@ class ShowTests(_Base):
         self.assertEqual(rows["reviewer_app_key_file"]["value"], str(self.pats["rev"]))
         self.assertNotIn(SENTINEL, json.dumps(rows))
 
+    def test_an_applied_tilde_app_key_path_is_not_called_unapplied(self):
+        # #1212: apply stores the key path expanded, so a form path written with ~ is the same
+        # file, not a setting "the form holds but the loop does not".
+        import pathlib
+        from test_token_file_settings import REV
+        self.install()
+        key = pathlib.Path.home() / "rev-app.pem"
+        key.write_text("not a key")
+        key.chmod(0o600)
+        raw = self.loop_json()
+        bot = "review-seat[bot]"
+        raw["reviewers"] = [bot]
+        raw["reviewer_seat"] = bot
+        raw["seats"]["reviewer"]["login"] = bot
+        raw["tokens"].pop(REV)
+        raw["apps"] = {bot: {"app_id": 42, "key_file": str(key)}}
+        self.loop_file().write_text(json.dumps(raw))
+        form = {"reviewer_app_id": "42", "reviewer_app_key_file": "~/rev-app.pem"}
+        rc, out = self.run_cli(["show", "--loop", "widgets", "--json"], form)
+        self.assertEqual(rc, 0, out)
+        rows = {row["name"]: row for row in json.loads(out)["settings"]}
+        self.assertNotIn("not applied", rows["reviewer_app_key_file"]["note"])
+        form["reviewer_app_key_file"] = "~/other.pem"                  # a different file is
+        rc, out = self.run_cli(["show", "--loop", "widgets", "--json"], form)
+        rows = {row["name"]: row for row in json.loads(out)["settings"]}
+        self.assertIn("not applied", rows["reviewer_app_key_file"]["note"])
+
     def test_every_loop_key_is_shown(self):
         rows = self.rows()
         covered = {n.split(".")[0] for n in rows}
