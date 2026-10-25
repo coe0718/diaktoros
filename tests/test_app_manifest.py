@@ -98,6 +98,7 @@ class BrowserRound(unittest.TestCase):
                     page = urllib.request.urlopen(urllib.request.Request(start, headers=headers),
                                                   timeout=5).read().decode()
                 except urllib.error.HTTPError as exc:
+                    exc.close()
                     self.log.append(("page", exc.code))
                     return
                 action = html.unescape(re.search(r'action="([^"]*)"', page).group(1))
@@ -110,6 +111,7 @@ class BrowserRound(unittest.TestCase):
                 try:
                     urllib.request.urlopen(back, timeout=5).read()
                 except urllib.error.HTTPError as exc:
+                    exc.close()
                     self.log.append(("callback", exc.code))
             threading.Thread(target=go, daemon=True).start()
         return visit
@@ -172,6 +174,7 @@ class BrowserRound(unittest.TestCase):
                 try:
                     urllib.request.urlopen(back + "c-other", timeout=5).read()
                 except urllib.error.HTTPError as exc:
+                    exc.close()
                     self.log.append(("again", exc.code))
                 except OSError:                    # the server already shut down: also refused
                     self.log.append(("again", "closed"))
