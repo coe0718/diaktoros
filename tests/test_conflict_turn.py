@@ -129,6 +129,16 @@ class Worker(sm.Worker):
                 self.assertEqual(seen, {}, "no turn launched")
                 self.assertEqual(row[0], "failed")
                 self.assertIn(words, row[1])
+                # #1154: a person's conflict is remembered for the head, so the watchdog stops
+                # requeueing it on every merge; "nothing to resolve" is not a person's.
+                from diaktoros import conflict_person, state as state_mod
+                st = state_mod.state_for({**self.loop, "base": "main"})
+                recorded = conflict_person.get(st, 7, sm.HEAD)
+                if label == "clean now":
+                    self.assertEqual(recorded, "")
+                else:
+                    self.assertIn(words.replace("conflict needs a person: ", ""), recorded)
+                (st.dir / conflict_person.FILE).unlink(missing_ok=True)
 
     def test_a_git_or_network_failure_is_a_retry(self):
         from diaktoros import broker

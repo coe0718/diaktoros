@@ -506,6 +506,7 @@ def conflict_merge(loop: dict, row, branch: str) -> dict:
                                        base_ref=loop['base'], base_sha=base_sha,
                                        login=loop['read_token'])
     except safe_push.NeedsPerson as exc:
+        _needs_person(loop, row, str(exc))
         raise ValueError(f"conflict needs a person: {exc}") from None
     except broker.BrokerDenied as exc:
         if str(exc) in ('fetched PR branch moved', 'base commit is not on the base branch'):
@@ -514,10 +515,21 @@ def conflict_merge(loop: dict, row, branch: str) -> dict:
     if not merged['conflicted']:
         raise ValueError(f"no conflict with {loop['base']} at {base_sha[:7]}: nothing to resolve")
     if merged['workflows']:
-        raise ValueError(f"conflict needs a person: {loop['base']} changed workflow files since "
-                         "this PR branched, and a push carrying them needs a token with the "
-                         "`workflow` scope, which the loop never asks for")
+        why = (f"{loop['base']} changed workflow files since this PR branched, and a push "
+               "carrying them needs a token with the `workflow` scope, which the loop never asks for")
+        _needs_person(loop, row, why)
+        raise ValueError(f"conflict needs a person: {why}")
     return merged
+
+
+def _needs_person(loop: dict, row, why: str) -> None:
+    """Record that this head's conflict is a person's (#1154's notices): no later base fixes it
+    for this head, so the watchdog must not queue it again on every merge. Best effort."""
+    try:
+        from .. import conflict_person, state as state_mod
+        conflict_person.record(state_mod.state_for(loop), int(row['pr']), str(row['head']), why)
+    except Exception:
+        pass
 
 
 UNPUBLISHED = 'agent exited without a confirmed scoped write'
