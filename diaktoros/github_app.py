@@ -94,21 +94,43 @@ def _runtime_python() -> Path | None:
     return python if venv and python.is_file() else None
 
 
+_signer: tuple[str, Path | None] | None = None      # this process's answer (#1187)
+
+
+def _sign_timeout(what: str) -> float:
+    """A signing subprocess's timeout: ``SIGN_TIMEOUT_S``, or what is left of a gate's budget
+    (#1187: a mint is a gate's first call, and its budget may be smaller than one signing)."""
+    left = gh.remaining()
+    if left is None:
+        return SIGN_TIMEOUT_S
+    if left <= 0:
+        raise gh.GateBudgetExceeded(f"time budget spent before {what}")
+    return max(0.05, min(SIGN_TIMEOUT_S, left))
+
+
 def signer() -> tuple[str, Path | None]:
     """``("cryptography", python)``, ``("openssl", path)`` or ``("", None)``: how this host can
-    sign an App JWT. ``doctor`` reports it; ``sign`` uses it."""
+    sign an App JWT. ``doctor`` reports it; ``sign`` uses it. Probed once per process (#1187):
+    the runtime Python does not change under a running host; ``forget`` re-probes."""
+    global _signer
+    if _signer is not None:
+        return _signer
+    found: tuple[str, Path | None] = ("", None)
     python = _runtime_python()
     if python is not None:
         try:
             done = subprocess.run([str(python), "-I", "-c", "import cryptography"],
-                                  capture_output=True, timeout=SIGN_TIMEOUT_S,
+                                  capture_output=True, timeout=_sign_timeout("the signer probe"),
                                   env={"PATH": "/usr/bin:/bin"})
             if done.returncode == 0:
-                return "cryptography", python
+                found = ("cryptography", python)
         except (OSError, subprocess.SubprocessError):
             pass
-    openssl = shutil.which("openssl", path="/usr/bin:/bin:/usr/local/bin")
-    return ("openssl", Path(openssl)) if openssl else ("", None)
+    if not found[0]:
+        openssl = shutil.which("openssl", path="/usr/bin:/bin:/usr/local/bin")
+        found = ("openssl", Path(openssl)) if openssl else ("", None)
+    _signer = found
+    return found
 
 
 def sign(key_file: Path, data: bytes) -> bytes:
@@ -122,8 +144,15 @@ def sign(key_file: Path, data: bytes) -> bytes:
         raise AppError("no App signer on this host: the Hermes runtime's Python lacks "
                        "`cryptography` and there is no `openssl` command")
     try:
-        done = subprocess.run(argv, input=data, capture_output=True, timeout=SIGN_TIMEOUT_S,
+        done = subprocess.run(argv, input=data, capture_output=True,
+                              timeout=_sign_timeout("App JWT signing"),
                               env={"PATH": "/usr/bin:/bin"})
+    except subprocess.TimeoutExpired:
+        left = gh.remaining()
+        if left is not None and left <= 0:
+            raise gh.GateBudgetExceeded("App JWT signing did not finish within the time "
+                                        "budget") from None
+        raise AppError("App JWT signing failed (TimeoutExpired)") from None
     except (OSError, subprocess.SubprocessError) as exc:
         raise AppError(f"App JWT signing failed ({type(exc).__name__})") from None
     if done.returncode != 0 or not done.stdout:
@@ -158,8 +187,11 @@ def _as_app(loop: dict, login: str, path: str, method: str = "GET", body=None) -
                                 "Authorization": f"Bearer {jwt(loop, login)}",
                                 "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "diaktoros"})
     guard_network(req.full_url)
+    # Charged to a gate's budget like every gh call (#1187): its timeout is what is left, and a
+    # failure past the deadline is an overrun, not an answer.
+    timeout = gh._budgeted(method, path)
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return gh.Response(json.loads(resp.read().decode() or "null"), "", resp.status,
                                {k.lower(): v for k, v in resp.headers.items()})
     except urllib.error.HTTPError as exc:
@@ -167,9 +199,10 @@ def _as_app(loop: dict, login: str, path: str, method: str = "GET", body=None) -
             detail = gh.one_line(exc.read().decode(errors="replace"), 120)
         finally:
             exc.close()
-        return gh.Response(None, f"HTTP {exc.code}{f' {detail}' if detail else ''}", exc.code, {})
+        return gh._outcome(method, path, gh.Response(
+            None, f"HTTP {exc.code}{f' {detail}' if detail else ''}", exc.code, {}))
     except Exception as exc:
-        return gh.Response(None, f"{type(exc).__name__}: {exc}")
+        return gh._outcome(method, path, gh.Response(None, f"{type(exc).__name__}: {exc}"))
 
 
 def _expires(stamp) -> float | None:
@@ -234,6 +267,8 @@ def principal(loop: dict, login: str) -> dict | None:
 
 def forget() -> None:
     """Drop every cached token and principal (tests, or after a key is rotated)."""
+    global _signer
     with _lock:
         _tokens.clear()
         _principals.clear()
+        _signer = None
