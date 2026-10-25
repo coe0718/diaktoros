@@ -527,7 +527,8 @@ def cmd_escalate(args) -> int:
     loop = _one_loop(args)
     if loop is None:
         return 2
-    result = one_shot_action.perform_escalate(loop, args.pr, getattr(args, "reason", ""))
+    result = one_shot_action.perform_escalate(loop, args.pr, getattr(args, "reason", ""),
+                                              withdraw=getattr(args, "withdraw", False))
     for line in result["lines"]:
         print(line)
     return result["code"]
@@ -919,6 +920,9 @@ def add_escalate(sub) -> None:  # noqa: ANN001
     escalate.add_argument("--loop", help="loop id (default: the only configured loop)")
     escalate.add_argument("--pr", type=int, required=True, help="the pull request to escalate")
     escalate.add_argument("--reason", default="", help="why, for the ruling's record (one line)")
+    escalate.add_argument("--withdraw", action="store_true",
+                          help="cancel a pending escalation (one asked for while a run was in "
+                               "flight, waiting for the next changes-requested verdict)")
     escalate.set_defaults(func=cmd_escalate)
 
 

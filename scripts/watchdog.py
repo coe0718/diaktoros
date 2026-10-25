@@ -45,6 +45,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from diaktoros import review_only_conflict  # noqa: E402
+from diaktoros import escalate_pending  # noqa: E402
 from diaktoros import merge_check  # noqa: E402
 from diaktoros import review_kick  # noqa: E402
 from diaktoros import (  # noqa: E402
@@ -1439,6 +1440,12 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         merge_check.refresh(loop, st, log=log)    # #1163: the diaktoros/review check, every head
     except Exception as exc:
         log(f"merge check failed: {type(exc).__name__}: {exc}")
+    try:                                          # #1246: a closed PR's pending escalation goes
+        for number in escalate_pending.prune(st, [p.get("number") for p in prs
+                                                  if isinstance(p, dict)]):
+            log(f"#{number}: pending escalation dropped (the PR is closed, or it lapsed)")
+    except Exception as exc:
+        log(f"pending escalation prune failed: {type(exc).__name__}: {exc}")
     conflicts += recheck_unknown(loop, unknown, conflict_live)
     act_on_conflicts(loop, st, conflicts, conflict_live)
     if observer.retry(loop, st):

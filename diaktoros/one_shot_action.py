@@ -193,8 +193,9 @@ def perform_review(loop, pr, another_round=False):
     return _capture(_review, loop, SimpleNamespace(pr=pr, another_round=another_round))
 
 
-def perform_escalate(loop, pr, reason="", *, expected_head=None):
-    return _capture(_escalate, loop, SimpleNamespace(pr=pr, reason=reason, expected_head=expected_head))
+def perform_escalate(loop, pr, reason="", *, expected_head=None, withdraw=False):
+    return _capture(_escalate, loop, SimpleNamespace(pr=pr, reason=reason, expected_head=expected_head,
+                                                     withdraw=withdraw))
 
 
 def perform_drain(loop, seat="reviewer"):
@@ -390,8 +391,13 @@ def _escalation_decision(loop, number, *, live=None):
     rows = _ledger_rows(loop, number)
     busy = sum(row[1] != "shadow" and row[3] in run_supervisor.ACTIVE for row in rows)
     if busy:
+        # #1246: the host CLI records it for the next changes-requested verdict instead; Desktop
+        # binds a confirmation to the marker it writes now, so it still refuses.
+        details.update(busy=busy, state=st)
         return refuse(f"{say}: refused — {busy} run(s) for this PR are in flight; escalate once "
-                      "they finish (a queued review or fix is retired by the escalation)")
+                      "they finish (a queued review or fix is retired by the escalation)",
+                      public_reason="a run is in flight; the host CLI can queue the escalation "
+                                    "for the next changes-requested verdict")
     if any(row[3] in ("uncertain", "quarantined") for row in rows):
         return refuse(f"{say}: run outcome unknown; reconcile before escalation")
     details.update(code=0, public_reason="", state=st, verdicts=verdicts,
@@ -434,11 +440,28 @@ def _matches_escalation(marker, expected):
 
 def _escalate(loop, args, emit=print):
     number = args.pr
+    from . import escalate_pending
+    if getattr(args, "withdraw", False):
+        withdrawn = escalate_pending.take(state_mod.state_for(loop), number)
+        emit(f"#{number}: pending escalation withdrawn ({withdrawn['reason']})" if withdrawn
+             else f"#{number}: no pending escalation to withdraw")
+        return 0
     try:
         decision = _escalation_decision(loop, number)
     except Exception:
         emit(f"#{number}: escalation facts unavailable — nothing escalated")
         return 2
+    if decision["code"] and decision.get("busy") and getattr(args, "expected_confirmation", None) is None:
+        # #1246: runs are in flight, and with fixer pushes on there is never a gap between them.
+        # Recorded for the next changes-requested verdict (the fixer gate writes the breach then;
+        # an approval drops it). Never a Desktop confirmation: that one binds a marker written now.
+        why = " ".join(str(args.reason or "").split())[:200] or "the operator asked for a ruling"
+        escalate_pending.record(decision["state"], number, reason=why, head=decision["head"])
+        emit(f"#{number} @ {decision['head'][:7]}: {decision['busy']} run(s) in flight — escalation "
+             "pending: the next changes-requested verdict goes to the adjudicator instead of the "
+             "fixer; an approval drops it (it lapses in 24h; `hermes dk escalate --loop "
+             f"{loop['id']} --pr {number} --withdraw` cancels it)")
+        return 0
     if decision["code"]:
         emit(decision["reason"])
         return decision["code"]
@@ -474,6 +497,7 @@ def _escalate(loop, args, emit=print):
     if outcome == "new":
         from .run_supervisor import record_operator_action
         record_operator_action(loop["repo"], number, "escalate")
+    escalate_pending.take(state_mod.state_for(loop), number)   # this escalation supersedes it
     emit(f"{say}: escalated at {verdicts}/{loop['cap']} verdicts — adjudicator turn "
           f"{'enqueued' if outcome in ('new', 'retry') else outcome}; the PR is parked at this "
           f"head (`hermes dk explain --loop {loop['id']} --pr {number}` follows it)")

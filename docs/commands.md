@@ -1252,8 +1252,26 @@ hermes dk escalate --loop "<loop-id>" --pr 12 --reason "the fix and the finding 
 ```
 
 It's refused unless the loop has an adjudicator, and only for an open, ready PR by a fixer that
-has at least one verdict, isn't approved at its head, isn't already awaiting a ruling and has no
-turn running. Exit `1` means it was refused, and the line says why.
+has at least one verdict, isn't approved at its head and isn't already awaiting a ruling. Exit `1`
+means it was refused, and the line says why.
+
+**With a turn running** (#1246), the escalation can't be written yet, and with unattended fixer
+pushes on there is never a gap between one turn and the next. So it's recorded as **pending**
+instead, and exits `0`:
+
+- the running turn finishes normally;
+- if the PR's next verdict requests changes, the adjudicator rules on that head in place of a
+  fixer turn (a spent cap takes precedence, and is the ruling);
+- if the next verdict approves the current head, the pending escalation is dropped, with a
+  notice: there's nothing left to rule on;
+- it lapses after 24 hours with no verdict, or when the PR closes;
+- `explain` shows it while it's pending, and `--withdraw` cancels it.
+
+```bash
+hermes dk escalate --loop "<loop-id>" --pr 12 --withdraw
+```
+
+Desktop's escalate still refuses while a turn is running and points at this command.
 
 <!-- flags:escalate -->
 | flag | value | default | what it does |
@@ -1261,6 +1279,7 @@ turn running. Exit `1` means it was refused, and the line says why.
 | `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
 | `--pr` | `PR` | **required** | the pull request to escalate |
 | `--reason` | `REASON` |  | why, for the ruling's record (one line) |
+| `--withdraw` |  |  | cancel a pending escalation (one asked for while a run was in flight, waiting for the next changes-requested verdict) |
 <!-- /flags -->
 
 
