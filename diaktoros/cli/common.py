@@ -90,6 +90,24 @@ GATE_SCRIPT = route_intent.GATE_SCRIPT
 # Each role's route prompt: together with the gate script, the proof that a route is ours.
 _ROUTE_PROMPT = route_intent.ROUTE_PROMPT
 
+
+def admin_unmapped(loop: dict, admin: str, *, also: set | None = None) -> str:
+    """Why ``--admin-token LOGIN`` cannot act on this loop, or "" (#1196): the login needs a
+    credential mapped here, a PAT (``tokens``) or a GitHub App's key (``apps``). ``also`` names
+    logins this same command is about to map. The fix names both ways to map one."""
+    from .. import gh
+    if not admin or gh.credential_path(loop, admin) is not None:
+        return ""
+    if admin.lower() in {str(x).lower() for x in (also or set())}:
+        return ""
+    lid = shlex.quote(str(loop.get("id") or "<id>"))
+    return (f"--admin-token {admin!r} has no credential mapped on this loop — map a PAT with "
+            f"`hermes dk set --loop {lid} --token {shlex.quote(admin)}=/abs/path/to/pat`, or a "
+            f"GitHub App with `hermes dk set --loop {lid} --app "
+            f"{shlex.quote(admin)}=APP_ID:/abs/path/to/key.pem` (it needs "
+            "hook write access: classic `repo` or `admin:repo_hook` for a PAT, Webhooks: Read and "
+            "write for an App)")
+
 # One matcher for every caller (doctor.split_route_hooks): arm and selftest --ping credit a hook
 # only at the registry's route URL; uninstall and init's stale-hook guard (ownership) also count
 # the URL the loop's config gives a route the registry no longer holds.

@@ -512,11 +512,9 @@ def cmd_init(args) -> int:
         credentials.verify_seats(loop, roles)
         # Hooks are created as --admin-token's login, after the config and routes are written;
         # an unmapped login would fail there and roll everything back, so refuse it up front.
-        if args.hooks and args.admin_token and args.admin_token.lower() not in {
-                str(k).lower() for k in loop.get("tokens") or {}}:
-            raise config.ConfigError(
-                f"--admin-token {args.admin_token!r} has no token file — add "
-                f"--token {args.admin_token}=/path/to/pat (hook write access)")
+        refusal = cli_common.admin_unmapped(loop, args.admin_token) if args.hooks else ""
+        if refusal:
+            raise config.ConfigError(refusal)
         cli_common._verify_routes(loop, roles)
         cli_common._observer_check(loop)
         # Refuses a foreign file (#105). Routes init is about to write are not "missing".
@@ -1057,7 +1055,7 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                            "is only a leftover until `migrate` moves it)")
     init.add_argument("--token", action="append", default=[], help="login=/path/to/pat (repeatable)")
     init.add_argument("--app", action="append", default=[], metavar="LOGIN=APP_ID:KEY",
-                      help="a GitHub App identity instead of a PAT: <app-slug>[bot]=APP_ID:/abs/path/to/key.pem (repeatable; the key stays on the host, mode 0600)")
+                      help="a GitHub App identity instead of a PAT, for a seat, the reader, the adjudicator or the hook admin (--admin-token): <app-slug>[bot]=APP_ID:/abs/path/to/key.pem (repeatable; the key stays on the host, mode 0600)")
     init.add_argument("--read-token", default="",
                       help="required: login whose token reads GitHub — its own account, never "
                            "a seat or the adjudicator login (the four-identity rule)")
@@ -1223,7 +1221,8 @@ def add_setup(sub) -> None:  # noqa: ANN001
                        ("watchdog-deliver", "where watchdog alerts go (default local)")):
         first.add_argument(f"--{flag}", default="", help=what)
     first.add_argument("--app", action="append", default=None, metavar="LOGIN=APP_ID:KEY",
-                       help="a GitHub App identity for a seat or the reader instead of a PAT: "
+                       help="a GitHub App identity instead of a PAT, for a seat, the reader, "
+                            "the adjudicator or the hook admin: "
                             "<app-slug>[bot]=APP_ID:/abs/path/to/key.pem (repeatable); that "
                             "login's token file is then not asked for")
     first.add_argument("--admin-token", default=None,

@@ -214,7 +214,7 @@ class UninstallRefusalTest(Base):
         self.fresh_install()
         rc, out = self.cli("uninstall", "--loop", "widgets", "--admin-token", "stranger")
         self.assertEqual(rc, 2, out)
-        self.assertIn("no token file mapped", out)
+        self.assertIn("no credential mapped", out)
         self.assertEqual(len(self.hooks()), 2)
         self.assertTrue(LOOP_FILE.exists())
 

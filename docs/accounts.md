@@ -163,7 +163,7 @@ token):
 
 | App | Permissions | Why |
 | --- | --- | --- |
-| Reader | Contents, Pull requests, Checks, Commit statuses, Issues: **Read**; **Webhooks: Read**; **Administration: Read** | The gates' reads and the CI the reviewer sees; Webhooks and Administration let `doctor`, `selftest` and `explain` see the hooks and the base's classic protection (without them those lines stay ⚠️) |
+| Reader | Contents, Pull requests, Checks, Commit statuses, Issues: **Read**; **Webhooks: Read**; **Administration: Read** | The gates' reads and the CI the reviewer sees; Webhooks and Administration let `doctor`, `selftest` and `explain` see the hooks and the base's classic protection (without them those lines stay ⚠️). As the hook admin (`--admin-token`, so a loop needs no PAT for hooks) it needs both **Read and write**: then it creates, arms and pauses the hooks and runs `protect` (#1196) |
 | Reviewer | Contents: Read; Pull requests, Issues: **Read and write**; **Checks: Read and write** | Reviews; issues it files and triage labels; the `diaktoros/review` check |
 | Fixer | Contents, Pull requests, Issues: **Read and write** | Pushes and PRs; comments on the issues it fixes. Never Workflows: a merge that carries workflow changes comes back to you |
 | Adjudicator (optional) | Pull requests: **Read and write** | The ruling's PR comment, nothing else |

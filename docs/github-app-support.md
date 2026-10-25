@@ -85,6 +85,22 @@ own that requires `diaktoros/review`, pinned to the reviewer App, with no bypass
 that still requires approvals (an App's never count, so each PR would need a person's), and one
 that requires the check while the loop does not post it, or from an App that is not the reviewer (a PAT reviewer's commit status never satisfies a pinned check): every PR would stay blocked. A base it could only half read is never reported as verified.
 
+## An App as the hook admin (#1196)
+
+Measured on the same repository (2026-10-25) with the reader App given **Webhooks: Read and
+write** and **Administration: Read and write**, through the plugin's own App-token path:
+
+| Operation, as the App | Answer |
+| --- | --- |
+| create a repository hook (inactive) / read it / activate / pause / delete | 201 / 200 / 200 / 200 / 204 |
+| create a ruleset / update it / delete it | 201 / 200 / 204 |
+| read the base's classic branch protection | 200 |
+| `hermes dk arm --admin-token <app>[bot]` on hooks a PAT created | pinged (signature accepted), read back active |
+| `hermes dk protect --admin-token <app>[bot]` | updated the loop's ruleset |
+
+So an App can be `--admin-token` everywhere a PAT can (`init --hooks`, `arm`, `uninstall`,
+`triage`, `trace`, `protect`), and a loop needs no PAT at all for its hooks or its merge check.
+
 ## Recommendation: go, with a synchronize-based handoff
 
 The core loop works with App identities: PRs, pushes, exact-commit reviews and their webhooks all
