@@ -143,6 +143,8 @@ def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None)
     from . import config
     if not config.merge_check_on(loop):
         return 0
+    import time
+    listed_at = time.time()             # entries written after this are newer than the listing
     prs, kinds, error = ready.collect_kinds(loop, st)
     if error:
         log(f"merge check not refreshed: {error}")
@@ -174,9 +176,13 @@ def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None)
                 memory = st._load(path, {})
                 memory = memory if isinstance(memory, dict) else {}
                 memory[str(number)] = {"head": head, "state": state, "digest": digest,
-                                       **({"run_id": run_id} if run_id else {})}
+                                       "at": time.time(), **({"run_id": run_id} if run_id else {})}
+                # Drop only what the listing shows gone and was written before it (#1258): a
+                # pending mark made mid-refresh, for a PR the listing predates, is kept.
                 open_numbers = {str(p["number"]) for p in prs}
-                memory = {k: v for k, v in memory.items() if k in open_numbers}
+                memory = {k: v for k, v in memory.items() if k in open_numbers
+                          or (isinstance(v, dict) and isinstance(v.get("at"), (int, float))
+                              and v["at"] >= listed_at)}
                 st._save(path, memory)
         written += 1
         log(f"#{number} @ {head[:7]}: merge check {state}")
@@ -188,6 +194,7 @@ def mark_pending(loop: dict, st, number: int, head: str, why: str) -> bool:
     shows the check at once, not after the first refresh. One write, no PR listing, so it is cheap
     enough for a gate; the next ``refresh`` decides the real state and updates the same run.
     Best effort: True only when it wrote."""
+    import time
     from . import config, gh
     try:
         if not config.merge_check_on(loop) or not head:
@@ -203,14 +210,16 @@ def mark_pending(loop: dict, st, number: int, head: str, why: str) -> bool:
             if isinstance(last, dict) and last.get("head") == head:
                 return False                           # already posted for this head
             # Only what is known without reading the PR: the next refresh gives the real reasons.
-            summary = f"Waiting: {why}. The full check follows once the loop reads this head."
+            # A bullet, so a commit status reads "Waiting: review queued; …" (#1258), not twice.
+            summary = (f"Waiting.\n\n- {why}; the full check follows once the loop reads this "
+                       "head")
             run_id, failed = post(loop, number, head, PENDING, summary)
             if failed:
                 return False
             with st.locked():
                 memory = st._load(path, {})
                 memory = memory if isinstance(memory, dict) else {}
-                memory[str(number)] = {"head": head, "state": PENDING,
+                memory[str(number)] = {"head": head, "state": PENDING, "at": time.time(),
                                        "digest": _digest(PENDING, summary),
                                        **({"run_id": run_id} if run_id else {})}
                 st._save(path, memory)

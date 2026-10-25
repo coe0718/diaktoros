@@ -314,13 +314,13 @@ class Posting(unittest.TestCase):
                      "seats": {"reviewer": {"login": "r[bot]"}},
                      "state_dir": str(pathlib.Path(tmp.name) / "state")}
         self.st = state_mod.state_for(self.loop)
-        self.calls, self.fail = [], False
+        self.calls, self.write_fails = [], False
         self.prs = [{"number": 7, "head": {"sha": HEAD}}]
         self.kinds = {7: [(ready.PENDING, "review not yet posted")]}
 
         def api(loop, path, method="GET", body=None, login=None):
             self.calls.append((path, method, body, login))
-            if self.fail:
+            if self.write_fails:
                 return None
             if "/check-runs" in path:
                 return {"id": int(path.rsplit("/", 1)[1]) if method == "PATCH" else 55}
@@ -367,7 +367,7 @@ class Posting(unittest.TestCase):
         # #1230: a PATCH that fails for any reason but 404 must not leave a second run on the head.
         self.refresh()
         self.kinds = {7: []}
-        self.fail = True
+        self.write_fails = True
         logged = []
         self.assertEqual(self.refresh(log=logged.append), 0)
         self.assertEqual([c[1] for c in self.calls], ["POST", "PATCH"])   # no second POST
@@ -375,7 +375,7 @@ class Posting(unittest.TestCase):
         gh.last_error.return_value = "HTTP 404 Not Found"
         self.assertEqual(self.refresh(), 0)                             # still failing: the POST too
         self.assertEqual([c[1] for c in self.calls], ["POST", "PATCH", "PATCH", "POST"])
-        self.fail = False
+        self.write_fails = False
         self.calls.clear()
         with mock.patch.object(gh, "api", side_effect=lambda loop, path, method="GET", body=None,
                                login=None: self.calls.append((path, method)) or (
@@ -425,12 +425,12 @@ class Posting(unittest.TestCase):
         self.assertIn("open PRs unreadable", logged[0])
 
     def test_a_failed_write_is_not_recorded_and_is_retried(self):
-        self.fail = True
+        self.write_fails = True
         logged = []
         self.assertEqual(self.refresh(log=logged.append), 0)
         self.assertEqual(self.memory(), {})
         self.assertIn("HTTP 403", logged[0])
-        self.fail = False
+        self.write_fails = False
         self.assertEqual(self.refresh(), 1)
 
     def test_only_limits_the_prs_and_closed_prs_are_pruned(self):
@@ -460,7 +460,7 @@ class Posting(unittest.TestCase):
         self.assertFalse(merge_check.mark_pending({**self.loop, "merge_check": "off"}, self.st,
                                                   7, HEAD, "x"))
         self.assertEqual(self.calls, [])
-        self.fail = True
+        self.write_fails = True
         self.assertFalse(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "x"))
         self.assertEqual(self.memory(), {})
         for error in (RuntimeError("boom"), gh.GateBudgetExceeded("budget spent")):
@@ -523,6 +523,47 @@ class Posting(unittest.TestCase):
         with merge_check._writer(self.st, wait=False) as mine:
             self.assertTrue(mine)
             self.assertFalse(merge_check.mark_pending(self.loop, self.st, 9, "c" * 40, "x"))
+
+    def test_a_mark_made_mid_refresh_survives_its_prune(self):
+        # #1258 (shadow review of #1256): the listing predates a PR the gate marks between two
+        # PRs' writes; pruning to it dropped the mark, and the next refresh POSTed a second run.
+        self.prs.append({"number": 8, "head": {"sha": "c" * 40}})
+        self.kinds[8] = []
+        real_decide, decided = merge_check.decide, []
+
+        def decide(kinds):
+            decided.append(kinds)
+            if len(decided) == 2:         # after PR 7's record, before PR 8 takes the lock
+                self.assertTrue(merge_check.mark_pending(self.loop, self.st, 9, "d" * 40, "x"))
+            return real_decide(kinds)
+        with mock.patch.object(merge_check, "decide", side_effect=decide):
+            self.refresh()
+        self.assertEqual(sorted(self.memory()), ["7", "8", "9"])
+        run_9 = self.memory()["9"]["run_id"]
+        # The next listing shows 9 (8 has closed): its run is updated, never a second one posted.
+        self.prs = [{"number": 7, "head": {"sha": HEAD}}, {"number": 9, "head": {"sha": "d" * 40}}]
+        self.kinds = {7: [], 9: []}
+        self.calls.clear()
+        self.refresh()
+        self.assertEqual(sorted(self.memory()), ["7", "9"])
+        self.assertIn((f"/repos/acme/widgets/check-runs/{run_9}", "PATCH"),
+                      [c[:2] for c in self.calls])
+        self.assertEqual([c for c in self.calls if c[:2] == ("/repos/acme/widgets/check-runs",
+                                                             "POST")], [])
+
+    def test_a_pat_loops_pending_status_says_waiting_once(self):
+        self.loop.update(reviewer_seat="rev", apps={}, tokens={"rev": "/t"}, merge_check="on",
+                         seats={"reviewer": {"login": "rev"}})
+        self.assertTrue(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "review queued"))
+        description = self.calls[0][2]["description"]
+        self.assertTrue(description.startswith("Waiting: review queued"), description)
+        self.assertEqual(description.count("Waiting"), 1)
+
+    def test_assertion_failures_in_this_class_keep_their_message(self):
+        # #1258: a `fail` attribute shadowed TestCase.fail, so every failed assert raised TypeError.
+        self.assertTrue(callable(self.fail))
+        with self.assertRaisesRegex(AssertionError, "kept"):
+            self.assertEqual(1, 2, "kept")
 
     def test_refresh_quietly_never_raises(self):
         from diaktoros import util
