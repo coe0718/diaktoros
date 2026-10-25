@@ -156,6 +156,38 @@ def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None)
     return written
 
 
+def mark_pending(loop: dict, st, number: int, head: str, why: str) -> bool:
+    """Post ``pending`` for a head nothing has been posted for yet (#1242): a PR entering the loop
+    shows the check at once, not after the first refresh. One write, no PR listing, so it is cheap
+    enough for a gate; the next ``refresh`` decides the real state and updates the same run.
+    Best effort: True only when it wrote."""
+    from . import config
+    try:
+        if not config.merge_check_on(loop) or not head:
+            return False
+        path = st.dir / FILE
+        with st.locked():
+            memory = st._load(path, {})
+            memory = memory if isinstance(memory, dict) else {}
+            last = memory.get(str(number))
+        if isinstance(last, dict) and last.get("head") == head:
+            return False                               # already posted for this head
+        summary = "In progress: nothing needs a change yet.\n\n- " + why
+        run_id, failed = post(loop, number, head, PENDING, summary)
+        if failed:
+            return False
+        with st.locked():
+            memory = st._load(path, {})
+            memory = memory if isinstance(memory, dict) else {}
+            memory[str(number)] = {"head": head, "state": PENDING,
+                                   "digest": _digest(PENDING, summary),
+                                   **({"run_id": run_id} if run_id else {})}
+            st._save(path, memory)
+        return True
+    except Exception:
+        return False                    # never changes what the gate decided
+
+
 def refresh_quietly(loop: dict, number: int | None = None) -> None:
     """``refresh`` after an event (a verdict, a shadow review, a ruling): best effort, never raises;
     the watchdog's sweep refreshes every open PR anyway."""

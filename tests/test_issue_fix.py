@@ -153,6 +153,16 @@ class Gate(Base):
         self.run_gate(self.labeled(label="Agent-Fix"))
         self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix")])
 
+    def test_the_fix_handoff_is_recorded_as_accepted(self):
+        # #1244 (live trial): the agent-fix label that started the fix was missing from the log.
+        from diaktoros import util
+        recorded = []
+        with mock.patch.object(util, "_DECISION_RECORDER",
+                               lambda reason, decision: recorded.append((decision, reason))):
+            self.run_gate(self.labeled(label="Agent-Fix"))
+        self.assertEqual(recorded, [("accepted",
+                                     f"issue #12 handed to the fixer at {BASE[:7]}: enqueued")])
+
     def test_an_enqueue_failure_is_held_with_the_base_it_failed_at(self):
         def boom(*a, **k):
             raise OSError("boom")

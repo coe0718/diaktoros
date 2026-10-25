@@ -68,7 +68,7 @@ one than the review alone: it covers everything `ready` knows and resets on ever
 proposes posting turn state as a commit status).
 
 **As built (#1163 M2b):** the host posts this check with the reviewer App, on by default
-(`merge_check: auto`). It is written after every verdict, shadow review and ruling, and on every
+(`merge_check: auto`). It is posted as pending the moment a review is queued for a head, then written after every verdict, shadow review and ruling, and on every
 watchdog sweep, only when the head, state or summary changes; the summary lists what holds the
 head. GitHub's own `blocked` is not counted (with the check required, GitHub reports `blocked`
 *because* the check is not green). A required check that has not reported for 15 minutes after the

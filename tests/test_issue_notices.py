@@ -46,6 +46,15 @@ class Rendering(unittest.TestCase):
         self.assertEqual(observer.link(self.loop, 7), f"https://github.com/{REPO}/pull/7")
         self.assertIn("failed", observer.EVENTS)
 
+    def test_a_notice_with_no_head_renders_none(self):
+        # #1247 (live trial): the ready set has no head, and rendered an empty code span.
+        for number in (11, None):
+            with self.subTest(number=number):
+                text = observer.summarize(self.loop, "ready_set", number, "", outcome="x")
+                self.assertNotIn("`", text)
+                self.assertIn("ready-to-merge set changed", text)
+        self.assertIn(f"`{BASE[:7]}`", observer.summarize(self.loop, "approved", 7, BASE))
+
 
 class Outcomes(fixture.Base):
     def scope(self, run_id):

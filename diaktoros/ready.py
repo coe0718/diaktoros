@@ -126,10 +126,13 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
                   if isinstance(reviews, list) else None)
         if not isinstance(reviews, list):
             add(PENDING, "review receipts unreadable: approval unknown")
+        elif latest is not None and gh.review_state(latest) == "CHANGES_REQUESTED":
+            # #1245: a red merge check names the verdict, with the budget explain counts.
+            add(FAILURE, f"changes requested at head {head[:7]} "
+                         f"({len(gate.verdicts(reviews, loop))} of {loop.get('cap')} verdicts)")
         elif latest is None or gh.review_state(latest) != "APPROVED":
-            # No verdict at the head yet is a review still to come; changes requested is not.
-            add(FAILURE if latest is not None and gh.review_state(latest) == "CHANGES_REQUESTED"
-                else PENDING, f"not approved at head {head[:7]}")
+            # No verdict at the head yet is a review still to come.
+            add(PENDING, f"not approved at head {head[:7]}")
         else:
             approved = True
             if stale_approval.is_stale(st.watch(), number, head):
@@ -186,9 +189,15 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
                                                                   "adjudicating"}:
         # Waiting for the ruling; once it is in, the decision is the operator's.
         # With no adjudicator route no ruling ever comes: a person decides (shadow, #1225).
-        add(FAILURE if (gate._ruled(loop, number, head)
-                        or not (loop.get("adjudicator") or {}).get("route")) else PENDING,
-            "escalated: parked awaiting adjudication")
+        # The reason says which (#1245): a stale "awaiting" after the ruling misled.
+        ruled = gate._ruled(loop, number, head)
+        if ruled:
+            add(FAILURE, f"escalated: the adjudicator ruled {ruled} at head {head[:7]}; a person "
+                         "decides (merge, close, or push a new head)")
+        elif not (loop.get("adjudicator") or {}).get("route"):
+            add(FAILURE, "escalated, and this loop has no adjudicator route: a person decides")
+        else:
+            add(PENDING, "escalated: parked awaiting adjudication")
     shadow_kind, shadow_held, _note = gate.shadow_state(loop, number, head, marker=marker)
     if shadow_held:
         add(shadow_kind or PENDING, "shadow review: " + shadow_held)
