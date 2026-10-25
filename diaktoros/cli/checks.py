@@ -220,8 +220,7 @@ def cmd_app_webhook(args) -> int:
     if state["error"]:
         print(f"[{lid}] {state['error']}")
         return 1
-    ok = state["url"] == state["want_url"] and state["content_type"] == "json" \
-        and not state["missing_events"]
+    ok = not app_ingress.webhook_problem(state)
     print(f"[{lid}] {loop['ingress_app']}'s webhook: {state['url'] or '(none)'} "
           f"({'matches the route' if state['url'] == state['want_url'] else 'not the route: ' + state['want_url']}); "
           f"content type {state['content_type'] or '?'}")

@@ -110,6 +110,8 @@ shape and runs that loop's own gate in the same process, under the gate's own na
 webhook has one URL for every repository it is installed on, so its route is shared by every loop
 it delivers for. GitHub cannot pause an App's webhook for one repository: pausing such a loop is a
 flag the gate reads. `hermes dk app-webhook --set` writes the URL and secret onto the App.
+`doctor`'s `app-webhook` line reads that webhook with the App's own key, and `arm` refuses
+"armed" until it posts to the route with every event the loop needs (`init` names the step).
 
 An existing loop moves over with `hermes dk set --ingress app-webhook --ingress-app <app>[bot]`,
 which installs the App's route, then `app-webhook --set`. Its repo hooks are not deleted for you:

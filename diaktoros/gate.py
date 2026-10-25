@@ -949,6 +949,15 @@ def _explain_state(loop: dict, st: state_mod.LoopState, key: str, number: int, h
             "capacity": capacity, "marker": marker, "sweep": sweep}
 
 
+def _explain_app_ingress(loop: dict, armed) -> str:
+    """The armed/paused line for a loop whose events come through its App's webhook (#1239)."""
+    via = f"events arrive through {loop.get('ingress_app')}'s webhook"
+    if armed is False:
+        return (f"PAUSED — {via}, and the loop's pause flag drops them "
+                f"(`hermes dk arm --loop {loop['id']}` resumes)")
+    return f"armed — {via} (`hermes dk doctor` reads that webhook)"
+
+
 def _explain_hooks(armed, armed_error: str) -> str:
     """The armed/paused line. Unreadable is its own answer: "paused" is a claim, not a default."""
     if armed is True:
@@ -1230,7 +1239,8 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     used, limit = local["capacity"].get(needed_seat, (0, 0))
     full_seat = bool(needed_seat and used >= limit and needed_seat not in held
                      and not (inflight_fix if needed_seat == "fixer" else inflight_review))
-    hooks_line = _explain_hooks(armed, armed_error)
+    hooks_line = (_explain_app_ingress(loop, armed) if config.app_ingress(loop)
+                  else _explain_hooks(armed, armed_error))
     # The fixer gate holds a changes-requested verdict while the loop has not opted in to
     # unattended pushes: no fixer turn can start, so the next event is the operator's.
     push_off = bool(at_head) and not review_only and not config.unattended_fixer_push_enabled(loop)

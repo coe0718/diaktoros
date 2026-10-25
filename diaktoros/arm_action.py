@@ -186,6 +186,13 @@ def perform(loop: dict, active: bool, token_login: str | None = None, *,
             # Armed would be a lie: the gateway 404s every delivery until the route exists.
             return [f"not armed: the App's route {route} is not installed, so nothing reaches "
                     f"the gates (`hermes dk doctor --loop {loop['id']} --repair` restores it)"], False
+        if active:
+            # Nor while the App's webhook does not post this loop's events to that route.
+            problem = app_ingress.webhook_problem(app_ingress.webhook_state(loop))
+            if problem:
+                return [f"not armed: {loop.get('ingress_app')}'s webhook would deliver nothing to "
+                        f"{route} ({problem}); `hermes dk app-webhook --loop {loop['id']} --set` "
+                        "points it there"], False
         st = state_mod.state_for(loop)
         try:
             app_ingress.set_paused(st, not active)

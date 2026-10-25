@@ -1880,6 +1880,27 @@ def _hook_listing(loop: dict) -> list | None:
     return None
 
 
+def check_app_webhook(loop: dict, offline: bool) -> Check:
+    """#1239: the App's webhook, read with the App's JWT, must post to this loop's App route with
+    every event it needs; until then the loop receives nothing, however healthy the rest reads."""
+    from . import app_ingress
+    app = loop.get("ingress_app")
+    fix = f"hermes dk app-webhook --loop {loop['id']} --set"
+    if offline:
+        return Check("app-webhook", UNKNOWN, f"not probed (--offline): {app}'s webhook was not read")
+    state = app_ingress.webhook_state(loop)
+    if state["error"]:
+        return Check("app-webhook", UNKNOWN, state["error"], f"`{fix}` once the App's key reads")
+    problem = app_ingress.webhook_problem(state)
+    if problem:
+        events = ("; subscribe to the missing events in the App's settings (Permissions & events)"
+                  if state["missing_events"] else "")
+        return Check("app-webhook", MISMATCH, f"{app}'s webhook delivers nothing here: {problem}",
+                     f"`{fix}`{events}")
+    return Check("app-webhook", VERIFIED, f"{app}'s webhook posts to {state['url']} "
+                                          f"({', '.join(state['events'])})")
+
+
 def check_leftover_hooks(loop: dict, offline: bool) -> Check:
     """#1239: a loop on its App's webhook has no repo hooks on purpose. One left from before it
     switched still posts to the seat's route; the gate drops those deliveries
@@ -1920,7 +1941,7 @@ def check_hooks(loop: dict, offline: bool) -> list[Check]:
     wrong-hook hunt the preflight exists to prevent.
     """
     if config.app_ingress(loop):
-        return [check_leftover_hooks(loop, offline)]
+        return [check_leftover_hooks(loop, offline), check_app_webhook(loop, offline)]
     expected = []
     for seat in config.hook_roles(loop):
         name = str(route_intent.routes_of(loop).get(seat) or "")

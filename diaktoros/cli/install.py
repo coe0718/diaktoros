@@ -635,7 +635,11 @@ def cmd_init(args) -> int:
         print(f"  {line}")
     if args.hooks:
         print(f"  {_hook_editor_line(loop, args.admin_token, getattr(args, 'arm', False), False)}")
-    if not args.hooks:
+    if config.app_ingress(loop):
+        # #1239: no repo hooks; the App's webhook is pointed at its route instead.
+        print(f"  next: hermes dk app-webhook --loop {loop['id']} --set   (points "
+              f"{loop.get('ingress_app')}'s webhook at route {config.app_route(loop)})")
+    elif not args.hooks:
         print("  (repo hooks not created — pass --hooks, or add them by hand with the route URLs)")
     # Armed at birth: prove the secret now, as `arm` does, rather than at the first real event.
     pinged = (cli_common._ping_loop_hooks(loop, args.admin_token)

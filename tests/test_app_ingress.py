@@ -30,10 +30,103 @@ class Flow(app_cli.Base):
             tokens=[(tfs.FIX, self.pats["fix"])],
             apps=[(app_cli.BOT_REV, 5416187, self.key("rev")), (READ_APP, 5416115, self.key_read)]))
         self.assertEqual(rc, 0, out)
+        self.init_out = out
         self.addCleanup(lambda: routes.restore_entries({"dk-app-acme-reader": None}))
+        # The App's webhook as GitHub answers it, read with the App's JWT: pointed at the route,
+        # with the events the loop needs, unless a test says otherwise.
+        from diaktoros import github_app, gh
+        self.webhook = {"url": routes.target("dk-app-acme-reader", "https://gateway.example")[0],
+                        "content_type": "json", "events": ["pull_request", "pull_request_review"],
+                        "error": ""}
+
+        def as_app(loop, login, path, method="GET", body=None):
+            if self.webhook["error"]:
+                return gh.Response(None, self.webhook["error"], 401, {})
+            if path == "/app/hook/config":
+                return gh.Response({k: self.webhook[k] for k in ("url", "content_type")}, "", 200, {})
+            return gh.Response({"events": self.webhook["events"]}, "", 200, {})
+        patch = mock.patch.object(github_app, "_as_app", side_effect=as_app)
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def loop(self):
         return config.load_id("widgets")
+
+    def test_doctor_reads_the_apps_webhook(self):
+        from diaktoros import doctor
+        for change, status, words in (
+                ({}, doctor.VERIFIED, "posts to https://gateway.example/webhooks/dk-app-acme-reader"),
+                ({"url": "https://example.com/dk-spike"}, doctor.MISMATCH,
+                 "posts to https://example.com/dk-spike, not the route's"),
+                ({"events": ["pull_request"]}, doctor.MISMATCH,
+                 "does not subscribe to pull_request_review"),
+                ({"content_type": "form"}, doctor.MISMATCH, "content type is form"),
+                ({"error": "HTTP 401"}, doctor.UNKNOWN, "could not be read")):
+            with self.subTest(change=change):
+                saved = dict(self.webhook)
+                self.webhook.update(change)
+                check = doctor.check_app_webhook(self.loop(), offline=False)
+                self.webhook.clear()
+                self.webhook.update(saved)
+                self.assertEqual(check.status, status, check)
+                self.assertIn(words, check.detail)
+                if status == doctor.MISMATCH:
+                    self.assertIn("hermes dk app-webhook --loop widgets --set", check.fix)
+
+    def test_doctor_and_explain_carry_the_apps_lines(self):
+        from diaktoros import doctor
+        with mock.patch.object(doctor.gh, "api", return_value=[]):
+            names = [c.name for c in doctor.check_hooks(self.loop(), offline=False)]
+        self.assertEqual(names, ["hooks", "app-webhook"])
+        rc, out = self.run_cli(["explain", "--loop", "widgets", "--pr", "7"])
+        self.assertIn("armed — events arrive through acme-reader[bot]'s webhook", out)
+        self.assertNotIn("seat routes are active repo hooks", out)
+
+    def test_arm_needs_the_webhook_to_deliver_and_explain_names_it(self):
+        st = state_mod.state_for(self.loop())
+        self.run_cli(["arm", "--loop", "widgets", "--pause"])
+        self.webhook["url"] = "https://example.com/dk-spike"
+        rc, out = self.run_cli(["arm", "--loop", "widgets"])
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("would deliver nothing to dk-app-acme-reader", out)
+        self.assertTrue(app_ingress.paused(st))           # still paused: nothing was switched
+        from diaktoros import gate
+        self.assertIn("PAUSED — events arrive through acme-reader[bot]'s webhook",
+                      gate._explain_app_ingress(self.loop(), False))
+        self.webhook["url"] = routes.target("dk-app-acme-reader", "https://gateway.example")[0]
+        rc, out = self.run_cli(["arm", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(gate._explain_app_ingress(self.loop(), True),
+                         "armed — events arrive through acme-reader[bot]'s webhook "
+                         "(`hermes dk doctor` reads that webhook)")
+
+    def test_the_dispatcher_runs_the_real_gate_under_its_own_name(self):
+        # The gateway's way in: gate_app.py as __main__, the payload on stdin. The reviewer gate
+        # it starts stops at its first GitHub read (no network here), recorded under its name.
+        import os
+        import subprocess
+        root = Path(__file__).resolve().parents[1]
+        payload = json.dumps({"action": "opened", "number": 7, "pull_request": {
+            "number": 7, "head": {"sha": "a" * 40}, "base": {"ref": "main"},
+            "user": {"login": tfs.FIX}}, "repository": {"full_name": "acme/widgets"},
+            "sender": {"login": tfs.FIX}})
+        st_dir = state_mod.state_for(self.loop()).dir
+        proc = subprocess.run([sys.executable, str(root / "scripts" / "gate_app.py")],
+                              input=payload, capture_output=True, text=True, timeout=60,
+                              cwd=str(root / "scripts"), env=dict(os.environ))
+        self.assertNotIn("Traceback", proc.stderr, proc.stderr)
+        rows = [json.loads(line) for line in
+                (st_dir / "gate-decisions.jsonl").read_text().splitlines() if line.strip()] \
+            if (st_dir / "gate-decisions.jsonl").exists() else []
+        failures = (st_dir / "gate-failures.json").read_text() \
+            if (st_dir / "gate-failures.json").exists() else ""
+        self.assertTrue(any(row.get("gate") == "gate_reviewer" for row in rows)
+                        or "gate_reviewer" in failures, (rows, failures, proc.stdout, proc.stderr))
+        self.assertFalse(any(row.get("gate") == "gate_app" for row in rows), rows)
+
+    def test_init_says_to_point_the_apps_webhook(self):
+        self.assertIn("next: hermes dk app-webhook --loop widgets --set", self.init_out)
+        self.assertNotIn("pass --hooks", self.init_out)
 
     def test_init_installs_the_apps_route_and_no_hooks(self):
         loop = self.loop()

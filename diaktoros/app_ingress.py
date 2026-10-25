@@ -106,6 +106,22 @@ def webhook_state(loop: dict) -> dict:
     return out
 
 
+def webhook_problem(state: dict) -> str:
+    """Why the App's webhook (``webhook_state``) would not deliver this loop's events; "" when it
+    would: its URL is the route's, its content type JSON, and it subscribes to every needed event."""
+    if state["error"]:
+        return state["error"]
+    problems = []
+    if state["url"] != state["want_url"]:
+        problems.append(f"it posts to {state['url'] or '(nowhere)'}, not the route's "
+                        f"{state['want_url'] or '(no route installed)'}")
+    elif state["content_type"] != "json":
+        problems.append(f"its content type is {state['content_type'] or '(none)'}, not json")
+    if state["missing_events"]:
+        problems.append(f"it does not subscribe to {', '.join(state['missing_events'])}")
+    return "; ".join(problems)
+
+
 def set_webhook(loop: dict) -> tuple[bool, str]:
     """Point the ingress App's webhook at its route, with the route's secret (never printed)."""
     from . import config, github_app, routes
