@@ -92,7 +92,7 @@ SETTINGS_SCHEMA: dict = {
                           "default": "",
                           "description": "Optional fourth account the ruling is also posted as, "
                                          "as a PR comment. Must differ from the reader and both "
-                                         "seats, with its own token file. Lands only on a loop "
+                                         "seats, with its own credential (a PAT file, or a GitHub App). Lands only on a loop "
                                          "with an adjudicator route. Blank = not set here"},
     "adjudicator_token_file": {"label": "Adjudicator's token file (path only, optional)",
                                "type": "str", "default": "",
