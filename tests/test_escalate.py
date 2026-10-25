@@ -355,6 +355,28 @@ class Parked(Base):
         breach.assert_called_once()
         self.assertEqual(breach.call_args.kwargs["escalated"]["by"], "operator")
 
+    def test_the_watchdog_retries_a_review_only_escalation_and_never_a_cap_on_one(self):
+        # Shadow on #1154: a review-only PR's escalation whose wake failed was parked for good,
+        # since the retry looked at fixer PRs only. The retry now parks what gate.breach does.
+        from scripts import watchdog
+        path = config.config_dir() / "one.json"
+        data = json.loads(path.read_text())
+        data["review_only"] = ["owner-human"]
+        path.write_text(json.dumps(data))
+        self.loop = config.load_id("one")
+        review_only_pr = {**fg.LIVE, "user": {"login": "Owner-Human"}}
+        marker = self.st.breach_get(7)
+        for escalated, retried in ((marker["escalated"], True), (None, False)):
+            with self.subTest(escalated=bool(escalated)):
+                entry = {**marker, "status": "delivery-pending"}
+                if escalated is None:
+                    entry.pop("escalated", None)              # a spent cap, not an escalation
+                self.set_marker(entry)
+                with mock.patch.object(gh, "reviews", return_value=self.reviews), \
+                        mock.patch.object(gate, "breach") as breach:
+                    watchdog.retry_pending_breaches(self.loop, self.st, [review_only_pr])
+                self.assertEqual(breach.called, retried)
+
 
 class Pending(Base):
     """#1246: an escalation asked for while a run is in flight takes effect at the next
