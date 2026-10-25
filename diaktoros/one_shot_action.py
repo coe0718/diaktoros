@@ -443,7 +443,8 @@ def _escalate(loop, args, emit=print):
     from . import escalate_pending
     if getattr(args, "withdraw", False):
         withdrawn = escalate_pending.take(state_mod.state_for(loop), number)
-        emit(f"#{number}: pending escalation withdrawn ({withdrawn['reason']})" if withdrawn
+        emit(f"#{number}: pending escalation withdrawn "
+             f"({withdrawn.get('reason') or 'no reason recorded'})" if withdrawn   # #1263
              else f"#{number}: no pending escalation to withdraw")
         return 0
     try:
@@ -456,7 +457,12 @@ def _escalate(loop, args, emit=print):
         # Recorded for the next changes-requested verdict (the fixer gate writes the breach then;
         # an approval drops it). Never a Desktop confirmation: that one binds a marker written now.
         why = " ".join(str(args.reason or "").split())[:200] or "the operator asked for a ruling"
-        escalate_pending.record(decision["state"], number, reason=why, head=decision["head"])
+        try:
+            escalate_pending.record(decision["state"], number, reason=why, head=decision["head"])
+        except Exception as exc:
+            emit(f"#{number}: the pending escalation could not be recorded ({type(exc).__name__}: "
+                 f"{exc}) — nothing escalated")                                       # #1262
+            return 2
         emit(f"#{number} @ {decision['head'][:7]}: {decision['busy']} run(s) in flight — escalation "
              "pending: the next changes-requested verdict goes to the adjudicator instead of the "
              "fixer; an approval drops it (it lapses in 24h; `hermes dk escalate --loop "

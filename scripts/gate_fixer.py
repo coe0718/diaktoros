@@ -35,6 +35,9 @@ from diaktoros import (  # noqa: E402
 )
 from diaktoros.util import log, silence  # noqa: E402
 
+# The breach outcomes that leave the head parked for a ruling (``stale`` parks nothing).
+PARKED = ("new", "retry", "already")
+
 
 def main() -> None:
     payload = json.load(sys.stdin)
@@ -246,22 +249,30 @@ def main() -> None:
     if gate.escalated(st.breach_get(number), pr_head):
         silence(f"#{number} @ {pr_head[:7]} is escalated to adjudication — no fix turn")
     if prior + 1 >= loop["cap"]:
-        escalate_pending.take(st, number)          # the cap's breach is the ruling (#1246)
-        gate.breach(loop, st, number, pr_head, prior + 1,
-                    f"verdict {prior + 1} returned changes requested — loop exhausted "
-                    f"({loop['cap']} reviews / {loop['cap'] - 1} fixes)")
+        outcome = gate.breach(loop, st, number, pr_head, prior + 1,
+                              f"verdict {prior + 1} returned changes requested — loop exhausted "
+                              f"({loop['cap']} reviews / {loop['cap'] - 1} fixes)")
+        if outcome in PARKED:
+            escalate_pending.take(st, number)      # the cap's breach is the ruling (#1246)
         silence(f"cap reached on #{number} — handed to adjudication instead of a fix")
-    pending = escalate_pending.take(st, number)
+    pending = escalate_pending.get(st, number)
     if pending:
         # #1246: the operator asked for a ruling while a run was in flight. This is the next
         # changes-requested verdict, so the adjudicator rules on this head instead of the fixer.
         import secrets
         from diaktoros.util import now_iso
         why = str(pending.get("reason") or "the operator asked for a ruling")
-        gate.breach(loop, st, number, pr_head, prior + 1, f"escalated: {why}",
-                    escalated={"by": str(pending.get("by") or "operator"), "at": now_iso(),
-                               "reason": why, "operation_id": secrets.token_hex(16),
-                               "pending_since": pending.get("at")})
+        outcome = gate.breach(loop, st, number, pr_head, prior + 1, f"escalated: {why}",
+                              escalated={"by": str(pending.get("by") or "operator"),
+                                         "at": now_iso(), "reason": why,
+                                         "operation_id": secrets.token_hex(16),
+                                         "pending_since": pending.get("at")})
+        if outcome not in PARKED:
+            # #1264: nothing was parked (the head moved under the breach lock), so the request
+            # stands for the next changes-requested verdict, and the log says what happened.
+            silence(f"#{number} @ {pr_head[:7]} pending escalation not taken: the breach was "
+                    f"{outcome}; it stays pending for the next verdict")
+        escalate_pending.take(st, number)
         silence(f"#{number} @ {pr_head[:7]} pending escalation taken at verdict {prior + 1} — "
                 "handed to adjudication instead of a fix", "accepted")
 
