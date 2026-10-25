@@ -20,6 +20,10 @@ check at all.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
+import os
+
 from . import ci, ready
 
 NAME = ci.MERGE_CHECK
@@ -65,6 +69,28 @@ def title(state: str) -> str:
 
 FILE = "merge-check.json"
 STATUS_DESCRIPTION_MAX = 140    # GitHub's commit-status description limit
+
+
+LOCK = "merge-check.lock"
+
+
+@contextlib.contextmanager
+def _writer(st, wait: bool = True):
+    """The one merge-check writer for this loop (#1251): held from reading what was posted through
+    the POST to recording it, so two writers never both decide nothing is posted for a head and
+    both create a run. Taken before the state lock, never inside it. Yields False when ``wait`` is
+    off and another writer holds it."""
+    st.dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(st.dir / LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+    try:                                # closing the descriptor releases the lock
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+    finally:
+        os.close(fd)
 
 
 def _digest(state: str, summary: str) -> str:
@@ -132,25 +158,26 @@ def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None)
         if state is None:
             continue                                   # not a loop PR: no check
         digest = _digest(state, summary)
-        with st.locked():
-            memory = st._load(path, {})
-            memory = memory if isinstance(memory, dict) else {}
-            last = memory.get(str(number)) if isinstance(memory.get(str(number)), dict) else {}
-        if last.get("head") == head and last.get("digest") == digest:
-            continue
-        run_id = last.get("run_id") if last.get("head") == head else None
-        run_id, why = post(loop, number, head, state, summary, run_id=run_id)
-        if why:
-            log(f"#{number} @ {head[:7]}: merge check not posted ({why})")
-            continue
-        with st.locked():
-            memory = st._load(path, {})
-            memory = memory if isinstance(memory, dict) else {}
-            memory[str(number)] = {"head": head, "state": state, "digest": digest,
-                                   **({"run_id": run_id} if run_id else {})}
-            open_numbers = {str(p["number"]) for p in prs}
-            memory = {k: v for k, v in memory.items() if k in open_numbers}
-            st._save(path, memory)
+        with _writer(st):
+            with st.locked():
+                memory = st._load(path, {})
+                memory = memory if isinstance(memory, dict) else {}
+                last = memory.get(str(number)) if isinstance(memory.get(str(number)), dict) else {}
+            if last.get("head") == head and last.get("digest") == digest:
+                continue
+            run_id = last.get("run_id") if last.get("head") == head else None
+            run_id, why = post(loop, number, head, state, summary, run_id=run_id)
+            if why:
+                log(f"#{number} @ {head[:7]}: merge check not posted ({why})")
+                continue
+            with st.locked():
+                memory = st._load(path, {})
+                memory = memory if isinstance(memory, dict) else {}
+                memory[str(number)] = {"head": head, "state": state, "digest": digest,
+                                       **({"run_id": run_id} if run_id else {})}
+                open_numbers = {str(p["number"]) for p in prs}
+                memory = {k: v for k, v in memory.items() if k in open_numbers}
+                st._save(path, memory)
         written += 1
         log(f"#{number} @ {head[:7]}: merge check {state}")
     return written
@@ -161,31 +188,37 @@ def mark_pending(loop: dict, st, number: int, head: str, why: str) -> bool:
     shows the check at once, not after the first refresh. One write, no PR listing, so it is cheap
     enough for a gate; the next ``refresh`` decides the real state and updates the same run.
     Best effort: True only when it wrote."""
-    from . import config
+    from . import config, gh
     try:
         if not config.merge_check_on(loop) or not head:
             return False
         path = st.dir / FILE
-        with st.locked():
-            memory = st._load(path, {})
-            memory = memory if isinstance(memory, dict) else {}
-            last = memory.get(str(number))
-        if isinstance(last, dict) and last.get("head") == head:
-            return False                               # already posted for this head
-        summary = "In progress: nothing needs a change yet.\n\n- " + why
-        run_id, failed = post(loop, number, head, PENDING, summary)
-        if failed:
-            return False
-        with st.locked():
-            memory = st._load(path, {})
-            memory = memory if isinstance(memory, dict) else {}
-            memory[str(number)] = {"head": head, "state": PENDING,
-                                   "digest": _digest(PENDING, summary),
-                                   **({"run_id": run_id} if run_id else {})}
-            st._save(path, memory)
-        return True
-    except Exception:
-        return False                    # never changes what the gate decided
+        with _writer(st, wait=False) as mine:
+            if not mine:
+                return False                # a refresh is posting now: it writes the real state
+            with st.locked():
+                memory = st._load(path, {})
+                memory = memory if isinstance(memory, dict) else {}
+                last = memory.get(str(number))
+            if isinstance(last, dict) and last.get("head") == head:
+                return False                           # already posted for this head
+            # Only what is known without reading the PR: the next refresh gives the real reasons.
+            summary = f"Waiting: {why}. The full check follows once the loop reads this head."
+            run_id, failed = post(loop, number, head, PENDING, summary)
+            if failed:
+                return False
+            with st.locked():
+                memory = st._load(path, {})
+                memory = memory if isinstance(memory, dict) else {}
+                memory[str(number)] = {"head": head, "state": PENDING,
+                                       "digest": _digest(PENDING, summary),
+                                       **({"run_id": run_id} if run_id else {})}
+                st._save(path, memory)
+            return True
+    except (Exception, gh.GateBudgetExceeded):
+        # Never changes what the gate decided (shadow review of #1249): the turn is already armed,
+        # so a gate budget spent on this extra write must not end the gate as a failure.
+        return False
 
 
 def refresh_quietly(loop: dict, number: int | None = None) -> None:

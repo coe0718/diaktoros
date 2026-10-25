@@ -449,6 +449,7 @@ class Posting(unittest.TestCase):
         self.assertEqual((path, method, body["status"]), ("/repos/acme/widgets/check-runs",
                                                           "POST", "in_progress"))
         self.assertIn("review queued", body["output"]["summary"])
+        self.assertNotIn("nothing needs a change", body["output"]["summary"])   # shadow, #1249
         self.assertFalse(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "again"))
         self.assertEqual(len(self.calls), 1)                          # once per head
         self.kinds = {7: []}
@@ -462,8 +463,27 @@ class Posting(unittest.TestCase):
         self.fail = True
         self.assertFalse(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "x"))
         self.assertEqual(self.memory(), {})
-        with mock.patch.object(merge_check, "post", side_effect=RuntimeError("boom")):
-            self.assertFalse(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "x"))
+        for error in (RuntimeError("boom"), gh.GateBudgetExceeded("budget spent")):
+            with self.subTest(error=type(error).__name__), \
+                    mock.patch.object(merge_check, "post", side_effect=error):
+                self.assertFalse(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "x"))
+
+    def test_a_spent_gate_budget_in_the_pending_mark_still_ends_the_gate_accepted(self):
+        # Shadow review of #1249: GateBudgetExceeded is a BaseException, so it escaped the gate
+        # after the turn was armed, as a gate failure with no recorded decision.
+        from diaktoros import util
+        st, recorded = mock.Mock(), []
+        st.queue_items.return_value = {}
+        with mock.patch.object(gate, "enqueue_isolated", return_value="enqueued"), \
+                mock.patch.object(merge_check, "post",
+                                  side_effect=gh.GateBudgetExceeded("budget spent")), \
+                mock.patch.object(util, "_DECISION_RECORDER",
+                                  lambda reason, decision: recorded.append((decision, reason))), \
+                mock.patch("sys.stdout", new_callable=__import__("io").StringIO), \
+                self.assertRaises(SystemExit) as caught:
+            gate.block_pr_agent(self.loop, self.st, "reviewer", 7, HEAD)
+        self.assertEqual(caught.exception.code, 0)
+        self.assertEqual(recorded, [("accepted", "reviewer turn enqueued")])
 
     def test_the_gate_marks_pending_only_for_a_scheduled_review(self):
         st = mock.Mock()
@@ -481,6 +501,28 @@ class Posting(unittest.TestCase):
                     gate.block_pr_agent(loop, st, seat, 7, HEAD)
                 finally:
                     self.assertEqual(mark.called, called)
+
+    def test_a_gate_mark_during_a_refresh_posts_nothing_and_the_refresh_wins(self):
+        # #1251: both used to read "nothing posted for this head" and both POSTed a run, leaving
+        # one untracked and in progress. The gate's mark now yields to a refresh in flight.
+        marks = []
+        real_post = merge_check.post
+
+        def post_while_the_gate_fires(*args, **kwargs):
+            marks.append(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "review queued"))
+            return real_post(*args, **kwargs)
+        with mock.patch.object(merge_check, "post", side_effect=post_while_the_gate_fires):
+            self.assertEqual(self.refresh(), 1)
+        self.assertEqual(marks, [False])
+        self.assertEqual([c[1] for c in self.calls], ["POST"])          # one run, not two
+        self.assertEqual(self.memory()["7"]["run_id"], 55)
+
+    def test_the_writer_lock_is_free_again_after_each_writer(self):
+        self.assertEqual(self.refresh(), 1)
+        self.assertTrue(merge_check.mark_pending(self.loop, self.st, 8, "b" * 40, "review queued"))
+        with merge_check._writer(self.st, wait=False) as mine:
+            self.assertTrue(mine)
+            self.assertFalse(merge_check.mark_pending(self.loop, self.st, 9, "c" * 40, "x"))
 
     def test_refresh_quietly_never_raises(self):
         from diaktoros import util
