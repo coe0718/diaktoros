@@ -372,12 +372,12 @@ def _escalation_decision(loop, number, *, live=None):
     if (pr.get("state") != "open" or pr.get("draft") or len(head) != 40
             or any(c not in "0123456789abcdefABCDEF" for c in head)
             or (pr.get("base") or {}).get("ref") != loop["base"]
-            or (author not in loop["fixers"] and author not in config.review_only(loop)
-                and author not in config.maintainers(loop))):
-        eligible = ", ".join([*loop["fixers"], *sorted(config.review_only(loop)),
-                                *sorted(config.maintainers(loop))])
-        return refuse(f"{say}: refused — only an open, ready PR by a fixer, review-only author or "
-                      f"maintainer ({eligible}) on {loop['base']} can be escalated")
+            or (author not in loop["fixers"] and author not in config.review_only(loop))):
+        # #1165: only authors the reviewer reviews, since escalation needs a verdict at the head.
+        # A maintainer's PR gets none unless they are review-only too (then it is eligible here).
+        eligible = ", ".join([*loop["fixers"], *sorted(config.review_only(loop))])
+        return refuse(f"{say}: refused — only an open, ready PR by a fixer or review-only author "
+                      f"({eligible}) on {loop['base']} can be escalated")
     st = state_mod.state_for(loop)
     reviews = transition.effective_reviews(loop, st, number, head, gh.reviews(loop, number))
     if not isinstance(reviews, list):

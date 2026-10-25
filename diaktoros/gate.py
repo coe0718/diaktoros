@@ -1677,13 +1677,11 @@ def breach(loop: dict, st: state_mod.LoopState, number: int, head: str, rounds: 
                 and ((current.get("user") or {}).get("login") or "").lower() in authors
                 and (current.get("head") or {}).get("sha") == head)
 
-    # Shadow rulings and explicit operator requests may concern any reviewed PR or maintainer;
-    # automatic cap/dispute rulings remain fixer-only. Review-only authors are never fixed here.
+    # Shadow rulings and explicit operator requests may concern any reviewed PR; automatic
+    # cap/dispute rulings remain fixer-only. Review-only authors are never fixed here.
     authors = (config.reviewed_authors(loop)
                if (escalated or {}).get("by") in {SHADOW_ESCALATION, "operator"}
                else set(loop["fixers"]))
-    if (escalated or {}).get("by") == "operator":
-        authors = authors | config.maintainers(loop)
 
     route = loop.get("adjudicator", {}).get("route")
     def observe_reserved(marker: dict) -> None:

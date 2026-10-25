@@ -57,7 +57,7 @@ def adjudication_state(loop: dict | None, row, ledger=None) -> tuple[str, dict]:
                 and (marker.get('escalated') or {}).get('by') == 'operator')
     allowed = (set(config.reviewed_authors(loop)) if shadow else set(loop.get('fixers') or ()))
     if operator:
-        allowed |= config.review_only(loop) | config.maintainers(loop)
+        allowed |= config.review_only(loop)
     if not author or author.lower() not in allowed:
         return 'superseded', {}
     # A retarget hold counts only receipted post-boundary verdicts: an old approval neither

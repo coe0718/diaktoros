@@ -143,25 +143,40 @@ class Command(Base):
         wake.assert_not_called()
         self.assertIsNone(escalate_pending.get(self.st, 7))
 
-    def test_operator_can_escalate_configured_maintainer_pr(self):
-        self.loop = config.load_id("one")
+    def test_a_maintainer_only_pr_is_refused(self):
+        # #1165: escalation needs a verdict, and the reviewer never reviews a maintainer who is
+        # not review-only, so the old allowance was unreachable. It is refused instead, and the
+        # worker does not accept such an escalation either.
         self.live = {**fg.LIVE, "user": {"login": "Trusted-Maintainer"}}
-
         with mock.patch.object(config, "maintainers", return_value={"trusted-maintainer"}):
             rc, out, wake = self.escalate("maintainer asks for ruling")
-            self.assertEqual(rc, 0, out)
-            wake.assert_called_once()
-            marker = self.st.breach_get(7)
-            self.assertEqual(marker["status"], "awaiting-adjudication")
-            self.assertEqual(marker["escalated"]["by"], "operator")
-
+            self.assertEqual(rc, 1, out)
+            self.assertIn("only an open, ready PR by a fixer or review-only author", out)
+            wake.assert_not_called()
+            self.assertEqual(self.st.breach_get(7), {})
             pr = {**self.live, "head": {"sha": HEAD, "ref": "maintainer-7"}}
             row = {"repo": fg.REPO, "pr": 7, "head": HEAD, "seat": "adjudicator",
                    "turn_key": "breach:1", "id": "ruling-maintainer", "created": time.time()}
+            self.st.breach.parent.mkdir(parents=True, exist_ok=True)
+            state_mod._atomic_write(self.st.breach, {gate.seat_key(self.loop, 7): {
+                "pr": 7, "head": HEAD, "rounds": 1, "cap": 3, "reason": "r", "at": "now",
+                "status": "awaiting-adjudication", "escalated": {"by": "operator", "reason": "r"}}})
             with (mock.patch.object(gh, "api", return_value=pr),
                   mock.patch.object(gh, "reviews", return_value=self.reviews),
                   mock.patch.object(pr_facts, "effective_reviews", return_value=self.reviews)):
-                self.assertEqual(pr_facts.adjudication_state(self.loop, row)[0], "ok")
+                self.assertEqual(pr_facts.adjudication_state(self.loop, row)[0], "superseded")
+
+    def test_breach_itself_does_not_park_a_maintainer_only_pr(self):
+        # #1165, defence in depth: an operator escalation reaching gate.breach for a maintainer
+        # who is not review-only is stale (nothing parked), not a ruling on a PR with no verdict.
+        self.live = {**fg.LIVE, "user": {"login": "trusted-maintainer"}}
+        with self.github() as wake, \
+                mock.patch.object(config, "maintainers", return_value={"trusted-maintainer"}):
+            outcome = gate.breach(self.loop, self.st, 7, HEAD, 1, "escalated: r",
+                                  escalated={"by": "operator", "reason": "r"})
+        self.assertEqual(outcome, "stale")
+        wake.assert_not_called()
+        self.assertEqual(self.st.breach_get(7), {})
 
     def test_an_escalation_parks_the_head_and_wakes_the_adjudicator(self):
         rc, out, wake = self.escalate("they disagree\non scope")
