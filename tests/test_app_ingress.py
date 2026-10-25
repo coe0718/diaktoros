@@ -82,6 +82,22 @@ class Flow(app_cli.Base):
         self.assertIn("armed — events arrive through acme-reader[bot]'s webhook", out)
         self.assertNotIn("seat routes are active repo hooks", out)
 
+    def test_arm_refuses_while_the_routes_script_cannot_run_and_apply_writes_it(self):
+        from diaktoros import gate_shims
+        entry = routes.route("dk-app-acme-reader")
+        found, _ = gate_shims.resolve(gate_shims.home_for(entry["profile"]), entry["script"])
+        found.unlink()
+        rc, out = self.run_cli(["arm", "--loop", "widgets"])
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("cannot run route dk-app-acme-reader's script", out)
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        rc, out = self.run_cli(["arm", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)                   # the advice holds
+
+    def test_status_names_the_app_route(self):
+        rc, out = self.run_cli(["status", "--loop", "widgets"])
+        self.assertIn("app dk-app-acme-reader → default (ok)", out)
+
     def test_arm_needs_the_webhook_to_deliver_and_explain_names_it(self):
         st = state_mod.state_for(self.loop())
         self.run_cli(["arm", "--loop", "widgets", "--pause"])
@@ -311,8 +327,26 @@ class Switch(app_cli.Base):
         from diaktoros import route_intent
         self.assertIn("dk-app-acme-reader", json.dumps(route_intent.load(config.load_id("widgets"))))
         self.assertIn("route written: dk-app-acme-reader", out)
+        from diaktoros import gate_shims
+        found, why = gate_shims.resolve(gate_shims.home_for(entry["profile"]), entry["script"])
+        self.assertIsNotNone(found, why)               # the gateway can run the route's script
+        self.assertEqual([c for c in gate_shims.live_checks(config.load_id("widgets"))
+                          if c[1] == "absent"], [])
         self.assertIn("app-webhook --loop widgets --set", out)
         self.assertIn("the gates now drop what they deliver", out)
+
+
+class InitHooks(app_cli.Base):
+    def test_init_hooks_on_an_app_loop_promises_no_hooks(self):
+        rc, out = self.run_cli(self.app_argv(
+            "--ingress", "app-webhook", "--ingress-app", READ_APP, "--hooks",
+            reader=READ_APP, tokens=[(tfs.FIX, self.pats["fix"])],
+            apps=[(app_cli.BOT_REV, 5416187, self.key("rev")), (READ_APP, 5416115, self.key("read"))]))
+        self.addCleanup(lambda: routes.restore_entries({"dk-app-acme-reader": None}))
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("created paused", out)
+        self.assertNotIn("the hooks are ARMED", out)
+        self.assertIn("next: hermes dk app-webhook --loop widgets --set", out)
 
 
 class Dispatch(unittest.TestCase):

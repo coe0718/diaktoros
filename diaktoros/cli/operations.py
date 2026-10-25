@@ -186,7 +186,7 @@ def cmd_status(args) -> int:
         # disagree after a profile change, and this is the one place the operator would see it.
         print("  routes:     " + " · ".join(_route_state(loop, role)
                                             for role in (*config.ROUTED_ROLES, "observer",
-                                                         "observer_urgent")
+                                                         "observer_urgent", "app")
                                             if role in _routes_of(loop)))
         refs = _credential_lines(loop)
         if refs:

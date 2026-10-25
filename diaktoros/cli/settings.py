@@ -1020,6 +1020,9 @@ def cmd_set(args) -> int:
         try:
             cli_common._write_config(updated)
             cli_common._install_routes(updated, roles=("app",))
+            # The route runs gate_app.py from the default profile's scripts: without its shim
+            # the gateway resolves no script and drops every delivery.
+            shim_lines = gate_shims.install(updated, report=True)
             route_intent.record_live(updated, [app_route])
         except Exception as exc:
             try:
@@ -1076,6 +1079,8 @@ def cmd_set(args) -> int:
     print(f"loop config updated: {path}")
     if app_route and app_route != config.app_route(loop):
         print(f"  route written: {app_route} ({updated.get('ingress_app')}'s events)")
+        for line in shim_lines:
+            print(f"  {line}")
         print(f"  next: `hermes dk app-webhook --loop {updated['id']} --set` points the App's "
               "webhook at it")
         if not config.app_ingress(loop):

@@ -633,7 +633,7 @@ def cmd_init(args) -> int:
         return 2
     for line in hook_lines:
         print(f"  {line}")
-    if args.hooks:
+    if args.hooks and not config.app_ingress(loop):
         print(f"  {_hook_editor_line(loop, args.admin_token, getattr(args, 'arm', False), False)}")
     if config.app_ingress(loop):
         # #1239: no repo hooks; the App's webhook is pointed at its route instead.
@@ -672,7 +672,9 @@ def cmd_init(args) -> int:
                      "verdict is held for you and no fixer turn starts. To let the fixer answer "
                      f"verdicts: {config.fixer_push_enable_command(loop)} "
                      "(read docs/operations.md on the PR-metadata race first)")
-    if args.hooks and not getattr(args, "arm", False):
+    if config.app_ingress(loop):
+        pass                          # no repo hooks: the app-webhook step above is the next one
+    elif args.hooks and not getattr(args, "arm", False):
         admin = f" --admin-token {args.admin_token}" if args.admin_token else ""
         steps.append(f"hermes dk arm --loop {lid}{admin}   (the hooks were created "
                      "paused)")

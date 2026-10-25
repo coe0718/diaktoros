@@ -187,6 +187,14 @@ def perform(loop: dict, active: bool, token_login: str | None = None, *,
             return [f"not armed: the App's route {route} is not installed, so nothing reaches "
                     f"the gates (`hermes dk doctor --loop {loop['id']} --repair` restores it)"], False
         if active:
+            # Nor while the gateway cannot resolve the route's script: it drops every delivery.
+            from . import gate_shims
+            entry = routes.route(route) or {}
+            found, why = gate_shims.resolve(gate_shims.home_for(entry.get("profile")),
+                                            entry.get("script"))
+            if found is None:
+                return [f"not armed: the gateway cannot run route {route}'s script ({why}), so it "
+                        f"drops every delivery (`hermes dk apply --loop {loop['id']}` writes it)"], False
             # Nor while the App's webhook does not post this loop's events to that route.
             problem = app_ingress.webhook_problem(app_ingress.webhook_state(loop))
             if problem:
