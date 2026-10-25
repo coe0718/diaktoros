@@ -673,6 +673,10 @@ def cmd_set(args) -> int:
 
     if getattr(args, "merge_check", None) and args.merge_check != (loop.get("merge_check") or "auto"):
         changes["merge_check"] = args.merge_check
+    if getattr(args, "ingress", None) and args.ingress != (loop.get("ingress") or "repo-hooks"):
+        changes["ingress"] = args.ingress
+    if getattr(args, "ingress_app", None) is not None and args.ingress_app.strip() != (loop.get("ingress_app") or ""):
+        changes["ingress_app"] = args.ingress_app.strip()
 
     seats = {seat: dict(cfg) for seat, cfg in loop["seats"].items()}
     seat_changes = {}
@@ -912,6 +916,12 @@ def cmd_set(args) -> int:
             credentials.verify_adjudicator_token(updated)
             credentials.verify_credentials(updated)
         cli_common._observer_check(updated)
+        # #1239: a loop switched onto an App's webhook gets that App's route now, not at the
+        # next init; checked first, like every route this command writes.
+        app_route = config.app_route(updated)
+        if app_route and app_route != config.app_route(loop):
+            config.webhook_host(updated.get("host"), required=True)
+            cli_common._verify_routes(updated, {"app"})
     except config.ConfigError as exc:
         print(f"refused: {exc}")
         return 2
@@ -1003,6 +1013,26 @@ def cmd_set(args) -> int:
             print(f"observer urgent route could not be reconciled; loop config unchanged: {exc}")
             return 2
         shims_ok = cli_common._install_shims(updated) and shims_ok
+    if app_route and app_route != config.app_route(loop):
+        loop_file = config.config_dir() / f"{updated['id']}.json"
+        previous_config = loop_file.read_bytes()
+        previous_route = routes.route(app_route)
+        try:
+            cli_common._write_config(updated)
+            cli_common._install_routes(updated, roles=("app",))
+            # The route runs gate_app.py from the default profile's scripts: without its shim
+            # the gateway resolves no script and drops every delivery.
+            shim_lines = gate_shims.install(updated, report=True)
+            route_intent.record_live(updated, [app_route])
+        except Exception as exc:
+            try:
+                routes.restore_entries({app_route: previous_route})
+                cli_common._restore_config(loop_file, previous_config)
+            except Exception as rollback_exc:
+                print(f"ROLLBACK FAILED: {rollback_exc} — inspect {loop_file} and route {app_route}")
+                return 2
+            print(f"App route install FAILED: {exc}; config and route restored")
+            return 2
     path = cli_common._write_config(updated)
     if before.get("urgent_route") and before["urgent_route"] != after.get("urgent_route"):
         try:
@@ -1047,6 +1077,17 @@ def cmd_set(args) -> int:
         print(f"  observer: {observer.describe(loop.get('observer') or {})} → "
               f"{observer.describe(updated.get('observer') or {})}")
     print(f"loop config updated: {path}")
+    if app_route and app_route != config.app_route(loop):
+        print(f"  route written: {app_route} ({updated.get('ingress_app')}'s events)")
+        for line in shim_lines:
+            print(f"  {line}")
+        print(f"  next: `hermes dk app-webhook --loop {updated['id']} --set` points the App's "
+              "webhook at it")
+        if not config.app_ingress(loop):
+            # Its repo hooks are not deleted here; the gates drop what they still deliver
+            # (app_ingress.woken_by_repo_hook), and doctor names them until they are gone.
+            print(f"  note: the loop's repo hooks stay until you delete them; the gates now drop "
+                  f"what they deliver, and `hermes dk doctor --loop {updated['id']}` lists them")
     if updated.get("host") != loop.get("host"):
         print(f"  next: `hermes dk apply --loop {updated['id']}` "
               "(rewrites the routes' origin; add --hooks to repoint the hooks)")
@@ -1195,6 +1236,7 @@ def _apply(args) -> int:
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci", "merge_check",
+                "ingress", "ingress_app",
                 "fix_ci", "fixer_scope_lock", "ci_fix_cap", "review_only_update", "required_checks", "human_paths",
                 "generated", "review_only", "review_only_cap", "review_only_daily", "shadow"):
         if updated.get(key) != loop.get(key):
@@ -2091,6 +2133,9 @@ def add_set(sub) -> None:  # noqa: ANN001
                            help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox (repeat it); replaces the list")
     generated.add_argument("--no-generated", action="store_true",
                            help="clear the list: the conflict shortcut is off")
+    change.add_argument("--ingress", choices=("repo-hooks", "app-webhook"), default=None,
+                        help="where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks)")
+    change.add_argument("--ingress-app", default=None, help="with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app)")
     change.add_argument("--merge-check", choices=("auto", "on", "off"), default=None,
                         help="post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off")
     change.add_argument("--fixer-check", default=None, help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none)")

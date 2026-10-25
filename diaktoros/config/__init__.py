@@ -175,6 +175,10 @@ def seat_profile(loop: dict, role: str) -> str:
     """
     if role == "adjudicator":
         return str((loop.get("adjudicator") or {}).get("profile") or "default")
+    if role == "app":
+        # #1239: an App's route is shared by every loop it delivers for, so it never follows one
+        # loop's seat; its gates end [SILENT], so no agent runs as this profile.
+        return "default" if app_ingress(loop) else ""
     if role == "triage":
         return str((loop.get("triage") or {}).get("profile") or "")
     if role == "shadow":
@@ -237,6 +241,8 @@ DEFAULTS: dict = {
     "attribution": True,      # sign what the loop posts (#197); false turns footer and trailer off
     "review_after_ci": False,  # hold a review while the head's checks are still running (#241)
     "merge_check": "auto",     # post the diaktoros/review merge check: auto|on|off (#1163 M2b)
+    "ingress": "repo-hooks",   # where events arrive: repo-hooks|app-webhook (#1239)
+    "ingress_app": "",         # with app-webhook: the App whose webhook delivers (its bot login)
     "fix_ci": False,          # hand a red required check on a fixer's PR to the fixer (#306)
     "fixer_check": "",        # one command fixer turns always run before publishing; "" = none
     "required_checks": [],    # the checks that gate an approval (#368); [] = every check gates
@@ -956,7 +962,10 @@ def maintainers(loop: dict) -> set[str]:
 
 
 def hook_roles(loop: dict) -> tuple[str, ...]:
-    """The roles with a repo hook on this loop: both seats, and triage when it is on."""
+    """The roles with a repo hook on this loop: both seats, and triage when it is on. None when
+    its events arrive through a GitHub App's webhook (#1239): the App's route wakes them all."""
+    if app_ingress(loop):
+        return ()
     return ("reviewer", "fixer") + (("triage",) if triage_enabled(loop) else ())
 
 
@@ -1545,6 +1554,15 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     loop["required_checks"] = check_required_checks(loop["required_checks"], where)
     loop["human_paths"] = check_human_paths(loop["human_paths"], where)
     loop["generated"] = check_generated(loop["generated"], where)
+    if loop.get("ingress") not in INGRESS_MODES:
+        raise ConfigError(f"{where}: 'ingress' must be one of {', '.join(INGRESS_MODES)}")
+    loop["ingress_app"] = str(loop.get("ingress_app") or "").strip()
+    if loop["ingress"] == "app-webhook":
+        app = loop["ingress_app"].lower()
+        if not APP_LOGIN.match(app) or app not in {str(k).lower() for k in loop.get("apps") or {}}:
+            raise ConfigError(f"{where}: 'ingress' app-webhook needs 'ingress_app': the bot login "
+                              "of a GitHub App mapped in 'apps' (its webhook delivers this loop's "
+                              "events)")
     if loop.get("merge_check") not in MERGE_CHECK_MODES:
         raise ConfigError(f"{where}: 'merge_check' must be one of {', '.join(MERGE_CHECK_MODES)} "
                           "(auto: on when the reviewer is a GitHub App)")
@@ -1909,6 +1927,21 @@ def review_only_update(loop: dict) -> bool:
 
 
 MERGE_CHECK_MODES = ("auto", "on", "off")
+INGRESS_MODES = ("repo-hooks", "app-webhook")
+
+
+def app_ingress(loop: dict) -> bool:
+    """Whether this loop's events arrive through a GitHub App's own webhook (#1239), not repo
+    hooks: then it has no repo hooks, and the App's host-level route (``app_route``) wakes it."""
+    return loop.get("ingress") == "app-webhook" and bool(loop.get("ingress_app"))
+
+
+def app_route(loop: dict) -> str:
+    """The host-level route an App's webhook delivers to: one per App, shared by every loop whose
+    events that App delivers (``dk-app-<slug>``). ``""`` for a repo-hooks loop."""
+    if not app_ingress(loop):
+        return ""
+    return "dk-app-" + str(loop["ingress_app"]).lower().removesuffix("[bot]")
 
 
 def merge_check_on(loop: dict) -> bool:

@@ -1860,6 +1860,79 @@ def check_gateway(loop: dict, offline: bool) -> Check:
     return Check("gateway", VERIFIED, "configured gateway accepts a TCP connection (URL withheld)")
 
 
+def _hook_listing(loop: dict) -> list | None:
+    """The repo's complete hook listing, or None when it cannot all be read."""
+    hooks = []
+    for page in range(1, 1001):
+        path = f"/repos/{loop['repo']}/hooks?per_page=100"
+        batch = gh.api(loop, path if page == 1 else f"{path}&page={page}")
+        if not isinstance(batch, list) or any(
+            not isinstance(hook, dict) or not isinstance(hook.get("config"), dict)
+            or not isinstance(hook["config"].get("url"), str)
+            or not isinstance(hook.get("events"), list)
+            or any(not isinstance(event, str) for event in hook["events"])
+            or type(hook.get("active")) is not bool
+            for hook in batch):
+            return None
+        hooks.extend(batch)
+        if len(batch) < 100:
+            return hooks
+    return None
+
+
+def check_app_webhook(loop: dict, offline: bool) -> Check:
+    """#1239: the App's webhook, read with the App's JWT, must post to this loop's App route with
+    every event it needs; until then the loop receives nothing, however healthy the rest reads."""
+    from . import app_ingress
+    app = loop.get("ingress_app")
+    fix = f"hermes dk app-webhook --loop {loop['id']} --set"
+    if offline:
+        return Check("app-webhook", UNKNOWN, f"not probed (--offline): {app}'s webhook was not read")
+    state = app_ingress.webhook_state(loop)
+    if state["error"]:
+        return Check("app-webhook", UNKNOWN, state["error"], f"`{fix}` once the App's key reads")
+    problem = app_ingress.webhook_problem(state)
+    if problem:
+        events = ("; subscribe to the missing events in the App's settings (Permissions & events)"
+                  if state["missing_events"] else "")
+        return Check("app-webhook", MISMATCH, f"{app}'s webhook delivers nothing here: {problem}",
+                     f"`{fix}`{events}")
+    return Check("app-webhook", VERIFIED, f"{app}'s webhook posts to {state['url']} "
+                                          f"({', '.join(state['events'])})")
+
+
+def check_leftover_hooks(loop: dict, offline: bool) -> Check:
+    """#1239: a loop on its App's webhook has no repo hooks on purpose. One left from before it
+    switched still posts to the seat's route; the gate drops those deliveries
+    (``app_ingress.woken_by_repo_hook``), but the hook should go."""
+    source = (f"events arrive through {loop.get('ingress_app')}'s webhook (route "
+              f"{config.app_route(loop)})")
+    names = {str(name) for role, name in route_intent.routes_of(loop).items()
+             if role in ("reviewer", "fixer", "triage") and name}
+    if not routes.route(config.app_route(loop)):
+        return Check("hooks", UNKNOWN, f"not checked: {source}, but that route is not installed "
+                                       "(see the route checks above)")
+    if offline:
+        return Check("hooks", UNKNOWN, f"not probed (--offline): {source}; leftover repo hooks "
+                                       "were not looked for")
+    hooks = _hook_listing(loop)
+    if hooks is None:
+        return Check("hooks", UNKNOWN,
+                     f"{source}; the repo's hooks could not all be read, so a leftover one to "
+                     f"this loop's routes was not looked for",
+                     f"{config.reader_access_fix(loop, 'hooks')} and re-run")
+    left = sorted(int(hook.get("id") or 0) for hook in hooks
+                  if hook_route_name(hook) in names)
+    if left:
+        ids = ", ".join(str(n) for n in left)
+        return Check("hooks", MISMATCH,
+                     f"{source}, but {len(left)} repo hook(s) still post to this loop's seat "
+                     f"routes (id {ids}): the gates drop what they deliver",
+                     f"delete them: `gh api -X DELETE repos/{loop['repo']}/hooks/<id>` for each "
+                     f"id, or in repo settings → Webhooks")
+    return Check("hooks", VERIFIED, f"none, on purpose: {source}")
+
+
 def check_hooks(loop: dict, offline: bool) -> list[Check]:
     """The two repo hooks GitHub posts to, matched by the URL each route resolves to.
 
@@ -1867,6 +1940,8 @@ def check_hooks(loop: dict, offline: bool) -> list[Check]:
     none at all, and this call cannot tell those apart. Saying "absent" here would be the exact
     wrong-hook hunt the preflight exists to prevent.
     """
+    if config.app_ingress(loop):
+        return [check_leftover_hooks(loop, offline), check_app_webhook(loop, offline)]
     expected = []
     for seat in config.hook_roles(loop):
         name = str(route_intent.routes_of(loop).get(seat) or "")
@@ -1882,24 +1957,8 @@ def check_hooks(loop: dict, offline: bool) -> list[Check]:
     if offline:
         return [Check("hooks", UNKNOWN,
                       f"not probed (--offline) — {len(expected)} hook(s) were not read")]
-    hooks = []
-    complete = False
-    for page in range(1, 1001):
-        path = f"/repos/{loop['repo']}/hooks?per_page=100"
-        batch = gh.api(loop, path if page == 1 else f"{path}&page={page}")
-        if not isinstance(batch, list) or any(
-            not isinstance(hook, dict) or not isinstance(hook.get("config"), dict)
-            or not isinstance(hook["config"].get("url"), str)
-            or not isinstance(hook.get("events"), list)
-            or any(not isinstance(event, str) for event in hook["events"])
-            or type(hook.get("active")) is not bool
-            for hook in batch):
-            break
-        hooks.extend(batch)
-        if len(batch) < 100:
-            complete = True
-            break
-    if not complete:
+    hooks = _hook_listing(loop)
+    if hooks is None:
         return [Check("hooks", UNKNOWN,
                       f"could not read the complete /repos/{loop['repo']}/hooks listing — nothing was proved about "
                       f"{len(expected)} hook(s) (a reader without "

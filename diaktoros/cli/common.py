@@ -234,7 +234,7 @@ def _verify_routes(loop: dict, roles) -> None:
     artifact here that another plugin could own.
     """
     mine = _routes_of(loop)
-    route_roles = (*config.ROUTED_ROLES, "observer", "observer_urgent")
+    route_roles = (*config.ROUTED_ROLES, "observer", "observer_urgent", "app")
     wanted = [role for role in route_roles if role in set(roles) and role in mine]
     names = [mine[role] for role in route_roles if role in mine]
     shared = sorted({name for name in names if names.count(name) > 1})
@@ -254,11 +254,24 @@ def _verify_routes(loop: dict, roles) -> None:
         # (and the repo) out from under it.
         owners = [other["id"] for other in other_loops
                   if not (other["id"] == loop["id"] and other.get("repo") == loop.get("repo"))
-                  and name in set(_routes_of(other).values())]
+                  and name in set(_routes_of(other).values())
+                  # An App's route is shared by every loop it delivers for (#1239): another
+                  # loop's claim through its own app role is the same App's, not a collision.
+                  and not (role == "app" and _routes_of(other).get("app") == name)]
         if owners:
             raise config.ConfigError(
                 f"route {name!r} already belongs to loop {', '.join(sorted(owners))} — give this "
                 "loop its own route name (the registry is shared by every plugin)")
+        if role == "app":
+            # One App webhook, one URL: every loop sharing its route must name the same gateway.
+            hosts = sorted({str(other.get("host") or "").removesuffix("/") for other in other_loops
+                            if other["id"] != loop["id"] and _routes_of(other).get("app") == name}
+                           - {str(loop.get("host") or "").removesuffix("/")} - {""})
+            if hosts:
+                raise config.ConfigError(
+                    f"route {name!r} is {loop.get('ingress_app')}'s, shared with loops on "
+                    f"{', '.join(hosts)}: an App's webhook has one URL, so every loop it delivers "
+                    "for must use the same --host")
         if name not in registry:
             continue                  # not installed yet: nothing of someone else's to collide with
         entry = registry[name]
@@ -287,7 +300,7 @@ def _install_routes(loop: dict, roles=None) -> dict:
     names = _routes_of(loop)
     host = config.webhook_host(loop.get("host"), required=True)
     skill = loop.get("skill") or ""
-    wanted = ((*config.ROUTED_ROLES, "observer", "observer_urgent") if roles is None
+    wanted = ((*config.ROUTED_ROLES, "observer", "observer_urgent", "app") if roles is None
               else tuple(roles))
     written: dict = {}
     for role in config.ROUTED_ROLES:
@@ -321,6 +334,15 @@ def _install_routes(loop: dict, roles=None) -> dict:
                              description=f"{loop['repo']} — adjudicate a loop that spent its "
                                           "budget", **common)
         written[role] = name
+    if "app" in wanted and "app" in names:
+        # #1239: one route per App, shared by every loop it delivers for, so its profile is the
+        # host's default rather than any one loop's seat (loops must not rewrite it to their own).
+        routes.new_route(names["app"], profile="default", prompt=prompts.APP_EVENTS,
+                         events=["pull_request", "pull_request_review", "issues", "ping"],
+                         script=GATE_SCRIPT["app"], deliver="discord", host=host,
+                         description=f"GitHub App {loop['ingress_app']} — events for every loop "
+                                     "it delivers for")
+        written["app"] = names["app"]
     if "observer" in wanted and "observer" in names:
         observer_cfg = loop["observer"]
         name = names["observer"]
@@ -528,9 +550,12 @@ def _patch_hook_url(loop: dict, hook_id: int, url: str, login: str | None = None
 
 
 def _hook_route_names(loop: dict) -> set[str]:
-    """The route names a repo hook of this loop posts to (both seats, and triage when on)."""
-    return {name for role, name in _routes_of(loop).items()
-            if role in config.hook_roles(loop) and name}
+    """The route names a repo hook of this loop posts to (both seats, and triage when on). A loop
+    on its App's webhook has none on purpose, but one left from before the switch still posts to
+    a seat's route (#1239): those names, so uninstall deletes such a hook and init refuses it."""
+    roles = (("reviewer", "fixer", "triage") if config.app_ingress(loop)
+             else config.hook_roles(loop))
+    return {name for role, name in _routes_of(loop).items() if role in roles and name}
 
 
 def _classify_hooks(loop: dict, login: str | None) -> tuple[list[dict] | None, list[dict], str]:

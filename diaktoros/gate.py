@@ -57,6 +57,11 @@ def context(payload: dict):
     # A gate's failed GitHub read ends in [SILENT]; keep it on disk for the watchdog and explain.
     gh.record_failures()
     _record_decisions(loop, payload)
+    from . import app_ingress
+    if config.app_ingress(loop) and app_ingress.woken_by_repo_hook():
+        silence(f"{loop['id']} takes its events from {loop.get('ingress_app')}'s webhook: this "
+                "delivery came from a leftover repo hook and is dropped (delete the repo's hooks "
+                "to this loop's routes)")
     return loop, state_mod.state_for(loop)
 
 
@@ -700,7 +705,15 @@ def hooks_read(loop: dict) -> tuple[bool | None, str]:
     cannot see hooks that may well be active.
     The watchdog reads that as silence, and ``explain`` labels it unknown rather than guessing in
     the other direction — "the loop is paused" is a claim, and it needs the hooks to prove it.
+
+    A loop whose events arrive through a GitHub App's webhook (#1239) has no repo hooks: it is
+    armed unless its own pause flag is set (``app_ingress``), which is what its dispatcher reads.
     """
+    if config.app_ingress(loop):
+        from . import app_ingress
+        paused = app_ingress.paused(state_mod.state_for(loop))
+        return not paused, ("paused (the App's deliveries for this loop are dropped)"
+                            if paused else "")
     hooks, error = gh.hooks_read(loop)      # every page: a full first page is not the whole list
     if error or not isinstance(hooks, list):
         return None, error or "GitHub returned no hook list"
@@ -934,6 +947,15 @@ def _explain_state(loop: dict, st: state_mod.LoopState, key: str, number: int, h
             "inflight_review": inflight_review,
             "inflight_fix": inflight_fix, "parked": parked, "delivery_status": delivery_status,
             "capacity": capacity, "marker": marker, "sweep": sweep}
+
+
+def _explain_app_ingress(loop: dict, armed) -> str:
+    """The armed/paused line for a loop whose events come through its App's webhook (#1239)."""
+    via = f"events arrive through {loop.get('ingress_app')}'s webhook"
+    if armed is False:
+        return (f"PAUSED — {via}, and the loop's pause flag drops them "
+                f"(`hermes dk arm --loop {loop['id']}` resumes)")
+    return f"armed — {via} (`hermes dk doctor` reads that webhook)"
 
 
 def _explain_hooks(armed, armed_error: str) -> str:
@@ -1217,7 +1239,8 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     used, limit = local["capacity"].get(needed_seat, (0, 0))
     full_seat = bool(needed_seat and used >= limit and needed_seat not in held
                      and not (inflight_fix if needed_seat == "fixer" else inflight_review))
-    hooks_line = _explain_hooks(armed, armed_error)
+    hooks_line = (_explain_app_ingress(loop, armed) if config.app_ingress(loop)
+                  else _explain_hooks(armed, armed_error))
     # The fixer gate holds a changes-requested verdict while the loop has not opted in to
     # unattended pushes: no fixer turn can start, so the next event is the operator's.
     push_off = bool(at_head) and not review_only and not config.unattended_fixer_push_enabled(loop)

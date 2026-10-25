@@ -91,6 +91,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | back up an install, or restore one | [`backup`](#backup), [`restore`](#restore) |
 | turn the loop on or off | [`arm`](#arm) |
 | make the merge button wait for the loop's verdict | [`protect`](#protect) |
+| point a GitHub App's webhook at a loop that takes its events from it | [`app-webhook`](#app-webhook) |
 | change a setting | [`set`](#set), [`apply`](#apply), [`settings`](#settings) |
 | move an account (a seat, the reader, the adjudicator) to a GitHub App, or back | [`identity`](#identity) |
 | see every setting a loop has, its value and where it came from | [`show`](#show) |
@@ -366,6 +367,8 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
+| `--ingress` | `repo-hooks` \| `app-webhook` |  | where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks) |
+| `--ingress-app` | `INGRESS_APP` |  | with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app) |
 | `--merge-check` | `auto` \| `on` \| `off` |  | post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting) |
 | `--review-only-update` | `on` \| `off` |  | push a clean merge of the base into a review-only author's PR branch (same repository only; off by default; turning it on needs --acknowledge-branch-push) |
@@ -496,6 +499,8 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
+| `--ingress` | `repo-hooks` \| `app-webhook` |  | where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks) |
+| `--ingress-app` | `INGRESS_APP` |  | with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app) |
 | `--merge-check` | `auto` \| `on` \| `off` |  | post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting) |
 | `--turn-budget` | `TURN_BUDGET` | `900` | seconds one isolated seat turn may run, build and tests included (default 900; the sandbox is killed past it) |
@@ -596,6 +601,8 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--no-human-paths` |  |  | clear the list: no path is reserved for a human (one of `--human-path`, `--no-human-paths`) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox (repeat it); replaces the list (one of `--generated`, `--no-generated`) |
 | `--no-generated` |  |  | clear the list: the conflict shortcut is off (one of `--generated`, `--no-generated`) |
+| `--ingress` | `repo-hooks` \| `app-webhook` |  | where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks) |
+| `--ingress-app` | `INGRESS_APP` |  | with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app) |
 | `--merge-check` | `auto` \| `on` \| `off` |  | post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) |
 | `--reviewer-turn-budget` | `REVIEWER_TURN_BUDGET` |  | the reviewer seat's own turn budget in seconds |
@@ -1109,6 +1116,30 @@ not necessarily failure; exit 0 is not proof every gateway delivery was observed
 | `--loop` | `LOOP` |  | loop id (default: every configured loop) |
 | `--pause` |  |  | pause instead of arming |
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose token can edit the repo's hooks (default: the reader) |
+<!-- /flags -->
+
+### app-webhook
+
+Shows, or with `--set` writes, the webhook of the GitHub App that delivers an `app-webhook` loop's
+events (#1239): its URL against the App's route (`dk-app-<slug>`), its content type, and the
+events it subscribes to against what the loop needs (`pull_request`, `pull_request_review`, and
+`issues` with triage on).
+
+```bash
+hermes dk app-webhook --loop "<loop-id>"
+hermes dk app-webhook --loop "<loop-id>" --set
+```
+
+`--set` points the App's webhook at the route, with the route's own secret, through the App's
+JWT; the secret is never printed. Subscribing to events is an App setting GitHub only lets you
+change on the App's page (Permissions & events → Subscribe to events); the command names what is
+missing. Exit `1` when anything still disagrees, `2` for a loop on repo hooks.
+
+<!-- flags:app-webhook -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` | **required** | loop id |
+| `--set` |  |  | point the App's webhook at its route with the route's secret |
 <!-- /flags -->
 
 ### protect

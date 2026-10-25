@@ -197,6 +197,42 @@ def cmd_protect(args) -> int:
     return 0 if done else 1
 
 
+def cmd_app_webhook(args) -> int:
+    """Show, or with --set write, the ingress App's webhook against its route (#1239)."""
+    from .. import app_ingress
+    try:
+        loop = config.load_id(args.loop)
+    except config.ConfigError as exc:
+        print(f"cannot read the App's webhook: {exc}")
+        return 2
+    lid = loop["id"]
+    if not config.app_ingress(loop):
+        print(f"[{lid}] events arrive through repo hooks (ingress repo-hooks): no App webhook to "
+              f"set. Switch with `hermes dk set --loop {lid} --ingress app-webhook --ingress-app "
+              "<slug>[bot]`")
+        return 2
+    if args.set:
+        done, line = app_ingress.set_webhook(loop)
+        print(f"[{lid}] {line}")
+        if not done:
+            return 1
+    state = app_ingress.webhook_state(loop)
+    if state["error"]:
+        print(f"[{lid}] {state['error']}")
+        return 1
+    ok = not app_ingress.webhook_problem(state)
+    print(f"[{lid}] {loop['ingress_app']}'s webhook: {state['url'] or '(none)'} "
+          f"({'matches the route' if state['url'] == state['want_url'] else 'not the route: ' + state['want_url']}); "
+          f"content type {state['content_type'] or '?'}")
+    print(f"[{lid}] events: {', '.join(state['events']) or '(none)'}"
+          + (f" — missing {', '.join(state['missing_events'])}: subscribe to "
+             f"{'it' if len(state['missing_events']) == 1 else 'them'} in the App's settings "
+             "(Permissions & events → Subscribe to events)" if state["missing_events"] else ""))
+    if state["url"] != state["want_url"] and not args.set:
+        print(f"  fix: hermes dk app-webhook --loop {lid} --set")
+    return 0 if ok else 1
+
+
 # -- the parser for this module's commands (#676 step 7) --------------------------------------
 
 
@@ -265,6 +301,16 @@ def add_arm(sub) -> None:  # noqa: ANN001
     arm.add_argument("--admin-token", default="",
                      help="login whose token can edit the repo's hooks (default: the reader)")
     arm.set_defaults(func=cmd_arm)
+
+
+def add_app_webhook(sub) -> None:  # noqa: ANN001
+    """The ``app-webhook`` subcommand's parser, registered by ``cli.register_cli`` (#1239)."""
+    hook = sub.add_parser("app-webhook", help="Show, or set, the GitHub App webhook that delivers "
+                                              "an app-webhook loop's events")
+    hook.add_argument("--loop", required=True, help="loop id")
+    hook.add_argument("--set", action="store_true",
+                      help="point the App's webhook at its route with the route's secret")
+    hook.set_defaults(func=cmd_app_webhook)
 
 
 def add_protect(sub) -> None:  # noqa: ANN001

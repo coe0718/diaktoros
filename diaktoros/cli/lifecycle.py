@@ -842,8 +842,15 @@ def cmd_uninstall(args) -> int:
     lid = shlex.quote(loop["id"])
     finish = f"hermes dk uninstall --loop {lid}"
     try:
-        route_intent.forget(loop, cli_common._routes_of(loop).values())
-        for name in cli_common._routes_of(loop).values():
+        mine = dict(cli_common._routes_of(loop))
+        app = mine.get("app")
+        if app and any(other.get("id") != loop["id"] and cli_common._routes_of(other).get("app") == app
+                       for other in config.all_loops()):
+            # #1239: the App's route is shared; another loop it delivers for still needs it.
+            print(f"route kept: {app} (another loop still receives this App's events through it)")
+            mine.pop("app")
+        route_intent.forget(loop, mine.values())
+        for name in mine.values():
             if name and routes.remove_route(name):
                 print(f"route removed: {name}")
                 if "routes" not in removed:

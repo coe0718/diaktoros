@@ -391,6 +391,9 @@ def cmd_init(args) -> int:
                         else args.fixer_check),
         "merge_check": (getattr(args, "merge_check", None)
                         or str(d.get("merge_check") or "").strip().lower() or "auto"),
+        "ingress": (getattr(args, "ingress", None)
+                    or str(d.get("ingress") or "").strip().lower() or "repo-hooks"),
+        "ingress_app": (getattr(args, "ingress_app", None) or str(d.get("ingress_app") or "").strip()),
         # The checks that gate an approval (#368); none named = every check gates.
         "required_checks": (config.split_check_names(d["required_checks"])
                             if getattr(args, "required_check", None) is None
@@ -630,9 +633,13 @@ def cmd_init(args) -> int:
         return 2
     for line in hook_lines:
         print(f"  {line}")
-    if args.hooks:
+    if args.hooks and not config.app_ingress(loop):
         print(f"  {_hook_editor_line(loop, args.admin_token, getattr(args, 'arm', False), False)}")
-    if not args.hooks:
+    if config.app_ingress(loop):
+        # #1239: no repo hooks; the App's webhook is pointed at its route instead.
+        print(f"  next: hermes dk app-webhook --loop {loop['id']} --set   (points "
+              f"{loop.get('ingress_app')}'s webhook at route {config.app_route(loop)})")
+    elif not args.hooks:
         print("  (repo hooks not created — pass --hooks, or add them by hand with the route URLs)")
     # Armed at birth: prove the secret now, as `arm` does, rather than at the first real event.
     pinged = (cli_common._ping_loop_hooks(loop, args.admin_token)
@@ -665,7 +672,9 @@ def cmd_init(args) -> int:
                      "verdict is held for you and no fixer turn starts. To let the fixer answer "
                      f"verdicts: {config.fixer_push_enable_command(loop)} "
                      "(read docs/operations.md on the PR-metadata race first)")
-    if args.hooks and not getattr(args, "arm", False):
+    if config.app_ingress(loop):
+        pass                          # no repo hooks: the app-webhook step above is the next one
+    elif args.hooks and not getattr(args, "arm", False):
         admin = f" --admin-token {args.admin_token}" if args.admin_token else ""
         steps.append(f"hermes dk arm --loop {lid}{admin}   (the hooks were created "
                      "paused)")
@@ -830,6 +839,10 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     argv.append(f"--fixer-check={check}")
     if getattr(args, "merge_check", None):
         argv.append(f"--merge-check={args.merge_check}")
+    if getattr(args, "ingress", None):
+        argv.append(f"--ingress={args.ingress}")
+    if getattr(args, "ingress_app", None):
+        argv.append(f"--ingress-app={args.ingress_app}")
     required = (args.required_check if args.required_check is not None else
                 config.split_check_names(_ask(
                     "the CI checks that must pass before an approval, comma-separated, exactly as "
@@ -1151,6 +1164,9 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                       help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     init.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
                       help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting)")
+    init.add_argument("--ingress", choices=("repo-hooks", "app-webhook"), default=None,
+                      help="where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks)")
+    init.add_argument("--ingress-app", default=None, help="with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app)")
     init.add_argument("--merge-check", choices=("auto", "on", "off"), default=None,
                       help="post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off")
     init.add_argument("--fixer-check", default=None,
@@ -1256,6 +1272,9 @@ def add_setup(sub) -> None:  # noqa: ANN001
                        help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     first.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
                        help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting)")
+    first.add_argument("--ingress", choices=("repo-hooks", "app-webhook"), default=None,
+                       help="where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks)")
+    first.add_argument("--ingress-app", default=None, help="with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app)")
     first.add_argument("--merge-check", choices=("auto", "on", "off"), default=None,
                        help="post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off")
     first.add_argument("--fixer-check", default=None,
