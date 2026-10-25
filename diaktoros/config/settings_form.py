@@ -261,6 +261,10 @@ SETTINGS_SCHEMA: dict = {
                                    "push or issue-fix PR, besides the tests it touched: the "
                                    "checks CI always runs (chain several with &&). At most "
                                    "500 characters, one line. Blank = not set here"},
+    "ingress": {"label": "Where events arrive", "type": "str", "default": "",
+                "description": "repo-hooks or app-webhook. Where the loop's GitHub events arrive: repo-hooks (the default) installs a repo hook per seat; app-webhook takes them from a GitHub App's own webhook (Ingress App below), so the loop needs no repo hooks and no PAT for them. Blank = not set here"},
+    "ingress_app": {"label": "Ingress App", "type": "str", "default": "",
+                    "description": "With app-webhook: the bot login (slug[bot]) of the GitHub App whose webhook delivers this loop's events, mapped as an App on the loop. Blank = not set here"},
     "merge_check": {"label": "Post the diaktoros/review merge check", "type": "str", "default": "",
                     "description": "auto, on or off. The check mirrors whether the loop would "
                                    "merge the head (green only when approved and nothing holds "
@@ -445,6 +449,10 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
         overlaid["review_after_ci"] = d["review_after_ci"]
     if str(d.get("merge_check") or "").strip():
         overlaid["merge_check"] = str(d["merge_check"]).strip().lower()
+    if str(d.get("ingress") or "").strip():
+        overlaid["ingress"] = str(d["ingress"]).strip().lower()
+    if str(d.get("ingress_app") or "").strip():
+        overlaid["ingress_app"] = str(d["ingress_app"]).strip()
     if _form_value(settings, "fix_ci") is not None:
         overlaid["fix_ci"] = d["fix_ci"]
     if _form_value(settings, "fixer_scope_lock") is not None:

@@ -167,6 +167,11 @@ def _rows(loop: dict) -> list[_Row]:
             rows[-1].note = "on, but inert: needs unattended fixer pushes (hermes dk fixer-push)"
     if loop["fix_ci"] and not config.unattended_fixer_push_enabled(loop):
         rows[-1].note = "on, but inert: needs unattended fixer pushes (hermes dk fixer-push)"
+    app_in = config.app_ingress(loop)
+    schema("ingress", ("ingress",), loop.get("ingress") or "repo-hooks",
+           note=(f"events arrive through {loop.get('ingress_app')}'s webhook (route "
+                 f"{config.app_route(loop)}); no repo hooks" if app_in else ""))
+    schema("ingress_app", ("ingress_app",), loop.get("ingress_app") or _UNSET)
     posting = config.merge_check_on(loop)
     schema("merge_check", ("merge_check",), loop.get("merge_check") or "auto", on=posting,
            off=("nothing is posted" if loop.get("merge_check") == "off" else

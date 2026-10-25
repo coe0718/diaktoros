@@ -178,6 +178,8 @@ def recreate_fix(loop: dict) -> str:
 
 _GATE_EVENT = {"reviewer": "pull_request", "fixer": "pull_request_review",
                "adjudicator": "pull_request", "triage": "issues"}
+# An App's route (#1239) carries every event its loops act on.
+APP_EVENTS = ("pull_request", "pull_request_review", "issues")
 
 
 def contract_drift(loop: dict, role: str, entry: dict) -> list[str]:
@@ -204,7 +206,8 @@ def contract_drift(loop: dict, role: str, entry: dict) -> list[str]:
     if entry.get("prompt") != route_intent.ROUTE_PROMPT[role]:
         wrong.append("prompt")
     events = entry.get("events")
-    if not isinstance(events, list) or _GATE_EVENT[role] not in events:
+    needed = APP_EVENTS if role == "app" else (_GATE_EVENT[role],)
+    if not isinstance(events, list) or any(event not in events for event in needed):
         wrong.append("events")
     if entry.get("deliver_only"):
         wrong.append("deliver_only")

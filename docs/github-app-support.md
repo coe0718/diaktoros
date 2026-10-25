@@ -101,6 +101,16 @@ write** and **Administration: Read and write**, through the plugin's own App-tok
 So an App can be `--admin-token` everywhere a PAT can (`init --hooks`, `arm`, `uninstall`,
 `triage`, `trace`, `protect`), and a loop needs no PAT at all for its hooks or its merge check.
 
+## Events through the App's own webhook (#1239)
+
+A loop with `ingress: app-webhook` takes its events from one App's webhook instead of repo hooks,
+so it needs no PAT at all. The Hermes gateway runs a route's script with the payload only (not
+the event name), so the App's route runs `gate_app.py`, which reads the event from the payload's
+shape and runs that loop's own gate in the same process, under the gate's own name. One App's
+webhook has one URL for every repository it is installed on, so its route is shared by every loop
+it delivers for. GitHub cannot pause an App's webhook for one repository: pausing such a loop is a
+flag the gate reads. `hermes dk app-webhook --set` writes the URL and secret onto the App.
+
 ## Recommendation: go, with a host-delivered handoff
 
 The core loop works with App identities: PRs, pushes, exact-commit reviews and their webhooks all

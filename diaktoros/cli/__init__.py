@@ -60,6 +60,7 @@ from .common import (  # noqa: F401
     _hook_route_name,
 )
 from .checks import (
+    cmd_app_webhook,
     cmd_arm,
     cmd_protect,
     cmd_corpus,
@@ -175,6 +176,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         cli_settings.add_show(sub)
         cli_checks.add_arm(sub)
         cli_checks.add_protect(sub)
+        cli_checks.add_app_webhook(sub)
         cli_settings.add_triage(sub)
         cli_settings.add_fixer_push(sub)
         cli_operations.add_retry(sub)

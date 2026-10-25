@@ -161,6 +161,11 @@ Nothing for the gateway to do: the gate answers [SILENT]."""
 # a transition it did not observe.
 OBSERVER = """{_observer.message}"""
 
+# The route a GitHub App's own webhook delivers to (#1239). Like every gate route's prompt it is
+# never run as a model turn (the gate ends [SILENT]); it is the route's stable identity.
+APP_EVENTS = """GitHub App events for the Diaktoros loops this App delivers for.
+The gate dispatches each event to its loop's reviewer, fixer or triage gate; nothing runs here."""
+
 
 # -- isolated turns -------------------------------------------------------------------------------
 #

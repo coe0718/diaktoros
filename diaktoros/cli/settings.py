@@ -673,6 +673,10 @@ def cmd_set(args) -> int:
 
     if getattr(args, "merge_check", None) and args.merge_check != (loop.get("merge_check") or "auto"):
         changes["merge_check"] = args.merge_check
+    if getattr(args, "ingress", None) and args.ingress != (loop.get("ingress") or "repo-hooks"):
+        changes["ingress"] = args.ingress
+    if getattr(args, "ingress_app", None) is not None and args.ingress_app.strip() != (loop.get("ingress_app") or ""):
+        changes["ingress_app"] = args.ingress_app.strip()
 
     seats = {seat: dict(cfg) for seat, cfg in loop["seats"].items()}
     seat_changes = {}
@@ -1195,6 +1199,7 @@ def _apply(args) -> int:
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci", "merge_check",
+                "ingress", "ingress_app",
                 "fix_ci", "fixer_scope_lock", "ci_fix_cap", "review_only_update", "required_checks", "human_paths",
                 "generated", "review_only", "review_only_cap", "review_only_daily", "shadow"):
         if updated.get(key) != loop.get(key):
@@ -2091,6 +2096,9 @@ def add_set(sub) -> None:  # noqa: ANN001
                            help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox (repeat it); replaces the list")
     generated.add_argument("--no-generated", action="store_true",
                            help="clear the list: the conflict shortcut is off")
+    change.add_argument("--ingress", choices=("repo-hooks", "app-webhook"), default=None,
+                        help="where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks)")
+    change.add_argument("--ingress-app", default=None, help="with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app)")
     change.add_argument("--merge-check", choices=("auto", "on", "off"), default=None,
                         help="post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off")
     change.add_argument("--fixer-check", default=None, help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none)")

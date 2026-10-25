@@ -54,10 +54,11 @@ def watched(role: str) -> tuple[str, ...]:
 
 GATE_SCRIPT = {"reviewer": "gate_reviewer.py", "fixer": "gate_fixer.py",
                "adjudicator": "gate_adjudicator.py", "triage": "gate_triage.py",
-               "observer": "observe.py", "observer_urgent": "observe.py"}
+               "observer": "observe.py", "observer_urgent": "observe.py", "app": "gate_app.py"}
 ROUTE_PROMPT = {"reviewer": prompts.REVIEWER, "fixer": prompts.FIXER,
                 "adjudicator": prompts.ADJUDICATOR, "triage": prompts.TRIAGE,
-                "observer": prompts.OBSERVER, "observer_urgent": prompts.OBSERVER}
+                "observer": prompts.OBSERVER, "observer_urgent": prompts.OBSERVER,
+                "app": prompts.APP_EVENTS}
 PLUGIN_SCRIPTS = frozenset(GATE_SCRIPT.values()).union(*config.LEGACY_GATE_SCRIPTS.values())
 
 
@@ -84,6 +85,9 @@ def routes_of(loop: dict) -> dict:
     urgent_route = str((loop.get("observer") or {}).get("urgent_route") or "")
     if observer_route and urgent_route:
         names["observer_urgent"] = urgent_route
+    app = config.app_route(loop)
+    if app:
+        names["app"] = app          # #1239: shared by every loop this App delivers for
     return names
 
 

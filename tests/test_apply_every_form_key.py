@@ -75,6 +75,8 @@ PUSHES = {
     "fixer_check": "python3 tests/run_tests.py",
     "review_after_ci": True,
     "merge_check": "on",
+    "ingress": "app-webhook",
+    "ingress_app": "events-app[bot]",
     "fix_ci": True,
     "fixer_scope_lock": True,
     "attribution": False,
@@ -151,6 +153,12 @@ class ApplyEveryFormKey(unittest.TestCase):
                     self.assertEqual(rc, 0, out)
                 settings = {key: self.value(key)}
                 loop = config.load_id("widgets")
+                if key in ("ingress", "ingress_app"):
+                    # #1239: app-webhook needs a mapped App, and each key needs the other.
+                    loop["apps"] = {**(loop.get("apps") or {}), "events-app[bot]": {
+                        "app_id": 9, "key_file": str(self.pats["adj2"])}}
+                    cli_common._write_config(loop)
+                    settings = {"ingress": "app-webhook", "ingress_app": "events-app[bot]"}
                 if "_app_" in key:
                     role = key.split("_", 1)[0]
                     login = f"test-{role}[bot]"
@@ -174,7 +182,10 @@ class ApplyEveryFormKey(unittest.TestCase):
                 # refuses and so never says "already matches" either.
                 if rc == 2 and "does not exist yet" in out and state != "routes installed":
                     continue
-                self.assertIn(rc, exit_codes, f"{key}: {out}")
+                # Moving to app-webhook installs the App's route, which a dry run reports as one
+                # it would write (exit 1), whatever routes the loop's seats have (#1239).
+                self.assertIn(rc, (*exit_codes, 1) if key in ("ingress", "ingress_app")
+                              else exit_codes, f"{key}: {out}")
                 # Past the guard: apply recognised a change and went on to say what it would write
                 # (with no route installed the guard's early return prints no "matches" line at
                 # all, only the routes' disagreement, so this is what shows the change was seen).

@@ -176,6 +176,21 @@ def set_hooks(loop: dict, active: bool, token_login: str | None, *,
 def perform(loop: dict, active: bool, token_login: str | None = None, *,
             hooks: list[dict] | None = None) -> tuple[list[str], bool]:
     """The CLI's complete host action: switch, verify, and ping only a confirmed resume."""
+    from . import config
+    if config.app_ingress(loop):
+        # #1239: no repo hooks; the App's webhook cannot be paused per repository, so the loop's
+        # own flag is what the App's dispatcher reads before any gate runs.
+        from . import app_ingress, state as state_mod
+        st = state_mod.state_for(loop)
+        try:
+            app_ingress.set_paused(st, not active)
+        except OSError as exc:
+            return [f"the pause flag could not be written ({exc}): nothing changed"], False
+        done = app_ingress.paused(st) is (not active)
+        return [(f"{'armed' if active else 'paused'}: events arrive through "
+                 f"{loop.get('ingress_app')}'s webhook, so its deliveries for this loop are "
+                 f"{'acted on' if active else 'dropped before any gate runs'} (read back)")
+                if done else "the pause flag did not read back: state unknown"], done
     lines, ok = set_hooks(loop, active, token_login, hooks=hooks)
     if ok and active:
         ok = _common()._ping_loop_hooks(loop, token_login)
@@ -212,6 +227,16 @@ def plan(loop: dict, token_login: str | None = None) -> dict:
     result = {'loop': loop['id'], 'repo': loop['repo'], 'state': 'unknown',
               'eligible': False, 'confirmation': None,
               'reason': 'Hook state could not be verified.', 'read_at': time.time()}
+    from . import config
+    if config.app_ingress(loop):
+        # #1239: no repo hooks to snapshot; the pause flag is switched on the host (its change is
+        # not one Desktop's hook-bound confirmation can verify).
+        from . import app_ingress, state as state_mod
+        paused = app_ingress.paused(state_mod.state_for(loop))
+        result.update(state='paused' if paused else 'armed',
+                      reason=("Events arrive through the App's webhook; pause or resume it on the "
+                              f"host: `hermes dk arm --loop {loop['id']}{'' if paused else ' --pause'}`."))
+        return result
     try:
         hooks = _common()._hook_listing(loop, token_login, require_active=False)
         names = _common()._routes_of(loop)

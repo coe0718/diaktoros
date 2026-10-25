@@ -700,7 +700,15 @@ def hooks_read(loop: dict) -> tuple[bool | None, str]:
     cannot see hooks that may well be active.
     The watchdog reads that as silence, and ``explain`` labels it unknown rather than guessing in
     the other direction — "the loop is paused" is a claim, and it needs the hooks to prove it.
+
+    A loop whose events arrive through a GitHub App's webhook (#1239) has no repo hooks: it is
+    armed unless its own pause flag is set (``app_ingress``), which is what its dispatcher reads.
     """
+    if config.app_ingress(loop):
+        from . import app_ingress
+        paused = app_ingress.paused(state_mod.state_for(loop))
+        return not paused, ("paused (the App's deliveries for this loop are dropped)"
+                            if paused else "")
     hooks, error = gh.hooks_read(loop)      # every page: a full first page is not the whole list
     if error or not isinstance(hooks, list):
         return None, error or "GitHub returned no hook list"

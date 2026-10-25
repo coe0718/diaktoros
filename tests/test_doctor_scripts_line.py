@@ -25,9 +25,9 @@ class ScriptsPassLine(unittest.TestCase):
     def test_pass_line_counts_every_gate_the_check_verifies(self):
         result = self.check(doctor.PLUGIN_SCRIPTS)
         gates = [n for n in doctor.PLUGIN_SCRIPTS if n.startswith("gate_")]
-        self.assertEqual(len(gates), 4)
+        self.assertEqual(len(gates), 5)          # reviewer, fixer, triage, adjudicator, app (#1239)
         self.assertEqual(result.status, doctor.VERIFIED)
-        self.assertIn("4 gates", result.detail)
+        self.assertIn("5 gates", result.detail)
         self.assertIn(f"{len(doctor.PLUGIN_SCRIPTS)} files", result.detail)
         self.assertNotIn("three", result.detail)
 

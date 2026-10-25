@@ -1867,6 +1867,11 @@ def check_hooks(loop: dict, offline: bool) -> list[Check]:
     none at all, and this call cannot tell those apart. Saying "absent" here would be the exact
     wrong-hook hunt the preflight exists to prevent.
     """
+    if config.app_ingress(loop):
+        # #1239: no repo hooks on purpose; the App's webhook is checked against its own route.
+        return [Check("hooks", VERIFIED, f"none, on purpose: events arrive through "
+                                         f"{loop.get('ingress_app')}'s webhook (route "
+                                         f"{config.app_route(loop)})")]
     expected = []
     for seat in config.hook_roles(loop):
         name = str(route_intent.routes_of(loop).get(seat) or "")
