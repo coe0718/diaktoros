@@ -202,7 +202,8 @@ def submit(loop, scope, ledger, verdict, body):
     if verdict not in expected or not isinstance(body, str) or not body.strip():
         raise ReceiptDenied('invalid verdict')
     login = broker.authorize(loop, repo=scope.repo, number=scope.number, head=scope.head,
-                             role='reviewer', branch=scope.branch, operation='review')
+                             role='reviewer', branch=scope.branch, operation='review',
+                             approve=verdict == 'APPROVE')
     path = f'/repos/{scope.repo}/pulls/{scope.number}'
     reader = loop['read_token']
     if generation_for(gh.api(loop, path, login=reader), loop, scope.number, scope.head) != ledger.generation:
