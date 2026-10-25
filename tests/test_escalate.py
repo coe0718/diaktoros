@@ -401,6 +401,14 @@ class Pending(Base):
         self.assertIn("escalated at 1/3 verdicts, but its pending record could not be cleared", out)
         self.assertIn("--withdraw` clears it", out)
 
+    def test_a_failed_removal_raises_and_keeps_the_record(self):
+        # Shadow on #1265 (#1262): a swallowed removal would leave the record on disk and fire the
+        # escalation again at a later head; take() must raise instead, with the record intact.
+        with mock.patch.object(state_mod.LoopState, "_save_strict", side_effect=OSError("disk full")), \
+                self.assertRaises(OSError):
+            escalate_pending.take(self.st, 7)
+        self.assertEqual(escalate_pending.get(self.st, 7)["reason"], "stuck on scope")
+
     def test_withdrawing_an_entry_without_a_reason(self):
         # #1263: a store entry with no reason raised KeyError.
         state_mod._atomic_write(self.st.dir / escalate_pending.FILE,
