@@ -550,9 +550,12 @@ def _patch_hook_url(loop: dict, hook_id: int, url: str, login: str | None = None
 
 
 def _hook_route_names(loop: dict) -> set[str]:
-    """The route names a repo hook of this loop posts to (both seats, and triage when on)."""
-    return {name for role, name in _routes_of(loop).items()
-            if role in config.hook_roles(loop) and name}
+    """The route names a repo hook of this loop posts to (both seats, and triage when on). A loop
+    on its App's webhook has none on purpose, but one left from before the switch still posts to
+    a seat's route (#1239): those names, so uninstall deletes such a hook and init refuses it."""
+    roles = (("reviewer", "fixer", "triage") if config.app_ingress(loop)
+             else config.hook_roles(loop))
+    return {name for role, name in _routes_of(loop).items() if role in roles and name}
 
 
 def _classify_hooks(loop: dict, login: str | None) -> tuple[list[dict] | None, list[dict], str]:

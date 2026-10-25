@@ -180,7 +180,12 @@ def perform(loop: dict, active: bool, token_login: str | None = None, *,
     if config.app_ingress(loop):
         # #1239: no repo hooks; the App's webhook cannot be paused per repository, so the loop's
         # own flag is what the App's dispatcher reads before any gate runs.
-        from . import app_ingress, state as state_mod
+        from . import app_ingress, routes, state as state_mod
+        route = config.app_route(loop)
+        if active and not routes.route(route):
+            # Armed would be a lie: the gateway 404s every delivery until the route exists.
+            return [f"not armed: the App's route {route} is not installed, so nothing reaches "
+                    f"the gates (`hermes dk doctor --loop {loop['id']} --repair` restores it)"], False
         st = state_mod.state_for(loop)
         try:
             app_ingress.set_paused(st, not active)

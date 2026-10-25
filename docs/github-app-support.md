@@ -111,6 +111,13 @@ webhook has one URL for every repository it is installed on, so its route is sha
 it delivers for. GitHub cannot pause an App's webhook for one repository: pausing such a loop is a
 flag the gate reads. `hermes dk app-webhook --set` writes the URL and secret onto the App.
 
+An existing loop moves over with `hermes dk set --ingress app-webhook --ingress-app <app>[bot]`,
+which installs the App's route, then `app-webhook --set`. Its repo hooks are not deleted for you:
+until you delete them, a gate the gateway runs straight from one of them drops the delivery
+(only the App's dispatcher, `hermes dk review` and a watchdog re-drive reach an App loop's
+gates), so nothing runs twice and `arm --pause` holds. `doctor`'s `hooks` line names each
+leftover hook by id.
+
 ## Recommendation: go, with a host-delivered handoff
 
 The core loop works with App identities: PRs, pushes, exact-commit reviews and their webhooks all

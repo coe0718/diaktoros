@@ -916,6 +916,12 @@ def cmd_set(args) -> int:
             credentials.verify_adjudicator_token(updated)
             credentials.verify_credentials(updated)
         cli_common._observer_check(updated)
+        # #1239: a loop switched onto an App's webhook gets that App's route now, not at the
+        # next init; checked first, like every route this command writes.
+        app_route = config.app_route(updated)
+        if app_route and app_route != config.app_route(loop):
+            config.webhook_host(updated.get("host"), required=True)
+            cli_common._verify_routes(updated, {"app"})
     except config.ConfigError as exc:
         print(f"refused: {exc}")
         return 2
@@ -1007,6 +1013,23 @@ def cmd_set(args) -> int:
             print(f"observer urgent route could not be reconciled; loop config unchanged: {exc}")
             return 2
         shims_ok = cli_common._install_shims(updated) and shims_ok
+    if app_route and app_route != config.app_route(loop):
+        loop_file = config.config_dir() / f"{updated['id']}.json"
+        previous_config = loop_file.read_bytes()
+        previous_route = routes.route(app_route)
+        try:
+            cli_common._write_config(updated)
+            cli_common._install_routes(updated, roles=("app",))
+            route_intent.record_live(updated, [app_route])
+        except Exception as exc:
+            try:
+                routes.restore_entries({app_route: previous_route})
+                cli_common._restore_config(loop_file, previous_config)
+            except Exception as rollback_exc:
+                print(f"ROLLBACK FAILED: {rollback_exc} — inspect {loop_file} and route {app_route}")
+                return 2
+            print(f"App route install FAILED: {exc}; config and route restored")
+            return 2
     path = cli_common._write_config(updated)
     if before.get("urgent_route") and before["urgent_route"] != after.get("urgent_route"):
         try:
@@ -1051,6 +1074,15 @@ def cmd_set(args) -> int:
         print(f"  observer: {observer.describe(loop.get('observer') or {})} → "
               f"{observer.describe(updated.get('observer') or {})}")
     print(f"loop config updated: {path}")
+    if app_route and app_route != config.app_route(loop):
+        print(f"  route written: {app_route} ({updated.get('ingress_app')}'s events)")
+        print(f"  next: `hermes dk app-webhook --loop {updated['id']} --set` points the App's "
+              "webhook at it")
+        if not config.app_ingress(loop):
+            # Its repo hooks are not deleted here; the gates drop what they still deliver
+            # (app_ingress.woken_by_repo_hook), and doctor names them until they are gone.
+            print(f"  note: the loop's repo hooks stay until you delete them; the gates now drop "
+                  f"what they deliver, and `hermes dk doctor --loop {updated['id']}` lists them")
     if updated.get("host") != loop.get("host"):
         print(f"  next: `hermes dk apply --loop {updated['id']}` "
               "(rewrites the routes' origin; add --hooks to repoint the hooks)")

@@ -57,6 +57,11 @@ def context(payload: dict):
     # A gate's failed GitHub read ends in [SILENT]; keep it on disk for the watchdog and explain.
     gh.record_failures()
     _record_decisions(loop, payload)
+    from . import app_ingress
+    if config.app_ingress(loop) and app_ingress.woken_by_repo_hook():
+        silence(f"{loop['id']} takes its events from {loop.get('ingress_app')}'s webhook: this "
+                "delivery came from a leftover repo hook and is dropped (delete the repo's hooks "
+                "to this loop's routes)")
     return loop, state_mod.state_for(loop)
 
 

@@ -1860,6 +1860,58 @@ def check_gateway(loop: dict, offline: bool) -> Check:
     return Check("gateway", VERIFIED, "configured gateway accepts a TCP connection (URL withheld)")
 
 
+def _hook_listing(loop: dict) -> list | None:
+    """The repo's complete hook listing, or None when it cannot all be read."""
+    hooks = []
+    for page in range(1, 1001):
+        path = f"/repos/{loop['repo']}/hooks?per_page=100"
+        batch = gh.api(loop, path if page == 1 else f"{path}&page={page}")
+        if not isinstance(batch, list) or any(
+            not isinstance(hook, dict) or not isinstance(hook.get("config"), dict)
+            or not isinstance(hook["config"].get("url"), str)
+            or not isinstance(hook.get("events"), list)
+            or any(not isinstance(event, str) for event in hook["events"])
+            or type(hook.get("active")) is not bool
+            for hook in batch):
+            return None
+        hooks.extend(batch)
+        if len(batch) < 100:
+            return hooks
+    return None
+
+
+def check_leftover_hooks(loop: dict, offline: bool) -> Check:
+    """#1239: a loop on its App's webhook has no repo hooks on purpose. One left from before it
+    switched still posts to the seat's route; the gate drops those deliveries
+    (``app_ingress.woken_by_repo_hook``), but the hook should go."""
+    source = (f"events arrive through {loop.get('ingress_app')}'s webhook (route "
+              f"{config.app_route(loop)})")
+    names = {str(name) for role, name in route_intent.routes_of(loop).items()
+             if role in ("reviewer", "fixer", "triage") and name}
+    if not routes.route(config.app_route(loop)):
+        return Check("hooks", UNKNOWN, f"not checked: {source}, but that route is not installed "
+                                       "(see the route checks above)")
+    if offline:
+        return Check("hooks", UNKNOWN, f"not probed (--offline): {source}; leftover repo hooks "
+                                       "were not looked for")
+    hooks = _hook_listing(loop)
+    if hooks is None:
+        return Check("hooks", UNKNOWN,
+                     f"{source}; the repo's hooks could not all be read, so a leftover one to "
+                     f"this loop's routes was not looked for",
+                     f"{config.reader_access_fix(loop, 'hooks')} and re-run")
+    left = sorted(int(hook.get("id") or 0) for hook in hooks
+                  if hook_route_name(hook) in names)
+    if left:
+        ids = ", ".join(str(n) for n in left)
+        return Check("hooks", MISMATCH,
+                     f"{source}, but {len(left)} repo hook(s) still post to this loop's seat "
+                     f"routes (id {ids}): the gates drop what they deliver",
+                     f"delete them: `gh api -X DELETE repos/{loop['repo']}/hooks/<id>` for each "
+                     f"id, or in repo settings → Webhooks")
+    return Check("hooks", VERIFIED, f"none, on purpose: {source}")
+
+
 def check_hooks(loop: dict, offline: bool) -> list[Check]:
     """The two repo hooks GitHub posts to, matched by the URL each route resolves to.
 
@@ -1868,10 +1920,7 @@ def check_hooks(loop: dict, offline: bool) -> list[Check]:
     wrong-hook hunt the preflight exists to prevent.
     """
     if config.app_ingress(loop):
-        # #1239: no repo hooks on purpose; the App's webhook is checked against its own route.
-        return [Check("hooks", VERIFIED, f"none, on purpose: events arrive through "
-                                         f"{loop.get('ingress_app')}'s webhook (route "
-                                         f"{config.app_route(loop)})")]
+        return [check_leftover_hooks(loop, offline)]
     expected = []
     for seat in config.hook_roles(loop):
         name = str(route_intent.routes_of(loop).get(seat) or "")
@@ -1887,24 +1936,8 @@ def check_hooks(loop: dict, offline: bool) -> list[Check]:
     if offline:
         return [Check("hooks", UNKNOWN,
                       f"not probed (--offline) — {len(expected)} hook(s) were not read")]
-    hooks = []
-    complete = False
-    for page in range(1, 1001):
-        path = f"/repos/{loop['repo']}/hooks?per_page=100"
-        batch = gh.api(loop, path if page == 1 else f"{path}&page={page}")
-        if not isinstance(batch, list) or any(
-            not isinstance(hook, dict) or not isinstance(hook.get("config"), dict)
-            or not isinstance(hook["config"].get("url"), str)
-            or not isinstance(hook.get("events"), list)
-            or any(not isinstance(event, str) for event in hook["events"])
-            or type(hook.get("active")) is not bool
-            for hook in batch):
-            break
-        hooks.extend(batch)
-        if len(batch) < 100:
-            complete = True
-            break
-    if not complete:
+    hooks = _hook_listing(loop)
+    if hooks is None:
         return [Check("hooks", UNKNOWN,
                       f"could not read the complete /repos/{loop['repo']}/hooks listing — nothing was proved about "
                       f"{len(expected)} hook(s) (a reader without "

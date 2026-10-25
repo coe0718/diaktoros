@@ -1241,6 +1241,13 @@ def check_hook_signatures(report: Report, loop: dict, *, ping: bool = False,
     """
     from . import hook_ping
     step = "hooks"
+    if config.app_ingress(loop):
+        # #1239: no repo hooks on purpose. doctor's hooks line names any left from before the
+        # switch; the App webhook's own deliveries are read in #1239's part 2.
+        report.add(step, "hooks:signature", SKIP,
+                   f"no repo hooks on purpose: events arrive through {loop.get('ingress_app')}'s "
+                   f"webhook (`hermes dk app-webhook --loop {loop['id']}` checks it)")
+        return
     hooks, error = gh.hooks_read(loop, loop.get("read_token"))
     if hooks is None:
         report.add(step, "hooks:signature", WARN, f"cannot read the repo's hooks ({error})",

@@ -65,7 +65,77 @@ class Flow(app_cli.Base):
         rc, out = self.run_cli(["show", "--loop", "widgets"])
         self.assertIn(f"events arrive through {READ_APP}'s webhook", out)
         rc, out = self.run_cli(["doctor", "--loop", "widgets", "--offline"])
-        self.assertIn(f"hooks                none, on purpose: events arrive through {READ_APP}", out)
+        self.assertIn(f"not probed (--offline): events arrive through {READ_APP}'s webhook", out)
+
+    def test_doctor_names_a_leftover_repo_hook_to_a_seat_route(self):
+        from diaktoros import doctor, route_intent
+        loop = self.loop()
+        seat = route_intent.routes_of(loop)["reviewer"]
+        other = {"id": 9, "config": {"url": "https://gateway.example/webhooks/someone-else"},
+                 "events": ["push"], "active": True}
+        left = {"id": 41, "config": {"url": f"https://gateway.example/webhooks/{seat}"},
+                "events": ["pull_request"], "active": True}
+        for listing, status, words in (([other], doctor.VERIFIED, "none, on purpose"),
+                                       ([other, left], doctor.MISMATCH, "(id 41)"),
+                                       ({"message": "Not Found"}, doctor.UNKNOWN, "not looked for")):
+            with self.subTest(status=status), \
+                    mock.patch.object(doctor.gh, "api", return_value=listing):
+                check = doctor.check_leftover_hooks(loop, offline=False)
+            self.assertEqual(check.status, status, check)
+            self.assertIn(words, check.detail)
+
+    def test_a_gate_woken_straight_from_a_repo_hook_drops_the_delivery(self):
+        # The gateway runs a seat route's script as __main__: that is a leftover repo hook on a
+        # loop whose events come through the App. Run the real script the way the gateway does.
+        import os
+        import subprocess
+        from diaktoros import gate_failures
+        root = Path(__file__).resolve().parents[1]
+        payload = json.dumps({"action": "opened", "number": 7, "pull_request": {
+            "number": 7, "head": {"sha": "a" * 40}, "base": {"ref": "main"},
+            "user": {"login": tfs.FIX}}, "repository": {"full_name": "acme/widgets"},
+            "sender": {"login": tfs.FIX}})
+        decisions = state_mod.state_for(self.loop()).dir / "gate-decisions.jsonl"
+        env = {k: v for k, v in os.environ.items() if k != gate_failures.REDRIVE_ENV}
+        for redrive in (False, True):
+            with self.subTest(redrive=redrive):
+                decisions.unlink(missing_ok=True)
+                proc = subprocess.run(
+                    [sys.executable, str(root / "scripts" / "gate_reviewer.py")], input=payload,
+                    capture_output=True, text=True, timeout=60, cwd=str(root / "scripts"),
+                    env={**env, **({gate_failures.REDRIVE_ENV: "k"} if redrive else {})})
+                self.assertIn("[SILENT]", proc.stdout, proc.stderr)
+                text = decisions.read_text() if decisions.exists() else ""
+                # A watchdog re-drive of a delivery the dispatcher once took runs as __main__
+                # too, with its mark: never dropped as a leftover.
+                self.assertEqual("leftover repo hook" in text, not redrive, text)
+        self.assertFalse(app_ingress.woken_by_repo_hook())   # in-process (CLI, dispatcher)
+
+    def test_arm_refuses_while_the_apps_route_is_missing_and_repair_restores_it(self):
+        routes.restore_entries({"dk-app-acme-reader": None})
+        rc, out = self.run_cli(["arm", "--loop", "widgets"])
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("not armed: the App's route dk-app-acme-reader is not installed", out)
+        from diaktoros import doctor
+        with mock.patch.object(doctor.gh, "api", return_value=[]):     # no hooks: still not green
+            check = doctor.check_leftover_hooks(self.loop(), offline=False)
+        self.assertEqual(check.status, doctor.UNKNOWN, check)
+        self.assertIn("that route is not installed", check.detail)
+        rc, out = self.run_cli(["doctor", "--loop", "widgets", "--offline", "--repair"])
+        self.assertIsNotNone(routes.route("dk-app-acme-reader"), out)   # the advice holds
+        rc, out = self.run_cli(["arm", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+
+    def test_selftest_skips_the_repo_hook_step_and_uninstall_sees_leftovers(self):
+        from diaktoros import route_intent, selftest
+        report = selftest.Report(out=io.StringIO())
+        with mock.patch.object(selftest.gh, "hooks_read") as read:
+            selftest.check_hook_signatures(report, self.loop())
+        read.assert_not_called()
+        self.assertEqual([r[2] for r in report.results], [selftest.SKIP])
+        seats = route_intent.routes_of(self.loop())
+        self.assertEqual(cli_common._hook_route_names(self.loop()),
+                         {seats["reviewer"], seats["fixer"]})
 
     def test_arm_and_pause_switch_the_flag(self):
         st = state_mod.state_for(self.loop())
@@ -130,6 +200,26 @@ class Flow(app_cli.Base):
                 config.normalize({**loop, **bad})
         with self.assertRaisesRegex(config.ConfigError, "'ingress' must be one of"):
             config.normalize({**loop, "ingress": "smoke-signals"})
+
+
+class Switch(app_cli.Base):
+    def test_set_moves_a_repo_hooks_loop_onto_the_apps_webhook(self):
+        rc, out = self.run_cli(self.app_argv(
+            reader=READ_APP, tokens=[(tfs.FIX, self.pats["fix"])],
+            apps=[(app_cli.BOT_REV, 5416187, self.key("rev")), (READ_APP, 5416115, self.key("read"))]))
+        self.assertEqual(rc, 0, out)
+        self.addCleanup(lambda: routes.restore_entries({"dk-app-acme-reader": None}))
+        self.assertIsNone(routes.route("dk-app-acme-reader"))
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--ingress", "app-webhook",
+                                "--ingress-app", READ_APP])
+        self.assertEqual(rc, 0, out)
+        entry = routes.route("dk-app-acme-reader")
+        self.assertEqual(entry["script"], "gate_app.py")
+        from diaktoros import route_intent
+        self.assertIn("dk-app-acme-reader", json.dumps(route_intent.load(config.load_id("widgets"))))
+        self.assertIn("route written: dk-app-acme-reader", out)
+        self.assertIn("app-webhook --loop widgets --set", out)
+        self.assertIn("the gates now drop what they deliver", out)
 
 
 class Dispatch(unittest.TestCase):

@@ -12,6 +12,9 @@ unaffected.
 from __future__ import annotations
 
 import json
+import os
+import pathlib
+import sys
 
 FILE = "app-ingress.json"
 
@@ -38,6 +41,18 @@ def gate_for(payload: dict) -> tuple[str, str]:
     if isinstance(payload.get("issue"), dict):
         return "gate_triage", ""
     return "", "an event the loop does not act on"
+
+
+def woken_by_repo_hook() -> bool:
+    """Whether this process is a gate the gateway ran straight from a repo hook's route: the gate's
+    own script is ``__main__``. The App dispatcher (``gate_app.py`` is ``__main__``), the CLI's
+    in-process runs (``hermes dk review``) and a watchdog re-drive (its environment mark) are not.
+    For a loop on its App's webhook such a wake is a leftover repo hook (#1239): acting on it would
+    run the gate twice, and act while ``arm --pause`` says the loop is paused."""
+    from . import gate_failures
+    main = sys.modules.get("__main__")
+    stem = pathlib.Path(getattr(main, "__file__", "") or "").stem
+    return stem in GATES and not os.environ.get(gate_failures.REDRIVE_ENV)
 
 
 def paused(st) -> bool:
