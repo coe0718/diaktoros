@@ -190,7 +190,7 @@ def cmd_status(args) -> int:
                                             if role in _routes_of(loop)))
         refs = _credential_lines(loop)
         if refs:
-            print("  token refs: " + " · ".join(refs))
+            print("  credentials: " + " · ".join(refs))   # a PAT file or a GitHub App (#1163)
         problem = credentials.reader_problem(loop)
         if problem:
             print(f"  ⚠️  reader:  {problem} — {config.FOUR_IDENTITY_RULE}")

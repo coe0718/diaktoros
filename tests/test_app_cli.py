@@ -60,6 +60,16 @@ class Init(Base):
         self.assertIn(f"reviewer {BOT_REV} → App 5416187, key {key}", out)
         self.assert_no_leak()                          # the key is never read or printed
 
+    def test_status_calls_them_credentials_not_token_refs(self):
+        # An App identity has a key, not a token: status's line names both kinds (#1163 audit).
+        key = self.key("rev")
+        self.assertEqual(self.run_cli(self.app_argv(apps=[(BOT_REV, 5416187, key)]))[0], 0)
+        rc, out = self.run_cli(["status", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"credentials: reviewer {BOT_REV} → App 5416187, key {key}", out)
+        self.assertNotIn("token refs", out)
+        self.assert_no_leak()
+
     def test_the_reader_can_be_a_github_app(self):
         key = self.key("read")
         rc, out = self.run_cli(self.app_argv(
