@@ -328,6 +328,6 @@ def next_steps(made: dict, owner: str, org: bool, loop_id: str | None) -> list[s
     else:
         apps = " ".join(f"--app \"{rec['login']}={rec['id']}:{rec['key_file']}\""
                         for rec in made.values())
-        steps.append(f"hermes dk setup --repo OWNER/REPO {apps} (or `init`, with --ingress "
+        steps.append(f"hermes dk setup --repo OWNER/REPO {apps}   (or `init`, with --ingress "
                      "app-webhook --ingress-app <reader login>)")
     return steps

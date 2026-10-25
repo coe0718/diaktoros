@@ -234,6 +234,7 @@ def cmd_app_webhook(args) -> int:
         print(f"  fix: hermes dk app-webhook --loop {lid} --set")
     return 0 if ok else 1
 
+
 def cmd_create_apps(args) -> int:
     """Create a loop's GitHub Apps from manifests (#1163 M4); print what to run next."""
     from .. import app_manifest
@@ -350,6 +351,7 @@ def add_app_webhook(sub) -> None:  # noqa: ANN001
     hook.add_argument("--set", action="store_true",
                       help="point the App's webhook at its route with the route's secret")
     hook.set_defaults(func=cmd_app_webhook)
+
 
 def add_create_apps(sub) -> None:  # noqa: ANN001
     """The ``create-apps`` subcommand's parser, registered by ``cli.register_cli`` (#1163 M4)."""

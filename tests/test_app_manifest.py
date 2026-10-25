@@ -83,6 +83,35 @@ class Manifests(unittest.TestCase):
         self.assertTrue(fresh[-1].startswith("hermes dk setup --repo OWNER/REPO --app"))
 
 
+class StepsParse(unittest.TestCase):
+    def test_every_printed_command_parses_against_the_real_cli(self):
+        # The next steps name other verbs' flags: a rename there must fail here, not on an
+        # operator's terminal.
+        import argparse
+        import shlex
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+        from harness.fixture import FakeCtx
+        from diaktoros import cli
+        ctx = FakeCtx()
+        cli.register_cli(ctx, settings={})
+        parser = argparse.ArgumentParser(prog="hermes dk")
+        ctx.setup(parser)
+        made = {role: {"slug": f"w-dk-{role}", "id": n, "login": f"w-dk-{role}[bot]",
+                       "key_file": f"/k/{role}.pem"}
+                for n, role in enumerate(am.ROLES, 1)}
+        commands = [step for loop_id in ("widgets", None)
+                    for step in am.next_steps(made, "coe0718", False, loop_id)
+                    if step.startswith("hermes dk ")]
+        self.assertGreaterEqual(len(commands), 6, commands)
+        for step in commands:
+            with self.subTest(step=step):
+                argv = shlex.split(step.split("   (")[0].replace("OWNER/REPO", "o/r"))[2:]
+                try:
+                    parser.parse_args(argv)
+                except SystemExit as exc:
+                    self.fail(f"{step!r} does not parse ({exc})")
+
+
 class BrowserRound(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
