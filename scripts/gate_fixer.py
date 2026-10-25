@@ -252,8 +252,11 @@ def main() -> None:
         outcome = gate.breach(loop, st, number, pr_head, prior + 1,
                               f"verdict {prior + 1} returned changes requested — loop exhausted "
                               f"({loop['cap']} reviews / {loop['cap'] - 1} fixes)")
-        if outcome in PARKED:
-            escalate_pending.take(st, number)      # the cap's breach is the ruling (#1246)
+        if outcome not in PARKED:
+            # Shadow on #1265: nothing was parked, so the log must not say it was handed over.
+            silence(f"cap reached on #{number} — but the breach was {outcome}: nothing parked, "
+                    "no fix queued; the next verdict tries again")
+        escalate_pending.take(st, number)          # the cap's breach is the ruling (#1246)
         silence(f"cap reached on #{number} — handed to adjudication instead of a fix")
     pending = escalate_pending.get(st, number)
     if pending:

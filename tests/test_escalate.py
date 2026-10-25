@@ -361,9 +361,12 @@ class Pending(Base):
 
     def test_a_stale_cap_breach_keeps_it_too(self):
         reviews = [verdict(4), verdict(5), verdict(6)]
-        self.fixer_gate(verdict(6) | {"state": "changes_requested"}, reviews,
-                        breach_outcome="stale")
+        err, _, _, _ = self.fixer_gate(verdict(6) | {"state": "changes_requested"}, reviews,
+                                       breach_outcome="stale")
         self.assertIsNotNone(escalate_pending.get(self.st, 7))
+        # Shadow on #1265: nothing was parked, so the log must not say it was handed over.
+        self.assertIn("the breach was stale: nothing parked", err)
+        self.assertNotIn("handed to adjudication", err)
 
     def test_explain_shows_it_beside_an_older_marker(self):
         # #1264: a marker from a ruled or superseded head no longer hides the pending request.
@@ -385,6 +388,18 @@ class Pending(Base):
         self.assertEqual(rc, 2)
         self.assertIn("could not be recorded", out)
         self.assertNotIn("escalation pending", out)
+
+    def test_a_failed_take_is_a_clear_line_never_a_traceback(self):
+        # Shadow on #1265: strict writes made take() raise, and both CLI callers let it through.
+        with mock.patch.object(escalate_pending, "take", side_effect=OSError("disk full")):
+            rc, out, _ = self.escalate(withdraw=True)
+            self.assertEqual(rc, 2)
+            self.assertIn("could not be withdrawn (OSError: disk full) — it still stands", out)
+            rc, out, wake = self.escalate()                     # nothing in flight: it lands
+        self.assertEqual(rc, 2)
+        wake.assert_called_once()
+        self.assertIn("escalated at 1/3 verdicts, but its pending record could not be cleared", out)
+        self.assertIn("--withdraw` clears it", out)
 
     def test_withdrawing_an_entry_without_a_reason(self):
         # #1263: a store entry with no reason raised KeyError.

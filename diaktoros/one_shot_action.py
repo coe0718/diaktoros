@@ -442,7 +442,12 @@ def _escalate(loop, args, emit=print):
     number = args.pr
     from . import escalate_pending
     if getattr(args, "withdraw", False):
-        withdrawn = escalate_pending.take(state_mod.state_for(loop), number)
+        try:
+            withdrawn = escalate_pending.take(state_mod.state_for(loop), number)
+        except Exception as exc:                  # strict (#1262): say so, never a traceback
+            emit(f"#{number}: the pending escalation could not be withdrawn ({type(exc).__name__}: "
+                 f"{exc}) — it still stands; retry")
+            return 2
         emit(f"#{number}: pending escalation withdrawn "
              f"({withdrawn.get('reason') or 'no reason recorded'})" if withdrawn   # #1263
              else f"#{number}: no pending escalation to withdraw")
@@ -503,7 +508,15 @@ def _escalate(loop, args, emit=print):
     if outcome == "new":
         from .run_supervisor import record_operator_action
         record_operator_action(loop["repo"], number, "escalate")
-    escalate_pending.take(state_mod.state_for(loop), number)   # this escalation supersedes it
+    try:
+        escalate_pending.take(state_mod.state_for(loop), number)   # this escalation supersedes it
+    except Exception as exc:
+        # The head is parked (above); only the stale pending record could not be cleared. Say both,
+        # rather than a traceback that hides that the escalation landed (shadow on #1265).
+        emit(f"{say}: escalated at {verdicts}/{loop['cap']} verdicts, but its pending record could "
+             f"not be cleared ({type(exc).__name__}: {exc}); `hermes dk escalate --loop "
+             f"{loop['id']} --pr {number} --withdraw` clears it")
+        return 2
     emit(f"{say}: escalated at {verdicts}/{loop['cap']} verdicts — adjudicator turn "
           f"{'enqueued' if outcome in ('new', 'retry') else outcome}; the PR is parked at this "
           f"head (`hermes dk explain --loop {loop['id']} --pr {number}` follows it)")
