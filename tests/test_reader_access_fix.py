@@ -32,6 +32,22 @@ class FixLines(unittest.TestCase):
         self.assertNotIn("read:repo_hook", app.fix)
         self.assertIn("read:repo_hook", pat.fix)
 
+    def test_doctor_hooks_detail_and_branch_protection_fix(self):
+        # #1255: the hooks detail named a PAT scope beside an App fix; branch-protection's unread
+        # fix named no permission at all.
+        with mock.patch.object(config, "hook_roles", return_value=["reviewer"]), \
+                mock.patch.object(route_intent, "routes_of", return_value={"reviewer": "w-review"}), \
+                mock.patch.object(routes, "url_for", return_value="https://gw.example/p/x"), \
+                mock.patch.object(gh, "api", return_value=None):
+            [app] = doctor.check_hooks(APP_READER, False)
+        self.assertNotIn("read:repo_hook", app.detail)
+        self.assertIn("Webhooks: Read", app.detail)              # the App's own need, named
+        unread = gh.Response(None, "HTTP 403", 403, {})
+        with mock.patch.object(gh, "request", return_value=unread):
+            check = doctor.check_branch_protection({**APP_READER, "required_checks": ["tests"]},
+                                                   False)
+        self.assertIn("Administration: Read", check.fix)
+
     def test_doctor_hook_deliveries(self):
         with mock.patch.object(gh, "fetch", return_value=(None, "HTTP 403")):
             app = doctor.check_deliveries(APP_READER, 5, "w-review")

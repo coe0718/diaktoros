@@ -1173,6 +1173,14 @@ _READER_ACCESS = {"hooks": ("hook read access (`repo`, or the narrower `read:rep
                                  "on an admin account)", "Administration: Read")}
 
 
+def reader_access_need(loop: dict, what: str) -> str:
+    """What the reader needs to see ``what``, for its kind of identity (#1255): a PAT's scope or
+    an App's permission, for a detail line that says why a read was denied."""
+    pat, app = _READER_ACCESS[what]
+    return f"the repository permission {app}" if is_app(loop, str(loop.get("read_token") or "")) \
+        else pat
+
+
 def reader_access_fix(loop: dict, what: str) -> str:
     """The fix line for a reader that cannot see ``what`` ("hooks" or "protection"), worded for
     the reader's kind of identity: an App gets the permission to add, a PAT the scope."""

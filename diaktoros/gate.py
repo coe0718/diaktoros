@@ -696,7 +696,7 @@ def hooks_read(loop: dict) -> tuple[bool | None, str]:
     """``(armed, error)``. ``None`` means the hook list could not be read at all.
 
     Both seat routes must exist as active repo hooks, or the loop is parked. An unreadable list is
-    **not** "paused": a token without hook read access (classic ``repo``, or ``read:repo_hook``)
+    **not** "paused": a reader without hook read access (a PAT's classic ``repo`` or ``read:repo_hook``; a GitHub App's Webhooks: Read)
     cannot see hooks that may well be active.
     The watchdog reads that as silence, and ``explain`` labels it unknown rather than guessing in
     the other direction — "the loop is paused" is a claim, and it needs the hooks to prove it.

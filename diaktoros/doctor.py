@@ -1902,8 +1902,8 @@ def check_hooks(loop: dict, offline: bool) -> list[Check]:
     if not complete:
         return [Check("hooks", UNKNOWN,
                       f"could not read the complete /repos/{loop['repo']}/hooks listing — nothing was proved about "
-                      f"{len(expected)} hook(s) (a token without hook read access — `repo`, or the "
-                      f"narrower `read:repo_hook` — reads as denied)",
+                      f"{len(expected)} hook(s) (a reader without "
+                      f"{config.reader_access_need(loop, 'hooks')} reads as denied)",
                       f"{config.reader_access_fix(loop, 'hooks')} and re-run; check by hand with "
                       f"`gh api repos/{loop['repo']}/hooks`")]
     checks = []
@@ -2401,7 +2401,8 @@ def check_branch_protection(loop: dict, offline: bool) -> Check | None:
     if len(unread) == 2:
         return Check("branch-protection", UNKNOWN,
                      f"could not read the required checks of {base}: {'; '.join(unread)}",
-                     "compare by hand in repo settings → rules and branches")
+                     f"{config.reader_access_fix(loop, 'protection')}, or compare by hand in "
+                     "repo settings → rules and branches")
     want = set(wanted)
     if want == have:
         return None

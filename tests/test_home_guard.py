@@ -90,6 +90,21 @@ class HomeGuard(unittest.TestCase):
         self.assertEqual(pathlib.Path.home(), _home_guard.TEST_HOME)
         self.assertIn(_home_guard.TEST_HOME, config.home().resolve().parents)
 
+    def test_git_in_tests_runs_no_background_gc(self):
+        # #1266: a detached `git gc --auto` after a push into a fixture's bare remote raced the
+        # fixture's cleanup ("Directory not empty"). The guard's home turns it off for every git.
+        import subprocess
+        import _home_guard
+        # An inherited GIT_CONFIG_GLOBAL (a seat's /dev/null) must not skip it (Vex on #1270).
+        self.assertEqual(pathlib.Path(os.environ["GIT_CONFIG_GLOBAL"]).read_text(),
+                         _home_guard.GIT_QUIET_CONFIG)
+        for key, want in (("receive.autogc", "false"), ("gc.auto", "0"),
+                          ("maintenance.auto", "false")):
+            with self.subTest(key=key):
+                got = subprocess.run(["git", "config", "--get", key], capture_output=True,
+                                     text=True, check=True).stdout.strip()
+                self.assertEqual(got, want)
+
     def test_tripwire_refuses_the_passwd_home(self):
         # Refused lexically, before anything under the real home is even stat'ed.
         real = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
