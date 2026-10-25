@@ -1853,9 +1853,21 @@ def _cmd_fixer_push_locked(args) -> int:
 # -- the parser for this module's commands (#676 step 7) --------------------------------------
 
 
-# The ledger seats whose runs act as each identity (shadows and triage write nothing as it).
+# The ledger seats whose runs write as each identity. Triage writes as the reviewer's login
+# unless it has its own (config.triage_login), so it is added for the reviewer when it does.
+# The reader reads for every run, shadows included, so any run in flight blocks moving it.
 _IDENTITY_SEATS = {"reviewer": ("reviewer",), "fixer": ("fixer", "issue_fixer"),
                    "adjudicator": ("adjudicator",)}
+
+
+def _identity_runs(loop: dict, seat: str) -> tuple[str, ...] | None:
+    """The ledger seats a switch of ``seat`` waits for; None for every seat (the reader)."""
+    if seat == "read":
+        return None
+    seats = _IDENTITY_SEATS[seat]
+    if seat == "reviewer" and config.triage_login(loop) == config.seat_login(loop, "reviewer").lower():
+        seats += ("triage",)
+    return seats
 
 
 def cmd_identity(args) -> int:
@@ -1904,25 +1916,31 @@ def cmd_identity(args) -> int:
     try:
         import sqlite3
         db = run_supervisor.production_ledger()
-        busy = 0
+        busy = uncertain = 0
         if db.exists():
-            seats = sum(_IDENTITY_SEATS.values(), ()) if seat == "read" else _IDENTITY_SEATS[seat]
+            seats = _identity_runs(loop, seat)
+            which = "" if seats is None else f" AND seat IN ({','.join('?' * len(seats))})"
             from .. import ledger
             con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=ledger.LOCK_WAIT_S)
             try:
-                busy = con.execute(
-                    f"SELECT COUNT(*) FROM runs WHERE repo=? AND seat IN ({','.join('?' * len(seats))})"
+                rows = con.execute(
+                    f"SELECT state FROM runs WHERE repo=?{which}"
                     f" AND state IN ({','.join('?' * len(run_supervisor.ACTIVE))})",
-                    (loop["repo"], *seats, *run_supervisor.ACTIVE)).fetchone()[0]
+                    (loop["repo"], *(seats or ()), *run_supervisor.ACTIVE)).fetchall()
             finally:
                 con.close()
+            busy = len(rows)
+            uncertain = sum(1 for (state,) in rows if state == "uncertain")
     except Exception as exc:
         print(f"refused: the run ledger cannot be read, so a run in flight cannot be ruled out "
               f"({type(exc).__name__}: {exc})")
         return 2
     if busy:
+        # An uncertain run never settles by itself: only `retry` moves it.
+        settle = (f" ({uncertain} uncertain: settle each with `hermes dk retry --loop {lid} --pr N`, "
+                  "`hermes dk explain` names them)" if uncertain else "")
         print(f"refused: {busy} run(s) acting as the {seat} identity are in flight on {lid}; "
-              "switch once they finish")
+              f"switch once they finish{settle}")
         return 2
     raw = json.loads(json.dumps(loop))
     tokens = {k: v for k, v in (raw.get("tokens") or {}).items() if k.lower() != login.lower()}
@@ -1948,7 +1966,10 @@ def cmd_identity(args) -> int:
     raw["seats"] = seats_cfg
     try:
         updated = config.normalize(raw)
-        credentials.verify_credentials(updated)
+        # The checks every other identity write runs: the reader and the seats stay distinct
+        # accounts (a shared one leaves the broker denying every write), each mapped and private.
+        credentials.verify_credentials(updated, {"read", seat} if seat != "read" else {"read"})
+        credentials.verify_seats(updated, {seat} & set(config.SEAT_KEYS))
         account = gh.principal(updated, login)
     except config.ConfigError as exc:
         print(f"refused: {exc}")
@@ -1970,7 +1991,7 @@ def cmd_identity(args) -> int:
     cli_common._write_config(updated)
     print(f"[{lid}] {seat}: {old or '(none)'} → {login} ({kind}); resolved on GitHub as "
           f"{account.get('login')} (id {account.get('id')})")
-    if old and old.lower() != login.lower():
+    if old and old.lower() != login.lower() and seat in ("reviewer", "fixer"):
         print(f"  {old} stays on the allowlist (open PRs keep its verdicts and authorship) and its "
               "credential stays mapped; remove them once no open PR needs them")
     steps = [f"hermes dk doctor --loop {lid}", f"hermes dk selftest --loop {lid} --no-model"]

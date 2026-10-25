@@ -648,9 +648,14 @@ hermes dk identity --loop "<loop-id>" --seat reviewer --pat "rev-account=/abs/re
   live on GitHub: an App mints an installation token for the loop's repository, so an App that
   isn't installed there is refused. Nothing is written until that succeeds; `--dry-run` stops
   right after it.
+- **The identities stay distinct accounts.** The same checks as `init` and `set` apply: a seat
+  can't take another seat's or the reader's login, nor the reader a seat's (the broker would deny
+  every write).
 - **It's refused while that identity has a turn in flight**, so no run finishes as the old login
-  on the new mapping. Another identity is unaffected.
-- **The old login stays on the allowlist** (`reviewers`/`fixers`), so open PRs keep the verdicts
+  on the new mapping. Triage counts for the reviewer when it labels as the reviewer's login, and
+  any run counts for the reader. An `uncertain` run never settles by itself: `retry` settles it.
+  Another identity is unaffected.
+- **A seat's old login stays on the allowlist** (`reviewers`/`fixers`), so open PRs keep the verdicts
   and authorship it earned, and its credential stays mapped. Remove them once no open PR needs
   them.
 - **Nothing else moves:** a seat's login isn't part of its route, so routes and hooks are
