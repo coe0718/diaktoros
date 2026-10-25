@@ -590,7 +590,10 @@ The loop does not resolve, and hands to you instead (the run ends `failed` with
 - a base that **changed workflow files** since the PR branched: GitHub refuses that push from a
   token without the `workflow` scope, which the loop never asks for.
 
-Merge the base into the branch yourself, then `hermes dk review --pr N`.
+Merge the base into the branch yourself, then `hermes dk review --pr N`. The loop remembers the
+refusal for that head: later merges to the base queue no new conflict turn and send no new
+failure notice for it (#1154: each merge used to start the same refused turn again). A push to
+the PR, yours included, is a new head and clears it.
 
 ## Publishing stats
 

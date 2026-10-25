@@ -45,6 +45,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from diaktoros import review_only_conflict  # noqa: E402
+from diaktoros import conflict_person  # noqa: E402
 from diaktoros import escalate_pending  # noqa: E402
 from diaktoros import merge_check  # noqa: E402
 from diaktoros import review_kick  # noqa: E402
@@ -730,7 +731,12 @@ def act_on_conflicts(loop: dict, st: state_mod.LoopState,
         if resolving and not review_only and not base_sha:
             log(f"#{number} @ {head[:7]} conflict turn not queued: {loop['base']}'s tip "
                 "unreadable (GitHub read failed); the next sweep retries")
-        if resolving and not review_only and re.fullmatch(r"[0-9a-f]{40}", base_sha):
+        person = conflict_person.get(st, number, head) if resolving and not review_only else ""
+        if person:
+            # #1154: this head's conflict was already handed to a person; a new base tip does
+            # not change that (a new push does), so no turn and no repeated failure notice.
+            log(f"#{number} @ {head[:7]} conflict needs a person ({person}): not requeued")
+        elif resolving and not review_only and re.fullmatch(r"[0-9a-f]{40}", base_sha):
             # #303 stage 3: one resolving fixer turn per (head, base); the ledger's turn key
             # dedups every later sweep. The worker merges and may still hand it to a person
             # (a whole-file conflict, or workflow changes the fixer's token cannot push).
@@ -1440,6 +1446,10 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         merge_check.refresh(loop, st, log=log)    # #1163: the diaktoros/review check, every head
     except Exception as exc:
         log(f"merge check failed: {type(exc).__name__}: {exc}")
+    try:                                          # #1154: a closed PR's conflict record goes
+        conflict_person.prune(st, [p.get("number") for p in prs if isinstance(p, dict)])
+    except Exception as exc:
+        log(f"conflict record prune failed: {type(exc).__name__}: {exc}")
     try:                                          # #1246: a closed PR's pending escalation goes
         for number in escalate_pending.prune(st, [p.get("number") for p in prs
                                                   if isinstance(p, dict)]):
