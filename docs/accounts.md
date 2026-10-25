@@ -156,6 +156,21 @@ how the `diaktoros/review` merge check stands in for the review GitHub does not 
 [GitHub App support](github-app-support.md). The reviewer App needs **Checks: write** to post that
 check (`merge_check`, on by default for an App reviewer).
 
+Each App's **repository permissions** (Metadata: Read is always added), as proven end to end on a
+live loop (#1163). Install each App on the loop's repository only, and leave its webhook inactive
+with no events (the repo hooks deliver events; `protect` and the hooks still use an admin login's
+token):
+
+| App | Permissions | Why |
+| --- | --- | --- |
+| Reader | Contents, Pull requests, Checks, Commit statuses, Issues: **Read**; **Webhooks: Read**; **Administration: Read** | The gates' reads and the CI the reviewer sees; Webhooks and Administration let `doctor`, `selftest` and `explain` see the hooks and the base's classic protection (without them those lines stay ⚠️) |
+| Reviewer | Contents: Read; Pull requests, Issues: **Read and write**; **Checks: Read and write** | Reviews; issues it files and triage labels; the `diaktoros/review` check |
+| Fixer | Contents, Pull requests, Issues: **Read and write** | Pushes and PRs; comments on the issues it fixes. Never Workflows: a merge that carries workflow changes comes back to you |
+| Adjudicator (optional) | Pull requests: **Read and write** | The ruling's PR comment, nothing else |
+
+After adding a permission, accept it on the App's installation (GitHub asks the owner first);
+until then the App's tokens do not carry it.
+
 ## Verify files, accounts and access
 
 ```bash

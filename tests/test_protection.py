@@ -172,6 +172,22 @@ class Doctor(Fake):
         self.rules, self.classic = None, None                 # rulesets unread, classic 404
         self.assertEqual(self.check(pat_loop(merge_check="on")).status, doctor.UNKNOWN)
 
+    def test_the_fix_names_the_reader_apps_permission_not_a_pat_scope(self):
+        # #1241 (live trial): an App reader got "`read:repo_hook`, or `repo`", which an App has
+        # no way to hold.
+        app_reader = {**app_loop(), "read_token": "rd[bot]", "tokens": {},
+                      "apps": {**app_loop()["apps"], "rd[bot]": {"app_id": 9, "key_file": "/k"}}}
+        self.assertEqual(config.reader_access_fix(app_reader, "hooks"),
+                         "give the reader App (rd[bot]) the repository permission Webhooks: Read, "
+                         "then accept the new permission on its installation")
+        self.assertIn("Administration: Read", config.reader_access_fix(app_reader, "protection"))
+        self.assertIn("`read:repo_hook`", config.reader_access_fix(app_loop(), "hooks"))
+        self.assertNotIn("Administration", config.reader_access_fix(app_loop(), "protection"))
+        self.rules, self.classic = requires(APP), "forbidden"
+        self.assertIn("Administration: Read", self.check(app_reader).fix)
+        self.rules = None
+        self.assertIn("Administration: Read", self.check(app_reader).fix)   # nothing readable
+
     def test_offline_and_unreadable(self):
         self.assertEqual(self.check(app_loop(), offline=True).status, doctor.UNKNOWN)
         self.assertEqual(self.calls, [])

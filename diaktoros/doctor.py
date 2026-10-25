@@ -1904,8 +1904,7 @@ def check_hooks(loop: dict, offline: bool) -> list[Check]:
                       f"could not read the complete /repos/{loop['repo']}/hooks listing — nothing was proved about "
                       f"{len(expected)} hook(s) (a token without hook read access — `repo`, or the "
                       f"narrower `read:repo_hook` — reads as denied)",
-                      f"give the read token hook read access — `repo`, or the narrower "
-                      f"`read:repo_hook` — and re-run; check by hand with "
+                      f"{config.reader_access_fix(loop, 'hooks')} and re-run; check by hand with "
                       f"`gh api repos/{loop['repo']}/hooks`")]
     checks = []
     for seat, name, url in expected:
@@ -2178,8 +2177,8 @@ def check_deliveries(loop: dict, hook_id, name: str) -> "Check | str":
         return Check(f"hook:{name}", UNKNOWN,
                      f"hook {hook_id} found, but its recent deliveries could not be read ({reason}) "
                      "— whether its secret matches the route is unproven",
-                     f"give the read token hook read access (`read:repo_hook`, or `repo`), or look "
-                     f"by hand: `gh api repos/{loop['repo']}/hooks/{hook_id}/deliveries`")
+                     f"{config.reader_access_fix(loop, 'hooks')}, or look by hand: "
+                     f"`gh api repos/{loop['repo']}/hooks/{hook_id}/deliveries`")
     stamped = [d for d in data if isinstance(d.get("delivered_at"), str)]
     if not stamped:
         return "no deliveries yet — the secret is unproven until the first one arrives"
@@ -2433,8 +2432,8 @@ def check_merge_check(loop: dict, offline: bool) -> Check | None:
             return None
         return Check("merge-check", UNKNOWN,
                      f"could not read {loop['base']}'s protection: {'; '.join(found.unread)}",
-                     f"check by hand that {loop['base']} requires {ci.MERGE_CHECK} "
-                     "(repo settings → rules)")
+                     f"{config.reader_access_fix(loop, 'protection')}, or check by hand that "
+                     f"{loop['base']} requires {ci.MERGE_CHECK} (repo settings → rules)")
     blocking, warnings, facts = protection.problems(loop, found)
     if not (blocking or warnings or facts):
         return None
@@ -2454,8 +2453,8 @@ def check_merge_check(loop: dict, offline: bool) -> Check | None:
         if any(ci.MERGE_CHECK in w and "approving" not in w for w in warnings):
             fixes.append(require)
         if any(w.startswith("could not read") for w in warnings):
-            fixes.append(f"check {loop['base']} by hand in repo settings → rules, or let a "
-                         "reader with admin access read it")
+            fixes.append(f"{config.reader_access_fix(loop, 'protection')}, or check "
+                         f"{loop['base']} by hand in repo settings → rules")
         return Check("merge-check", UNKNOWN, "; ".join(warnings + facts), "; ".join(fixes))
     return Check("merge-check", VERIFIED, "; ".join(facts))
 

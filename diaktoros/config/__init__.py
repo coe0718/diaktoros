@@ -1158,6 +1158,32 @@ def check_apps(value, tokens: dict, where: str) -> dict:
     return out
 
 
+def is_app(loop: dict, login: str) -> bool:
+    """Whether ``login`` is mapped as a GitHub App identity (#1163), not a PAT."""
+    name = str(login or "").lower()
+    pats = {str(k).lower() for k in loop.get("tokens") or {}}
+    return bool(name) and name not in pats and name in {str(k).lower() for k in loop.get("apps") or {}}
+
+
+# What the reader needs to see each part of the repository's setup (#1241): a PAT's scope, or a
+# GitHub App's repository permission (an App answers "Resource not accessible by integration").
+_READER_ACCESS = {"hooks": ("hook read access (`repo`, or the narrower `read:repo_hook`)",
+                            "Webhooks: Read"),
+                  "protection": ("admin access to read classic branch protection (classic `repo` "
+                                 "on an admin account)", "Administration: Read")}
+
+
+def reader_access_fix(loop: dict, what: str) -> str:
+    """The fix line for a reader that cannot see ``what`` ("hooks" or "protection"), worded for
+    the reader's kind of identity: an App gets the permission to add, a PAT the scope."""
+    pat, app = _READER_ACCESS[what]
+    reader = str(loop.get("read_token") or "the reader")
+    if is_app(loop, reader):
+        return (f"give the reader App ({reader}) the repository permission {app}, then accept the "
+                "new permission on its installation")
+    return f"give the read token ({reader}) {pat}"
+
+
 def reviewer_is_app(loop: dict) -> bool:
     """Whether the reviewer seat is a GitHub App identity (#1163). GitHub cannot request an App
     bot as a reviewer (a request answers 201 and does nothing, docs/github-app-support.md), so the

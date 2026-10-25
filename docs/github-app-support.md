@@ -13,7 +13,9 @@ the distinct accounts and tokens described in [Accounts](accounts.md).
   webhook active. Their webhook URL pointed at an address that refuses deliveries: GitHub still
   records every delivery, and the harness reads them back through each App's
   `GET /app/hook/deliveries` API, so no receiver was needed.
-- Permissions: reader — contents, pull requests, checks, commit statuses and issues, all read;
+- Permissions: reader — contents, pull requests, checks, commit statuses and issues, all read
+  (a live loop's reader also needs Webhooks: Read and Administration: Read, #1241; the full
+  table is in [Accounts](accounts.md));
   reviewer — contents read, pull requests and issues read and write (and checks write, for 9);
   fixer — contents, pull requests and issues read and write. Both writers need issues: the
   reviewer files issues and labels for triage; the fixer comments on issues it fixes.
