@@ -114,6 +114,17 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(self.posts, 0)
         self.assertIsNone(self.receipt())
 
+    def test_an_approve_on_a_conflicting_pr_is_refused_before_the_claim(self):
+        # #1243: the live read right before the write sees the conflict; nothing is claimed, so
+        # the turn can end cleanly (a block on a conflicting PR: test_broker_ipc).
+        from diaktoros import broker
+        self.pr = {**self.pr, 'mergeable': False, 'mergeable_state': 'dirty'}
+        with mock.patch.object(gh, 'api', side_effect=self.api):
+            with self.assertRaises(broker.BrokerConflict):
+                review_receipt.submit(self.loop, self.scope, self.ledger, 'APPROVE', 'reviewed')
+        self.assertEqual(self.posts, 0)
+        self.assertIsNone(self.receipt())
+
     def test_exact_id_mismatch_stays_uncertain(self):
         self.mode = 'wrong-id'
         self.assert_uncertain_after_post()

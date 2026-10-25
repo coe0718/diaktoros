@@ -26,6 +26,11 @@ class BrokerDenied(Exception):
     """Fail closed: the requested operation is not authorized at this PR head."""
 
 
+class BrokerConflict(BrokerDenied):
+    """An APPROVE refused because the live PR conflicts with its base (#1243): no review body can
+    cure it, so the caller ends the reviewer's turn rather than asking for a resubmission."""
+
+
 _MESSAGE = re.compile(r'"message"\s*:\s*"((?:[^"\\]|\\.)*)')
 _SECRETISH = re.compile(r"(?i)\b(?:sk|pk|rk|key|token|bearer|ghp|gho|ghs|github_pat)[-_a-z0-9]*[\s:=]*[A-Za-z0-9_\-\.]{16,}"
                         r"|[A-Za-z0-9_\-]{40,}")
@@ -56,7 +61,8 @@ def _denied(message: str, why: str) -> BrokerDenied:
 
 
 def authorize(loop: dict, *, repo: str, number: int, head: str, role: str,
-              branch: str, operation: str, require_verdict: bool = True) -> str:
+              branch: str, operation: str, require_verdict: bool = True,
+              approve: bool = False) -> str:
     """Return the seat login only after checking exact live PR identity and credentials.
 
     No caller-supplied path, URL, token, reviewer or destination enters an API request.
@@ -120,6 +126,10 @@ def authorize(loop: dict, *, repo: str, number: int, head: str, role: str,
         raise BrokerDenied("wrong destination branch")
     if (pr_head.get("repo") or {}).get("full_name") != repo:
         raise BrokerDenied("fork head not permitted for credentialed writes")
+    if approve and (current.get("mergeable") is False or current.get("mergeable_state") == "dirty"):
+        # #1243: on the read made right before the write, so a base that moved during the turn
+        # is caught. Only a conflict GitHub computed counts; an uncomputed state (null) does not.
+        raise BrokerConflict(f"#{number} now conflicts with {loop.get('base')}")
     if role == "fixer":
         user = current.get("user")
         author = user.get("login") if isinstance(user, dict) else None
@@ -179,7 +189,8 @@ def perform(loop: dict, *, repo: str, number: int, head: str, role: str,
     the verdict was checked at the old head before the push, and the new head cannot have one.
     """
     login = authorize(loop, repo=repo, number=number, head=head, role=role,
-                      branch=branch, operation=operation, require_verdict=require_verdict)
+                      branch=branch, operation=operation, require_verdict=require_verdict,
+                      approve=operation == "review" and verdict == "APPROVE")
     # `authorize` also permits push, answers and file_issue, which have their own write paths.
     # This function sends only the two REST writes below; anything else is refused here, so a
     # new authorized operation can never fall through into a request-review POST.

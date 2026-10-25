@@ -206,6 +206,13 @@ Missing offline dependencies or insufficient sandbox build space are environment
 not automatically PR defects; the seat must state what it did and did not verify. With
 nothing verified it still cannot approve. A partial change view cannot authorize approval.
 
+**A conflict during the turn.** A review starts only on a PR that merges cleanly, but the
+base can move while the reviewer works. On its last read before posting, right before the
+write, the broker refuses an APPROVE if GitHub reports the PR conflicting (#1243). Nothing
+is posted and the turn ends as done, not retried: the conflict is resolved on a new head,
+which gets a fresh review. A REQUEST_CHANGES still goes through, and a merge state GitHub
+has not computed yet is not treated as a conflict.
+
 **CI.** The reviewer and fixer prompts carry the head's CI as the reader saw it just before
 the turn: failed checks, checks still running, and how many passed. A failed check is a blocking
 finding. At the write, the broker re-reads CI and refuses an APPROVE while any check run or
