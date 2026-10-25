@@ -502,6 +502,28 @@ class Posting(unittest.TestCase):
                 finally:
                     self.assertEqual(mark.called, called)
 
+    def test_a_gate_mark_during_a_refresh_posts_nothing_and_the_refresh_wins(self):
+        # #1251: both used to read "nothing posted for this head" and both POSTed a run, leaving
+        # one untracked and in progress. The gate's mark now yields to a refresh in flight.
+        marks = []
+        real_post = merge_check.post
+
+        def post_while_the_gate_fires(*args, **kwargs):
+            marks.append(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "review queued"))
+            return real_post(*args, **kwargs)
+        with mock.patch.object(merge_check, "post", side_effect=post_while_the_gate_fires):
+            self.assertEqual(self.refresh(), 1)
+        self.assertEqual(marks, [False])
+        self.assertEqual([c[1] for c in self.calls], ["POST"])          # one run, not two
+        self.assertEqual(self.memory()["7"]["run_id"], 55)
+
+    def test_the_writer_lock_is_free_again_after_each_writer(self):
+        self.assertEqual(self.refresh(), 1)
+        self.assertTrue(merge_check.mark_pending(self.loop, self.st, 8, "b" * 40, "review queued"))
+        with merge_check._writer(self.st, wait=False) as mine:
+            self.assertTrue(mine)
+            self.assertFalse(merge_check.mark_pending(self.loop, self.st, 9, "c" * 40, "x"))
+
     def test_refresh_quietly_never_raises(self):
         from diaktoros import util
         with mock.patch.object(merge_check, "refresh", side_effect=RuntimeError("boom")), \
