@@ -178,12 +178,19 @@ class TriageVerb(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual(config.load_id(LOOP_ID)["tokens"]["hook-admin"], str(good))
 
+    def test_an_unmapped_admin_token_is_refused_naming_both_mappings(self):
+        # #1196: the refusal names a PAT and a GitHub App, since either can manage the hook.
+        rc, out = self.enable("--admin-token", "stranger")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("has no credential mapped", out)
+        self.assertIn("--app stranger=APP_ID:", out)
+
     def test_padded_token_login_satisfies_the_admin_token_precheck(self):
         """#945: `--token` strips the login it maps, so the `--admin-token` pre-check must
         see the same stripped login, not refuse a mapping the command would write."""
         good = self._pat(0o600)
         rc, out = self.enable("--admin-token", "hook-admin", "--token", f" hook-admin ={good}")
-        self.assertNotIn("has no token file mapped", out)
+        self.assertNotIn("has no credential mapped", out)
         self.assertEqual(rc, 0, out)
         self.assertEqual(config.load_id(LOOP_ID)["tokens"]["hook-admin"], str(good))
 

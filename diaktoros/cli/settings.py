@@ -1585,9 +1585,10 @@ def cmd_triage(args) -> int:
             return 2
         args.enable = True      # triage is on: apply the flags as --enable would (#527)
     admin = args.admin_token or None
-    if admin and gh.token_path(loop, admin) is None and admin.lower() not in {
-            str(pair.split("=", 1)[0]).strip().lower() for pair in args.token or []}:
-        print(f"refused: --admin-token {admin!r} has no token file mapped on this loop")
+    refusal = cli_common.admin_unmapped(loop, admin, also={
+        str(pair.split("=", 1)[0]).strip() for pair in args.token or []})
+    if refusal:
+        print(f"refused: {refusal}")
         return 2
     path = config.config_dir() / f"{loop['id']}.json"
     previous_config = path.read_bytes()
@@ -1993,8 +1994,9 @@ def add_set(sub) -> None:  # noqa: ANN001
                              "login only (a path, never the token)")
     change.add_argument("--app", action="append", default=[], metavar="LOGIN=APP_ID:KEY",
                         help="<app-slug>[bot]=APP_ID:/abs/path/to/key.pem: a GitHub App identity "
-                             "for the --read-token or --adjudicator-login login only, instead of "
-                             "a PAT (the key stays on the host, mode 0600)")
+                             "instead of a PAT for the --read-token or --adjudicator-login login, "
+                             "or an extra login such as a hook admin (--admin-token); the key "
+                             "stays on the host, mode 0600")
     change.add_argument("--observer-route", help="route the observer feed delivers through")
     change.add_argument("--observer-profile", help="profile that owns the observer destination")
     change.add_argument("--observer-deliver",

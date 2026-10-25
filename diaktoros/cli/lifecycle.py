@@ -760,10 +760,9 @@ def cmd_uninstall(args) -> int:
         if busy:
             print("refused: --purge would delete the state of a run in flight: " + "; ".join(busy))
             return 2
-    if admin and gh.token_path(loop, admin) is None:
-        print(f"refused: --admin-token {admin!r} has no token file mapped on this loop — map it "
-              f"with `hermes dk set --loop {shlex.quote(loop['id'])} --token "
-              f"{shlex.quote(admin)}=/abs/path/to/pat`")
+    refusal = cli_common.admin_unmapped(loop, admin)
+    if refusal:
+        print(f"refused: {refusal}")
         return 2
     jobs, error = cli_common._cron_jobs(loop)
     if jobs is None:

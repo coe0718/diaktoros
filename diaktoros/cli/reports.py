@@ -11,6 +11,7 @@ import pathlib
 import shlex
 
 from .. import config, gh
+from . import common as cli_common
 
 
 def cmd_trace(args) -> int:
@@ -28,10 +29,9 @@ def cmd_trace(args) -> int:
         print(f"no such loop: {exc}")
         return 2
     admin = getattr(args, "admin_token", "") or None
-    if admin and gh.token_path(loop, admin) is None:
-        print(f"refused: --admin-token {admin!r} has no token file mapped on this loop — map it "
-              f"with `hermes dk set --loop {shlex.quote(loop['id'])} --token "
-              f"{shlex.quote(admin)}=/abs/path`")
+    refusal = cli_common.admin_unmapped(loop, admin)
+    if refusal:
+        print(f"refused: {refusal}")
         return 2
     try:
         if args.delivery:

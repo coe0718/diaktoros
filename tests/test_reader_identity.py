@@ -226,7 +226,7 @@ class ReaderIdentityTests(_Loop):
 
     def test_init_refuses_an_admin_token_with_no_file(self):
         self.refused(self.init_argv("--hooks", "--admin-token", "owner-acct", "--dry-run"),
-                     r"--admin-token 'owner-acct' has no token file")
+                     r"--admin-token 'owner-acct' has no credential mapped")
 
     def test_distinct_reader_installs(self):
         rc, out = self.run_cli(self.init_argv())
