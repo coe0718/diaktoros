@@ -325,6 +325,7 @@ class ReaderIdentityTests(_Loop):
                  "trace": ["--payload", "/nonexistent-payload.json"],
                  "models": ["--seat", "reviewer"], "retry": ["--pr", "1"], "continue": ["--run", "1"],
                  "review": ["--pr", "1"], "escalate": ["--pr", "1"],
+                 "identity": ["--seat", "reviewer", "--app", "x-app[bot]=1:/nonexistent.pem"],
                  "regression": ["--issue", "1", "--pr", "1"],
                  "restore": ["/nonexistent-backup.tar.gz", "--dry-run"],
                  "observer": ["--list"], "init": ["--repo", "acme/other", "--dry-run"], "setup": ["--yes"]}

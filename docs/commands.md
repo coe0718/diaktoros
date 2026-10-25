@@ -92,6 +92,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | turn the loop on or off | [`arm`](#arm) |
 | make the merge button wait for the loop's verdict | [`protect`](#protect) |
 | change a setting | [`set`](#set), [`apply`](#apply), [`settings`](#settings) |
+| move an account (a seat, the reader, the adjudicator) to a GitHub App, or back | [`identity`](#identity) |
 | see every setting a loop has, its value and where it came from | [`show`](#show) |
 | let the fixer push on its own | [`fixer-push`](#fixer-push) |
 | label new issues automatically | [`triage`](#triage) |
@@ -629,6 +630,47 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--observer-mute` |  |  | stop the feed without forgetting it |
 | `--observer-unmute` |  |  | resume a muted feed |
 | `--observer-disable` |  |  | drop this loop's observer config entirely |
+<!-- /flags -->
+
+### identity
+
+Moves one identity of an existing loop to a GitHub App, or back to a person's account (#1163):
+the reviewer seat, the fixer seat, the reader or the adjudicator. Run it once per identity, with
+`doctor` in between, to move a loop onto Apps one step at a time.
+
+```bash
+hermes dk identity --loop "<loop-id>" --seat reviewer --app "acme-reviewer[bot]=12345:/abs/reviewer.pem" --dry-run
+hermes dk identity --loop "<loop-id>" --seat reviewer --app "acme-reviewer[bot]=12345:/abs/reviewer.pem"
+hermes dk identity --loop "<loop-id>" --seat reviewer --pat "rev-account=/abs/rev.pat"   # back
+```
+
+- **The new identity is proven first.** Its key (or PAT) file is checked, then it's resolved
+  live on GitHub: an App mints an installation token for the loop's repository, so an App that
+  isn't installed there is refused. Nothing is written until that succeeds; `--dry-run` stops
+  right after it.
+- **The identities stay distinct accounts.** The same checks as `init` and `set` apply: a seat
+  can't take another seat's or the reader's login, nor the reader a seat's (the broker would deny
+  every write).
+- **It's refused while that identity has a turn in flight**, so no run finishes as the old login
+  on the new mapping. Triage counts for the reviewer when it labels as the reviewer's login, and
+  any run counts for the reader. An `uncertain` run never settles by itself: `retry` settles it.
+  Another identity is unaffected.
+- **A seat's old login stays on the allowlist** (`reviewers`/`fixers`), so open PRs keep the verdicts
+  and authorship it earned, and its credential stays mapped. Remove them once no open PR needs
+  them.
+- **Nothing else moves:** a seat's login isn't part of its route, so routes and hooks are
+  unchanged. Moving the reviewer to an App turns the `diaktoros/review` merge check on
+  (`merge_check: auto`); the command then suggests [`protect`](#protect), and turning required
+  approvals off on the base.
+
+<!-- flags:identity -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` | **required** | loop id |
+| `--seat` | `reviewer` \| `fixer` \| `read` \| `adjudicator` | **required** | which identity moves |
+| `--app` | `LOGIN=APP_ID:KEY` |  | the App: <app-slug>[bot]=APP_ID:/abs/path/to/key.pem (mode 0600) |
+| `--pat` | `LOGIN=PATH` |  | or a person's account: login=/abs/path/to/pat (mode 0600) |
+| `--dry-run` |  |  | prove the identity on GitHub and print the change; write nothing |
 <!-- /flags -->
 
 ### apply
