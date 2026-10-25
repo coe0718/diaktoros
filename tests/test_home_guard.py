@@ -94,6 +94,10 @@ class HomeGuard(unittest.TestCase):
         # #1266: a detached `git gc --auto` after a push into a fixture's bare remote raced the
         # fixture's cleanup ("Directory not empty"). The guard's home turns it off for every git.
         import subprocess
+        import _home_guard
+        # An inherited GIT_CONFIG_GLOBAL (a seat's /dev/null) must not skip it (Vex on #1270).
+        self.assertEqual(pathlib.Path(os.environ["GIT_CONFIG_GLOBAL"]).read_text(),
+                         _home_guard.GIT_QUIET_CONFIG)
         for key, want in (("receive.autogc", "false"), ("gc.auto", "0"),
                           ("maintenance.auto", "false")):
             with self.subTest(key=key):

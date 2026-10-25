@@ -255,9 +255,12 @@ for _home in {os.environ.get("HOME"), os.environ.get("HERMES_HOME")} - {None, ""
 GIT_QUIET_CONFIG = "[gc]\n\tauto = 0\n\tautoDetach = false\n[maintenance]\n\tauto = false\n" \
                    "[receive]\n\tautogc = false\n"
 _gitconfig = pathlib.Path(os.environ.get("HOME") or "") / ".gitconfig"
-if _gitconfig.parent.is_absolute() and not _under_a_home(_gitconfig.parent) \
-        and not _gitconfig.exists():
-    _gitconfig.write_text(GIT_QUIET_CONFIG)
+if _gitconfig.parent.is_absolute() and not _under_a_home(_gitconfig.parent):
+    if not _gitconfig.exists():
+        _gitconfig.write_text(GIT_QUIET_CONFIG)
+    # An inherited GIT_CONFIG_GLOBAL (a seat's environment sets /dev/null) would make git skip
+    # this file; point it here instead (Vex on #1270). A test that sets its own still wins.
+    os.environ["GIT_CONFIG_GLOBAL"] = str(_gitconfig)
 
 
 RUST = (pathlib.Path(os.environ.get("RUSTUP_HOME") or USER_HOME / ".rustup")
