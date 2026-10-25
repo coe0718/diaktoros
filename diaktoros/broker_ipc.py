@@ -895,7 +895,11 @@ class RunBroker:
             entry["login"] = broker.authorize(
                 self._loop, repo=self.scope.repo, number=self.scope.number,
                 head=self.scope.head, role="reviewer", branch=self.scope.branch,
-                operation="review")
+                operation="review", approve=verdict == "APPROVE")
+        except broker.BrokerConflict as exc:
+            # #1250: the answer a real write gives (#1243), so the no-write run behaves the same.
+            entry["denial"] = entry["held"] = str(exc)[:200]
+            return self._end_on_conflict(str(exc), body)
         except broker.BrokerDenied as exc:
             entry["denial"] = str(exc)[:200]
             raise
