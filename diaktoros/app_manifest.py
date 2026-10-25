@@ -129,7 +129,9 @@ def write_key(key_dir: Path, slug: str, pem: str) -> Path:
     path = key_dir / f"{slug}.pem"
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        os.write(fd, pem.encode())
+        data = memoryview(pem.encode())
+        while data:                        # os.write may write less than it was given
+            data = data[os.write(fd, data):]
     finally:
         os.close(fd)
     return path
@@ -146,6 +148,12 @@ def write_page(key_dir: Path, name: str, page: bytes) -> Path:
     return path
 
 
+def run_key(owner: str, org: bool, prefix: str, host: str) -> str:
+    """What identifies one run's Apps in the session: a rerun resumes only the same run, never
+    another loop's Apps made into the same key directory."""
+    return json.dumps([owner.lower(), bool(org), prefix, host.rstrip("/")])
+
+
 def load_session(key_dir: Path) -> dict:
     try:
         data = json.loads((key_dir / SESSION).read_text())
@@ -155,7 +163,7 @@ def load_session(key_dir: Path) -> dict:
 
 
 def save_session(key_dir: Path, session: dict) -> None:
-    """What was made, without a key or secret: a rerun skips these roles."""
+    """What was made, per run (``run_key``), without a key or secret: a rerun skips these."""
     key_dir.mkdir(parents=True, exist_ok=True)
     tmp = key_dir / (SESSION + ".tmp")
     tmp.write_text(json.dumps(session, indent=2, sort_keys=True))
@@ -220,15 +228,17 @@ class _Round:
 
 
 def code_from(text: str, state: str) -> str:
-    """A pasted redirect URL (state checked) or a bare code."""
+    """The code from a pasted redirect URL, once its state is this App's."""
     text = text.strip()
-    if "?" in text or text.startswith("http"):
-        query = urllib.parse.parse_qs(urllib.parse.urlsplit(text).query)
-        if not hmac.compare_digest(((query.get("state") or [""])[0]).encode(), state.encode()):
-            raise WizardError("that URL's state is not this App's: paste the URL GitHub sent you "
-                              "back to for this App")
-        return (query.get("code") or [""])[0]
-    return text
+    # Only the whole address: its state proves the code came back from this App's page.
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(text).query)
+    if not (query.get("state") or [""])[0]:
+        raise WizardError("paste the whole address GitHub sent you to (it carries ?code= and "
+                          "&state=), not the code alone")
+    if not hmac.compare_digest(((query.get("state") or [""])[0]).encode(), state.encode()):
+        raise WizardError("that URL's state is not this App's: paste the URL GitHub sent you "
+                          "back to for this App")
+    return (query.get("code") or [""])[0]
 
 
 def create(*, owner: str, org: bool, prefix: str, roles, host: str, key_dir: Path,
@@ -240,12 +250,23 @@ def create(*, owner: str, org: bool, prefix: str, roles, host: str, key_dir: Pat
             raise WizardError(f"unknown role {role!r}: choose from {', '.join(ROLES)}")
         app_name(prefix, role)
     session = load_session(key_dir)
-    made = dict(session.get("apps") or {})
+    runs = session.get("runs") if isinstance(session.get("runs"), dict) else {}
+    this = run_key(owner, org, prefix, host)
+    made = dict((runs.get(this) or {}).get("apps") or {})
     homepage = "https://github.com/coe0718/diaktoros"
     for role in roles:
         if role in made:
             emit(f"  {role}: {made[role]['slug']} (made earlier, key {made[role]['key_file']})")
             continue
+        # Checked before the click: a key this run did not record (a lost session, or a run
+        # stopped between the key and the session) is never overwritten, and an App made now
+        # would have nowhere to put its key.
+        key_path = key_dir / f"{slug_of(app_name(prefix, role))}.pem"
+        if key_path.exists():
+            raise WizardError(f"{key_path} already exists, but this run has no record of making "
+                              f"{app_name(prefix, role)}: if it is that App's key, map it by hand "
+                              "(its App id is on the App's settings page); otherwise move it "
+                              "aside and rerun")
         state = secrets.token_urlsafe(32)
         action = new_app_url(owner, org, state)
         if browser:
@@ -271,10 +292,18 @@ def create(*, owner: str, org: bool, prefix: str, roles, host: str, key_dir: Pat
             code = code_from(ask(f"  {role} redirect URL or code: "), state)
             page.unlink(missing_ok=True)
         app = convert(code, post=post)
-        key = write_key(key_dir, str(app["slug"]), str(app["pem"]))
+        try:
+            key = write_key(key_dir, str(app["slug"]), str(app["pem"]))
+        except FileExistsError as exc:
+            # GitHub gave another slug than the name's, and that file is already there: the key
+            # is lost with this process, so say which App needs a new one.
+            raise WizardError(f"{exc.filename} already exists, so App {app['slug']} (id "
+                              f"{app['id']}) was made without a saved key: generate a new private "
+                              "key on its settings page") from exc
         made[role] = {"slug": app["slug"], "id": app["id"], "login": f"{app['slug']}[bot]",
                       "key_file": str(key), "made_at": int(time.time())}
-        session.update(apps=made, owner=owner, org=org, prefix=prefix, host=host)
+        runs[this] = {"apps": made, "owner": owner, "org": org, "prefix": prefix, "host": host}
+        session["runs"] = runs
         save_session(key_dir, session)
         emit(f"  {role}: made {app['slug']} (App {app['id']}), key {key} (mode 600)")
     return made

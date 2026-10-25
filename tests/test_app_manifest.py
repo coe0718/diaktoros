@@ -14,6 +14,7 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from diaktoros import app_manifest as am  # noqa: E402
@@ -62,7 +63,8 @@ class Manifests(unittest.TestCase):
 
     def test_a_pasted_redirect_url_must_carry_this_apps_state(self):
         self.assertEqual(am.code_from("https://x.example/cb?code=abc&state=S1", "S1"), "abc")
-        self.assertEqual(am.code_from("  abc  ", "S1"), "abc")
+        with self.assertRaisesRegex(am.WizardError, "not the code alone"):
+            am.code_from("  abc  ", "S1")             # a bare code carries no state to check
         with self.assertRaisesRegex(am.WizardError, "state is not this App's"):
             am.code_from("https://x.example/cb?code=abc&state=OTHER", "S1")
 
@@ -150,6 +152,33 @@ class BrowserRound(unittest.TestCase):
         self.assertEqual(sorted(made), ["fixer", "reader"])
         with self.assertRaises(FileExistsError):
             am.write_key(self.key_dir, "w-dk-reader", "other")
+
+    def test_another_runs_apps_are_never_reused(self):
+        # One key directory serves every loop: a run for another prefix makes its own Apps.
+        self.create(roles=("reader",))
+        out = []
+        made = am.create(owner="coe0718", org=False, prefix="b-dk", roles=("reader",), host=HOST,
+                         key_dir=self.key_dir, emit=out.append, post=self.post,
+                         open_url=self.browser(), wait_s=10)
+        self.assertEqual(made["reader"]["login"], "b-dk-reader[bot]")
+        self.assertNotIn("made earlier", "\n".join(out))
+        made, out = self.create(roles=("reader",))          # the first run still resumes
+        self.assertIn("reader: w-dk-reader (made earlier", out)
+
+    def test_a_key_this_run_did_not_record_stops_it_before_the_click(self):
+        self.key_dir.mkdir(parents=True)
+        (self.key_dir / "w-dk-reader.pem").write_text("someone's key")
+        opened = []
+        with self.assertRaisesRegex(am.WizardError, "already exists, but this run has no record"):
+            self.create(roles=("reader",), open_url=opened.append, wait_s=0)
+        self.assertEqual(opened, [])
+        self.assertEqual((self.key_dir / "w-dk-reader.pem").read_text(), "someone's key")
+
+    def test_a_short_write_still_writes_the_whole_key(self):
+        real = am.os.write
+        with mock.patch.object(am.os, "write", side_effect=lambda fd, data: real(fd, bytes(data[:7]))):
+            path = am.write_key(self.key_dir, "w-dk-fixer", PEM)
+        self.assertEqual(path.read_text(), PEM)
 
     def test_a_request_to_another_host_name_is_refused(self):
         with self.assertRaisesRegex(am.WizardError, "no answer from GitHub"):
