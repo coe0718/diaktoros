@@ -884,6 +884,16 @@ def _explain_state(loop: dict, st: state_mod.LoopState, key: str, number: int, h
         f"{marker.get('status') or 'recorded'} at head {str(marker.get('head') or '?')[:7]} since "
         f"{marker.get('at') or 'an unrecorded time'} — {marker.get('reason') or 'no reason recorded'}"
         if marker else "none")
+    if escalation_line == "none":
+        from . import escalate_pending      # #1246: asked for while a run was in flight
+        pending = escalate_pending.get(st, number)
+        if pending:
+            at = pending.get("at")
+            when = (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(at))
+                    if isinstance(at, (int, float)) else "an unrecorded time")
+            escalation_line = (f"pending since {when} ({pending.get('reason')}) — the next "
+                               "changes-requested verdict goes to the adjudicator instead of the "
+                               "fixer; an approval drops it")
 
     watch = st.watch()
     if watch.get("last_run"):

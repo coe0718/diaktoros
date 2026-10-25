@@ -22,7 +22,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import cli, config, gate, gh, ledger, run_supervisor, state as state_mod  # noqa: E402
+from diaktoros import cli, config, escalate_pending, gate, gh, ledger, one_shot_action, run_supervisor, state as state_mod  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 from scripts import gate_fixer, gate_reviewer  # noqa: E402
@@ -60,10 +60,40 @@ class Base(fg.Base):
                 mock.patch.object(gate.observer, "notify"):
             yield wake
 
-    def escalate(self, reason="talking past each other"):
+    def escalate(self, reason="talking past each other", withdraw=False):
         with self.github() as wake, contextlib.redirect_stdout(io.StringIO()) as out:
-            rc = cli.cmd_escalate(argparse.Namespace(loop="one", pr=7, reason=reason))
+            rc = cli.cmd_escalate(argparse.Namespace(loop="one", pr=7, reason=reason,
+                                                     withdraw=withdraw))
         return rc, out.getvalue(), wake
+
+    def running(self, seat):
+        sup = Supervisor(config.home() / "state" / "diaktoros-runs.sqlite")
+        with mock.patch.object(sup, "_spawn"):
+            sup.enqueue("d", fg.REPO, 7, HEAD, seat)
+        with ledger.connect(sup.db) as con:
+            con.execute("UPDATE runs SET state='running'")
+        return sup
+
+    def fixer_gate(self, review, reviews):
+        """Drive the fixer gate on one verdict webhook; (stderr, enqueue mock, breach mock)."""
+        payload = {"action": "submitted", "repository": {"full_name": fg.REPO},
+                   "pull_request": fg.LIVE, "review": review}
+        with mock.patch.object(gate_fixer.sys, "stdin", io.StringIO(json.dumps(payload))), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as err, \
+                mock.patch.object(gate_fixer.gh, "pr", return_value=fg.LIVE), \
+                mock.patch.object(gate_fixer.gh, "reviews", return_value=reviews), \
+                mock.patch.object(gate_fixer.gate, "fetch_reviews", return_value=reviews), \
+                mock.patch.object(gate_fixer.gate, "drain_seat"), \
+                mock.patch.object(gate, "enqueue_isolated", return_value="enqueued") as enqueue, \
+                mock.patch.object(gate, "breach", return_value="new") as breach, \
+                mock.patch.object(gate_fixer.observer, "notify") as notify, \
+                mock.patch.object(gate_fixer.observer, "verified_base_sha",
+                                  side_effect=lambda loop, pr: (pr.get("base") or {}).get("sha")), \
+                mock.patch.object(gate_fixer.observer, "base_tip", return_value=""):
+            with self.assertRaises(SystemExit):
+                gate_fixer.main()
+        return err.getvalue(), enqueue, breach, notify
 
 
 class Command(Base):
@@ -104,16 +134,15 @@ class Command(Base):
                 wake.assert_not_called()
                 self.assertEqual(self.st.breach_get(7), {})
 
-    def test_a_run_in_flight_refuses(self):
-        sup = Supervisor(config.home() / "state" / "diaktoros-runs.sqlite")
-        with mock.patch.object(sup, "_spawn"):
-            sup.enqueue("d", fg.REPO, 7, HEAD, "reviewer")
-        with ledger.connect(sup.db) as con:
-            con.execute("UPDATE runs SET state='running'")
+    def test_a_run_in_flight_records_a_pending_escalation(self):
+        # #1246: no longer a refusal: with fixer pushes on there is never a gap between runs.
+        self.running("reviewer")
         rc, out, wake = self.escalate()
-        self.assertEqual(rc, 1)
-        self.assertIn("in flight", out)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("escalation pending", out)
         wake.assert_not_called()
+        self.assertEqual(self.st.breach_get(7), {})               # nothing parked yet
+        self.assertEqual(escalate_pending.get(self.st, 7)["reason"], "talking past each other")
 
     def test_a_running_shadow_review_does_not_refuse(self):
         # #218: a shadow writes nothing at the head, so it holds no escalation.
@@ -244,6 +273,92 @@ class Parked(Base):
             watchdog.retry_pending_breaches(self.loop, self.st, [fg.LIVE])
         breach.assert_called_once()
         self.assertEqual(breach.call_args.kwargs["escalated"]["by"], "operator")
+
+
+class Pending(Base):
+    """#1246: an escalation asked for while a run is in flight takes effect at the next
+    changes-requested verdict; an approval drops it."""
+
+    def setUp(self):
+        super().setUp()
+        escalate_pending.record(self.st, 7, reason="stuck on scope", head=HEAD)
+
+    def test_the_next_changes_requested_verdict_goes_to_the_adjudicator(self):
+        err, enqueue, breach, _ = self.fixer_gate(
+            verdict(6) | {"state": "changes_requested"}, [verdict(5), verdict(6)])
+        enqueue.assert_not_called()                                  # no fixer turn
+        breach.assert_called_once()
+        args, kwargs = breach.call_args
+        self.assertEqual(args[3:6], (HEAD, 2, "escalated: stuck on scope"))
+        self.assertEqual(kwargs["escalated"]["reason"], "stuck on scope")
+        self.assertIn("pending escalation taken", err)
+        self.assertIsNone(escalate_pending.get(self.st, 7))
+
+    def test_the_cap_comes_first_and_clears_it(self):
+        reviews = [verdict(4), verdict(5), verdict(6)]               # 3 of 3: the cap breaches
+        err, enqueue, breach, _ = self.fixer_gate(verdict(6) | {"state": "changes_requested"},
+                                                  reviews)
+        breach.assert_called_once()
+        self.assertIn("loop exhausted", breach.call_args.args[5])
+        self.assertIsNone(escalate_pending.get(self.st, 7))
+
+    def test_an_approval_of_the_current_head_drops_it_with_a_notice(self):
+        approved = verdict(6, state="APPROVED")
+        err, enqueue, breach, notify = self.fixer_gate(approved | {"state": "approved"},
+                                                       [verdict(5), approved])
+        breach.assert_not_called()
+        self.assertIsNone(escalate_pending.get(self.st, 7))
+        events = [c.args[2] for c in notify.call_args_list]
+        self.assertIn("escalation", events)
+        [dropped] = [c for c in notify.call_args_list if c.args[2] == "escalation"]
+        self.assertIn("pending escalation dropped", dropped.kwargs["outcome"])
+
+    def test_an_approval_of_an_older_head_keeps_it(self):
+        old = verdict(6, state="APPROVED", head=OTHER)
+        self.fixer_gate(old | {"state": "approved"}, [verdict(5), old])
+        self.assertIsNotNone(escalate_pending.get(self.st, 7))
+
+    def test_withdraw_lapse_and_prune(self):
+        rc, out, _ = self.escalate(withdraw=True)
+        self.assertEqual(rc, 0)
+        self.assertIn("withdrawn (stuck on scope)", out)
+        self.assertIsNone(escalate_pending.get(self.st, 7))
+        self.assertIn("no pending escalation", self.escalate(withdraw=True)[1])
+        entry = escalate_pending.record(self.st, 7, reason="r", head=HEAD)
+        with mock.patch.object(escalate_pending.time, "time",
+                               return_value=entry["at"] + escalate_pending.TTL_S + 1):
+            self.assertIsNone(escalate_pending.get(self.st, 7))      # lapsed after 24h
+        escalate_pending.record(self.st, 8, reason="r", head=HEAD)
+        self.assertEqual(escalate_pending.prune(self.st, [7]), [8])  # 8 is no longer open
+        self.assertIsNotNone(escalate_pending.get(self.st, 7))
+
+    def test_reading_it_writes_nothing(self):
+        # explain is read-only (the harness hashes every file): get() and a no-op take() never
+        # create a lock or touch the store.
+        before = sorted(p.name for p in self.st.dir.iterdir())
+        with mock.patch.object(self.st, "locked", side_effect=AssertionError("took the lock")):
+            self.assertIsNotNone(escalate_pending.get(self.st, 7))
+            self.assertIsNone(escalate_pending.take(self.st, 99))
+        self.assertEqual(sorted(p.name for p in self.st.dir.iterdir()), before)
+        self.assertIsNone(escalate_pending.take(mock.Mock(), 7))   # unreadable: none pending
+
+    def test_desktop_still_refuses_and_names_the_cli(self):
+        escalate_pending.take(self.st, 7)
+        self.running("fixer")
+        with self.github():
+            offer = one_shot_action.plan(self.loop, "escalate", pr=7)
+        self.assertFalse(offer["eligible"])
+        self.assertIn("host CLI can queue", offer["reason"])
+        self.assertIsNone(escalate_pending.get(self.st, 7))
+
+    def test_a_normal_escalation_supersedes_it_and_explain_shows_it(self):
+        state = gate._explain_state(self.loop, self.st, gate.seat_key(self.loop, 7), 7, HEAD,
+                                    time.time())
+        self.assertIn("pending since", state["escalation"])
+        self.assertIn("stuck on scope", state["escalation"])
+        rc, out, _ = self.escalate()                                  # nothing in flight now
+        self.assertEqual(rc, 0, out)
+        self.assertIsNone(escalate_pending.get(self.st, 7))
 
 
 if __name__ == "__main__":

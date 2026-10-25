@@ -72,6 +72,13 @@ class ReadyNotice(unittest.TestCase):
         with mock.patch.object(watchdog.merge_check, "refresh", side_effect=RuntimeError("x")):
             self.sweep([5])                          # a failure never stops the sweep
 
+    def test_the_sweep_prunes_pending_escalations_to_the_open_prs(self):
+        # #1246: a closed PR's pending escalation (or a lapsed one) is dropped by the sweep.
+        with mock.patch.object(watchdog.escalate_pending, "prune", return_value=[]) as prune:
+            self.sweep([5])
+        prune.assert_called_once()
+        self.assertIs(prune.call_args.args[0], self.st)
+
     def test_first_set_is_recorded_silently(self):
         self.assertEqual(self.sweep([5, 7]), [])
 
