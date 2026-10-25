@@ -116,6 +116,7 @@ def signer() -> tuple[str, Path | None]:
     if _signer is not None:
         return _signer
     found: tuple[str, Path | None] = ("", None)
+    cut_short = False
     python = _runtime_python()
     if python is not None:
         try:
@@ -124,12 +125,17 @@ def signer() -> tuple[str, Path | None]:
                                   env={"PATH": "/usr/bin:/bin"})
             if done.returncode == 0:
                 found = ("cryptography", python)
+        except subprocess.TimeoutExpired:
+            cut_short = True        # a budget's limit, not an answer (#1278)
         except (OSError, subprocess.SubprocessError):
             pass
     if not found[0]:
         openssl = shutil.which("openssl", path="/usr/bin:/bin:/usr/local/bin")
         found = ("openssl", Path(openssl)) if openssl else ("", None)
-    _signer = found
+    if not cut_short:
+        # A probe a tight gate budget cut short is not cached: it would answer "no signer" for
+        # the process's life on a host whose runtime Python has cryptography (#1278).
+        _signer = found
     return found
 
 

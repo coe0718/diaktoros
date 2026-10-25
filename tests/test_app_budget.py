@@ -67,6 +67,22 @@ class Budget(unittest.TestCase):
             with self.assertRaises(gh.GateBudgetExceeded):
                 github_app._as_app(LOOP, "r[bot]", "/app")
 
+    def test_a_probe_cut_short_by_the_budget_is_not_cached(self):
+        # #1278: one tight-budget timeout cached "no signer" for the process's life.
+        answers = [subprocess.TimeoutExpired("probe", 0.1), subprocess.CompletedProcess([], 0, b"", b"")]
+
+        def run(argv, **kw):
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        with mock.patch.object(github_app, "_runtime_python", return_value=pathlib.Path("/py")), \
+                mock.patch.object(github_app.shutil, "which", return_value=None), \
+                mock.patch.object(github_app.subprocess, "run", side_effect=run):
+            self.assertEqual(github_app.signer(), ("", None))          # cut short: no answer
+            self.assertEqual(github_app.signer()[0], "cryptography")   # asked again, and cached
+            self.assertEqual(github_app.signer()[0], "cryptography")
+
     def test_the_signer_is_probed_once_per_process(self):
         probes = []
         with mock.patch.object(github_app, "_runtime_python", return_value=pathlib.Path("/py")), \
