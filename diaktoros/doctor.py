@@ -50,7 +50,7 @@ import time
 from datetime import datetime
 from urllib.parse import urlsplit
 
-from . import config, gh, isolation, observer, route_intent, routes
+from . import ci, config, gh, isolation, observer, route_intent, routes
 from .config import host_guards
 from .config import credentials
 
@@ -509,7 +509,10 @@ def check_triage(loop: dict) -> list[Check]:
     checks = [_check_profile(config.seat_profile(loop, "triage"), "triage")]
     login = config.triage_login(loop)
     path = gh.token_path(loop, login) if login else None
-    if path is None or not path.is_file() or path.stat().st_size == 0:
+    from . import github_app
+    if path is None and login and github_app.is_app(loop, login):
+        checks.append(check_app_identity(loop, login, "credential:triage"))
+    elif path is None or not path.is_file() or path.stat().st_size == 0:
         checks.append(Check("credential:triage", ABSENT,
                             f"no nonempty token file mapped for the triage login {login or '?'}",
                             f"map one: `hermes dk set --loop {loop['id']} --token "
@@ -523,6 +526,14 @@ def check_triage(loop: dict) -> list[Check]:
         checks.append(Check("credential:triage", VERIFIED,
                             f"{login} → {_token_file_facts(path)} · authors "
                             f"{', '.join(triage['authors'])} · {len(triage['labels'])} labels"))
+    # #1217: with no maintainers, no comment reaches the seats and no re-request starts a review.
+    names = sorted(config.maintainers(loop))
+    checks.append(Check("triage:maintainers", VERIFIED,
+                        f"{', '.join(names)} (their comments reach both seats)") if names else
+                  Check("triage:maintainers", UNKNOWN,
+                        "no maintainers: no one's PR or issue comments reach the seats, and no "
+                        "re-request starts a fresh review",
+                        f"run `hermes dk triage --loop {loop['id']} --maintainer <login>`"))
     return checks
 
 
@@ -719,10 +730,78 @@ def _token_file_facts(path: pathlib.Path) -> str:
             f"private: {'yes' if private else 'no'})")
 
 
+def check_app_identity(loop: dict, login: str, name: str) -> Check:
+    """A GitHub App identity's credential (#1163): its private key file exists, is non-empty
+    and private, and this host can sign an App JWT. Metadata only: the key is never opened. Its
+    live principal and installation are checked by ``selftest`` and by the broker before each
+    write, as a PAT's identity is."""
+    from . import github_app
+    entry = github_app.entry(loop, login) or {}
+    path = github_app.key_path(loop, login)
+    app = f"GitHub App {entry.get('app_id')}"
+    if path is None:
+        return Check(name, ABSENT, f"{login}: {app} has no key_file",
+                     f"run `hermes dk set --loop {loop['id']} --app {login}=APP_ID:/abs/key.pem` "
+                     "(the reader or adjudicator), or `init --app` for a seat")
+    if not path.is_file() or path.stat().st_size == 0:
+        return Check(name, ABSENT, f"{login} → {app}, key {_token_file_facts(path)}: missing or empty",
+                     f"save the App's private key (Generate a private key, on the App's page) "
+                     f"to {path} and chmod 600 it")
+    problem = credentials.token_file_problem(str(path))
+    if problem:
+        return Check(name, MISMATCH, f"{login} → {app}, key {_token_file_facts(path)}: {problem}",
+                     f"chmod 600 {path} (and own it): an App key other users can read is the App")
+    kind, _tool = github_app.signer()
+    if not kind:
+        return Check(name, ABSENT, f"{login} → {app}: no way to sign an App JWT on this host",
+                     "install `cryptography` in the Hermes runtime venv, or the `openssl` command")
+    return Check(name, VERIFIED, f"{login} → {app}, key {_token_file_facts(path)}, signed with "
+                                 f"{kind} (the App and its installation: app-live:{login})")
+
+
+def check_app_live(loop: dict, login: str, offline: bool) -> Check:
+    """Whether a GitHub App identity works against GitHub (#1181): its key signs as *that* App
+    (``GET /app``: the id and the bot login match) and the App is installed on this repository
+    (``GET /repos/<repo>/installation``). Both are reads made with the App's own JWT; no token is
+    minted and nothing is written."""
+    from . import github_app
+    name = f"app-live:{login}"
+    if offline:
+        return Check(name, UNKNOWN, "not probed (--offline) — the App and its installation not read")
+    entry = github_app.entry(loop, login) or {}
+    try:
+        app = github_app._as_app(loop, login, "/app")
+        where = github_app._as_app(loop, login, f"/repos/{loop['repo']}/installation")
+    except github_app.AppError as exc:
+        return Check(name, MISMATCH, f"{login}: {exc}", "check the key file is this App's private key")
+    found = app.data if isinstance(app.data, dict) else {}
+    if not found:
+        return Check(name, MISMATCH, f"{login}: GET /app as the App failed ({app.error or 'no answer'})",
+                     "check the key file is the App's private key and the App id is right")
+    if found.get("id") != entry.get("app_id"):
+        return Check(name, MISMATCH, f"{login}: the key signs as App {found.get('id')} "
+                                     f"({found.get('slug')}), not App {entry.get('app_id')}",
+                     "put this App's own id and private key in apps")
+    if f"{found.get('slug')}[bot]".casefold() != login.casefold():
+        return Check(name, MISMATCH, f"{login}: App {entry.get('app_id')} is {found.get('slug')}[bot]",
+                     f"name the identity {found.get('slug')}[bot]")
+    installation = where.data.get("id") if isinstance(where.data, dict) else None
+    if type(installation) is not int:
+        return Check(name, ABSENT, f"{login}: App {found.get('slug')} is not installed on "
+                                   f"{loop['repo']} ({where.error or 'no installation'})",
+                     f"install the App on {loop['repo']} (its page → Install App → only this "
+                     "repository)")
+    return Check(name, VERIFIED, f"{login} is App {entry.get('app_id')} ({found.get('slug')}), "
+                                 f"installed on {loop['repo']} (installation {installation})")
+
+
 def check_credential(loop: dict, seat: str) -> Check:
     """The gates use gh.token_path, not the profile's GH_TOKEN environment variable."""
     login = str(loop["seats"][seat].get("login") or "")
     tokens = loop.get("tokens") or {}
+    from . import github_app
+    if login and gh.token_path(loop, login) is None and github_app.is_app(loop, login):
+        return check_app_identity(loop, login, f"credential:{seat}")
     if login:
         path = gh.token_path(loop, login)
         if path and path.is_file() and path.stat().st_size > 0:
@@ -780,10 +859,16 @@ def check_adjudicator_identity(loop: dict) -> Check | None:
                          "set seats.adjudicator.login to its own account, or remove it for "
                          "operator-only rulings")
     path = gh.token_path(loop, login)
+    from . import github_app
+    if path is None and github_app.is_app(loop, login):
+        found = check_app_identity(loop, login, "credential:adjudicator")
+        if found.status != VERIFIED:
+            return found
+        path = github_app.key_path(loop, login)
     if path is None:
-        return Check("credential:adjudicator", ABSENT, f"no tokens entry for {login!r}",
-                     f"add --token {login}=/path/to/pat, or remove seats.adjudicator.login for "
-                     "operator-only rulings")
+        return Check("credential:adjudicator", ABSENT, f"no tokens or apps entry for {login!r}",
+                     f"add --token {login}=/path/to/pat (or --app {login}=APP_ID:/abs/key.pem), or "
+                     "remove seats.adjudicator.login for operator-only rulings")
     if not path.is_file() or path.stat().st_size == 0:
         return Check("credential:adjudicator", ABSENT,
                      f"{login} → {_token_file_facts(path)}: no nonempty token file",
@@ -795,7 +880,7 @@ def check_adjudicator_identity(loop: dict) -> Check | None:
                      f"chmod 600 {path} (and own it): the ruling identity needs a private "
                      "credential")
     for role, other in others.items():
-        theirs = gh.token_path(loop, other) if isinstance(other, str) and other else None
+        theirs = gh.credential_path(loop, other) if isinstance(other, str) and other else None
         try:
             shared = theirs is not None and theirs.exists() and path.samefile(theirs)
         except OSError:
@@ -838,11 +923,13 @@ def check_token(login: str, raw: str) -> Check:
 
 def check_tokens(loop: dict) -> list[Check]:
     tokens = loop.get("tokens") or {}
-    if not tokens:
+    apps = loop.get("apps") or {}
+    if not tokens and not apps:
         return [Check("tokens", ABSENT, "no token file is named for any login",
                       "run `hermes dk set --loop <id> --token <login>=/path/to/pat` (the gates read GitHub "
                       "through it; without one they go silent)")]
-    return [check_token(login, raw) for login, raw in sorted(tokens.items())]
+    return ([check_token(login, raw) for login, raw in sorted(tokens.items())]
+            + [check_app_identity(loop, login, f"app:{login}") for login in sorted(apps)])
 
 
 def check_read_token(loop: dict) -> Check:
@@ -850,17 +937,19 @@ def check_read_token(loop: dict) -> Check:
     if not name:
         return Check("read_token", ABSENT, "no login is named as the reader",
                      "run `hermes dk set --loop <id> --read-token <login> --token <login>=/path/to/pat`")
-    if name not in (loop.get("tokens") or {}):
+    if name not in config.credentials_map(loop):
         return Check("read_token", MISMATCH, f"read_token names {name!r}, which has no token file",
-                     f"run `hermes dk set --loop <id> --token {name}=/path/to/pat`: the gates read every PR "
-                     f"state as this login")
+                     f"run `hermes dk set --loop <id> --token {name}=/path/to/pat` (or --app "
+                     f"{name}=APP_ID:/abs/key.pem for a GitHub App reader): the gates read every "
+                     "PR state as this login")
     problem = credentials.reader_problem(loop)
     if problem:
         # The broker refuses every write while the reader is a seat, so a loop in this shape
         # installs, "passes", and then never posts a review.
         return Check("read_token", MISMATCH, f"{problem} — {config.FOUR_IDENTITY_RULE}",
                      credentials.reader_fix(loop))
-    return Check("read_token", VERIFIED, f"{name} (mapped in tokens; its own account and file)")
+    where = "apps, a GitHub App" if name not in (loop.get("tokens") or {}) else "tokens"
+    return Check("read_token", VERIFIED, f"{name} (mapped in {where}; its own account and file)")
 
 
 def _route_entry(data: dict, name: str) -> dict | None:
@@ -1621,6 +1710,30 @@ def check_fix_ci(loop: dict) -> Check:
                  f"(`hermes dk set --loop {lid} --ci-fix-cap N` to change, `--fix-ci off` to stop)")
 
 
+def base_requires_up_to_date(loop: dict) -> tuple[bool | None, str]:
+    """Whether the base requires branches to be up to date before merging (the setting that makes
+    GitHub report a PR ``behind``), read from its rulesets (plain read access) and its classic
+    branch protection (admin access). ``(True, "")``, ``(False, "")``, or ``(None, why)`` when
+    neither answer settles it."""
+    base = str(loop.get("base") or "main")
+    unread = []
+    rules = gh.request(loop, f"/repos/{loop['repo']}/rules/branches/{base}?per_page=100")
+    if rules.status != 404 and (rules.error or not isinstance(rules.data, list)):
+        unread.append(f"rulesets: {gh.one_line(rules.error or 'no rule list')}")
+    for rule in rules.data if isinstance(rules.data, list) else ():
+        params = rule.get("parameters") if isinstance(rule, dict) else None
+        if (isinstance(rule, dict) and rule.get("type") == "required_status_checks"
+                and isinstance(params, dict)
+                and params.get("strict_required_status_checks_policy") is True):
+            return True, ""
+    classic = gh.request(loop, f"/repos/{loop['repo']}/branches/{base}/protection/required_status_checks")
+    if classic.status != 404 and (classic.error or not isinstance(classic.data, dict)):
+        unread.append(f"classic branch protection: {gh.one_line(classic.error or 'no answer')}")
+    elif isinstance(classic.data, dict) and classic.data.get("strict") is True:
+        return True, ""
+    return (None, "; ".join(unread)) if unread else (False, "")
+
+
 def check_review_only_update(loop: dict, offline: bool = False) -> Check | None:
     """The host's merge pushes to a review-only author's branch (a branch the loop does not own):
     off is the default; on, the pushing token must be able to push to the repository."""
@@ -1649,10 +1762,25 @@ def check_review_only_update(loop: dict, offline: bool = False) -> Check | None:
                      "push would be refused",
                      f"give {login} write access to {loop['repo']}, or `hermes dk set --loop {lid} "
                      "--review-only-update off`")
+    strict, unread = base_requires_up_to_date(loop)
+    if strict is not True:
+        # Not a failure: the notice still goes out. Only the push can never fire (#504).
+        why = (f"{loop['base']} does not require branches to be up to date"
+               if strict is False else
+               f"could not read whether {loop['base']} requires branches to be up to date "
+               f"({unread})")
+        return Check("review-only-update", UNKNOWN,
+                     f"on — {login} can push to {loop['repo']}, but {why}: GitHub then never "
+                     "reports a PR as `behind`, a conflicting PR cannot be pushed, so the host "
+                     "pushes nothing and only the conflict notice applies",
+                     f"to let it push, require branches to be up to date before merging on "
+                     f"{loop['base']} (branch protection or a ruleset: 'strict required status "
+                     "checks')")
     return Check("review-only-update", VERIFIED,
                  f"on — {login} can push to {loop['repo']}; clean merges of {loop['base']} are "
-                 "pushed to same-repository review-only branches under a lease, never conflicts, "
-                 "workflow changes or forks")
+                 "pushed to same-repository review-only branches under a lease when GitHub "
+                 f"reports the PR `behind` ({loop['base']} requires up-to-date branches), never "
+                 "conflicts, workflow changes or forks")
 
 
 def check_attribution(loop: dict) -> Check:
@@ -1776,8 +1904,7 @@ def check_hooks(loop: dict, offline: bool) -> list[Check]:
                       f"could not read the complete /repos/{loop['repo']}/hooks listing — nothing was proved about "
                       f"{len(expected)} hook(s) (a token without hook read access — `repo`, or the "
                       f"narrower `read:repo_hook` — reads as denied)",
-                      f"give the read token hook read access — `repo`, or the narrower "
-                      f"`read:repo_hook` — and re-run; check by hand with "
+                      f"{config.reader_access_fix(loop, 'hooks')} and re-run; check by hand with "
                       f"`gh api repos/{loop['repo']}/hooks`")]
     checks = []
     for seat, name, url in expected:
@@ -2050,8 +2177,8 @@ def check_deliveries(loop: dict, hook_id, name: str) -> "Check | str":
         return Check(f"hook:{name}", UNKNOWN,
                      f"hook {hook_id} found, but its recent deliveries could not be read ({reason}) "
                      "— whether its secret matches the route is unproven",
-                     f"give the read token hook read access (`read:repo_hook`, or `repo`), or look "
-                     f"by hand: `gh api repos/{loop['repo']}/hooks/{hook_id}/deliveries`")
+                     f"{config.reader_access_fix(loop, 'hooks')}, or look by hand: "
+                     f"`gh api repos/{loop['repo']}/hooks/{hook_id}/deliveries`")
     stamped = [d for d in data if isinstance(d.get("delivered_at"), str)]
     if not stamped:
         return "no deliveries yet — the secret is unproven until the first one arrives"
@@ -2152,6 +2279,13 @@ def check_token_expiry_scopes(loop: dict, offline: bool, now: float | None = Non
     """Per login: days to the token's expiry and the scopes its roles need (read-only GET /user)."""
     now = time.time() if now is None else now
     checks: list[Check] = []
+    # A GitHub App identity (#1163) has neither: its installation tokens are minted per use and
+    # its permissions are the App's, set on GitHub. Said, not silently skipped.
+    for login in sorted(loop.get("apps") or {}):
+        checks.append(Check(f"token-expiry:{login}", VERIFIED,
+                            "a GitHub App identity: installation tokens are minted per use, so "
+                            "there is no PAT expiry or scope to read (the App's permissions are "
+                            "set on GitHub)"))
     for login, roles in sorted(_token_roles(loop).items()):
         name = f"token-expiry:{login}"
         if offline:
@@ -2263,6 +2397,7 @@ def check_branch_protection(loop: dict, offline: bool) -> Check | None:
         have |= {str(c) for c in classic.data.get("contexts") or []}
         have |= {str(c.get("context")) for c in classic.data.get("checks") or []
                  if isinstance(c, dict)}
+    have.discard(ci.MERGE_CHECK)       # the loop's own check: never a CI check (merge-check, #1163)
     if len(unread) == 2:
         return Check("branch-protection", UNKNOWN,
                      f"could not read the required checks of {base}: {'; '.join(unread)}",
@@ -2279,6 +2414,49 @@ def check_branch_protection(loop: dict, offline: bool) -> Check | None:
         parts.append(f"not read: {unread[0]}")
     return Check("branch-protection", UNKNOWN, "; ".join(parts),
                  f"align `required_checks` with the required status checks of {base}")
+
+
+def check_merge_check(loop: dict, offline: bool) -> Check | None:
+    """The base's protection against the ``diaktoros/review`` merge check (#1163 M2c): required
+    (in App mode pinned to the reviewer App) when the loop posts it, never required when it does
+    not, and no required approvals in App mode (GitHub never counts the App's). None when the loop
+    does not post the check and nothing requires it."""
+    from . import protection
+    lid = shlex.quote(str(loop.get("id") or "<id>"))
+    posting = config.merge_check_on(loop)
+    if offline:
+        return (Check("merge-check", UNKNOWN, "not probed (--offline)") if posting else None)
+    found = protection.read(loop)
+    if not found.known:
+        if not posting:
+            return None
+        return Check("merge-check", UNKNOWN,
+                     f"could not read {loop['base']}'s protection: {'; '.join(found.unread)}",
+                     f"{config.reader_access_fix(loop, 'protection')}, or check by hand that "
+                     f"{loop['base']} requires {ci.MERGE_CHECK} (repo settings → rules)")
+    blocking, warnings, facts = protection.problems(loop, found)
+    if not (blocking or warnings or facts):
+        return None
+    protect = f"hermes dk protect --loop {lid} --admin-token LOGIN"
+    require = f"`{protect}`"
+    if blocking:
+        fix = (f"`hermes dk set --loop {lid} --merge-check on`, or `{protect} --remove` (it "
+               "removes only the loop's own ruleset)" if not posting else
+               f"{require} (it rewrites the loop's own ruleset for this reviewer), and remove "
+               "any other requirement of the check in repo settings → rules")
+        return Check("merge-check", MISMATCH, "; ".join(blocking + warnings + facts), fix)
+    if warnings:
+        fixes = []
+        if any("approving review" in w for w in warnings):
+            fixes.append(f"turn required approvals off on {loop['base']} (repo settings → rules), "
+                         "or keep them and approve every PR yourself")
+        if any(ci.MERGE_CHECK in w and "approving" not in w for w in warnings):
+            fixes.append(require)
+        if any(w.startswith("could not read") for w in warnings):
+            fixes.append(f"{config.reader_access_fix(loop, 'protection')}, or check "
+                         f"{loop['base']} by hand in repo settings → rules")
+        return Check("merge-check", UNKNOWN, "; ".join(warnings + facts), "; ".join(fixes))
+    return Check("merge-check", VERIFIED, "; ".join(facts))
 
 
 UPSTREAM_REPO = "coe0718/diaktoros"
@@ -2336,7 +2514,8 @@ def check_plugin_version(loop: dict, offline: bool = False) -> Check:
 def check_environment(loop: dict, offline: bool) -> list[Check]:
     """The GitHub-side contract: token expiry and scopes, triage labels, branch protection."""
     checks = check_token_expiry_scopes(loop, offline)
-    for extra in (check_labels(loop, offline), check_branch_protection(loop, offline)):
+    for extra in (check_labels(loop, offline), check_branch_protection(loop, offline),
+                  check_merge_check(loop, offline)):
         if extra:
             checks.append(extra)
     return checks
@@ -2369,6 +2548,7 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     if identity:
         checks.append(identity)
     checks.extend(check_tokens(loop))
+    checks.extend(check_app_live(loop, login, offline) for login in sorted(loop.get("apps") or {}))
     checks.append(check_read_token(loop))
     checks.extend(check_routes(loop))
     checks.extend(check_gateway_scripts(loop))

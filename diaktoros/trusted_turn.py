@@ -534,6 +534,18 @@ def tool_instructions(role: str) -> str:
     return TOOLS[role] + _COMMON
 
 
+# The seats whose turn is nudged to submit before its step cap (#554). A reviewer and a fixer
+# (and an issue fix, which runs as the fixer seat) each hold one write they may lose by running
+# out of steps; the judging seats — an adjudicator's ruling, a triage label — are short by
+# comparison and are not nudged.
+NUDGED_ROLES = ('reviewer', 'fixer', 'issue_fixer')
+
+
+def gets_nudge(role: str) -> bool:
+    """Whether a turn of ``role`` gets the host's submit-now nudge (#554)."""
+    return role in NUDGED_ROLES
+
+
 SANDBOX_KEY = 'sandbox-dummy-not-a-credential'
 # Hermes applies the Claude Code request identity to any token it classifies as a Claude
 # subscription login (``agent/anthropic_credentials._is_oauth_token``: ``sk-ant-`` but not
@@ -743,7 +755,10 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
             inference = stack.enter_context(inference_proxy.InferenceCapability(
                 sockets / 'i', upstream, None if credential is not None else key,
                 model=proxy_model or model, quota=config.model_calls(steps), api_mode=api_mode,
-                credential=credential))
+                credential=credential,
+                # #554: the writing seats are nudged to submit before their steps run out; a
+                # judging seat (adjudicator, triage) is not.
+                nudge_steps=steps if gets_nudge(scope.role) else None))
             broker_root = sockets / 'b'
             broker_root.mkdir(mode=0o700)
             broker = stack.enter_context(broker_ipc.RunBroker(

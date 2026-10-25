@@ -68,9 +68,10 @@ def _seat_diffs(was: dict, now: dict) -> tuple[list[tuple[str, object, object]],
     # identity change, owed the same in-flight check. Paths only — the file is never opened here.
     for role in ("reviewer", "fixer"):
         login = config.seat_login(now, role)
-        before, after = cli_common._token_ref(was, login), cli_common._token_ref(now, login)
+        before, after = cli_common._credential_label(was, login), cli_common._credential_label(now, login)
         if before != after:
-            diffs.append((f"{role} token file ({login})", before or "(none)", after or "(none)"))
+            label = "credential" if cli_common._app_ref(was, login) or cli_common._app_ref(now, login) else "token file"
+            diffs.append((f"{role} {label} ({login})", before or "(none)", after or "(none)"))
             touched.add(role)
     # The adjudicator's comment identity has no run of its own to strand: it is reported, and
     # validated, but it does not rebind a route.
@@ -78,9 +79,10 @@ def _seat_diffs(was: dict, now: dict) -> tuple[list[tuple[str, object, object]],
     if login_before != login_after:
         diffs.append(("adjudicator login", login_before or "(none)", login_after or "(none)"))
     if login_after:
-        before, after = cli_common._token_ref(was, login_after), cli_common._token_ref(now, login_after)
+        before, after = cli_common._credential_label(was, login_after), cli_common._credential_label(now, login_after)
         if before != after:
-            diffs.append((f"adjudicator token file ({login_after})", before or "(none)",
+            label = "credential" if cli_common._app_ref(was, login_after) or cli_common._app_ref(now, login_after) else "token file"
+            diffs.append((f"adjudicator {label} ({login_after})", before or "(none)",
                           after or "(none)"))
     return diffs, touched
 
@@ -669,6 +671,9 @@ def cmd_set(args) -> int:
         if check != (loop.get("fixer_check") or ""):
             changes["fixer_check"] = check
 
+    if getattr(args, "merge_check", None) and args.merge_check != (loop.get("merge_check") or "auto"):
+        changes["merge_check"] = args.merge_check
+
     seats = {seat: dict(cfg) for seat, cfg in loop["seats"].items()}
     seat_changes = {}
 
@@ -676,6 +681,7 @@ def cmd_set(args) -> int:
     # credentials: the seats' token files move through the settings form and `apply`, which owns
     # the in-flight rules.
     tokens = dict(loop.get("tokens") or {})
+    apps = {k: dict(v) for k, v in (loop.get("apps") or {}).items()}
     adj_before = config.adjudicator_login(loop)
     adj_wanted = getattr(args, "adjudicator_login", None)
     adj_after = adj_before if adj_wanted is None else adj_wanted.strip()
@@ -706,13 +712,37 @@ def cmd_set(args) -> int:
             return 2
         for key in [k for k in tokens if str(k).lower() == login.lower()]:
             del tokens[key]
+        for key in [k for k in apps if str(k).lower() == login.lower()]:
+            del apps[key]               # one identity, one credential: a PAT replaces an App
         tokens[owner or login] = str(pathlib.Path(path.strip()).expanduser())
+    # --app (#1163): the same owners as --token, a GitHub App identity instead of a PAT.
+    for pair in getattr(args, "app", None) or []:
+        split = cli_common._split_app_pair(pair)
+        if split is None:
+            return 2
+        login, spec = split
+        owner = next((name for name in (adj_after, read_after if read_wanted is not None else "")
+                      if name and login.lower() == name.lower()), "")
+        if not owner and _is_seat_or_reader_login(loop, login):
+            print(f"refused: `set --app` maps the App of the login named by --read-token or "
+                  f"--adjudicator-login; {login!r} is a seat or the current reader — a seat's "
+                  "credential moves through the plugin settings and `apply` (or `init --app`), "
+                  "and a reader moves with --read-token")
+            return 2
+        for key in [k for k in apps if str(k).lower() == login.lower()]:
+            del apps[key]
+        for key in [k for k in tokens if str(k).lower() == login.lower()]:
+            del tokens[key]             # an App replaces a PAT
+        apps[owner or login] = spec
     # gh looks a login's file up by its exact key: keep the reader spelled as its mapping is.
-    read_after = next((str(k) for k in tokens if str(k).lower() == read_after.lower()), read_after)
-    tokens_changed = tokens != (loop.get("tokens") or {})
+    read_after = next((str(k) for k in (*tokens, *apps) if str(k).lower() == read_after.lower()),
+                      read_after)
+    tokens_changed = (tokens != (loop.get("tokens") or {})
+                      or apps != (loop.get("apps") or {}))
     adj_changed = adj_after != adj_before or tokens_changed
     read_changed = (read_after != read_before
-                    or cli_common._token_ref({"tokens": tokens}, read_after) != cli_common._token_ref(loop, read_after))
+                    or cli_common._credential_label({"tokens": tokens, "apps": apps}, read_after)
+                    != cli_common._credential_label(loop, read_after))
     if adj_after != adj_before:
         adj_seat = dict(seats.get("adjudicator") or {})
         if adj_after:
@@ -865,16 +895,17 @@ def cmd_set(args) -> int:
 
     try:
         updated = config.normalize({**loop, **changes, "seats": seats, "observer": observer_cfg,
-                                    "tokens": tokens, "read_token": read_after})
+                                    "tokens": tokens, "apps": apps, "read_token": read_after})
         if read_changed:
             # The same rules init applies to the reader: mapped, its file present and private,
-            # and its own account (the four-identity rule).
-            if not cli_common._token_ref(updated, read_after):
+            # and its own account (the four-identity rule). Its file is a PAT or an App key.
+            if not cli_common._credential_file(updated, read_after):
                 raise config.ConfigError(
                     f"no token file mapped for the reader {read_after!r} — add "
-                    f"--token {read_after}=/path/to/pat")
-            credentials.check_token_file(cli_common._token_ref(updated, read_after),
-                                    f"token file for the reader {read_after!r}")
+                    f"--token {read_after}=/path/to/pat, or --app {read_after}=APP_ID:/path/to/key.pem "
+                    "for a GitHub App reader")
+            credentials.check_token_file(cli_common._credential_file(updated, read_after),
+                                    f"credential file for the reader {read_after!r}")
             credentials.verify_credentials(updated, {"read"})
         if adj_changed and config.adjudicator_login(updated):
             # The same file-level rules init applies, plus: the file must exist and be private.
@@ -1002,15 +1033,16 @@ def cmd_set(args) -> int:
             print(f"  {seat} turn budget: {was}s → {value}s  (this seat only)")
     if read_after != read_before:
         print(f"  read_token: {read_before or '(none)'} → {read_after}")
-    if read_after and cli_common._token_ref(loop, read_after) != cli_common._token_ref(updated, read_after):
-        print(f"  reader token file ({read_after}): {cli_common._token_ref(loop, read_after) or '(none)'}"
-              f" → {cli_common._token_ref(updated, read_after)}")
+    if read_after and cli_common._credential_label(loop, read_after) != cli_common._credential_label(updated, read_after):
+        # A PAT path, or a GitHub App's id and key path (#1163) — never a value.
+        print(f"  reader credential ({read_after}): {cli_common._credential_label(loop, read_after) or '(none)'}"
+              f" → {cli_common._credential_label(updated, read_after)}")
     if adj_after != adj_before:
         shown = adj_after or "(none — rulings go to the operator only)"
         print(f"  adjudicator login: {adj_before or '(none)'} → {shown}")
-    if adj_after and cli_common._token_ref(loop, adj_after) != cli_common._token_ref(updated, adj_after):
-        print(f"  adjudicator token file ({adj_after}): {cli_common._token_ref(loop, adj_after) or '(none)'}"
-              f" → {cli_common._token_ref(updated, adj_after)}")
+    if adj_after and cli_common._credential_label(loop, adj_after) != cli_common._credential_label(updated, adj_after):
+        print(f"  adjudicator credential ({adj_after}): {cli_common._credential_label(loop, adj_after) or '(none)'}"
+              f" → {cli_common._credential_label(updated, adj_after)}")
     if updated.get("observer") != (loop.get("observer") or {}):
         print(f"  observer: {observer.describe(loop.get('observer') or {})} → "
               f"{observer.describe(updated.get('observer') or {})}")
@@ -1082,8 +1114,8 @@ def _apply(args) -> int:
         return 2
 
     try:
-        # Token-file paths first: a bad path is refused by name before anything is computed.
-        credentials.verify_token_settings(cli_common._SETTINGS)
+        # Select before stat: stale PAT fields for App seats are not effective paths (#1197).
+        credentials.verify_token_settings(cli_common._SETTINGS, loop=loop)
         updated = config.normalize(settings_form.apply_settings(loop, cli_common._SETTINGS))
     except config.ConfigError as exc:
         print(f"settings refused: {exc}")
@@ -1097,13 +1129,25 @@ def _apply(args) -> int:
         print(f"fix: {credentials.reader_fix(updated)}")
         return 2
     reader = str(updated.get("read_token") or "")
-    if reader.casefold() not in {str(k).casefold() for k in updated.get("tokens") or {}}:
-        # doctor fails this loop; apply must not report success over it either.
+    if reader.casefold() not in {str(k).casefold() for k in config.credentials_map(updated)}:
+        # doctor fails this loop; apply must not report success over it either. A PAT or a
+        # GitHub App identity (#1163) both count.
         print(f"settings refused: {updated['id']}: read_token {reader!r} has no entry in "
-              "'tokens' — the gates read GitHub as that login and have no file to read it from")
+              "'tokens' or 'apps' — the gates read GitHub as that login and have no credential "
+              "to read it with")
         print(f"fix: hermes dk set --loop {updated['id']} --read-token {reader} "
               f"--token {reader}=/path/to/pat")
         return 2
+
+    # A form token file for a login the loop gives a GitHub App identity is not applied (the
+    # identity keeps its App, #1163): say so, rather than "matches" over it.
+    form = settings_form.settings_defaults(cli_common._SETTINGS)
+    for role, key in config.TOKEN_FILE_SETTINGS.items():
+        login = (config.adjudicator_login(updated) if role == "adjudicator"
+                 else config.seat_login(updated, role))
+        if str(form.get(key) or "").strip() and cli_common._app_ref(updated, login):
+            print(f"[{updated['id']}] note: the plugin settings' {key} is not applied — {login} "
+                  "is a GitHub App identity on this loop (stale PAT setting; App selected)")
 
     identity, touched = _seat_diffs(loop, updated)
     # The installed registry can drift independently of the loop and the form. Repair those
@@ -1120,7 +1164,7 @@ def _apply(args) -> int:
         credentials.verify_seats(updated, rebinding)
         adj = config.adjudicator_login(updated)
         if adj and (adj != config.adjudicator_login(loop)
-                    or cli_common._token_ref(loop, adj) != cli_common._token_ref(updated, adj)):
+                    or cli_common._credential_label(loop, adj) != cli_common._credential_label(updated, adj)):
             credentials.verify_adjudicator_token(updated)
             credentials.verify_credentials(updated)
         if rebinding:
@@ -1150,7 +1194,7 @@ def _apply(args) -> int:
 
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
-                "turn_budget_s", "attribution", "fixer_check", "review_after_ci",
+                "turn_budget_s", "attribution", "fixer_check", "review_after_ci", "merge_check",
                 "fix_ci", "fixer_scope_lock", "ci_fix_cap", "review_only_update", "required_checks", "human_paths",
                 "generated", "review_only", "review_only_cap", "review_only_daily", "shadow"):
         if updated.get(key) != loop.get(key):
@@ -1400,6 +1444,9 @@ def cmd_settings(args) -> int:
         print(f"  {role:<12} profile {profile:<20} {cell}[{'set' if entry else 'blank'}]")
         # The path only, never the file: this is where the login's PAT is read from at use time.
         print(f"  {'':<12} token file {entry.get('token_file') or '(blank)'}")
+        if role in config.TOKEN_FILE_SETTINGS:
+            print(f"  {'':<12} App id {entry.get('app_id') or '(blank)'}, "
+                  f"key file {entry.get('app_key_file') or '(blank)'}")
     adjudicator_note = ("the adjudicator lands only on a loop that already has an adjudicator "
                         "route; its login is optional — a fourth account the ruling is also posted "
                         "as — and it never pushes or reviews; route names stay per repository")
@@ -1458,6 +1505,11 @@ def _triage_lines(loop: dict) -> list[str]:
                 f" — OFF until unattended fixer pushes are on: "
                 f"{config.fixer_push_enable_command(loop)}")) if triage.get("fix_label")
             else "  issue fixes: off (--fix-label LABEL --maintainer LOGIN turns them on)",
+            ("  maintainers: " + ", ".join(triage["maintainers"])
+             + " (their comments reach both seats; their re-request starts a fresh review)")
+            if triage.get("maintainers") else
+            "  maintainers: none — no one's comments reach the seats, and no re-request starts a "
+            "fresh review (--maintainer LOGIN)",
             _auto_offer_line(triage)]
 
 
@@ -1477,8 +1529,11 @@ _TRIAGE_CHANGE_FLAGS = ("profile", "author", "labels", "max_labels", "comment", 
 
 def _triage_change_flags(args) -> list[str]:
     """Option names given on the command line that change triage (not --loop/--dry-run)."""
+    # `--fix-label ''` is a change (it turns issue fixes off, #1217): its default is None, so
+    # an empty string can only have been given on purpose. Every other "" or [] is no change.
     return ["--" + name.replace("_", "-") for name in _TRIAGE_CHANGE_FLAGS
-            if getattr(args, name, None) not in (None, "", [])]
+            if getattr(args, name, None) not in (None, "", [])
+            or (name == "fix_label" and getattr(args, name, None) == "")]
 
 
 def _split_token_pair(pair: str) -> tuple[str, str] | None:
@@ -1589,15 +1644,20 @@ def cmd_triage(args) -> int:
     login = args.login or current.get("login")
     if login:
         block["login"] = login
+    # The maintainers and the issue-fix daily cap stand on their own (#1217): turning issue
+    # fixes off (--fix-label '') keeps them. --maintainer '' clears the list.
+    wanted = [m for m in args.maintainer or [] if m.strip()]
+    maintainers = (wanted if wanted else [] if args.maintainer else current.get("maintainers") or [])
+    if maintainers:
+        block["maintainers"] = maintainers
+    # The issue-fix daily cap (#247); omitted keeps the current one, 0 the default.
+    fix_cap = (current.get("fix_daily_turns") if args.fix_daily_turns is None
+               else args.fix_daily_turns or None)
+    if fix_cap:
+        block["fix_daily_turns"] = fix_cap
     fix_label = current.get("fix_label") if args.fix_label is None else args.fix_label
     if fix_label:
         block["fix_label"] = fix_label
-        block["maintainers"] = args.maintainer or current.get("maintainers") or []
-        # The issue-fix daily cap (#247); omitted keeps the current one, 0 the default.
-        fix_cap = (current.get("fix_daily_turns") if args.fix_daily_turns is None
-                   else args.fix_daily_turns or None)
-        if fix_cap:
-            block["fix_daily_turns"] = fix_cap
         # Automatic hand-off (#232): omitted keeps the current list, an empty value clears it.
         auto = (current.get("auto_fix_labels") if args.auto_fix_label is None
                 else [x for x in args.auto_fix_label if x])
@@ -1880,6 +1940,8 @@ def add_set(sub) -> None:  # noqa: ANN001
                            help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox (repeat it); replaces the list")
     generated.add_argument("--no-generated", action="store_true",
                            help="clear the list: the conflict shortcut is off")
+    change.add_argument("--merge-check", choices=("auto", "on", "off"), default=None,
+                        help="post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off")
     change.add_argument("--fixer-check", default=None, help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none)")
     change.add_argument("--reviewer-turn-budget", type=int, default=None,
                         help="the reviewer seat's own turn budget in seconds")
@@ -1929,6 +1991,10 @@ def add_set(sub) -> None:  # noqa: ANN001
     change.add_argument("--token", action="append", default=[],
                         help="LOGIN=/path/to/pat for the --read-token or --adjudicator-login "
                              "login only (a path, never the token)")
+    change.add_argument("--app", action="append", default=[], metavar="LOGIN=APP_ID:KEY",
+                        help="<app-slug>[bot]=APP_ID:/abs/path/to/key.pem: a GitHub App identity "
+                             "for the --read-token or --adjudicator-login login only, instead of "
+                             "a PAT (the key stays on the host, mode 0600)")
     change.add_argument("--observer-route", help="route the observer feed delivers through")
     change.add_argument("--observer-profile", help="profile that owns the observer destination")
     change.add_argument("--observer-deliver",
@@ -2037,7 +2103,10 @@ def add_triage(sub) -> None:  # noqa: ANN001
                         help="a label a maintainer applies to hand an issue to the fixer "
                              "(#214; needs unattended fixer pushes on); '' turns it off")
     triage.add_argument("--maintainer", action="append", default=[],
-                        help="login whose applying --fix-label counts (repeatable)")
+                        help="a maintainer's login (repeatable; '' clears the list): their "
+                             "comments reach both seats, their re-request starts a fresh review, "
+                             "and their applying --fix-label hands an issue to the fixer. Kept "
+                             "when --fix-label '' turns issue fixes off")
     triage.add_argument("--daily-turns", type=int, default=None,
                         help="at most this many triage turns per day (0 removes the cap)")
     triage.add_argument("--fix-daily-turns", type=int, default=None,

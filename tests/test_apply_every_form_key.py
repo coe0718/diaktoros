@@ -46,6 +46,12 @@ PUSHES = {
     "fixer_token_file": lambda t: str(t.pats["fix2"]),
     "adjudicator_login": "adj-other",
     "adjudicator_token_file": lambda t: str(t.pats["adj2"]),
+    "reviewer_app_id": "123",
+    "reviewer_app_key_file": lambda t: str(t.pats["rev2"]),
+    "fixer_app_id": "123",
+    "fixer_app_key_file": lambda t: str(t.pats["fix2"]),
+    "adjudicator_app_id": "123",
+    "adjudicator_app_key_file": lambda t: str(t.pats["adj2"]),
     "reviewer_max_steps": "40",
     "fixer_max_steps": "41",
     "reviewer_daily_tokens": "100000",
@@ -68,6 +74,7 @@ PUSHES = {
     "generated": "docs/commands.md=python3 tests/commands_doc.py --write",
     "fixer_check": "python3 tests/run_tests.py",
     "review_after_ci": True,
+    "merge_check": "on",
     "fix_ci": True,
     "fixer_scope_lock": True,
     "attribution": False,
@@ -144,6 +151,16 @@ class ApplyEveryFormKey(unittest.TestCase):
                     self.assertEqual(rc, 0, out)
                 settings = {key: self.value(key)}
                 loop = config.load_id("widgets")
+                if "_app_" in key:
+                    role = key.split("_", 1)[0]
+                    login = f"test-{role}[bot]"
+                    if role != "adjudicator":
+                        allowlist = "reviewers" if role == "reviewer" else "fixers"
+                        loop[allowlist] = [*loop[allowlist], login]
+                        cli_common._write_config(loop)
+                    settings.update({f"{role}_login": login,
+                                     f"{role}_app_id": "123",
+                                     f"{role}_app_key_file": self.value(f"{role}_app_key_file")})
                 try:
                     pushed = config.normalize(settings_form.apply_settings(loop, settings))
                 except config.ConfigError:

@@ -135,6 +135,36 @@ config_schema:
     type: str
     default: ""
     description: "Absolute path (~ allowed) to the file holding the adjudicator login's GitHub PAT — the path only, never the token itself. Must be your own mode-600 regular file, not shared with any other login. Blank = not set here"
+  reviewer_app_id:
+    label: "Reviewer's GitHub App id"
+    type: "str"
+    default: ""
+    description: "Positive ASCII decimal App id, paired with this seat's App key file and bot login. Blank pair = not set here. A complete pair selects App, never PAT."
+  reviewer_app_key_file:
+    label: "Reviewer's App key file (path only)"
+    type: "str"
+    default: ""
+    description: "Absolute path (~ allowed) to your mode-600 regular private-key file; the path only, never the key itself. Set with the App id. Blank pair = not set here."
+  fixer_app_id:
+    label: "Fixer's GitHub App id"
+    type: "str"
+    default: ""
+    description: "Positive ASCII decimal App id, paired with this seat's App key file and bot login. Blank pair = not set here. A complete pair selects App, never PAT."
+  fixer_app_key_file:
+    label: "Fixer's App key file (path only)"
+    type: "str"
+    default: ""
+    description: "Absolute path (~ allowed) to your mode-600 regular private-key file; the path only, never the key itself. Set with the App id. Blank pair = not set here."
+  adjudicator_app_id:
+    label: "Adjudicator's GitHub App id"
+    type: "str"
+    default: ""
+    description: "Positive ASCII decimal App id, paired with this seat's App key file and bot login. Blank pair = not set here. A complete pair selects App, never PAT."
+  adjudicator_app_key_file:
+    label: "Adjudicator's App key file (path only)"
+    type: "str"
+    default: ""
+    description: "Absolute path (~ allowed) to your mode-600 regular private-key file; the path only, never the key itself. Set with the App id. Blank pair = not set here."
   reviewer_max_steps:
     label: "Reviewer's agent steps per turn"
     type: str
@@ -204,7 +234,7 @@ config_schema:
     label: "Merge the base into review-only PRs"
     type: bool
     default: false
-    description: "Off (default): a review-only PR that conflicts gets a notice naming the merged PRs, the files and the commands. On: the host also pushes a clean merge of the base into the author's same-repository branch, with a lease on the head it read (a push to a branch the loop does not own; needs unattended fixer pushes). Never resolves a real conflict or a workflow change"
+    description: "Off (default): a review-only PR that conflicts gets a notice naming the merged PRs, the files and the commands. On: the host also pushes a clean merge of the base into the author's same-repository branch, with a lease on the head it read (a push to a branch the loop does not own; needs unattended fixer pushes). Never resolves a real conflict or a workflow change. It pushes only a PR GitHub reports as behind, which it does only when the base requires branches to be up to date; without that setting only the notice applies"
   required_checks:
     label: "Required CI checks (comma-separated)"
     type: str
@@ -240,6 +270,11 @@ config_schema:
     type: str
     default: ""
     description: "One command the fixer runs in the checkout before every push or issue-fix PR, besides the tests it touched: the checks CI always runs (chain several with &&). At most 500 characters, one line. Blank = not set here"
+  merge_check:
+    label: "Post the diaktoros/review merge check"
+    type: str
+    default: ""
+    description: "auto, on or off. The check mirrors whether the loop would merge the head (green only when approved and nothing holds it); make it required in branch protection for a block the merge button honours. auto: on when the reviewer is a GitHub App (a check run), off for a PAT reviewer (on: a commit status). Blank = not set here"
   review_after_ci:
     label: "Review after CI finishes"
     type: bool

@@ -44,10 +44,11 @@ The plugin uses token files and Python REST calls; **`gh auth login` is not requ
 | --- | --- | --- |
 | Owner-reader | Fine-grained selected-repo token is appropriate | `contents: read`, `pull_requests: read`, `repository_hooks: read`, `checks: read`, `statuses: read` |
 | Separate collaborator reader | Classic `repo`; cannot administer the owner's hooks, so hook state is **unknown**, not paused | Read-only fine-grained credentials can be used where the account/resource-owner model supports them |
-| Reviewer | Collaborator seats commonly require classic `repo` | `pull_requests: write` |
+| Reviewer | Collaborator seats commonly require classic `repo` | `pull_requests: write`; add `statuses: write` with `merge_check` `on` (a PAT reviewer's commit status) |
 | Fixer | Classic `repo` for collaborator seat | `contents: write`, `pull_requests: write` |
 | Adjudicator comment login | Classic `repo` for collaborator | `pull_requests: write` |
 | Hook admin | Classic `repo` or `admin:repo_hook`, or fine-grained owner token | `repository_hooks: write` (Webhooks: Read and write) |
+| Ruleset admin (`protect`, setup step 5) | Classic `repo` on an account with admin access to the repository | `administration: write` (Administration: Read and write) |
 | Reader with issue automation | Add issue-reading access | Add `issues: read` |
 | Triage account | Classic `repo` covers issue writes | Add `issues: write` |
 | Issue fixer | Classic `repo` covers issue/branch/PR operations | `contents: write`, `pull_requests: write`, `issues: write` |
@@ -127,6 +128,48 @@ hermes dk set --loop ID \
 Seat logins/file paths move through plugin settings and `apply`; preview first with `apply --loop ID --dry-run`. A changed seat path is an identity change and is refused while that seat is busy unless explicitly overridden. The running turn keeps its starting identity. [Settings](settings.md) and [configuration](configuration.md) explain this staging.
 
 If the reader is changed, default hook-editing commands now act as the new reader. Give it hook write or explicitly pass a mapped `--admin-token "<admin-login>"` to each hook operation. Naming an admin does not bypass repository access checks.
+
+### A GitHub App identity instead of an account (in progress)
+
+A seat or the reader can be a GitHub App's bot instead of a person's account (#1163): register
+an App, install it on the repository only, keep its private key in a 0600 file, and map it by its
+bot login, App id and key path:
+
+```bash
+hermes dk init --repo owner/repo --reviewer "acme-reviewer[bot]" --fixer fix-bot \
+  --reviewer-profile critic --fixer-profile coder \
+  --read-token reader-bot --host https://gateway.example \
+  --token reader-bot=/abs/reader.pat --token fix-bot=/abs/fixer.pat \
+  --app "acme-reviewer[bot]=5416187:/abs/acme-reviewer.pem"
+```
+
+`setup --app` does the same and does not ask that login's token file. `doctor` checks an App
+identity's key file (present, private, never opened) and the host's JWT signer; `selftest` resolves
+it to its bot user. `set --read-token LOGIN --app
+LOGIN=ID:KEY` (or with `--adjudicator-login`) moves the reader or the adjudicator to an App, as
+`--token` does for a PAT. An identity has a PAT or an App, never both: mapping one replaces the
+other. The key never leaves the host and is never read by the CLI. GitHub cannot request an App bot
+as a reviewer, so when the reviewer is an App the host delivers the fixer's request to the
+reviewer gate itself; to ask for a review by hand, use `hermes dk review --loop ID --pr N`
+(a review request on GitHub does nothing for it). What App bots can and cannot do on GitHub, and
+how the `diaktoros/review` merge check stands in for the review GitHub does not count, is in
+[GitHub App support](github-app-support.md). The reviewer App needs **Checks: write** to post that
+check (`merge_check`, on by default for an App reviewer).
+
+Each App's **repository permissions** (Metadata: Read is always added), as proven end to end on a
+live loop (#1163). Install each App on the loop's repository only, and leave its webhook inactive
+with no events (the repo hooks deliver events; `protect` and the hooks still use an admin login's
+token):
+
+| App | Permissions | Why |
+| --- | --- | --- |
+| Reader | Contents, Pull requests, Checks, Commit statuses, Issues: **Read**; **Webhooks: Read**; **Administration: Read** | The gates' reads and the CI the reviewer sees; Webhooks and Administration let `doctor`, `selftest` and `explain` see the hooks and the base's classic protection (without them those lines stay ⚠️) |
+| Reviewer | Contents: Read; Pull requests, Issues: **Read and write**; **Checks: Read and write** | Reviews; issues it files and triage labels; the `diaktoros/review` check |
+| Fixer | Contents, Pull requests, Issues: **Read and write** | Pushes and PRs; comments on the issues it fixes. Never Workflows: a merge that carries workflow changes comes back to you |
+| Adjudicator (optional) | Pull requests: **Read and write** | The ruling's PR comment, nothing else |
+
+After adding a permission, accept it on the App's installation (GitHub asks the owner first);
+until then the App's tokens do not carry it.
 
 ## Verify files, accounts and access
 

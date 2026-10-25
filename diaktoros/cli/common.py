@@ -106,9 +106,9 @@ def _routes_of(loop: dict) -> dict:
 
 
 def _credential_lines(loop: dict) -> list[str]:
-    """Where each seat's PAT is *referenced*. Never its value: the value lives in a 0600 file the
-    seats read at use time, and this CLI has no business copying it into a terminal."""
-    tokens = loop.get("tokens") or {}
+    """Where each seat's credential is *referenced*: a PAT file, or a GitHub App's id and key
+    file (#1163). Never a value: it lives in a 0600 file read at use time, and this CLI has no
+    business copying it into a terminal."""
     lines: list[str] = []
     seen: set[str] = set()
     for role in ("reviewer", "fixer"):
@@ -116,17 +116,66 @@ def _credential_lines(loop: dict) -> list[str]:
         if not login or login.lower() in seen:
             continue
         seen.add(login.lower())
-        ref = tokens.get(login) or tokens.get(login.lower()) or ""
         lines.append(f"{role} {login} → "
-                     f"{ref or '(no file mapped — falls back to read_token)'}")
+                     f"{_credential_label(loop, login) or '(no file mapped — falls back to read_token)'}")
     read_token = loop.get("read_token") or ""
     if read_token and read_token.lower() not in seen:
-        ref = tokens.get(read_token) or tokens.get(read_token.lower()) or ""
-        lines.append(f"read {read_token} → {ref or '(no file mapped)'}")
+        lines.append(f"read {read_token} → {_credential_label(loop, read_token) or '(no file mapped)'}")
     adj = config.adjudicator_login(loop)
     if adj:
-        lines.append(f"adjudicator {adj} → {_token_ref(loop, adj) or '(no file mapped)'}")
+        lines.append(f"adjudicator {adj} → {_credential_label(loop, adj) or '(no file mapped)'}")
     return lines
+
+
+def _app_ref(loop: dict, login: str) -> dict:
+    """The ``apps`` entry for ``login`` (exact key first, then any case), or ``{}``."""
+    apps = loop.get("apps") or {}
+    if not login or not isinstance(apps, dict):
+        return {}
+    found = apps.get(login)
+    if found is None:
+        found = next((v for k, v in apps.items() if str(k).lower() == login.lower()), None)
+    return found if isinstance(found, dict) else {}
+
+
+def _credential_file(loop: dict, login: str) -> str:
+    """The file ``login``'s credential lives in: its PAT, or its App's private key; ``""``."""
+    return _token_ref(loop, login) or str(_app_ref(loop, login).get("key_file") or "")
+
+
+def _credential_label(loop: dict, login: str) -> str:
+    """How a credential is shown: the PAT path, or ``App <id>, key <path>``. Never a value."""
+    token = _token_ref(loop, login)
+    if token:
+        return token
+    app = _app_ref(loop, login)
+    return f"App {app.get('app_id')}, key {app.get('key_file')}" if app else ""
+
+
+def _split_app_pair(pair: str) -> tuple[str, dict] | None:
+    """Parse one ``--app LOGIN=APP_ID:/abs/key.pem`` (#1163): ``(login, {"app_id", "key_file"})``,
+    or ``None`` after printing the refusal. The key file must pass the same checks as a token file
+    (absolute, yours, mode 0600); it is never opened here."""
+    from ..config import credentials
+    usage = "--app expects <app-slug>[bot]=APP_ID:/abs/path/to/key.pem"
+    if "=" not in pair or ":" not in pair.split("=", 1)[1]:
+        print(f"{usage}, got {pair!r}")
+        return None
+    login, rest = pair.split("=", 1)
+    login = login.strip()
+    app_id, key = rest.split(":", 1)
+    if not config.APP_LOGIN.match(login.lower()):
+        print(f"refused: {usage}: {login!r} is not an App's bot login")
+        return None
+    if not app_id.strip().isdigit() or int(app_id) <= 0:
+        print(f"refused: {usage}: the App id {app_id!r} is not a number")
+        return None
+    try:
+        credentials.check_token_file(key, f"--app {login} key")
+    except config.ConfigError as exc:
+        print(f"refused: {exc}")
+        return None
+    return login, {"app_id": int(app_id), "key_file": str(pathlib.Path(key.strip()).expanduser())}
 
 
 def _token_ref(loop: dict, login: str) -> str:

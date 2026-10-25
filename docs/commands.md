@@ -90,6 +90,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | move to a renamed plugin or repository | [`migrate`](#migrate) |
 | back up an install, or restore one | [`backup`](#backup), [`restore`](#restore) |
 | turn the loop on or off | [`arm`](#arm) |
+| make the merge button wait for the loop's verdict | [`protect`](#protect) |
 | change a setting | [`set`](#set), [`apply`](#apply), [`settings`](#settings) |
 | see every setting a loop has, its value and where it came from | [`show`](#show) |
 | let the fixer push on its own | [`fixer-push`](#fixer-push) |
@@ -285,7 +286,7 @@ measured from the review run's creation to its receipt.
 
 ### setup
 
-A first install in one command, and the easiest way to start. It walks through five steps, each
+A first install in one command, and the easiest way to start. It walks through six steps, each
 using the same code as the command named in it:
 
 1. **Runtime paths.** It finds the Hermes checkout, its virtualenv, the Python installation and a
@@ -299,7 +300,11 @@ using the same code as the command named in it:
 3. **The watchdog.** It schedules the shared watchdog job, only if it is missing.
 4. **Checks.** It runs [`doctor`](#doctor) and [`selftest --no-model`](#selftest). Any ❌ stops it
    here, with the fix line above.
-5. **Arm.** Only after a clean pass, and only if you say yes (the question defaults to no).
+5. **The merge check.** Only when the loop posts `diaktoros/review` (an App reviewer, or
+   `merge_check` `on`) and the base does not require it yet: it offers [`protect`](#protect)
+   (the question defaults to no; `--protect` says yes). Declining keeps going: the check is
+   posted, but the merge button ignores it until it is required.
+6. **Arm.** Only after a clean pass, and only if you say yes (the question defaults to no).
 
 ```bash
 hermes dk setup --repo "<owner>/<repository>"
@@ -332,6 +337,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--id` | `ID` |  | loop id (default: the repository name) |
 | `--yes` |  |  | no questions: the flags and the plugin settings are the answers, and every confirmation is yes (arming still needs --arm) |
 | `--dry-run` |  |  | show every step, write nothing |
+| `--protect` |  |  | require the diaktoros/review merge check on the base (the loop's own ruleset; `hermes dk protect`) when the loop posts it |
 | `--arm` |  |  | arm the hooks after a clean doctor and selftest |
 | `--reviewer` | `REVIEWER` |  | reviewer GitHub login |
 | `--fixer` | `FIXER` |  | fixer GitHub login |
@@ -345,6 +351,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--admin-token-file` | `ADMIN_TOKEN_FILE` |  | hook admin's token file |
 | `--schedule` | `SCHEDULE` |  | watchdog interval (default 15m) |
 | `--watchdog-deliver` | `WATCHDOG_DELIVER` |  | where watchdog alerts go (default local) |
+| `--app` | `LOGIN=APP_ID:KEY` (repeatable) |  | a GitHub App identity for a seat or the reader instead of a PAT: <app-slug>[bot]=APP_ID:/abs/path/to/key.pem (repeatable); that login's token file is then not asked for |
 | `--admin-token` | `ADMIN_TOKEN` |  | hook admin login: the hooks are created (paused) as it |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | Hermes profile whose chat gets the loop's notices |
 | `--adjudicator-profile` | `ADJUDICATOR_PROFILE` |  | Hermes profile that rules when a PR's verdict cap is spent; turns adjudication on (blank: off) (default: the plugin setting) |
@@ -358,6 +365,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
+| `--merge-check` | `auto` \| `on` \| `off` |  | post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting) |
 | `--review-only-update` | `on` \| `off` |  | push a clean merge of the base into a review-only author's PR branch (same repository only; off by default; turning it on needs --acknowledge-branch-push) |
 | `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
@@ -452,6 +460,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--root` | `ROOT` (repeatable) |  | a directory reviews may clean (repeatable) |
 | `--state-dir` | `STATE_DIR` |  | where this loop keeps its state files (default: ~/.hermes/state/diaktoros/<id>; ~/.hermes/state/review-loops/<id> is only a leftover until `migrate` moves it) |
 | `--token` | `TOKEN` (repeatable) |  | login=/path/to/pat (repeatable) |
+| `--app` | `LOGIN=APP_ID:KEY` (repeatable) |  | a GitHub App identity instead of a PAT: <app-slug>[bot]=APP_ID:/abs/path/to/key.pem (repeatable; the key stays on the host, mode 0600) |
 | `--read-token` | `READ_TOKEN` |  | required: login whose token reads GitHub — its own account, never a seat or the adjudicator login (the four-identity rule) |
 | `--skill` | `SKILL` |  | skill the seats are told to load. A plugin-provided skill is qualified, e.g. diaktoros:review-loop |
 | `--adjudicator-route` | `ADJUDICATOR_ROUTE` |  | route name for the adjudicator (e.g. <id>-breach): setting it turns adjudication on when the verdict cap is spent |
@@ -486,6 +495,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
+| `--merge-check` | `auto` \| `on` \| `off` |  | post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting) |
 | `--turn-budget` | `TURN_BUDGET` | `900` | seconds one isolated seat turn may run, build and tests included (default 900; the sandbox is killed past it) |
 | `--reviewer-turn-budget` | `REVIEWER_TURN_BUDGET` |  | the reviewer seat's own turn budget in seconds (overrides --turn-budget) |
@@ -585,6 +595,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--no-human-paths` |  |  | clear the list: no path is reserved for a human (one of `--human-path`, `--no-human-paths`) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox (repeat it); replaces the list (one of `--generated`, `--no-generated`) |
 | `--no-generated` |  |  | clear the list: the conflict shortcut is off (one of `--generated`, `--no-generated`) |
+| `--merge-check` | `auto` \| `on` \| `off` |  | post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) |
 | `--reviewer-turn-budget` | `REVIEWER_TURN_BUDGET` |  | the reviewer seat's own turn budget in seconds |
 | `--fixer-turn-budget` | `FIXER_TURN_BUDGET` |  | the fixer seat's own turn budget in seconds |
@@ -605,6 +616,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--adjudicator` | `off` |  | turn adjudication off: removes the route and the block (breach markers and rulings stay in the ledger) |
 | `--read-token` | `READ_TOKEN` |  | the login the gates read GitHub as — its own account, never a seat or the adjudicator login (the four-identity rule); map a new login with --token LOGIN=/path |
 | `--token` | `TOKEN` (repeatable) |  | LOGIN=/path/to/pat for the --read-token or --adjudicator-login login only (a path, never the token) |
+| `--app` | `LOGIN=APP_ID:KEY` (repeatable) |  | <app-slug>[bot]=APP_ID:/abs/path/to/key.pem: a GitHub App identity for the --read-token or --adjudicator-login login only, instead of a PAT (the key stays on the host, mode 0600) |
 | `--observer-route` | `OBSERVER_ROUTE` |  | route the observer feed delivers through |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | profile that owns the observer destination |
 | `--observer-deliver` | `OBSERVER_DELIVER` |  | where the gateway delivers the feed (telegram, discord, ...) |
@@ -768,7 +780,7 @@ may preserve activation; do not assume every update pauses a live hook.
 | `--login` | `LOGIN` |  | account that labels (default: the reviewer seat); needs issues: write, never the reader |
 | `--token` | `TOKEN` (repeatable) |  | login=/path/to/pat for --login (or --admin-token), if not mapped |
 | `--fix-label` | `FIX_LABEL` |  | a label a maintainer applies to hand an issue to the fixer (#214; needs unattended fixer pushes on); '' turns it off |
-| `--maintainer` | `MAINTAINER` (repeatable) |  | login whose applying --fix-label counts (repeatable) |
+| `--maintainer` | `MAINTAINER` (repeatable) |  | a maintainer's login (repeatable; '' clears the list): their comments reach both seats, their re-request starts a fresh review, and their applying --fix-label hands an issue to the fixer. Kept when --fix-label '' turns issue fixes off |
 | `--daily-turns` | `DAILY_TURNS` |  | at most this many triage turns per day (0 removes the cap) |
 | `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | at most this many issue-fix turns per day (0 = the default, 10); issue fixes are always capped |
 | `--auto-fix-label` | `AUTO_FIX_LABEL` (repeatable) |  | a triage label that hands an issue to the fixer without a maintainer (#232; repeatable; never P0-P2; '' clears the list) |
@@ -1057,6 +1069,36 @@ not necessarily failure; exit 0 is not proof every gateway delivery was observed
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose token can edit the repo's hooks (default: the reader) |
 <!-- /flags -->
 
+### protect
+
+Makes the base branch require the `diaktoros/review` merge check, so the merge button honours the
+loop's verdict (#1163). It adds one ruleset of the loop's own, named `diaktoros/review`, beside
+whatever protection the base already has, and never edits another rule. With a GitHub App
+reviewer the requirement is pinned to that App, so no one else's status of the same name counts;
+a PAT reviewer's commit status cannot be pinned. The ruleset has no bypass: no one, admins
+included, merges a PR until the check is green. `--remove` deletes that ruleset and nothing else.
+
+```bash
+hermes dk protect --loop "<loop-id>" --admin-token "<admin-login>"
+hermes dk protect --loop "<loop-id>" --admin-token "<admin-login>" --remove
+```
+
+It refuses a loop that does not post the check (requiring it would block every PR). The login
+needs admin access to the repository (classic `repo`, or Administration: write). GitHub never
+counts a GitHub App's approval, so with an App reviewer a base that still requires approvals
+needs a person's approval on every PR. `protect` and `doctor` say so; turning required approvals
+off is yours to do, in repo settings → rules. `doctor`'s `merge-check` line reads the base
+either way.
+
+<!-- flags:protect -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` | **required** | loop id |
+| `--admin-token` | `ADMIN_TOKEN` |  | login whose token can manage rulesets (admin access; default: the reader) |
+| `--remove` |  |  | delete the loop's ruleset instead; nothing else is touched |
+| `--dry-run` |  |  | print what would be written, write nothing |
+<!-- /flags -->
+
 ---
 
 ## When something is stuck
@@ -1217,12 +1259,32 @@ to or merges that branch.
 The review-only verdict cap still waits for `review --another-round`; it does not automatically
 escalate. Exit `1` means it was refused, and the line says why.
 
+**With a turn running on a fixer's PR** (#1246), the escalation can't be written yet, and with unattended fixer
+pushes on there is never a gap between one turn and the next (a review-only or
+maintainer PR has no fixer turn, so there it is still refused until the turn ends). So it's recorded as **pending**
+instead, and exits `0`:
+
+- the running turn finishes normally;
+- if the PR's next verdict requests changes, the adjudicator rules on that head in place of a
+  fixer turn (a spent cap takes precedence, and is the ruling);
+- if the next verdict approves the current head, the pending escalation is dropped, with a
+  notice: there's nothing left to rule on;
+- it lapses after 24 hours with no verdict, or when the PR closes;
+- `explain` shows it while it's pending, and `--withdraw` cancels it.
+
+```bash
+hermes dk escalate --loop "<loop-id>" --pr 12 --withdraw
+```
+
+Desktop's escalate still refuses while a turn is running and points at this command.
+
 <!-- flags:escalate -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
 | `--pr` | `PR` | **required** | the pull request to escalate |
 | `--reason` | `REASON` |  | why, for the ruling's record (one line) |
+| `--withdraw` |  |  | cancel a pending escalation (one asked for while a run was in flight, waiting for the next changes-requested verdict) |
 <!-- /flags -->
 
 

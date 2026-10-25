@@ -347,6 +347,13 @@ class Ruling(Base):
         self.assertIn("no adjudicator GitHub identity", messages[0])
         self.assertEqual(Supervisor(self.db).notify(messages.append), 0)
 
+    def test_a_ruling_refreshes_the_merge_check(self):
+        from diaktoros import merge_check
+        server = self.start()
+        with mock.patch.object(merge_check, "refresh_quietly") as refresh:
+            self.assertTrue(self.send(server, self.ruling())["ok"])
+        refresh.assert_called_once_with(self.loop, 7)
+
     def test_field_validation_precedes_consuming_the_capability(self):
         server = self.start()
         for bad in (self.ruling("APPROVE"), self.ruling(body="   "),

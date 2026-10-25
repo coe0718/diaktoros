@@ -436,7 +436,7 @@ class Ready(Base):
         from diaktoros import ready
         self.mark_escalated()
         pr = {**fg.LIVE, "user": {"login": "fixer"}}
-        with mock.patch.object(gate, "shadow_hold", return_value=("", "")), \
+        with mock.patch.object(gate, "shadow_state", return_value=("", "", "")), \
                 mock.patch.object(ready.gate_failures, "open_for", return_value=[]):
             with mock.patch.object(gate, "shadow_overruled", return_value=False):
                 parked = ready.assess(self.loop, self.st, pr, APPROVED, None, None)
@@ -535,6 +535,19 @@ class CallSites(Base):
             turn.run_shadow([], rc=1)                         # nothing recorded: no check
         hook.assert_not_called()
 
+
+    def test_the_shadows_finish_refreshes_the_merge_check(self):
+        import test_shadow as ts
+        from diaktoros import merge_check
+        turn = ts.ProductionTurn("run")
+        turn.setUp()
+        self.addCleanup(turn.doCleanups)
+        with mock.patch.object(run_supervisor.Supervisor, "_shadow_escalation"), \
+                mock.patch.object(merge_check, "refresh_quietly") as refresh:
+            turn.run_shadow([{"verdict": "REQUEST_CHANGES", "body": "F1: a.py:1: x",
+                              "authorized": True, "denial": ""}])
+        refresh.assert_called_once()
+        self.assertEqual(refresh.call_args.args[1], 8)               # the shadowed PR
 
 if __name__ == "__main__":
     unittest.main()

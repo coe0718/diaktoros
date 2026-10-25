@@ -451,6 +451,15 @@ def _work_root(loop: dict) -> Path:
     return root
 
 
+def redactor_for(loop: dict) -> "Redactor":
+    """The redactor every selftest line passes: it knows each identity's credential, PATs and
+    GitHub App private keys (#1163) alike, so none is ever printed."""
+    redact = Redactor()
+    for raw in config.credentials_map(loop).values():
+        redact.add_file(raw)
+    return redact
+
+
 def host_secret_paths(loop: dict, settings: dict, runtime_file: Path) -> list[str]:
     from . import seat_model
     paths = seat_model.secret_paths(loop, settings)
@@ -459,7 +468,9 @@ def host_secret_paths(loop: dict, settings: dict, runtime_file: Path) -> list[st
             paths.append(str(Path(os.environ[var]).expanduser()))
     paths += [str(runtime_file), str(config.home() / ".env"),
               str(config.config_dir() / f"{loop['id']}.json")]
-    paths += [str(Path(str(raw)).expanduser()) for raw in (loop.get("tokens") or {}).values()]
+    # Every identity's credential file: PATs and GitHub App private keys (#1163) alike.
+    paths += [str(Path(str(raw)).expanduser()) for raw in config.credentials_map(loop).values()
+              if raw]
     return list(dict.fromkeys(paths))
 
 
@@ -807,6 +818,39 @@ def check_identities(report: Report, loop: dict) -> bool:
                        "loop takes them from `init --reviewer/--reviewer-seat/--fixer`)")
             continue
         raw = (loop.get("tokens") or {}).get(login)
+        from . import github_app
+        if not raw and github_app.is_app(loop, login):
+            # A GitHub App identity (#1163): its key, then its live bot principal — minted and
+            # read with the App's own credentials, never GET /user.
+            check = doctor.check_app_identity(loop, login, name)
+            if check.status != doctor.VERIFIED:
+                ok = False
+                report.add(step, name, FAIL, check.detail, check.fix)
+                continue
+            files[role] = github_app.key_path(loop, login).resolve()
+            try:
+                account = gh.principal(loop, login)
+            except gh.GitHubError as exc:
+                account = None
+                why = str(exc)
+            else:
+                why = gh.last_error() or "no answer"     # e.g. the App is not installed here
+            if not isinstance(account, dict) or type(account.get("id")) is not int:
+                ok = False
+                report.add(step, name, FAIL, f"{login}: the App's bot could not be resolved ({why})",
+                           "check the App is installed on this repository and the key file is "
+                           "that App's private key")
+                continue
+            if str(account.get("login") or "").casefold() != login.casefold():
+                ok = False
+                report.add(step, name, FAIL,
+                           f"the key mapped to {login} belongs to {account.get('login')}",
+                           f"put {login}'s own App id and private key in apps")
+                continue
+            principals[role] = account["id"]
+            report.add(step, name, PASS, f"{account['login']} (id {account['id']}, GitHub App "
+                                         f"{account.get('app_id')})")
+            continue
         if not raw:
             ok = False
             report.add(step, name, FAIL, f"{login}: no token file mapped",
@@ -1200,7 +1244,7 @@ def check_hook_signatures(report: Report, loop: dict, *, ping: bool = False,
     hooks, error = gh.hooks_read(loop, loop.get("read_token"))
     if hooks is None:
         report.add(step, "hooks:signature", WARN, f"cannot read the repo's hooks ({error})",
-                   "give the read token hook read access (`read:repo_hook`, or `repo`)")
+                   config.reader_access_fix(loop, "hooks"))
         return
     from . import route_intent
     names = {name: seat for seat, name in ((s, str(route_intent.routes_of(loop).get(s) or ""))
@@ -1257,9 +1301,7 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
     if timeout is None:
         timeout = config.turn_budget(loop, "reviewer")
     runtime_file = Path(runtime_file or runtime_path())
-    redact = Redactor()
-    for raw in (loop.get("tokens") or {}).values():
-        redact.add_file(raw)
+    redact = redactor_for(loop)
     report = Report(out, redact)
     github_scope = ("GitHub: reads only, plus one write: --ping asks GitHub to ping each loop hook"
                     if ping else "GitHub: reads only, nothing is posted")

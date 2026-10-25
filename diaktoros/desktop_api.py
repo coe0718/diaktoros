@@ -736,7 +736,8 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
             created, _ = stamp.get(row["id"], (None, None))
             view["stuck"].append({"seat": row["seat"], "head": str(row["head"] or "")[:7],
                                   "state": row["state"], "since": created,
-                                  "next": run_supervisor.next_step(row, loop["id"])})
+                                  "next": run_supervisor.next_step(row, loop["id"]),
+                                  "explanation": run_supervisor.hold_explanation(row)})
         # The newest TURNS_MAX rows, shown oldest first: the latest turns are the ones that say
         # whether the PR is still moving. ``turns_total`` lets the page say the list is cut.
         view["turns_total"] = _count(con, "runs", repo, pr)
@@ -848,8 +849,9 @@ def settings_view() -> dict:
 
     Safety, per this module's rule that nothing here writes:
 
-    * **A token is a path, never a value.** ``token_file`` names where a login's PAT is read from
-      at use time; the file is never opened, read or returned.
+    * **Credentials are paths, never contents.** PAT-only ``token_file`` and App-only
+      ``key_file`` name the credential without opening it; ``credential_kind`` and ``app_id``
+      distinguish them. Form choices may be partial; effective loop credentials are typed.
     * **An unreadable settings store is unavailable, not a clean default** — ``available`` is
       false and ``reason`` says why, so the page cannot present schema defaults as if the
       operator had chosen them. A store that reads fine but holds nothing is available,
@@ -925,10 +927,19 @@ def _seat_settings(settings: dict) -> dict:
         out[role] = {
             "profile": entry.get("profile") or "",
             "login": entry.get("login") or "",
-            "token_file": entry.get("token_file") or "",
+            **_form_credential(entry),
             "set": bool(entry),
         }
     return out
+
+
+def _form_credential(entry: dict) -> dict:
+    """Unapplied form choices, including partial App fields; never resolve a credential."""
+    app_id = entry.get("app_id") or ""
+    key_file = entry.get("app_key_file") or ""
+    token_file = entry.get("token_file") or ""
+    return {"credential_kind": "app" if app_id or key_file else "pat" if token_file else "none",
+            "app_id": str(app_id), "key_file": key_file, "token_file": token_file}
 
 
 def _loop_settings() -> list[dict]:
@@ -990,23 +1001,32 @@ def _seat_line(loop: dict, role: str) -> dict:
     return {
         "profile": config.seat_profile(loop, role),
         "login": login,
-        "token_file": _token_path(loop, login),
+        **_seat_credential(loop, login),
         "route": route_intent.routes_of(loop).get(role) or "",
         "turn_budget_s": config.turn_budget(loop, role),
         "max_steps": config.max_steps(loop, role),
     }
 
 
-def _token_path(loop: dict, login: str) -> str:
-    """Where ``login``'s PAT is read from at use time, or ``""`` — a path, never a credential.
+def _seat_credential(loop: dict, login: str) -> dict:
+    """Typed effective credential metadata; a PEM path is never a PAT token_file."""
+    from . import gh
 
-    The same two-step lookup the CLI's credential lines use: the exact login key first, then any
-    case, because a hand-edited ``tokens`` map may key it either way. The file is never opened.
-    """
-    tokens = loop.get("tokens") or {}
-    if not login:
-        return ""
-    return str(tokens.get(login) or tokens.get(login.lower()) or "")
+    result = {"credential_kind": "none", "app_id": None, "key_file": "", "token_file": ""}
+    mapped = config.credentials_map(loop)
+    actual = login if login in mapped else next(
+        (name for name in mapped if name.casefold() == login.casefold()), "")
+    if not login or not actual:
+        return result
+    path = gh.credential_path(loop, actual)
+    if path is None:
+        return result
+    app = (loop.get("apps") or {}).get(actual)
+    if app:
+        result.update(credential_kind="app", app_id=app["app_id"], key_file=str(path))
+    else:
+        result.update(credential_kind="pat", token_file=str(path))
+    return result
 
 
 def _loop_flags(loop: dict) -> dict:

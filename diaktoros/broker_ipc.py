@@ -363,9 +363,11 @@ class RunBroker:
                     response = {"ok": True, "result": {"accepted": True}}
                     if isinstance(outcome, dict) and type(outcome.get("issue")) is int:
                         response["result"]["issue"] = outcome["issue"]
-                    if isinstance(outcome, dict) and outcome.get("held") == "human_paths":
-                        # Host-written (#478): the seat must not read a withheld approval as done.
-                        response["result"] = {"accepted": False, "held": "human_paths",
+                    if isinstance(outcome, dict) and outcome.get("held") in ("human_paths",
+                                                                             "conflict"):
+                        # Host-written (#478, #1243): the seat must not read a withheld approval
+                        # as done.
+                        response["result"] = {"accepted": False, "held": outcome["held"],
                                               "reason": str(outcome.get("reason") or "")[:500]}
                     if self.answers_outcome:
                         response["result"]["answers"] = self.answers_outcome
@@ -641,6 +643,8 @@ class RunBroker:
             from .review_receipt import ReviewedPrIneligible
             try:
                 result = submit(self._loop, self.scope, ledger, verdict, body)
+            except broker.BrokerConflict as exc:
+                return self._end_on_conflict(str(exc), body)     # #1243: nothing claimed or sent
             except ReviewedPrIneligible as exc:
                 # The review exists on GitHub: name it on the run before answering the sandbox.
                 try:
@@ -687,18 +691,26 @@ class RunBroker:
             # CI-fix push) makes GitHub send no event. Read that before the request, and if so
             # deliver the gate the event GitHub will not.
             pending = None
-            if after_push:
+            # An App reviewer (#1163) is never requested on GitHub: the request is always
+            # delivered to the reviewer gate by the host, as for #532.
+            app_reviewer = operation == "request_review" and config.reviewer_is_app(self._loop)
+            if after_push or app_reviewer:
                 try:
                     from . import gh, review_kick
                     live = gh.api(self._loop, gh.pr_path(self._loop, self.scope.number),
                                   login=self._loop["read_token"])
-                    pending = live if review_kick.already_requested(self._loop, live) else None
+                    pending = (live if isinstance(live, dict) and (
+                        app_reviewer or review_kick.already_requested(self._loop, live)) else None)
                 except Exception:
                     pending = None
-            result = broker.perform(self._loop, repo=self.scope.repo, number=self.scope.number,
-                                    head=head, role=self.scope.role, branch=self.scope.branch,
-                                    operation=operation, verdict=verdict, body=body,
-                                    require_verdict=not after_push)
+            try:
+                result = broker.perform(self._loop, repo=self.scope.repo,
+                                        number=self.scope.number, head=head,
+                                        role=self.scope.role, branch=self.scope.branch,
+                                        operation=operation, verdict=verdict, body=body,
+                                        require_verdict=not after_push)
+            except broker.BrokerConflict as exc:
+                return self._end_on_conflict(str(exc), body)     # #1243: nothing was sent
             if pending is not None:
                 self._kick_review(pending, head)
         if operation == 'review':
@@ -707,6 +719,8 @@ class RunBroker:
                 findings.record(self._loop, self.scope.number, self.scope.head, body)
             except Exception:
                 pass  # the review is already written; state is best effort
+            from . import merge_check
+            merge_check.refresh_quietly(self._loop, self.scope.number)   # #1163: a new verdict
         self.completed = True
         return result
 
@@ -738,6 +752,17 @@ class RunBroker:
             return "", ""
         names = ", ".join(hits[:10]) + (f" and {len(hits) - 10} more" if len(hits) > 10 else "")
         return "", f"it touches {names}"
+
+    def _end_on_conflict(self, why: str, body: str = "") -> dict:
+        """End a reviewer turn whose APPROVE met a conflict on the live read right before the write
+        (#1243): capability spent, nothing written, no hold (the conflict merge brings a new head,
+        reviewed as usual). A shadow never reaches the write path, so never this."""
+        reason = (f"{why}: an approval would not stand, so none is posted. Your turn is done; "
+                  "do not retry. The conflict is resolved on a new head, which gets a fresh "
+                  "review.")
+        self._used = True
+        self.completed = True
+        return {"accepted": False, "held": "conflict", "reason": reason}
 
     def _hold_for_person(self, why: str, body: str = "") -> dict:
         """End this reviewer turn without approving: the head waits for a person (#478).
@@ -870,7 +895,11 @@ class RunBroker:
             entry["login"] = broker.authorize(
                 self._loop, repo=self.scope.repo, number=self.scope.number,
                 head=self.scope.head, role="reviewer", branch=self.scope.branch,
-                operation="review")
+                operation="review", approve=verdict == "APPROVE")
+        except broker.BrokerConflict as exc:
+            # #1250: the answer a real write gives (#1243), so the no-write run behaves the same.
+            entry["denial"] = entry["held"] = str(exc)[:200]
+            return self._end_on_conflict(str(exc), body)
         except broker.BrokerDenied as exc:
             entry["denial"] = str(exc)[:200]
             raise
@@ -912,6 +941,8 @@ class RunBroker:
         except Exception:
             # Already durable, and the operator outbox reports it regardless.
             pass
+        from . import merge_check
+        merge_check.refresh_quietly(self._loop, self.scope.number)       # #1163: a ruling
         return {"accepted": True}
 
 
@@ -1131,8 +1162,11 @@ class RunBroker:
             sent = False
             log(f"#{self.scope.number} @ {head[:7]}: review start not delivered: "
                 f"{type(exc).__name__}: {exc}")
-        log(f"#{self.scope.number} @ {head[:7]}: reviewer was already requested, so GitHub sends "
-            f"no event — {'delivered the review request to the gate' if sent else 'the watchdog will start it'}")
+        why = ("the reviewer is a GitHub App, which GitHub cannot request"
+               if config.reviewer_is_app(self._loop) else
+               "reviewer was already requested, so GitHub sends no event")
+        log(f"#{self.scope.number} @ {head[:7]}: {why} — "
+            f"{'delivered the review request to the gate' if sent else 'the watchdog will start it'}")
 
     def _hold_issue_fix(self, supervisor, outcome: str) -> None:
         """An issue-fix write whose outcome is unknown holds its run ``uncertain`` (#522), as the

@@ -295,6 +295,17 @@ jobs:
         run: >-
           uv pip install --python "$HERMES_AGENT_SOURCE/venv/bin/python"
           "fastapi==0.133.1" "starlette==1.3.1" "httpx==0.28.1"
+      # Only query-core, pinned to the desktop lock: no Electron/frontend install.
+      - uses: actions/setup-node@v6
+        if: matrix.part == 'core'
+        with:
+          node-version: "24"
+      - name: Install locked Desktop cache test dependency (no lifecycle scripts)
+        if: matrix.part == 'core'
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix tests/query-core
+      - name: Desktop real-TanStack component acceptance (exact count, no skips)
+        if: matrix.part == 'core'
+        run: python tests/run_desktop_query_core.py
       - name: Desktop read and socket acceptance (no skips)
         if: matrix.part == 'core'
         env:

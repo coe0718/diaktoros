@@ -235,16 +235,24 @@ def shadow_open_heads(db=None) -> set[tuple[int, str]]:
 
 def shadow_hold(loop: dict, number: int, head: str, db=None,
                 marker: dict | None = None) -> tuple[str, str]:
-    """``(hold, note)`` for a PR head under ``shadow.escalate`` (#1004), read-only.
+    """``(hold, note)``: why the shadow review holds this head (``""`` when it does not), and a
+    note. ``shadow_state`` adds the kind of hold for the merge check (#1163 M2b)."""
+    return shadow_state(loop, number, head, db=db, marker=marker)[1:]
+
+
+def shadow_state(loop: dict, number: int, head: str, db=None,
+                marker: dict | None = None) -> tuple[str, str, str]:
+    """``(kind, hold, note)`` for a PR head — kind ``pending`` or ``failure`` when it holds under ``shadow.escalate`` (#1004), read-only.
 
     ``hold`` (it is not ready to merge) once the newest shadow review of this head requested
     changes, or while a shadow run started after the newest review (or with none yet) is still
     open; a ledger that exists but cannot be read holds too (unknown is not ready). ``note``
     only, never a hold, when there is nothing to wait for: no ledger yet, no shadow run queued
     (sampled out, or queued before escalate was on), or runs that ended without a review, so a
-    failed shadow never parks a PR for good. ``("", "")`` with escalate off."""
+    failed shadow never parks a PR for good. ``("", "", "")`` with escalate off; ``shadow_hold`` is
+    the ``(hold, note)`` view of it."""
     if not config.shadow_escalate(loop):
-        return "", ""
+        return "", "", ""
     import sqlite3
     from pathlib import Path
     from . import run_supervisor
@@ -252,11 +260,11 @@ def shadow_hold(loop: dict, number: int, head: str, db=None,
     path = Path(db or run_supervisor.production_ledger())
     if not path.exists():
         # A loop whose ledger was never created holds no shadow review (shadow review of #1097).
-        return "", f"no run ledger yet, so no shadow review of {short} exists: nothing to wait for"
+        return "", "", f"no run ledger yet, so no shadow review of {short} exists: nothing to wait for"
     try:
         con = run_supervisor.read_only_connect(path)
         if con is None:
-            return f"the run ledger is unreadable, so the shadow review at {short} is unknown", ""
+            return "pending", f"the run ledger is unreadable, so the shadow review at {short} is unknown", ""
         try:
             try:
                 review = con.execute("SELECT verdict, created, run_id FROM shadow_reviews "
@@ -287,7 +295,7 @@ def shadow_hold(loop: dict, number: int, head: str, db=None,
         finally:
             con.close()
     except Exception as exc:
-        return (f"the run ledger is unreadable ({type(exc).__name__}), so the shadow review at "
+        return "pending", (f"the run ledger is unreadable ({type(exc).__name__}), so the shadow review at "
                 f"{short} is unknown"), ""
     if review is not None and str(review[0]) == "REQUEST_CHANGES":
         mine = isinstance(marker, dict) and str(marker.get("head") or "") == head and (
@@ -295,24 +303,24 @@ def shadow_hold(loop: dict, number: int, head: str, db=None,
         verdict = str(ruling[0]) if ruling else ""
         if mine and verdict == "ACCEPT":
             # Part 2 (#1004): the adjudicator overruled it; the reviewer's approval stands.
-            return "", f"the adjudicator overruled the shadow review at {short} (ACCEPT)"
+            return "", "", f"the adjudicator overruled the shadow review at {short} (ACCEPT)"
         if mine and verdict:
-            return (f"the adjudicator ruled {verdict} on the shadow review at {short} — the "
+            return "failure", (f"the adjudicator ruled {verdict} on the shadow review at {short} — the "
                     "decision is yours (`hermes dk explain --pr N` shows the findings)"), ""
         if mine:
-            return (f"the shadow review requested changes at {short}; escalated to the "
+            return "pending", (f"the shadow review requested changes at {short}; escalated to the "
                     "adjudicator, waiting for its ruling"), ""
-        return (f"the shadow review requested changes at {short} — it holds the PR until "
+        return "failure", (f"the shadow review requested changes at {short} — it holds the PR until "
                 "you decide (`hermes dk explain --pr N` shows its findings)"), ""
     if pending is not None:
         # A shadow run queued after the newest review (a re-review at the same head, #1097's
         # shadow review) can still change it: wait for it, even past an earlier approval.
-        return f"waiting on the shadow review at {short} ({pending[0]})", ""
+        return "pending", f"waiting on the shadow review at {short} ({pending[0]})", ""
     if review is not None:
-        return "", ""
+        return "", "", ""
     if run is None:
-        return "", f"no shadow review was queued for {short}: nothing to wait for"
-    return "", f"the shadow run at {short} ended {run[0]} without a review: nothing to wait for"
+        return "", "", f"no shadow review was queued for {short}: nothing to wait for"
+    return "", "", f"the shadow run at {short} ended {run[0]} without a review: nothing to wait for"
 
 
 SHADOW_ESCALATION = "shadow"           # the breach marker's ``escalated.by`` for #1004
@@ -535,6 +543,9 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
                                         queued.get("url") or pr_url(loop, number),
                                         declined_reason(seat, outcome))
             final = (f"{seat} turn {outcome}", "accepted" if scheduled else "declined")
+            if scheduled and seat == "reviewer":
+                from . import merge_check          # #1242: the check shows at once, pending
+                merge_check.mark_pending(loop, st, number, head, "review queued")
             if outcome == "enqueued":
                 log(f"#{number} @ {head[:7]} {seat} enqueued for isolated worker")
             elif scheduled:
@@ -873,6 +884,16 @@ def _explain_state(loop: dict, st: state_mod.LoopState, key: str, number: int, h
         f"{marker.get('status') or 'recorded'} at head {str(marker.get('head') or '?')[:7]} since "
         f"{marker.get('at') or 'an unrecorded time'} — {marker.get('reason') or 'no reason recorded'}"
         if marker else "none")
+    if escalation_line == "none":
+        from . import escalate_pending      # #1246: asked for while a run was in flight
+        pending = escalate_pending.get(st, number)
+        if pending:
+            at = pending.get("at")
+            when = (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(at))
+                    if isinstance(at, (int, float)) else "an unrecorded time")
+            escalation_line = (f"pending since {when} ({pending.get('reason')}) — the next "
+                               "changes-requested verdict goes to the adjudicator instead of the "
+                               "fixer; an approval drops it")
 
     watch = st.watch()
     if watch.get("last_run"):
@@ -1396,7 +1417,10 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                   f"`hermes dk review --loop {loop['id']} --pr {number} --another-round`")
     elif review_only and at_head:
         kind = "author-push"
-        action = (f"the author {author} pushes a fix and re-requests review of the new head — a "
+        ask = (f"runs `hermes dk review --loop {loop['id']} --pr {number}` (a GitHub App reviewer "
+               "cannot be requested on GitHub)" if config.reviewer_is_app(loop) else
+               "re-requests review of the new head")
+        action = (f"the author {author} pushes a fix and {ask} — a "
                   f"review-only PR has no fixer, but its verdicts are capped at "
                   f"{config.review_only_cap(loop)} (`review_only_cap`, default the loop's "
                   f"`cap`); a maintainer's `--another-round` lifts it once reached")
@@ -1487,9 +1511,12 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         kind = "review-request"
         detail = ("a fresh PR also wakes the reviewer on opened / ready_for_review, so re-driving "
                   "that event is the other way in" if not spent else "a push alone wakes nobody")
-        action = (f"the fixer asks for review of head {short}: gh api -X POST "
-                  f"repos/{repo}/pulls/{number}/requested_reviewers -f "
-                  f"'reviewers[]={loop['reviewer_seat']}' — {detail}")
+        action = ((f"ask for review of head {short}: `hermes dk review --loop {loop['id']} --pr "
+                   f"{number}` — the reviewer is a GitHub App, which GitHub cannot request")
+                  if config.reviewer_is_app(loop) else
+                  (f"the fixer asks for review of head {short}: gh api -X POST "
+                   f"repos/{repo}/pulls/{number}/requested_reviewers -f "
+                   f"'reviewers[]={loop['reviewer_seat']}' — {detail}"))
 
     if pr is None:
         state_line = "unknown — the PR itself could not be read"

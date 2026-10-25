@@ -106,13 +106,13 @@ def _identity(loop: dict, repo: str, number: int, head: str, ref: str, role: str
     assert isinstance(reader, str) and isinstance(reviewer, str) and isinstance(fixer, str)
     if len({reader.casefold(), reviewer.casefold(), fixer.casefold()}) != 3:
         raise FetchDenied("explicit, distinct read and seat identities required")
-    paths = [gh.token_path(loop, x) for x in (reader, reviewer, fixer)]
+    paths = [gh.credential_path(loop, x) for x in (reader, reviewer, fixer)]
     if any(p is None for p in paths) or len({p.resolve() for p in paths if p is not None}) != 3:
         raise FetchDenied("distinct token files required")
     # Distinct filenames are not distinct principals; verify every actual credential.
     for login in (reader, reviewer, fixer):
         assert isinstance(login, str)
-        user = _json(loop, "/user", login)
+        user = gh.principal(loop, login, fetch=lambda path, who=login: _json(loop, path, who))
         if not isinstance(user, dict) or not isinstance(user.get("login"), str) or user["login"].casefold() != login.casefold():
             raise FetchDenied("credential principal mismatch")
     assert isinstance(reader, str)
@@ -372,7 +372,7 @@ def _stage(loop: dict, *, repo: str, number: int, head: str, ref: str,
     root = pathlib.Path(sandbox_root).absolute()
     token_paths = [path.resolve() for login in
                    (reader, loop["seats"]["reviewer"]["login"], loop["seats"]["fixer"]["login"])
-                   if (path := gh.token_path(loop, login)) is not None]
+                   if (path := gh.credential_path(loop, login)) is not None]
     if (root.exists() or root.is_symlink() or root.parent.resolve() != root.parent
             or any(root == token or root in token.parents for token in token_paths)):
         raise FetchDenied("sandbox root exists, follows a symlink or overlaps credential")

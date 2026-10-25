@@ -30,6 +30,12 @@ Credentials: the capability takes a *credential provider* (``StaticCredential`` 
 ``RefreshingCredential`` for an OAuth access token the host re-resolves near expiry or once after
 an upstream 401). Only the access token and host-chosen headers ever reach this module; refresh
 tokens stay in the host's Hermes auth store (see ``seat_model``).
+
+One thing it adds instead of forwarding: when the capability is created with the seat's step cap
+(``nudge_steps``), the model request five steps before that cap carries one extra host-written
+message telling the agent to submit what it has verified now (#554). It is appended to that one
+request only, so a turn that finishes early never sees it and the agent's own history never
+contains it.
 """
 from __future__ import annotations
 
@@ -472,6 +478,69 @@ def bounded_request(body: bytes, model: str, contract: Contract,
     return json.dumps(payload).encode('utf-8')
 
 
+# -- the submit-now nudge (#554) ---------------------------------------------------------------
+
+# A turn that spends its step cap without publishing loses everything it did and is retried from
+# scratch (#536). The proxy sees every model request of the turn, so the host can spend the turn's
+# last stretch telling the agent to submit what it has. This is host policy text, appended to the
+# one request named below — the agent's own history never carries it, so a turn that finishes
+# early never sees it.
+NUDGE_LEAD = 5
+NUDGE = ("You are near the end of this turn's steps. Submit now through the broker with what you "
+         "have verified, and put the rest under `Not verified:`.")
+
+
+def nudge_request_at(steps: int) -> int:
+    """The (1-based) model request of a ``steps``-step turn that carries the nudge (#554).
+
+    Five steps before the cap, so five more steps still run after it — and the smallest seat
+    setting (8 steps, ``config.MAX_STEPS_RANGE``) is nudged on its third request, three steps
+    after the turn began rather than at its first. The count is of model requests, which is what
+    the proxy sees: a step that retried or compressed its request spends quota without spending
+    a step, so the nudge can land a step early — never after the cap.
+    """
+    return max(1, steps - NUDGE_LEAD)
+
+
+def nudge_body(body: bytes, contract: Contract) -> bytes | None:
+    """``body`` with the nudge appended as one trailing message, or None when the request has no
+    conversation this module can append to (it is then forwarded unchanged)."""
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if contract.mode == 'codex_responses':
+        items = payload.get('input')
+        if isinstance(items, list):
+            items.append({'type': 'message', 'role': 'user',
+                          'content': [{'type': 'input_text', 'text': NUDGE}]})
+        elif isinstance(items, str):
+            payload['input'] = items + '\n\n' + NUDGE
+        else:
+            return None
+    else:
+        messages = payload.get('messages')
+        if not isinstance(messages, list):
+            return None
+        last = messages[-1] if messages else None
+        if (contract.mode == 'anthropic_messages' and isinstance(last, dict)
+                and last.get('role') == 'user'):
+            # Messages carries tool results in a user turn: the nudge joins that turn after them
+            # instead of opening a second user message.
+            content = last.get('content')
+            if isinstance(content, str):
+                last['content'] = content + '\n\n' + NUDGE
+            elif isinstance(content, list):
+                content.append({'type': 'text', 'text': NUDGE})
+            else:
+                return None
+        else:
+            messages.append({'role': 'user', 'content': NUDGE})
+    return json.dumps(payload).encode('utf-8')
+
+
 def thinking_level(body: bytes, contract: Contract) -> str | None:
     """The thinking level a (clamped) request runs at (#513): ``budget:<tokens>``,
     ``effort:<level>``, or ``off`` when it asks for none. None when it cannot be told."""
@@ -639,7 +708,8 @@ class InferenceCapability:
     """
 
     def __init__(self, socket_dir: Path, upstream: str, key: str | None = None, *, model: str,
-                 quota: int = 8, api_mode: str = 'chat_completions', credential=None):
+                 quota: int = 8, api_mode: str = 'chat_completions', credential=None,
+                 nudge_steps: int | None = None):
         contract = contract_for(api_mode)   # unsupported modes: refused before any credential use
         if credential is None:
             if not isinstance(key, str) or not key or '\r' in key or '\n' in key:
@@ -650,6 +720,8 @@ class InferenceCapability:
         if (not isinstance(model, str) or not model or type(quota) is not int or
                 not 1 <= quota <= MAX_CALLS):
             raise ValueError('invalid key, model or quota')
+        if nudge_steps is not None and (type(nudge_steps) is not int or nudge_steps < 1):
+            raise ValueError('invalid nudge steps')
         self.contract = contract
         self.process_backend = getattr(credential, 'backend', '') == 'directsdk'
         if self.process_backend:
@@ -683,6 +755,10 @@ class InferenceCapability:
         self.cost_known = False
         self.model = model
         self.quota = quota
+        # The seat's step cap when this turn gets the submit-now nudge (#554), else None: only
+        # the writing seats are nudged, and only once per turn (``nudged``).
+        self.nudge_steps = nudge_steps
+        self.nudged = False
         self.used = 0
         self.lock = threading.Lock()
         self.directory = Path(socket_dir)
@@ -721,6 +797,25 @@ class InferenceCapability:
                 return 401, 'application/json', iter([b'{"error": "upstream rejected the credential"}'])
             status, content_type, data = self.endpoint.post(body, self._headers(fresh, sandbox_headers))
         return status, content_type, data
+
+    def maybe_nudge(self, body: bytes) -> bytes:
+        """``body`` with the submit-now nudge appended when this request is the turn's nudge
+        request, else unchanged (#554).
+
+        Once per turn: the flag is set only when the message really was appended, so a request
+        shape this module cannot edit does not spend the turn's one nudge. A turn that never
+        reaches the request named by ``nudge_request_at`` — one that finished early — never gets
+        it.
+        """
+        with self.lock:
+            if (self.nudged or self.nudge_steps is None
+                    or self.used < nudge_request_at(self.nudge_steps)):
+                return body
+            nudged = nudge_body(body, self.contract)
+            if nudged is None:
+                return body
+            self.nudged = True
+            return nudged
 
     def add_usage(self, meter: 'UsageMeter') -> None:
         """Add one reply's tokens (and the cost the provider reported) to this turn's totals (#480)."""
@@ -794,6 +889,9 @@ class InferenceCapability:
                         self.send_error(429)
                         return
                     capability.used += 1
+                # #554: the turn's last stretch is spent telling the agent to submit what it has.
+                # After last_activity, which records the agent's own last step, not host text.
+                body = capability.maybe_nudge(body)
                 try:
                     status, content_type, data = capability.forward(body, self.headers)
                 except (OSError, ProxyError, http.client.HTTPException) as exc:

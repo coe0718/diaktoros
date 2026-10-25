@@ -260,14 +260,12 @@ def cmd_init(args) -> int:
             print(f"refused: {exc}")
             return 2
         tokens[login] = path
-
-    # Token-file paths from the settings form are checked before anything else is: a path that is
-    # relative, missing, not yours or group/world readable is refused by name, and never opened.
-    try:
-        credentials.verify_token_settings(cli_common._SETTINGS)
-    except config.ConfigError as exc:
-        print(f"config refused: {exc}")
-        return 2
+    apps = {}
+    for pair in getattr(args, "app", None) or []:
+        split = cli_common._split_app_pair(pair)
+        if split is None:
+            return 2
+        apps[split[0]] = split[1]
 
     reviewer_profile = args.reviewer_profile or d["reviewer_profile"]
     fixer_profile = args.fixer_profile or d["fixer_profile"]
@@ -298,11 +296,6 @@ def cmd_init(args) -> int:
     fixer_seat = next((login for login in fixers
                        if login.lower() == configured_fixer.lower()), fixers[0]) if configured_fixer else fixers[0]
     adjudicator_profile = args.adjudicator_profile or d["adjudicator_profile"] or "default"
-    # An explicit --token for a login wins over the form's path for it, as every explicit flag does.
-    mapped = {login.lower() for login in tokens}
-    for seat_login_, key in ((reviewer_seat, "reviewer_token_file"), (fixer_seat, "fixer_token_file")):
-        if d[key] and seat_login_ and seat_login_.lower() not in mapped:
-            tokens[seat_login_] = str(pathlib.Path(d[key]).expanduser())
     explicit_adj = getattr(args, "adjudicator_login", None)
     adjudicator_login = (explicit_adj if explicit_adj is not None
                          else (d["adjudicator_login"] if args.adjudicator_route else "")).strip()
@@ -310,11 +303,29 @@ def cmd_init(args) -> int:
         print("--adjudicator-login needs --adjudicator-route: the comment identity only ever posts "
               "a ruling, and without a breach route nothing rules")
         return 2
-    if (adjudicator_login and d["adjudicator_token_file"]
-            and adjudicator_login.lower() not in mapped
-            and (not d["adjudicator_login"]
-                 or d["adjudicator_login"].lower() == adjudicator_login.lower())):
-        tokens[adjudicator_login] = str(pathlib.Path(d["adjudicator_token_file"]).expanduser())
+    # CLI credentials win; select and validate only effective form paths, as apply does.
+    explicit = {login.lower() for login in (*tokens, *apps)}
+    credential_form = {}
+    for role, login in (("reviewer", reviewer_seat), ("fixer", fixer_seat),
+                        ("adjudicator", adjudicator_login)):
+        if role == "adjudicator" and d["adjudicator_login"] and (
+                d["adjudicator_login"].lower() != login.lower()):
+            continue  # A form credential for another named adjudicator is not this CLI identity.
+        if login.lower() not in explicit:
+            for suffix in ("token_file", "app_id", "app_key_file"):
+                credential_form[f"{role}_{suffix}"] = d[f"{role}_{suffix}"]
+    credential_loop = {"tokens": tokens, "apps": apps,
+                       "seats": {"reviewer": {"login": reviewer_seat},
+                                 "fixer": {"login": fixer_seat},
+                                 "adjudicator": {"login": adjudicator_login}},
+                       "adjudicator": {"route": args.adjudicator_route}}
+    try:
+        credentials.verify_token_settings(credential_form, loop=credential_loop)
+        tokens, apps, _selected, _ignored = settings_form.select_credentials(
+            credential_loop, credential_form)
+    except config.ConfigError as exc:
+        print(f"config refused: {exc}")
+        return 2
     # The weekly report (#658): the flag wins over the form; the form's 'off' or blank is none.
     weekly_form = str(d["observer_weekly_report"]).strip()
     if (not getattr(args, "observer_weekly_report", "") and weekly_form.lower() not in ("", "off")
@@ -360,6 +371,7 @@ def cmd_init(args) -> int:
         "shadow": shadow,
         "skill": args.skill,
         "tokens": tokens, "read_token": args.read_token,
+        **({"apps": apps} if apps else {}),
         "clone": args.clone, "roots": args.root or [],
         "state_dir": args.state_dir or str(config.default_state_dir(
             args.id or args.repo.split("/")[-1])),
@@ -377,6 +389,8 @@ def cmd_init(args) -> int:
         # The checks CI always runs, which a fixer running only its touched tests would miss.
         "fixer_check": (d["fixer_check"] if getattr(args, "fixer_check", None) is None
                         else args.fixer_check),
+        "merge_check": (getattr(args, "merge_check", None)
+                        or str(d.get("merge_check") or "").strip().lower() or "auto"),
         # The checks that gate an approval (#368); none named = every check gates.
         "required_checks": (config.split_check_names(d["required_checks"])
                             if getattr(args, "required_check", None) is None
@@ -766,12 +780,17 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     fixer = ask(args.fixer, "fixer GitHub login (the account that pushes fixes)", d["fixer_login"])
     reviewer_profile = ask(args.reviewer_profile, "reviewer's Hermes profile", d["reviewer_profile"])
     fixer_profile = ask(args.fixer_profile, "fixer's Hermes profile", d["fixer_profile"])
-    reviewer_file = ask(args.reviewer_token, f"token file for {reviewer or 'the reviewer'}",
-                        d["reviewer_token_file"])
-    fixer_file = ask(args.fixer_token, f"token file for {fixer or 'the fixer'}",
-                     d["fixer_token_file"])
+    # A login given a GitHub App identity (--app, #1163) has a key, not a PAT: no file is asked.
+    app_logins = {str(pair).split("=", 1)[0].strip().lower()
+                  for pair in (getattr(args, "app", None) or [])}
+    has_app = lambda login: bool(login) and login.lower() in app_logins  # noqa: E731
+    reviewer_file = "" if has_app(reviewer) else ask(
+        args.reviewer_token, f"token file for {reviewer or 'the reviewer'}", d["reviewer_token_file"])
+    fixer_file = "" if has_app(fixer) else ask(
+        args.fixer_token, f"token file for {fixer or 'the fixer'}", d["fixer_token_file"])
     reader = ask(args.read_token, "reader login (its own account; the gates read GitHub as it)")
-    reader_file = ask(args.read_token_file, f"token file for {reader or 'the reader'}")
+    reader_file = "" if has_app(reader) else ask(
+        args.read_token_file, f"token file for {reader or 'the reader'}")
     host = ask(args.host, "your gateway's webhook origin (https://…)", d["host"])
     observer = (args.observer_profile if args.observer_profile is not None else
                 _ask("Hermes profile whose chat gets the loop's notices (blank: none)", "",
@@ -805,11 +824,14 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
                         (admin, admin_file)):
         if login and file:
             argv.append(f"--token={login}={pathlib.Path(file).expanduser()}")
+    argv += [f"--app={pair}" for pair in (getattr(args, "app", None) or [])]
     if observer:
         argv.append(f"--observer-profile={observer}")
     if adjudicator:
         argv += [f"--adjudicator-route={loop_id}-breach", f"--adjudicator-profile={adjudicator}"]
     argv.append(f"--fixer-check={check}")
+    if getattr(args, "merge_check", None):
+        argv.append(f"--merge-check={args.merge_check}")
     required = (args.required_check if args.required_check is not None else
                 config.split_check_names(_ask(
                     "the CI checks that must pass before an approval, comma-separated, exactly as "
@@ -904,7 +926,9 @@ def cmd_setup(args) -> int:
             return 2
         if args.dry_run:
             print("\n3. would schedule the shared watchdog job (if missing)\n"
-                  "4. would run doctor and selftest --no-model\n5. would arm only when asked")
+                  "4. would run doctor and selftest --no-model\n5. would offer to require the "
+                  "diaktoros/review merge check, when the loop posts it\n6. would arm only when "
+                  "asked")
             return 0
         if not _agree("Install this loop?", True, interactive, True):
             print("setup stopped: nothing installed")
@@ -933,7 +957,9 @@ def cmd_setup(args) -> int:
               f"re-run `hermes dk setup --repo {shlex.quote(repo)}` — it keeps what is done")
         return 1
 
-    print("\n5. Arm")
+    _setup_merge_check(args, config.load_id(loop_id), admin, interactive)
+
+    print("\n6. Arm")
     if not (args.arm or _agree("Arm the repo hooks now? The loop goes live.", False,
                                interactive, False)):
         print(f"   not armed. When ready: hermes dk arm --loop {loop_id}"
@@ -945,6 +971,37 @@ def cmd_setup(args) -> int:
     print("\nsetup complete: the loop is live" if rc == 0 else
           "\narm was not confirmed — see above; re-running setup is safe")
     return rc
+
+
+def _setup_merge_check(args, loop: dict, admin: str, interactive: bool) -> None:
+    """Step 5 (#1163 M2c): when the loop posts ``diaktoros/review`` and the base does not require
+    it yet, offer the loop's own ruleset. Never blocks setup: the check is still posted, and
+    doctor keeps saying the base does not require it."""
+    from .. import protection
+    if not config.merge_check_on(loop):
+        return
+    print("\n5. The merge check")
+    found = protection.read(loop, admin or None)
+    lid = loop["id"]
+    command = f"hermes dk protect --loop {lid}" + (f" --admin-token {admin}" if admin else "")
+    if found.known and found.required:
+        print(f"   ✅ {loop['base']} already requires {protection.RULESET_NAME} (doctor above "
+              "says whether it is pinned)")
+        return
+    if not (args.protect or _agree(
+            f"Require {protection.RULESET_NAME} on {loop['base']}? No one, admins included, "
+            "merges a PR until the loop's check is green.", False, interactive, False)):
+        print(f"   not required: the check is posted, but the merge button ignores it. "
+              f"When ready: {command}")
+        return
+    done, line = protection.require(loop, admin or None)
+    print(f"   {'✅' if done else '❌'} {line}")
+    if not done:
+        print(f"   re-run it when the login has admin access: {command}")
+    elif protection.reviewer_app_id(loop) and found.approvals:
+        print(f"   ⚠️  {loop['base']} still requires {found.approvals} approving review(s); "
+              "GitHub never counts the reviewer App's, so turn them off in repo settings → "
+              "rules, or approve every PR yourself")
 
 
 # -- the parser for this module's commands (#676 step 7) --------------------------------------
@@ -999,6 +1056,8 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                            "~/.hermes/state/diaktoros/<id>; ~/.hermes/state/review-loops/<id> "
                            "is only a leftover until `migrate` moves it)")
     init.add_argument("--token", action="append", default=[], help="login=/path/to/pat (repeatable)")
+    init.add_argument("--app", action="append", default=[], metavar="LOGIN=APP_ID:KEY",
+                      help="a GitHub App identity instead of a PAT: <app-slug>[bot]=APP_ID:/abs/path/to/key.pem (repeatable; the key stays on the host, mode 0600)")
     init.add_argument("--read-token", default="",
                       help="required: login whose token reads GitHub — its own account, never "
                            "a seat or the adjudicator login (the four-identity rule)")
@@ -1094,6 +1153,8 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                       help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     init.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
                       help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting)")
+    init.add_argument("--merge-check", choices=("auto", "on", "off"), default=None,
+                      help="post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off")
     init.add_argument("--fixer-check", default=None,
                       help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
     init.add_argument("--turn-budget", type=int, default=d["turn_budget_s"],
@@ -1144,6 +1205,9 @@ def add_setup(sub) -> None:  # noqa: ANN001
                        help="no questions: the flags and the plugin settings are the answers, "
                             "and every confirmation is yes (arming still needs --arm)")
     first.add_argument("--dry-run", action="store_true", help="show every step, write nothing")
+    first.add_argument("--protect", action="store_true",
+                       help="require the diaktoros/review merge check on the base (the loop's "
+                            "own ruleset; `hermes dk protect`) when the loop posts it")
     first.add_argument("--arm", action="store_true",
                        help="arm the hooks after a clean doctor and selftest")
     for flag, what in (("reviewer", "reviewer GitHub login"), ("fixer", "fixer GitHub login"),
@@ -1158,6 +1222,10 @@ def add_setup(sub) -> None:  # noqa: ANN001
                        ("schedule", "watchdog interval (default 15m)"),
                        ("watchdog-deliver", "where watchdog alerts go (default local)")):
         first.add_argument(f"--{flag}", default="", help=what)
+    first.add_argument("--app", action="append", default=None, metavar="LOGIN=APP_ID:KEY",
+                       help="a GitHub App identity for a seat or the reader instead of a PAT: "
+                            "<app-slug>[bot]=APP_ID:/abs/path/to/key.pem (repeatable); that "
+                            "login's token file is then not asked for")
     first.add_argument("--admin-token", default=None,
                        help="hook admin login: the hooks are created (paused) as it")
     first.add_argument("--observer-profile", default=None,
@@ -1189,6 +1257,8 @@ def add_setup(sub) -> None:  # noqa: ANN001
                        help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     first.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
                        help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting)")
+    first.add_argument("--merge-check", choices=("auto", "on", "off"), default=None,
+                       help="post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off")
     first.add_argument("--fixer-check", default=None,
                        help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
     first.add_argument("--review-only-update", choices=("on", "off"), default=None,

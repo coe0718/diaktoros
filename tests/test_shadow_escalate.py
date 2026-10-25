@@ -189,9 +189,10 @@ class ReadyAndExplain(unittest.TestCase):
         self.add(2)
 
         def hold(loop, number, head, db=None, marker=None):
-            return (("waiting on the shadow review at " + head[:7] + " (running)", "")
-                    if number == 2 else ("", ""))
-        with mock.patch.object(gate, "shadow_hold", side_effect=hold):
+            # ready reads the hold with its kind (shadow_state, #1163 M2b).
+            return (("pending", "waiting on the shadow review at " + head[:7] + " (running)", "")
+                    if number == 2 else ("", "", ""))
+        with mock.patch.object(gate, "shadow_state", side_effect=hold):
             text = self.run_ready()
         self.assertIn("1. #1", text)
         self.assertIn("shadow review: waiting on the shadow review", text)

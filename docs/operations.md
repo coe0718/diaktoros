@@ -207,6 +207,13 @@ Missing offline dependencies or insufficient sandbox build space are environment
 not automatically PR defects; the seat must state what it did and did not verify. With
 nothing verified it still cannot approve. A partial change view cannot authorize approval.
 
+**A conflict during the turn.** A review starts only on a PR that merges cleanly, but the
+base can move while the reviewer works. On its last read before posting, right before the
+write, the broker refuses an APPROVE if GitHub reports the PR conflicting (#1243). Nothing
+is posted and the turn ends as done, not retried: the conflict is resolved on a new head,
+which gets a fresh review. A REQUEST_CHANGES still goes through, and a merge state GitHub
+has not computed yet is not treated as a conflict.
+
 **CI.** The reviewer and fixer prompts carry the head's CI as the reader saw it just before
 the turn: failed checks, checks still running, and how many passed. A failed check is a blocking
 finding. At the write, the broker re-reads CI and refuses an APPROVE while any check run or
@@ -472,6 +479,14 @@ the same over-budget turn. A separate case is a clean agent exit without any bro
 The host classifies it as unpublished (no broker write was attempted) and retries it once
 with a nudge to publish. If that attempt also exits without calling the broker, it fails
 for operator review. This is not a retry path for a denied or uncertain write.
+
+Before that happens, a reviewer or fixer turn is nudged once, five steps before its step cap
+(`seats.<seat>.max_steps`), to submit what it has verified and put the rest under
+`Not verified:` (#554). The nudge is a host-written message appended to that one model request;
+it never enters the agent's own history, so a turn that finishes early never sees it. It cannot
+save a turn whose budget (wall clock) runs out, and it is not sent to an adjudicator or triage
+turn. An unpublished exit that is retried is separate: its retry's prompt opens with the
+publish nudge above.
 
 Write-ahead evidence, not exit code, decides replay safety. Review claims, push intents,
 rulings, answers, triage results and issue-fix records may prohibit replay even if a

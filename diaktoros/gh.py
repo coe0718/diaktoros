@@ -132,7 +132,26 @@ def token_path(loop: dict, login: str | None = None) -> pathlib.Path | None:
     return pathlib.Path(str(raw)).expanduser() if raw else None
 
 
+def credential_path(loop: dict, login: str | None = None) -> pathlib.Path | None:
+    """The file ``login``'s credential lives in: its PAT (``tokens``), or its GitHub App's
+    private key (``apps``, #1163). For "is a credential mapped" and "are two identities' files
+    distinct" only: the key file is never a token, and ``token_path`` stays PAT-only so nothing
+    reads a key as one."""
+    path = token_path(loop, login)
+    if path is not None:
+        return path
+    from . import github_app
+    return github_app.key_path(loop, login or loop.get("read_token"))
+
+
 def token(loop: dict, login: str | None = None) -> str:
+    """The token to send as ``login``: its PAT, or a minted installation token for an App
+    identity (``github_app``). Raises ``GitHubError`` without the credential in the message."""
+    name = login or loop.get("read_token")
+    if token_path(loop, name) is None:
+        from . import github_app
+        if github_app.is_app(loop, name):
+            return github_app.installation_token(loop, name)
     path = token_path(loop, login)
     if not path or not path.exists():
         raise GitHubError(f"no token file for {login or loop.get('read_token')!r} "
@@ -346,8 +365,32 @@ def failure_hint(status: int | None) -> str:
     return ""
 
 
+def principal(loop: dict, login: str, fetch=None) -> dict | None:
+    """Who ``login``'s credential authenticates as: GitHub's account object, or ``None`` when the
+    answer is not an object. The one place a seat or reader identity is resolved (#1163): today
+    ``GET /user`` with that login's token; a GitHub App identity will answer from its bot user
+    here instead, since an installation token cannot call ``/user``. ``fetch(path)`` is the
+    caller's own transport (a bounded read, a read that raises), so each caller keeps its exact
+    failure behaviour and its own checks on what comes back."""
+    from . import github_app
+    if token_path(loop, login) is None and github_app.is_app(loop, login):
+        # An installation token cannot call /user: the App's bot user is the principal.
+        return github_app.principal(loop, login)
+    if fetch is None:
+        def fetch(path):
+            return api(loop, path, login=login)
+    account = fetch("/user")
+    return account if isinstance(account, dict) else None
+
+
 def auth_probe(loop: dict) -> Response:
-    """``GET /user`` as the read token: who it is, and (in the headers) when it expires."""
+    """``GET /user`` as the read token: who it is, and (in the headers) when it expires. An App
+    reader (#1163) cannot call ``/user`` and has no expiry: its probe reads the loop's repository,
+    so a key that cannot mint a token still fails here."""
+    from . import github_app
+    reader = loop.get("read_token")
+    if token_path(loop, reader) is None and github_app.is_app(loop, reader):
+        return request(loop, f"/repos/{loop.get('repo')}")
     return request(loop, "/user")
 
 
@@ -459,11 +502,14 @@ def reviews_read(loop: dict, number: int,
 
 
 def _read_pages(loop: dict, path: str, what: str, max_pages: int,
-                login: str | None = None) -> tuple[list[dict] | None, str]:
+                login: str | None = None,
+                keep_partial: bool = False) -> tuple[list[dict] | None, str]:
     """Every page of a ``per_page=100`` listing, or ``(None, reason)`` — never a prefix of it.
 
     A failed, malformed or oversized page anywhere makes the whole listing unknown: the caller
-    would otherwise read "the first N items" as "all of them".
+    would otherwise read "the first N items" as "all of them". With ``keep_partial`` a listing
+    that is merely past the page bound returns the pages read *and* the reason (an incomplete
+    listing the caller must say is incomplete); a failed or malformed page is still unknown.
     """
     result: list[dict] = []
     for page in range(1, max_pages + 1):
@@ -477,7 +523,8 @@ def _read_pages(loop: dict, path: str, what: str, max_pages: int,
         result.extend(items)
         if len(items) < REVIEW_PAGE_SIZE:
             return result, ""
-    return None, f"{what} listing exceeds {max_pages} full pages"
+    reason = f"{what} listing exceeds {max_pages} full pages"
+    return (result, reason) if keep_partial else (None, reason)
 
 
 # Issue comments on a PR, read in full for the seats' records (the fixer's answers, #52).
@@ -562,13 +609,17 @@ MAX_ISSUE_PAGES = 5
 
 
 def open_issues_read(loop: dict, since: str) -> tuple[list[dict] | None, str]:
-    """Open issues and PRs updated since ``since`` (ISO-8601), or ``(None, reason)`` (#849).
+    """Open issues and PRs updated since ``since`` (ISO-8601), newest first (#849, #1037).
 
-    GitHub's issues listing includes pull requests (they carry ``pull_request``); the caller
-    filters them. Bounded to a few pages: a listing past them is unknown, never a prefix.
+    GitHub's issues listing includes pull requests (they carry ``pull_request``) and cannot be
+    filtered of them; the caller filters. Bounded to ``MAX_ISSUE_PAGES`` pages, read newest
+    first so a burst (the case the recovery sweep exists for) stays reachable. A listing past
+    the bound returns the pages read *and* a reason: ``(issues, reason)`` is an incomplete
+    listing the caller must report; ``(None, reason)`` is unreadable; ``(issues, "")`` is whole.
     """
-    path = f"/repos/{loop['repo']}/issues?state=open&sort=created&direction=asc&since={since}&per_page=100"
-    return _read_pages(loop, path, "open issue", MAX_ISSUE_PAGES)
+    path = (f"/repos/{loop['repo']}/issues?state=open&sort=created&direction=desc"
+            f"&since={since}&per_page=100")
+    return _read_pages(loop, path, "open issue", MAX_ISSUE_PAGES, keep_partial=True)
 
 
 def request_review(loop: dict, number: int, login: str | None = None, as_login: str | None = None):

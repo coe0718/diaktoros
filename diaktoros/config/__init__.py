@@ -154,6 +154,11 @@ def seat_mapping(settings: dict | None) -> dict:
         token_key = TOKEN_FILE_SETTINGS.get(seat)
         if token_key and str(d.get(token_key) or "").strip():
             entry["token_file"] = str(d[token_key]).strip()
+        if seat in TOKEN_FILE_SETTINGS:
+            for field in ("app_id", "app_key_file"):
+                value = str(d.get(f"{seat}_{field}") or "").strip()
+                if value:
+                    entry[field] = value
         if entry:
             mapping[seat] = entry
     return mapping
@@ -214,6 +219,7 @@ DEFAULTS: dict = {
     "skill": "",
     "read_token": "",
     "tokens": {},
+    "apps": {},
     "clone": "",
     "roots": [],
     "concurrency": 1,         # runs allowed at once per seat; >1 requires isolation
@@ -230,6 +236,7 @@ DEFAULTS: dict = {
     "unattended_fixer_push": False,  # per-repository; never inherited from plugin settings
     "attribution": True,      # sign what the loop posts (#197); false turns footer and trailer off
     "review_after_ci": False,  # hold a review while the head's checks are still running (#241)
+    "merge_check": "auto",     # post the diaktoros/review merge check: auto|on|off (#1163 M2b)
     "fix_ci": False,          # hand a red required check on a fixer's PR to the fixer (#306)
     "fixer_check": "",        # one command fixer turns always run before publishing; "" = none
     "required_checks": [],    # the checks that gate an approval (#368); [] = every check gates
@@ -444,6 +451,9 @@ REQUIRED_CHECKS_MAX = 50
 REQUIRED_CHECK_NAME_MAX = 100
 
 
+MERGE_CHECK_NAME = "diaktoros/review"     # ci.MERGE_CHECK (config imports nothing from ci)
+
+
 def check_required_checks(value, where: str) -> list[str]:
     """The operator's required checks (#368): unique, printable, one-line names, exactly as GitHub
     shows them; [] means every check gates. Host-owned: never read from a PR."""
@@ -458,6 +468,10 @@ def check_required_checks(value, where: str) -> list[str]:
         raise ConfigError(f"{where}: 'required_checks' must be at most {REQUIRED_CHECKS_MAX} "
                           f"unique names, each one printable line of 1-{REQUIRED_CHECK_NAME_MAX} "
                           "characters")
+    if any(name.lower() == MERGE_CHECK_NAME for name in names):
+        # #1233: the loop never reads its own check as CI, so requiring it refuses every approval.
+        raise ConfigError(f"{where}: 'required_checks' cannot name {MERGE_CHECK_NAME}, the loop's "
+                          "own merge check; require it in the base branch's protection instead")
     return names
 
 
@@ -828,10 +842,11 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
     if login.casefold() in others:
         raise ConfigError(f"{where}: seats.adjudicator.login {login!r} is also the reader, a seat "
                           f"or an allowlisted reviewer/fixer — {FOUR_IDENTITY_RULE}")
-    tokens = loop.get("tokens") or {}
+    tokens = credentials_map(loop)          # a PAT or an App key (#1163)
     if not tokens.get(login):
-        raise ConfigError(f"{where}: seats.adjudicator.login {login!r} has no entry in 'tokens' — "
-                          "an adjudicator identity without its own credential cannot comment")
+        raise ConfigError(f"{where}: seats.adjudicator.login {login!r} has no entry in 'tokens' "
+                          "or 'apps' — an adjudicator identity without its own credential cannot "
+                          "comment")
     mine = _path(tokens[login])
     for other, raw_path in tokens.items():
         if other == login or not raw_path:
@@ -1050,6 +1065,18 @@ def normalize_triage(raw, loop: dict, where: str) -> dict:
         if not isinstance(login, str) or login != login.strip() or not login:
             raise ConfigError(f"{where}: triage.login must be a GitHub login")
         out["login"] = login.lower()
+    # The maintainers are trusted for more than issue fixes (#1217): their comments reach both
+    # seats (#511), their re-request starts a fresh review (#375), they hold a PR (#477). So they
+    # stand on their own, with or without a fix label, and turning fixes off keeps them.
+    maintainers = raw.get("maintainers")
+    if maintainers not in (None, []):
+        if (not isinstance(maintainers, list)
+                or not all(isinstance(m, str) and m.strip() for m in maintainers)):
+            raise ConfigError(f"{where}: triage.maintainers must be a list of GitHub logins")
+        out["maintainers"] = sorted({m.strip().lower() for m in maintainers})
+    if raw.get("fix_daily_turns") not in (None, ""):
+        out["fix_daily_turns"] = _check_daily_turns(raw["fix_daily_turns"],
+                                                    "triage.fix_daily_turns", where)
     fix_label = raw.get("fix_label")
     if fix_label not in (None, ""):
         if (not isinstance(fix_label, str) or not TRIAGE_LABEL.fullmatch(fix_label)
@@ -1059,16 +1086,10 @@ def normalize_triage(raw, loop: dict, where: str) -> dict:
         if fix_label.casefold() in {x.casefold() for x in out["labels"]}:
             raise ConfigError(f"{where}: triage.fix_label must not be one of triage.labels — the "
                               "triage seat could then hand issues to the fixer itself")
-        maintainers = raw.get("maintainers")
-        if (not isinstance(maintainers, list) or not maintainers
-                or not all(isinstance(m, str) and m.strip() for m in maintainers)):
+        if not out.get("maintainers"):
             raise ConfigError(f"{where}: triage.fix_label needs triage.maintainers: the logins "
                               "whose applying it hands an issue to the fixer")
         out["fix_label"] = fix_label
-        out["maintainers"] = sorted({m.strip().lower() for m in maintainers})
-        if raw.get("fix_daily_turns") not in (None, ""):
-            out["fix_daily_turns"] = _check_daily_turns(raw["fix_daily_turns"],
-                                                        "triage.fix_daily_turns", where)
         auto = raw.get("auto_fix_labels")
         if auto not in (None, []):
             known = {x.casefold(): x for x in out["labels"]}
@@ -1085,9 +1106,6 @@ def normalize_triage(raw, loop: dict, where: str) -> dict:
                 raise ConfigError(f"{where}: triage.auto_fix_daily needs triage.auto_fix_labels")
             out["auto_fix_daily"] = _check_daily_turns(raw["auto_fix_daily"],
                                                        "triage.auto_fix_daily", where)
-    elif raw.get("maintainers") not in (None, []):
-        raise ConfigError(f"{where}: triage.maintainers only means something with "
-                          "triage.fix_label")
     elif (raw.get("auto_fix_labels") not in (None, [])
           or raw.get("auto_fix_daily") not in (None, "")):
         raise ConfigError(f"{where}: triage.auto_fix_labels and auto_fix_daily need "
@@ -1099,10 +1117,90 @@ def normalize_triage(raw, loop: dict, where: str) -> dict:
     if who == str(loop.get("read_token") or "").lower():
         raise ConfigError(f"{where}: triage would label as the reader {who!r} — the reader only "
                           f"reads; {FOUR_IDENTITY_RULE}")
-    if not {str(k).lower() for k in loop.get("tokens") or {}} & {who}:
+    if not {str(k).lower() for k in credentials_map(loop)} & {who}:
         raise ConfigError(f"{where}: no token mapped for the triage login {who!r} — add --token "
                           f"{who}=/path/to/pat (it needs issues: write on the repository)")
     return out
+
+
+APP_LOGIN = re.compile(r"[a-z0-9][a-z0-9-]{0,33}\[bot\]\Z")
+
+
+def check_apps(value, tokens: dict, where: str) -> dict:
+    """GitHub App identities (#1163): ``{"<slug>[bot]": {"app_id": N, "key_file": "/abs.pem"}}``.
+    The login is the App's bot login; an identity has a PAT (``tokens``) or an App, never both,
+    so which credential a seat uses is never a guess."""
+    if value in (None, {}):
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError(f"{where}: 'apps' must be an object of App bot logins")
+    out = {}
+    pats = {str(k).casefold() for k in tokens}
+    for login, spec in value.items():
+        name = str(login)
+        if not APP_LOGIN.match(name.lower()):
+            raise ConfigError(f"{where}: apps.{name}: an App identity is its bot login, "
+                              "'<app-slug>[bot]'")
+        if name.casefold() in pats:
+            raise ConfigError(f"{where}: {name!r} is in both 'tokens' and 'apps' — an identity "
+                              "uses one credential")
+        if not isinstance(spec, dict) or set(spec) - {"app_id", "key_file"}:
+            raise ConfigError(f"{where}: apps.{name} must be {{\"app_id\": N, \"key_file\": "
+                              "\"/abs/path.pem\"}}")
+        app_id = spec.get("app_id")
+        if type(app_id) is not int or app_id <= 0:
+            raise ConfigError(f"{where}: apps.{name}.app_id must be the App's numeric id")
+        key = str(spec.get("key_file") or "")
+        problem = relative_path_problem(key) if key else "no key_file given"
+        if problem:
+            raise ConfigError(f"{where}: apps.{name}.key_file: {problem}")
+        out[name] = {"app_id": app_id, "key_file": key}
+    return out
+
+
+def is_app(loop: dict, login: str) -> bool:
+    """Whether ``login`` is mapped as a GitHub App identity (#1163), not a PAT."""
+    name = str(login or "").lower()
+    pats = {str(k).lower() for k in loop.get("tokens") or {}}
+    return bool(name) and name not in pats and name in {str(k).lower() for k in loop.get("apps") or {}}
+
+
+# What the reader needs to see each part of the repository's setup (#1241): a PAT's scope, or a
+# GitHub App's repository permission (an App answers "Resource not accessible by integration").
+_READER_ACCESS = {"hooks": ("hook read access (`repo`, or the narrower `read:repo_hook`)",
+                            "Webhooks: Read"),
+                  "protection": ("admin access to read classic branch protection (classic `repo` "
+                                 "on an admin account)", "Administration: Read")}
+
+
+def reader_access_fix(loop: dict, what: str) -> str:
+    """The fix line for a reader that cannot see ``what`` ("hooks" or "protection"), worded for
+    the reader's kind of identity: an App gets the permission to add, a PAT the scope."""
+    pat, app = _READER_ACCESS[what]
+    reader = str(loop.get("read_token") or "the reader")
+    if is_app(loop, reader):
+        return (f"give the reader App ({reader}) the repository permission {app}, then accept the "
+                "new permission on its installation")
+    return f"give the read token ({reader}) {pat}"
+
+
+def reviewer_is_app(loop: dict) -> bool:
+    """Whether the reviewer seat is a GitHub App identity (#1163). GitHub cannot request an App
+    bot as a reviewer (a request answers 201 and does nothing, docs/github-app-support.md), so the
+    handoff to it is delivered to the reviewer gate by the host instead."""
+    seat = str(loop.get("reviewer_seat") or "").lower()
+    pats = {str(k).lower() for k in loop.get("tokens") or {}}
+    return bool(seat) and seat not in pats and seat in {str(k).lower() for k in loop.get("apps") or {}}
+
+
+def credentials_map(loop: dict) -> dict:
+    """Every identity's credential file: PAT files (``tokens``) and App private keys (``apps``).
+    For "has a credential" and "uses its own file" checks only; a key is never read as a token."""
+    found = {str(k): str(v or "") for k, v in (loop.get("tokens") or {}).items()}
+    for login, spec in (loop.get("apps") or {}).items():
+        if isinstance(spec, dict):
+            found.setdefault(str(login), str(spec.get("key_file") or ""))
+    return found
 
 
 def check_concurrency(value, what: str, where: str) -> int:
@@ -1439,6 +1537,9 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     loop["required_checks"] = check_required_checks(loop["required_checks"], where)
     loop["human_paths"] = check_human_paths(loop["human_paths"], where)
     loop["generated"] = check_generated(loop["generated"], where)
+    if loop.get("merge_check") not in MERGE_CHECK_MODES:
+        raise ConfigError(f"{where}: 'merge_check' must be one of {', '.join(MERGE_CHECK_MODES)} "
+                          "(auto: on when the reviewer is a GitHub App)")
     if type(loop["review_after_ci"]) is not bool:
         raise ConfigError(f"{where}: 'review_after_ci' must be a JSON boolean (true holds a "
                           "review until the head's checks finish)")
@@ -1529,6 +1630,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         problem = relative_path_problem(token_path)
         if problem:
             raise ConfigError(f"{where}: tokens.{login}: {problem}")
+    loop["apps"] = check_apps(loop.get("apps"), loop["tokens"], where)
     # The reader is named, never inferred: taking "the first token" would make whichever seat
     # happens to be listed first the account every gate reads GitHub as.
     loop["read_token"] = str(loop.get("read_token") or "").strip()
@@ -1796,6 +1898,17 @@ def fixer_scope_lock(loop: dict) -> bool:
 def review_only_update(loop: dict) -> bool:
     """Whether the host may push a clean merge of the base into a review-only PR. Off unless set."""
     return loop.get("review_only_update") is True
+
+
+MERGE_CHECK_MODES = ("auto", "on", "off")
+
+
+def merge_check_on(loop: dict) -> bool:
+    """Whether the host posts the ``diaktoros/review`` merge check (#1163 M2b): ``on``, or ``auto``
+    with a GitHub App reviewer (whose approvals GitHub never counts, so the check is the block). A
+    PAT loop opts in with ``on`` and gets a commit status (which branch protection cannot pin)."""
+    mode = loop.get("merge_check") or "auto"
+    return mode == "on" or (mode == "auto" and reviewer_is_app(loop))
 
 
 def review_after_ci(loop: dict) -> bool:

@@ -12,7 +12,8 @@ The plugin settings form is *not* a source for a running loop: it supplies defau
 and `apply --loop` pushes it. A form value the loop does not hold is shown as a ``note``, never as
 the effective value, so `show` cannot say a setting is on when the loop would not act on it.
 
-Token values are never read: ``tokens`` rows show the file paths from the loop file.
+Token values are never read: ``tokens`` rows show the file paths from the loop file, and
+``apps`` rows the App ids and key paths, never a key.
 """
 from __future__ import annotations
 
@@ -113,6 +114,18 @@ def _rows(loop: dict) -> list[_Row]:
         login = config.seat_login(loop, role) if role != "adjudicator" \
             else config.adjudicator_login(loop)
         match = {str(k).lower(): v for k, v in tokens.items()}.get(login.lower()) if login else None
+        app = {str(k).lower(): v for k, v in (loop.get("apps") or {}).items()}.get(
+            login.lower()) if login and not match else None
+        for field, app_field in (("app_id", "app_id"), ("app_key_file", "key_file")):
+            schema(f"{role}_{field}", ("apps",),
+                   (app.get(app_field) if isinstance(app, dict) else None) or _UNSET,
+                   note="a path, never the key" if field == "app_key_file" and app else "")
+        if isinstance(app, dict):
+            # A GitHub App identity (#1163) has no token file: say what it has instead.
+            schema(key, ("apps",), _UNSET,
+                   note=f"a GitHub App identity: App {app.get('app_id')}, key "
+                        f"{app.get('key_file')} (a path, never the key)")
+            continue
         schema(key, ("tokens",), match or _UNSET,
                note="a path, never the token" if match else "")
     for role in config.SEAT_KEYS:
@@ -152,6 +165,12 @@ def _rows(loop: dict) -> list[_Row]:
             rows[-1].note = "on, but inert: needs unattended fixer pushes (hermes dk fixer-push)"
     if loop["fix_ci"] and not config.unattended_fixer_push_enabled(loop):
         rows[-1].note = "on, but inert: needs unattended fixer pushes (hermes dk fixer-push)"
+    posting = config.merge_check_on(loop)
+    schema("merge_check", ("merge_check",), loop.get("merge_check") or "auto", on=posting,
+           off=("nothing is posted" if loop.get("merge_check") == "off" else
+                "the reviewer uses a PAT: `on` posts a commit status"),
+           note=("" if not posting else "a check run from the reviewer App"
+                 if config.reviewer_is_app(loop) else "a commit status from the reviewer's PAT"))
     schema("attribution", ("attribution",), bool(loop["attribution"]), on=bool(loop["attribution"]),
            off="nothing the loop posts is signed")
     schema("required_checks", ("required_checks",), list(loop.get("required_checks") or []),
@@ -176,6 +195,11 @@ def _rows(loop: dict) -> list[_Row]:
           "login the gates read GitHub as (the reader; never a seat)")
     plain("tokens", ("tokens",), {k: str(v) for k, v in tokens.items()},
           "login -> token file path (paths only; token values are never read)")
+    plain("apps", ("apps",),
+          {k: {"app_id": v.get("app_id"), "key_file": str(v.get("key_file"))}
+           for k, v in (loop.get("apps") or {}).items() if isinstance(v, dict)},
+          "GitHub App identities: bot login -> App id and private-key path (the key is never "
+          "read here)")
     plain("skill", ("skill",), loop.get("skill") or _UNSET, "plugin skill the seats load")
     plain("roots", ("roots",), list(loop.get("roots") or []),
           "directories cleanup prunes PR-named children of")

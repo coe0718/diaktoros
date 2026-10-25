@@ -86,11 +86,15 @@ class Config(Base):
         off = config.normalize({**self.raw, "unattended_fixer_push": False})
         self.assertFalse(config.issue_fixes_enabled(off))
         for name, change in (("no maintainers", {"maintainers": []}),
-                             ("label triage could apply", {"fix_label": "docs"}),
-                             ("maintainers without a label", {"fix_label": "",
-                                                              "maintainers": ["x"]})):
+                             ("label triage could apply", {"fix_label": "docs"})):
             with self.subTest(name), self.assertRaises(config.ConfigError):
                 config.normalize({**self.raw, "triage": {**self.raw["triage"], **change}})
+        # #1217: maintainers stand on their own; without a label they keep the loop's trust
+        # (comments to the seats, re-requests, holds), and issue fixes are simply off.
+        paused = config.normalize({**self.raw, "triage": {**self.raw["triage"], "fix_label": "",
+                                                          "maintainers": ["X"]}})
+        self.assertEqual(config.maintainers(paused), {"x"})
+        self.assertFalse(config.issue_fixes_enabled(paused))
 
     def test_the_issue_fixer_is_the_fixer_seat(self):
         self.assertEqual(config.seat_profile(self.loop, "issue_fixer"), "coder")
@@ -148,6 +152,16 @@ class Gate(Base):
     def test_a_maintainers_fix_label_queues_one_fix_from_the_base_head(self):
         self.run_gate(self.labeled(label="Agent-Fix"))
         self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix")])
+
+    def test_the_fix_handoff_is_recorded_as_accepted(self):
+        # #1244 (live trial): the agent-fix label that started the fix was missing from the log.
+        from diaktoros import util
+        recorded = []
+        with mock.patch.object(util, "_DECISION_RECORDER",
+                               lambda reason, decision: recorded.append((decision, reason))):
+            self.run_gate(self.labeled(label="Agent-Fix"))
+        self.assertEqual(recorded, [("accepted",
+                                     f"issue #12 handed to the fixer at {BASE[:7]}: enqueued")])
 
     def test_an_enqueue_failure_is_held_with_the_base_it_failed_at(self):
         def boom(*a, **k):

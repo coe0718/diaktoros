@@ -89,15 +89,23 @@ def message(loop: dict, author: str, facts: dict, tried: str = "") -> str:
     return "; ".join(parts)
 
 
+class Retry(str):
+    """Why an update stopped, when that is not a fact about the (head, base tip) pair: pushes
+    are off, or the broker refused or the push failed. The watchdog keeps the dry merge for the
+    pair but tries the update again on its next sweep; a fork, a workflow change, a real
+    conflict or a merge that is not clean stays settled for the pair (#504, shadow on #1151)."""
+
+
 def update(loop: dict, number: int, head: str, facts: dict, remote: str | None = None) -> tuple:
     """With ``review_only_update`` on, try the host's clean merge push. Returns
-    ``(new_head, "")`` when pushed, else ``("", why it stopped)`` — the notice then goes out."""
+    ``(new_head, "")`` when pushed, else ``("", why it stopped)`` — the notice then goes out.
+    A stop the next sweep should try again is a ``Retry``."""
     if not config.review_only_update(loop):
         return "", ""
     if facts["fork"]:
         return "", "a fork branch is notice-only"
     if not config.unattended_fixer_push_enabled(loop):
-        return "", "unattended fixer pushes are off"
+        return "", Retry("unattended fixer pushes are off")
     if facts.get("workflows"):
         return "", "the base changed workflow files"
     if facts.get("conflicted"):
@@ -107,6 +115,6 @@ def update(loop: dict, number: int, head: str, facts: dict, remote: str | None =
                                        branch=facts["branch"], remote=remote)
     except safe_push.NotClean as exc:
         return "", str(exc)
-    except broker.BrokerDenied as exc:
-        return "", str(exc)
+    except broker.BrokerDenied as exc:          # a PushFailure too
+        return "", Retry(str(exc))
     return done["new_head"], ""

@@ -27,6 +27,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from diaktoros import (  # noqa: E402
     config,
+    escalate_pending,
     gate,
     gh,
     observer,
@@ -183,6 +184,16 @@ def main() -> None:
                         identity=review.get("id"), actor=gate.reviewer_login(review),
                         outcome=outcome, next_turn=next_turn,
                         base_sha=base_sha if base_matches else "")
+        # Only a live approval of the current head settles it; a stale or unverified one does not.
+        dropped = (escalate_pending.take(st, number)
+                   if live_approval and current_head and approved_head == current_head else None)
+        if dropped:
+            # #1246: approved before a ruling was needed; nothing is left to rule on.
+            observer.notify(loop, st, "escalation", number, approved_head,
+                            identity=f"pending-dropped:{approved_head}",
+                            outcome="pending escalation dropped: approved before a ruling was "
+                                    f"needed ({dropped.get('reason')})",
+                            next_turn=next_turn)
         silence(f"#{number} approval event — no fixer dispatch")
     if state != "CHANGES_REQUESTED":
         silence(f"verdict state {review.get('state')!r} needs no fix")
@@ -235,10 +246,24 @@ def main() -> None:
     if gate.escalated(st.breach_get(number), pr_head):
         silence(f"#{number} @ {pr_head[:7]} is escalated to adjudication — no fix turn")
     if prior + 1 >= loop["cap"]:
+        escalate_pending.take(st, number)          # the cap's breach is the ruling (#1246)
         gate.breach(loop, st, number, pr_head, prior + 1,
                     f"verdict {prior + 1} returned changes requested — loop exhausted "
                     f"({loop['cap']} reviews / {loop['cap'] - 1} fixes)")
         silence(f"cap reached on #{number} — handed to adjudication instead of a fix")
+    pending = escalate_pending.take(st, number)
+    if pending:
+        # #1246: the operator asked for a ruling while a run was in flight. This is the next
+        # changes-requested verdict, so the adjudicator rules on this head instead of the fixer.
+        import secrets
+        from diaktoros.util import now_iso
+        why = str(pending.get("reason") or "the operator asked for a ruling")
+        gate.breach(loop, st, number, pr_head, prior + 1, f"escalated: {why}",
+                    escalated={"by": str(pending.get("by") or "operator"), "at": now_iso(),
+                               "reason": why, "operation_id": secrets.token_hex(16),
+                               "pending_since": pending.get("at")})
+        silence(f"#{number} @ {pr_head[:7]} pending escalation taken at verdict {prior + 1} — "
+                "handed to adjudication instead of a fix", "accepted")
 
     # A loop that has not opted in to unattended fixer pushes gets no fixer turn: it could not
     # publish, so it would spend a model conversation and fail. block_pr_agent holds the verdict

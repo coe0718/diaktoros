@@ -99,6 +99,50 @@ class BrokerIPCTests(unittest.TestCase):
         self.assertNotIn("DUMMY_SECRET", audit)
         self.assertNotIn("DUMMY_SECRET", str(self.send(server, self.review())))
 
+    def test_a_review_refreshes_the_merge_check_and_a_refused_one_does_not(self):
+        # #1163 M2b: the verdict is in, so the check follows it now, not at the next sweep.
+        from diaktoros import merge_check
+        server = self.start()
+        with mock.patch.object(merge_check, "refresh_quietly") as refresh:
+            self.assertFalse(self.send(server, {**self.review(), "verdict": "MAYBE"})["ok"])
+            refresh.assert_not_called()
+            self.assertTrue(self.send(server, self.review())["ok"])
+        refresh.assert_called_once_with(self.loop, 7)
+
+    def test_an_approve_on_a_pr_that_began_conflicting_ends_the_turn_with_nothing_written(self):
+        # #1243 (live trial, dk-app-spike#11): the base moved mid-turn and the PR conflicts now.
+        self.pr = {**self.pr, "mergeable": False, "mergeable_state": "dirty"}
+        server = self.start()
+        response = self.send(server, self.review())
+        self.assertTrue(response["ok"], response)
+        self.assertEqual((response["result"]["accepted"], response["result"]["held"]),
+                         (False, "conflict"))
+        self.assertIn("now conflicts with main", response["result"]["reason"])
+        self.assertIn("do not retry", response["result"]["reason"])
+        self.assertNotIn("POST", [c[1] for c in self.calls])         # nothing written
+        self.assertTrue(server.completed)
+        self.assertEqual(self.send(server, self.review())["error"], "run capability already used")
+
+    def test_a_block_still_goes_through_on_a_conflict(self):
+        self.pr = {**self.pr, "mergeable": False, "mergeable_state": "dirty"}
+        server = self.start()
+        with mock.patch("diaktoros.findings.check_citations", return_value=""):
+            block = {"operation": "review", "verdict": "REQUEST_CHANGES",
+                     "body": "F1: a.py:1: wrong\nNot verified: nothing"}
+            self.assertTrue(self.send(server, block)["ok"])
+        self.assertIn("POST", [c[1] for c in self.calls])
+
+    def test_an_uncomputed_or_blocked_merge_state_is_no_conflict(self):
+        for state in ({"mergeable": None, "mergeable_state": "unknown"},
+                      {"mergeable": True, "mergeable_state": "blocked"}):
+            with self.subTest(state):
+                self.calls.clear()
+                self.pr = {**self.pr, **state}
+                server = self.start()
+                response = self.send(server, self.review())
+                self.assertEqual(response, {"ok": True, "result": {"accepted": True}})
+                self.assertIn("POST", [c[1] for c in self.calls])
+
     def test_linked_issue_review_without_requirements_is_refused_then_resubmittable(self):
         # #511: through the real request path, for a PR that closes an issue.
         server = self.start()

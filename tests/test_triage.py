@@ -158,6 +158,15 @@ class Gate(Base):
         self.assertEqual(self.enqueued, [("triage", 12, "issue", "triage")])
         self.assertEqual(self.reads, [(f"/repos/{REPO}/issues/12", "GET", "read")])
 
+    def test_a_queued_triage_is_recorded_as_accepted(self):
+        # #1244 (live trial): only the declined issue events reached gate-decisions.jsonl.
+        from diaktoros import util
+        recorded = []
+        with mock.patch.object(util, "_DECISION_RECORDER",
+                               lambda reason, decision: recorded.append((decision, reason))):
+            self.run_gate(self.payload())
+        self.assertEqual(recorded, [("accepted", "issue #12 triage enqueued")])
+
     def test_anyone_elses_issue_stops_before_any_read_or_model(self):
         log = self.run_gate(self.payload(author="drive-by"))
         self.assertIn("not in triage.authors", log)

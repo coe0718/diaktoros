@@ -45,6 +45,8 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from diaktoros import review_only_conflict  # noqa: E402
+from diaktoros import escalate_pending  # noqa: E402
+from diaktoros import merge_check  # noqa: E402
 from diaktoros import review_kick  # noqa: E402
 from diaktoros import (  # noqa: E402
     ci_fix,
@@ -748,12 +750,27 @@ def act_on_conflicts(loop: dict, st: state_mod.LoopState,
             # with review_only_update on, a clean merge is pushed first, once, under a lease.
             tried = ""
             try:
-                facts = review_only_conflict.assess(loop, number, head,
-                                                    conflict_live.get(number) or {})
+                # The dry merge, and an attempt that stopped, are kept per (head, base tip): a
+                # sweep that sees the same pair again reads them instead of fetching (#504).
+                key = (number, head, tip or base_tip(loop) or "", config.review_only_update(loop))
+                cached = st.review_only_conflict(*key) if key[2] else None
+                if cached:
+                    facts, tried, attempt = cached
+                else:
+                    facts, attempt = review_only_conflict.assess(
+                        loop, number, head, conflict_live.get(number) or {}), True
                 if (conflict_live.get(number) or {}).get("mergeable_state") == "behind" \
                         and (facts["conflicted"] or facts["error"]):
                     continue                  # behind, not conflicting: nothing to say
-                pushed, tried = review_only_conflict.update(loop, number, head, facts)
+                pushed = ""
+                # A stop that is not a fact about the pair (pushes off, a broker refusal, a
+                # failed push) keeps the dry merge but is attempted again (shadow on #1151).
+                if attempt:
+                    pushed, tried = review_only_conflict.update(loop, number, head, facts)
+                    if not pushed and key[2] and "clean" in facts:   # the dry merge ran
+                        st.review_only_conflict_set(
+                            *key, facts, tried,
+                            retry=isinstance(tried, review_only_conflict.Retry))
                 if pushed:
                     log(f"#{number} @ {head[:7]} merged {loop['base']} in: {pushed[:7]}")
                     observer.notify(loop, st, "updated", number, pushed, identity="updated",
@@ -1065,6 +1082,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                                   "base": previous.get("base"),
                                   "base_sha": previous.get("base_sha"),
                                   "observed_at": valid_clock(previous.get("observed_at"), now),
+                                  "first_seen_at": valid_clock(previous.get("first_seen_at"), now),
                                   "last_seen_at": last_seen}
     for pr in prs:
         if not isinstance(pr, dict):
@@ -1095,7 +1113,9 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             new_pr = epoch(pr.get("created_at")) >= int(watch["armed_since"])
             current_heads[key] = {"sha": head, "base": base, "base_sha": base_sha, "observed_at":
                                   now if previous or (not first_sweep and new_pr) else None,
-                                  "last_seen_at": now}
+                                  # When the loop first saw this head, whatever the PR's age: the
+                                  # merge check's missing-check grace starts here (#1236).
+                                  "first_seen_at": now, "last_seen_at": now}
     watch["heads"] = current_heads
     st.watch_save(watch)                 # persist observations even if review reads fail
     retry_pending_breaches(loop, st, prs, pr_failures)
@@ -1313,7 +1333,10 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             # rules and the ledger's dedup decide, so a held or queued review is not doubled.
             # A same-head transition hold (a retarget) starts its own one fresh review under its
             # turn key; a pending request is not delivered across it.
-            if (review_kick.already_requested(loop, pr) and kicks.get(str(number)) != head
+            # An App reviewer (#1163) never shows as requested: its handoff is always the
+            # host's, so a head with no verdict and no run is delivered the same way.
+            if ((review_kick.already_requested(loop, pr) or config.reviewer_is_app(loop))
+                    and kicks.get(str(number)) != head
                     and not boundary
                     and head_postdates_arming and (TEST or mins >= KICK_AFTER_MIN)):
                 try:
@@ -1413,6 +1436,16 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         ready.sweep(loop, st, log)            # #654: one notice when the ready-to-merge set changes
     except Exception as exc:
         log(f"ready sweep failed: {type(exc).__name__}: {exc}")
+    try:
+        merge_check.refresh(loop, st, log=log)    # #1163: the diaktoros/review check, every head
+    except Exception as exc:
+        log(f"merge check failed: {type(exc).__name__}: {exc}")
+    try:                                          # #1246: a closed PR's pending escalation goes
+        for number in escalate_pending.prune(st, [p.get("number") for p in prs
+                                                  if isinstance(p, dict)]):
+            log(f"#{number}: pending escalation dropped (the PR is closed, or it lapsed)")
+    except Exception as exc:
+        log(f"pending escalation prune failed: {type(exc).__name__}: {exc}")
     conflicts += recheck_unknown(loop, unknown, conflict_live)
     act_on_conflicts(loop, st, conflicts, conflict_live)
     if observer.retry(loop, st):

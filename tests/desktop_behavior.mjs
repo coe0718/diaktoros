@@ -8,7 +8,11 @@ import test from 'node:test'
 const source = await readFile(process.env.DIAKTOROS_PLUGIN_SOURCE || new URL('../desktop/plugin.js', import.meta.url), 'utf8')
 // Pinned from real stats.collect with a missing disposable ledger; Python checks equality.
 const settingsFixture = JSON.parse(await readFile(new URL('./fixtures/desktop_settings.json', import.meta.url), 'utf8'))
+const settingsMixedFixture = JSON.parse(await readFile(new URL('./fixtures/desktop_settings_mixed.json', import.meta.url), 'utf8'))
+const settingsAppFixture = JSON.parse(await readFile(new URL('./fixtures/desktop_settings_app.json', import.meta.url), 'utf8'))
 const recordsWriterFixture = JSON.parse(await readFile(new URL('./fixtures/desktop_records.json', import.meta.url), 'utf8'))
+const holdWriterFixtures = JSON.parse(await readFile(new URL('./fixtures/desktop_hold_explanations.json', import.meta.url), 'utf8'))
+const holdWriterFixture = holdWriterFixtures.run_waiting
 const noLedgerStats = JSON.parse(await readFile(new URL('./fixtures/desktop_no_ledger_stats.json', import.meta.url), 'utf8'))
 
 // One loop of an /overview read, for synthetic fixtures. needs_you defaults to its uncertain run
@@ -22,7 +26,7 @@ function overview(...loops) {
   return { loops, read_at: 1800000000 }
 }
 
-async function harness({ cachedAge = null, queryClient: realQueryClient = null } = {}) {
+async function harness({ cachedAge = null, queryClient: realQueryClient = null, HealthObserver = null } = {}) {
   const registrations = []
   const queries = {}
   // Opt-in exact keys let selection tests model independent TanStack cache entries.
@@ -40,13 +44,32 @@ async function harness({ cachedAge = null, queryClient: realQueryClient = null }
   const refs = []
   let refCursor = 0
   const timers = new Map()
-  let time = 1800000000000
+  let time = HealthObserver ? Date.now() : 1800000000000
   let elapsed = 0
   let timerId = 0
   let cursor = 0
   let effectCursor = 0
   let mountedId = null
   let currentTree = null
+  // Opt-in SDK adapter: the actual mounted Health calls production useHealth;
+  // its observer owns fetching/subscription/refetch, rather than extracting options
+  // and manually creating an observer after a mock component render.
+  let healthObserver = null
+  let unsubscribeHealth = null
+  let observerRenderQueued = false
+  const stopHealthObserver = () => {
+    unsubscribeHealth?.()
+    unsubscribeHealth = null
+    healthObserver = null
+  }
+  const observerChanged = () => {
+    if (observerRenderQueued) return
+    observerRenderQueued = true
+    queueMicrotask(() => {
+      observerRenderQueued = false
+      if (mountedId) render(mountedId)
+    })
+  }
   class FakeDate extends Date {
     constructor(...args) { super(...(args.length ? args : [time])) }
     static now() { return time }
@@ -98,6 +121,15 @@ async function harness({ cachedAge = null, queryClient: realQueryClient = null }
       const kind = opts.queryKey[1]
       options[kind] = opts
       queryReads.push(opts)
+      if (HealthObserver && kind === 'health') {
+        if (!healthObserver) {
+          healthObserver = new HealthObserver(realQueryClient, opts)
+          unsubscribeHealth = healthObserver.subscribe(observerChanged)
+        } else {
+          healthObserver.setOptions(opts)
+        }
+        return healthObserver.getCurrentResult()
+      }
       return scopedKinds.has(kind) ? keyedQueries.get(JSON.stringify(opts.queryKey)) || loading() : queries[kind]
     }
   })
@@ -224,8 +256,9 @@ async function harness({ cachedAge = null, queryClient: realQueryClient = null }
     emit, listenerCount: () => cacheListeners.size,
     focusWrites: () => focusWrites,
     pendingTimers: () => [...timers.values()].filter(timer => timer.at - elapsed === 60000).map(timer => timer.fn),
-    dispose: () => { effects.forEach(effect => effect.cleanup?.()); mountedId = null; disposers.forEach(fn => fn()) },
-    unmount: () => { effects.forEach(effect => effect.cleanup?.()); mountedId = null },
+    healthResult: () => healthObserver?.getCurrentResult(),
+    dispose: () => { stopHealthObserver(); effects.forEach(effect => effect.cleanup?.()); mountedId = null; disposers.forEach(fn => fn()) },
+    unmount: () => { stopHealthObserver(); effects.forEach(effect => effect.cleanup?.()); mountedId = null },
     moveWall: ms => { time += ms },
     advance: (ms, wallMs = ms) => {
       elapsed += ms
@@ -236,6 +269,71 @@ async function harness({ cachedAge = null, queryClient: realQueryClient = null }
     } }
 }
 
+
+async function holdDrawer() {
+  const h = await harness()
+  h.queries.now = h.good({ runs: [{ pr: 7, seat: 'reviewer', head: 'aaaaaaa', state: 'waiting', why: 'waiting' }],
+    counts: { waiting: 1 }, pacing: {}, available: true })
+  const data = { repo: 'fixture/repo', loop: 'fixture-loop', pr: 7, cap: 3,
+    stuck: [{ seat: 'reviewer', head: 'aaaaaaa', state: 'waiting', since: 1, next: 'Legacy host guidance.',
+      explanation: structuredClone(holdWriterFixture) }], turns: [], verdicts: {}, rulings: [], breach: null,
+    findings: [], decisions: [], read_at: 1800000000 }
+  h.queries.pr = h.good(data)
+  h.render('page')
+  h.buttons(h.tree()).find(n => h.text([n]).includes('#7')).props.onClick()
+  h.render('page')
+  return { h, data }
+}
+
+test('hold contract: actual backend fixture renders unchanged without granting an action', async () => {
+  const { h, data } = await holdDrawer()
+  assert.ok(h.text(h.tree()).includes(holdWriterFixture.text))
+  assert.match(h.text(h.tree()), /Ledger only \(partial\)/)
+  h.respond(data)
+  assert.equal(await h.options.pr.queryFn(), data)
+  for (const explanation of Object.values(holdWriterFixtures)) {
+    const next = structuredClone(data); next.stuck[0].explanation = explanation
+    h.respond(next); assert.equal(await h.options.pr.queryFn(), next)
+    h.queries.pr = h.good(next); h.render('page')
+    assert.ok(h.text(h.tree()).includes(explanation.text))
+  }
+  assert.equal(h.calls.at(-1), '/pr?pr=7&loop=fixture-loop')
+  assert.equal(h.retryCalls.length, 0)
+  const dialog = [h.flatten(h.tree()).find(n => n.type === 'Dialog')]
+  assert.equal(h.buttons(dialog).filter(n => h.text([n]) === 'Retry').length, 0)
+  h.dispose()
+})
+
+test('hold contract: malformed nested provenance identity actions and secret prose are rejected before cache', async () => {
+  const { h, data } = await holdDrawer()
+  for (const mutate of [e => { e.schema = 2 }, e => { e.reason_code = 'ci_passed' },
+    e => { e.run_id = '/home/private ghp_secret' }, e => { e.head = 'b'.repeat(40) },
+    e => { e.evidence_source = 'live_github' }, e => { e.completeness = 'complete' },
+    e => { e.waiting_for = '/private/token' }, e => { e.automatic_resume = 'yes' },
+    e => { e.next_eligible_start = -1 }, e => { e.next_eligible_start = NaN },
+    e => { e.next_eligible_start = true }, e => { e.operator_action = 'retry' },
+    e => { e.text = '/home/private ghp_secret' }, e => { e.extra = 'secret' }]) {
+    const broken = structuredClone(data); mutate(broken.stuck[0].explanation); h.respond(broken)
+    await assert.rejects(h.options.pr.queryFn(), /Invalid pr response/)
+  }
+  h.dispose()
+})
+
+test('hold contract: retained stale and legacy unknown stay explicit with no transport text', async () => {
+  const { h, data } = await holdDrawer()
+  h.queries.pr = { ...h.good(data), dataUpdatedAt: 1 }
+  h.render('page')
+  assert.match(h.text(h.tree()), /stale.*PR ledger explanation/i)
+  assert.ok(h.text(h.tree()).includes(holdWriterFixture.text))
+  h.queries.pr = { ...h.fail(data), error: new Error('/home/private ghp_secret') }
+  h.render('page')
+  assert.match(h.text(h.tree()), /stale/i)
+  assert.doesNotMatch(h.text(h.tree()), /home\/private|ghp_secret/)
+  const legacy = structuredClone(data); delete legacy.stuck[0].explanation
+  h.queries.pr = h.good(legacy); h.respond(legacy); await h.options.pr.queryFn(); h.render('page')
+  assert.match(h.text(h.tree()), /Shared explanation unavailable \(older backend\)/)
+  h.dispose(); assert.equal(h.timerCount(), 0)
+})
 
 function recordsFixture() { return structuredClone(recordsWriterFixture) }
 
@@ -943,7 +1041,20 @@ test('settings: malformed nested successes rejected before caching', async () =>
     d => { d.loops[0].seats.reviewer.max_steps = -1 }, d => { d.loops[0].flags = [] },
     d => { delete d.loops[0].flags.fix_ci }, d => { d.loops[0].flags.cap = -1 },
     d => { delete d.loops[0].seats.reviewer }, d => { d.loops.push(d.loops[0]) },
-    d => { d.loops[0].seats.reviewer = null }, d => { d.read_at = 'now' }
+    d => { d.loops[0].seats.reviewer = null }, d => { d.read_at = 'now' },
+    d => { delete d.plugin.seats.reviewer.credential_kind },
+    d => { d.plugin.seats.reviewer.app_id = 123 },
+    d => { d.plugin.seats.reviewer.key_file = {} },
+    d => { d.plugin.seats.reviewer.credential_kind = 'app' },
+    d => { d.loops[0].seats.reviewer.credential_kind = 'guessed' },
+    d => { d.loops[0].seats.reviewer.app_id = '123' },
+    d => { d.loops[0].seats.reviewer.key_file = '/wrong-kind.pem' },
+    d => { d.loops[0].seats.reviewer.extra = 'unvalidated' },
+    ...[0, -1, '123', null, {}, true].map(appId => d => {
+      Object.assign(d.loops[0].seats.reviewer, { credential_kind: 'app', app_id: appId, token_file: '', key_file: '/synthetic/review.pem' })
+    }),
+    d => { Object.assign(d.loops[0].seats.reviewer, { credential_kind: 'app', app_id: 123, key_file: '/synthetic/review.pem' }) },
+    d => { Object.assign(d.loops[0].seats.reviewer, { credential_kind: 'app', app_id: 123, token_file: '', key_file: '' }) }
   ]
   for (const mutate of mutations) {
     const data = structuredClone(settingsFixture); mutate(data); h.respond(data)
@@ -969,6 +1080,45 @@ test('settings: secrets and invalid token paths withheld, token budgets and vali
   assert.match(text, /~\/credentials\/seat.pat/)
   assert.match(text, /Invalid token path withheld/)
   assert.equal(h.buttons(h.tree()).some(button => /save|apply|merge/i.test(String(button.props.children))), false)
+})
+
+for (const [mode, fixture] of [['PAT', settingsFixture], ['mixed', settingsMixedFixture], ['App', settingsAppFixture]]) {
+  test('settings: real backend ' + mode + ' fixture validates and renders typed credentials', async () => {
+    const h = await harness()
+    h.respond(structuredClone(fixture))
+    h.render('page')
+    h.queries.settings = h.good(await h.options.settings.queryFn())
+    const text = h.text(h.render('page'))
+    for (const seat of Object.values(fixture.loops[0].seats)) {
+      assert.ok(text.includes('credential_kind ' + seat.credential_kind))
+      if (seat.credential_kind === 'app') {
+        assert.ok(text.includes('app_id ' + seat.app_id))
+        assert.ok(text.includes('key_file ' + seat.key_file))
+        assert.equal(seat.token_file, '')
+      } else if (seat.token_file) assert.ok(text.includes(seat.token_file))
+    }
+    assert.doesNotMatch(text, /BEGIN.*PRIVATE KEY|installation.token|Sensitive value withheld/)
+  })
+}
+
+test('settings: App key paths and dynamic schema are path-sensitive, not PEM or secret text', async () => {
+  const h = await harness()
+  const data = structuredClone(settingsFixture)
+  for (const [key, value] of Object.entries({ future_app_key_file: 'private-key-content', future_key_file: '-----BEGIN PRIVATE KEY-----\nprivate-pem\n-----END PRIVATE KEY-----', safe_app_key_file: '~/credentials/reviewer.pem' })) {
+    data.plugin.schema[key] = { label: key, description: '', type: 'str', default: value }
+    data.plugin.values[key] = value; data.plugin.sources[key] = 'set'
+  }
+  Object.assign(data.loops[0].seats.reviewer, { credential_kind: 'app', app_id: 12345, key_file: '/synthetic/review.pem', token_file: '' })
+  h.respond(data)
+  h.render('page')
+  h.queries.settings = h.good(await h.options.settings.queryFn())
+  const text = h.text(h.render('page'))
+  assert.match(text, /credential_kind app/)
+  assert.match(text, /app_id 12345/)
+  assert.match(text, /\/synthetic\/review.pem/)
+  assert.match(text, /~\/credentials\/reviewer.pem/)
+  assert.doesNotMatch(text, /private-key-content|private-pem|BEGIN PRIVATE KEY/)
+  assert.match(text, /Invalid key path withheld/)
 })
 
 test('palette only: unseen successful cache read expires despite backward wall clock', async () => {
@@ -2205,9 +2355,9 @@ for (const kind of Object.keys(READ_ENDPOINTS)) {
   })
 }
 
-// Optional dependency acceptance mode, in addition to the dependency-free component suite:
-// DIAKTOROS_QUERY_CORE=/absolute/path/to/@tanstack/query-core/build/modern/index.js
-// The protected verification wrapper supplies the installed desktop's actual TanStack package.
+// Real-cache acceptance mode: tests/run_desktop_query_core.py supplies the locked
+// tests/query-core dependency and requires every named case below (no skips).
+// Direct developer opt-in also accepts DIAKTOROS_QUERY_CORE as an explicit ESM entry.
 if (process.env.DIAKTOROS_QUERY_CORE) {
   // Model a browser for QueryObserver's built-in polling, not a plugin-owned timer/transport.
   globalThis.window = {}
@@ -2217,6 +2367,64 @@ if (process.env.DIAKTOROS_QUERY_CORE) {
     for (let i = 0; i < 200 && client.isFetching(); i++) await new Promise(resolve => setTimeout(resolve, 5))
     assert.equal(client.isFetching(), 0, 'REST refresh settled')
   }
+  test('health real TanStack mounted page: adapter follows selection, fallback and Retry', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
+    const a = await harness({ queryClient: client, HealthObserver: QueryObserver })
+    const b = await harness({ queryClient: client, HealthObserver: QueryObserver })
+    const calls = () => [...a.calls, ...b.calls]
+    try {
+      a.respond(healthFixture()); b.respond(healthFixture())
+      a.render('page'); b.render('page'); await settle(client)
+      assert.deepEqual(calls(), ['/health?loop=fixture-loop&probe=1'], 'mounted pages launch one probe without extracted options')
+      assert.equal(a.healthResult().data, b.healthResult().data)
+      assert.deepEqual(Array.from(a.options.health.queryKey), ['diaktoros', 'health', 'fixture-loop', 'probe'])
+      assert.equal(a.options.health.staleTime, 600000)
+      assert.equal(a.options.health.refetchInterval, false)
+      assert.match(a.text(a.tree()), /Health/)
+      a.unmount(); a.render('page'); await settle(client)
+      a.render('page'); b.sockets[0].callback(invalidation()); await settle(client)
+      assert.equal(calls().length, 1, 'fresh actual remount, rerender and socket do not repeat probe')
+
+      a.queries.loops = a.good({ loops: [{ id: 'fixture-loop' }, { id: 'other-loop' }] })
+      a.render('page')
+      a.respond({ ...healthFixture('other-loop'), offline: true })
+      a.readFails('&probe=1', new Error('private transport'))
+      a.buttons(a.tree()).find(button => button.props.children === 'other-loop').props.onClick()
+      await settle(client)
+      assert.deepEqual(a.calls.slice(-2), ['/health?loop=other-loop&probe=1', '/health?loop=other-loop'])
+      assert.equal(a.healthResult().data.loop, 'other-loop')
+      assert.equal(a.healthResult().data.probeFailure, 'unreachable')
+      assert.doesNotMatch(a.text(a.tree()), /private transport/)
+      const count = calls().length
+      a.queries.loops = a.good({ loops: [{ id: 'other-loop' }] })
+      a.unmount(); a.render('page'); await settle(client)
+      assert.equal(calls().length, count, 'fresh fallback remount repeats neither request')
+
+      a.respond(healthFixture('other-loop'))
+      await a.buttons(a.tree()).find(button => button.props.children === 'Refresh GitHub').props.onClick()
+      await settle(client)
+      assert.equal(a.calls.at(-1), '/health?loop=other-loop&probe=1')
+      assert.equal(calls().length, count + 1)
+      assert.equal(a.healthResult().data.offline, false)
+      a.readFails('/health')
+      await a.buttons(a.tree()).find(button => button.props.children === 'Refresh GitHub').props.onClick()
+      await settle(client)
+      assert.equal(a.healthResult().isError, true)
+      const sentence = 'Health: showing last good data, not current status'
+      const region = a.flatten(a.tree()).filter(node => typeof node === 'object' &&
+        a.text([node]).includes(sentence) && a.buttons([node]).some(button => button.props.children === 'Retry')).at(-1)
+      assert.ok(region, 'observer notification rerenders the mounted Health error without injected result')
+      a.respond(healthFixture('other-loop'))
+      const before = calls().length
+      await a.buttons([region]).find(button => button.props.children === 'Retry').props.onClick()
+      await settle(client)
+      assert.equal(calls().length, before + 1)
+      assert.equal(a.calls.at(-1), '/health?loop=other-loop&probe=1')
+      assert.equal(a.healthResult().isError, false)
+      assert.doesNotMatch(a.text(a.tree()), /Health: showing last good data/)
+    } finally { a.dispose(); b.dispose(); client.clear() }
+  })
+
   for (const [failure, reason] of [[new Error('403: {}'), 'caller'], [new Error('private transport'), 'unreachable']]) {
     test('health real TanStack fallback dedupes concurrent observers and remount; manual refresh recovers: ' + reason, async () => {
       const client = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity } } })
