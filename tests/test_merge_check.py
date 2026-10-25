@@ -66,8 +66,11 @@ class Kinds(KindsBase):
 
     def test_no_verdict_yet_is_pending_and_changes_requested_is_a_failure(self):
         self.assertEqual(self.kind_of("not approved", reviews=[]), ready.PENDING)
-        self.assertEqual(self.kind_of("not approved", reviews=[review("CHANGES_REQUESTED")]),
-                         ready.FAILURE)
+        self.assertEqual(self.kind_of("changes requested at head aaaaaaa (1 of 3 verdicts)",
+                                      reviews=[review("CHANGES_REQUESTED")]), ready.FAILURE)
+        # #1245: the waiting text and the verdict text differ, so a red check says why.
+        self.assertFalse(any("not approved" in text
+                             for _, text in self.kinds(reviews=[review("CHANGES_REQUESTED")])))
 
     def test_red_ci_is_a_failure_and_running_ci_is_pending(self):
         self.assertEqual(self.kind_of("required checks", ci_state=ci.CIState(failed=["tests"])),
@@ -158,11 +161,16 @@ class Kinds(KindsBase):
             "status": "awaiting-adjudication"}})
         with mock.patch.object(gate, "_ruled", return_value=None):
             # No adjudicator route: no ruling ever comes, so a person decides (shadow, #1225).
-            self.assertEqual(self.kind_of("escalated"), ready.FAILURE)
+            self.assertEqual(self.kind_of("no adjudicator route: a person decides"),
+                             ready.FAILURE)
             self.loop["adjudicator"] = {"route": "w-breach"}
-            self.assertEqual(self.kind_of("escalated"), ready.PENDING)
+            self.assertEqual(self.kind_of("escalated: parked awaiting adjudication"),
+                             ready.PENDING)
         with mock.patch.object(gate, "_ruled", return_value="REJECT"):
-            self.assertEqual(self.kind_of("escalated"), ready.FAILURE)
+            # #1245: once ruled, the reason names the ruling, never "awaiting" (live trial #18).
+            self.assertEqual(self.kind_of("the adjudicator ruled REJECT at head aaaaaaa"),
+                             ready.FAILURE)
+            self.assertFalse(any("awaiting" in text for _, text in self.kinds()))
 
     def test_the_shadow_states_kind_is_carried(self):
         for kind in (ready.PENDING, ready.FAILURE):
@@ -433,6 +441,46 @@ class Posting(unittest.TestCase):
         self.prs = [{"number": 7, "head": {"sha": HEAD}}]
         self.assertEqual(self.refresh(), 1)
         self.assertEqual(list(self.memory()), ["7"])
+
+    def test_mark_pending_posts_once_per_head_and_refresh_updates_the_same_run(self):
+        # #1242 (live trial): a new PR showed no check until the first refresh.
+        self.assertTrue(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "review queued"))
+        [(path, method, body, _)] = self.calls
+        self.assertEqual((path, method, body["status"]), ("/repos/acme/widgets/check-runs",
+                                                          "POST", "in_progress"))
+        self.assertIn("review queued", body["output"]["summary"])
+        self.assertFalse(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "again"))
+        self.assertEqual(len(self.calls), 1)                          # once per head
+        self.kinds = {7: []}
+        self.refresh()
+        self.assertEqual(self.calls[1][:2], ("/repos/acme/widgets/check-runs/55", "PATCH"))
+
+    def test_mark_pending_is_off_with_the_check_and_records_no_failed_write(self):
+        self.assertFalse(merge_check.mark_pending({**self.loop, "merge_check": "off"}, self.st,
+                                                  7, HEAD, "x"))
+        self.assertEqual(self.calls, [])
+        self.fail = True
+        self.assertFalse(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "x"))
+        self.assertEqual(self.memory(), {})
+        with mock.patch.object(merge_check, "post", side_effect=RuntimeError("boom")):
+            self.assertFalse(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "x"))
+
+    def test_the_gate_marks_pending_only_for_a_scheduled_review(self):
+        st = mock.Mock()
+        st.queue_items.return_value = {}
+        for seat, outcome, called in (("reviewer", "enqueued", True),
+                                      ("reviewer", "duplicate succeeded", False),
+                                      ("fixer", "enqueued", False)):
+            with self.subTest(seat=seat, outcome=outcome), \
+                    mock.patch.object(gate, "enqueue_isolated", return_value=outcome), \
+                    mock.patch.object(merge_check, "mark_pending") as mark, \
+                    mock.patch("sys.stdout", new_callable=__import__("io").StringIO), \
+                    self.assertRaises(SystemExit):
+                loop = {**self.loop, "unattended_fixer_push": True}
+                try:
+                    gate.block_pr_agent(loop, st, seat, 7, HEAD)
+                finally:
+                    self.assertEqual(mark.called, called)
 
     def test_refresh_quietly_never_raises(self):
         from diaktoros import util

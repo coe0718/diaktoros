@@ -543,6 +543,9 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
                                         queued.get("url") or pr_url(loop, number),
                                         declined_reason(seat, outcome))
             final = (f"{seat} turn {outcome}", "accepted" if scheduled else "declined")
+            if scheduled and seat == "reviewer":
+                from . import merge_check          # #1242: the check shows at once, pending
+                merge_check.mark_pending(loop, st, number, head, "review queued")
             if outcome == "enqueued":
                 log(f"#{number} @ {head[:7]} {seat} enqueued for isolated worker")
             elif scheduled:

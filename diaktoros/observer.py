@@ -473,8 +473,9 @@ def summarize(loop: dict, event: str, number, head: str, *, outcome: str = "",
     decide whether to look, and the link to look at. Anything longer belongs on the PR.
     """
     emoji = EMOJI.get(event, "•")
-    # An issue has no head of its own: the notice names the issue alone.
-    at = "" if issue else f" `{(head or '')[:7]}`"
+    # An issue has no head of its own, nor has a repository-level notice (the ready set, #1247):
+    # the notice names no head rather than an empty one.
+    at = "" if issue or not head else f" `{head[:7]}`"
     ref = f" #{number}" if has_pr(number) else ""      # a main-level notice names no PR
     parts = [f"{emoji} [{loop.get('id')}]{ref}{at} {LABEL.get(event, event)}"]
     if outcome:

@@ -64,10 +64,11 @@ def fix(loop: dict, payload: dict) -> None:
         silence(f"issue #{number} fix held: {reason}")
     if kind != "queued":
         silence(f"issue #{number}: {text}; not handed to the fixer")
-    log(f"issue #{number} handed to the fixer at {base[:7]}: {outcome}")
     if outcome in ("enqueued", "rearmed", "pending"):
         _fix_notice(loop, number, base, f"fix turn queued from {loop['base']} at {base[:7]}")
-    silence()
+    # Recorded like the reviewer gate's acceptances (#1244): explain and Desktop show the event
+    # that started the fix, not only the ones declined around it.
+    silence(f"issue #{number} handed to the fixer at {base[:7]}: {outcome}", "accepted")
 
 
 def _fix_notice(loop: dict, number: int, base: str, outcome: str) -> None:
@@ -115,8 +116,7 @@ def main() -> None:
     except Exception as exc:
         silence(f"issue #{number} triage held: isolated worker unavailable: "
                 f"{type(exc).__name__}: {exc}")
-    log(f"issue #{number} triage {outcome}")
-    silence()
+    silence(f"issue #{number} triage {outcome}", "accepted")       # #1244: recorded
 
 
 if __name__ == "__main__":
