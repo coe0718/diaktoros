@@ -75,7 +75,7 @@ class Base(fg.Base):
             con.execute("UPDATE runs SET state='running'")
         return sup
 
-    def fixer_gate(self, review, reviews):
+    def fixer_gate(self, review, reviews, breach_outcome="new"):
         """Drive the fixer gate on one verdict webhook; (stderr, enqueue mock, breach mock)."""
         payload = {"action": "submitted", "repository": {"full_name": fg.REPO},
                    "pull_request": fg.LIVE, "review": review}
@@ -87,7 +87,7 @@ class Base(fg.Base):
                 mock.patch.object(gate_fixer.gate, "fetch_reviews", return_value=reviews), \
                 mock.patch.object(gate_fixer.gate, "drain_seat"), \
                 mock.patch.object(gate, "enqueue_isolated", return_value="enqueued") as enqueue, \
-                mock.patch.object(gate, "breach", return_value="new") as breach, \
+                mock.patch.object(gate, "breach", return_value=breach_outcome) as breach, \
                 mock.patch.object(gate_fixer.observer, "notify") as notify, \
                 mock.patch.object(gate_fixer.observer, "verified_base_sha",
                                   side_effect=lambda loop, pr: (pr.get("base") or {}).get("sha")), \
@@ -444,6 +444,81 @@ class Pending(Base):
             self.assertIsNone(escalate_pending.take(self.st, 99))
         self.assertEqual(sorted(p.name for p in self.st.dir.iterdir()), before)
         self.assertIsNone(escalate_pending.take(mock.Mock(), 7))   # unreadable: none pending
+
+    def test_a_stale_breach_keeps_it_and_says_so(self):
+        # #1264: the head moved under the breach lock; nothing parked, so nothing is consumed.
+        err, enqueue, breach, _ = self.fixer_gate(
+            verdict(6) | {"state": "changes_requested"}, [verdict(5), verdict(6)],
+            breach_outcome="stale")
+        breach.assert_called_once()
+        enqueue.assert_not_called()
+        self.assertIn("pending escalation not taken: the breach was stale", err)
+        self.assertNotIn("handed to adjudication", err)
+        self.assertIsNotNone(escalate_pending.get(self.st, 7))
+        for outcome in ("retry", "already"):
+            with self.subTest(outcome=outcome):
+                escalate_pending.record(self.st, 7, reason="r", head=HEAD)
+                self.fixer_gate(verdict(6) | {"state": "changes_requested"},
+                                [verdict(5), verdict(6)], breach_outcome=outcome)
+                self.assertIsNone(escalate_pending.get(self.st, 7))
+
+    def test_a_stale_cap_breach_keeps_it_too(self):
+        reviews = [verdict(4), verdict(5), verdict(6)]
+        err, _, _, _ = self.fixer_gate(verdict(6) | {"state": "changes_requested"}, reviews,
+                                       breach_outcome="stale")
+        self.assertIsNotNone(escalate_pending.get(self.st, 7))
+        # Shadow on #1265: nothing was parked, so the log must not say it was handed over.
+        self.assertIn("the breach was stale: nothing parked", err)
+        self.assertNotIn("handed to adjudication", err)
+
+    def test_explain_shows_it_beside_an_older_marker(self):
+        # #1264: a marker from a ruled or superseded head no longer hides the pending request.
+        self.st.breach.parent.mkdir(parents=True, exist_ok=True)
+        state_mod._atomic_write(self.st.breach, {gate.seat_key(self.loop, 7): {
+            "pr": 7, "head": OTHER, "rounds": 3, "cap": 3, "reason": "old cap",
+            "at": "2026-10-24T00:00:00Z", "status": "adjudicating"}})
+        line = gate._explain_state(self.loop, self.st, gate.seat_key(self.loop, 7), 7, HEAD,
+                                   time.time())["escalation"]
+        self.assertTrue(line.startswith("pending since"), line)
+        self.assertIn("(earlier: adjudicating at head cccccc", line)
+
+    def test_a_record_that_cannot_be_saved_is_not_reported_pending(self):
+        # #1262: the CLI said "escalation pending" over a best-effort write.
+        escalate_pending.take(self.st, 7)
+        self.running("fixer")
+        with mock.patch.object(state_mod.LoopState, "_save_strict", side_effect=OSError("disk full")):
+            rc, out, _ = self.escalate()
+        self.assertEqual(rc, 2)
+        self.assertIn("could not be recorded", out)
+        self.assertNotIn("escalation pending", out)
+
+    def test_a_failed_take_is_a_clear_line_never_a_traceback(self):
+        # Shadow on #1265: strict writes made take() raise, and both CLI callers let it through.
+        with mock.patch.object(escalate_pending, "take", side_effect=OSError("disk full")):
+            rc, out, _ = self.escalate(withdraw=True)
+            self.assertEqual(rc, 2)
+            self.assertIn("could not be withdrawn (OSError: disk full) — it still stands", out)
+            rc, out, wake = self.escalate()                     # nothing in flight: it lands
+        self.assertEqual(rc, 2)
+        wake.assert_called_once()
+        self.assertIn("escalated at 1/3 verdicts, but its pending record could not be cleared", out)
+        self.assertIn("--withdraw` clears it", out)
+
+    def test_a_failed_removal_raises_and_keeps_the_record(self):
+        # Shadow on #1265 (#1262): a swallowed removal would leave the record on disk and fire the
+        # escalation again at a later head; take() must raise instead, with the record intact.
+        with mock.patch.object(state_mod.LoopState, "_save_strict", side_effect=OSError("disk full")), \
+                self.assertRaises(OSError):
+            escalate_pending.take(self.st, 7)
+        self.assertEqual(escalate_pending.get(self.st, 7)["reason"], "stuck on scope")
+
+    def test_withdrawing_an_entry_without_a_reason(self):
+        # #1263: a store entry with no reason raised KeyError.
+        state_mod._atomic_write(self.st.dir / escalate_pending.FILE,
+                                {"7": {"head": HEAD, "at": time.time()}})
+        rc, out, _ = self.escalate(withdraw=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("withdrawn (no reason recorded)", out)
 
     def test_desktop_still_refuses_and_names_the_cli(self):
         escalate_pending.take(self.st, 7)

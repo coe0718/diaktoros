@@ -57,7 +57,8 @@ def record(st, number: int, *, reason: str, head: str, by: str = "operator") -> 
         memory = st._load(_path(st), {})
         memory = memory if isinstance(memory, dict) else {}
         memory[str(number)] = entry
-        st._save(_path(st), memory)
+        # Strict (#1262): the CLI says "pending" only once it is on disk; a failed write raises.
+        st._save_strict(_path(st), memory)
     return entry
 
 
@@ -70,7 +71,7 @@ def take(st, number: int) -> dict | None:
         memory = memory if isinstance(memory, dict) else {}
         entry = memory.pop(str(number), None)
         if entry is not None:
-            st._save(_path(st), memory)
+            st._save_strict(_path(st), memory)     # a record that will not go must not act twice
     return entry if _live(entry, time.time()) else None
 
 
