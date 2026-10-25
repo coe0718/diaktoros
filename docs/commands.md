@@ -1251,12 +1251,18 @@ A new head (someone pushes) supersedes the escalation.
 hermes dk escalate --loop "<loop-id>" --pr 12 --reason "the fix and the finding disagree on scope"
 ```
 
-It's refused unless the loop has an adjudicator, and only for an open, ready PR by a fixer that
-has at least one verdict, isn't approved at its head and isn't already awaiting a ruling. Exit `1`
-means it was refused, and the line says why.
+It's refused unless the loop has an adjudicator, and only for an open, ready PR by a fixer or a
+review-only author that has at least one verdict, isn't approved at its head, isn't already awaiting
+a ruling and has no turn running. For a review-only PR this is always a person's explicit request;
+the ruling is advice to the operator, and the loop never pushes to or merges that branch. A
+maintainer's own PR is eligible only when the maintainer is also review-only, since only then does
+the reviewer give it a verdict to rule on (#1165).
+The review-only verdict cap still waits for `review --another-round`; it does not automatically
+escalate. Exit `1` means it was refused, and the line says why.
 
-**With a turn running** (#1246), the escalation can't be written yet, and with unattended fixer
-pushes on there is never a gap between one turn and the next. So it's recorded as **pending**
+**With a turn running on a fixer's PR** (#1246), the escalation can't be written yet, and with unattended fixer
+pushes on there is never a gap between one turn and the next (a review-only or
+maintainer PR has no fixer turn, so there it is still refused until the turn ends). So it's recorded as **pending**
 instead, and exits `0`:
 
 - the running turn finishes normally;

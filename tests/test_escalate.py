@@ -27,6 +27,7 @@ from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 from scripts import gate_fixer, gate_reviewer  # noqa: E402
 
+
 HEAD = fg.HEAD
 OTHER = "c" * 40
 
@@ -97,6 +98,86 @@ class Base(fg.Base):
 
 
 class Command(Base):
+    def test_operator_can_escalate_review_only_pr_and_adjudicator_accepts_it(self):
+        self.loop = config.load_id("one")
+        path = config.config_dir() / "one.json"
+        data = json.loads(path.read_text())
+        data["review_only"] = ["owner-human"]
+        path.write_text(json.dumps(data))
+        self.loop = config.load_id("one")
+        self.live = {**fg.LIVE, "user": {"login": "Owner-Human"}}
+        rc, out, wake = self.escalate("person asks for ruling")
+        self.assertEqual(rc, 0, out)
+        wake.assert_called_once()
+        marker = self.st.breach_get(7)
+        self.assertEqual(marker["status"], "awaiting-adjudication")
+        self.assertEqual(marker["escalated"]["by"], "operator")
+
+        from diaktoros.run_supervisor import pr_facts
+        pr = {**self.live, "head": {"sha": HEAD, "ref": "review-only-7"}}
+        row = {"repo": fg.REPO, "pr": 7, "head": HEAD, "seat": "adjudicator",
+               "turn_key": "breach:1", "id": "ruling-1", "created": time.time()}
+        with mock.patch.object(gh, "api", return_value=pr), \
+                mock.patch.object(gh, "reviews", return_value=self.reviews), \
+                mock.patch.object(pr_facts, "effective_reviews", return_value=self.reviews):
+            self.assertEqual(pr_facts.adjudication_state(self.loop, row)[0], "ok")
+        from diaktoros.run_supervisor.turn_prompts import adjudication_situation
+        self.assertIn("operator asked for a ruling", adjudication_situation(marker))
+
+
+
+    def test_a_review_only_pr_with_a_turn_running_is_refused_not_left_pending(self):
+        # #1154 + #1246: a pending escalation takes effect in the fixer gate, which returns a
+        # review-only verdict to its author first; there it would only lapse. A review-only PR
+        # has no fixer turn, so it is free once this turn ends: still the plain refusal.
+        path = config.config_dir() / "one.json"
+        data = json.loads(path.read_text())
+        data["review_only"] = ["owner-human"]
+        path.write_text(json.dumps(data))
+        self.loop = config.load_id("one")
+        self.live = {**fg.LIVE, "user": {"login": "owner-human"}}
+        self.running("reviewer")
+        rc, out, wake = self.escalate()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("in flight", out)
+        wake.assert_not_called()
+        self.assertIsNone(escalate_pending.get(self.st, 7))
+
+    def test_a_maintainer_only_pr_is_refused(self):
+        # #1165: escalation needs a verdict, and the reviewer never reviews a maintainer who is
+        # not review-only, so the old allowance was unreachable. It is refused instead, and the
+        # worker does not accept such an escalation either.
+        self.live = {**fg.LIVE, "user": {"login": "Trusted-Maintainer"}}
+        with mock.patch.object(config, "maintainers", return_value={"trusted-maintainer"}):
+            rc, out, wake = self.escalate("maintainer asks for ruling")
+            self.assertEqual(rc, 1, out)
+            self.assertIn("only an open, ready PR by a fixer or review-only author", out)
+            wake.assert_not_called()
+            self.assertEqual(self.st.breach_get(7), {})
+            pr = {**self.live, "head": {"sha": HEAD, "ref": "maintainer-7"}}
+            row = {"repo": fg.REPO, "pr": 7, "head": HEAD, "seat": "adjudicator",
+                   "turn_key": "breach:1", "id": "ruling-maintainer", "created": time.time()}
+            self.st.breach.parent.mkdir(parents=True, exist_ok=True)
+            state_mod._atomic_write(self.st.breach, {gate.seat_key(self.loop, 7): {
+                "pr": 7, "head": HEAD, "rounds": 1, "cap": 3, "reason": "r", "at": "now",
+                "status": "awaiting-adjudication", "escalated": {"by": "operator", "reason": "r"}}})
+            with (mock.patch.object(gh, "api", return_value=pr),
+                  mock.patch.object(gh, "reviews", return_value=self.reviews),
+                  mock.patch.object(pr_facts, "effective_reviews", return_value=self.reviews)):
+                self.assertEqual(pr_facts.adjudication_state(self.loop, row)[0], "superseded")
+
+    def test_breach_itself_does_not_park_a_maintainer_only_pr(self):
+        # #1165, defence in depth: an operator escalation reaching gate.breach for a maintainer
+        # who is not review-only is stale (nothing parked), not a ruling on a PR with no verdict.
+        self.live = {**fg.LIVE, "user": {"login": "trusted-maintainer"}}
+        with self.github() as wake, \
+                mock.patch.object(config, "maintainers", return_value={"trusted-maintainer"}):
+            outcome = gate.breach(self.loop, self.st, 7, HEAD, 1, "escalated: r",
+                                  escalated={"by": "operator", "reason": "r"})
+        self.assertEqual(outcome, "stale")
+        wake.assert_not_called()
+        self.assertEqual(self.st.breach_get(7), {})
+
     def test_an_escalation_parks_the_head_and_wakes_the_adjudicator(self):
         rc, out, wake = self.escalate("they disagree\non scope")
         self.assertEqual(rc, 0, out)
@@ -273,6 +354,28 @@ class Parked(Base):
             watchdog.retry_pending_breaches(self.loop, self.st, [fg.LIVE])
         breach.assert_called_once()
         self.assertEqual(breach.call_args.kwargs["escalated"]["by"], "operator")
+
+    def test_the_watchdog_retries_a_review_only_escalation_and_never_a_cap_on_one(self):
+        # Shadow on #1154: a review-only PR's escalation whose wake failed was parked for good,
+        # since the retry looked at fixer PRs only. The retry now parks what gate.breach does.
+        from scripts import watchdog
+        path = config.config_dir() / "one.json"
+        data = json.loads(path.read_text())
+        data["review_only"] = ["owner-human"]
+        path.write_text(json.dumps(data))
+        self.loop = config.load_id("one")
+        review_only_pr = {**fg.LIVE, "user": {"login": "Owner-Human"}}
+        marker = self.st.breach_get(7)
+        for escalated, retried in ((marker["escalated"], True), (None, False)):
+            with self.subTest(escalated=bool(escalated)):
+                entry = {**marker, "status": "delivery-pending"}
+                if escalated is None:
+                    entry.pop("escalated", None)              # a spent cap, not an escalation
+                self.set_marker(entry)
+                with mock.patch.object(gh, "reviews", return_value=self.reviews), \
+                        mock.patch.object(gate, "breach") as breach:
+                    watchdog.retry_pending_breaches(self.loop, self.st, [review_only_pr])
+                self.assertEqual(breach.called, retried)
 
 
 class Pending(Base):

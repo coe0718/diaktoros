@@ -890,13 +890,18 @@ def retry_pending_breaches(loop: dict, st: state_mod.LoopState, prs: list,
             continue
         if (pr.get("base") or {}).get("ref") != loop["base"]:
             continue
-        if ((pr.get("user") or {}).get("login") or "").lower() not in loop["fixers"]:
-            continue
         number = pr.get("number")
         head = (pr.get("head") or {}).get("sha")
         if type(number) is not int or not head:
             continue
         marker = markers.get(f"{loop['repo']}#{number}")
+        # The authors gate.breach parks (shadow on #1154): an operator's or a shadow's escalation
+        # covers every reviewed author, review-only included; a spent cap only a fixer's PR.
+        by = ((marker.get("escalated") or {}).get("by") if isinstance(marker, dict) else None)
+        authors = (config.reviewed_authors(loop) if by in {gate.SHADOW_ESCALATION, "operator"}
+                   else set(loop["fixers"]))
+        if ((pr.get("user") or {}).get("login") or "").lower() not in authors:
+            continue
         if (not isinstance(marker, dict) or gate.breach_delivery_status(marker, head) != "delivery-pending"
                 or marker.get("head") != head):
             continue

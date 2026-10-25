@@ -371,9 +371,13 @@ def _escalation_decision(loop, number, *, live=None):
     say = f"#{number} @ {head[:7]}"
     if (pr.get("state") != "open" or pr.get("draft") or len(head) != 40
             or any(c not in "0123456789abcdefABCDEF" for c in head)
-            or (pr.get("base") or {}).get("ref") != loop["base"] or author not in loop["fixers"]):
-        return refuse(f"{say}: refused — only an open, ready PR by a fixer ({', '.join(loop['fixers'])}) "
-                      f"on {loop['base']} can be escalated")
+            or (pr.get("base") or {}).get("ref") != loop["base"]
+            or (author not in loop["fixers"] and author not in config.review_only(loop))):
+        # #1165: only authors the reviewer reviews, since escalation needs a verdict at the head.
+        # A maintainer's PR gets none unless they are review-only too (then it is eligible here).
+        eligible = ", ".join([*loop["fixers"], *sorted(config.review_only(loop))])
+        return refuse(f"{say}: refused — only an open, ready PR by a fixer or review-only author "
+                      f"({eligible}) on {loop['base']} can be escalated")
     st = state_mod.state_for(loop)
     reviews = transition.effective_reviews(loop, st, number, head, gh.reviews(loop, number))
     if not isinstance(reviews, list):
@@ -393,7 +397,9 @@ def _escalation_decision(loop, number, *, live=None):
     if busy:
         # #1246: the host CLI records it for the next changes-requested verdict instead; Desktop
         # binds a confirmation to the marker it writes now, so it still refuses.
-        details.update(busy=busy, state=st)
+        # Pending only for a fixer's PR: with fixer pushes on its turns leave no gap. A review-only
+        # or maintainer PR has no fixer turn, so it is free once this run ends (#1154 + #1246).
+        details.update(busy=busy, state=st, fixer_pr=author in loop["fixers"])
         return refuse(f"{say}: refused — {busy} run(s) for this PR are in flight; escalate once "
                       "they finish (a queued review or fix is retired by the escalation)",
                       public_reason="a run is in flight; the host CLI can queue the escalation "
@@ -451,7 +457,8 @@ def _escalate(loop, args, emit=print):
     except Exception:
         emit(f"#{number}: escalation facts unavailable — nothing escalated")
         return 2
-    if decision["code"] and decision.get("busy") and getattr(args, "expected_confirmation", None) is None:
+    if (decision["code"] and decision.get("busy") and decision.get("fixer_pr")
+            and getattr(args, "expected_confirmation", None) is None):
         # #1246: runs are in flight, and with fixer pushes on there is never a gap between them.
         # Recorded for the next changes-requested verdict (the fixer gate writes the breach then;
         # an approval drops it). Never a Desktop confirmation: that one binds a marker written now.
