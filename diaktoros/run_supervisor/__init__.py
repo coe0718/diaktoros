@@ -116,6 +116,17 @@ CREATE TABLE IF NOT EXISTS filed_issues (
  created REAL NOT NULL, updated REAL NOT NULL,
  PRIMARY KEY (run_id, seq), UNIQUE (repo, pr, title_key)
 );
+-- An issue a shadow review asked to file (#914): its broker is no-write, so the request is recorded
+-- here, never posted by the seat. The host files it once the real review exists at that head and
+-- the reviewer did not file the same finding (shadow_issues.file_pending), as the reader, labelled
+-- shadow-found. state: recorded → posting → posted (issue_number), duplicate, uncertain or denied.
+CREATE TABLE IF NOT EXISTS shadow_issues (
+ run_id TEXT NOT NULL REFERENCES runs(id), seq INTEGER NOT NULL, repo TEXT NOT NULL,
+ pr INTEGER NOT NULL, head TEXT NOT NULL, title TEXT NOT NULL, title_key TEXT NOT NULL,
+ body TEXT NOT NULL, labels TEXT NOT NULL, state TEXT NOT NULL, issue_number INTEGER,
+ error TEXT, created REAL NOT NULL, updated REAL NOT NULL,
+ PRIMARY KEY (run_id, seq), UNIQUE (repo, pr, title_key)
+);
 -- An operator's explicit step on a PR (#678), recorded after it took effect, for the report:
 -- retry (a run re-armed), escalate, review (a fresh review asked for), hold (a maintainer's
 -- hold began). Only counted; nothing decides from it.

@@ -261,6 +261,70 @@ class LedgerRecords:
             con.execute('COMMIT')
             return count + 1
 
+    def record_shadow_issue(self, run_id: str, repo: str, number: int, head: str, title: str,
+                            body: str, labels: list, limit: int) -> int:
+        """Record one issue a live shadow run asked to file (#914); its sequence in the run.
+        Refused (``ValueError``) like the reviewer's (``record_filed_issue``): any run but a live
+        shadow on this PR and head, past ``limit`` in the run, or a title already recorded here."""
+        key = " ".join(title.casefold().split())
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            row = con.execute('SELECT repo,pr,head,seat,state,launch_intent FROM runs WHERE id=?',
+                              (run_id,)).fetchone()
+            if (row is None or (row['repo'], row['pr'], row['head'], row['seat']) !=
+                    (repo, number, head, 'shadow') or row['launch_intent'] is None
+                    or row['state'] not in ('launching', 'running')):
+                raise ValueError('shadow run identity unavailable')
+            if con.execute('SELECT 1 FROM shadow_issues WHERE repo=? AND pr=? AND title_key=?',
+                           (repo, number, key)).fetchone():
+                raise ValueError('an issue with this title was already asked for from this PR')
+            count = con.execute('SELECT COUNT(*) FROM shadow_issues WHERE run_id=?',
+                                (run_id,)).fetchone()[0]
+            if count >= limit:
+                raise ValueError(f'at most {limit} issues per review')
+            now = time.time()
+            con.execute('INSERT INTO shadow_issues(run_id,seq,repo,pr,head,title,title_key,body,'
+                        'labels,state,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                        (run_id, count + 1, repo, number, head, title, key, body,
+                         json.dumps(list(labels)), 'recorded', now, now))
+            con.execute('COMMIT')
+            return count + 1
+
+    def shadow_issues_waiting(self, repo: str) -> list:
+        """The shadow issues recorded and not yet filed or ruled out (#914), oldest first."""
+        with self._connect() as con:
+            return con.execute("SELECT * FROM shadow_issues WHERE repo=? AND state='recorded' "
+                               "ORDER BY created, run_id, seq", (repo,)).fetchall()
+
+    def filed_titles(self, repo: str, number: int) -> list[str]:
+        """The normalized titles of the issues the reviewer filed (or is filing) from a PR."""
+        with self._connect() as con:
+            return [r[0] for r in con.execute('SELECT title_key FROM filed_issues WHERE repo=? '
+                                              'AND pr=?', (repo, number)).fetchall()]
+
+    def shadow_model(self, run_id: str) -> str:
+        """The model of the shadow review a run recorded, or ''."""
+        with self._connect() as con:
+            row = con.execute('SELECT model FROM shadow_reviews WHERE run_id=?', (run_id,)).fetchone()
+        return str(row[0] or '') if row else ''
+
+    def shadow_issues_posted_since(self, repo: str, since: float) -> int:
+        with self._connect() as con:
+            return con.execute("SELECT COUNT(*) FROM shadow_issues WHERE repo=? AND state IN "
+                               "('posting','posted','uncertain') AND updated>=?",
+                               (repo, since)).fetchone()[0]
+
+    def shadow_issue_status(self, run_id: str, seq: int, state: str, *, expect: str | None = None,
+                            issue_number: int | None = None, error: str | None = None) -> bool:
+        """Move one shadow issue to ``state``; with ``expect``, only from that state (a claim)."""
+        with self._connect() as con:
+            cur = con.execute('UPDATE shadow_issues SET state=?,issue_number=COALESCE(?,issue_number),'
+                              'error=COALESCE(?,error),updated=? WHERE run_id=? AND seq=?'
+                              + (' AND state=?' if expect else ''),
+                              (state, issue_number, error, time.time(), run_id, seq,
+                               *((expect,) if expect else ())))
+        return cur.rowcount == 1
+
     def filed_issue_status(self, run_id: str, seq: int, state: str, *,
                            issue_number: int | None = None, error: str | None = None) -> None:
         with self._connect() as con:

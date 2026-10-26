@@ -48,6 +48,7 @@ from diaktoros import review_only_conflict  # noqa: E402
 from diaktoros import conflict_person  # noqa: E402
 from diaktoros import escalate_pending  # noqa: E402
 from diaktoros import merge_check  # noqa: E402
+from diaktoros import shadow_issues  # noqa: E402
 from diaktoros import review_kick  # noqa: E402
 from diaktoros import (  # noqa: E402
     ci_fix,
@@ -1463,6 +1464,13 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         log(f"pending escalation prune failed: {type(exc).__name__}: {exc}")
     conflicts += recheck_unknown(loop, unknown, conflict_live)
     act_on_conflicts(loop, st, conflicts, conflict_live)
+    try:
+        # #914: the issues a shadow review asked for, once the real review is in and did not
+        # file them (off unless shadow.file_issues; bounded per day).
+        for issue in shadow_issues.file_pending(loop):
+            log(f"shadow-found issue #{issue} filed")
+    except Exception as exc:
+        log(f"shadow issue filing failed: {type(exc).__name__}: {exc}")
     if observer.retry(loop, st):
         log("observer: retried an undelivered notice")
     observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))

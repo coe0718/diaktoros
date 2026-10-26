@@ -1053,9 +1053,20 @@ def shadow_escalate(loop: dict) -> bool:
     return (loop.get("shadow") or {}).get("escalate") is True
 
 
+def shadow_file_issues(loop: dict) -> bool:
+    """Whether the host files the issues a shadow review asked for (#914), once the real review
+    exists and did not file them. Off unless the loop opts in."""
+    return (loop.get("shadow") or {}).get("file_issues") is True
+
+
+# At most this many shadow-found issues a day per loop (#914): a second model's issue-tier output
+# is useful, and unbounded it is noise.
+SHADOW_ISSUES_DAILY = 5
+
+
 def normalize_shadow(raw, where: str) -> dict:
     """The ``shadow`` block (#218): ``profile`` (required to turn it on), ``every`` and
-    ``escalate`` (#1004), or ``{}``.
+    ``escalate`` (#1004) and ``file_issues`` (#914), or ``{}``.
 
     A shadow review is a second reviewer model in no-write mode: it never posts, so it needs no
     route, login or token, only the profile its model and account come from. Its limits
@@ -1064,8 +1075,9 @@ def normalize_shadow(raw, where: str) -> dict:
     """
     if raw in (None, {}):
         return {}
-    if not isinstance(raw, dict) or not set(raw) <= {"profile", "every", "escalate"}:
-        raise ConfigError(f"{where}: shadow may only hold 'profile', 'every' and 'escalate'")
+    if not isinstance(raw, dict) or not set(raw) <= {"profile", "every", "escalate", "file_issues"}:
+        raise ConfigError(f"{where}: shadow may only hold 'profile', 'every', 'escalate' and "
+                          "'file_issues'")
     profile = str(raw.get("profile") or "").strip()
     if not profile:
         raise ConfigError(f"{where}: shadow.profile is required (the Hermes profile shadow "
@@ -1088,6 +1100,11 @@ def normalize_shadow(raw, where: str) -> dict:
             raise ConfigError(f"{where}: shadow.escalate needs shadow.every 1: a head the "
                               "sampling skips would have no second review to hold it")
         shadow["escalate"] = raw["escalate"]
+    if raw.get("file_issues") not in (None, ""):
+        if not isinstance(raw["file_issues"], bool):
+            raise ConfigError(f"{where}: shadow.file_issues must be true or false, "
+                              f"got {raw['file_issues']!r}")
+        shadow["file_issues"] = raw["file_issues"]
     return shadow
 
 

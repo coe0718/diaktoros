@@ -573,6 +573,32 @@ def file_issue(loop: dict, *, repo: str, number: int, head: str, login: str, tit
     return result["number"]
 
 
+SHADOW_FOUND_LABEL = "shadow-found"     # every issue a shadow review found carries it (#914)
+
+
+def file_shadow_issue(loop: dict, *, repo: str, number: int, head: str, title: str, body: str,
+                      labels: list[str], model: str) -> int:
+    """POST one issue a shadow review found (#914), as the **reader**: the reviewer did not find
+    it. Its number, or raise. The labels were checked when the shadow asked (the loop's triage
+    list, never the fix label); ``shadow-found`` is added here. Host-built header and footer."""
+    if repo != loop.get("repo"):
+        raise BrokerDenied("repository mismatch")
+    login = str(loop.get("read_token") or "")
+    if not login:
+        raise BrokerDenied("no reader identity")
+    header = (f"Found by a shadow review (`{model}`) of #{number} at `{head[:7]}`. The reviewer "
+              "did not file it. A shadow review is a second model that writes nothing; the host "
+              "filed this for it.\n\n")
+    payload = {"title": title, "labels": list(dict.fromkeys([*labels, SHADOW_FOUND_LABEL])),
+               "body": _signed(loop, header + body.strip(), "shadow", head)}
+    result, why = _write(loop, f"/repos/{repo}/issues", method="POST", body=payload, login=login)
+    if (not isinstance(result, dict) or type(result.get("number")) is not int
+            or result["number"] <= 0 or "pull_request" in result):
+        raise _denied("GitHub issue write did not return a successful response", why)
+    _audit(loop, repo, number, head, "", "reader", "file_shadow_issue", login)
+    return result["number"]
+
+
 def ruling_comment_body(verdict: str, body: str, *, head: str, turn_key: str, run_id: str,
                         cap: object) -> str:
     rounds = turn_key.split(":", 1)[1] if turn_key.startswith("breach:") else "?"

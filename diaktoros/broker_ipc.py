@@ -386,6 +386,11 @@ class RunBroker:
     def _dispatch(self, raw: bytes) -> object:
         self.requests += 1
         request = json.loads(raw)
+        if (self._no_write and isinstance(request, dict)
+                and request.get("operation") == "file_issue"):
+            # #914: a shadow's issue is recorded, never posted by the seat; the host files it
+            # later, if the real review did not, as the reader. Nothing here reaches GitHub.
+            return self._record_shadow_issue(raw, request)
         if self._no_write and not (isinstance(request, dict)
                                    and request.get("operation") == "review"):
             # A no-write broker serves one reviewer verdict and nothing else, before any branch
@@ -1177,16 +1182,26 @@ class RunBroker:
         except Exception as exc:
             raise ProtocolError("post-write quarantine persistence failed") from exc
 
-    def _file_issue(self, raw: bytes, request: object) -> object:
-        """File one issue from an issue-tier finding (#247), as the reviewer's own login.
-
-        Narrow on purpose: a title, a body and labels from the loop's triage list, at most
-        ``broker.FILED_ISSUES_MAX`` per run, one title per PR (a retry or a later round never
-        files it twice). Recorded in the ledger before the POST; an unknown outcome is uncertain
-        and never replayed. The issue carries its lineage (the PR, and how deep a chain of
-        automatic fixes it came from) so a later automatic hand-off can be bounded.
-        """
+    def _record_shadow_issue(self, raw: bytes, request: object) -> object:
+        """Record one issue a shadow review asks to file (#914), checked as the reviewer's would
+        be. The seat gets the same "accepted" a filing gets; the host files it after the real
+        review (``shadow_issues.file_pending``), or never, if the reviewer filed the same."""
         from .run_supervisor import Supervisor
+        title, body, labels, _current = self._issue_request(raw, request)
+        if not self.scope.run_id or not self.scope.ledger_db:
+            raise ProtocolError("host run ledger unavailable")
+        try:
+            Supervisor(self.scope.ledger_db, create=False).record_shadow_issue(
+                self.scope.run_id, self.scope.repo, self.scope.number, self.scope.head,
+                title, body, labels, broker.FILED_ISSUES_MAX)
+        except ValueError as exc:
+            raise ProtocolError(f"{exc}; nothing was filed")
+        return {"accepted": True}
+
+    def _issue_request(self, raw: bytes, request: object) -> tuple:
+        """A ``file_issue`` request checked as the reviewer's is (#247): ``(title, body, labels,
+        loop)``, or ``ProtocolError``. Shared by the reviewer's filing and the shadow's record
+        (#914), so a second model's request is held to exactly the same rules."""
         if self.scope.role != "reviewer" or not isinstance(request, dict):
             raise ProtocolError("operation out of scope")
         if set(request) != {"operation", "title", "body", "labels"} or len(raw) > MAX_REQUEST:
@@ -1223,6 +1238,19 @@ class RunBroker:
                                 f"({', '.join(allowed.values()) or 'none configured'}); "
                                 "nothing was filed")
         labels = list(dict.fromkeys(allowed[x.casefold()] for x in labels))
+        return title.strip(), body, labels, current
+
+    def _file_issue(self, raw: bytes, request: object) -> object:
+        """File one issue from an issue-tier finding (#247), as the reviewer's own login.
+
+        Narrow on purpose: a title, a body and labels from the loop's triage list, at most
+        ``broker.FILED_ISSUES_MAX`` per run, one title per PR (a retry or a later round never
+        files it twice). Recorded in the ledger before the POST; an unknown outcome is uncertain
+        and never replayed. The issue carries its lineage (the PR, and how deep a chain of
+        automatic fixes it came from) so a later automatic hand-off can be bounded.
+        """
+        from .run_supervisor import Supervisor
+        title, body, labels, current = self._issue_request(raw, request)
         if not self.scope.run_id or not self.scope.ledger_db:
             raise ProtocolError("host run ledger unavailable")
         supervisor = Supervisor(self.scope.ledger_db, create=False)
