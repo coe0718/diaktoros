@@ -593,8 +593,9 @@ def overrides(db: Path, repo: str, since: float, until: float) -> dict | None:
     """Where a human overrode the loop (#220), by the time of the override (the merge) in
     ``[since, until)``. Only the merge over a changes-requested is recorded so far; dismissed
     reviews, reversed rulings and reverted pushes are not, so zero here is not zero overrides.
-    ``findings`` is how many numbered findings (#475) were still open across them; a finding has
-    no category in the record, so there is no count per category. None without a ledger."""
+    ``findings`` is how many numbered findings (#475) were still open across them, and
+    ``categories`` how many of those per category (``findings.CATEGORIES``; a record made without
+    one counts as ``other``). None without a ledger."""
     db = Path(db)
     if not db.exists():
         return None
@@ -610,18 +611,24 @@ def overrides(db: Path, repo: str, since: float, until: float) -> dict | None:
             rows = []
     finally:
         con.close()
-    cases, models, found = [], Counter(), 0
+    cases, models, categories, found = [], Counter(), Counter(), 0
     for row in rows:
         try:
-            ids = [str(i) for i in json.loads(row["findings"])]
+            listed = json.loads(row["findings"])
         except (TypeError, ValueError):
-            ids = []
+            listed = []
+        # Each finding is {"id", "category"}; a bare id (no category recorded) is "other".
+        pairs = [(str(item.get("id")), str(item.get("category") or "other"))
+                 if isinstance(item, dict) else (str(item), "other")
+                 for item in (listed if isinstance(listed, list) else [])]
         models[row["model"] or "unknown"] += 1
-        found += len(ids)
+        categories.update(category for _, category in pairs)
+        found += len(pairs)
         cases.append({"pr": row["pr"], "head": row["head"][:7], "seat": row["seat"],
-                      "model": row["model"] or "unknown", "findings": ids})
+                      "model": row["model"] or "unknown",
+                      "findings": [f"{fid} ({category})" for fid, category in pairs]})
     return {"merged_over_changes": len(rows), "models": dict(sorted(models.items())),
-            "findings": found, "cases": cases}
+            "findings": found, "categories": dict(categories.most_common()), "cases": cases}
 
 
 FIX_READS_MAX = 100
@@ -1019,7 +1026,8 @@ def report_text(data: dict) -> str:
                    "changes-requested"
                    + (" · " + ", ".join(f"{name} {n}" for name, n in over["models"].items())
                       if over["models"] else "")
-                   + (f" · {over['findings']} open finding(s) overridden"
+                   + (f" · {over['findings']} open finding(s) overridden: "
+                      + ", ".join(f"{name} {n}" for name, n in over["categories"].items())
                       if over["findings"] else ""))
         out += [f"  #{case['pr']} merged at {case['head']} over {case['seat']} ({case['model']})"
                 + (f": {', '.join(case['findings'])}" if case["findings"] else "")

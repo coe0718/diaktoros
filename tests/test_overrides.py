@@ -18,7 +18,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import gate, gh, ledger, overrides, run_supervisor, stats  # noqa: E402
+from diaktoros import findings, gate, gh, ledger, overrides, run_supervisor, stats  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
@@ -91,11 +91,13 @@ class Override(fg.Base):
 class Recording(Override):
     def test_a_merge_over_a_current_changes_requested_writes_one_record(self):
         self.reviewed("model-a")
-        self.st.findings_put(7, {"findings": {"F1": {"state": "open"}, "F2": {"state": "fixed"},
-                                              "F3": {"state": "open"}}})
+        # F3 was recorded before categories existed: it is "other".
+        self.st.findings_put(7, {"findings": {"F1": {"state": "open", "category": "test"},
+                                              "F2": {"state": "fixed"}, "F3": {"state": "open"}}})
         self.assertEqual(self.scan(), [7])
         self.assertEqual(self.rows(), [(7, HEAD, "merged_over_changes", "reviewer", "model-a", 5,
-                                        json.dumps(["F1", "F3"]))])
+                                        json.dumps([{"id": "F1", "category": "test"},
+                                                    {"id": "F3", "category": "other"}]))])
         self.assertEqual(self.scan(), [])                    # a rescan: still one
         self.assertEqual(len(self.rows()), 1)
 
@@ -178,19 +180,25 @@ class Sweep(Override):
 class Report(Override):
     def test_the_report_lists_the_override_with_seat_model_and_findings(self):
         self.reviewed("model-a")
-        self.st.findings_put(7, {"findings": {"F1": {"state": "open"}}})
+        self.st.findings_put(7, {"findings": {"F1": {"state": "open", "category": "test"},
+                                              "F2": {"state": "open", "category": "correctness"},
+                                              "F4": {"state": "open", "category": "test"}}})
         self.scan()
         data = stats.report(self.loop, self.db, self.merged_at - 86400, self.merged_at + 86400,
                             breaches={}, pr_state=lambda n: None, tracked={})
         got = data["overrides"]
-        self.assertEqual((got["merged_over_changes"], got["models"], got["findings"]),
-                         (1, {"model-a": 1}, 1))
+        self.assertEqual((got["merged_over_changes"], got["models"], got["findings"],
+                          got["categories"]),
+                         (1, {"model-a": 1}, 3, {"test": 2, "correctness": 1}))
         self.assertEqual(got["cases"], [{"pr": 7, "head": HEAD[:7], "seat": "reviewer",
-                                         "model": "model-a", "findings": ["F1"]}])
+                                         "model": "model-a",
+                                         "findings": ["F1 (test)", "F2 (correctness)", "F4 (test)"]}])
         text = stats.report_text(data)
+        # #220: the weekly report counts the overridden findings per category.
         self.assertIn("human overrides: 1 merged over a changes-requested · model-a 1 "
-                      "· 1 open finding(s) overridden", text)
-        self.assertIn(f"  #7 merged at {HEAD[:7]} over reviewer (model-a): F1", text)
+                      "· 3 open finding(s) overridden: test 2, correctness 1", text)
+        self.assertIn(f"  #7 merged at {HEAD[:7]} over reviewer (model-a): "
+                      "F1 (test), F2 (correctness), F4 (test)", text)
         self.assertEqual(json.loads(json.dumps(data))["overrides"]["merged_over_changes"], 1)
         later = stats.overrides(self.db, fg.REPO, self.merged_at + 86400, self.merged_at + 2e5)
         self.assertEqual(later["merged_over_changes"], 0)     # outside the window
@@ -199,6 +207,41 @@ class Report(Override):
         with ledger.connect(self.db) as con:
             con.execute("DROP TABLE overrides")
         self.assertEqual(stats.overrides(self.db, fg.REPO, 0, 4e9)["merged_over_changes"], 0)
+
+
+class Categories(unittest.TestCase):
+    """#220: a blocking finding carries its category, from the reviewer's tag to the report."""
+
+    def test_the_tag_is_read_and_stored_and_an_unknown_or_missing_one_is_other(self):
+        body = ("F1 [test]: src/a.py:3: no test fails without it\n"
+                "F2 [Security]: src/a.py:9: the token is logged\n"
+                "F3 [style]: src/a.py:4: odd name\n"
+                "F4: src/a.py:5: wrong result")
+        entry = findings.apply({"findings": {}}, "h1", body, at=1.0)
+        self.assertEqual({fid: f["category"] for fid, f in entry["findings"].items()},
+                         {"F1": "test", "F2": "security", "F3": "other", "F4": "other"})
+        later = findings.apply(entry, "h2", "F1 [test]: fixed\nF2: open", at=2.0)
+        self.assertEqual((later["findings"]["F1"]["state"], later["findings"]["F2"]["state"]),
+                         ("fixed", "open"))           # a tagged state line is still a state
+
+    def test_a_tagged_finding_still_cites_the_diff(self):
+        ranges = {"src/a.py": [(1, 20)]}
+        self.assertTrue(findings._cited("[test]: src/a.py:3: no test fails without it", ranges))
+        self.assertFalse(findings._cited("[test]: src/b.py:3: elsewhere", ranges))
+
+    def test_the_reviewer_is_told_the_categories(self):
+        from diaktoros import prompts
+        source = Path(prompts.__file__).read_text()
+        self.assertIn("`F1 [test]: path/to/file.py: what is wrong`", source)
+        for name in findings.CATEGORIES:
+            self.assertIn(f"`{name}`", source)
+
+    def test_overrides_share_the_gates_non_verdict_states(self):
+        # The shadow on #1310: one set, so the two can never disagree about what is a verdict.
+        from diaktoros import gate, overrides
+        self.assertFalse(hasattr(overrides, "_NOT_VERDICTS"))
+        self.assertIn("gate.NOT_VERDICTS", Path(overrides.__file__).read_text())
+        self.assertEqual(gate.NOT_VERDICTS, frozenset({"DISMISSED", "COMMENTED", "PENDING"}))
 
 
 if __name__ == "__main__":

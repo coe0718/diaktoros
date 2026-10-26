@@ -282,10 +282,12 @@ author the loop reviews) and their reviews; when the loop reviewer's latest live
 merged head is changes-requested, it writes one record (PR, head, seat, the resolved model of the
 reviewer run that posted it, and the findings still open) to the run ledger. A merge after an
 approval, a dismissed review, or a verdict at an earlier head writes none; reviews that cannot be
-read or ordered are read again next sweep. The report lists them by the day of the merge, with a
-count per model and the number of open findings. Nothing changes behaviour. Not recorded yet: a
-dismissed review, a reversed ruling, a reverted fixer push (so zero is not zero overrides), and a
-count per finding category (a finding has no category on record). Detection needs the watchdog
+read or ordered are read again each sweep while the merge is within the 7 days; one never
+proved by then is not recorded. The report lists them by the day of the merge, with a
+count per model and per category of the findings still open (each blocking finding carries one of
+`correctness`, `test`, `requirement`, `docs`, `security` or `other`, tagged by the reviewer as
+`F1 [test]: …`). Nothing changes behaviour. Not recorded yet: a dismissed review, a reversed
+ruling, or a reverted fixer push (so zero is not zero overrides). Detection needs the watchdog
 running; a merge it never saw within the window (host off, or more than 30 PRs updated since) is
 not recorded.
 
