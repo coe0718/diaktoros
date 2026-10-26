@@ -18,6 +18,7 @@ from . import config, findings, gate, gh
 
 MERGED_OVER_CHANGES = "merged_over_changes"
 LOOKBACK_S = 7 * 86400      # a merge older than the report's window is not looked at
+_NOT_VERDICTS = {"DISMISSED", "COMMENTED", "PENDING"}   # as gate.latest_effective_review_at_head
 LISTED = 30                 # recently updated closed PRs read per sweep (one request)
 
 
@@ -47,8 +48,11 @@ def scan(loop: dict, st, sup, now: float | None = None) -> list[int]:
         reviews, _error = gh.reviews_read(loop, number, login=reader)
         if reviews is None:
             continue                       # unknown, not "approved": read again next sweep
-        kept[str(number)] = head
         latest = gate.latest_effective_review_at_head(reviews, loop, head)
+        if latest is None and any(gh.review_state(r) not in _NOT_VERDICTS
+                                  for r in gate.reviews_at_head(reviews, loop, head)):
+            continue                       # a verdict whose order is unproved: read again
+        kept[str(number)] = head
         if latest is None or gh.review_state(latest) != "CHANGES_REQUESTED":
             continue
         review_id = int(latest["id"])
