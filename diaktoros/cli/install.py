@@ -406,6 +406,10 @@ def cmd_init(args) -> int:
         "generated": config.parse_generated(
             config.split_generated(d["generated"]) if getattr(args, "generated", None) is None
             else args.generated, "--generated"),
+        # What each CI check covers, told to the reviewer (#756).
+        "ci_coverage": config.parse_ci_coverage(
+            config.split_ci_coverage(d["ci_coverage"]) if getattr(args, "ci_covers", None) is None
+            else args.ci_covers, "--ci-covers"),
         # Authors reviewed but never fixed (#191).
         "review_only": ([name.strip() for name in str(d["review_only"]).split(",") if name.strip()]
                         if getattr(args, "review_only", None) is None
@@ -861,6 +865,9 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     generated = (args.generated if getattr(args, "generated", None) is not None else
                  config.split_generated(d["generated"]))
     argv += [f"--generated={entry}" for entry in generated]
+    covers = (args.ci_covers if getattr(args, "ci_covers", None) is not None else
+              config.split_ci_coverage(d["ci_coverage"]))
+    argv += [f"--ci-covers={entry}" for entry in covers]
     shadow = (args.shadow_profile if getattr(args, "shadow_profile", None) is not None else
               _ask("a Hermes profile for shadow reviews: a second reviewer model whose verdicts "
                    "are recorded, never posted (blank: none)", d["shadow_profile"], interactive))
@@ -1174,6 +1181,8 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                       help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     init.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
                       help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting)")
+    init.add_argument("--ci-covers", action="append", default=None, metavar="CHECK=COVERS",
+                      help="what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting)")
     init.add_argument("--ingress", choices=("repo-hooks", "app-webhook"), default=None,
                       help="where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks)")
     init.add_argument("--ingress-app", default=None, help="with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app)")
@@ -1284,6 +1293,8 @@ def add_setup(sub) -> None:  # noqa: ANN001
                        help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     first.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
                        help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting)")
+    first.add_argument("--ci-covers", action="append", default=None, metavar="CHECK=COVERS",
+                       help="what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting)")
     first.add_argument("--ingress", choices=("repo-hooks", "app-webhook"), default=None,
                        help="where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks)")
     first.add_argument("--ingress-app", default=None, help="with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app)")

@@ -7,7 +7,9 @@ the open issues and queues the triage turn of each one the gate would have queue
 ``gate.enqueue_isolated`` call ``gate_triage.py`` makes, so the ledger's unique key still stops a
 second turn. A
 noted issue whose triage run later ``succeeded`` is dropped from the ``late-triage.json`` list
-that ``status`` prints; a failed, cancelled or still-active run stays noted.
+that ``status`` prints; a failed, cancelled or still-active run stays noted. That cleanup runs
+first in every sweep, so it also happens when triage is turned off and when the open-issues read
+fails (#1136); it still needs the private runtime's run ledger.
 
 An issue is queued when ``run_supervisor.triage_blocker`` has nothing against it (open, not a pull
 request, author in ``triage.authors``, no label from ``triage.labels``), it has no triage row in the
@@ -51,8 +53,25 @@ def candidates(loop: dict, issues: list, queued: set[int], now: float) -> list[i
     return sorted(found)
 
 
+def resolve_late(loop: dict, st) -> None:
+    """Drop the late-triage entries whose triage run has since succeeded (`status` reads them).
+
+    It needs only the ledger and ``late-triage.json``, so :func:`sweep` runs it first: before the
+    triage-enabled check (a loop that turned triage off still settles what it noted) and before
+    the open-issues read (a GitHub read error does not delay it).
+    """
+    try:
+        noted = st.late_triage().keys()
+        if noted:
+            st.late_triage_resolve(noted & gate.isolated_supervisor(loop).seat_numbers(
+                loop["repo"], "triage", "succeeded"))
+    except Exception as exc:
+        log(f"triage sweep: late-triage cleanup failed: {type(exc).__name__}: {exc}")
+
+
 def sweep(loop: dict, st, now: float | None = None) -> list[str]:
     """Queue the triage turn of each issue whose delivery was missed; return the alert lines."""
+    resolve_late(loop, st)
     if not config.triage_enabled(loop):
         return []
     now = time.time() if now is None else now
@@ -72,12 +91,6 @@ def sweep(loop: dict, st, now: float | None = None) -> list[str]:
     except Exception as exc:              # no private runtime / ledger: the gate cannot enqueue either
         log(f"triage sweep: run ledger unavailable: {type(exc).__name__}: {exc}")
         return lines
-    # A late-queued triage that has since succeeded is no longer news: `status` reads this file.
-    try:
-        st.late_triage_resolve(st.late_triage().keys() & gate.isolated_supervisor(loop).seat_numbers(
-            loop["repo"], "triage", "succeeded"))
-    except Exception as exc:
-        log(f"triage sweep: late-triage cleanup failed: {type(exc).__name__}: {exc}")
     for number in candidates(loop, issues, queued, now)[:PER_SWEEP]:
         try:
             outcome = gate.enqueue_isolated(loop, "triage", number, config.TRIAGE_HEAD,

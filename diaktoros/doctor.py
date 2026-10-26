@@ -48,6 +48,7 @@ import socket
 import subprocess
 import time
 from datetime import datetime
+from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from . import ci, config, gh, isolation, observer, route_intent, routes
@@ -2574,6 +2575,25 @@ def installed_commit() -> str:
     return sha if proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else ""
 
 
+class PluginComparison(NamedTuple):
+    """GitHub's compare of the installed commit with a target (#904): the one reading both
+    doctor's ``plugin-version`` and ``hermes dk update`` take, so they cannot disagree."""
+    status: str | None = None       # ahead / behind / identical / diverged (the target's side)
+    ahead_by: int | None = None     # commits the target has that the installed commit lacks
+    commits: tuple = ()             # those commits, oldest first (GitHub lists at most 250)
+    error: str = ""
+
+
+def compare_plugin(loop: dict, sha: str, target: str = "main") -> PluginComparison:
+    """``sha`` (installed) compared with ``target`` (a branch, tag or sha) in the upstream repo."""
+    resp = gh.request(loop, f"/repos/{UPSTREAM_REPO}/compare/{sha}...{target}")
+    data = resp.data if isinstance(resp.data, dict) else {}
+    commits = data.get("commits")
+    commits = tuple(c for c in commits if isinstance(c, dict)) if isinstance(commits, list) else ()
+    return PluginComparison(data.get("status") if isinstance(data.get("status"), str) else None,
+                            data.get("ahead_by"), commits, resp.error)
+
+
 def check_plugin_version(loop: dict, offline: bool = False) -> Check:
     """#556: is the installed plugin behind the latest release or ``main``?
 
@@ -2599,8 +2619,8 @@ def check_plugin_version(loop: dict, offline: bool = False) -> Check:
                      f"{gh.one_line(release.error or 'no tag')}")
     since = gh.request(loop, f"{base}/compare/{tag}...{sha}")
     status = since.data.get("status") if isinstance(since.data, dict) else None
-    main = gh.request(loop, f"{base}/compare/{sha}...main")
-    behind_main = main.data.get("ahead_by") if isinstance(main.data, dict) else None
+    main = compare_plugin(loop, sha, "main")
+    behind_main = main.ahead_by
     if since.error or not status or main.error or type(behind_main) is not int:
         return Check(name, UNKNOWN, f"could not compare installed {short} with {tag} or main: "
                      f"{gh.one_line(since.error or main.error or 'no comparison')}")

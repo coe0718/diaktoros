@@ -73,6 +73,7 @@ PUSHES = {
     "shadow_escalate": "on",
     "human_paths": ".github/**, scripts/release*",
     "generated": "docs/commands.md=python3 tests/commands_doc.py --write",
+    "ci_coverage": "tests (3.14)=full unit suite and harness",
     "fixer_check": "python3 tests/run_tests.py",
     "review_after_ci": True,
     "merge_check": "on",

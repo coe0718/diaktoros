@@ -37,7 +37,7 @@
         "label": "Clone path (required above 1)",
         "type": "str",
         "default": "",
-        "description": "Local clone the runs isolate from \u2014 required above 1, because a parallel run in a shared checkout produces wrong verdicts"
+        "description": "Local clone the runs isolate from — required above 1, because a parallel run in a shared checkout produces wrong verdicts"
       },
       "base": {
         "label": "Base branch",
@@ -55,7 +55,7 @@
         "label": "Seat slot TTL (minutes)",
         "type": "int",
         "default": 45,
-        "description": "Minutes a seat slot survives \u2014 the backstop for a run that died without a verdict"
+        "description": "Minutes a seat slot survives — the backstop for a run that died without a verdict"
       },
       "inflight_ttl_min": {
         "label": "In-flight mark TTL (minutes)",
@@ -91,7 +91,7 @@
         "label": "Reviewer's GitHub login",
         "type": "str",
         "default": "",
-        "description": "GitHub login the reviewer seat acts as \u2014 the login the review route serves. Must be in the loop's reviewers allowlist. Blank = not set here"
+        "description": "GitHub login the reviewer seat acts as — the login the review route serves. Must be in the loop's reviewers allowlist. Blank = not set here"
       },
       "fixer_login": {
         "label": "Fixer's GitHub login",
@@ -109,13 +109,13 @@
         "label": "Reviewer's token file (path only)",
         "type": "str",
         "default": "",
-        "description": "Absolute path (~ allowed) to the file holding the reviewer login's GitHub PAT \u2014 the path only, never the token itself. Must be your own mode-600 regular file. Blank = not set here"
+        "description": "Absolute path (~ allowed) to the file holding the reviewer login's GitHub PAT — the path only, never the token itself. Must be your own mode-600 regular file. Blank = not set here"
       },
       "fixer_token_file": {
         "label": "Fixer's token file (path only)",
         "type": "str",
         "default": "",
-        "description": "Absolute path (~ allowed) to the file holding the fixer login's GitHub PAT \u2014 the path only, never the token itself. Must be your own mode-600 regular file. Blank = not set here"
+        "description": "Absolute path (~ allowed) to the file holding the fixer login's GitHub PAT — the path only, never the token itself. Must be your own mode-600 regular file. Blank = not set here"
       },
       "adjudicator_login": {
         "label": "Adjudicator's GitHub login (optional)",
@@ -127,7 +127,7 @@
         "label": "Adjudicator's token file (path only, optional)",
         "type": "str",
         "default": "",
-        "description": "Absolute path (~ allowed) to the file holding the adjudicator login's GitHub PAT \u2014 the path only, never the token itself. Must be your own mode-600 regular file, not shared with any other login. Blank = not set here"
+        "description": "Absolute path (~ allowed) to the file holding the adjudicator login's GitHub PAT — the path only, never the token itself. Must be your own mode-600 regular file, not shared with any other login. Blank = not set here"
       },
       "reviewer_app_id": {
         "label": "Reviewer's GitHub App id",
@@ -285,6 +285,12 @@
         "default": "",
         "description": "Glob patterns, e.g. '.github/**, scripts/release*'. If a reviewed diff touches one, the loop never approves it: when the reviewer would approve, the approval is left to a person (the head is held, one notice per head); REQUEST_CHANGES still works. '*' also matches '/'. Blank = not set here (an unset list means no path is reserved)"
       },
+      "ci_coverage": {
+        "label": "What each CI check covers (NAME=COVERS, ';;' between entries)",
+        "type": "str",
+        "default": "",
+        "description": "Tells the reviewer what a required check ran, e.g. 'tests (3.14)=full unit suite and harness'. A covering check that is green at the head, as the host read it, moves what it covers out of the review's list of unchecked items; a failed, running or missing one does not. Only a check that gates (named in required checks, when that is set) can be cited. Blank = not set here (an unset map means the reviewer is told nothing)"
+      },
       "generated": {
         "label": "Generated files (PATH[,PATH]=COMMAND, ';;' between entries)",
         "type": "str",
@@ -388,6 +394,7 @@
       "shadow_every": "",
       "shadow_escalate": "",
       "human_paths": "",
+      "ci_coverage": "",
       "generated": "",
       "fixer_check": "",
       "ingress": "",
@@ -446,6 +453,7 @@
       "shadow_every": "default",
       "shadow_escalate": "default",
       "human_paths": "default",
+      "ci_coverage": "default",
       "generated": "default",
       "fixer_check": "default",
       "ingress": "default",

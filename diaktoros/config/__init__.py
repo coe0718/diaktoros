@@ -248,6 +248,7 @@ DEFAULTS: dict = {
     "required_checks": [],    # the checks that gate an approval (#368); [] = every check gates
     "human_paths": [],        # globs whose changes only a human may approve (#478)
     "generated": [],          # generated files the host regenerates on a conflict (#551); [] = off
+    "ci_coverage": {},        # what each required check covers, for the reviewer (#756); {} = off
     "review_only": [],        # authors reviewed but never fixed (#191); [] = fixers only
     "operator_agents": [],    # agents that post as the operator's account (#757); [] = none named
     "review_only_update": False,  # push a clean merge of the base into a review-only PR (opt-in)
@@ -480,6 +481,65 @@ def check_required_checks(value, where: str) -> list[str]:
         raise ConfigError(f"{where}: 'required_checks' cannot name {MERGE_CHECK_NAME}, the loop's "
                           "own merge check; require it in the base branch's protection instead")
     return names
+
+
+CI_COVERAGE_MAX = 50
+CI_COVERS_MAX = 200
+
+
+def check_ci_coverage(value, where: str) -> dict[str, str]:
+    """The operator's map of check name -> what that check covers (#756), e.g. ``{"tests (3.14)":
+    "full unit suite and harness"}``; {} = the reviewer is told nothing about it. Names are as
+    GitHub shows them (no ``=`` or ``;;``, which the one-line forms use), the text one printable
+    line. Host-owned: never read from a PR."""
+    if value is None:
+        return {}
+    bad = f"{where}: 'ci_coverage' must map check names to a line saying what each covers"
+    if not isinstance(value, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+        raise ConfigError(bad)
+    out = {name.strip(): covers.strip() for name, covers in value.items()}
+    if (len(value) > CI_COVERAGE_MAX or len(out) != len(value)
+            or not all(0 < len(n) <= REQUIRED_CHECK_NAME_MAX and n.isprintable()
+                       and "=" not in n and ";;" not in n for n in out)
+            or not all(0 < len(c) <= CI_COVERS_MAX and c.isprintable() and ";;" not in c
+                       for c in out.values())):
+        raise ConfigError(f"{bad}: at most {CI_COVERAGE_MAX} unique names (1-"
+                          f"{REQUIRED_CHECK_NAME_MAX} printable characters, no '=' or ';;'), "
+                          f"each text 1-{CI_COVERS_MAX} printable characters, no ';;'")
+    if any(name.lower() == MERGE_CHECK_NAME for name in out):
+        raise ConfigError(f"{where}: 'ci_coverage' cannot name {MERGE_CHECK_NAME}, the loop's "
+                          "own merge check, which the reviewer never reads as CI")
+    return out
+
+
+def parse_ci_coverage(entries, where: str) -> dict[str, str]:
+    """``NAME=COVERS`` strings (the CLI and the form's spelling) -> ``ci_coverage``."""
+    parsed: dict[str, str] = {}
+    for text in entries:
+        name, sep, covers = str(text).partition("=")
+        if not sep:
+            raise ConfigError(f"{where}: 'ci_coverage' entry {text!r} must be NAME=COVERS")
+        if name.strip() in parsed:
+            raise ConfigError(f"{where}: 'ci_coverage' names {name.strip()!r} twice")
+        parsed[name.strip()] = covers
+    return check_ci_coverage(parsed, where)
+
+
+def split_ci_coverage(text) -> list[str]:
+    """The settings form's one line: entries separated by ``;;``."""
+    return [part.strip() for part in str(text or "").split(";;") if part.strip()]
+
+
+def ci_coverage_text(coverage) -> str:
+    """The inverse of ``split_ci_coverage`` (for ``show``)."""
+    return " ;; ".join(f"{name}={covers}" for name, covers in (coverage or {}).items())
+
+
+def ci_coverage(loop: dict) -> dict[str, str]:
+    """The check name -> what it covers map; {} = off."""
+    value = loop.get("ci_coverage")
+    return dict(value) if isinstance(value, dict) else {}
 
 
 HUMAN_PATHS_MAX = 50
@@ -1600,6 +1660,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     loop["required_checks"] = check_required_checks(loop["required_checks"], where)
     loop["human_paths"] = check_human_paths(loop["human_paths"], where)
     loop["generated"] = check_generated(loop["generated"], where)
+    loop["ci_coverage"] = check_ci_coverage(loop["ci_coverage"], where)
     if loop.get("ingress") not in INGRESS_MODES:
         raise ConfigError(f"{where}: 'ingress' must be one of {', '.join(INGRESS_MODES)}")
     loop["ingress_app"] = str(loop.get("ingress_app") or "").strip()

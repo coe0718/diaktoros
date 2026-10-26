@@ -161,5 +161,76 @@ class ObserverSafetyTests(unittest.TestCase):
         self.assertIn("https://github.com/owner/private/pull/7", message)
 
 
+    # #1314: a claim whose sender stopped before the POST (no posting mark) never reached the
+    # gateway, so the sweep sends it; one that reached its POST may have, so it stays uncertain.
+    def stale_claim(self, **extra):
+        self.loop["host"] = "https://owner.example"
+        key = "diaktoros:7:" + "a" * 40 + ":approved:1"
+        self.state.observations.write_text(json.dumps({"entries": {key: {
+            "status": "pending", "attempts": 0, "error": "", "event": "approved", "number": 7,
+            "head": "a" * 40, "message": "approved #7", "url": "https://github.com/owner/private/pull/7",
+            "delivery": "approved-7-x", "at": time.time() - observer.STALE_CLAIM_S - 5, **extra}}}))
+        return key
+
+    def test_a_claim_that_never_reached_its_post_is_sent_by_the_sweep(self):
+        key = self.stale_claim()
+        with patch.object(routes, "fire", return_value=True) as fire:
+            self.assertEqual(observer.retry(self.loop, self.state), 1)
+            fire.assert_called_once()
+        self.assertEqual(observer._read(self.state.observations)["entries"][key]["status"],
+                         "delivered")
+
+    def test_a_claim_that_reached_its_post_stays_uncertain(self):
+        key = self.stale_claim(posting_at=time.time() - observer.STALE_CLAIM_S)
+        with patch.object(routes, "fire") as fire:
+            self.assertEqual(observer.retry(self.loop, self.state), 0)
+            fire.assert_not_called()
+        entry = observer._read(self.state.observations)["entries"][key]
+        self.assertEqual(entry["status"], "uncertain")
+
+    def test_a_sender_killed_during_its_post_is_never_resent(self):
+        # The real path: notify claims, marks, then dies inside the POST.
+        self.loop["host"] = "https://owner.example"
+        with patch.object(observer, "_post", side_effect=SystemExit(1)), \
+                self.assertRaises(SystemExit):
+            observer.notify(self.loop, self.state, "opened", 7, "a" * 40)
+        data = observer._read(self.state.observations)
+        [(key, entry)] = list(data["entries"].items())
+        self.assertEqual(entry["status"], "pending")
+        self.assertTrue(entry.get("posting_at"))
+        entry["at"] = time.time() - observer.STALE_CLAIM_S - 5
+        observer._save(self.state.observations, data)
+        with patch.object(routes, "fire") as fire:
+            self.assertEqual(observer.retry(self.loop, self.state), 0)
+            fire.assert_not_called()
+
+    def test_every_sender_marks_its_claim_before_the_post(self):
+        # A sweep's resend, a digest and the weekly report claim first too: each must carry the
+        # posting mark into its POST, or a sender killed mid-POST would be sent twice.
+        self.loop["host"] = "https://owner.example"
+
+        def killed(run):
+            with patch.object(observer, "_post", side_effect=SystemExit(1)), \
+                    self.assertRaises(SystemExit):
+                run()
+            return [e for e in observer._read(self.state.observations)["entries"].values()
+                    if e.get("status") == "pending"]
+
+        self.stale_claim()
+        [resent] = killed(lambda: observer.retry(self.loop, self.state))
+        self.assertTrue(resent.get("posting_at"), "retry")
+
+        self.state.observations.write_text(json.dumps({"entries": {}}))
+        self.loop["observer"]["digest_min"] = 30
+        observer.notify(self.loop, self.state, "opened", 7, "a" * 40)
+        [digest] = killed(lambda: observer.flush(self.loop, self.state, wait_s=0))
+        self.assertTrue(digest.get("posting_at"), "digest")
+
+        self.state.observations.write_text(json.dumps({"entries": {}}))
+        [report] = killed(lambda: observer.send_report(self.loop, self.state, "2026-10-26",
+                                                       "the week"))
+        self.assertTrue(report.get("posting_at"), "report")
+
+
 if __name__ == "__main__":
     unittest.main()

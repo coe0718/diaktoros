@@ -608,6 +608,15 @@ def cmd_set(args) -> int:
             return 2
         if names != (loop.get("human_paths") or []):
             changes["human_paths"] = names
+    if getattr(args, "ci_covers", None) is not None or getattr(args, "no_ci_coverage", False):
+        try:
+            covers = config.parse_ci_coverage(
+                [] if args.no_ci_coverage else args.ci_covers, "--ci-covers")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
+        if covers != (loop.get("ci_coverage") or {}):
+            changes["ci_coverage"] = covers
     if getattr(args, "generated", None) is not None or getattr(args, "no_generated", False):
         try:
             names = config.parse_generated(
@@ -1274,8 +1283,8 @@ def _apply(args) -> int:
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci", "merge_check",
                 "ingress", "ingress_app",
                 "fix_ci", "fixer_scope_lock", "ci_fix_cap", "review_only_update", "required_checks", "human_paths",
-                "generated", "review_only", "operator_agents", "review_only_cap", "review_only_daily",
-                "shadow"):
+                "generated", "ci_coverage", "review_only", "operator_agents", "review_only_cap",
+                "review_only_daily", "shadow"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     # The form also pushes triage.auto_fix_* and observer.weekly_report (#781): compare them, or a
@@ -2180,6 +2189,11 @@ def add_set(sub) -> None:  # noqa: ANN001
                         help="a glob pattern for paths only a human may approve (repeat it); replaces the list")
     humans.add_argument("--no-human-paths", action="store_true",
                         help="clear the list: no path is reserved for a human")
+    covers = change.add_mutually_exclusive_group()
+    covers.add_argument("--ci-covers", action="append", default=None, metavar="CHECK=COVERS",
+                        help="what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it); replaces the map")
+    covers.add_argument("--no-ci-coverage", action="store_true",
+                        help="clear the map: the reviewer is told nothing about what a check covers")
     generated = change.add_mutually_exclusive_group()
     generated.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
                            help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox (repeat it); replaces the list")
