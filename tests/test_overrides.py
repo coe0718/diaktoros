@@ -163,9 +163,23 @@ class Sweep(Override):
 
     def test_the_sweep_records_a_merge_over_changes_requested_once(self):
         self.sweep()
+        # A merge already there when the loop is armed is recorded by that first sweep's own
+        # call, not one sweep later.
+        self.assertEqual([(r[0], r[2]) for r in self.rows()], [(7, "merged_over_changes")])
         self.sweep()
         self.assertEqual([(r[0], r[1], r[2]) for r in self.rows()],
                          [(7, HEAD, "merged_over_changes")])
+
+    def test_a_merge_after_the_first_sweep_is_recorded_by_a_later_one(self):
+        # Tuck's ruling on #1310 (upholding the shadow): the first sweep after arming records
+        # through its own call, so the test above cannot tell whether the steady-state one exists.
+        # Here nothing is merged on the first sweep; only the ordinary sweep's call can record it.
+        self.closed = []
+        self.sweep()                                         # first sweep: nothing merged yet
+        self.assertEqual(self.rows(), [])
+        self.closed = [self.merged_pr()]
+        self.sweep()
+        self.assertEqual([(r[0], r[2]) for r in self.rows()], [(7, "merged_over_changes")])
 
     def test_the_sweep_records_nothing_for_a_merge_after_an_approval(self):
         self.reviews = {7: [review(5, "APPROVED")]}
