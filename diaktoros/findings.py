@@ -30,7 +30,8 @@ _STATUS = re.compile(r"^[\s:*\-–—]*" + _TAG + r"(fixed|open|withdrawn)\b", r
 
 # For an id not yet known a state needs the word to be the whole line plus an optional reason:
 # 'F3: open file handle leaks' and 'F4: Fixed-size buffer' are new findings, not states.
-_BARE_STATUS = re.compile(r"^[\s:*\-–—]*(fixed|open|withdrawn)(?:\*\*)?(?:\s*$|\s*[:;,.(]|\s+[-–—]\s)",
+# check_citations parses without the known ids, so a tagged state line must read as one here too.
+_BARE_STATUS = re.compile(r"^[\s:*\-–—]*" + _TAG + r"(fixed|open|withdrawn)(?:\*\*)?(?:\s*$|\s*[:;,.(]|\s+[-–—]\s)",
                           re.IGNORECASE)
 
 

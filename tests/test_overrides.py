@@ -224,6 +224,16 @@ class Categories(unittest.TestCase):
         self.assertEqual((later["findings"]["F1"]["state"], later["findings"]["F2"]["state"]),
                          ("fixed", "open"))           # a tagged state line is still a state
 
+    def test_a_tagged_state_line_is_not_an_uncited_new_finding(self):
+        # The shadow on #1310: check_citations parses without the known ids, so `F1 [test]: fixed`
+        # beside a cited new finding must still read as a state, or the review is refused.
+        body = "F1 [test]: fixed\nF2 [correctness]: open\nF3 [test]: src/a.py:3: no test fails"
+        self.assertEqual([kind for _, kind, _ in findings.parse(body)], ["fixed", "open", "new"])
+        files = [{"filename": "src/a.py", "patch": "@@ -1,2 +1,20 @@\n+x"}]
+        with mock.patch.object(gh, "pr_files_read", return_value=(files, "")):
+            self.assertEqual(findings.check_citations({"repo": "o/r", "read_token": "r"}, 7,
+                                                      "REQUEST_CHANGES", body), "")
+
     def test_a_tagged_finding_still_cites_the_diff(self):
         ranges = {"src/a.py": [(1, 20)]}
         self.assertTrue(findings._cited("[test]: src/a.py:3: no test fails without it", ranges))
