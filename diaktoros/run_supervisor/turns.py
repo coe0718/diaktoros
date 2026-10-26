@@ -245,6 +245,12 @@ class ClaimAndLaunch:
                 read.superseded = 'fixer verdict superseded'
             elif pr.get('state') != 'open' or pr.get('draft') is not False:
                 read.retry_read = True
+            elif str(row['turn_key'] or '').startswith(run_supervisor.SHADOW_FIX_KEY):
+                # #1004 part 3: no reviewer verdict either (the head is approved); the
+                # adjudicator's upholding ruling is its work order, and it must still stand.
+                ruled = gate.upheld_shadow_ruling(loop, row['pr'], row['head'], db=self.db)
+                if ruled is None or row['turn_key'] != f"{run_supervisor.SHADOW_FIX_KEY}{int(ruled)}":
+                    read.superseded = 'upheld shadow ruling no longer current'
             elif (str(row['turn_key'] or '').startswith(run_supervisor.CONFLICT_KEY)
                   or ci_fix.is_ci_fix(row['turn_key'])):
                 # #303: a conflict turn answers no verdict (the PR may be approved, or
@@ -709,7 +715,39 @@ class ClaimAndLaunch:
             return self._prepare_conflict_launch(turn, head)
         if row['seat'] == 'fixer' and ci_fix.is_ci_fix(row['turn_key']):
             return self._prepare_ci_fix_launch(turn, head)
+        if row['seat'] == 'fixer' and str(row['turn_key'] or '').startswith(run_supervisor.SHADOW_FIX_KEY):
+            return self._prepare_shadow_fix_launch(turn, head)
         return self._prepare_verdict_launch(turn, head)
+
+    def _prepare_shadow_fix_launch(self, turn: _Turn, head: dict) -> _Launch | None:
+        """#1004 part 3: the fixer answers a shadow review the adjudicator upheld. The ruling is
+        re-read now (a moved head or a later ruling ends the run), and the push is allowed only
+        while it still stands (``RunScope.shadow_fix``, checked by the broker)."""
+        from .. import broker_ipc, gate, gh
+        row, loop = turn.row, turn.loop
+        ruled = gate.upheld_shadow_ruling(loop, row['pr'], row['head'], db=self.db)
+        if ruled is None or row['turn_key'] != f"{run_supervisor.SHADOW_FIX_KEY}{int(ruled)}":
+            raise ValueError('upheld shadow ruling no longer current')
+        if self._policy_hold(turn):
+            return None
+        reviews = pr_facts.effective_reviews(loop, row, gh.reviews(loop, row['pr']), self.db)
+        if not isinstance(reviews, list):
+            raise run_supervisor.RetryableError('reviews or receipts unreadable before launch')
+        try:
+            final = (row['retries'] or 0) + 1 >= run_supervisor.MAX_RETRIES
+            change = pr_facts.pr_change(loop, row, final=final)
+            prompt = (turn_prompts.isolated_prompt(loop, row, reviews, None, change)
+                      + turn_prompts.upheld_shadow_section(row, ruled))
+        except ValueError as exc:
+            if str(exc) == 'PR unreadable' or str(exc).startswith('PR files unreadable'):
+                raise run_supervisor.RetryableError(str(exc)) from None
+            raise
+        partial = change.partial if change else ''
+        self.record_view(turn.run_id, turn.owner, partial)
+        return _Launch(prompt, broker_ipc.RunScope(
+            row["repo"], row["pr"], row["head"], row["seat"], head["ref"], row['id'],
+            str(self.db), row['generation'], partial_view=partial, shadow_fix=ruled),
+            change=change)
 
     def _policy_hold(self, turn: _Turn) -> bool:
         """Every write this fixer turn would make is refused (#81): hold it instead of

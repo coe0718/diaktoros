@@ -309,6 +309,10 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
         if mine and verdict == "ACCEPT":
             # Part 2 (#1004): the adjudicator overruled it; the reviewer's approval stands.
             return "", "", f"the adjudicator overruled the shadow review at {short} (ACCEPT)"
+        if mine and verdict == "REJECT":
+            # Part 3 (#1004): upheld, so its findings go to the fixer (queue_shadow_fix).
+            return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT): the "
+                    "fixer answers its findings, and the fixed head is reviewed fresh"), ""
         if mine and verdict:
             return "failure", (f"the adjudicator ruled {verdict} on the shadow review at {short} — the "
                     "decision is yours (`hermes dk explain --pr N` shows the findings)"), ""
@@ -329,6 +333,52 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
 
 
 SHADOW_ESCALATION = "shadow"           # the breach marker's ``escalated.by`` for #1004
+
+
+def upheld_shadow_ruling(loop: dict, number: int, head: str, db=None) -> float | None:
+    """When the adjudicator upheld this head's newest shadow review (#1004 part 3): the REJECT
+    ruling that answers that review (``ruling_answers``), as its time; None otherwise, or when the
+    ledger cannot be read. One rule for queueing the fix, launching it, and its push."""
+    import sqlite3
+    from pathlib import Path
+    from . import run_supervisor
+    path = Path(db or run_supervisor.production_ledger())
+    if not path.exists():
+        return None
+    con = run_supervisor.read_only_connect(path)
+    if con is None:
+        return None
+    try:
+        review = con.execute("SELECT verdict, created, run_id FROM shadow_reviews WHERE repo=? "
+                             "AND pr=? AND head=? ORDER BY created DESC LIMIT 1",
+                             (loop["repo"], number, head)).fetchone()
+        if review is None or str(review[0]) != "REQUEST_CHANGES":
+            return None
+        ruling = next((r for r in _rulings_at(con, loop["repo"], number, head)
+                       if ruling_answers(r, review[2], review[1])), None)
+    except sqlite3.Error:
+        return None
+    finally:
+        con.close()
+    return float(ruling[1]) if ruling is not None and str(ruling[0]) == "REJECT" else None
+
+
+def queue_shadow_fix(loop: dict, number: int, head: str, db=None) -> str:
+    """Hand an upheld shadow review's findings to the fixer (#1004 part 3), once per ruling: the
+    turn key is ``shadow:<ruling time>``, so a redelivery or a second sweep dedups. What happened:
+    ``""`` (nothing upheld), ``push off``, ``not a fixer PR``, or the ledger's enqueue outcome."""
+    from . import run_supervisor
+    ruled = upheld_shadow_ruling(loop, number, head, db=db)
+    if ruled is None:
+        return ""
+    if not config.unattended_fixer_push_enabled(loop):
+        return "push off"        # the hold stays the operator's: no turn that could not publish
+    pr = gh.pr(loop, number)
+    author = str(((pr or {}).get("user") or {}).get("login") or "").casefold()
+    if author not in {str(x).casefold() for x in loop.get("fixers") or []}:
+        return "not a fixer PR"  # a review-only PR's author answers it, not the fixer
+    return enqueue_isolated(loop, "fixer", number, head,
+                            turn_key=f"{run_supervisor.SHADOW_FIX_KEY}{int(ruled)}")
 
 
 def shadow_overruled(loop: dict, marker, head: str, db=None) -> bool:

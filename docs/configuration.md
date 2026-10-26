@@ -449,8 +449,15 @@ shadow review **requested changes** is sent to the adjudicator once. The shadow'
 sends it, and the watchdog sweep does too if the shadow finished before the reviewer. The ruling
 prompt says the head is approved and includes the shadow review as host-recorded data.
 - **ACCEPT** overrules it: the hold lifts, and `ready` and `explain` treat the approval as standing.
-- **REJECT** (or RESPEC) keeps the hold, and the decision is yours. A later version hands upheld
-  findings to the fixer.
+- **REJECT** upholds it (#1004 part 3). The hold stays, and the shadow's findings go to the fixer as a
+  turn of their own (`shadow:<ruling time>`), as a changes-requested verdict would. Its prompt
+  carries the shadow review and the ruling as the work order. It is claimed, launched and allowed
+  to push only while that same ruling still stands at the head. A ruling that changes, or a head
+  that moves, ends it. The pushed head is reviewed fresh by the reviewer and the shadow. The
+  ruling's own delivery queues the turn, and the watchdog sweep does as a backstop (same key, so
+  never twice). Nothing is queued on a loop without unattended fixer pushes, or on a review-only
+  author's PR: there the decision stays yours.
+- **RESPEC** keeps the hold, and the decision is yours.
 
 If a later shadow review at the same head requests changes again after the ruling, that review goes for a ruling of its own.
 
