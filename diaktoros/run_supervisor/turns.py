@@ -179,8 +179,15 @@ class ClaimAndLaunch:
                 # maintainer's requested re-review: an approval then supersedes the ruling.
                 rereview = (str(row['turn_key'] or '').startswith(run_supervisor.DISPUTE_KEY)
                             and ((marker or {}).get('escalated') or {}).get('by') == 'dispute')
-                if escalated_loop is not None and not rereview and gate.escalated(marker,
-                                                                                 row['head']):
+                # Nor is the fix of a shadow review the adjudicator upheld (#1004 part 3): that
+                # ruling is why it exists, and its marker stays at the head. Whether the ruling
+                # still stands is _claim_read_fixer's (upheld_shadow_ruling).
+                upheld = (row['seat'] == 'fixer'
+                          and str(row['turn_key'] or '').startswith(run_supervisor.SHADOW_FIX_KEY)
+                          and ((marker or {}).get('escalated') or {}).get('by')
+                          == gate.SHADOW_ESCALATION)
+                if (escalated_loop is not None and not rereview and not upheld
+                        and gate.escalated(marker, row['head'])):
                     read.superseded = 'escalated to adjudication at this head'
             except Exception as exc:
                 read.read_error = read.read_error or f'{type(exc).__name__}: {exc}'[:200]

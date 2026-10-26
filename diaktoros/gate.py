@@ -310,9 +310,14 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
             # Part 2 (#1004): the adjudicator overruled it; the reviewer's approval stands.
             return "", "", f"the adjudicator overruled the shadow review at {short} (ACCEPT)"
         if mine and verdict == "REJECT":
-            # Part 3 (#1004): upheld, so its findings go to the fixer (queue_shadow_fix).
-            return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT): the "
-                    "fixer answers its findings, and the fixed head is reviewed fresh"), ""
+            # Part 3 (#1004): upheld. The fixer answers it where queue_shadow_fix can hand it on;
+            # a loop without unattended pushes, or a review-only author's PR, is the operator's.
+            if config.unattended_fixer_push_enabled(loop) and not _review_only_pr(loop, number):
+                return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT): "
+                        "the fixer answers its findings, and the fixed head is reviewed fresh"), ""
+            return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT) — no "
+                    "fixer takes it here, so the decision is yours (`hermes dk explain --pr N` "
+                    "shows the findings)"), ""
         if mine and verdict:
             return "failure", (f"the adjudicator ruled {verdict} on the shadow review at {short} — the "
                     "decision is yours (`hermes dk explain --pr N` shows the findings)"), ""
@@ -333,6 +338,14 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
 
 
 SHADOW_ESCALATION = "shadow"           # the breach marker's ``escalated.by`` for #1004
+
+
+def _review_only_pr(loop: dict, number: int) -> bool:
+    """Whether a PR's author is not one of the loop's fixers (its author answers it), read live;
+    an unreadable PR counts as not the fixer's, so no fix is promised on a guess."""
+    pr = gh.pr(loop, number)
+    author = str(((pr or {}).get("user") or {}).get("login") or "").casefold()
+    return not author or author not in {str(x).casefold() for x in loop.get("fixers") or []}
 
 
 def upheld_shadow_ruling(loop: dict, number: int, head: str, db=None) -> float | None:
@@ -373,9 +386,7 @@ def queue_shadow_fix(loop: dict, number: int, head: str, db=None) -> str:
         return ""
     if not config.unattended_fixer_push_enabled(loop):
         return "push off"        # the hold stays the operator's: no turn that could not publish
-    pr = gh.pr(loop, number)
-    author = str(((pr or {}).get("user") or {}).get("login") or "").casefold()
-    if author not in {str(x).casefold() for x in loop.get("fixers") or []}:
+    if _review_only_pr(loop, number):
         return "not a fixer PR"  # a review-only PR's author answers it, not the fixer
     return enqueue_isolated(loop, "fixer", number, head,
                             turn_key=f"{run_supervisor.SHADOW_FIX_KEY}{int(ruled)}")

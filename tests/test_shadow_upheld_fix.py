@@ -43,14 +43,22 @@ class Upheld(ruling.Base):
         self.ruled("REJECT")
         self.assertIsNone(self.upheld())                       # a shadow approval upholds nothing
 
-    def test_the_hold_says_the_fixer_answers_an_upheld_review(self):
+    def test_the_hold_says_who_answers_an_upheld_review(self):
+        # The shadow on #1342: it must not promise a fix that queue_shadow_fix will not queue.
         self.shadow("REQUEST_CHANGES")
         marker = self.mark_escalated()
         self.ruled("REJECT")
-        kind, held, _note = gate.shadow_state(self.loop, 7, fg.HEAD, db=self.db, marker=marker)
-        self.assertEqual(kind, "failure")                      # still not ready to merge
-        self.assertIn("upheld the shadow review", held)
-        self.assertIn("the fixer answers its findings", held)
+
+        def held(author="fixer"):
+            with mock.patch.object(gh, "pr", return_value={**fg.LIVE, "user": {"login": author}}):
+                kind, text, _note = gate.shadow_state(self.loop, 7, fg.HEAD, db=self.db,
+                                                      marker=marker)
+            self.assertEqual(kind, "failure")                  # never ready to merge
+            return text
+        self.assertIn("no fixer takes it here, so the decision is yours", held())   # push off
+        self.loop = {**self.loop, "unattended_fixer_push": True}
+        self.assertIn("the fixer answers its findings", held())
+        self.assertIn("the decision is yours", held(author="someone"))             # review-only
 
 
 class Queue(ruling.Base):
@@ -173,6 +181,37 @@ class Claim(ruling.Base):
                 mock.patch.object(gh, "api", return_value=dict(fg.LIVE)):
             sup._claim_read_fixer(row, read)
         return read
+
+    def test_the_production_claim_order_claims_it_past_the_shadow_escalation(self):
+        # The shadow on #1342: the escalation marker stays at the head after the ruling, and
+        # _claim_read_live cancelled every fixer row at an escalated head before the ruling
+        # check was reached. Driven in the order _claim uses, with that marker in place.
+        from diaktoros import config, pr_hold
+        from diaktoros.run_supervisor import turns
+        self.shadow("REQUEST_CHANGES")
+        self.mark_escalated()
+        self.ruled("REJECT")
+        ruled = gate.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
+        key = f"shadow:{int(ruled)}"
+        self.loop = {**self.loop, "unattended_fixer_push": True}
+        sup, _turn = self.row(key)
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("UPDATE runs SET state='pending', owner=NULL, push_admitted=1 "
+                        "WHERE seat='fixer'")
+        row = sup.get(f"{fg.REPO}:7:{fg.HEAD}:fixer:{key}")
+        read = turns._ClaimRead()
+        with mock.patch.object(config, "by_repo", return_value=self.loop), \
+                mock.patch.object(gh, "api", return_value=dict(fg.LIVE)), \
+                mock.patch.object(pr_hold, "read", return_value=(None, "")):
+            sup._claim_read_live(row, read)
+            sup._claim_read_fixer(row, read)
+        self.assertFalse(read.superseded or read.read_error or read.refused, vars(read))
+        # Any other fixer row at the escalated head is still retired, as before.
+        other = turns._ClaimRead()
+        with mock.patch.object(config, "by_repo", return_value=self.loop), \
+                mock.patch.object(pr_hold, "read", return_value=(None, "")):
+            sup._claim_read_live({**dict(row), "turn_key": ""}, other)
+        self.assertEqual(other.superseded, "escalated to adjudication at this head")
 
     def test_a_claim_needs_the_ruling_still_standing_not_a_verdict(self):
         self.shadow("REQUEST_CHANGES")
