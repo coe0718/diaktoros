@@ -197,9 +197,10 @@ App login is ignored with a note; it never silently migrates App to PAT. To inte
 return a working seat to PAT, review the per-loop credential mapping separately.
 
 The reader has no App form fields: use `set --read-token LOGIN --app LOGIN=APP_ID:/abs/key.pem`.
-Hook admin remains PAT-only; App hook administration is unproven (#1196). Provisioning Apps,
-installations, permissions and webhooks is separate. These fields do not request App bots
-as reviewers, add required checks, or change branch protection; #1163 remains in progress.
+An App can also be the hook admin (`--admin-token`, with Webhooks and Administration: Read
+and write; #1196). These fields don't make Apps, install them or set their webhooks: see
+[Getting started with GitHub Apps](github-apps.md) (`create-apps`, `app-webhook`). Nor do they
+change branch protection: `protect` requires the `diaktoros/review` check.
 The Desktop inspection is GET-only and does not open PEMs or mint credentials.
 
 ## Preview and apply

@@ -185,7 +185,7 @@ keeping every open PR's history:
 1. Register the Apps (permissions above) and install each on the loop's repository only. Keep
    each private key in a 0600 file.
 2. For each identity, a dry run, then the move, then `doctor`:
-   `hermes dk identity --loop ID --seat reader --app "<slug>[bot]=APP_ID:/abs/key.pem" --dry-run`
+   `hermes dk identity --loop ID --seat read --app "<slug>[bot]=APP_ID:/abs/key.pem" --dry-run`
    (then without `--dry-run`); the same for `--seat fixer`, `--seat reviewer` and, with an
    adjudicator, `--seat adjudicator`.
 3. After the reviewer moves, require the merge check (`hermes dk protect --loop ID --admin-token

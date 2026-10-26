@@ -71,8 +71,9 @@ hermes dk app-webhook --loop ID --set
 `setup` asks for anything else it needs (profiles, the gateway origin) as usual. It installs the
 App's route and creates no repo hooks. `--protect` makes the base require `diaktoros/review`,
 pinned to the reviewer App. `app-webhook --set` points the reader App's webhook at the loop's
-route and sets its secret; the secret is never printed. `init` takes the same flags, if you prefer
-to wire the loop flag by flag.
+route and sets its secret; the secret is never printed. `init` takes the same flags except
+`--protect`, if you prefer to wire the loop flag by flag; then run
+`hermes dk protect --loop ID --admin-token "<name>-dk-reader[bot]"` yourself.
 
 ## 2b. An existing loop
 
