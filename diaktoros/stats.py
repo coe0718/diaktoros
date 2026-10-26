@@ -18,6 +18,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import config
 from .ledger import LOCK_WAIT_S
 
 SEATS = ("reviewer", "fixer", "issue_fixer", "triage", "adjudicator")
@@ -930,6 +931,7 @@ def report(loop: dict, db: Path, since: float, until: float | None = None,
         def pr_state(number):
             return fix_hold.pr_state(loop, number)
     return {"repo": repo, "loop": loop.get("id", ""), "since": since, "until": until,
+            "operator_agents": sorted(config.operator_agents(loop)),      # #757
             "turns": ledger(db, repo, since, until),
             "turns_before": ledger(db, repo, before, since),
             "reviews": review_window(db, repo, since, until),
@@ -980,6 +982,9 @@ def report_text(data: dict) -> str:
     days = (data["until"] - data["since"]) / 86400
     out = [f"{data['repo']} (loop {data['loop']}) · {_day(data['since'])} → "
            f"{_day(data['until'])} ({days:.1f} days)"]
+    if data.get("operator_agents"):
+        out.append("operator agents (post as the operator's account; steps counted apart as "
+                   "\"agent hold\"): " + ", ".join(data["operator_agents"]))
     reviews = data["reviews"]
     if reviews is None:
         return "\n".join(out + ["no run ledger yet"])

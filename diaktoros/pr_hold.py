@@ -81,9 +81,13 @@ def release_how(hold: dict) -> str:
     return "an authorized `/loop release` comment (removing the label does not lift it)"
 
 
-def line(hold: dict) -> str:
-    """The one sentence explain, status and the watchdog all use."""
+def line(hold: dict, loop: dict | None = None) -> str:
+    """The one sentence explain, status and the watchdog all use. With ``loop``, a hold by an
+    ``operator_agents`` login says so (#757)."""
     how = "the diaktoros:hold label" if hold.get("how") == "label" else "/loop hold"
     when = iso_at(epoch(hold.get("at"))) or "an unknown time"
-    return (f"held by {hold.get('by') or '?'} via {how} since {when}: no review, adjudication, fix, CI-fix or "
+    by = hold.get("by") or "?"
+    if loop is not None and config.maintainer_kind(loop, by) == "operator agent":
+        by += " (operator agent)"
+    return (f"held by {by} via {how} since {when}: no review, adjudication, fix, CI-fix or "
             f"conflict turn starts until {release_how(hold)}")

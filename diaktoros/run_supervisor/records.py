@@ -392,7 +392,8 @@ class LedgerRecords:
                                json.dumps(list(findings)), merged_at, time.time()))
         return cur.rowcount == 1
 
-    OPERATOR_ACTIONS = ("retry", "escalate", "review", "hold")
+    # "agent hold" is a hold by an ``operator_agents`` login (#757): counted apart from a person's.
+    OPERATOR_ACTIONS = ("retry", "escalate", "review", "hold", "agent hold")
 
     def record_operator_action(self, repo: str, pr: int, action: str) -> None:
         """Note an operator's step on a PR for the report (#678). Called after the step took

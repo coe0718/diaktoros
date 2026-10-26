@@ -228,7 +228,7 @@ def cmd_status(args) -> int:
                   f"({time.strftime('%Y-%m-%d %H:%M', time.gmtime(late['at']))} UTC): the "
                   "webhook delivery was missed (see `doctor`: gate:rate_limit)")
         for pr_no, hold in sorted(st.pr_holds().items()):
-            print(f"  held:       PR #{pr_no} {pr_hold.line(hold)}")
+            print(f"  held:       PR #{pr_no} {pr_hold.line(hold, loop)}")
         for pr_no, hold in sorted(st.scope_holds().items()):
             print(f"  held:       {scope_lock.line(pr_no, hold)}")
         for seat in ("reviewer", "fixer"):
@@ -781,6 +781,12 @@ def cmd_explain(args) -> int:
         print(f"  {'escalation:':<12}{report['escalation']}")
         print(f"  {'hooks:':<12}{report['hooks']}")
         print(f"  {'sweep:':<12}{report['sweep']}")
+        if report.get("operator_agents"):                     # #757
+            print(f"  {'operators:':<12}{', '.join(report['operator_agents'])} post as the "
+                  "operator's account (operator agents): their comments reach the seats as "
+                  "maintainer data, labelled as such")
+        for text in report.get("authorship") or []:
+            print(f"  {'authorship:':<12}{text}")
         print(f"  {'github:':<12}{report['github']}")
         decisions = report.get("gate_decisions") or []
         for text in decisions:
