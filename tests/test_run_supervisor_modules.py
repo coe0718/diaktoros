@@ -58,6 +58,24 @@ class Split(unittest.TestCase):
         self.assertTrue(mixin)
         self.assertFalse(mixin & set(vars(Supervisor)), "defined on both Supervisor and the mixin")
 
+    def test_the_claim_and_turn_methods_live_only_in_their_mixin(self):
+        # Same guard for turns.ClaimAndLaunch (#758): every claim and turn step has one home,
+        # the mixin, and Supervisor (or the other mixin) does not define it again.
+        from diaktoros.run_supervisor import Supervisor, records, turns
+        self.assertIn(turns.ClaimAndLaunch, Supervisor.__mro__)
+        mixin = {name for name in vars(turns.ClaimAndLaunch) if not name.startswith("__")}
+        for step in ("_claim", "_claim_commit", "_run_production", "_production_turn",
+                     "_pacing_hold", "_ci_hold", "_prepare_launch", "_budget_kill_error",
+                     "_production_finish"):
+            self.assertIn(step, mixin)
+        self.assertFalse(mixin & set(vars(Supervisor)), "defined on both Supervisor and the mixin")
+        self.assertFalse(mixin & set(vars(records.LedgerRecords)), "defined on both mixins")
+        # The state classes live in turns; the package re-exports the same objects.
+        for name in ("_ClaimRead", "_Turn", "_Launch"):
+            self.assertIs(getattr(run_supervisor, name), getattr(turns, name))
+            self.assertIn(name, _top_level_names(PACKAGE / "turns.py"))
+            self.assertNotIn(f"class {name}", (PACKAGE / "__init__.py").read_text())
+
     def test_nothing_imports_a_moved_name_from_the_package(self):
         moved = {n for sub in SUBMODULES for n in _top_level_names(PACKAGE / f"{sub}.py")}
         files = [*(ROOT / "diaktoros").rglob("*.py"), *(ROOT / "scripts").glob("*.py"),
