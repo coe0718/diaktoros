@@ -868,6 +868,17 @@ def base_tip(loop: dict) -> str | None:
     return sha.lower()
 
 
+def record_overrides(loop: dict, st) -> None:
+    """Record the merges over a standing changes-requested (#220). Never fails the sweep."""
+    try:
+        from diaktoros import overrides, run_supervisor
+        for number in overrides.scan(loop, st, run_supervisor.Supervisor(
+                run_supervisor.production_ledger())):
+            log(f"#{number}: merged over a changes-requested; override recorded")
+    except Exception as exc:
+        log(f"override scan: {type(exc).__name__}: {exc}")
+
+
 def send_weekly_report(loop: dict, st) -> None:
     """The loop's weekly report, when one is due (#658). Never fails the sweep."""
     try:
@@ -1136,6 +1147,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         if observer.retry(loop, st):
             log("observer: retried an undelivered notice")
         observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))
+        record_overrides(loop, st)
         send_weekly_report(loop, st)
         finish_reads(loop, watch, now, health, pr_failures, lines)
         st.watch_save(watch)
@@ -1475,6 +1487,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     if observer.retry(loop, st):
         log("observer: retried an undelivered notice")
     observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))
+    record_overrides(loop, st)
     send_weekly_report(loop, st)
 
     # ``watch["alerts"]`` and ``last_run`` were saved above, before the best-effort work; here only

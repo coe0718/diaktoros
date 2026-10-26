@@ -1243,6 +1243,16 @@ class LoopState:
             data[str(number)] = entry
             self._save_strict(self.dir / "findings.json", data)
 
+    # -- merges already read for an override (#220) ---------------------------
+
+    def override_checked(self) -> dict:
+        """PR number -> the merged head whose reviews were already read for an override."""
+        raw = self._load(self.dir / "override-checked.json", {})
+        return raw if isinstance(raw, dict) else {}
+
+    def override_checked_put(self, data: dict) -> None:
+        self._save(self.dir / "override-checked.json", data)
+
     # The findings ledger as a shadow review was queued (#218): its prompt shows only the
     # reviews posted before then, so the broker judges its review against this, never against
     # what the real review of the same head recorded meanwhile. First snapshot wins.

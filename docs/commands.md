@@ -273,8 +273,23 @@ The same report can go to the observer feed once a week: see
 head, with verdict agreement per shadow model, the PRs where they disagreed (the shadow blocked
 what the reviewer approved, or the reverse), and findings matched by cited file and line (within 10
 lines; a citation with no line matches the file). A shadow whose head has no real verdict yet is
-counted, not compared. Not in this command yet: override feeds (#220). Request → verdict is
-measured from the review run's creation to its receipt.
+counted, not compared. Request → verdict is measured from the review run's creation to its
+receipt.
+
+Human overrides (#220, first step): a PR merged over a standing changes-requested. The watchdog
+sweep reads the repository's recently merged PRs (the last 30 updated, merged within 7 days, by an
+author the loop reviews) and their reviews; when the loop reviewer's latest live verdict at the
+merged head is changes-requested, it writes one record (PR, head, seat, the resolved model of the
+reviewer run that posted it, and the findings still open) to the run ledger. A merge after an
+approval, a dismissed review, or a verdict at an earlier head writes none; reviews that cannot be
+read or ordered are read again each sweep while the merge is within the 7 days; one never
+proved by then is not recorded. The report lists them by the day of the merge, with a
+count per model and per category of the findings still open (each blocking finding carries one of
+`correctness`, `test`, `requirement`, `docs`, `security` or `other`, tagged by the reviewer as
+`F1 [test]: …`). Nothing changes behaviour. Not recorded yet: a dismissed review, a reversed
+ruling, or a reverted fixer push (so zero is not zero overrides). Detection needs the watchdog
+running; a merge it never saw within the window (host off, or more than 30 PRs updated since) is
+not recorded.
 
 <!-- flags:report -->
 | flag | value | default | what it does |

@@ -717,6 +717,10 @@ def reviews_at_head(reviews: list, loop: dict, head: str) -> list:
             if isinstance(r, dict) and is_reviewer(r, loop) and r.get("commit_id") == head]
 
 
+# Review states that are not a verdict: they never supersede one (overrides.py reads this too).
+NOT_VERDICTS = frozenset({"DISMISSED", "COMMENTED", "PENDING"})
+
+
 def latest_effective_review_at_head(reviews: list, loop: dict, head: str) -> dict | None:
     """Latest live verdict, or unknown when the same-head chronology cannot be proved.
 
@@ -726,7 +730,7 @@ def latest_effective_review_at_head(reviews: list, loop: dict, head: str) -> dic
     candidates = []
     for review in reviews_at_head(reviews, loop, head):
         state = gh.review_state(review)
-        if state in {"DISMISSED", "COMMENTED", "PENDING"}:
+        if state in NOT_VERDICTS:
             continue
         if state not in {"APPROVED", "CHANGES_REQUESTED"}:
             return None
