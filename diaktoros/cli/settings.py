@@ -1137,6 +1137,21 @@ _NESTED_FORM_KEYS = (("triage", "auto_fix_labels"), ("triage", "auto_fix_daily")
                      ("observer", "weekly_report"))
 
 
+def _role_login(loop: dict, role: str) -> str:
+    return (config.adjudicator_login(loop) if role == "adjudicator"
+            else config.seat_login(loop, role))
+
+
+def _app_reverts(before: dict, after: dict) -> list[tuple[str, str, str]]:
+    """``(role, App login, form login)`` for each seat the form would move off a GitHub App."""
+    out = []
+    for role in (*config.SEAT_KEYS, "adjudicator"):
+        old, new = _role_login(before, role), _role_login(after, role)
+        if old and new and old.lower() != new.lower() and cli_common._app_ref(before, old):
+            out.append((role, old, new))
+    return out
+
+
 def _apply(args) -> int:
     """Make a loop match the plugin settings — one push, with the diff printed.
 
@@ -1160,6 +1175,18 @@ def _apply(args) -> int:
         updated = config.normalize(settings_form.apply_settings(loop, cli_common._SETTINGS))
     except config.ConfigError as exc:
         print(f"settings refused: {exc}")
+        return 2
+
+    # #1296: a seat moved to a GitHub App (`identity`) is not moved back by a form that still names
+    # the old login: that would silently drop the App, and with a reviewer App the merge check.
+    reverts = _app_reverts(loop, updated)
+    if reverts and not getattr(args, "identity_from_form", False):
+        for role, old, new in reverts:
+            print(f"settings refused: {loop['id']}: the plugin settings name {new!r} for the {role}, "
+                  f"but this loop's {role} is the GitHub App {old!r} (moved with `hermes dk "
+                  "identity`); apply would move it back")
+        print("fix: put the App's login in the settings form (or blank that login field), or pass "
+              "--identity-from-form to move the identity back to what the form names")
         return 2
 
     # The four-identity rule holds for the config apply would leave behind, whether or not this
@@ -2036,6 +2063,13 @@ def cmd_identity(args) -> int:
     if old and old.lower() != login.lower() and seat in ("reviewer", "fixer"):
         print(f"  {old} stays on the allowlist (open PRs keep its verdicts and authorship) and its "
               "credential stays mapped; remove them once no open PR needs them")
+    form_key = {**config.LOGIN_SETTINGS, "adjudicator": "adjudicator_login"}.get(seat)
+    form_login = str(settings_form.settings_defaults(cli_common._SETTINGS).get(form_key) or "").strip() \
+        if form_key else ""
+    if form_login and form_login.lower() != login.lower():
+        # #1296: `apply` refuses to move it back, but the form should say what the loop does.
+        print(f"  note: the plugin settings still name {form_login} for the {seat}: set "
+              f"{form_key} to {login} (or blank it), or `apply` refuses to run")
     steps = [f"hermes dk doctor --loop {lid}", f"hermes dk selftest --loop {lid} --no-model"]
     if seat == "reviewer" and config.merge_check_on(updated):
         steps.append(f"hermes dk protect --loop {lid} --admin-token LOGIN   (the reviewer is an "
@@ -2244,6 +2278,9 @@ def add_apply(sub) -> None:  # noqa: ANN001
                            help="loop id (its config file name; `list` shows them)")
     apply_cmd.add_argument("--dry-run", action="store_true",
                            help="show the diff without writing it")
+    apply_cmd.add_argument("--identity-from-form", action="store_true",
+                           help="move a seat off its GitHub App identity to the login the settings "
+                                "form names (refused otherwise: `identity` moves seats deliberately)")
     apply_cmd.add_argument("--while-busy", action="store_true",
                            help="rebind a seat's profile/login even while a run is in flight "
                                 "(that run keeps the identity it started with)")

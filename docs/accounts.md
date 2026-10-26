@@ -188,6 +188,9 @@ keeping every open PR's history:
    `hermes dk identity --loop ID --seat reader --app "<slug>[bot]=APP_ID:/abs/key.pem" --dry-run`
    (then without `--dry-run`); the same for `--seat fixer`, `--seat reviewer` and, with an
    adjudicator, `--seat adjudicator`.
+   If the plugin settings form names that seat's login (`reviewer_login`, `fixer_login`,
+   `adjudicator_login`), set it to the App's login or blank it: `identity` says so, and until
+   then `apply` refuses rather than move the seat back off its App.
 3. After the reviewer moves, require the merge check (`hermes dk protect --loop ID --admin-token
    LOGIN`) and turn required approvals off on the base, since GitHub never counts an App's
    approval.

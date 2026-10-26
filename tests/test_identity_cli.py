@@ -162,6 +162,40 @@ class Identity(app_cli.Base):
         self.assertEqual(rc, 0, out)
         self.assertNotIn("stays on the allowlist", out)   # the reader never was on one
 
+    def test_a_stale_form_never_moves_an_app_identity_back(self):
+        # #1296: the form still names the reviewer's old PAT login. apply refuses rather than drop
+        # the App (and with it the merge check); --identity-from-form says the form wins.
+        rc, out = self.identity("--seat", "reviewer", "--app", f"{BOT_REV}=5416187:{self.key('rev')}")
+        self.assertEqual(rc, 0, out)
+        form = {"reviewer_login": tfs.REV, "reviewer_profile": "critic"}
+        before = self.loop_file().read_bytes()
+        rc, out = self.run_cli(["apply", "--loop", "widgets"], settings=form)
+        self.assertEqual(rc, 2, out)
+        self.assertIn(f"this loop's reviewer is the GitHub App '{BOT_REV}'", out)
+        self.assertIn("--identity-from-form", out)
+        self.assertEqual(self.loop_file().read_bytes(), before)
+        rc, out = self.run_cli(["apply", "--loop", "widgets", "--identity-from-form"], settings=form)
+        self.assertEqual(self.loop_json()["seats"]["reviewer"]["login"], tfs.REV, out)
+        rc, out = self.run_cli(["apply", "--loop", "widgets"],
+                               settings={"reviewer_login": tfs.REV, "fixer_login": tfs.FIX})
+        self.assertNotIn("GitHub App", out)            # a form that matches a PAT loop is fine
+
+    def test_a_form_still_moves_a_pat_seat(self):
+        # Only a seat on a GitHub App is guarded: the form moving one PAT login to another is the
+        # push apply has always been.
+        rc, out = self.run_cli(["apply", "--loop", "widgets", "--dry-run"],
+                               settings={"fixer_login": "fix-two"})
+        self.assertNotIn("is the GitHub App", out)
+        self.assertNotIn("--identity-from-form", out)
+
+    def test_identity_says_when_the_form_still_names_the_old_login(self):
+        rc, out = self.run_cli(["identity", "--loop", "widgets", "--seat", "reviewer", "--app",
+                                f"{BOT_REV}=5416187:{self.key('rev')}"],
+                               settings={"reviewer_login": tfs.REV})
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"the plugin settings still name {tfs.REV} for the reviewer: set "
+                      f"reviewer_login to {BOT_REV}", out)
+
     def test_usage_refusals(self):
         self.assertEqual(self.identity("--seat", "reviewer")[0], 2)            # neither
         rc, out = self.identity("--seat", "reviewer", "--app", f"{BOT_REV}=1:{self.key('rev')}",
