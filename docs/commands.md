@@ -732,6 +732,11 @@ Pushes the settings form onto **one** loop. It shows the difference first, then 
 loop config and any route whose profile, prompt or event no longer matches. A form that changed
 never touches a running loop until you run `apply` for it.
 
+It never moves a seat off a GitHub App identity on its own. If the loop's reviewer, fixer or
+adjudicator is an App (moved there with [`identity`](#identity)) and the form still names
+another login for it, `apply` refuses and says so. Fix the form, or pass
+`--identity-from-form` to let the form's login win.
+
 ```bash
 hermes dk apply --loop "<loop-id>" --dry-run
 hermes dk apply --loop "<loop-id>"
@@ -767,6 +772,7 @@ A dry run also previews before the live busy-seat check; it is not proof a busy 
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
 | `--dry-run` |  |  | show the diff without writing it |
+| `--identity-from-form` |  |  | move a seat off its GitHub App identity to the login the settings form names (refused otherwise: `identity` moves seats deliberately) |
 | `--while-busy` |  |  | rebind a seat's profile/login even while a run is in flight (that run keeps the identity it started with) |
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose token can write the repo's hooks, for the hook moves and re-keys apply makes (default: the reader) |
 | `--recreate-routes` |  |  | write this loop's routes the registry lost, from the loop config, with a new secret, and re-key the repo hooks that point at them (when no intent record can restore them) |
