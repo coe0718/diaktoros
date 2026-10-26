@@ -276,7 +276,10 @@ What to do:
    REQUEST_CHANGES is refused before anything is written: resubmit with a real verdict.
    **End the review body with a `Not verified:` line** listing what you did not check (for
    example "didn't run the watchdog harness", "didn't drive the broker path"). If there is
-   nothing, write `Not verified: nothing`. The broker refuses a review without the line.
+   nothing, write `Not verified: nothing`. The broker refuses a review without the line. When
+   a section **What the CI checks at this head cover** follows, an item a check listed there as
+   green covers is not "not verified": say it ran under **CI at this head**, naming the check.
+   Nothing a check listed as not citable (or not listed) covers moves out of `Not verified:`.
 6. Finish with a 3-5 line summary: verdict, what you verified, what you did not verify.
 
 A test you cannot run because a toolchain is missing, or for a timeout or platform, is looked up

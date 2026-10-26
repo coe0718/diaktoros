@@ -413,6 +413,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
+| `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting) |
 | `--ingress` | `repo-hooks` \| `app-webhook` |  | where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks) |
 | `--ingress-app` | `INGRESS_APP` |  | with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app) |
 | `--merge-check` | `auto` \| `on` \| `off` |  | post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off |
@@ -545,6 +546,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
+| `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting) |
 | `--ingress` | `repo-hooks` \| `app-webhook` |  | where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks) |
 | `--ingress-app` | `INGRESS_APP` |  | with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app) |
 | `--merge-check` | `auto` \| `on` \| `off` |  | post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off |
@@ -645,6 +647,8 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve (repeat it); replaces the list (one of `--human-path`, `--no-human-paths`) |
 | `--no-human-paths` |  |  | clear the list: no path is reserved for a human (one of `--human-path`, `--no-human-paths`) |
+| `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it); replaces the map (one of `--ci-covers`, `--no-ci-coverage`) |
+| `--no-ci-coverage` |  |  | clear the map: the reviewer is told nothing about what a check covers (one of `--ci-covers`, `--no-ci-coverage`) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox (repeat it); replaces the list (one of `--generated`, `--no-generated`) |
 | `--no-generated` |  |  | clear the list: the conflict shortcut is off (one of `--generated`, `--no-generated`) |
 | `--ingress` | `repo-hooks` \| `app-webhook` |  | where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks) |

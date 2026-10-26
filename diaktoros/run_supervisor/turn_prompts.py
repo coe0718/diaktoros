@@ -101,6 +101,8 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, shadow=_
             # #687: what the required checks ran at this head, for a test this sandbox cannot run.
             from .. import ci_tests
             text += ci_tests.section(ci_tests.read(loop, state, required, row['head']))
+            # #756: what the green checks at this head cover, from the operator's map.
+            text += ci.coverage_section(state, required, config_mod.ci_coverage(loop))
         if seat == 'reviewer':
             # #539: commits CI-fix turns pushed unreviewed, so this review checks none weakened
             # a test.
