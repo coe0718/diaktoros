@@ -49,6 +49,12 @@ class ReconciliationTest(unittest.TestCase):
         self.notices = []
         self.posts = []
 
+    def snapshot(self):
+        """Every file under the fixture's state dir (its ``hermes`` home is a directory)."""
+        root = pathlib.Path(self.temp.name)
+        return {str(p.relative_to(root)): p.read_bytes()
+                for p in sorted(root.rglob("*")) if p.is_file()}
+
     def sweep(self, listing, baseline=([], "")):
         by_number = {p["number"]: p for p in listing} if isinstance(listing, list) else {}
         with mock.patch.object(watchdog, "TEST", True), mock.patch.object(watchdog.gh, "open_prs", return_value=listing), \
@@ -143,14 +149,14 @@ class ReconciliationTest(unittest.TestCase):
                                           situation.Identity(C, "parent", B, ((182, "parent", B, A),)), (182,))
         facts = {"pr": self.child, "reviews": [], "armed": True,
                  "read_at": time.time(), "chain": resolution}
-        before = {p.name: p.read_bytes() for p in pathlib.Path(self.temp.name).iterdir()}
+        before = self.snapshot()
         with mock.patch.object(gate, "seat_capacity", return_value=(0, 1)):
             report = gate.explain(self.loop, self.st, 184, facts)
         self.assertEqual(report["next"]["kind"], "wait")
         self.assertIn("#182", report["chain"]["reason"])
         self.assertIn("visibility queue", report["queue"])
         self.assertIn("no automatic reviewer", report["next"]["action"])
-        self.assertEqual(before, {p.name: p.read_bytes() for p in pathlib.Path(self.temp.name).iterdir()})
+        self.assertEqual(before, self.snapshot())
 
     def test_stale_watchdog_snapshot_cannot_erase_transition_hold(self):
         self.sweep([self.parent, self.child])

@@ -69,6 +69,7 @@ class Sweep(fg.Base):
                                   else {"return_value": self.sup})), \
              mock.patch.object(gate, "enqueue_isolated", side_effect=self.fake_enqueue), \
              mock.patch.object(watchdog, "retry_pending_breaches"), \
+             mock.patch.object(watchdog, "record_overrides"), \
              mock.patch.object(watchdog.routes, "fire"), \
              mock.patch.object(watchdog.observer, "notify"), \
              mock.patch.object(watchdog.observer, "retry", return_value=0), \
