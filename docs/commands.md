@@ -86,6 +86,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | see what a loop did this week, and how long turns took | [`stats`](#stats) |
 | get the digest across all loops (reviews, rounds, trends, stuck PR) | [`report`](#report) |
 | install a loop | [`setup`](#setup) (guided), or [`init`](#init) (flag by flag) |
+| make the loop's GitHub Apps, one click each | [`create-apps`](#create-apps) |
 | check an install before going live | [`doctor`](#doctor), [`selftest`](#selftest) |
 | move to a renamed plugin or repository | [`migrate`](#migrate) |
 | back up an install, or restore one | [`backup`](#backup), [`restore`](#restore) |
@@ -285,6 +286,51 @@ measured from the review run's creation to its receipt.
 ---
 
 ## Installing and changing a loop
+
+### create-apps
+
+Makes a loop's GitHub Apps from manifests (#1163): one "Create GitHub App" click per App, with the
+name, permissions, events and webhook filled in, and no key or secret copied by hand. For each
+role it serves a page on `127.0.0.1` and opens it in your browser; the page posts the App's
+manifest to GitHub, and GitHub sends the browser back to that page with a one-time code. The host
+exchanges the code for the App's id and private key, and writes the key to
+`<key-dir>/<app-slug>.pem` (mode 600, never over an existing file, never printed).
+
+```bash
+hermes dk create-apps --owner "<you-or-org>" --loop "<loop-id>"
+hermes dk create-apps --owner "<org>" --org --prefix widgets-dk --host https://gw.example --roles reader,reviewer,fixer
+```
+
+The Apps are named `<prefix>-<role>` (`<loop-id>-dk-…` with `--loop`), private, and get the
+permissions in [Accounts](accounts.md#a-github-app-identity-instead-of-an-account-in-progress). The reader gets Webhooks and
+Administration **Read and write**, so it can also be the hook admin and run `protect`, and the
+only active webhook: it points at the loop's App route (`<host>/webhooks/dk-app-<slug>`), which
+`hermes dk app-webhook --set` then gives its secret. The defaults are reader, reviewer and
+fixer, plus the adjudicator when the loop has one. The local page answers only requests made
+to its own address and port, and takes a code only with the random state it issued.
+
+A rerun skips the Apps it already made (`apps-wizard.json` in the key directory records them,
+with no secrets), so an interrupted run picks up where it stopped. When it is done it prints each
+App's install link (install it on the loop's repository only), then the commands that map the
+Apps to the loop: `identity`, `set --ingress app-webhook`, `app-webhook --set` and `protect`;
+without `--loop`, the `setup` line for a new loop.
+
+When the browser is on another machine, `--no-browser` writes the page to a file (mode 600) to
+open there; after the click, paste the address GitHub sends that browser to (its state is
+checked, so the code cannot come from another App's page).
+
+<!-- flags:create-apps -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--owner` | `OWNER` | **required** | the GitHub user (or, with --org, the organization) that owns the Apps |
+| `--org` |  |  | --owner is an organization |
+| `--loop` | `LOOP` |  | an existing loop: its host, its id as the name prefix, and the commands to map them |
+| `--host` | `HOST` |  | the gateway origin the reader App's webhook goes to (default: the loop's host) |
+| `--prefix` | `PREFIX` |  | App name prefix: <prefix>-reader, … (default: <loop>-dk) |
+| `--roles` | `ROLES` |  | comma-separated: reader,reviewer,fixer[,adjudicator] (default: all the loop uses) |
+| `--key-dir` | `KEY_DIR` |  | where the private keys go, mode 600 (default: $HERMES_HOME/apps) |
+| `--no-browser` |  |  | write each App's page to a file to open in any browser (another machine too), then paste back the address GitHub sends it to |
+<!-- /flags -->
 
 ### setup
 

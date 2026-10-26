@@ -328,7 +328,7 @@ class ReaderIdentityTests(_Loop):
                  "identity": ["--seat", "reviewer", "--app", "x-app[bot]=1:/nonexistent.pem"],
                  "regression": ["--issue", "1", "--pr", "1"],
                  "restore": ["/nonexistent-backup.tar.gz", "--dry-run"],
-                 "observer": ["--list"], "init": ["--repo", "acme/other", "--dry-run"], "setup": ["--yes"]}
+                 "observer": ["--list"], "create-apps": ["--owner", "x"], "init": ["--repo", "acme/other", "--dry-run"], "setup": ["--yes"]}
         self.assertIn("uninstall", verbs)
         self.assertIn("cleanup", verbs)
         for verb, sub in verbs.items():
@@ -346,7 +346,9 @@ class ReaderIdentityTests(_Loop):
                 except Exception as exc:       # noqa: BLE001 - the point of the test
                     self.fail(f"{argv} raised {type(exc).__name__}: {exc}")
                 self.assertIsInstance(rc, int, argv)
-                if loop_opt is not None or verb == "list":
+                # create-apps without --loop makes Apps for no loop: it reads no loop file.
+                loopless = verb == "create-apps" and "--loop" not in argv
+                if (loop_opt is not None or verb == "list") and not loopless:
                     self.assertEqual(rc, 2, (argv, out))
                     self.assertIn("'read_token' is not set", out, argv)
         # scripts/cleanup.py is also run directly (and by the cleanup verb): same answer.

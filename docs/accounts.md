@@ -133,7 +133,12 @@ If the reader is changed, default hook-editing commands now act as the new reade
 
 A seat or the reader can be a GitHub App's bot instead of a person's account (#1163): register
 an App, install it on the repository only, keep its private key in a 0600 file, and map it by its
-bot login, App id and key path:
+bot login, App id and key path.
+
+`hermes dk create-apps --owner <you> --loop <id>` registers them for you, one click each in your
+browser, with the permissions below (the reader with Webhooks and Administration **Read and
+write**, so it is also the hook admin), and writes each key at mode 600 ([`create-apps`](commands.md#create-apps)).
+It prints the install links and the commands that map the Apps. To map one by hand:
 
 ```bash
 hermes dk init --repo owner/repo --reviewer "acme-reviewer[bot]" --fixer fix-bot \
@@ -157,13 +162,14 @@ how the `diaktoros/review` merge check stands in for the review GitHub does not 
 check (`merge_check`, on by default for an App reviewer).
 
 Each App's **repository permissions** (Metadata: Read is always added), as proven end to end on a
-live loop (#1163). Install each App on the loop's repository only, and leave its webhook inactive
-with no events (the repo hooks deliver events; `protect` and the hooks still use an admin login's
-token):
+live loop (#1163). Install each App on the loop's repository only. Only one App's webhook is
+active: none when repo hooks deliver the loop's events, the reader's when its webhook does
+(`ingress: app-webhook`; `create-apps` makes the reader that way, active with its events). Every
+other App's webhook stays inactive with no events:
 
 | App | Permissions | Why |
 | --- | --- | --- |
-| Reader | Contents, Pull requests, Checks, Commit statuses, Issues: **Read**; **Webhooks: Read**; **Administration: Read** | The gates' reads and the CI the reviewer sees; Webhooks and Administration let `doctor`, `selftest` and `explain` see the hooks and the base's classic protection (without them those lines stay ⚠️). As the hook admin (`--admin-token`, so a loop needs no PAT for hooks) it needs both **Read and write**: then it creates, arms and pauses the hooks and runs `protect` (#1196) |
+| Reader | Contents, Pull requests, Checks, Commit statuses, Issues: **Read**; **Webhooks** and **Administration**: **Read**, or **Read and write** as the hook admin (`create-apps` grants that) | The gates' reads and the CI the reviewer sees; Webhooks and Administration let `doctor`, `selftest` and `explain` see the hooks and the base's classic protection (without them those lines stay ⚠️). As the hook admin (`--admin-token`, so a loop needs no PAT for hooks) it needs both **Read and write**: then it creates, arms and pauses the hooks and runs `protect` (#1196) |
 | Reviewer | Contents: Read; Pull requests, Issues: **Read and write**; **Checks: Read and write** | Reviews; issues it files and triage labels; the `diaktoros/review` check |
 | Fixer | Contents, Pull requests, Issues: **Read and write** | Pushes and PRs; comments on the issues it fixes. Never Workflows: a merge that carries workflow changes comes back to you |
 | Adjudicator (optional) | Pull requests: **Read and write** | The ruling's PR comment, nothing else |

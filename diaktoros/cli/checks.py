@@ -6,6 +6,8 @@ operation shared by ``arm`` and Desktop; it reuses the existing CLI hook plumbin
 """
 from __future__ import annotations
 
+import pathlib
+
 from .. import (
     arm_action,
     config,
@@ -233,6 +235,44 @@ def cmd_app_webhook(args) -> int:
     return 0 if ok else 1
 
 
+def cmd_create_apps(args) -> int:
+    """Create a loop's GitHub Apps from manifests (#1163 M4); print what to run next."""
+    from .. import app_manifest
+    loop = None
+    if args.loop:
+        try:
+            loop = config.load_id(args.loop)
+        except config.ConfigError as exc:
+            print(f"cannot create Apps: {exc}")
+            return 2
+    host = args.host or (loop or {}).get("host") or ""
+    try:
+        host = config.webhook_host(host, required=True)
+    except config.ConfigError as exc:
+        print(f"refused: {exc} (the reader App's webhook goes there)")
+        return 2
+    prefix = args.prefix or (f"{loop['id']}-dk" if loop else "")
+    if not prefix:
+        print("refused: name the Apps with --prefix (or give --loop, which names them <loop>-dk-…)")
+        return 2
+    roles = [r.strip() for r in (args.roles or "").split(",") if r.strip()] or \
+        ["reader", "reviewer", "fixer"] + (["adjudicator"] if loop and
+                                           (loop.get("adjudicator") or {}).get("route") else [])
+    key_dir = pathlib.Path(args.key_dir).expanduser() if args.key_dir else config.home() / "apps"
+    try:
+        print(f"Creating {len(roles)} GitHub App(s) for {'org ' if args.org else ''}{args.owner}: "
+              f"{', '.join(app_manifest.app_name(prefix, r) for r in roles)}")
+        made = app_manifest.create(owner=args.owner, org=args.org, prefix=prefix, roles=roles,
+                                   host=host, key_dir=key_dir, browser=not args.no_browser)
+    except app_manifest.WizardError as exc:
+        print(f"stopped: {exc}")
+        return 1
+    print("next:")
+    for step in app_manifest.next_steps(made, args.owner, args.org, loop["id"] if loop else None):
+        print(f"  {step}")
+    return 0
+
+
 # -- the parser for this module's commands (#676 step 7) --------------------------------------
 
 
@@ -311,6 +351,30 @@ def add_app_webhook(sub) -> None:  # noqa: ANN001
     hook.add_argument("--set", action="store_true",
                       help="point the App's webhook at its route with the route's secret")
     hook.set_defaults(func=cmd_app_webhook)
+
+
+def add_create_apps(sub) -> None:  # noqa: ANN001
+    """The ``create-apps`` subcommand's parser, registered by ``cli.register_cli`` (#1163 M4)."""
+    create = sub.add_parser("create-apps", help="Create a loop's GitHub Apps (reader, reviewer, "
+                                                "fixer, adjudicator) from manifests, one browser "
+                                                "click each")
+    create.add_argument("--owner", required=True, help="the GitHub user (or, with --org, the "
+                                                       "organization) that owns the Apps")
+    create.add_argument("--org", action="store_true", help="--owner is an organization")
+    create.add_argument("--loop", default="", help="an existing loop: its host, its id as the "
+                                                   "name prefix, and the commands to map them")
+    create.add_argument("--host", default="", help="the gateway origin the reader App's webhook "
+                                                   "goes to (default: the loop's host)")
+    create.add_argument("--prefix", default="", help="App name prefix: <prefix>-reader, … "
+                                                     "(default: <loop>-dk)")
+    create.add_argument("--roles", default="", help="comma-separated: reader,reviewer,fixer"
+                                                    "[,adjudicator] (default: all the loop uses)")
+    create.add_argument("--key-dir", default="", help="where the private keys go, mode 600 "
+                                                      "(default: $HERMES_HOME/apps)")
+    create.add_argument("--no-browser", action="store_true",
+                        help="write each App's page to a file to open in any browser (another "
+                             "machine too), then paste back the address GitHub sends it to")
+    create.set_defaults(func=cmd_create_apps)
 
 
 def add_protect(sub) -> None:  # noqa: ANN001
