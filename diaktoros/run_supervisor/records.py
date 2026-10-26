@@ -296,6 +296,27 @@ class LedgerRecords:
             return con.execute("SELECT * FROM shadow_issues WHERE repo=? AND state='recorded' "
                                "ORDER BY created, run_id, seq", (repo,)).fetchall()
 
+    def record_shadow_filing(self, run_id: str, repo: str, number: int, head: str, title: str,
+                             depth: int) -> int:
+        """The ``filed_issues`` row of an issue the host files for a shadow review (#914), before
+        the POST, so the origin-PR hold (#324) and the lineage bound (#487) see it as they see the
+        reviewer's. Its sequence in that run; ``ValueError`` when this PR already filed the title."""
+        key = " ".join(title.casefold().split())
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            if con.execute('SELECT 1 FROM filed_issues WHERE repo=? AND pr=? AND title_key=?',
+                           (repo, number, key)).fetchone():
+                con.execute('ROLLBACK')
+                raise ValueError('an issue with this title was already filed from this PR')
+            seq = con.execute('SELECT COUNT(*) FROM filed_issues WHERE run_id=?',
+                              (run_id,)).fetchone()[0] + 1
+            now = time.time()
+            con.execute('INSERT INTO filed_issues(run_id,seq,repo,pr,head,title,title_key,depth,'
+                        'state,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                        (run_id, seq, repo, number, head, title, key, depth, 'recorded', now, now))
+            con.execute('COMMIT')
+            return seq
+
     def filed_titles(self, repo: str, number: int) -> list[str]:
         """The normalized titles of the issues the reviewer filed (or is filing) from a PR."""
         with self._connect() as con:

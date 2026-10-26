@@ -128,13 +128,15 @@ class FilePending(unittest.TestCase):
                         "state,created,updated) VALUES('r',1,?,7,?,?,?,1,'posted',1,1)",
                         (REPO, HEAD, title, " ".join(title.casefold().split())))
 
-    def file(self, reviews=APPROVED, now=None):
+    def file(self, reviews=APPROVED, now=None, branch="fix-7"):
         posts = []
 
         def write(loop, path, method, body, login):
             posts.append((path, body, login))
             return {"number": 100 + len(posts)}, ""
+        pr = None if branch is None else {"number": 7, "head": {"sha": HEAD, "ref": branch}}
         with mock.patch.object(gh, "reviews", return_value=reviews), \
+                mock.patch.object(gh, "pr", return_value=pr), \
                 mock.patch.object(broker, "_write", side_effect=write), \
                 mock.patch.object(broker, "_audit"):
             filed = shadow_issues.file_pending(self.loop, db=self.db, now=now)
@@ -154,6 +156,33 @@ class FilePending(unittest.TestCase):
         self.assertIn("Found by a shadow review (`deepseek-x`) of #7", body["body"])
         self.assertEqual(self.state(run), "posted")
         self.assertEqual(self.file()[1], [])                   # never twice
+
+    def test_its_lineage_is_recorded_as_the_reviewers_is(self):
+        # Tuck upheld the shadow on #1343: a shadow-found issue needs its filed_issues row, so
+        # the origin-PR hold (#324) and the lineage bound (#487) see it.
+        self.recorded("A finding")
+        filed, posts = self.file()
+        self.assertEqual(self.sup.filed_origin_pr(REPO, filed[0]), 7)
+        self.assertEqual(self.sup.filed_depth(REPO, filed[0]), 1)
+        self.assertIn("Filed by the Diaktoros host for a shadow review from PR #7", posts[0][1]["body"])
+        self.assertIn("Lineage depth 1.", posts[0][1]["body"])
+
+    def test_on_an_issue_fix_branch_it_is_one_deeper(self):
+        with ledger.connect(self.db) as con:             # PR #7 fixes issue 40, itself depth 2
+            con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,state,attempts,turn_key,"
+                        "created,updated) VALUES('o','do',?,3,?,'reviewer','succeeded',0,'',1,1)",
+                        (REPO, HEAD))
+            con.execute("INSERT INTO filed_issues(run_id,seq,repo,pr,head,title,title_key,depth,"
+                        "state,issue_number,created,updated) VALUES('o',1,?,3,?,'t','t',2,"
+                        "'posted',40,1,1)", (REPO, HEAD))
+        self.recorded("A finding")
+        filed, _ = self.file(branch="diaktoros/issue-40")
+        self.assertEqual(self.sup.filed_depth(REPO, filed[0]), 3)
+
+    def test_an_unreadable_pr_files_nothing_this_sweep(self):
+        run = self.recorded("A finding")
+        self.assertEqual(self.file(branch=None)[1], [])
+        self.assertEqual(self.state(run), "recorded")
 
     def test_one_the_reviewer_filed_too_is_not_filed_again(self):
         self.reviewer_filed("Docs say the flag is --x")
@@ -191,8 +220,11 @@ class FilePending(unittest.TestCase):
             self.assertEqual(self.file()[1], [])
 
     def test_at_most_the_daily_cap(self):
-        for i in range(config.SHADOW_ISSUES_DAILY + 2):
-            self.recorded(f"Finding number {i} about something else entirely {i * 7}")
+        topics = ["Docs miss the flag", "Retry loops forever", "Lock is never freed",
+                  "Wrong exit code on refusal", "Cache key ignores head", "Timeout not budgeted",
+                  "Label list unsorted"]
+        for topic in topics[:config.SHADOW_ISSUES_DAILY + 2]:
+            self.recorded(topic)                               # distinct findings
         filed, _posts = self.file()
         self.assertEqual(len(filed), config.SHADOW_ISSUES_DAILY)
         self.assertEqual(self.file()[0], [])                   # the cap holds for the day
@@ -200,6 +232,7 @@ class FilePending(unittest.TestCase):
     def test_a_failed_post_is_uncertain_and_never_replayed(self):
         run = self.recorded("A finding")
         with mock.patch.object(gh, "reviews", return_value=APPROVED), \
+                mock.patch.object(gh, "pr", return_value={"number": 7, "head": {"ref": "fix-7"}}), \
                 mock.patch.object(broker, "_write", return_value=(None, "HTTP 502")):
             self.assertEqual(shadow_issues.file_pending(self.loop, db=self.db), [])
         self.assertEqual(self.state(run), "uncertain")
