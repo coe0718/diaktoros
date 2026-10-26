@@ -17,6 +17,9 @@ import urllib.request
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import test_app_cli as app_cli  # noqa: E402
+import test_token_file_settings as tfs  # noqa: E402
 from diaktoros import app_manifest as am  # noqa: E402
 
 HOST = "https://gw.example"
@@ -61,6 +64,15 @@ class Manifests(unittest.TestCase):
         self.assertEqual(seen, ["https://api.github.com/app-manifests/abc/conversions"])
         self.assertEqual(app["id"], 7)
 
+    def test_the_real_conversion_goes_through_the_network_guard(self):
+        # No post seam: the wizard's own POST is checked by the host guard before any socket
+        # opens, and the guard's refusal is never swallowed into a wizard message.
+        from diaktoros.config.host_guards import RealNetworkError
+        with mock.patch("urllib.request.urlopen") as urlopen, \
+                self.assertRaisesRegex(RealNetworkError, "api.github.com/app-manifests/abc/conversions"):
+            am.convert("abc")
+        urlopen.assert_not_called()
+
     def test_a_pasted_redirect_url_must_carry_this_apps_state(self):
         self.assertEqual(am.code_from("https://x.example/cb?code=abc&state=S1", "S1"), "abc")
         with self.assertRaisesRegex(am.WizardError, "not the code alone"):
@@ -79,8 +91,61 @@ class Manifests(unittest.TestCase):
                       steps)
         self.assertTrue(any("--ingress app-webhook" in s for s in steps))
         self.assertTrue(any(s.startswith("hermes dk protect") for s in steps))
+        only_reviewer = am.next_steps({"reviewer": made["reviewer"]}, "coe0718", False, "widgets")
+        self.assertIn('hermes dk protect --loop widgets --admin-token "<admin-login>"', only_reviewer)
+        self.assertIn('hermes dk protect --loop widgets --admin-token "w-dk-reader[bot]"', steps)
         fresh = am.next_steps(made, "coe0718", False, None)
         self.assertTrue(fresh[-1].startswith("hermes dk setup --repo OWNER/REPO --app"))
+
+
+class ForALoop(app_cli.Base):
+    """`create-apps --loop`: the loop's own host, its id as the prefix, its roles, and the
+    commands for that loop, read from a real loop file."""
+
+    def setUp(self):
+        super().setUp()
+        rc, out = self.run_cli(self.app_argv(reviewer=tfs.REV,
+                                             tokens=[(tfs.READER, self.pats["read"]),
+                                                     (tfs.REV, self.pats["rev"]),
+                                                     (tfs.FIX, self.pats["fix"])]))
+        self.assertEqual(rc, 0, out)
+
+    def create_apps(self, *argv):
+        seen = {}
+
+        def create(**kw):
+            seen.update(kw)
+            return {role: {"slug": f"{kw['prefix']}-{role}", "id": n,
+                           "login": f"{kw['prefix']}-{role}[bot]", "key_file": f"/k/{role}.pem"}
+                    for n, role in enumerate(kw["roles"], 1)}
+        with mock.patch.object(am, "create", side_effect=create):
+            rc, out = self.run_cli(["create-apps", "--owner", "acme", *argv])
+        return rc, out, seen
+
+    def test_the_loop_names_the_apps_their_host_and_their_next_steps(self):
+        from diaktoros import config
+        rc, out, seen = self.create_apps("--loop", "widgets")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((seen["prefix"], seen["host"], seen["roles"], seen["key_dir"]),
+                         ("widgets-dk", "https://gateway.example", ["reader", "reviewer", "fixer"],
+                          config.home() / "apps"))
+        self.assertIn('hermes dk identity --loop widgets --seat read --app "widgets-dk-reader[bot]', out)
+        self.assertIn("hermes dk app-webhook --loop widgets --set", out)
+
+    def test_a_loop_with_an_adjudicator_gets_its_app_too(self):
+        data = json.loads(self.loop_file().read_text())
+        data["adjudicator"] = {"route": "widgets-adjudicate", "profile": "default"}
+        self.loop_file().write_text(json.dumps(data))
+        rc, out, seen = self.create_apps("--loop", "widgets", "--prefix", "w2")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((seen["prefix"], seen["roles"]),
+                         ("w2", ["reader", "reviewer", "fixer", "adjudicator"]))
+
+    def test_an_unknown_loop_is_refused(self):
+        rc, out, seen = self.create_apps("--loop", "nope")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("cannot create Apps", out)
+        self.assertEqual(seen, {})
 
 
 class StepsParse(unittest.TestCase):
@@ -202,6 +267,19 @@ class BrowserRound(unittest.TestCase):
             self.create(roles=("reader",), open_url=opened.append, wait_s=0)
         self.assertEqual(opened, [])
         self.assertEqual((self.key_dir / "w-dk-reader.pem").read_text(), "someone's key")
+
+    def test_a_slug_clash_after_the_click_says_which_app_needs_a_key(self):
+        # GitHub may give the App another slug than its name's; if that file is already there the
+        # key cannot be saved, and the operator is told which App to give a new one.
+        self.key_dir.mkdir(parents=True)
+        (self.key_dir / "github-renamed.pem").write_text("another App's key")
+        renamed = lambda url: {"id": 77, "slug": "github-renamed", "pem": PEM, "webhook_secret": "w"}
+        with self.assertRaisesRegex(am.WizardError, r"App github-renamed \(id 77\) was made without a "
+                                                    "saved key: generate a new private key"):
+            am.create(owner="coe0718", org=False, prefix="w-dk", roles=("reader",), host=HOST,
+                      key_dir=self.key_dir, emit=lambda _l: None, post=renamed,
+                      open_url=self.browser(), wait_s=10)
+        self.assertEqual((self.key_dir / "github-renamed.pem").read_text(), "another App's key")
 
     def test_a_short_write_still_writes_the_whole_key(self):
         real = am.os.write

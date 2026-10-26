@@ -323,8 +323,10 @@ def next_steps(made: dict, owner: str, org: bool, loop_id: str | None) -> list[s
                       f"\"{made['reader']['login']}\"",
                       f"hermes dk app-webhook --loop {loop_id} --set"]
         if "reviewer" in made:
-            steps.append(f"hermes dk protect --loop {loop_id} --admin-token "
-                         f"\"{made.get('reader', made['reviewer'])['login']}\"")
+            # The ruleset admin is the reader App this run made (Administration: write), else
+            # whoever administers the repo: never the reviewer, which has no such permission.
+            admin = made["reader"]["login"] if "reader" in made else "<admin-login>"
+            steps.append(f"hermes dk protect --loop {loop_id} --admin-token \"{admin}\"")
     else:
         apps = " ".join(f"--app \"{rec['login']}={rec['id']}:{rec['key_file']}\""
                         for rec in made.values())
