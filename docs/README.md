@@ -24,7 +24,8 @@
 | Add issue automation | [Issues](issues.md) | Opt-in triage and maintainer-label issue fixing |
 | Add a notification feed | [Observer](observer.md) | Delivery-only notices, destination binding, batching and retries |
 | Evaluate trust and push risks | [Security](security.md) | Host/sandbox/broker boundary and explicit unattended-push policy |
-| Evaluate GitHub App identities | [GitHub App support](github-app-support.md) | What App bots can do on GitHub, observed (feasibility spike, not a feature yet) |
+| Run a loop as GitHub Apps | [Getting started with GitHub Apps](github-apps.md) | Make the Apps, set up or move a loop, events through the App's webhook, the merge check |
+| Evaluate GitHub App identities | [GitHub App support](github-app-support.md) | What App bots can and can't do on GitHub, observed |
 | Understand implementation | [Architecture](architecture.md) | Gates, ledgers, exact-head isolation, adjudication and reconciliation |
 | Test or contribute | [Development](development.md) | Development workflow and verification |
 

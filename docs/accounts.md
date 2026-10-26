@@ -129,7 +129,7 @@ Seat logins/file paths move through plugin settings and `apply`; preview first w
 
 If the reader is changed, default hook-editing commands now act as the new reader. Give it hook write or explicitly pass a mapped `--admin-token "<admin-login>"` to each hook operation. Naming an admin does not bypass repository access checks.
 
-### A GitHub App identity instead of an account (in progress)
+### A GitHub App identity instead of an account
 
 A seat or the reader can be a GitHub App's bot instead of a person's account (#1163): register
 an App, install it on the repository only, keep its private key in a 0600 file, and map it by its
@@ -237,6 +237,10 @@ For ordinary rotation, keep the same path and replace its contents with a new PA
 2. Replace the existing file privately and enforce mode 600.
 3. Run `selftest --loop ID --no-model` to check the mapped principal/access.
 4. Revoke the old PAT after the replacement is verified. For a suspected leak, revoke first even if that causes downtime.
+
+A GitHub App's key rotates the same way. On the App's settings page, generate a new private key,
+then write it over the same file privately (mode 600). Run `selftest --loop ID --no-model`, and
+once it passes, delete the old key on that page. A suspected leak: delete the old key first.
 
 Token files are read at use time; running work can encounter either credentials or an authentication gap depending on when it calls the host broker. Rotation is not an atomic transaction with all in-flight requests. Do not claim verification proves an already-running write was undone. A failed pre-write run may be retried; an ambiguous write must be reconciled rather than replayed.
 

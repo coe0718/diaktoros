@@ -1,9 +1,9 @@
-# GitHub App support (M0 feasibility spike)
+# GitHub App support
 
 What three GitHub App identities (reader, reviewer, fixer) can actually do on GitHub, observed on
-2026-10-21 against a throwaway repository. This page is the evidence for issue #1164 and gates the
-GitHub App authentication work tracked in #1163. Nothing here is a feature yet: loops still use
-the distinct accounts and tokens described in [Accounts](accounts.md).
+2026-10-21 against a throwaway repository in the M0 feasibility spike (#1164). This evidence
+shaped the App mode built in #1163, and the sections below record how each finding was answered.
+To set a loop up with Apps, see [Getting started with GitHub Apps](github-apps.md).
 
 ## How it was measured
 

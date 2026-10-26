@@ -214,6 +214,7 @@ To disable future fixer pushes use `fixer-push --loop ID --disable`; to pause ho
 
 ## Next steps
 
+- [Getting started with GitHub Apps](github-apps.md): run the loop's identities as GitHub Apps, with no personal accounts or PATs.
 - [Accounts](accounts.md): rotate a PAT without changing the file path.
 - [Settings](settings.md): change identities/models/defaults without reinstalling.
 - [Configuration](configuration.md): add isolated adjudication (not enabled by setup).
