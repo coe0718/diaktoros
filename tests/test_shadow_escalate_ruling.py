@@ -4,8 +4,8 @@ With ``shadow.escalate`` on, when the reviewer approved a head and the shadow re
 requested changes, the head is sent to the adjudicator once (``gate.shadow_escalation``, from the
 shadow's finish and the watchdog sweep). The adjudicator's prompt says the head is approved and
 carries the shadow review. ACCEPT overrules it: the hold lifts, ``ready`` and ``explain`` treat the
-approval as standing. REJECT keeps the hold; the decision is the operator's (part 3 hands upheld
-findings to the fixer).
+approval as standing. REJECT keeps the hold, and part 3 hands the upheld findings to the fixer
+(test_shadow_upheld_fix).
 """
 from __future__ import annotations
 
@@ -109,7 +109,7 @@ class Hold(Base):
         marker = self.mark_escalated()
         self.assertIn("waiting for its ruling", self.hold(marker)[0])
         self.ruled("REJECT")
-        self.assertIn("ruled REJECT on the shadow review", self.hold(marker)[0])
+        self.assertIn("upheld the shadow review", self.hold(marker)[0])   # #1004 part 3
         self.ruled("ACCEPT")                                  # the newest ruling wins
         held, note = self.hold(marker)
         self.assertEqual(held, "")

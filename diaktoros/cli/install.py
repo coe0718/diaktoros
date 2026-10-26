@@ -417,6 +417,11 @@ def cmd_init(args) -> int:
         "review_only": ([name.strip() for name in str(d["review_only"]).split(",") if name.strip()]
                         if getattr(args, "review_only", None) is None
                         else [name for name in args.review_only if name.strip()]),
+        # Agents that post as the operator's account (#757).
+        "operator_agents": ([name.strip() for name in str(d["operator_agents"]).split(",")
+                             if name.strip()]
+                            if getattr(args, "operator_agent", None) is None
+                            else [name for name in args.operator_agent if name.strip()]),
     }
     if raw["review_only_update"] and not getattr(args, "acknowledge_branch_push", False):
         print(BRANCH_PUSH_REFUSAL)
@@ -882,6 +887,9 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
                                        "never touches, comma-separated (blank: none)",
                                        d["review_only"], interactive).split(",") if name.strip()])
     argv += [f"--review-only={name.strip()}" for name in reviewed]
+    agents = (args.operator_agent if getattr(args, "operator_agent", None) is not None else
+              [name for name in str(d["operator_agents"]).split(",") if name.strip()])
+    argv += [f"--operator-agent={name.strip()}" for name in agents]
     if getattr(args, "review_only_update", None) is not None:
         argv.append(f"--review-only-update={args.review_only_update}")
     if getattr(args, "fixer_scope_lock", None) is not None:
@@ -1164,6 +1172,8 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                            "plugin setting, else no cap)")
     init.add_argument("--review-only", action="append", default=None,
                       help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting)")
+    init.add_argument("--operator-agent", action="append", default=None,
+                      help="a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated) (default: the plugin setting)")
     init.add_argument("--required-check", action="append", default=None,
                       help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
     init.add_argument("--shadow-profile", default=None,
@@ -1276,6 +1286,8 @@ def add_setup(sub) -> None:  # noqa: ANN001
                             "plugin setting, else no cap)")
     first.add_argument("--review-only", action="append", default=None,
                        help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting)")
+    first.add_argument("--operator-agent", action="append", default=None,
+                       help="a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated) (default: the plugin setting)")
     first.add_argument("--required-check", action="append", default=None,
                        help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
     first.add_argument("--shadow-profile", default=None,

@@ -212,6 +212,16 @@ class Sweep(fg.Base):
             self.assertEqual(con.execute("SELECT pr, action FROM operator_actions").fetchall(),
                              [(7, "hold")])
 
+    def test_an_operator_agents_hold_is_recorded_as_an_agent_hold(self):
+        # #757 (the shadow on #1329): the report counts an agent's holds apart from a person's.
+        self.loop = {**self.loop, "operator_agents": ["quill-bot"]}
+        hold = {**self.HOLD, "by": "quill-bot"}
+        self.sweep(lambda *a: (None, ""))                  # baseline
+        self.sweep(lambda *a: (hold, ""))
+        with ledger.connect(run_supervisor.production_ledger()) as con:
+            self.assertEqual(con.execute("SELECT pr, action FROM operator_actions").fetchall(),
+                             [(7, "agent hold")])
+
     def test_release_drops_the_record_and_an_unreadable_hold_keeps_it(self):
         self.st.pr_hold_set(7, self.HOLD)
         self.sweep(lambda *a: (None, "event page 1: boom"))
