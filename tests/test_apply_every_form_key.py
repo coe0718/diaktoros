@@ -61,6 +61,7 @@ PUSHES = {
     "auto_fix_daily": "4",
     "fix_daily_turns": "6",
     "review_only": "someone",
+    "operator_agents": "docs-agent, bug-hunter",
     "review_only_cap": "5",
     "observer_weekly_report": "tue 08:00",
     "ci_fix_cap": "2",

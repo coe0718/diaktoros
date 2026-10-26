@@ -185,6 +185,13 @@ SETTINGS_SCHEMA: dict = {
                     "description": "GitHub logins whose PRs the reviewer reviews but the fixer "
                                    "never touches: a changes-requested verdict goes back to the "
                                    "author. Not a fixer or a reviewer. Blank = not set here"},
+    "operator_agents": {"label": "Operator agents (comma-separated)", "type": "str",
+                        "default": "",
+                        "description": "GitHub logins of agents that post as the operator's own "
+                                       "account (an assistant, a docs or bug-hunting agent). Their "
+                                       "comments reach the seats as maintainer data, labelled "
+                                       "operator agent; not a fixer, a reviewer or another seat's "
+                                       "account. Blank = not set here"},
     "review_only_cap": {"label": "Review-only verdict cap", "type": "str", "default": "",
                         "description": "Verdicts the reviewer may give one review-only PR before it "
                                        "stops until a maintainer grants another round, a whole "
@@ -462,6 +469,9 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     if _form_value(settings, "review_only") is not None:
         overlaid["review_only"] = [name.strip() for name in str(d["review_only"]).split(",")
                                    if name.strip()]
+    if _form_value(settings, "operator_agents") is not None:
+        overlaid["operator_agents"] = [name.strip() for name in str(d["operator_agents"]).split(",")
+                                       if name.strip()]
     if _form_value(settings, "ci_fix_cap") is not None:
         overlaid["ci_fix_cap"] = config.check_ci_fix_cap(config._form_int(d["ci_fix_cap"].strip()), "settings")
     for key in ("review_only_cap", "review_only_daily"):

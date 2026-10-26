@@ -1015,7 +1015,16 @@ def explain_facts(loop: dict, number: int) -> dict:
         breach_marker = None               # no marker read: an unruled hold, never an error
     shadow = (shadow_hold(loop, number, head, marker=breach_marker)
               if isinstance(head, str) and head else ("", ""))
+    # #757: commits that show as a seat's but no seat turn pushed. Report-only, never a blocker.
+    stray, stray_error = [], ""
+    if isinstance(pr, dict):
+        try:
+            from . import authorship
+            stray, stray_error = authorship.scan(loop, number)
+        except Exception as exc:
+            stray_error = f"{type(exc).__name__}: {exc}"
     return {"review_only_conflict": ro_conflict, "hold": hold, "hold_error": hold_error,
+            "misattributed": stray, "misattributed_error": stray_error,
             "shadow_hold": shadow,
             "pr": pr, "pr_error": pr_error, "reviews": reviews, "reviews_error": reviews_error,
             "armed": armed, "armed_error": armed_error, "read_at": time.time(),
@@ -1274,7 +1283,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             if not head:
                 blockers.append("PR head missing or malformed — no gate can authorize a run")
             if hold:
-                blockers.append(pr_hold.line(hold))
+                blockers.append(pr_hold.line(hold, loop))
             elif hold_error:
                 blockers.append(f"hold state unreadable ({hold_error}) — no turn starts until it "
                                 "is read")
@@ -1371,7 +1380,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                   "no review can be requested without a known head")
     elif hold or hold_error:
         kind = "operator" if hold else "retry"
-        action = (f"{pr_hold.line(hold)}" if hold else
+        action = (f"{pr_hold.line(hold, loop)}" if hold else
                   f"retry the hold read for {repo}#{number} ({hold_error}) — no turn starts until "
                   "it is known")
     elif pr.get("draft"):
@@ -1583,7 +1592,21 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         "gate_decisions": [gate_decisions.line(e) for e in gate_decisions.for_pr(loop, number)],
         "gate_failures": gate_failed, "blockers": blockers, "next": {"kind": kind, "action": action},
         "shadow": {"hold": shadow_held, "note": shadow_note},
+        "authorship": authorship_lines(facts),
+        "operator_agents": sorted(config.operator_agents(loop)),
     }
+
+
+def authorship_lines(facts: dict) -> list[str]:
+    """What ``explain`` says about commit authorship (#757): one line per commit that shows as a
+    seat's but no seat turn pushed, or why that could not be checked. Empty when all is well.
+    Never a blocker: nothing here stops a turn."""
+    from . import authorship
+    lines = [f"misattributed: {authorship.line(entry)}"
+             for entry in facts.get("misattributed") or [] if isinstance(entry, dict)]
+    if facts.get("misattributed_error"):
+        lines.append(f"not checked: {facts['misattributed_error']}")
+    return lines
 
 
 # -- side effects -------------------------------------------------------------

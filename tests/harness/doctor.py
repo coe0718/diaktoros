@@ -487,6 +487,8 @@ DOCTOR_FIXTURE_CHECKS = frozenset({
     "fixer-push", "sandbox:caps",
     # Signing what the loop posts (#197): on by default, so the fixture reads as on.
     "attribution",
+    # Commit authorship (#757): commits that show as a seat's with no seat turn behind them.
+    "authorship",
     "token:rev-coach", "token:dev-fixer", "token:read-acct", "read_token",
     "route:widgets-review", "route:widgets-fix", "route:widgets-breach",
     # Route/role isolation (#105): each route runs its own seat's gate shim.

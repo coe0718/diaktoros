@@ -147,6 +147,10 @@ def _rows(loop: dict) -> list[_Row]:
     schema("review_only", ("review_only",), list(loop.get("review_only") or []),
            on=bool(loop.get("review_only")),
            off="every author's PR may be fixed by the fixer")
+    schema("operator_agents", ("operator_agents",), list(loop.get("operator_agents") or []),
+           on=bool(loop.get("operator_agents")),
+           off="no agent is named as posting from the operator's account",
+           note="their comments reach the seats as maintainer data, labelled operator agent")
     schema("review_only_cap", ("review_only_cap",), config.review_only_cap(loop),
            derived=f"cap ({loop['cap']})")
     schema("ci_fix_cap", ("ci_fix_cap",), config.ci_fix_cap(loop))
