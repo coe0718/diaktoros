@@ -1061,10 +1061,10 @@ def hold_explanation(row: dict) -> dict:
     if uncertain:
         code = 'external_write_guard'
     text = {
-        'external_write_guard': 'External write outcome requires inspection; never replay this run.',
+        'external_write_guard': 'Recorded run has external write evidence or an uncertain outcome.',
         'run_waiting': 'Recorded run is waiting; the policy-specific reason is not structured yet.',
-        'run_failed': 'Recorded run failed; inspect host eligibility before any operator action.',
-        'run_cancelled': 'Recorded run was cancelled; inspect host eligibility before any operator action.',
+        'run_failed': 'Recorded run failed.',
+        'run_cancelled': 'Recorded run was cancelled.',
         'unknown': 'The ledger does not establish a supported hold explanation.',
     }[code]
     due = row.get('retry_at')
@@ -1080,8 +1080,7 @@ def hold_explanation(row: dict) -> dict:
     automatic = 'never' if uncertain else 'unknown'
     due_text = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(due)) if due is not None else 'unknown'
     text += (f" Ledger only (partial). Waiting for: {waiting.replace('_', ' ')}. "
-             f"Automatic resume: {automatic}. Recorded earliest eligibility: {due_text}. "
-             "Operator action: inspect.")
+             f"Recorded earliest recheck: {due_text}.")
     return {'schema': 1, 'reason_code': code, 'run_id': run_id, 'head': head,
             'evidence_source': 'run_ledger', 'completeness': 'partial',
             'waiting_for': waiting, 'automatic_resume': automatic,
@@ -1099,13 +1098,15 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
         return 'outcome uncertain — never replayed; inspect external state'
     if row['state'] == 'waiting' and str(row.get('error') or '').startswith('held: '):
         due = max(0, int((row['retry_at'] or 0) - time.time()))
-        return (f"waits for the reset, no retry spent — starts in {due}s on the next event or "
-                "armed watchdog sweep")
+        return (f"no retry spent — recorded earliest recheck in {due}s on the next event or "
+                "armed watchdog sweep; a start still depends on host eligibility")
     if row['state'] == 'waiting':
         due = max(0, int((row['retry_at'] or 0) - time.time()))
         return (f"attempt {(row['retries'] or 0) + 1} of {MAX_RETRIES} due in {due}s "
-                "(starts on the next event or armed watchdog sweep)")
-    if (row['state'] == 'cancelled' and policy_cancelled(row['error'])) or policy_hold(row['error']):
+                "(recorded earliest recheck on the next event or armed watchdog sweep; "
+                "a start still depends on host eligibility)")
+    if row['write'] is None and ((row['state'] == 'cancelled' and policy_cancelled(row['error']))
+                                 or policy_hold(row['error'])):
         # The retry names the row's own seat: `retry --seat fixer` filters an issue_fixer row out.
         if row['seat'] == 'issue_fixer':
             return (f"no external write — issue fixes are off or no longer allowed: they need "

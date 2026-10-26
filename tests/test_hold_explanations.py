@@ -120,6 +120,14 @@ class LedgerExplanations(unittest.TestCase):
         self.assertEqual(result['automatic_resume'], 'never')
         self.assertIsNone(result['next_eligible_start'])
         self.assertNotIn('pending', result['text'])
+        # Error prose cannot override durable evidence, even when it resembles a recoverable hold.
+        for state in ('waiting', 'failed', 'cancelled', 'uncertain'):
+            guarded = self.row(state=state, error=run_supervisor.POLICY_CANCELLATIONS[0])
+            self.assertIsNotNone(guarded['write'])
+            advice = run_supervisor.next_step(guarded, 'widgets')
+            self.assertNotIn('hermes dk retry', advice)
+            self.assertNotIn('no external write', advice)
+            self.assertNotIn('hermes dk retry', self.desktop_view()['stuck'][0]['next'])
 
     def test_backend_contract_fixture_matrix(self):
         cases = {'run_waiting': self.row(), 'run_failed': self.row(state='failed'),
@@ -129,6 +137,104 @@ class LedgerExplanations(unittest.TestCase):
         result = {name: run_supervisor.hold_explanation(row) for name, row in cases.items()}
         fixture = pathlib.Path(__file__).parent / 'fixtures/desktop_hold_explanations.json'
         self.assertEqual(result, json.loads(fixture.read_text()))
+
+    def desktop_view(self, db=None):
+        with mock.patch.object(config, 'readable_loops', return_value=([self.loop], [])), \
+                mock.patch.object(run_supervisor, 'production_ledger', return_value=db or self.db):
+            return desktop_api.pr_view('widgets', 7)
+
+    def test_missing_ledger_is_unavailable_but_successfully_read_empty_is_available(self):
+        missing = pathlib.Path(self.temp.name) / 'missing.sqlite'
+        view = self.desktop_view(missing)
+        self.assertIs(view['ledger_available'], False)
+        self.assertEqual(view['stuck'], [])
+        self.assertFalse(missing.exists())
+        with ledger.connect(self.db) as con:
+            con.execute('DELETE FROM runs')
+        view = self.desktop_view()
+        self.assertIs(view['ledger_available'], True)
+        self.assertEqual(view['stuck'], [])
+        self.assertEqual(view['turns_total'], 0)
+
+    def test_real_ledger_facts_do_not_duplicate_or_override_host_advice(self):
+        for state in ('waiting', 'failed', 'cancelled', 'uncertain'):
+            error = (run_supervisor.POLICY_CANCELLATIONS[0] if state == 'cancelled'
+                     else 'held: private /home/private ghp_SECRET')
+            with self.subTest(state=state):
+                row = self.row(state=state, error=error)
+                stuck = self.desktop_view()['stuck'][0]
+                self.assertEqual(stuck['next'], run_supervisor.next_step(row, 'widgets'))
+                text = stuck['explanation']['text']
+                self.assertNotIn('Automatic resume:', text)
+                self.assertNotIn('Operator action:', text)
+                for advice in ('inspect ', 'never replay', 'hermes dk retry', 'starts'):
+                    self.assertNotIn(advice, text.lower())
+                if state == 'waiting':
+                    self.assertIn('recorded earliest recheck', stuck['next'])
+                    self.assertNotIn('starts', stuck['next'])
+                elif state == 'failed':
+                    self.assertIn('re-arm: hermes dk retry', stuck['next'])
+                elif state == 'cancelled':
+                    self.assertIn('re-admit it:', stuck['next'])
+                else:
+                    self.assertIn('reconcile DB', stuck['next'])
+                    self.assertNotIn('hermes dk retry', stuck['next'])
+
+    def test_waiting_backoff_and_policy_hold_only_offer_a_recorded_recheck(self):
+        for error in ('held: provider window', 'transient worker error'):
+            with self.subTest(error=error):
+                row = self.row(error=error)
+                with mock.patch.object(run_supervisor.time, 'time', return_value=1200):
+                    advice = run_supervisor.next_step(row)
+                self.assertIn('recorded earliest recheck', advice)
+                self.assertIn('34s', advice)
+                self.assertNotIn('starts', advice)
+                self.assertNotIn('waits for the reset', advice)
+                self.assertIn('host eligibility', advice)
+
+    def test_real_malformed_head_is_withheld_without_suppressing_the_row(self):
+        self.row()
+        with ledger.connect(self.db) as con:
+            con.execute('UPDATE runs SET head=?', ('ghp_SECRET',))
+        view = self.desktop_view()
+        self.assertIs(view['ledger_available'], True)
+        self.assertEqual(len(view['stuck']), 1)
+        self.assertIsNone(view['stuck'][0]['explanation']['head'])
+        self.assertEqual(view['stuck'][0]['head'], '')
+        self.assertEqual(view['turns'][0]['head'], '')
+        self.assertNotIn('ghp_SEC', json.dumps(view))
+
+    def test_production_pr_route_missing_and_unreadable_ledger(self):
+        import importlib.util
+        from hermes_prereqs import skip_or_fail
+        for module in ('fastapi', 'httpx'):
+            if importlib.util.find_spec(module) is None:
+                skip_or_fail(self, module + ' is not installed')
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        root = pathlib.Path(__file__).resolve().parents[1]
+        spec = importlib.util.spec_from_file_location('hold_explanations_api', root / 'dashboard/plugin_api.py')
+        assert spec is not None and spec.loader is not None
+        api = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(api)
+        app = FastAPI()
+        app.include_router(api.router, prefix='/api/plugins/diaktoros')
+        missing = pathlib.Path(self.temp.name) / 'missing.sqlite'
+        with mock.patch.object(config, 'readable_loops', return_value=([self.loop], [])), \
+                mock.patch.object(run_supervisor, 'production_ledger', return_value=missing), \
+                TestClient(app, raise_server_exceptions=False) as client:
+            response = client.get('/api/plugins/diaktoros/pr?loop=widgets&pr=7')
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertIs(response.json()['ledger_available'], False)
+            actual = response.json()
+            actual['read_at'] = 1800000000  # freeze only the response's volatile read timestamp
+            fixture = pathlib.Path(__file__).parent / 'fixtures/desktop_missing_ledger_pr.json'
+            self.assertEqual(actual, json.loads(fixture.read_text()))
+            self.assertFalse(missing.exists())
+            missing.write_bytes(b'not a SQLite database')
+            response = client.get('/api/plugins/diaktoros/pr?loop=widgets&pr=7')
+            self.assertEqual(response.status_code, 503, response.text)
+            self.assertEqual(response.json(), {'detail': 'Desktop read unavailable; retry the read.'})
 
     def test_presentation_reads_do_not_modify_artifacts_or_start_work(self):
         row = self.row()
