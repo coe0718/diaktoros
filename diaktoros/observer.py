@@ -643,6 +643,20 @@ def _post(loop: dict, block: dict, tag: str, delivery: str = "", urgent: bool = 
     return False, "POST result unverified; manual reconciliation required (not automatically retried)", True
 
 
+def _mark_posting(st, key: str) -> bool:
+    """Record, just before the POST, that this claim's POST is starting (#1314). A stale claim
+    without the mark provably never reached the gateway, so ``retry`` may send it; one with the
+    mark may have, so it stays uncertain. False: the claim is gone or no longer pending."""
+    with _lock(st.observations):
+        data = _read(st.observations)
+        entry = data["entries"].get(key)
+        if not isinstance(entry, dict) or entry.get("status") != "pending":
+            return False
+        entry["posting_at"] = time.time()
+        _save(st.observations, data)
+    return True
+
+
 def _receipt(st, key: str, delivered: bool, error: str = "", uncertain: bool = False) -> None:
     """Record how a delivery ended, and free the members of a digest batch when it lands."""
     with _lock(st.observations):
@@ -774,6 +788,9 @@ def _deliver(loop: dict, st, key: str, text: str, tag: str, event: str, number, 
                 and latest and gh.review_state(latest) == "APPROVED"
                 and str(latest.get("id")) == entry.get("identity")):
             text = _without_next_turn(text)
+    if not _mark_posting(st, key):
+        log(f"observer: {event} #{number} claim is no longer pending — not sent")
+        return False
     delivered, error, uncertain = _post(loop, block_for(loop, event, number, head, text, url),
                                         tag, delivery, urgent)
     _receipt(st, key, delivered, error, uncertain)
@@ -846,6 +863,8 @@ def send_report(loop: dict, st, identity: str, text: str) -> bool:
             _save(st.observations, data)
         block = {"event": "report", "loop": loop.get("id"), "pr": "", "head": "", "url": url,
                  "at": now_iso(), "message": text}
+        if not _mark_posting(st, key):
+            return False
         delivered, error, uncertain = _post(loop, block, tag, delivery)
         _receipt(st, key, delivered, error, uncertain)
         log(f"observer: weekly report {identity} " + ("delivered" if delivered else
@@ -883,6 +902,16 @@ def retry(loop: dict, st) -> int:
                 if (status == "failed" and entry.get("retryable") is True
                         and int(entry.get("attempts") or 0) < MAX_ATTEMPTS):
                     pending.append((key, dict(entry)))
+                elif (status == "pending" and now - float(entry.get("at") or 0) > STALE_CLAIM_S
+                        and not entry.get("posting_at")):
+                    # #1314: the sender stopped before the POST began (no posting mark), so the
+                    # gateway never saw it: a definite pre-POST failure, resent like one.
+                    entry.update(status="failed", retryable=True,
+                                 attempts=int(entry.get("attempts") or 0) + 1,
+                                 error="the sender stopped before the POST; resending")
+                    # A digest's members stay `digesting`: the resent batch carries them.
+                    if int(entry["attempts"]) < MAX_ATTEMPTS:
+                        pending.append((key, dict(entry)))
                 elif status == "pending" and now - float(entry.get("at") or 0) > STALE_CLAIM_S:
                     entry["status"] = "uncertain"
                     entry["error"] = "sender died before receipt; POST outcome unknown; reconcile manually"
@@ -916,6 +945,8 @@ def retry(loop: dict, st) -> int:
                  "url": entry.get("url") or "", "at": now_iso(), "message": text}
         if entry.get("batch"):
             block["count"] = len(entry["batch"])
+        if not _mark_posting(st, key):
+            continue
         delivered, error, uncertain = _post(loop, block, tag, delivery,
                                             bool(entry.get("urgent")))
         _receipt(st, key, delivered, error, uncertain)
@@ -972,6 +1003,8 @@ def flush(loop: dict, st, wait_s: int = 0) -> bool:
                 data["entries"][member]["status"] = "digesting"
             _save(path, data)
 
+        if not _mark_posting(st, key):
+            return False
         delivered, error, uncertain = _post(loop, {"event": DIGEST_EVENT, "loop": loop.get("id"),
                                         "count": len(members), "at": now_iso(), "message": text},
                                  tag, delivery)
