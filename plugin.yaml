@@ -260,6 +260,11 @@ config_schema:
     type: str
     default: ""
     description: "Glob patterns, e.g. '.github/**, scripts/release*'. If a reviewed diff touches one, the loop never approves it: when the reviewer would approve, the approval is left to a person (the head is held, one notice per head); REQUEST_CHANGES still works. '*' also matches '/'. Blank = not set here (an unset list means no path is reserved)"
+  ci_coverage:
+    label: "What each CI check covers (NAME=COVERS, ';;' between entries)"
+    type: str
+    default: ""
+    description: "Tells the reviewer what a required check ran, e.g. 'tests (3.14)=full unit suite and harness'. A covering check that is green at the head, as the host read it, moves what it covers out of the review's list of unchecked items; a failed, running or missing one does not. Only a check that gates (named in required checks, when that is set) can be cited. Blank = not set here (an unset map means the reviewer is told nothing)"
   generated:
     label: "Generated files (PATH[,PATH]=COMMAND, ';;' between entries)"
     type: str

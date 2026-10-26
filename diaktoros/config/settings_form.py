@@ -247,6 +247,15 @@ SETTINGS_SCHEMA: dict = {
                                    "(the head is held, one notice per head); REQUEST_CHANGES "
                                    "still works. '*' also matches '/'. Blank = not set here (an "
                                    "unset list means no path is reserved)"},
+    "ci_coverage": {"label": "What each CI check covers (NAME=COVERS, ';;' between entries)",
+                    "type": "str", "default": "",
+                    "description": "Tells the reviewer what a required check ran, e.g. 'tests "
+                                   "(3.14)=full unit suite and harness'. A covering check that "
+                                   "is green at the head, as the host read it, moves what it "
+                                   "covers out of the review's list of unchecked items; a failed, running "
+                                   "or missing one does not. Only a check that gates (named in "
+                                   "required checks, when that is set) can be cited. Blank = not "
+                                   "set here (an unset map means the reviewer is told nothing)"},
     "generated": {"label": "Generated files (PATH[,PATH]=COMMAND, ';;' between entries)",
                   "type": "str", "default": "",
                   "description": "Generated files the host regenerates when a PR's only merge "
@@ -473,6 +482,9 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     if _form_value(settings, "human_paths") is not None:
         overlaid["human_paths"] = config.check_human_paths(
             config.split_human_paths(d["human_paths"]), "settings")
+    if _form_value(settings, "ci_coverage") is not None:
+        overlaid["ci_coverage"] = config.parse_ci_coverage(
+            config.split_ci_coverage(d["ci_coverage"]), "settings")
     if _form_value(settings, "generated") is not None:
         overlaid["generated"] = config.parse_generated(
             config.split_generated(d["generated"]), "settings")
