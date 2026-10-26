@@ -42,5 +42,19 @@ class Entry(unittest.TestCase):
         self.assertIn('"PYTHONPATH": str(Path(__file__).resolve().parents[2])', source)
 
 
+class WriteRecordsDoc(unittest.TestCase):
+    def test_docstring_lists_every_table_the_function_checks(self):
+        # Drift guard (#808): a reader deciding whether a run may be re-armed goes by the
+        # docstring, so each table the function queries must be named in it.
+        import inspect
+        import re
+        source = inspect.getsource(run_supervisor.write_records)
+        tables = set(re.findall(r"\bFROM\s+(\w+)", source))
+        self.assertGreaterEqual(len(tables), 7, tables)  # runs + the six record tables
+        doc = run_supervisor.write_records.__doc__
+        for table in sorted(tables):
+            self.assertIn(f"``{table}``", doc, f"docstring omits the {table} table")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -196,6 +196,25 @@ class Sweep(fg.Base):
         self.assertEqual(self.st.late_triage(), {})
         self.assertNotIn("triage queued late", self.status_out())
 
+    def test_a_late_triage_entry_is_dropped_when_triage_is_off_or_the_read_fails(self):
+        # #1136: the cleanup sat behind the triage-enabled check and the open-issues read.
+        self.sweep([issue(7), issue(8)])
+        self.assertEqual(sorted(self.st.late_triage()), [7, 8])
+        self.set_run_state(7, "succeeded")
+        self.set_run_state(8, "succeeded")
+        failing = mock.Mock(return_value=(None, "HTTP 502"))
+        with mock.patch.object(triage_sweep, "log"):
+            self.sweep(None, read=failing)            # the issue read fails
+        failing.assert_called_once()
+        self.assertEqual(self.st.late_triage(), {})
+        self.sweep([issue(9)])                        # note one more, then turn triage off
+        self.set_run_state(9, "succeeded")
+        self.loop = config.load_id("one")
+        with mock.patch.object(gh, "open_issues_read") as read:
+            self.sweep([])
+        read.assert_not_called()
+        self.assertEqual(self.st.late_triage(), {})
+
     def test_status_names_an_issue_the_sweep_queued_late(self):
         self.sweep([issue(7)])
         out = io.StringIO()

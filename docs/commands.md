@@ -88,6 +88,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | install a loop | [`setup`](#setup) (guided), or [`init`](#init) (flag by flag) |
 | make the loop's GitHub Apps, one click each | [`create-apps`](#create-apps) |
 | check an install before going live | [`doctor`](#doctor), [`selftest`](#selftest) |
+| see what updating the plugin picks up, and update it | [`update`](#update) |
 | move to a renamed plugin or repository | [`migrate`](#migrate) |
 | back up an install, or restore one | [`backup`](#backup), [`restore`](#restore) |
 | turn the loop on or off | [`arm`](#arm) |
@@ -426,6 +427,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
+| `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting) |
 | `--ingress` | `repo-hooks` \| `app-webhook` |  | where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks) |
 | `--ingress-app` | `INGRESS_APP` |  | with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app) |
 | `--merge-check` | `auto` \| `on` \| `off` |  | post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off |
@@ -558,6 +560,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
+| `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting) |
 | `--ingress` | `repo-hooks` \| `app-webhook` |  | where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks) |
 | `--ingress-app` | `INGRESS_APP` |  | with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app) |
 | `--merge-check` | `auto` \| `on` \| `off` |  | post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off |
@@ -658,6 +661,8 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve (repeat it); replaces the list (one of `--human-path`, `--no-human-paths`) |
 | `--no-human-paths` |  |  | clear the list: no path is reserved for a human (one of `--human-path`, `--no-human-paths`) |
+| `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it); replaces the map (one of `--ci-covers`, `--no-ci-coverage`) |
+| `--no-ci-coverage` |  |  | clear the map: the reviewer is told nothing about what a check covers (one of `--ci-covers`, `--no-ci-coverage`) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox (repeat it); replaces the list (one of `--generated`, `--no-generated`) |
 | `--no-generated` |  |  | clear the list: the conflict shortcut is off (one of `--generated`, `--no-generated`) |
 | `--ingress` | `repo-hooks` \| `app-webhook` |  | where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks) |
@@ -941,6 +946,45 @@ a real isolated seat turn. To prove the isolated path end to end, use [`selftest
 | `--offline` |  |  | skip every network probe, each reported as not probed: gateway reachability, repo hooks, review-only push access, token expiry and scopes, triage labels, branch protection, plugin version |
 | `--strict` |  |  | treat a check that could not be decided as a failure |
 | `--repair` |  |  | restore this loop's own routes from the plugin's intent record (same secret) before checking; the only write doctor makes |
+<!-- /flags -->
+
+### update
+
+Shows what updating the installed plugin would pick up, and with `--apply` does it. Hermes's own
+`plugins check-updates` reports a pinned install as up to date; this compares the installed commit
+with `main`'s head (or `--ref`) on GitHub, through the same comparison doctor's `plugin-version`
+check reads.
+
+```bash
+hermes dk update --loop "<loop-id>"
+hermes dk update --loop "<loop-id>" --ref v0.3.0
+hermes dk update --loop "<loop-id>" --apply
+```
+
+By default it only reads. It prints the installed commit, the target commit, how many commits the
+update picks up, the merged PRs among them (squash `title (#N)` and `Merge pull request #N`
+commits; a direct push counts as a commit only), and the exact install line. GitHub's compare lists
+at most 250 commits, so past that the PR list says it is partial.
+
+- `--apply` runs that install line with `--ref` set to the target's commit, then
+  `hermes dk doctor --loop <id>`, and reports the new commit. It refuses while any run is in
+  flight or uncertain in the host ledger (or the ledger cannot be read), because a reinstall
+  mid-turn would swap code under a live worker. It holds migrate's lock while it installs, so a
+  second `update --apply` or `migrate` is refused. Exit `1` if the install failed, the commit is
+  not the expected one, or doctor reports a failure.
+- Offline or unreadable (no network, no read token, GitHub error, an install that is not a git
+  checkout): it says the count is unknown, guesses none, and still prints the install line. With
+  `--apply` and no resolvable commit it installs nothing.
+- It needs a configured loop only for its read token; it does not change the loop.
+- The running process keeps the old code until Hermes restarts: restart the gateway after an
+  update.
+
+<!-- flags:update -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` |  | loop id whose read token queries GitHub (default: the only configured loop) |
+| `--ref` | `SHA|TAG` |  | the commit or tag to update to (default: main's head) |
+| `--apply` |  |  | run the install line, then doctor, and report the new commit; refused while a loop turn is running |
 <!-- /flags -->
 
 ### migrate
