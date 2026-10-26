@@ -428,6 +428,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--shadow-profile` | `SHADOW_PROFILE` |  | the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted (default: the plugin setting, else none) |
 | `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5) |
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
+| `--shadow-file-issues` | `on` \| `off` |  | on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914) (default: the plugin setting, else off) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
 | `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting) |
@@ -562,6 +563,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--shadow-profile` | `SHADOW_PROFILE` |  | the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted (default: the plugin setting, else none) |
 | `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5) |
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
+| `--shadow-file-issues` | `on` \| `off` |  | on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914) (default: the plugin setting, else off) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
 | `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting) |
@@ -665,6 +667,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--no-shadow` |  |  | turn shadow reviews off (one of `--shadow-profile`, `--no-shadow`) |
 | `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (needs a shadow profile) |
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 |
+| `--shadow-file-issues` | `on` \| `off` |  | on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914); needs a shadow profile |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve (repeat it); replaces the list (one of `--human-path`, `--no-human-paths`) |
 | `--no-human-paths` |  |  | clear the list: no path is reserved for a human (one of `--human-path`, `--no-human-paths`) |
 | `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it); replaces the map (one of `--ci-covers`, `--no-ci-coverage`) |

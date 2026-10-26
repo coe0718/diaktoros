@@ -463,6 +463,23 @@ prompt says the head is approved and includes the shadow review as host-recorded
 
 If a later shadow review at the same head requests changes again after the ruling, that review goes for a ruling of its own.
 
+**Filing its issues (`shadow.file_issues`, #914).** Off by default. A shadow review runs in no-write
+mode, so an issue it asks to file is recorded in the run ledger (`shadow_issues`), checked exactly as
+the reviewer's would be: a title, a body, labels from the loop's triage list and never the fix label.
+The shadow gets the same "accepted" a filing gets. With `file_issues` on, the watchdog sweep files
+each one once the real review exists at that head:
+- **Who files it:** the **reader**, not the reviewer, since the reviewer didn't find it. So the reader
+  needs issue write access (a PAT with `repo`, or a reader App with Issues: Read and write).
+- **How it reads:** it's labelled `shadow-found`, and opens with a line naming the shadow model, the
+  PR and the head.
+- **What's skipped:** an issue the reviewer already filed from that PR, with the same title or one
+  close to it, is marked `duplicate` and never filed.
+- **Limits:** at most 5 a day per loop. An unreadable review files nothing that sweep, and a head the
+  real review never reaches is dropped after 7 days.
+
+Set it with `set`/`init`/`setup --shadow-file-issues on|off`, the settings form's *File the shadow's
+issues*, or the loop file.
+
 A ruling answers the shadow review its prompt showed, not whichever review is newest when the ruling lands: the host records that review's run id with the ruling (`rulings.shadow_run`), and the hold, `ready`, `explain` and the sweep's re-escalation all count an ACCEPT against that review only. A second shadow review that lands during the adjudicator's turn therefore stays held and is sent for its own ruling. A ruling recorded before this column existed has no run id and is matched by time, as before.
 
 Without an adjudicator, the hold just waits for you.

@@ -347,7 +347,10 @@ def cmd_init(args) -> int:
             (args.shadow_every if getattr(args, "shadow_every", None) is not None
              else settings_form._form_value(d, "shadow_every")), "init",
             escalate=(args.shadow_escalate if getattr(args, "shadow_escalate", None) is not None
-                      else settings_form._form_value(d, "shadow_escalate"))) or {}
+                      else settings_form._form_value(d, "shadow_escalate")),
+            file_issues=(args.shadow_file_issues
+                         if getattr(args, "shadow_file_issues", None) is not None
+                         else settings_form._form_value(d, "shadow_file_issues"))) or {}
     except config.ConfigError as exc:
         print(f"refused: {exc}")
         return 2
@@ -877,6 +880,8 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
         argv.append(f"--shadow-every={args.shadow_every}")
     if getattr(args, "shadow_escalate", None) is not None:
         argv.append(f"--shadow-escalate={args.shadow_escalate}")
+    if getattr(args, "shadow_file_issues", None) is not None:
+        argv.append(f"--shadow-file-issues={args.shadow_file_issues}")
     reviewed = (args.review_only if getattr(args, "review_only", None) is not None else
                 [name for name in _ask("GitHub logins whose PRs the reviewer reviews but the fixer "
                                        "never touches, comma-separated (blank: none)",
@@ -1177,6 +1182,8 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                      help="shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5)")
     init.add_argument("--shadow-escalate", choices=("on", "off"), default=None,
                       help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off)")
+    init.add_argument("--shadow-file-issues", choices=("on", "off"), default=None,
+                      help="on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914) (default: the plugin setting, else off)")
     init.add_argument("--human-path", action="append", default=None,
                       help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     init.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
@@ -1289,6 +1296,8 @@ def add_setup(sub) -> None:  # noqa: ANN001
                       help="shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5)")
     first.add_argument("--shadow-escalate", choices=("on", "off"), default=None,
                        help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off)")
+    first.add_argument("--shadow-file-issues", choices=("on", "off"), default=None,
+                       help="on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914) (default: the plugin setting, else off)")
     first.add_argument("--human-path", action="append", default=None,
                        help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     first.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",

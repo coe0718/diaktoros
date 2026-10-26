@@ -260,6 +260,11 @@ config_schema:
     type: str
     default: ""
     description: "on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004). Needs shadow every = 1. Blank = not set here: the loop keeps its own value (default: off)"
+  shadow_file_issues:
+    label: "File the shadow's issues"
+    type: str
+    default: ""
+    description: "on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914). Blank = not set here: the loop keeps its own value (default: off)"
   human_paths:
     label: "Human-only paths (comma-separated globs)"
     type: str
