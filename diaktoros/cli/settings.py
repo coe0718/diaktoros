@@ -2067,9 +2067,12 @@ def cmd_identity(args) -> int:
     form_login = str(settings_form.settings_defaults(cli_common._SETTINGS).get(form_key) or "").strip() \
         if form_key else ""
     if form_login and form_login.lower() != login.lower():
-        # #1296: `apply` refuses to move it back, but the form should say what the loop does.
+        # #1296: `apply` refuses to move a seat off an App, but moves a PAT seat as the form says
+        # (#1306): the note says which, so it never promises a refusal that will not come.
+        then = ("or `apply` refuses to run" if cli_common._app_ref(updated, login) else
+                f"or the next `apply` moves the {seat} back to {form_login}")
         print(f"  note: the plugin settings still name {form_login} for the {seat}: set "
-              f"{form_key} to {login} (or blank it), or `apply` refuses to run")
+              f"{form_key} to {login} (or blank it), {then}")
     steps = [f"hermes dk doctor --loop {lid}", f"hermes dk selftest --loop {lid} --no-model"]
     if seat == "reviewer" and config.merge_check_on(updated):
         steps.append(f"hermes dk protect --loop {lid} --admin-token LOGIN   (the reviewer is an "

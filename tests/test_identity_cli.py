@@ -194,7 +194,19 @@ class Identity(app_cli.Base):
                                settings={"reviewer_login": tfs.REV})
         self.assertEqual(rc, 0, out)
         self.assertIn(f"the plugin settings still name {tfs.REV} for the reviewer: set "
-                      f"reviewer_login to {BOT_REV}", out)
+                      f"reviewer_login to {BOT_REV} (or blank it), or `apply` refuses to run", out)
+
+    def test_the_note_on_a_pat_move_says_apply_moves_it_back(self):
+        # #1306: only a seat on an App is guarded, so a PAT move's note must not promise a refusal
+        # and must say what the next apply does, which this test then watches it do.
+        form = {"fixer_login": tfs.FIX}
+        rc, out = self.run_cli(["identity", "--loop", "widgets", "--seat", "fixer", "--pat",
+                                f"fix-two={self.pat('fix2')}"], settings=form)
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"or the next `apply` moves the fixer back to {tfs.FIX}", out)
+        self.assertNotIn("refuses", out)
+        rc, out = self.run_cli(["apply", "--loop", "widgets"], settings=form)
+        self.assertEqual(self.loop_json()["seats"]["fixer"]["login"], tfs.FIX, out)
 
     def test_usage_refusals(self):
         self.assertEqual(self.identity("--seat", "reviewer")[0], 2)            # neither
