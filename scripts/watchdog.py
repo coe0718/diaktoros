@@ -1235,6 +1235,13 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                         "sent for a ruling")
             except Exception as exc:
                 log(f"#{number} shadow escalation check failed: {type(exc).__name__}: {exc}")
+            try:
+                # #1004 part 3: an upheld ruling's fix, if the ruling's own delivery did not
+                # queue it (same turn key, so never twice).
+                if gate.queue_shadow_fix(loop, number, head) in gate.SCHEDULED_OUTCOMES:
+                    log(f"#{number} @ {head[:7]} upheld shadow review handed to the fixer")
+            except Exception as exc:
+                log(f"#{number} upheld shadow fix check failed: {type(exc).__name__}: {exc}")
             # #1114: the ruling it went for is owed like any other: a dead adjudicator turn is
             # a stall here too. A pending delivery is the escalation check's to retry (above).
             marker = st.breach_get(number)

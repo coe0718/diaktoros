@@ -68,6 +68,10 @@ class RunScope:
     # it showed none), recorded with its ruling so a later shadow review is never read as
     # overruled by it. None: not an adjudicator scope. Host-built, like every field here.
     shadow_run: str | None = None
+    # A fix of a shadow review the adjudicator upheld (#1004 part 3): that REJECT ruling's time. Its
+    # push needs no changes-requested review (the head is approved) but that ruling, still current
+    # at the head; its review request needs none. None: not such a turn. Host-built.
+    shadow_fix: float | None = None
 
 
 # What a reviewer that could not see the whole change reads when it tries to approve (#93, #110).
@@ -467,7 +471,8 @@ class RunBroker:
                                                 manifest=request["manifest"],
                                                 **({"merge": dict(self.scope.merge)}
                                                    if self.scope.merge else {}),
-                                                ci_fix=self.scope.ci_fix)
+                                                ci_fix=self.scope.ci_fix,
+                                                shadow_fix=self.scope.shadow_fix)
                         # safe_push returns only after exact ref + PR readback and
                         # durable audit. Failure to commit completion leaves intent.
                         supervisor.confirm_push(self.scope.run_id, self.scope.repo,
@@ -943,6 +948,15 @@ class RunBroker:
             pass
         from . import merge_check
         merge_check.refresh_quietly(self._loop, self.scope.number)       # #1163: a ruling
+        if verdict == "REJECT" and self.scope.shadow_run:
+            # #1004 part 3: an upheld shadow review's findings go to the fixer now; the watchdog
+            # sweep queues the same turn (same key) if this does not.
+            try:
+                from . import gate
+                gate.queue_shadow_fix(self._loop, self.scope.number, self.scope.head,
+                                      db=self.scope.ledger_db)
+            except Exception:
+                pass
         return {"accepted": True}
 
 
