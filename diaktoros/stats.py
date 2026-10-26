@@ -589,6 +589,41 @@ def regressions(db: Path, repo: str, since: float, until: float) -> dict | None:
             "from": first}
 
 
+def overrides(db: Path, repo: str, since: float, until: float) -> dict | None:
+    """Where a human overrode the loop (#220), by the time of the override (the merge) in
+    ``[since, until)``. Only the merge over a changes-requested is recorded so far; dismissed
+    reviews, reversed rulings and reverted pushes are not, so zero here is not zero overrides.
+    ``findings`` is how many numbered findings (#475) were still open across them; a finding has
+    no category in the record, so there is no count per category. None without a ledger."""
+    db = Path(db)
+    if not db.exists():
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    try:
+        con.row_factory = sqlite3.Row
+        try:
+            rows = con.execute("SELECT pr, head, seat, model, findings, merged_at FROM overrides "
+                               "WHERE repo=? AND kind='merged_over_changes' AND merged_at>=? "
+                               "AND merged_at<? ORDER BY merged_at, pr", (repo, since, until)
+                               ).fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+    finally:
+        con.close()
+    cases, models, found = [], Counter(), 0
+    for row in rows:
+        try:
+            ids = [str(i) for i in json.loads(row["findings"])]
+        except (TypeError, ValueError):
+            ids = []
+        models[row["model"] or "unknown"] += 1
+        found += len(ids)
+        cases.append({"pr": row["pr"], "head": row["head"][:7], "seat": row["seat"],
+                      "model": row["model"] or "unknown", "findings": ids})
+    return {"merged_over_changes": len(rows), "models": dict(sorted(models.items())),
+            "findings": found, "cases": cases}
+
+
 FIX_READS_MAX = 100
 
 
@@ -897,6 +932,7 @@ def report(loop: dict, db: Path, since: float, until: float | None = None,
             "fixes": fix_outcomes(db, repo, since, until, pr_state),
             "findings": finding_outcomes(db, repo, since, until, tracked),
             "regressions": regressions(db, repo, since, until),
+            "overrides": overrides(db, repo, since, until),
             "shadows": shadow_outcomes(db, repo, since, until, tracked),
             "stuck": stuck(db, repo, until)}
 
@@ -977,6 +1013,17 @@ def report_text(data: dict) -> str:
                       else " · none linked yet (`hermes dk regression`)"))
         out += [f"  #{link['issue']} ← PR #{link['pr']} approved at {link['head']} "
                 f"({link['model']})" for link in broke["links"][:10]]
+    over = data.get("overrides")
+    if over is not None:
+        out.append(f"human overrides: {over['merged_over_changes']} merged over a "
+                   "changes-requested"
+                   + (" · " + ", ".join(f"{name} {n}" for name, n in over["models"].items())
+                      if over["models"] else "")
+                   + (f" · {over['findings']} open finding(s) overridden"
+                      if over["findings"] else ""))
+        out += [f"  #{case['pr']} merged at {case['head']} over {case['seat']} ({case['model']})"
+                + (f": {', '.join(case['findings'])}" if case["findings"] else "")
+                for case in over["cases"][:10]]
     shadows = data.get("shadows")
     if shadows:
         paired = shadows["findings"]

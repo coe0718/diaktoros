@@ -134,6 +134,15 @@ CREATE TABLE IF NOT EXISTS regressions (
  review_id INTEGER NOT NULL, model TEXT, state TEXT NOT NULL, created REAL NOT NULL,
  updated REAL NOT NULL, PRIMARY KEY (repo, issue, pr)
 );
+-- A human overrode the loop (#220). kind merged_over_changes: the PR merged at a head where the
+-- reviewer's latest live verdict was changes-requested. seat/model: the reviewer run that posted
+-- that verdict (model NULL when the ledger has none); findings: the F-numbers still open then (a
+-- JSON list). One row per (PR, head, kind). Only recorded and reported; nothing decides from it.
+CREATE TABLE IF NOT EXISTS overrides (
+ repo TEXT NOT NULL, pr INTEGER NOT NULL, head TEXT NOT NULL, kind TEXT NOT NULL,
+ seat TEXT NOT NULL, model TEXT, review_id INTEGER NOT NULL, findings TEXT NOT NULL,
+ merged_at REAL NOT NULL, created REAL NOT NULL, PRIMARY KEY (repo, pr, head, kind)
+);
 -- Facts about the ledger itself for the operator outbox, e.g. that it vanished and was
 -- recreated empty. Delivered once by notify(), claim-before-send like every other notice.
 CREATE TABLE IF NOT EXISTS ledger_events (
