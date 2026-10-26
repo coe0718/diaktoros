@@ -644,10 +644,21 @@ def write_records(con, run_id: str) -> str | None:
     """The host's write-ahead record of an external write this run began, if any.
 
     The sandbox holds no GitHub credential; its only writes are the run broker's, and each
-    commits one of these, keyed by the run ID, before the external call: a review receipt
-    claim (reviewer), a push intent / confirmation (fixer; its review request needs a
-    confirmed push first), a ruling (adjudicator; the optional PR comment follows it) or a
-    triage result (triage; its labels and comment follow it).
+    commits one of these, keyed by the run ID, before the external call. Every table this
+    function checks is listed here:
+
+    - ``runs`` push_intent / push_confirmed: a fixer push (its review request needs a
+      confirmed push first)
+    - ``review_receipts``: a review receipt claim (reviewer)
+    - ``rulings``: a ruling (adjudicator; the optional PR comment follows it)
+    - ``disputes``: a recorded dispute
+    - ``triage_results``: a triage result (triage; its labels and comment follow it)
+    - ``issue_fixes``: a recorded issue fix
+    - ``filed_issues``: a reviewer-filed issue whose outcome is ambiguous ('recorded' or
+      'uncertain'; 'posted' and 'denied' are known outcomes and do not count)
+
+    A run holding any of them may have written, so ``complete_uncertain`` and ``retry``
+    refuse to re-arm it.
     """
     row = con.execute('SELECT push_intent,push_confirmed FROM runs WHERE id=?',
                       (run_id,)).fetchone()
