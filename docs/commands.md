@@ -302,7 +302,7 @@ hermes dk create-apps --owner "<org>" --org --prefix widgets-dk --host https://g
 ```
 
 The Apps are named `<prefix>-<role>` (`<loop-id>-dk-…` with `--loop`), private, and get the
-permissions in [Accounts](accounts.md#a-github-app-identity-instead-of-an-account-in-progress). The reader gets Webhooks and
+permissions in [Accounts](accounts.md#a-github-app-identity-instead-of-an-account). The reader gets Webhooks and
 Administration **Read and write**, so it can also be the hook admin and run `protect`, and the
 only active webhook: it points at the loop's App route (`<host>/webhooks/dk-app-<slug>`), which
 `hermes dk app-webhook --set` then gives its secret. The defaults are reader, reviewer and

@@ -129,7 +129,7 @@ Seat logins/file paths move through plugin settings and `apply`; preview first w
 
 If the reader is changed, default hook-editing commands now act as the new reader. Give it hook write or explicitly pass a mapped `--admin-token "<admin-login>"` to each hook operation. Naming an admin does not bypass repository access checks.
 
-### A GitHub App identity instead of an account (in progress)
+### A GitHub App identity instead of an account
 
 A seat or the reader can be a GitHub App's bot instead of a person's account (#1163): register
 an App, install it on the repository only, keep its private key in a 0600 file, and map it by its
@@ -185,7 +185,7 @@ keeping every open PR's history:
 1. Register the Apps (permissions above) and install each on the loop's repository only. Keep
    each private key in a 0600 file.
 2. For each identity, a dry run, then the move, then `doctor`:
-   `hermes dk identity --loop ID --seat reader --app "<slug>[bot]=APP_ID:/abs/key.pem" --dry-run`
+   `hermes dk identity --loop ID --seat read --app "<slug>[bot]=APP_ID:/abs/key.pem" --dry-run`
    (then without `--dry-run`); the same for `--seat fixer`, `--seat reviewer` and, with an
    adjudicator, `--seat adjudicator`.
    If the plugin settings form names that seat's login (`reviewer_login`, `fixer_login`,
@@ -240,6 +240,10 @@ For ordinary rotation, keep the same path and replace its contents with a new PA
 2. Replace the existing file privately and enforce mode 600.
 3. Run `selftest --loop ID --no-model` to check the mapped principal/access.
 4. Revoke the old PAT after the replacement is verified. For a suspected leak, revoke first even if that causes downtime.
+
+A GitHub App's key rotates the same way. On the App's settings page, generate a new private key,
+then write it over the same file privately (mode 600). Run `selftest --loop ID --no-model`, and
+once it passes, delete the old key on that page. A suspected leak: delete the old key first.
 
 Token files are read at use time; running work can encounter either credentials or an authentication gap depending on when it calls the host broker. Rotation is not an atomic transaction with all in-flight requests. Do not claim verification proves an already-running write was undone. A failed pre-write run may be retried; an ambiguous write must be reconciled rather than replayed.
 
