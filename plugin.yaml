@@ -1,5 +1,5 @@
 name: diaktoros
-version: 0.4.0
+version: 0.5.0
 description: >-
   Diaktoros — bounded autonomous software maintenance for Hermes: one agent reviews pull
   requests, another fixes what it finds. New issues are triaged and small ones fixed
