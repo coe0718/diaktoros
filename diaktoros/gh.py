@@ -40,6 +40,7 @@ REVIEW_PAGE_SIZE = 100
 MAX_REVIEW_PAGES = 100
 # The same bound for the open-PR listing: a repository past 10,000 open PRs reads as unknown.
 MAX_PR_PAGES = 100
+MAX_PR_COMMIT_PAGES = 5
 # GitHub's pulls/N/files listing stops at 3,000 files (30 full pages); the 31st page is what
 # proves the listing ended, so a PR at GitHub's cap still reads as complete-as-GitHub-lists-it.
 MAX_PR_FILE_PAGES = 31
@@ -582,6 +583,14 @@ def pr_files_read(loop: dict, number: int) -> tuple[list[dict] | None, str]:
     """
     path = f"{pr_path(loop, number)}/files?per_page=100"
     return _read_pages(loop, path, "PR file", MAX_PR_FILE_PAGES)
+
+
+def pr_commits_read(loop: dict, number: int) -> tuple[list[dict] | None, str]:
+    """Every commit GitHub lists for the PR (``pulls/N/commits``; GitHub lists at most 250), each
+    with ``author`` — the account GitHub maps the commit's author email to, or null — or
+    ``(None, reason)`` (#757)."""
+    return _read_pages(loop, f"{pr_path(loop, number)}/commits?per_page=100", "PR commit",
+                       MAX_PR_COMMIT_PAGES)
 
 
 def open_prs_read(loop: dict) -> tuple[list[dict] | None, str]:

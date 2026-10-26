@@ -1193,7 +1193,9 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         elif hold:
             if st.pr_hold_set(number, hold):              # a hold began: the report's (#678)
                 from diaktoros.run_supervisor import record_operator_action
-                record_operator_action(loop["repo"], number, "hold")
+                record_operator_action(loop["repo"], number,
+                                       "agent hold" if config.maintainer_kind(
+                                           loop, hold.get("by")) == "operator agent" else "hold")
         else:
             st.pr_hold_drop(number)
         if hold or (hold_error and number in st.pr_holds()):
