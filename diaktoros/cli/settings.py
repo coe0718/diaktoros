@@ -649,6 +649,15 @@ def cmd_set(args) -> int:
             return 2
         if names != (loop.get("review_only") or []):
             changes["review_only"] = names
+    if getattr(args, "operator_agent", None) is not None or getattr(args, "no_operator_agents", False):
+        try:
+            agents = config.check_operator_agents(
+                [] if args.no_operator_agents else args.operator_agent, loop, "--operator-agent")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
+        if agents != (loop.get("operator_agents") or []):
+            changes["operator_agents"] = agents
     if getattr(args, "ci_fix_cap", None) is not None:
         try:
             value = (None if str(args.ci_fix_cap).strip() in ("0", "")
@@ -1274,7 +1283,8 @@ def _apply(args) -> int:
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci", "merge_check",
                 "ingress", "ingress_app",
                 "fix_ci", "fixer_scope_lock", "ci_fix_cap", "review_only_update", "required_checks", "human_paths",
-                "generated", "ci_coverage", "review_only", "review_only_cap", "review_only_daily", "shadow"):
+                "generated", "ci_coverage", "review_only", "operator_agents", "review_only_cap",
+                "review_only_daily", "shadow"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     # The form also pushes triage.auto_fix_* and observer.weekly_report (#781): compare them, or a
@@ -2154,6 +2164,11 @@ def add_set(sub) -> None:  # noqa: ANN001
                           help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated); replaces the list")
     reviewed.add_argument("--no-review-only", action="store_true",
                           help="clear the review-only list")
+    agents = change.add_mutually_exclusive_group()
+    agents.add_argument("--operator-agent", action="append", default=None,
+                        help="a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated); replaces the list")
+    agents.add_argument("--no-operator-agents", action="store_true",
+                        help="clear the operator-agents list")
     required = change.add_mutually_exclusive_group()
     required.add_argument("--required-check", action="append", default=None,
                           help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates); replaces the list")
