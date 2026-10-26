@@ -32,6 +32,15 @@ NOW = 1_800_000_000.0
 SECRET = "/home/someone/.hermes/tokens/x.pat exploded"
 PLUGIN_JS = ROOT / "desktop" / "plugin.js"
 
+# One left-to-right scan, so a `//` inside a block comment (or a `/*` inside a line comment) is
+# consumed by whichever comment starts first. The lookbehind keeps `https://` in a string.
+_JS_COMMENT = re.compile(r"/\*.*?\*/|(?<![:\w])//[^\n]*", re.S)
+
+
+def strip_js_comments(source: str) -> str:
+    """The JS that runs: `//` line comments and `/* ... */` / `/** ... */` blocks removed."""
+    return _JS_COMMENT.sub("", source)
+
 
 class Now(unittest.TestCase):
     def setUp(self):
@@ -699,9 +708,19 @@ class Package(unittest.TestCase):
         self.assertIn("useQuery({ queryKey: FOCUS_KEY", source)
         self.assertNotIn("window.addEventListener", source)              # stays inside the SDK surface
 
+    def test_comment_stripper_drops_block_comments_but_keeps_code_and_urls(self):
+        # A backtick in prose (a doc comment) is not a rendered string; one in code still is.
+        prose = "/** the read `hermes dk status` prints */\nconst a = 1;\n// and `this`\n"
+        self.assertNotIn("`", strip_js_comments(prose))
+        self.assertIn("const a = 1;", strip_js_comments(prose))
+        multi = "/**\n *  see `x`\n *  // not a line comment\n */\nconst b = `lit`;\n"
+        self.assertEqual(strip_js_comments(multi).strip(), "const b = `lit`;")
+        url = "const u = 'https://example.test/a'; // `tail`\n"
+        self.assertEqual(strip_js_comments(url).strip(), "const u = 'https://example.test/a';")
+
     def test_first_render_findings_641(self):
         source = PLUGIN_JS.read_text()
-        code = re.sub(r"(?<![:\w])//[^\n]*", "", source)
+        code = strip_js_comments(source)
         # no markdown backticks in rendered strings (they print literally)
         self.assertNotIn("`", code)
         # seat rows show the states that have no column of their own
@@ -731,7 +750,7 @@ ALLOWED_IMPORTS = {"@hermes/plugin-sdk", "react", "react/jsx-runtime"}
 
 class Surface(unittest.TestCase):
     def test_stays_inside_the_sdk_surface(self):
-        code = re.sub(r"(?<![:\w])//[^\n]*", "", PLUGIN_JS.read_text())
+        code = strip_js_comments(PLUGIN_JS.read_text())
         for pattern in FORBIDDEN:
             with self.subTest(pattern=pattern.pattern):
                 self.assertIsNone(pattern.search(code))
