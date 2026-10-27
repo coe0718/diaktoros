@@ -177,7 +177,7 @@ The gate dispatches each event to its loop's reviewer, fixer or triage gate; not
 # So these are rendered **host-side**, once, by the worker, with plain ``str.format`` fields from
 # facts the host just read from GitHub (never from a webhook snapshot). Same substance as the
 # gateway text — verify, cite evidence with ``file:line``, answer every finding, rule with a reason
-# — but every write goes through ``python -m diaktoros.broker_client``. The exact commands for
+# — but every write goes through ``python -P -m diaktoros.broker_client``. The exact commands for
 # the role are appended by ``trusted_turn``; each role is told only about its own.
 #
 # ``render_isolated`` refuses to return a prompt with a field left unrendered: a literal

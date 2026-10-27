@@ -2150,7 +2150,8 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
         from ..config.host_guards import (TEST_GUARD_SENTINEL_ENV, TEST_HOME_GUARD_ENV,
                                          TEST_REAL_HOME_ENV, guard_real_home)
         host_home = guard_real_home(self.hermes_home or Path(os.environ.get("HERMES_HOME", os.environ["HOME"])).resolve(strict=True))
-        env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+        plugin_root = Path(__file__).resolve().parents[2]
+        env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(plugin_root),
                "HOME": str(host_home), "HERMES_HOME": str(host_home),
                envnames.name("TEST_FIXTURE"): "1" if self.fixture_mode else "0"}
         # The worker's environment is built from scratch; keep the test tripwire armed in it.
@@ -2169,7 +2170,11 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
         _WORKERS[:] = [worker for worker in _WORKERS if worker.poll() is None]
         log = self._worker_log()
         try:
-            _WORKERS.append(subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL,
+            # ``python -m`` puts the current directory first on sys.path, ahead of PYTHONPATH:
+            # started from a checkout of another revision, the worker would run that code
+            # (#1373). In the plugin root, the package it imports is this one.
+            _WORKERS.append(subprocess.Popen(args, env=env, cwd=str(plugin_root),
+                                             stdin=subprocess.DEVNULL,
                                              stdout=subprocess.DEVNULL,
                                              stderr=log if log is not None else subprocess.DEVNULL,
                                              close_fds=True, start_new_session=True))
