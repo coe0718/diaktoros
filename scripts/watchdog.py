@@ -48,6 +48,7 @@ from diaktoros import review_only_conflict  # noqa: E402
 from diaktoros import conflict_person  # noqa: E402
 from diaktoros import escalate_pending  # noqa: E402
 from diaktoros import merge_check  # noqa: E402
+from diaktoros import shadow_issues  # noqa: E402
 from diaktoros import review_kick  # noqa: E402
 from diaktoros import (  # noqa: E402
     ci_fix,
@@ -868,6 +869,17 @@ def base_tip(loop: dict) -> str | None:
     return sha.lower()
 
 
+def record_overrides(loop: dict, st) -> None:
+    """Record the merges over a standing changes-requested (#220). Never fails the sweep."""
+    try:
+        from diaktoros import overrides, run_supervisor
+        for number in overrides.scan(loop, st, run_supervisor.Supervisor(
+                run_supervisor.production_ledger())):
+            log(f"#{number}: merged over a changes-requested; override recorded")
+    except Exception as exc:
+        log(f"override scan: {type(exc).__name__}: {exc}")
+
+
 def send_weekly_report(loop: dict, st) -> None:
     """The loop's weekly report, when one is due (#658). Never fails the sweep."""
     try:
@@ -1136,6 +1148,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         if observer.retry(loop, st):
             log("observer: retried an undelivered notice")
         observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))
+        record_overrides(loop, st)
         send_weekly_report(loop, st)
         finish_reads(loop, watch, now, health, pr_failures, lines)
         st.watch_save(watch)
@@ -1193,7 +1206,9 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         elif hold:
             if st.pr_hold_set(number, hold):              # a hold began: the report's (#678)
                 from diaktoros.run_supervisor import record_operator_action
-                record_operator_action(loop["repo"], number, "hold")
+                record_operator_action(loop["repo"], number,
+                                       "agent hold" if config.maintainer_kind(
+                                           loop, hold.get("by")) == "operator agent" else "hold")
         else:
             st.pr_hold_drop(number)
         if hold or (hold_error and number in st.pr_holds()):
@@ -1233,6 +1248,13 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                         "sent for a ruling")
             except Exception as exc:
                 log(f"#{number} shadow escalation check failed: {type(exc).__name__}: {exc}")
+            try:
+                # #1004 part 3: an upheld ruling's fix, if the ruling's own delivery did not
+                # queue it (same turn key, so never twice).
+                if gate.queue_shadow_fix(loop, number, head) in gate.SCHEDULED_OUTCOMES:
+                    log(f"#{number} @ {head[:7]} upheld shadow review handed to the fixer")
+            except Exception as exc:
+                log(f"#{number} upheld shadow fix check failed: {type(exc).__name__}: {exc}")
             # #1114: the ruling it went for is owed like any other: a dead adjudicator turn is
             # a stall here too. A pending delivery is the escalation check's to retry (above).
             marker = st.breach_get(number)
@@ -1463,9 +1485,17 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         log(f"pending escalation prune failed: {type(exc).__name__}: {exc}")
     conflicts += recheck_unknown(loop, unknown, conflict_live)
     act_on_conflicts(loop, st, conflicts, conflict_live)
+    try:
+        # #914: the issues a shadow review asked for, once the real review is in and did not
+        # file them (off unless shadow.file_issues; bounded per day).
+        for issue in shadow_issues.file_pending(loop):
+            log(f"shadow-found issue #{issue} filed")
+    except Exception as exc:
+        log(f"shadow issue filing failed: {type(exc).__name__}: {exc}")
     if observer.retry(loop, st):
         log("observer: retried an undelivered notice")
     observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))
+    record_overrides(loop, st)
     send_weekly_report(loop, st)
 
     # ``watch["alerts"]`` and ``last_run`` were saved above, before the best-effort work; here only

@@ -228,7 +228,7 @@ def cmd_status(args) -> int:
                   f"({time.strftime('%Y-%m-%d %H:%M', time.gmtime(late['at']))} UTC): the "
                   "webhook delivery was missed (see `doctor`: gate:rate_limit)")
         for pr_no, hold in sorted(st.pr_holds().items()):
-            print(f"  held:       PR #{pr_no} {pr_hold.line(hold)}")
+            print(f"  held:       PR #{pr_no} {pr_hold.line(hold, loop)}")
         for pr_no, hold in sorted(st.scope_holds().items()):
             print(f"  held:       {scope_lock.line(pr_no, hold)}")
         for seat in ("reviewer", "fixer"):
@@ -458,6 +458,46 @@ def cmd_retry(args) -> int:
             print(result["worker"] + (" — the next event or armed watchdog sweep starts it"
                                       if result["worker"].startswith("worker not started")
                                       else ""))
+    return 0 if result["ok"] else 2
+
+
+def cmd_cancel(args) -> int:
+    """Stop a queued, waiting or running isolated run (#1148).
+
+    The selection, the state change and the read-back are ``cancel_action``'s, which the
+    Desktop's confirmed cancel calls too: this function supplies the CLI's one GitHub read (the
+    PR's current head), waits a bounded time for a worker to stop a running turn, and prints the
+    result. A finished run is refused with its state; only ``retry`` re-arms a cancelled one.
+    """
+    from .. import cancel_action, gh
+
+    try:
+        loop = config.load_id(args.loop)
+    except config.ConfigError as exc:
+        print(f"no such loop: {exc}")
+        return 2
+    if args.run and (args.pr is not None or args.seat):
+        print("name one run (--run) or one PR (--pr, optionally --seat), not both")
+        return 2
+    if not args.run and args.pr is None:
+        print("name a run (--run RUN_ID) or a PR (--pr N)")
+        return 2
+
+    def resolve_head():
+        live = gh.pr(loop, args.pr)
+        return ((live or {}).get("head") or {}).get("sha") if isinstance(live, dict) else None
+
+    result = cancel_action.perform(loop, pr=args.pr, seat=args.seat, run_id=args.run or None,
+                                   ledger=_ledger_path(),
+                                   resolve_head=resolve_head if args.pr is not None else None,
+                                   wait=cancel_action.STOP_WAIT_S, reveal_errors=True)
+    if result["message"]:
+        print(result["message"])
+        for line in cancel_action.lines(dict(result, cancelled=[])):
+            print(line)
+        return 2
+    for line in cancel_action.lines(result):
+        print(line)
     return 0 if result["ok"] else 2
 
 
@@ -695,7 +735,13 @@ def cmd_review(args) -> int:
     loop = _one_loop(args)
     if loop is None:
         return 2
-    result = one_shot_action.perform_review(loop, args.pr, getattr(args, "another_round", False))
+    reconsider = getattr(args, "reconsider", None)
+    reconsider = reconsider if isinstance(reconsider, str) else None   # argparse: str or None
+    if reconsider is not None and getattr(args, "another_round", False):
+        print("--reconsider and --another-round ask for different things; use one")
+        return 2
+    result = one_shot_action.perform_review(loop, args.pr, getattr(args, "another_round", False),
+                                            reconsider=reconsider)
     for line in result["lines"]:
         print(line)
     return result["code"]
@@ -781,6 +827,12 @@ def cmd_explain(args) -> int:
         print(f"  {'escalation:':<12}{report['escalation']}")
         print(f"  {'hooks:':<12}{report['hooks']}")
         print(f"  {'sweep:':<12}{report['sweep']}")
+        if report.get("operator_agents"):                     # #757
+            print(f"  {'operators:':<12}{', '.join(report['operator_agents'])} post as the "
+                  "operator's account (operator agents): their comments reach the seats as "
+                  "maintainer data, labelled as such")
+        for text in report.get("authorship") or []:
+            print(f"  {'authorship:':<12}{text}")
         print(f"  {'github:':<12}{report['github']}")
         decisions = report.get("gate_decisions") or []
         for text in decisions:
@@ -910,6 +962,10 @@ def add_review(sub) -> None:  # noqa: ANN001
     review.add_argument("--another-round", action="store_true",
                         help="allow exactly one more verdict on a review-only PR that has "
                              "reached its review cap (maintainer or operator only)")
+    review.add_argument("--reconsider", metavar="REASON",
+                        help="send a head that already has a verdict back for one fresh review, "
+                             "with your reason as a requirement; a changes-requested result goes "
+                             "to the fixer (one per head; host operator only)")
     review.set_defaults(func=cmd_review)
 
 
@@ -987,6 +1043,22 @@ def add_retry(sub) -> None:  # noqa: ANN001
                        help="only that seat's run (default: whichever failed at the PR's "
                             "newest head; a shadow run only when named)")
     retry.set_defaults(func=cmd_retry)
+
+
+def add_cancel(sub) -> None:  # noqa: ANN001
+    """The ``cancel`` subcommand's parser, registered by ``cli.register_cli`` (#1148)."""
+    cancel = sub.add_parser("cancel", help="Stop a queued, waiting or running isolated run "
+                                           "(only `retry` re-arms it)")
+    cancel.add_argument("--loop", required=True,
+                        help="loop id (its config file name; `list` shows them)")
+    cancel.add_argument("--run", help="the run id to cancel (`status` lists it)")
+    cancel.add_argument("--pr", type=int,
+                        help="cancel every open run at this PR's current head (an issue number "
+                             "for triage and issue_fixer)")
+    cancel.add_argument("--seat", choices=["reviewer", "fixer", "adjudicator", "triage",
+                                           "issue_fixer", "shadow"],
+                        help="with --pr: only that seat's run")
+    cancel.set_defaults(func=cmd_cancel)
 
 
 def add_continue(sub) -> None:  # noqa: ANN001

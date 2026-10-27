@@ -13,6 +13,7 @@ const settingsAppFixture = JSON.parse(await readFile(new URL('./fixtures/desktop
 const recordsWriterFixture = JSON.parse(await readFile(new URL('./fixtures/desktop_records.json', import.meta.url), 'utf8'))
 const holdWriterFixtures = JSON.parse(await readFile(new URL('./fixtures/desktop_hold_explanations.json', import.meta.url), 'utf8'))
 const holdWriterFixture = holdWriterFixtures.run_waiting
+const missingLedgerPr = JSON.parse(await readFile(new URL('./fixtures/desktop_missing_ledger_pr.json', import.meta.url), 'utf8'))
 const noLedgerStats = JSON.parse(await readFile(new URL('./fixtures/desktop_no_ledger_stats.json', import.meta.url), 'utf8'))
 
 // One loop of an /overview read, for synthetic fixtures. needs_you defaults to its uncertain run
@@ -270,14 +271,15 @@ async function harness({ cachedAge = null, queryClient: realQueryClient = null, 
 }
 
 
-async function holdDrawer() {
+async function holdDrawer(loop = 'fixture-loop') {
   const h = await harness()
+  h.queries.loops = h.good({ loops: [{ id: loop, repo: loop === 'widgets' ? 'owner/widgets' : 'fixture/repo' }] })
   h.queries.now = h.good({ runs: [{ pr: 7, seat: 'reviewer', head: 'aaaaaaa', state: 'waiting', why: 'waiting' }],
     counts: { waiting: 1 }, pacing: {}, available: true })
-  const data = { repo: 'fixture/repo', loop: 'fixture-loop', pr: 7, cap: 3,
+  const data = { repo: 'fixture/repo', loop, pr: 7, cap: 3, ledger_available: true,
     stuck: [{ seat: 'reviewer', head: 'aaaaaaa', state: 'waiting', since: 1, next: 'Legacy host guidance.',
       explanation: structuredClone(holdWriterFixture) }], turns: [], verdicts: {}, rulings: [], breach: null,
-    findings: [], decisions: [], read_at: 1800000000 }
+    findings: [], decisions: [], turns_total: 0, rulings_total: 0, read_at: 1800000000 }
   h.queries.pr = h.good(data)
   h.render('page')
   h.buttons(h.tree()).find(n => h.text([n]).includes('#7')).props.onClick()
@@ -316,6 +318,56 @@ test('hold contract: malformed nested provenance identity actions and secret pro
     const broken = structuredClone(data); mutate(broken.stuck[0].explanation); h.respond(broken)
     await assert.rejects(h.options.pr.queryFn(), /Invalid pr response/)
   }
+  h.dispose()
+})
+
+test('PR truth: null explanation head cannot bind a valid parent; unknown parent stays visible unavailable', async () => {
+  const { h, data } = await holdDrawer()
+  const broken = structuredClone(data); broken.stuck[0].explanation.head = null; h.respond(broken)
+  await assert.rejects(h.options.pr.queryFn(), /Invalid pr response/)
+  broken.stuck[0].head = ''; h.respond(broken)
+  const admitted = await h.options.pr.queryFn()
+  h.queries.pr = h.good(admitted); h.render('page')
+  assert.match(h.text(h.tree()), /Shared explanation unavailable \(recorded head unavailable\)/)
+  assert.match(h.text(h.tree()), /Legacy host guidance/)
+  assert.doesNotMatch(h.text(h.tree()), /Recorded run is waiting/)
+  h.dispose()
+})
+
+test('PR truth: required ledger availability distinguishes unavailable and verified empty through query and render', async () => {
+  // This exact payload is checked against the production ASGI route over a genuinely missing file.
+  const missing = (await holdDrawer('widgets')).h
+  missing.respond(missingLedgerPr)
+  missing.queries.pr = missing.good(await missing.options.pr.queryFn()); missing.render('page')
+  assert.match(missing.text(missing.tree()), /Run ledger unavailable/)
+  assert.doesNotMatch(missing.text(missing.tree()), /No run on this PR is waiting on anything/)
+  missing.dispose()
+  const { h, data } = await holdDrawer()
+  const empty = { ...data, stuck: [], turns_total: 0, rulings_total: 0 }
+  for (const available of [false, true]) {
+    const payload = { ...empty, ledger_available: available }; h.respond(payload)
+    h.queries.pr = h.good(await h.options.pr.queryFn()); h.render('page')
+    const text = h.text(h.tree())
+    assert.equal(text.includes('No run on this PR is waiting on anything.'), available)
+    assert.equal(text.includes('No turn recorded for this PR.'), available)
+    assert.equal(text.includes('No reviewer verdict recorded for this PR.'), available)
+    assert.equal(text.includes('Run ledger unavailable'), !available)
+  }
+  for (const flag of [undefined, null, 0, 'true']) {
+    h.respond({ ...empty, ledger_available: flag })
+    await assert.rejects(h.options.pr.queryFn(), /Invalid pr response/)
+  }
+  for (const mutate of [d => { d.turns = [null] }, d => { d.rulings = [null] },
+    d => { d.turns_total = -1 }, d => { d.verdicts = { APPROVED: -1 } },
+    d => { d.stuck = [null] }, d => { d.loop = 'another-loop' }, d => { d.pr = 8 }]) {
+    const broken = structuredClone(empty); mutate(broken); h.respond(broken)
+    await assert.rejects(h.options.pr.queryFn(), /Invalid pr response/)
+  }
+  h.respond({ ...data, ledger_available: false })
+  await assert.rejects(h.options.pr.queryFn(), /Invalid pr response/)
+  h.queries.pr = { ...h.fail(empty), error: new Error('/private ghp_secret') }; h.render('page')
+  assert.match(h.text(h.tree()), /stale/i)
+  assert.doesNotMatch(h.text(h.tree()), /\/private|ghp_secret/)
   h.dispose()
 })
 
@@ -1802,7 +1854,7 @@ test('page: the drawer is scoped to its loop and closes when the loop changes', 
   h.queries.loops = h.good(TWO_LOOPS)
   h.queries.now = h.good({ runs: [{ pr: 42, seat: 'reviewer', head: 'abcdef0', state: 'waiting', why: 'waiting to retry' }],
     counts: { waiting: 1 }, pacing: {}, available: true })
-  h.queries.pr = h.good({ repo: 'acme/widgets', loop: 'widgets', pr: 42, cap: 3, stuck: [], turns: [],
+  h.queries.pr = h.good({ repo: 'acme/widgets', loop: 'widgets', pr: 42, cap: 3, ledger_available: true, stuck: [], turns: [],
     verdicts: {}, rulings: [], breach: null, findings: [], decisions: [], read_at: 1800000000 })
   let tree = h.render('page')
   h.buttons(tree).find(n => h.text([n]).includes('#42')).props.onClick()
@@ -1818,7 +1870,7 @@ test('page: the drawer shows shadow reviews beside the real verdict, and none wh
   h.queries.loops = h.good(TWO_LOOPS)
   h.queries.now = h.good({ runs: [{ pr: 42, seat: 'reviewer', head: 'abcdef0', state: 'waiting', why: 'waiting to retry' }],
     counts: { waiting: 1 }, pacing: {}, available: true })
-  const pr = { repo: 'acme/widgets', loop: 'widgets', pr: 42, cap: 3, stuck: [], turns: [],
+  const pr = { repo: 'acme/widgets', loop: 'widgets', pr: 42, cap: 3, ledger_available: true, stuck: [], turns: [],
     verdicts: {}, rulings: [], breach: null, findings: [], decisions: [], read_at: 1800000000 }
   h.queries.pr = h.good({ ...pr, shadows: [
     { model: 'grok-4.7', head: 'abcdef0', verdict: 'changes', real: 'approved', agrees: false,
@@ -1848,7 +1900,7 @@ test('page: the drawer says when its turns and rulings are the newest of more, a
     counts: { waiting: 1 }, pacing: {}, available: true })
   const turn = n => ({ seat: 'reviewer', head: 'abcdef' + n, state: 'succeeded', created: 1800000000 + n, updated: 1800000000 + n })
   const ruling = n => ({ verdict: 'V' + n, head: 'abcdef' + n, created: 1800000000 + n })
-  const pr = { repo: 'acme/widgets', loop: 'widgets', pr: 42, cap: 3, stuck: [],
+  const pr = { repo: 'acme/widgets', loop: 'widgets', pr: 42, cap: 3, ledger_available: true, stuck: [],
     turns: [turn(1), turn(2), turn(3)], turns_total: 3, verdicts: {},
     rulings: [ruling(1), ruling(2), ruling(3)], rulings_total: 3,
     breach: null, findings: [], decisions: [], read_at: 1800000000 }

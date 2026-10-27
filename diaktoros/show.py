@@ -147,6 +147,10 @@ def _rows(loop: dict) -> list[_Row]:
     schema("review_only", ("review_only",), list(loop.get("review_only") or []),
            on=bool(loop.get("review_only")),
            off="every author's PR may be fixed by the fixer")
+    schema("operator_agents", ("operator_agents",), list(loop.get("operator_agents") or []),
+           on=bool(loop.get("operator_agents")),
+           off="no agent is named as posting from the operator's account",
+           note="their comments reach the seats as maintainer data, labelled operator agent")
     schema("review_only_cap", ("review_only_cap",), config.review_only_cap(loop),
            derived=f"cap ({loop['cap']})")
     schema("ci_fix_cap", ("ci_fix_cap",), config.ci_fix_cap(loop))
@@ -186,6 +190,8 @@ def _rows(loop: dict) -> list[_Row]:
            on=bool(loop.get("human_paths")), off="no path is reserved for a person")
     schema("generated", ("generated",), config.generated_text(loop.get("generated")) or _UNSET,
            on=bool(loop.get("generated")), off="a conflict in a generated file gets a fixer turn")
+    schema("ci_coverage", ("ci_coverage",), config.ci_coverage_text(loop.get("ci_coverage")) or _UNSET,
+           on=bool(loop.get("ci_coverage")), off="the reviewer is not told what a green check covers")
     schema("fixer_check", ("fixer_check",), loop.get("fixer_check") or _UNSET,
            on=bool(loop.get("fixer_check")), off="the fixer runs no always-run check")
 
@@ -274,6 +280,8 @@ def _rows(loop: dict) -> list[_Row]:
            derived="" if "every" in shadow else f"the default, {config.DEFAULT_SHADOW_EVERY}")
     schema("shadow_escalate", ("shadow", "escalate"), config.shadow_escalate(loop),
            derived="" if "escalate" in shadow else "the default, off")
+    schema("shadow_file_issues", ("shadow", "file_issues"), config.shadow_file_issues(loop),
+           derived="" if "file_issues" in shadow else "the default, off")
     plain("triage.enabled", ("triage", "route"), config.triage_enabled(loop),
           "issue triage (hermes dk triage)", on=config.triage_enabled(loop),
           off="new issues are not labelled")

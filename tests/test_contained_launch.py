@@ -425,6 +425,21 @@ class ProductionLaunch(Base):
         from diaktoros import run_supervisor
         self.assertFalse(run_supervisor.retryable(raised.exception))
 
+    def test_the_bridge_and_the_broker_client_never_import_from_the_reviewed_tree(self):
+        # #1373: the sandbox's cwd is /work, the tree under review. `python -m` would put it
+        # first on sys.path, so a PR carrying its own `diaktoros` would replace the trusted
+        # bridge and client. -P keeps it off the path.
+        for role in ("reviewer", "fixer", "adjudicator"):
+            with self.subTest(role=role):
+                entry = self.launch(role)["kwargs"]["entry"]
+                self.assertEqual(entry[:4], ["/opt/venv/bin/python", "-P", "-m",
+                                             "diaktoros.inference_proxy"], entry)
+        # And every broker command a seat is told to run (the agent runs it in /work too).
+        commands = " ".join(trusted_turn.TOOLS.values())
+        self.assertIn("python -P -m diaktoros.broker_client", commands)
+        for module in (trusted_turn, broker_ipc):
+            self.assertNotIn("python -m diaktoros", Path(module.__file__).read_text())
+
     def test_hermes_gets_exactly_the_terminal_and_file_tools(self):
         for role in ("reviewer", "fixer", "adjudicator"):
             with self.subTest(role=role):

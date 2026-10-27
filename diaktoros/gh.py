@@ -17,6 +17,8 @@ prints ``{"__gh_stub_response__": {"status": 401, "headers": {...}, "body": ...}
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import os
 import pathlib
@@ -40,6 +42,7 @@ REVIEW_PAGE_SIZE = 100
 MAX_REVIEW_PAGES = 100
 # The same bound for the open-PR listing: a repository past 10,000 open PRs reads as unknown.
 MAX_PR_PAGES = 100
+MAX_PR_COMMIT_PAGES = 5
 # GitHub's pulls/N/files listing stops at 3,000 files (30 full pages); the 31st page is what
 # proves the listing ended, so a PR at GitHub's cap still reads as complete-as-GitHub-lists-it.
 MAX_PR_FILE_PAGES = 31
@@ -84,27 +87,48 @@ class GateBudgetExceeded(BaseException):
 # budget): the monotonic deadline, the per-call cap, and every call that failed, so a silence
 # that followed a failed read is told apart from a chosen one.
 _GATE: dict = {"deadline": None, "errors": None, "per_call": 30.0}
+# A gate run in-process (#1046) has its own budget and failure flag for the call, never the
+# process's: two calls on two threads each see only theirs (``gate_scope``).
+_SCOPED: contextvars.ContextVar = contextvars.ContextVar("diaktoros_gh_gate", default=None)
+
+
+def _gate() -> dict:
+    scoped = _SCOPED.get()
+    return scoped if scoped is not None else _GATE
+
+
+@contextlib.contextmanager
+def gate_scope(deadline: float, per_call: float = 30.0):
+    """This call's GitHub budget (#1046): ``begin_gate`` for the calls made inside it only, with
+    its own failed-call list and ``record_failures`` flag. Yields the scope's state."""
+    scope = {"deadline": deadline, "errors": [], "per_call": per_call, "record": False}
+    token = _SCOPED.set(scope)
+    try:
+        yield scope
+    finally:
+        _SCOPED.reset(token)
 
 
 def begin_gate(deadline: float, per_call: float = 30.0) -> None:
-    _GATE.update(deadline=deadline, errors=[], per_call=per_call)
+    _gate().update(deadline=deadline, errors=[], per_call=per_call)
 
 
 def end_gate() -> list[tuple[str, str, str]]:
-    errors = _GATE.get("errors") or []
-    _GATE.update(deadline=None, errors=None, per_call=30.0)
+    gate = _gate()
+    errors = gate.get("errors") or []
+    gate.update(deadline=None, errors=None, per_call=30.0)
     return errors
 
 
 def remaining() -> float | None:
     """Seconds left in the current budget, or ``None`` when no budget is set."""
-    deadline = _GATE.get("deadline")
+    deadline = _gate().get("deadline")
     return None if deadline is None else deadline - time.monotonic()
 
 
 def _budgeted(method: str, path: str) -> float:
     """The per-call timeout: the per-call cap, or what is left of the budget. Raises when spent."""
-    per_call = float(_GATE.get("per_call") or 30.0)
+    per_call = float(_gate().get("per_call") or 30.0)
     left = remaining()
     if left is None:
         return per_call
@@ -121,8 +145,9 @@ def _outcome(method: str, path: str, response: "Response") -> "Response":
         if left is not None and left <= 0:
             raise GateBudgetExceeded(f"{method} {path} did not finish within the time budget "
                                      f"({response.error})")
-        if _GATE.get("errors") is not None:
-            _GATE["errors"].append((method, path, response.error))
+        errors = _gate().get("errors")
+        if errors is not None:
+            errors.append((method, path, response.error))
     return response
 
 
@@ -401,7 +426,11 @@ def record_failures() -> None:
     """Opt this process in to ``record_failure``. The gates do (``gate.context``); ``explain`` and
     ``doctor`` never do, because they promise to write nothing."""
     global _RECORD_FAILURES
-    _RECORD_FAILURES = True
+    scoped = _SCOPED.get()
+    if scoped is not None:
+        scoped["record"] = True      # this gate call only (#1046)
+    else:
+        _RECORD_FAILURES = True
 
 
 def record_failure(loop: dict, method: str, path: str, error: str,
@@ -413,7 +442,9 @@ def record_failure(loop: dict, method: str, path: str, error: str,
     disk, in the loop's state directory, so "the event was dropped because GitHub was unreadable"
     is something the next sweep can say out loud.
     """
-    if not _RECORD_FAILURES or not loop.get("state_dir") or status_of(error) == 404:
+    scoped = _SCOPED.get()
+    enabled = scoped["record"] if scoped is not None else _RECORD_FAILURES
+    if not enabled or not loop.get("state_dir") or status_of(error) == 404:
         return
     try:
         from . import state as state_mod
@@ -582,6 +613,14 @@ def pr_files_read(loop: dict, number: int) -> tuple[list[dict] | None, str]:
     """
     path = f"{pr_path(loop, number)}/files?per_page=100"
     return _read_pages(loop, path, "PR file", MAX_PR_FILE_PAGES)
+
+
+def pr_commits_read(loop: dict, number: int) -> tuple[list[dict] | None, str]:
+    """Every commit GitHub lists for the PR (``pulls/N/commits``; GitHub lists at most 250), each
+    with ``author`` — the account GitHub maps the commit's author email to, or null — or
+    ``(None, reason)`` (#757)."""
+    return _read_pages(loop, f"{pr_path(loop, number)}/commits?per_page=100", "PR commit",
+                       MAX_PR_COMMIT_PAGES)
 
 
 def open_prs_read(loop: dict) -> tuple[list[dict] | None, str]:

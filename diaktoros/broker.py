@@ -548,9 +548,9 @@ FILED_ISSUES_MAX = 3
 FILED_ISSUE_BODY_MAX = 6 * 1024
 
 
-def lineage_note(*, pr: int, head: str, depth: int) -> str:
+def lineage_note(*, pr: int, head: str, depth: int, by: str = "the Diaktoros reviewer") -> str:
     """The host's line under a filed issue: where it came from, and how deep the chain is."""
-    note = (f"\n\n---\nFiled by the Diaktoros reviewer from PR #{pr} (head `{head[:7]}`). "
+    note = (f"\n\n---\nFiled by {by} from PR #{pr} (head `{head[:7]}`). "
             f"Lineage depth {depth}.")
     if depth > 1:
         note += (" This finding came from reviewing an automatic fix of a filed issue: a person "
@@ -570,6 +570,35 @@ def file_issue(loop: dict, *, repo: str, number: int, head: str, login: str, tit
             or result["number"] <= 0 or "pull_request" in result):
         raise _denied("GitHub issue write did not return a successful response", why)
     _audit(loop, repo, number, head, "", "reviewer", "file_issue", login)
+    return result["number"]
+
+
+SHADOW_FOUND_LABEL = "shadow-found"     # every issue a shadow review found carries it (#914)
+
+
+def file_shadow_issue(loop: dict, *, repo: str, number: int, head: str, title: str, body: str,
+                      labels: list[str], model: str, depth: int) -> int:
+    """POST one issue a shadow review found (#914), as the **reader**: the reviewer did not find
+    it. Its number, or raise. The labels were checked when the shadow asked (the loop's triage
+    list, never the fix label); ``shadow-found`` is added here. Host-built header and footer."""
+    if repo != loop.get("repo"):
+        raise BrokerDenied("repository mismatch")
+    login = str(loop.get("read_token") or "")
+    if not login:
+        raise BrokerDenied("no reader identity")
+    header = (f"Found by a shadow review (`{model}`) of #{number} at `{head[:7]}`. The reviewer "
+              "did not file it. A shadow review is a second model that writes nothing; the host "
+              "filed this for it.\n\n")
+    payload = {"title": title, "labels": list(dict.fromkeys([*labels, SHADOW_FOUND_LABEL])),
+               "body": _signed(loop, header + body.strip()
+                               + lineage_note(pr=number, head=head, depth=depth,
+                                              by="the Diaktoros host for a shadow review"),
+                               "shadow", head)}
+    result, why = _write(loop, f"/repos/{repo}/issues", method="POST", body=payload, login=login)
+    if (not isinstance(result, dict) or type(result.get("number")) is not int
+            or result["number"] <= 0 or "pull_request" in result):
+        raise _denied("GitHub issue write did not return a successful response", why)
+    _audit(loop, repo, number, head, "", "reader", "file_shadow_issue", login)
     return result["number"]
 
 

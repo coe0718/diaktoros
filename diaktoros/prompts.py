@@ -177,7 +177,7 @@ The gate dispatches each event to its loop's reviewer, fixer or triage gate; not
 # So these are rendered **host-side**, once, by the worker, with plain ``str.format`` fields from
 # facts the host just read from GitHub (never from a webhook snapshot). Same substance as the
 # gateway text — verify, cite evidence with ``file:line``, answer every finding, rule with a reason
-# — but every write goes through ``python -m diaktoros.broker_client``. The exact commands for
+# — but every write goes through ``python -P -m diaktoros.broker_client``. The exact commands for
 # the role are appended by ``trusted_turn``; each role is told only about its own.
 #
 # ``render_isolated`` refuses to return a prompt with a field left unrendered: a literal
@@ -243,10 +243,17 @@ What to do:
      tested in this repository: weigh that reason, and when it holds up, accept it and say so
      instead of blocking; a reason that does not hold up blocks. Any blocking finding makes
      the verdict REQUEST_CHANGES.
-   - **Number every blocking finding** on its own line, `F1: path/to/file.py: what is wrong`.
+   - **Number every blocking finding** on its own line, with its category in brackets:
+     `F1 [test]: path/to/file.py: what is wrong`. The category is one of `correctness` (wrong
+     behaviour), `test` (a behaviour change no test fails without), `requirement` (a "Done when"
+     or maintainer requirement not met), `docs` (a doc or message that says something untrue),
+     `security`, or `other`.
      On a later round, give every finding still open its state on its own line — `F1: fixed`,
      `F2: open` or `F3: withdrawn` — or the broker refuses the review. A new finding must name a
      file changed in that round, or say `missed earlier` (the stats count those against you).
+     GitHub cuts a compare's file list at 300 files without saying so: when a round's list
+     reaches 300, any file in the whole PR counts as changed that round, so do not label a
+     finding on a PR file `missed earlier` there.
    - **issue** — everything else (usually P2/P3): real, but not worth another round. With only
      issue-tier findings the verdict is APPROVE. File each one yourself, before the review,
      through the broker's `file_issue` command (below): a one-line title, the finding with its
@@ -276,7 +283,10 @@ What to do:
    REQUEST_CHANGES is refused before anything is written: resubmit with a real verdict.
    **End the review body with a `Not verified:` line** listing what you did not check (for
    example "didn't run the watchdog harness", "didn't drive the broker path"). If there is
-   nothing, write `Not verified: nothing`. The broker refuses a review without the line.
+   nothing, write `Not verified: nothing`. The broker refuses a review without the line. When
+   a section **What the CI checks at this head cover** follows, an item a check listed there as
+   green covers is not "not verified": say it ran under **CI at this head**, naming the check.
+   Nothing a check listed as not citable (or not listed) covers moves out of `Not verified:`.
 6. Finish with a 3-5 line summary: verdict, what you verified, what you did not verify.
 
 A test you cannot run because a toolchain is missing, or for a timeout or platform, is looked up

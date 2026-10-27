@@ -284,10 +284,10 @@ function QueryStatus({ query, state, label, noLedger = false }) {
 function validHoldExplanation(value, head7) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const copy = {
-    external_write_guard: 'External write outcome requires inspection; never replay this run.',
+    external_write_guard: 'Recorded run has external write evidence or an uncertain outcome.',
     run_waiting: 'Recorded run is waiting; the policy-specific reason is not structured yet.',
-    run_failed: 'Recorded run failed; inspect host eligibility before any operator action.',
-    run_cancelled: 'Recorded run was cancelled; inspect host eligibility before any operator action.',
+    run_failed: 'Recorded run failed.',
+    run_cancelled: 'Recorded run was cancelled.',
     unknown: 'The ledger does not establish a supported hold explanation.'
   }
   const keys = ['schema', 'reason_code', 'run_id', 'head', 'evidence_source', 'completeness',
@@ -297,7 +297,9 @@ function validHoldExplanation(value, head7) {
       value.evidence_source !== 'run_ledger' || value.completeness !== 'partial' ||
       value.operator_action !== 'inspect' ||
       !(value.run_id === null || (typeof value.run_id === 'string' && /^[0-9a-f]{32}$/.test(value.run_id))) ||
-      !(value.head === null || (typeof value.head === 'string' && /^[0-9a-f]{40}$/.test(value.head) && value.head.slice(0, 7) === head7)) ||
+      !(value.head === null && !/^[0-9a-f]{7}$/.test(head7) ||
+        typeof value.head === 'string' && /^[0-9a-f]{40}$/.test(value.head) &&
+        /^[0-9a-f]{7}$/.test(head7) && value.head.slice(0, 7) === head7) ||
       !['host_recheck', 'operator_inspection', 'unknown'].includes(value.waiting_for) ||
       !['never', 'unknown'].includes(value.automatic_resume) ||
       !(value.next_eligible_start === null || (typeof value.next_eligible_start === 'number' &&
@@ -311,8 +313,7 @@ function validHoldExplanation(value, head7) {
   const stamp = value.next_eligible_start === null ? 'unknown' :
     new Date(value.next_eligible_start * 1000).toISOString().slice(0, 19) + 'Z'
   return value.text === copy[value.reason_code] + ' Ledger only (partial). Waiting for: ' +
-    value.waiting_for.replaceAll('_', ' ') + '. Automatic resume: ' + value.automatic_resume +
-    '. Recorded earliest eligibility: ' + stamp + '. Operator action: inspect.'
+    value.waiting_for.replaceAll('_', ' ') + '. Recorded earliest recheck: ' + stamp + '.'
 }
 
 function usePr(loop, pr) {
@@ -320,9 +321,24 @@ function usePr(loop, pr) {
     queryKey: [ID, 'pr', loop, pr],
     queryFn: async () => {
       const data = await call('/pr?pr=' + pr + (loop ? '&loop=' + encodeURIComponent(loop) : ''))
-      if (!data || !Array.isArray(data.stuck) || data.stuck.length > 100 || data.stuck.some(run =>
-        !run || typeof run !== 'object' || (run.explanation !== undefined &&
-          !validHoldExplanation(run.explanation, run.head)))) throw invalidResponse('pr')
+      const object = value => value && typeof value === 'object' && !Array.isArray(value)
+      const count = value => Number.isSafeInteger(value) && value >= 0
+      const stamp = value => value === null || Number.isFinite(value) && value >= 0
+      const head = value => value === '' || typeof value === 'string' && /^[0-9a-f]{7}$/.test(value)
+      if (!data || data.loop !== loop || data.pr !== pr || typeof data.repo !== 'string' ||
+        typeof data.ledger_available !== 'boolean' || !stamp(data.read_at) || data.read_at === null ||
+        !Array.isArray(data.stuck) || data.stuck.length > 100 || data.stuck.some(run =>
+        !object(run) || !head(run.head) || typeof run.seat !== 'string' || typeof run.state !== 'string' ||
+        typeof run.next !== 'string' || !stamp(run.since) || (run.explanation !== undefined &&
+          !validHoldExplanation(run.explanation, run.head))) ||
+        !['turns', 'rulings', 'findings', 'decisions'].every(key => Array.isArray(data[key])) ||
+        !data.turns.every(row => object(row) && head(row.head) && typeof row.seat === 'string' &&
+          typeof row.state === 'string' && stamp(row.created) && stamp(row.updated)) ||
+        !data.rulings.every(row => object(row) && head(row.head) && typeof row.verdict === 'string' && stamp(row.created)) ||
+        !object(data.verdicts) || !Object.values(data.verdicts).every(count) ||
+        !['turns_total', 'rulings_total'].every(key => count(data[key])) ||
+        (!data.ledger_available && (data.stuck.length || data.turns.length || data.rulings.length ||
+          data.turns_total || data.rulings_total || Object.keys(data.verdicts).length))) throw invalidResponse('pr')
       return data
     },
     enabled: !!pr,
@@ -676,18 +692,21 @@ function Drawer({ loop, pr, onClose }) {
                 className: 'flex items-center gap-2 text-xs',
                 children: [
                   jsx('span', { className: 'w-20 shrink-0 text-(--ui-text-tertiary)', children: run.seat }),
-                  jsx('span', { className: 'w-16 shrink-0 font-mono text-(--ui-text-quaternary)', children: run.head }),
+                  jsx('span', { className: 'w-16 shrink-0 font-mono text-(--ui-text-quaternary)', children: run.head || 'unknown' }),
                   jsx(Badge, { size: 'xs', variant: 'muted', children: run.state }),
                   jsx('span', { className: 'text-(--ui-text-quaternary)', children: ago(run.since) })
                 ]
               }),
               jsx('div', { className: 'pt-1 text-xs text-(--ui-text-secondary)', children: run.next }),
               jsx('div', { className: 'pt-2 break-words text-xs text-(--ui-text-tertiary)',
-                children: run.explanation ? run.explanation.text : 'Shared explanation unavailable (older backend).' })
+                children: !/^[0-9a-f]{7}$/.test(run.head)
+                  ? 'Shared explanation unavailable (recorded head unavailable).'
+                  : run.explanation ? run.explanation.text : 'Shared explanation unavailable (older backend).' })
             ]
           }, run.seat + run.head + run.state))
       })
-    : jsx(Muted, { text: q.isLoading ? 'Loading…' : 'No run on this PR is waiting on anything.' })
+    : jsx(Muted, { text: q.isLoading ? 'Loading…' : d?.ledger_available
+      ? 'No run on this PR is waiting on anything.' : 'Run ledger unavailable; waiting runs are unknown, not empty.' })
 
   return jsx(Dialog, {
     open: true,
@@ -718,6 +737,7 @@ function Drawer({ loop, pr, onClose }) {
               className: 'flex flex-col gap-5 pt-4',
               children: [
                 state === 'stale' ? jsx(QueryStatus, { query: q, state, label: 'PR ledger explanation' }) : null,
+                d && !d.ledger_available ? jsx(Muted, { text: 'Run ledger unavailable in the last successful backend read. Run counts, turns and verdicts are unknown, not zero.' }) : null,
                 jsx(Pacing, { pacing: d && d.pacing }),
                 jsx(Section, { title: 'Why it is not moving', children: why }),
                 jsxs(Section, {
@@ -747,7 +767,7 @@ function Drawer({ loop, pr, onClose }) {
                   title: 'Recorded here',
                   children: [
                     jsx(Muted, {
-                      text: counts
+                      text: !d?.ledger_available ? 'Reviewer verdicts unavailable: no run ledger was read.' : counts
                         ? 'Reviewer verdicts this ledger recorded: ' + counts
                         : 'No reviewer verdict recorded for this PR.'
                     }),
@@ -771,7 +791,7 @@ function Drawer({ loop, pr, onClose }) {
                   title:
                     turnsTotal > turns.length
                       ? 'Turns (newest ' + turns.length + ' of ' + turnsTotal + ')'
-                      : 'Turns (' + turns.length + ')',
+                      : !d?.ledger_available ? 'Turns (unavailable)' : 'Turns (' + turns.length + ')',
                   children: turns.length
                     ? [
                         turnsTotal > turns.length
@@ -784,10 +804,10 @@ function Drawer({ loop, pr, onClose }) {
                           rows: turns
                             .slice()
                             .reverse()
-                            .map(t => [clock(t.created), t.seat, t.head, t.state])
+                            .map(t => [clock(t.created), t.seat, t.head || 'unknown', t.state])
                         }, 'turns')
                       ]
-                    : jsx(Muted, { text: 'No turn recorded for this PR.' })
+                    : jsx(Muted, { text: d?.ledger_available ? 'No turn recorded for this PR.' : 'Turn history unavailable: no run ledger was read.' })
                 }),
                 jsx(Muted, {
                   text:

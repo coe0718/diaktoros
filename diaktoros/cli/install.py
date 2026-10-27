@@ -347,7 +347,10 @@ def cmd_init(args) -> int:
             (args.shadow_every if getattr(args, "shadow_every", None) is not None
              else settings_form._form_value(d, "shadow_every")), "init",
             escalate=(args.shadow_escalate if getattr(args, "shadow_escalate", None) is not None
-                      else settings_form._form_value(d, "shadow_escalate"))) or {}
+                      else settings_form._form_value(d, "shadow_escalate")),
+            file_issues=(args.shadow_file_issues
+                         if getattr(args, "shadow_file_issues", None) is not None
+                         else settings_form._form_value(d, "shadow_file_issues"))) or {}
     except config.ConfigError as exc:
         print(f"refused: {exc}")
         return 2
@@ -406,10 +409,19 @@ def cmd_init(args) -> int:
         "generated": config.parse_generated(
             config.split_generated(d["generated"]) if getattr(args, "generated", None) is None
             else args.generated, "--generated"),
+        # What each CI check covers, told to the reviewer (#756).
+        "ci_coverage": config.parse_ci_coverage(
+            config.split_ci_coverage(d["ci_coverage"]) if getattr(args, "ci_covers", None) is None
+            else args.ci_covers, "--ci-covers"),
         # Authors reviewed but never fixed (#191).
         "review_only": ([name.strip() for name in str(d["review_only"]).split(",") if name.strip()]
                         if getattr(args, "review_only", None) is None
                         else [name for name in args.review_only if name.strip()]),
+        # Agents that post as the operator's account (#757).
+        "operator_agents": ([name.strip() for name in str(d["operator_agents"]).split(",")
+                             if name.strip()]
+                            if getattr(args, "operator_agent", None) is None
+                            else [name for name in args.operator_agent if name.strip()]),
     }
     if raw["review_only_update"] and not getattr(args, "acknowledge_branch_push", False):
         print(BRANCH_PUSH_REFUSAL)
@@ -856,6 +868,9 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     generated = (args.generated if getattr(args, "generated", None) is not None else
                  config.split_generated(d["generated"]))
     argv += [f"--generated={entry}" for entry in generated]
+    covers = (args.ci_covers if getattr(args, "ci_covers", None) is not None else
+              config.split_ci_coverage(d["ci_coverage"]))
+    argv += [f"--ci-covers={entry}" for entry in covers]
     shadow = (args.shadow_profile if getattr(args, "shadow_profile", None) is not None else
               _ask("a Hermes profile for shadow reviews: a second reviewer model whose verdicts "
                    "are recorded, never posted (blank: none)", d["shadow_profile"], interactive))
@@ -865,11 +880,16 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
         argv.append(f"--shadow-every={args.shadow_every}")
     if getattr(args, "shadow_escalate", None) is not None:
         argv.append(f"--shadow-escalate={args.shadow_escalate}")
+    if getattr(args, "shadow_file_issues", None) is not None:
+        argv.append(f"--shadow-file-issues={args.shadow_file_issues}")
     reviewed = (args.review_only if getattr(args, "review_only", None) is not None else
                 [name for name in _ask("GitHub logins whose PRs the reviewer reviews but the fixer "
                                        "never touches, comma-separated (blank: none)",
                                        d["review_only"], interactive).split(",") if name.strip()])
     argv += [f"--review-only={name.strip()}" for name in reviewed]
+    agents = (args.operator_agent if getattr(args, "operator_agent", None) is not None else
+              [name for name in str(d["operator_agents"]).split(",") if name.strip()])
+    argv += [f"--operator-agent={name.strip()}" for name in agents]
     if getattr(args, "review_only_update", None) is not None:
         argv.append(f"--review-only-update={args.review_only_update}")
     if getattr(args, "fixer_scope_lock", None) is not None:
@@ -1153,6 +1173,8 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                            "plugin setting, else no cap)")
     init.add_argument("--review-only", action="append", default=None,
                       help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting)")
+    init.add_argument("--operator-agent", action="append", default=None,
+                      help="a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated) (default: the plugin setting)")
     init.add_argument("--required-check", action="append", default=None,
                       help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
     init.add_argument("--shadow-profile", default=None,
@@ -1161,10 +1183,14 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                      help="shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5)")
     init.add_argument("--shadow-escalate", choices=("on", "off"), default=None,
                       help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off)")
+    init.add_argument("--shadow-file-issues", choices=("on", "off"), default=None,
+                      help="on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914) (default: the plugin setting, else off)")
     init.add_argument("--human-path", action="append", default=None,
                       help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     init.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
                       help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting)")
+    init.add_argument("--ci-covers", action="append", default=None, metavar="CHECK=COVERS",
+                      help="what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting)")
     init.add_argument("--ingress", choices=("repo-hooks", "app-webhook"), default=None,
                       help="where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks)")
     init.add_argument("--ingress-app", default=None, help="with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app)")
@@ -1261,6 +1287,8 @@ def add_setup(sub) -> None:  # noqa: ANN001
                             "plugin setting, else no cap)")
     first.add_argument("--review-only", action="append", default=None,
                        help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting)")
+    first.add_argument("--operator-agent", action="append", default=None,
+                       help="a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated) (default: the plugin setting)")
     first.add_argument("--required-check", action="append", default=None,
                        help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
     first.add_argument("--shadow-profile", default=None,
@@ -1269,10 +1297,14 @@ def add_setup(sub) -> None:  # noqa: ANN001
                       help="shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5)")
     first.add_argument("--shadow-escalate", choices=("on", "off"), default=None,
                        help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off)")
+    first.add_argument("--shadow-file-issues", choices=("on", "off"), default=None,
+                       help="on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914) (default: the plugin setting, else off)")
     first.add_argument("--human-path", action="append", default=None,
                        help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     first.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
                        help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting)")
+    first.add_argument("--ci-covers", action="append", default=None, metavar="CHECK=COVERS",
+                       help="what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting)")
     first.add_argument("--ingress", choices=("repo-hooks", "app-webhook"), default=None,
                        help="where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks)")
     first.add_argument("--ingress-app", default=None, help="with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app)")

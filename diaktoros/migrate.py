@@ -232,31 +232,43 @@ def _ledger_tables(con) -> list[str]:
             if any(col[1] == "repo" for col in con.execute(f'PRAGMA table_info("{name}")'))]
 
 
+def _active_runs(con, repo: str | None = None) -> int:
+    """Active runs (all repos, or just ``repo``) on an open ledger connection. A ledger without a
+    ``runs`` table (empty file, a crash before the schema was written) has none in flight."""
+    from .run_supervisor import ACTIVE  # noqa: PLC0415 - heavy module, only when migrating
+    where = f"state IN ({','.join('?' * len(ACTIVE))})"
+    args: tuple = tuple(ACTIVE)
+    if repo is not None:
+        where, args = "repo=? AND " + where, (repo, *args)
+    try:
+        return con.execute(f"SELECT COUNT(*) FROM runs WHERE {where}", args).fetchone()[0]
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            return 0
+        raise
+
+
 def busy_runs(db: pathlib.Path, repo: str) -> int:
     """Runs for ``repo`` that are claimed, launching, running or uncertain: none may be renamed
     under."""
-    from .run_supervisor import ACTIVE  # noqa: PLC0415 - heavy module, only when migrating
     if not db.exists():
         return 0
     con = sqlite3.connect(db, timeout=LOCK_WAIT_S)
     try:
-        return con.execute(f"SELECT COUNT(*) FROM runs WHERE repo=? AND state IN "
-                           f"({','.join('?' * len(ACTIVE))})", (repo, *ACTIVE)).fetchone()[0]
+        return _active_runs(con, repo)
     finally:
         con.close()
 
 
 def _move_ledger(db: pathlib.Path, old: str, new: str, *, dry_run: bool) -> tuple[int, str]:
     """Rows moved (or that would be); a refusal reason instead while a run is in flight."""
-    from .run_supervisor import ACTIVE  # noqa: PLC0415 - heavy module, only when migrating
     if not db.exists():
         return 0, ""
     con = sqlite3.connect(db, timeout=LOCK_WAIT_S, isolation_level=None)
     try:
         con.execute("BEGIN IMMEDIATE")
         try:
-            busy = con.execute(f"SELECT COUNT(*) FROM runs WHERE repo=? AND state IN "
-                               f"({','.join('?' * len(ACTIVE))})", (old, *ACTIVE)).fetchone()[0]
+            busy = _active_runs(con, old)
             if busy:
                 con.execute("ROLLBACK")
                 return 0, (f"{busy} run(s) for {old} are in flight or uncertain — wait for them "
@@ -456,16 +468,10 @@ def runs_in_flight() -> int:
     ledger = config.host_path("ledger")
     if not ledger.exists():
         return 0
-    from .run_supervisor import ACTIVE  # noqa: PLC0415 - heavy module, only when needed
     try:
         con = sqlite3.connect(ledger, timeout=LOCK_WAIT_S)
         try:
-            return con.execute(f"SELECT COUNT(*) FROM runs WHERE state IN "
-                               f"({','.join('?' * len(ACTIVE))})", ACTIVE).fetchone()[0]
-        except sqlite3.OperationalError as exc:
-            if "no such table" in str(exc).lower():
-                return 0                    # no runs table yet: nothing can be in flight
-            raise
+            return _active_runs(con)        # no runs table yet: nothing can be in flight
         finally:
             con.close()
     except sqlite3.Error as exc:

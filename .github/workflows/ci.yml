@@ -314,7 +314,7 @@ jobs:
           set -o pipefail
           "$HERMES_AGENT_SOURCE/venv/bin/python" tests/leakguard.py -v \
             test_desktop_events.Socket.test_real_hermes_validator_plugin_route_refusal_disconnect_reconnect \
-            test_desktop_records test_desktop_reads \
+            test_desktop_records test_desktop_reads test_hold_explanations \
             2>&1 | tee "$RUNNER_TEMP/desktop-socket.log"
           if grep -E "\.\.\. skipped|skipped=[0-9]" "$RUNNER_TEMP/desktop-socket.log"; then
             echo "::error::desktop read/socket acceptance must run, not skip"

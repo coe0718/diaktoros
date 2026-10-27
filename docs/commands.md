@@ -88,6 +88,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | install a loop | [`setup`](#setup) (guided), or [`init`](#init) (flag by flag) |
 | make the loop's GitHub Apps, one click each | [`create-apps`](#create-apps) |
 | check an install before going live | [`doctor`](#doctor), [`selftest`](#selftest) |
+| see what updating the plugin picks up, and update it | [`update`](#update) |
 | move to a renamed plugin or repository | [`migrate`](#migrate) |
 | back up an install, or restore one | [`backup`](#backup), [`restore`](#restore) |
 | turn the loop on or off | [`arm`](#arm) |
@@ -106,6 +107,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | link a later bug to the approved PR that shipped it | [`regression`](#regression) |
 | find out why a webhook started nothing | [`trace`](#trace) |
 | run a failed turn again | [`retry`](#retry) |
+| stop a queued, waiting or running turn | [`cancel`](#cancel) |
 | finish a half-written issue fix | [`continue`](#continue) |
 | start a queued turn now | [`drain`](#drain) |
 | settle an observer notice whose delivery is uncertain | [`observer`](#observer) |
@@ -272,8 +274,23 @@ The same report can go to the observer feed once a week: see
 head, with verdict agreement per shadow model, the PRs where they disagreed (the shadow blocked
 what the reviewer approved, or the reverse), and findings matched by cited file and line (within 10
 lines; a citation with no line matches the file). A shadow whose head has no real verdict yet is
-counted, not compared. Not in this command yet: override feeds (#220). Request → verdict is
-measured from the review run's creation to its receipt.
+counted, not compared. Request → verdict is measured from the review run's creation to its
+receipt.
+
+Human overrides (#220, first step): a PR merged over a standing changes-requested. The watchdog
+sweep reads the repository's recently merged PRs (the last 30 updated, merged within 7 days, by an
+author the loop reviews) and their reviews; when the loop reviewer's latest live verdict at the
+merged head is changes-requested, it writes one record (PR, head, seat, the resolved model of the
+reviewer run that posted it, and the findings still open) to the run ledger. A merge after an
+approval, a dismissed review, or a verdict at an earlier head writes none; reviews that cannot be
+read or ordered are read again each sweep while the merge is within the 7 days; one never
+proved by then is not recorded. The report lists them by the day of the merge, with a
+count per model and per category of the findings still open (each blocking finding carries one of
+`correctness`, `test`, `requirement`, `docs`, `security` or `other`, tagged by the reviewer as
+`F1 [test]: …`). Nothing changes behaviour. Not recorded yet: a dismissed review, a reversed
+ruling, or a reverted fixer push (so zero is not zero overrides). Detection needs the watchdog
+running; a merge it never saw within the window (host off, or more than 30 PRs updated since) is
+not recorded.
 
 <!-- flags:report -->
 | flag | value | default | what it does |
@@ -407,12 +424,15 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10 (default: the plugin setting, else 3) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000 (default: the plugin setting, else no cap) |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting) |
+| `--operator-agent` | `OPERATOR_AGENT` (repeatable) |  | a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated) (default: the plugin setting) |
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting) |
 | `--shadow-profile` | `SHADOW_PROFILE` |  | the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted (default: the plugin setting, else none) |
 | `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5) |
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
+| `--shadow-file-issues` | `on` \| `off` |  | on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914) (default: the plugin setting, else off) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
+| `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting) |
 | `--ingress` | `repo-hooks` \| `app-webhook` |  | where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks) |
 | `--ingress-app` | `INGRESS_APP` |  | with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app) |
 | `--merge-check` | `auto` \| `on` \| `off` |  | post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off |
@@ -539,12 +559,15 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10 (default: the plugin setting, else 3) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000 (default: the plugin setting, else no cap) |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting) |
+| `--operator-agent` | `OPERATOR_AGENT` (repeatable) |  | a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated) (default: the plugin setting) |
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting) |
 | `--shadow-profile` | `SHADOW_PROFILE` |  | the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted (default: the plugin setting, else none) |
 | `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5) |
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
+| `--shadow-file-issues` | `on` \| `off` |  | on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914) (default: the plugin setting, else off) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
+| `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting) |
 | `--ingress` | `repo-hooks` \| `app-webhook` |  | where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks) |
 | `--ingress-app` | `INGRESS_APP` |  | with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app) |
 | `--merge-check` | `auto` \| `on` \| `off` |  | post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off |
@@ -637,14 +660,19 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000; 0 = no cap |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated); replaces the list (one of `--review-only`, `--no-review-only`) |
 | `--no-review-only` |  |  | clear the review-only list (one of `--review-only`, `--no-review-only`) |
+| `--operator-agent` | `OPERATOR_AGENT` (repeatable) |  | a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated); replaces the list (one of `--operator-agent`, `--no-operator-agents`) |
+| `--no-operator-agents` |  |  | clear the operator-agents list (one of `--operator-agent`, `--no-operator-agents`) |
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates); replaces the list (one of `--required-check`, `--no-required-checks`) |
 | `--no-required-checks` |  |  | clear the list: every check gates again (one of `--required-check`, `--no-required-checks`) |
 | `--shadow-profile` | `SHADOW_PROFILE` |  | the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted; 'off' turns them off (one of `--shadow-profile`, `--no-shadow`) |
 | `--no-shadow` |  |  | turn shadow reviews off (one of `--shadow-profile`, `--no-shadow`) |
 | `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (needs a shadow profile) |
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 |
+| `--shadow-file-issues` | `on` \| `off` |  | on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914); needs a shadow profile |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve (repeat it); replaces the list (one of `--human-path`, `--no-human-paths`) |
 | `--no-human-paths` |  |  | clear the list: no path is reserved for a human (one of `--human-path`, `--no-human-paths`) |
+| `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it); replaces the map (one of `--ci-covers`, `--no-ci-coverage`) |
+| `--no-ci-coverage` |  |  | clear the map: the reviewer is told nothing about what a check covers (one of `--ci-covers`, `--no-ci-coverage`) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox (repeat it); replaces the list (one of `--generated`, `--no-generated`) |
 | `--no-generated` |  |  | clear the list: the conflict shortcut is off (one of `--generated`, `--no-generated`) |
 | `--ingress` | `repo-hooks` \| `app-webhook` |  | where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks) |
@@ -928,6 +956,45 @@ a real isolated seat turn. To prove the isolated path end to end, use [`selftest
 | `--offline` |  |  | skip every network probe, each reported as not probed: gateway reachability, repo hooks, review-only push access, token expiry and scopes, triage labels, branch protection, plugin version |
 | `--strict` |  |  | treat a check that could not be decided as a failure |
 | `--repair` |  |  | restore this loop's own routes from the plugin's intent record (same secret) before checking; the only write doctor makes |
+<!-- /flags -->
+
+### update
+
+Shows what updating the installed plugin would pick up, and with `--apply` does it. Hermes's own
+`plugins check-updates` reports a pinned install as up to date; this compares the installed commit
+with `main`'s head (or `--ref`) on GitHub, through the same comparison doctor's `plugin-version`
+check reads.
+
+```bash
+hermes dk update --loop "<loop-id>"
+hermes dk update --loop "<loop-id>" --ref v0.3.0
+hermes dk update --loop "<loop-id>" --apply
+```
+
+By default it only reads. It prints the installed commit, the target commit, how many commits the
+update picks up, the merged PRs among them (squash `title (#N)` and `Merge pull request #N`
+commits; a direct push counts as a commit only), and the exact install line. GitHub's compare lists
+at most 250 commits, so past that the PR list says it is partial.
+
+- `--apply` runs that install line with `--ref` set to the target's commit, then
+  `hermes dk doctor --loop <id>`, and reports the new commit. It refuses while any run is in
+  flight or uncertain in the host ledger (or the ledger cannot be read), because a reinstall
+  mid-turn would swap code under a live worker. It holds migrate's lock while it installs, so a
+  second `update --apply` or `migrate` is refused. Exit `1` if the install failed, the commit is
+  not the expected one, or doctor reports a failure.
+- Offline or unreadable (no network, no read token, GitHub error, an install that is not a git
+  checkout): it says the count is unknown, guesses none, and still prints the install line. With
+  `--apply` and no resolvable commit it installs nothing.
+- It needs a configured loop only for its read token; it does not change the loop.
+- The running process keeps the old code until Hermes restarts: restart the gateway after an
+  update.
+
+<!-- flags:update -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` |  | loop id whose read token queries GitHub (default: the only configured loop) |
+| `--ref` | `SHA|TAG` |  | the commit or tag to update to (default: main's head) |
+| `--apply` |  |  | run the install line, then doctor, and report the new commit; refused while a loop turn is running |
 <!-- /flags -->
 
 ### migrate
@@ -1302,6 +1369,7 @@ loops without triage.
 
 ```bash
 hermes dk review --loop "<loop-id>" --pr 12
+hermes dk review --loop "<loop-id>" --pr 12 --reconsider "the issue's requirement must be met, not deferred"
 ```
 
 The real reviewer gate decides, fed a `ready_for_review` event built from the live PR, so the
@@ -1311,12 +1379,23 @@ write, as usual. It prints `review queued` (exit 0), or `no review started —` 
 reason (exit 1). Exit 2 when the loop or the PR cannot be read, several loops are configured and
 no `--loop` names one, or the gate did not finish within 120 seconds.
 
+`--reconsider REASON` sends a head that **already has a verdict** back for one fresh review: for
+example, an approved fixer PR that a maintainer says must still meet a requirement. Your reason
+goes into the reviewer's prompt as a requirement, next to the maintainers' PR comments. If that
+review requests changes, the fixer takes it as usual. An approval adds no round, since only
+changes-requested verdicts count toward the cap. One per head: a second reconsider of the same
+head is refused, and a new head gets its own review. It's the host operator's alone. No webhook
+or GitHub comment can start one, so a re-request on GitHub still gets "head already has a
+reviewer's verdict". It can't be combined with `--another-round`, and it's refused at a head
+that has no verdict yet (a plain `review` asks for one) or that is escalated to adjudication.
+
 <!-- flags:review -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
 | `--pr` | `PR` | **required** | the pull request to review |
 | `--another-round` |  |  | allow exactly one more verdict on a review-only PR that has reached its review cap (maintainer or operator only) |
+| `--reconsider` | `REASON` |  | send a head that already has a verdict back for one fresh review, with your reason as a requirement; a changes-requested result goes to the fixer (one per head; host operator only) |
 <!-- /flags -->
 
 ### depends
@@ -1495,7 +1574,8 @@ hermes dk retry --loop "<loop-id>" --pr 12 --seat fixer
 ```
 
 It selects the newest offerable ledger head (a GitHub PR read breaks a supersession tie).
-It can re-arm `failed`, `waiting` and push-policy-cancelled turns, not arbitrary cancellations.
+It can re-arm `failed`, `waiting`, push-policy-cancelled and [`cancel`](#cancel)led turns, not
+arbitrary cancellations.
 `--seat triage` / `issue_fixer` use an issue number in `--pr`, despite that option's PR wording. A run that **may have written** (it posted a review,
 pushed, or ended `uncertain`) is never replayed: `retry` refuses it and prints how to inspect
 and reconcile it instead.
@@ -1506,6 +1586,45 @@ and reconcile it instead.
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
 | `--pr` | `PR` | **required** | the pull request whose failed run to re-arm |
 | `--seat` | `reviewer` \| `fixer` \| `adjudicator` \| `triage` \| `issue_fixer` \| `shadow` |  | only that seat's run (default: whichever failed at the PR's newest head; a shadow run only when named) |
+<!-- /flags -->
+
+### cancel
+
+Stops an isolated run that is queued, waiting to retry, or running. Only `retry` re-arms a
+cancelled run. A redelivered event or a watchdog sweep doesn't, and a new head queues a fresh
+run as usual.
+
+```bash
+hermes dk cancel --loop "<loop-id>" --pr 12
+hermes dk cancel --loop "<loop-id>" --pr 12 --seat reviewer
+hermes dk cancel --loop "<loop-id>" --run "<run-id>"
+```
+
+- **Not started yet** (pending, waiting, claimed): cancelled at once.
+- **Launching or running:** the worker that owns the turn stops it, within a few seconds. It
+  kills the sandbox the same way the turn budget does, and frees the seat. An adjudicator's
+  breach marker is handed back. The command waits up to 30 seconds and prints how the run ended.
+  If the turn had already started writing (a review receipt, a push intent, a ruling), the run
+  ends `uncertain` rather than `cancelled`. It's never replayed, so inspect and reconcile it.
+- **Already finished** (succeeded, failed, cancelled, uncertain): refused, with its state.
+
+`--pr` alone cancels every open run at the PR's current head, shadow included, and lists each.
+An open run at an older head is left alone, because the claim supersedes it. `--seat` cancels
+only that seat's run. `--seat triage` / `issue_fixer` take an issue number in `--pr`. `status`
+and `explain` show a cancelled run as an operator's cancel, with the `retry` that re-arms it.
+
+The Desktop host has the same cancel as the confirmed `cancel` action (`GET`/`POST /actions`).
+The preview names the runs it would stop. If any of them starts, ends or appears before you
+confirm, the confirmation is stale and nothing is cancelled. The page has no control for it
+yet: that's #1372.
+
+<!-- flags:cancel -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
+| `--run` | `RUN` |  | the run id to cancel (`status` lists it) |
+| `--pr` | `PR` |  | cancel every open run at this PR's current head (an issue number for triage and issue_fixer) |
+| `--seat` | `reviewer` \| `fixer` \| `adjudicator` \| `triage` \| `issue_fixer` \| `shadow` |  | with --pr: only that seat's run |
 <!-- /flags -->
 
 ### continue

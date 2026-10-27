@@ -43,6 +43,7 @@ from . import lifecycle as cli_lifecycle
 from . import operations as cli_operations
 from . import reports as cli_reports
 from . import settings as cli_settings
+from . import update as cli_update
 from ..util import logged
 # Every command lives in its own module with its parser (#676): register_cli below lists them in
 # help order. `cli.cmd_*` stays usable through these re-exports; the parser dispatches to the
@@ -69,6 +70,7 @@ from .checks import (
     cmd_selftest,
 )  # noqa: F401
 from .install import cmd_init, cmd_setup  # noqa: F401
+from .update import cmd_update  # noqa: F401
 from .lifecycle import (
     cmd_backup,
     cmd_migrate,
@@ -76,6 +78,7 @@ from .lifecycle import (
     cmd_uninstall,
 )  # noqa: F401
 from .operations import (
+    cmd_cancel,
     cmd_cleanup,
     cmd_depends,
     cmd_drain,
@@ -168,6 +171,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         cli_lifecycle.add_restore(sub)
         cli_checks.add_doctor(sub)
         cli_checks.add_selftest(sub)
+        cli_update.add_update(sub)
         cli_checks.add_corpus(sub)
         cli_reports.add_models(sub)
         cli_settings.add_set(sub)
@@ -182,6 +186,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         cli_settings.add_triage(sub)
         cli_settings.add_fixer_push(sub)
         cli_operations.add_retry(sub)
+        cli_operations.add_cancel(sub)
         cli_operations.add_continue(sub)
         cli_operations.add_drain(sub)
         cli_operations.add_observer(sub)

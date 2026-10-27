@@ -96,9 +96,13 @@ def hooks_action_view(loop_id: str | None, action: str, confirmation: str) -> di
 
 def _action_target(loop_id, action, pr, seat):
     """Validate shape only; every eligibility rule belongs to the shared owner."""
-    if action not in ('review', 'escalate', 'drain') or not isinstance(action, str):
-        raise BadRequest('Action must be review, escalate or drain.')
-    if action == 'drain':
+    if action not in ('review', 'escalate', 'drain', 'cancel') or not isinstance(action, str):
+        raise BadRequest('Action must be review, escalate, drain or cancel.')
+    if action == 'cancel':
+        # Any seat, or none for every open run at the PR's head (#1148).
+        if type(pr) is not int or pr <= 0 or (seat is not None and seat not in retry_action.SEATS):
+            raise BadRequest('Cancel requires a positive PR number and, optionally, a seat.')
+    elif action == 'drain':
         if pr is not None or seat not in ('reviewer', 'fixer'):
             raise BadRequest('Drain requires a reviewer or fixer seat, not a PR.')
     elif type(pr) is not int or pr <= 0 or seat is not None:
@@ -714,7 +718,7 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
     repo = loop["repo"]
     view: dict = {"repo": repo, "loop": loop["id"], "pr": pr, "cap": loop.get("cap"),
                   "stuck": [], "turns": [], "turns_total": 0, "verdicts": {}, "rulings": [],
-                  "rulings_total": 0, "breach": None,
+                  "rulings_total": 0, "breach": None, "ledger_available": False,
                   "findings": [], "decisions": [], "shadows": [], "shadows_older": 0,
                   "read_at": time.time()}
     # The loop's own state files, not the ledger: what the reviewer raised, and why each gate
@@ -723,7 +727,7 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
     view["decisions"] = _decisions(loop, pr)
     db = run_supervisor.production_ledger()
     con = run_supervisor.read_only_connect(db)
-    if con is None:                                 # no ledger: an empty record, not an error
+    if con is None:                                 # no ledger: unavailable, not verified empty
         view["breach"] = _breach(loop, pr)
         return view
     try:
@@ -734,7 +738,7 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
         # The host's own "what moves it" line, for the runs that are actually not moving.
         for row in run_supervisor.runs_view(con, repo, pr):
             created, _ = stamp.get(row["id"], (None, None))
-            view["stuck"].append({"seat": row["seat"], "head": str(row["head"] or "")[:7],
+            view["stuck"].append({"seat": row["seat"], "head": _recorded_head(row["head"]),
                                   "state": row["state"], "since": created,
                                   "next": run_supervisor.next_step(row, loop["id"]),
                                   "explanation": run_supervisor.hold_explanation(row)})
@@ -744,7 +748,7 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
         for row in reversed(con.execute(
                 "SELECT seat, head, state, created, updated FROM runs WHERE repo=? AND pr=? "
                 "ORDER BY created DESC, id DESC LIMIT ?", (repo, pr, TURNS_MAX)).fetchall()):
-            view["turns"].append({"seat": row["seat"], "head": str(row["head"] or "")[:7],
+            view["turns"].append({"seat": row["seat"], "head": _recorded_head(row["head"]),
                                   "state": row["state"], "created": row["created"],
                                   "updated": row["updated"]})
         # Every stored receipt's verdict counts: review_receipt.submit refuses a COMMENT before
@@ -762,7 +766,7 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
                 "SELECT verdict, head, created FROM rulings WHERE repo=? AND pr=? "
                 "ORDER BY created DESC, rowid DESC LIMIT ?", (repo, pr, TURNS_MAX)).fetchall()):
             view["rulings"].append({"verdict": str(row["verdict"] or "")[:80],
-                                    "head": str(row["head"] or "")[:7], "created": row["created"]})
+                                    "head": _recorded_head(row["head"]), "created": row["created"]})
     finally:
         con.close()
     view["breach"] = _breach(loop, pr)
@@ -770,7 +774,13 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
     # Shadow reviews (#218): a second model's would-be verdicts, recorded and never posted.
     from . import stats
     view["shadows"], view["shadows_older"] = stats.shadow_reviews_for(db, repo, pr)
+    view["ledger_available"] = True
     return view
+
+
+def _recorded_head(value) -> str:
+    """A safe recorded identity, or unavailable; never echo malformed ledger contents."""
+    return value[:7] if isinstance(value, str) and re.fullmatch(r'[0-9a-f]{40}', value) else ''
 
 
 def _count(con, table: str, repo: str, pr: int) -> int:
