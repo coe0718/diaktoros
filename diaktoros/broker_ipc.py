@@ -1223,6 +1223,12 @@ class RunBroker:
                                 f"({', '.join(allowed.values()) or 'none configured'}); "
                                 "nothing was filed")
         labels = list(dict.fromkeys(allowed[x.casefold()] for x in labels))
+        # A maintainer selecting by type must find it (#967): one of the list's non-priority
+        # labels is required. A list with no such label cannot meet this, so it is not asked.
+        types = config.type_labels(allowed.values())
+        if types and not config.type_labels(labels):
+            raise ProtocolError("a filed issue needs one type label as well as a priority "
+                                f"(one of {', '.join(types)}); nothing was filed")
         if not self.scope.run_id or not self.scope.ledger_db:
             raise ProtocolError("host run ledger unavailable")
         supervisor = Supervisor(self.scope.ledger_db, create=False)

@@ -238,7 +238,10 @@ files it as an issue itself, before submitting its review, instead of listing it
 
 - is filed as the **reviewer seat's own account**, so the history shows a machine filed it;
 - carries only a title, a body and labels from this loop's triage list (`triage.labels`); with no
-  list configured, it has no labels;
+  list configured, it has no labels. When the list holds a label that is not a priority
+  (`P0`, `P1`, … are priorities; `bug`, `enhancement`, … are types), the request needs at
+  least one such type label, or the broker refuses it and nothing is filed. A list of
+  priorities only cannot ask for a type, so none is required there;
 - ends with a host-written line naming the PR it came from and its **lineage depth**: 1 for a
   finding on a person's PR, one more for a finding on a PR that fixed a filed issue. Past depth 1
   the issue says a person decides whether it goes back to the fixer.

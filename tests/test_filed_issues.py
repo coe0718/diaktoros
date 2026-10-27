@@ -131,17 +131,17 @@ class Filing(Base):
         cases = {
             "label not in the list": dict(title="t", body="b", labels=["wontfix"]),
             "too many labels": dict(title="t", body="b", labels=["bug", "P2", "P3", "bug"]),
-            "two lines": dict(title="a\nb", body="b", labels=[]),
-            "long title": dict(title="x" * 121, body="b", labels=[]),
-            "empty body": dict(title="t", body="  ", labels=[]),
+            "two lines": dict(title="a\nb", body="b", labels=["bug"]),
+            "long title": dict(title="x" * 121, body="b", labels=["bug"]),
+            "empty body": dict(title="t", body="  ", labels=["bug"]),
             "huge body": dict(title="t", body="x" * (broker.FILED_ISSUE_BODY_MAX + 1),
-                              labels=[]),
+                              labels=["bug"]),
         }
         for name, request in cases.items():
             with self.subTest(name):
                 answer = self.send(server, **request)
                 self.assertFalse(answer["ok"], answer)
-        extra = self.send(server, title="t", body="b", labels=[], assignees=["me"])
+        extra = self.send(server, title="t", body="b", labels=["bug"], assignees=["me"])
         self.assertFalse(extra["ok"])                              # no other field, ever
         self.assertEqual(self.posts, [])
 
@@ -152,6 +152,29 @@ class Filing(Base):
         self.assertFalse(answer["ok"])
         self.assertIn("labels must come from the loop's triage list", answer["error"])
         self.assertEqual(self.posts, [])
+
+    def test_a_priority_only_issue_is_refused_and_a_type_plus_priority_is_filed(self):
+        """#967: a maintainer selecting by type must find every filed issue."""
+        _, run_id = self.run_row()
+        server = self.broker(run_id)
+        for labels in (["P3"], ["p2", "P3"], []):
+            with self.subTest(labels=labels):
+                answer = self.send(server, title="no type", body="b", labels=labels)
+                self.assertFalse(answer["ok"], answer)
+                self.assertIn("needs one type label", answer["error"])
+                self.assertIn("nothing was filed", answer["error"])
+        self.assertEqual(self.posts, [])
+        with Supervisor(self.db)._connect() as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM filed_issues").fetchone()[0], 0)
+        answer = self.send(server, title="no type", body="b", labels=["bug", "P3"])
+        self.assertTrue(answer["ok"], answer)         # the same title: the refusals spent nothing
+        self.assertEqual(self.posts[0][0]["labels"], ["bug", "P3"])
+
+    def test_a_list_with_no_type_label_cannot_be_asked_for_one(self):
+        self.loop["triage"] = {**self.loop["triage"], "labels": ["P2", "P3"]}
+        _, run_id = self.run_row()
+        self.assertTrue(self.send(self.broker(run_id), title="t", body="b",
+                                  labels=["P3"])["ok"])
 
     def test_the_fix_label_is_never_a_reviewers_even_if_planted_in_the_list(self):
         """#298: a reviewer applying the fix label would hand its own finding to the fixer with
@@ -168,7 +191,7 @@ class Filing(Base):
                 self.assertFalse(answer["ok"])
                 self.assertIn("maintainer's hand-off", answer["error"])
         self.assertEqual(self.posts, [])
-        self.assertTrue(self.send(server, title="ok", body="b", labels=["P3"])["ok"])
+        self.assertTrue(self.send(server, title="ok", body="b", labels=["bug", "P3"])["ok"])
 
     def test_a_label_outside_the_triage_list_is_refused_with_nothing_filed(self):
         # The allowlist is what stops a finding being labelled into the fixer's queue.
@@ -186,13 +209,13 @@ class Filing(Base):
     def test_one_title_per_pr_and_three_per_review(self):
         _, run_id = self.run_row()
         server = self.broker(run_id)
-        self.assertTrue(self.send(server, title="Same thing", body="b", labels=[])["ok"])
-        again = self.send(server, title="  same   THING ", body="b", labels=[])
+        self.assertTrue(self.send(server, title="Same thing", body="b", labels=["bug"])["ok"])
+        again = self.send(server, title="  same   THING ", body="b", labels=["bug"])
         self.assertFalse(again["ok"])
         self.assertIn("already filed", again["error"])
         for n in (2, 3):
-            self.assertTrue(self.send(server, title=f"t{n}", body="b", labels=[])["ok"])
-        over = self.send(server, title="t4", body="b", labels=[])
+            self.assertTrue(self.send(server, title=f"t{n}", body="b", labels=["bug"])["ok"])
+        over = self.send(server, title="t4", body="b", labels=["bug"])
         self.assertIn("at most 3", over["error"])
         self.assertEqual(len(self.posts), 3)
 
@@ -201,7 +224,7 @@ class Filing(Base):
         for role in ("fixer", "issue_fixer", "triage"):
             with self.subTest(role=role):
                 answer = self.send(self.broker(run_id, role=role), title="t", body="b",
-                                   labels=[])
+                                   labels=["bug"])
                 self.assertFalse(answer["ok"])
         with self.assertRaises(broker.BrokerDenied):
             broker.authorize(self.loop, repo=REPO, number=7, head=HEAD, role="fixer",
@@ -212,10 +235,10 @@ class Filing(Base):
         _, run_id = self.run_row()
         server = self.broker(run_id)
         self.fail_post = True
-        answer = self.send(server, title="t", body="b", labels=[])
+        answer = self.send(server, title="t", body="b", labels=["bug"])
         self.assertIn("outcome is unknown", answer["error"])
         self.fail_post = False
-        self.assertIn("already filed", self.send(server, title="t", body="b", labels=[])["error"])
+        self.assertIn("already filed", self.send(server, title="t", body="b", labels=["bug"])["error"])
         self.assertEqual(len(self.posts), 1)
 
     def test_a_lost_post_response_is_write_evidence_so_the_run_is_not_retried(self):
@@ -223,7 +246,7 @@ class Filing(Base):
         server = self.broker(run_id)
         self.fail_post = True
         self.assertIn("outcome is unknown", self.send(server, title="t", body="b",
-                                                      labels=[])["error"])
+                                                      labels=["bug"])["error"])
         with sup._connect() as con:
             self.assertEqual(run_supervisor.write_evidence(con, run_id),
                              "filed issue outcome unknown")
@@ -238,17 +261,17 @@ class Filing(Base):
     def test_a_posted_issue_is_a_known_outcome_and_not_write_evidence(self):
         sup, run_id = self.run_row()
         server = self.broker(run_id)
-        self.send(server, title="t", body="b", labels=[])
+        self.send(server, title="t", body="b", labels=["bug"])
         with sup._connect() as con:
             self.assertIsNone(run_supervisor.write_evidence(con, run_id))
 
     def test_a_finding_on_an_automatic_fix_is_one_deeper_and_says_a_person_decides(self):
         sup, run_id = self.run_row()
         # Issue #301 was filed (depth 1); the PR under review fixes it.
-        self.send(self.broker(run_id), title="first", body="b", labels=[])
+        self.send(self.broker(run_id), title="first", body="b", labels=["bug"])
         self.pr["head"]["ref"] = "diaktoros/issue-301"            # the PR fixing #301
         answer = self.send(self.broker(run_id, branch="diaktoros/issue-301"),
-                           title="second", body="b", labels=[])
+                           title="second", body="b", labels=["bug"])
         self.assertTrue(answer["ok"], answer)
         body = self.posts[-1][0]["body"]
         self.assertIn("Lineage depth 2.", body)
@@ -277,6 +300,8 @@ class Prompt(unittest.TestCase):
         text = prompts.render_isolated("reviewer", issue_labels="this list only: `P3`", **facts)
         self.assertIn("File each one yourself, before the review", text)
         self.assertIn("labels from this list only: `P3`", text)
+        self.assertIn("exactly one type label", text)
+        self.assertIn("exactly one priority label", text)
         self.assertIn("**Issues filed**", text)
         from diaktoros import trusted_turn
         tools = trusted_turn.tool_instructions("reviewer")

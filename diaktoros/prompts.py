@@ -250,7 +250,10 @@ What to do:
    - **issue** — everything else (usually P2/P3): real, but not worth another round. With only
      issue-tier findings the verdict is APPROVE. File each one yourself, before the review,
      through the broker's `file_issue` command (below): a one-line title, the finding with its
-     evidence and `file:line` as the body, and labels from {issue_labels}. List what you filed
+     evidence and `file:line` as the body, and labels from {issue_labels}. Each filed issue
+     carries exactly one type label (a listed label that is not a priority, such as `bug`) and
+     exactly one priority label (`P0`–`P3`); the broker refuses an issue with no type label
+     when the list has one. List what you filed
      in the review under **Issues filed**, with the numbers the broker returned; a finding the
      broker refused to file goes under **Issues to file** instead, so the operator can.
 4. **Requirements.** When the PR closes an issue, the issue and its maintainers' comments are

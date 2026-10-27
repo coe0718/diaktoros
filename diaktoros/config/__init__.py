@@ -884,6 +884,14 @@ TRIAGE_KEYS = {"route", "profile", "authors", "labels", "max_labels", "comment",
 DEFAULT_AUTO_FIX_DAILY = 25
 # Priorities a person owns: an issue carrying one is never auto-offered (#232).
 AUTO_FIX_BLOCKED = re.compile(r"P[012]\Z", re.IGNORECASE)
+# A priority label (P0, P1, …); any other triage label is a type (bug, enhancement, …) (#967).
+PRIORITY_LABEL = re.compile(r"P\d+\Z", re.IGNORECASE)
+
+
+def type_labels(names) -> list[str]:
+    """The labels in ``names`` that are a type rather than a priority (#967)."""
+    return [x for x in names if not PRIORITY_LABEL.match(x)]
+
 # The deepest filed-issue lineage (#247) still auto-offered: past it a person must hand it over.
 AUTO_FIX_MAX_DEPTH = 2
 # Issue-fix turns per local day when the loop sets none (#247): the chain bound. Every issue fix
