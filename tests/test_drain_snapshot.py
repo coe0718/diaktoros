@@ -49,16 +49,25 @@ class Drain(unittest.TestCase):
                             f"https://github.com/{t.REPO}/pull/{number}", "seat busy")
 
     def answer(self, consume=True):
-        """The route POST: the gate takes the queue entry (it queued the run) when ``consume``."""
+        """The route POST: when ``consume``, the gate queues the run, as a real gate does: a run
+        ledger row for the PR, head and seat, then the queue entry taken."""
         def fire(route, event, payload, tag, host, on_attempt=None, on_unsent=None):
             self.fired.append(tag)
             if on_attempt:
                 on_attempt()
             if consume:
-                number = (payload.get("pull_request") or {}).get("number")
-                self.st().queue_pop("reviewer", f"{t.REPO}#{number}")
+                pr = payload.get("pull_request") or {}
+                seat = "fixer" if tag.startswith("drain-fix") else "reviewer"
+                self.gate_queues(pr.get("number"), (pr.get("head") or {}).get("sha"), seat)
+                self.st().queue_pop(seat, f"{t.REPO}#{pr.get('number')}")
             return True
         return mock.patch.object(routes, "fire", side_effect=fire)
+
+    def gate_queues(self, number, head, seat):
+        import uuid
+        from diaktoros import run_supervisor
+        sup = run_supervisor.Supervisor(run_supervisor.production_ledger())
+        sup.enqueue(uuid.uuid4().hex, t.REPO, number, head, seat)
 
     def drain(self, expected):
         return actions.drain_confirmed(self.loop(), "reviewer", expected)
@@ -267,6 +276,46 @@ class Drain(unittest.TestCase):
         self.assertEqual(result["outcomes"][0]["outcome"], "uncertain")
         self.assertNotIn("drain", self.st().queue_items("reviewer")[f"{t.REPO}#7"],
                          "the newer request stays, unclaimed, for its own turn")
+
+    def test_an_entry_replaced_then_removed_during_the_post_is_not_a_start(self):
+        # #1407 round 4 F1: a 2xx, and the entry is gone, but this POST's gate queued nothing
+        # (a newer request replaced the claim, then another path removed it).
+        t.reset(prs={"7": t.pr(7)})
+        self.queue(7)
+        shown = actions.drain_snapshot(self.loop(), "reviewer")
+
+        def fire(route, event, payload, tag, host, on_attempt=None, on_unsent=None):
+            self.fired.append(tag)
+            on_attempt and on_attempt()
+            self.queue(7)                                           # replaced...
+            self.st().queue_pop("reviewer", f"{t.REPO}#7")          # ...then removed
+            return True
+        with mock.patch.object(routes, "fire", side_effect=fire):
+            result = self.drain(shown)
+        self.assertEqual((result["ok"], result["status"], result["started"]), (False, "unknown", 0))
+        self.assertEqual(result["outcomes"][0]["outcome"], "uncertain")
+        self.assertIn("no run for this head is in the run ledger", result["outcomes"][0]["why"])
+
+    def test_a_same_head_request_queued_during_the_hold_check_is_kept(self):
+        # #1407 round 4 F6: the removal compared only the head, so a newer same-head request
+        # was deleted and reported as the confirmed one dropped.
+        from diaktoros import transition
+        t.reset(prs={"7": t.pr(7)})
+        self.queue(7)
+        shown = actions.drain_snapshot(self.loop(), "reviewer")
+        real_hold = transition.hold
+
+        def hold_then_requeue(st, number, head):
+            out = real_hold(st, number, head)
+            self.queue(7)
+            return {"missing_baseline": True} if out is None else out
+        with mock.patch.object(transition, "hold", side_effect=hold_then_requeue), \
+                mock.patch.object(transition, "baseline_missing", return_value=True), self.answer():
+            result = self.drain(shown)
+        self.assertEqual([(o["outcome"], o["why"]) for o in result["outcomes"]],
+                         [("left", "the entry changed during the checks")])
+        self.assertIn(f"{t.REPO}#7", self.st().queue_items("reviewer"), "the newer request is kept")
+        self.assertEqual(self.fired, [])
 
     def test_a_removal_that_loses_its_compare_is_reported_changed_not_dropped(self):
         # #1407 round 3 F6: #7 is requeued while its closed PR is being read.

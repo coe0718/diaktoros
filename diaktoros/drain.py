@@ -87,7 +87,8 @@ def drain(loop: dict, st: state_mod.LoopState, seat: str, quiet: bool = False, *
             note(key, "left", "the entry changed since it was confirmed" if expected is not None
                  else "the entry changed during the checks")
             continue
-        if _wake(loop, st, seat, key, claimed, fire, quiet, note, give_back=entry):
+        if _wake(loop, st, seat, key, claimed, fire, quiet, note, give_back=entry,
+                 bound=expected is not None):
             started += 1
             if started < free:
                 continue
@@ -101,11 +102,13 @@ def drain(loop: dict, st: state_mod.LoopState, seat: str, quiet: bool = False, *
 
 
 def _wake(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: dict, fire: tuple,
-          quiet: bool, note, give_back: dict | None = None) -> bool:
+          quiet: bool, note, give_back: dict | None = None, bound: bool = False) -> bool:
     """POST the queued request to the seat's route; True when the gate took it (the run is
     queued). False stops the drain: the POST was not sent, or may have been sent unanswered.
     ``entry`` is the drain's claim; ``give_back``, the entry it replaced, is restored if
-    nothing was sent (#1407)."""
+    nothing was sent (#1407). A ``bound`` (confirmed) drain counts a start only when the run
+    ledger shows the gate queued a run for this PR, head and seat since the claim: the entry
+    leaving the queue is not proof, since another path can replace and then remove it."""
     number, head, event, payload, tag = fire
     attempted = False
 
@@ -124,6 +127,11 @@ def _wake(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: dict,
     # because no private runtime exists. Only the gate can remove its observed queue
     # entry, after Supervisor.enqueue succeeds. Never pop a replacement here.
     current = st.queue_items(seat).get(key)
+    if posted and current is None and bound and not _run_since(loop, seat, number, head,
+                                                                entry["drain"]["at"]):
+        note(key, "uncertain", "the entry left the queue, but no run for this head is in the "
+                               "run ledger since the claim")
+        return False
     if posted and current is None:
         st.note(f"drained {seat} for {key}")
         if not quiet:
@@ -166,6 +174,24 @@ def _in_flight(st: state_mod.LoopState, seat: str, key: str, entry: dict):
 def _confirmed(expected: list, key: str, entry: dict) -> bool:
     """Whether this queue entry is one the operator confirmed: same key, head and time."""
     return [str(key), str((entry or {}).get("head") or ""), state_mod.mark_at(entry)] in expected
+
+
+def _run_since(loop: dict, seat: str, number: int, head: str, since: float) -> bool:
+    """Whether the run ledger holds a run for this PR, head and seat written since ``since``:
+    the gate's own record that it queued (or re-armed) the turn. Unreadable is not proof."""
+    from . import run_supervisor
+    try:
+        con = run_supervisor.read_only_connect(run_supervisor.production_ledger())
+        if con is None:
+            return False
+        try:
+            return con.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
+                               "AND updated>=?", (loop["repo"], number, head, seat,
+                                                  since)).fetchone() is not None
+        finally:
+            con.close()
+    except Exception:  # noqa: BLE001 - an unreadable ledger is no proof of a start
+        return False
 
 
 def _changed():
@@ -258,13 +284,15 @@ def _pr_check(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: d
         if base == loop["base"] and transition.record(loop, st, number, head, base):
             status, detail = transition.start_fresh_review(loop, st, number, live=pr)
             log(f"drain: PR #{number} retarget: fresh review {status} ({detail})")
-        if not st.queue_pop_head(seat, key, stacked.get("head")):
+        # The exact entry, not any at that head (#1407 review, F6): a newer same-head request
+        # queued meanwhile is kept for its own turn.
+        if entry.get("head") != stacked.get("head") or not st.queue_pop_if(seat, key, entry):
             return _changed()
         log(f"drain: PR #{number} retargeted since stacked observation — stale request dropped")
         return "dropped", "the PR was retargeted since it was queued", None
     boundary = transition.hold(st, number, head)
     if boundary and transition.baseline_missing(boundary):
-        if not st.queue_pop_head(seat, key, head):
+        if not st.queue_pop_if(seat, key, entry):
             return _changed()
         log(f"drain: PR #{number} same-head retarget held — {transition.MISSING_BASELINE}")
         return "dropped", "a same-head retarget hold", None
