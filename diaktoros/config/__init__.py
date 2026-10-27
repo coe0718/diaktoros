@@ -61,6 +61,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request
 
 from .. import envnames
+from . import flags
 
 # Seat identity: *who* a seat is. A profile decides the model, the budget and the credentials the
 # run happens with; a login decides the GitHub attribution. Both are per loop — two repositories can
@@ -879,6 +880,20 @@ def seat_daily_turns(loop: dict, seat: str) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
+def isolated_runtime_configured() -> bool:
+    """Whether this host has the isolated worker's runtime file, so every turn runs isolated.
+
+    The one place that decides when parallel runs need no ``clone``. Production turns are only
+    launched by the isolated worker (``gate.enqueue_isolated``), which gives each its own
+    exact-head export and sandbox and never a shared writable checkout; without this file it
+    cannot start (``gate.resume_isolated`` checks the same file), and ``clone`` stays the only
+    isolation source. Presence only: ``doctor`` and ``selftest`` check the file is valid. The
+    legacy shared-checkout path (``gate.take_seat``) does not rely on this: it queues a run it
+    cannot isolate above concurrency 1 whatever is configured.
+    """
+    return host_path("runtime").is_file()
+
+
 def seat_concurrency(loop: dict, seat: str) -> int:
     """How many PRs this seat may work at once.
 
@@ -1670,9 +1685,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     loop = {**DEFAULTS, **raw}
     where = f"{source or loop.get('id', '<inline>')}"
     check_known_keys(raw, where)
-    if type(loop["unattended_fixer_push"]) is not bool:
-        raise ConfigError(f"{where}: 'unattended_fixer_push' must be a JSON boolean; "
-                          "only explicit true authorizes unattended fixer pushes")
+    flags.check(loop, where)
     loop["fixer_check"] = check_fixer_check(loop["fixer_check"], where)
     loop["required_checks"] = check_required_checks(loop["required_checks"], where)
     loop["human_paths"] = check_human_paths(loop["human_paths"], where)
@@ -1690,21 +1703,6 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     if loop.get("merge_check") not in MERGE_CHECK_MODES:
         raise ConfigError(f"{where}: 'merge_check' must be one of {', '.join(MERGE_CHECK_MODES)} "
                           "(auto: on when the reviewer is a GitHub App)")
-    if type(loop["review_after_ci"]) is not bool:
-        raise ConfigError(f"{where}: 'review_after_ci' must be a JSON boolean (true holds a "
-                          "review until the head's checks finish)")
-    if type(loop["review_only_update"]) is not bool:
-        raise ConfigError(f"{where}: 'review_only_update' must be a JSON boolean (true lets the "
-                          "host push a clean merge of the base into a review-only PR)")
-    if type(loop["fixer_scope_lock"]) is not bool:
-        raise ConfigError(f"{where}: 'fixer_scope_lock' must be a JSON boolean (true holds a "
-                          "fix round that changes files its findings do not name)")
-    if type(loop["fix_ci"]) is not bool:
-        raise ConfigError(f"{where}: 'fix_ci' must be a JSON boolean (true hands a failed "
-                          "required check on a fixer's PR to the fixer)")
-    if type(loop["attribution"]) is not bool:
-        raise ConfigError(f"{where}: 'attribution' must be a JSON boolean (true signs what the "
-                          "loop posts; false turns it off)")
 
     repo = str(loop.get("repo") or "").strip()
     if repo.count("/") != 1:
@@ -1844,15 +1842,17 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
             seats[seat]["max_steps"] = _check_max_steps(
                 seats[seat]["max_steps"], f"seats.{seat}.max_steps", where)
 
-    if not loop.get("clone"):
-        # Above one run at once, isolation is not a preference: without a clone to isolate from,
-        # two runs would share whatever checkout they find, which is the wrong-verdict bug. Check
-        # the effective value per seat, so a seat-level 2 is caught even when the loop default is 1.
+    if not loop.get("clone") and not isolated_runtime_configured():
+        # Above one run at once, isolation is not a preference: with no clone to isolate from and
+        # no isolated worker to launch the turns, two runs would share whatever checkout they
+        # find, which is the wrong-verdict bug. Check the effective value per seat, so a
+        # seat-level 2 is caught even when the loop default is 1.
         for seat in SEAT_KEYS:
             if seat_concurrency(loop, seat) > 1:
                 raise ConfigError(
                     f"{where}: seats.{seat}.concurrency > 1 requires 'clone' "
-                    f"(runs must be isolated)")
+                    f"(runs must be isolated), or the isolated worker's runtime file "
+                    f"{host_path('runtime')} (`hermes dk setup` writes it)")
 
     loop["host"] = webhook_host(loop.get("host"))
     if not loop.get("state_dir"):

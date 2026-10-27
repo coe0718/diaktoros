@@ -147,7 +147,7 @@ Do not paste PATs into JSON, plugin settings, command arguments, issue text, or 
 
 | Key | Default | Accepted value and behavior |
 |---|---|---|
-| `concurrency` | `1` | Whole number at least `1`, with no explicit loader maximum. Default simultaneous runs **per working seat**, not a combined loop-wide total. Effective reviewer/fixer capacity above `1` requires `clone`, even though production turns use isolated exports. |
+| `concurrency` | `1` | Whole number at least `1`, with no explicit loader maximum. Default simultaneous runs **per working seat**, not a combined loop-wide total. Effective reviewer/fixer capacity above `1` needs either `clone` or the isolated worker's runtime file (`diaktoros-runtime.json`, written by `setup`). With that file every production turn is launched by the isolated worker into its own exact-head export and sandbox, so no checkout is shared and no `clone` is needed. With neither, the loader refuses (`seats.<seat>.concurrency > 1 requires 'clone'`). The loader checks only that the file exists when the config loads (`doctor` and `selftest` validate its content), so a loop file copied to a host without the file is refused until `clone` is set or `setup` has run. |
 | `seats.reviewer.concurrency`, `seats.fixer.concurrency` | Loop `concurrency` | Whole number at least `1`. An explicit value pins that seat: later loop-wide changes do not override it. Missing, `null`, or empty values inherit. |
 | `seats.adjudicator.concurrency` | `1` | Whole number at least `1`; does not inherit loop capacity. |
 | `seats.triage.concurrency` | `1` | Whole number at least `1`; does not inherit loop capacity. |
@@ -210,7 +210,7 @@ hermes dk doctor --loop "<loop-id>"
 
 | Key | Default | Behavior |
 |---|---|---|
-| `clone` | Empty | Optional local clone; required when effective reviewer/fixer concurrency exceeds `1`. Cleanup uses its registered worktrees. A loader accepting a path is not proof of a valid Git clone; preflight checks the installation. |
+| `clone` | Empty | Optional local clone. Required when effective reviewer/fixer concurrency exceeds `1` only if the isolated worker's runtime file is absent (see `concurrency`); production turns never build in it. Cleanup uses its registered worktrees. A loader accepting a path is not proof of a valid Git clone; preflight checks the installation. |
 | `roots` | `[]` | Dedicated cleanup discovery directories. Filesystem root, the current home directory, and ancestors of home are refused. Shared roots do not authorize deletion of another repository's PR artifacts. |
 | `state_dir` | `$HERMES_HOME/state/diaktoros/<id>` | Per-loop locks, queues, markers, observations, diagnostics, run working directories, and dependency caches. Use a dedicated absolute path if overriding. |
 

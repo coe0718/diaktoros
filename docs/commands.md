@@ -63,7 +63,7 @@ No setting named here is an extra CLI flag.
 | Login / allowlist options | GitHub login; working-seat allowlists must not be empty | Reviewer/fixer/reader and optional adjudicator comment identity must differ. `/user` checks in selftest/broker establish actual token principals, not spelling alone. |
 | Token-file options | File path, not a PAT; absolute paths or `~` paths recommended | Form paths, `set --token` and adjudicator mappings require an owned regular file with no group/other permission bits; symlinks are followed for metadata. `init --token` is checked the same way; doctor/selftest are still required. |
 | `--cap` | Integer >= 2; fresh default 3 | Counts verdicts, not pushes; at cap, adjudication requires an adjudicator route. |
-| Concurrency options | Integer >= 1; fresh default 1 | Reviewer/fixer inherit loop default unless pinned. Above 1 requires a nonblank clone path; validity of the checkout is checked separately. No CLI flag clears a seat override. |
+| Concurrency options | Integer >= 1; fresh default 1 | Reviewer/fixer inherit loop default unless pinned. Above 1 requires a nonblank clone path unless the runtime file exists; validity of the checkout is checked separately. No CLI flag clears a seat override. |
 | `--turn-budget`, per-seat budget options | Integer seconds 60–14400; fresh loop default 900 | Seat override wins; queued rows retain recorded budgets. `retry` uses current seat budget. Prefetch, kill grace and broker drain are outside the model budget. |
 | Daily-turn options | Integer 1–1000; omitted means existing value or no cap; CLI 0 removes cap | Later turns wait for local midnight; applies only to the named seat. |
 | Grace / TTL options | Integer minutes; fresh grace 35, marker grace 60, slot TTL 45, in-flight TTL 10 | Parser enforces integer type but loader has no positive range for these fields. Use positive values; actual slot/stall clocks also cover the seat's whole worst-case turn. |
@@ -520,7 +520,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--reviewer-agent` | `REVIEWER_AGENT` |  | display name for the reviewer (default: profile) |
 | `--fixer-agent` | `FIXER_AGENT` |  | display name for the fixer |
 | `--cap` | `CAP` | `3` | verdicts allowed before adjudication |
-| `--concurrency` | `CONCURRENCY` |  | default PRs per seat at once: 1 = serialized (default: 1, from the plugin settings). Above 1 needs --clone, because each run then gets its own clone. Override per seat with --reviewer-concurrency / --fixer-concurrency. |
+| `--concurrency` | `CONCURRENCY` |  | default PRs per seat at once: 1 = serialized (default: 1, from the plugin settings). Above 1 needs --clone unless the isolated worker's runtime file exists, because each run then gets its own clone or sandbox. Override per seat with --reviewer-concurrency / --fixer-concurrency. |
 | `--reviewer-concurrency` | `REVIEWER_CONCURRENCY` |  | PRs the reviewer may work at once (overrides --concurrency; default: the loop's, settings 1) |
 | `--fixer-concurrency` | `FIXER_CONCURRENCY` |  | PRs the fixer may work at once (overrides --concurrency; default: the loop's, settings 1) |
 | `--shadow-concurrency` | `SHADOW_CONCURRENCY` |  | shadow reviews that may run at once, >= 1 (the shadow seat's own value: --concurrency does not reach it) (default: the plugin setting, else 1) |
@@ -636,7 +636,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
-| `--concurrency` | `CONCURRENCY` |  | default PRs per seat at once (1 = serialized; above 1 needs a clone, since each run gets its own) |
+| `--concurrency` | `CONCURRENCY` |  | default PRs per seat at once (1 = serialized; above 1 needs a clone unless the isolated worker's runtime file exists, since each run gets its own) |
 | `--reviewer-concurrency` | `REVIEWER_CONCURRENCY` |  | how many PRs the reviewer may work at once |
 | `--fixer-concurrency` | `FIXER_CONCURRENCY` |  | how many PRs the fixer may work at once |
 | `--shadow-concurrency` | `SHADOW_CONCURRENCY` |  | how many shadow reviews may run at once (>= 1; only the shadow seat's own value: the loop default does not reach it) |
