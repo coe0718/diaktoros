@@ -254,11 +254,13 @@ def _hook_origin(loop: dict, drifted: dict) -> dict:
 
 def _ensure_hooks(loop: dict, token_login: str | None, dry_run: bool,
                   outcome: dict | None = None) -> int:
-    """``apply --hooks``: make this loop's two repo hooks what its routes need, the way ``init
-    --hooks`` would have for a new loop (``init`` refuses an existing one).
+    """``apply --hooks``: make each of this loop's repo hooks what its routes need (reviewer and
+    fixer, plus triage when it is enabled; none under a GitHub App's ingress, see
+    ``config.hook_roles``), the way ``init --hooks`` would have for a new loop (``init``
+    refuses an existing one).
 
-    Per seat, hooks are matched by route name and one is kept by #106's ``_keep_one`` (active
-    first). A seat with none gets one created, paused until ``arm``. The kept hook is repointed at
+    Per hook role, hooks are matched by route name and one is kept by #106's ``_keep_one`` (active
+    first). A role with none gets one created, paused until ``arm``. The kept hook is repointed at
     the route's exact URL with ``_patch_hook_url`` (full config: the route's secret, the hook's own
     TLS setting, json), and given the gate's event if it lacks it. Extra hooks are only named. The
     listing is read first and nothing is written if it cannot be trusted; returns an exit code.
