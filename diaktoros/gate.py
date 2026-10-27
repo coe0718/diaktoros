@@ -70,8 +70,8 @@ def _record_decisions(loop: dict, payload: dict) -> None:
     gate-decisions.jsonl (#209)."""
     from . import gate_decisions, util
     name = pathlib.Path(sys.argv[0] or "gate").stem or "gate"
-    util._DECISION_RECORDER = lambda reason, decision: gate_decisions.record(
-        loop, name, payload, decision, reason)
+    util.set_decision_recorder(lambda reason, decision: gate_decisions.record(
+        loop, name, payload, decision, reason))
 
 
 def pr_of(payload: dict) -> dict:
