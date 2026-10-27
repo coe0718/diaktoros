@@ -31,7 +31,9 @@ from .util import logged, now_iso
 
 _LOCK = threading.RLock()
 _SECRET = secrets.token_bytes(32)
-_ACTIONS = ("review", "escalate", "drain")
+_ACTIONS = ("review", "escalate", "drain", "cancel")
+# The seats a confirmed cancel may name (#1148); the other actions take reviewer or fixer only.
+_CANCEL_SEATS = ("reviewer", "fixer", "adjudicator", "triage", "issue_fixer", "shadow")
 
 
 def _identity(loop, action, pr, seat, snapshot):
@@ -64,11 +66,14 @@ def plan(loop, action, pr=None, seat=None):
     A host restart invalidates outstanding confirmations. CLI-only grant, reason and
     whole-seat drain semantics are intentionally not expanded into Desktop authority.
     """
+    seats = _CANCEL_SEATS if action == "cancel" else ("reviewer", "fixer")
     out = {"action": action if action in _ACTIONS else "unknown", "pr": None,
-           "seat": seat if seat in ("reviewer", "fixer") else None, "eligible": False,
+           "seat": seat if seat in seats else None, "eligible": False,
            "head": "", "reason": "invalid action target", "confirmation": ""}
     if action not in _ACTIONS:
         return out
+    if action == "cancel":
+        return _cancel_plan(loop, pr, seat, out)
     if action == "drain":
         if pr is None and seat in ("reviewer", "fixer"):
             out["reason"] = "drain cannot bind the confirmed queue snapshot; use the host CLI"
@@ -104,6 +109,73 @@ def plan(loop, action, pr=None, seat=None):
         return out
 
 
+def _cancel_found(loop, pr, seat):
+    """``cancel_action.plan`` for a PR (#1148), at the head GitHub reports now."""
+    from . import cancel_action
+    db = run_supervisor.production_ledger()
+    if not db.exists():
+        return None
+    con = run_supervisor.read_only_connect(db)
+    if con is None:
+        return None
+    try:
+        def head():
+            live = gh.pr(loop, pr)
+            return ((live or {}).get("head") or {}).get("sha") if isinstance(live, dict) else None
+        return cancel_action.plan(con, loop["repo"], pr, seat, resolve_head=head)
+    finally:
+        con.close()
+
+
+def _cancel_plan(loop, pr, seat, out):
+    """The confirmed cancel's offer: the exact runs it would stop, bound into the confirmation.
+    A run that starts, ends or appears after the preview makes the confirmation stale."""
+    from . import cancel_action
+    if type(pr) is not int or pr <= 0 or (seat is not None and seat not in _CANCEL_SEATS):
+        return out
+    out["pr"] = pr
+    try:
+        found = _cancel_found(loop, pr, seat)
+    except Exception:
+        out["reason"] = "run facts unavailable; nothing authorized"
+        return out
+    if found is None:
+        out["reason"] = "no run ledger; nothing to cancel"
+        return out
+    out["head"] = found["head"]
+    if not found["targets"]:
+        out["reason"] = "nothing open to cancel"
+        return out
+    shown = cancel_action.snapshot(found)
+    out.update(eligible=True,
+               reason="cancels " + ", ".join(f"{row['seat']} {row['state']}"
+                                             for row in found["targets"])
+               + "; only a retry re-arms them",
+               confirmation=_identity(loop["id"], "cancel", pr, seat, [found["head"], shown]),
+               snapshot=shown)
+    return out
+
+
+def _cancel_perform(loop, pr, seat, proposal):
+    from . import cancel_action
+    head = proposal["head"]
+    try:
+        result = cancel_action.perform(loop, pr=pr, seat=seat,
+                                       ledger=run_supervisor.production_ledger(),
+                                       resolve_head=lambda: head, expected=proposal["snapshot"])
+    except Exception:
+        return _result("unknown", "operation interrupted; inspect state before retrying", head=head)
+    if result["message"]:
+        return _result("stale", "confirmation is stale or unavailable; preview again", head=head)
+    states = [entry["state"] for entry in result["cancelled"]]
+    if result["refused"] or not states:
+        return _result("unknown", "not every run could be cancelled; inspect before retrying",
+                       head=head)
+    if all(state == "cancelled" for state in states):
+        return _result("verified", "cancelled; only a retry re-arms them", ok=True, head=head)
+    return _result("partial", "stop requested; the worker stops the running turn", head=head)
+
+
 def _result(status, reason, *, ok=False, head=""):
     return {"ok": ok, "status": status, "reason": reason, "head": head}
 
@@ -122,6 +194,8 @@ def confirmed_perform(loop, action, confirmation, pr=None, seat=None):
             return _result("stale", "confirmation is stale or unavailable; preview again")
         if not proposal["eligible"]:
             return _result("refused", proposal["reason"])
+        if action == "cancel":
+            return _cancel_perform(loop, pr, seat, proposal)
         head = proposal["head"]
         operation = SimpleNamespace(pr=pr, reason="", expected_head=head, expected_confirmation=token)
         try:

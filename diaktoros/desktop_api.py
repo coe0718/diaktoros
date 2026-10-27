@@ -96,9 +96,13 @@ def hooks_action_view(loop_id: str | None, action: str, confirmation: str) -> di
 
 def _action_target(loop_id, action, pr, seat):
     """Validate shape only; every eligibility rule belongs to the shared owner."""
-    if action not in ('review', 'escalate', 'drain') or not isinstance(action, str):
-        raise BadRequest('Action must be review, escalate or drain.')
-    if action == 'drain':
+    if action not in ('review', 'escalate', 'drain', 'cancel') or not isinstance(action, str):
+        raise BadRequest('Action must be review, escalate, drain or cancel.')
+    if action == 'cancel':
+        # Any seat, or none for every open run at the PR's head (#1148).
+        if type(pr) is not int or pr <= 0 or (seat is not None and seat not in retry_action.SEATS):
+            raise BadRequest('Cancel requires a positive PR number and, optionally, a seat.')
+    elif action == 'drain':
         if pr is not None or seat not in ('reviewer', 'fixer'):
             raise BadRequest('Drain requires a reviewer or fixer seat, not a PR.')
     elif type(pr) is not int or pr <= 0 or seat is not None:

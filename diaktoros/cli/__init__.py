@@ -78,6 +78,7 @@ from .lifecycle import (
     cmd_uninstall,
 )  # noqa: F401
 from .operations import (
+    cmd_cancel,
     cmd_cleanup,
     cmd_depends,
     cmd_drain,
@@ -185,6 +186,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         cli_settings.add_triage(sub)
         cli_settings.add_fixer_push(sub)
         cli_operations.add_retry(sub)
+        cli_operations.add_cancel(sub)
         cli_operations.add_continue(sub)
         cli_operations.add_drain(sub)
         cli_operations.add_observer(sub)

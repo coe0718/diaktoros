@@ -461,6 +461,46 @@ def cmd_retry(args) -> int:
     return 0 if result["ok"] else 2
 
 
+def cmd_cancel(args) -> int:
+    """Stop a queued, waiting or running isolated run (#1148).
+
+    The selection, the state change and the read-back are ``cancel_action``'s, which the
+    Desktop's confirmed cancel calls too: this function supplies the CLI's one GitHub read (the
+    PR's current head), waits a bounded time for a worker to stop a running turn, and prints the
+    result. A finished run is refused with its state; only ``retry`` re-arms a cancelled one.
+    """
+    from .. import cancel_action, gh
+
+    try:
+        loop = config.load_id(args.loop)
+    except config.ConfigError as exc:
+        print(f"no such loop: {exc}")
+        return 2
+    if args.run and (args.pr is not None or args.seat):
+        print("name one run (--run) or one PR (--pr, optionally --seat), not both")
+        return 2
+    if not args.run and args.pr is None:
+        print("name a run (--run RUN_ID) or a PR (--pr N)")
+        return 2
+
+    def resolve_head():
+        live = gh.pr(loop, args.pr)
+        return ((live or {}).get("head") or {}).get("sha") if isinstance(live, dict) else None
+
+    result = cancel_action.perform(loop, pr=args.pr, seat=args.seat, run_id=args.run or None,
+                                   ledger=_ledger_path(),
+                                   resolve_head=resolve_head if args.pr is not None else None,
+                                   wait=cancel_action.STOP_WAIT_S, reveal_errors=True)
+    if result["message"]:
+        print(result["message"])
+        for line in cancel_action.lines(dict(result, cancelled=[])):
+            print(line)
+        return 2
+    for line in cancel_action.lines(result):
+        print(line)
+    return 0 if result["ok"] else 2
+
+
 def cmd_continue(args) -> int:
     """Finish a half-written issue fix (#485): inspect, then run only the missing stage.
 
@@ -1003,6 +1043,22 @@ def add_retry(sub) -> None:  # noqa: ANN001
                        help="only that seat's run (default: whichever failed at the PR's "
                             "newest head; a shadow run only when named)")
     retry.set_defaults(func=cmd_retry)
+
+
+def add_cancel(sub) -> None:  # noqa: ANN001
+    """The ``cancel`` subcommand's parser, registered by ``cli.register_cli`` (#1148)."""
+    cancel = sub.add_parser("cancel", help="Stop a queued, waiting or running isolated run "
+                                           "(only `retry` re-arms it)")
+    cancel.add_argument("--loop", required=True,
+                        help="loop id (its config file name; `list` shows them)")
+    cancel.add_argument("--run", help="the run id to cancel (`status` lists it)")
+    cancel.add_argument("--pr", type=int,
+                        help="cancel every open run at this PR's current head (an issue number "
+                             "for triage and issue_fixer)")
+    cancel.add_argument("--seat", choices=["reviewer", "fixer", "adjudicator", "triage",
+                                           "issue_fixer", "shadow"],
+                        help="with --pr: only that seat's run")
+    cancel.set_defaults(func=cmd_cancel)
 
 
 def add_continue(sub) -> None:  # noqa: ANN001

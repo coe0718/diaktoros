@@ -354,6 +354,9 @@ class ClaimAndLaunch:
         """Worker-only host control plane; never pass credentials to bwrap."""
         from .. import trusted_turn
         turn = _Turn(run_id, owner, int(self.budget_of(run_id)))
+        # An operator's stop (#1148: contained.Stopped, TurnCancelled) ends like any failed turn
+        # here; complete_uncertain sees the request and makes it cancelled, never retried (or
+        # uncertain after a write-ahead record).
         try:
             self._production_turn(turn)
         except trusted_turn.TurnBudgetExceeded as exc:
@@ -459,6 +462,9 @@ class ClaimAndLaunch:
         prompt = launch.prompt
         if run_supervisor.unpublished_before(row):
             prompt = run_supervisor.PUBLISH_NUDGE + prompt
+        cancel = self._cancels.get(run_id)
+        if cancel is not None and cancel.is_set():
+            raise run_supervisor.TurnCancelled(run_supervisor.OPERATOR_STOPPED)  # before any launch
         # Each turn is counted once, against its own pool (#772).
         pacing.count_turn(loop['id'], pacing.REVIEW_ONLY_SEAT if ro_turn else row['seat'])
         change, merged = launch.change, launch.merged
@@ -480,7 +486,9 @@ class ClaimAndLaunch:
               work_root=config.state_dir(loop) / "isolated-runs", observed=turn.observed,
               # The prefetch phase lands in the ledger as it happens (#51): a slow one shows
               # as "fetching", not as a silent turn, and its outcome outlives the run.
-              progress=lambda text: self.record_dependencies(run_id, owner, text))
+              progress=lambda text: self.record_dependencies(run_id, owner, text),
+              # An operator's cancel (#1148) stops the sandbox the way the budget does.
+              stop=cancel)
         # A non-zero sandbox exit with nothing on the write-ahead record is the model or
         # provider failing (429/5xx, OAuth refresh, crash): worth a backed-off retry.
         turn.retry = turn.rc != 0
@@ -1006,7 +1014,7 @@ class ClaimAndLaunch:
             run_id, owner, turn.rc, turn.error, stopped=turn.stopped, retry=turn.retry,
             detail=run_supervisor.output_detail(observed.get('stdout'), observed.get('stderr')),
             paced_until=turn.paced_until, cancel=turn.cancel)
-        if turn.breach is not None and state in ('waiting', 'failed'):
+        if turn.breach is not None and state in ('waiting', 'failed', 'cancelled'):
             # This run marked the breach 'adjudicating' and made no ruling: hand the
             # marker back so its retry (or a re-arm) can claim it again.
             try:
