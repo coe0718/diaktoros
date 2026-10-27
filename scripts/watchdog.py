@@ -1479,7 +1479,7 @@ def sweep_ledger(ledger: pathlib.Path, presence: pathlib.Path | None = None) -> 
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Stall watchdog for configured review loops")
+    ap = argparse.ArgumentParser(description="Diaktoros stall watchdog for configured loops")
     ap.add_argument("--loop", help="loop id (default: every configured loop)")
     ap.add_argument("--drain", action="store_true", help="start a queued run and print nothing else")
     ap.add_argument("--seat", default="reviewer", choices=["reviewer", "fixer"])

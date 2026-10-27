@@ -176,6 +176,17 @@ class Repo(fg.Base):
         self.assertEqual(self.repos_in_ledger(), [OLD])
         self.assertEqual(list(self.st.queue_items("reviewer")), [f"{OLD}#7"])
 
+    def test_a_ledger_without_a_runs_table_does_not_crash_or_wedge_the_migrate(self):
+        # #1055: a zero-byte ledger (crash before the schema) made busy_runs/_move_ledger raise
+        # "no such table", so every re-run crashed. Nothing can be in flight without the table.
+        self.db().parent.mkdir(parents=True, exist_ok=True)
+        migrate.sqlite3.connect(self.db()).close()
+        self.assertEqual(migrate.busy_runs(self.db(), OLD), 0)
+        self.assertEqual(migrate._move_ledger(self.db(), OLD, NEW, dry_run=False), (0, ""))
+        lines = self.run_step()
+        self.assertIn(f"moved {OLD} → {NEW}", lines[0])
+        self.assertEqual(config.load_id("one")["repo"], NEW)
+
 
 class Writer(fg.Base):
     def test_only_repo_moves_and_the_current_push_policy_stays(self):

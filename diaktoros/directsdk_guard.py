@@ -1,4 +1,4 @@
-"""Fail-closed native launch contract, owned by review-loop, not the provider."""
+"""Fail-closed native launch contract, owned by Diaktoros, not the provider."""
 import hashlib
 import json
 import os

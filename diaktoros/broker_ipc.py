@@ -35,7 +35,7 @@ import stat
 import threading
 from dataclasses import dataclass
 
-from . import broker, config, contained, repro_proof, safe_push
+from . import broker, config, contained, issue_labels, repro_proof, safe_push
 
 MAX_REQUEST = 16 * 1024
 MAX_BODY = 12 * 1024
@@ -1252,6 +1252,8 @@ class RunBroker:
                                 f"({', '.join(allowed.values()) or 'none configured'}); "
                                 "nothing was filed")
         labels = list(dict.fromkeys(allowed[x.casefold()] for x in labels))
+        if why := issue_labels.missing_type(allowed.values(), labels):    # #967: a type label
+            raise ProtocolError(why)
         return title.strip(), body, labels, current
 
     def _file_issue(self, raw: bytes, request: object) -> object:

@@ -88,7 +88,7 @@ def _rows(loop: dict) -> list[_Row]:
                derived="" if own else f"the loop's concurrency ({cap_loop_c})")
     schema("cap", ("cap",), loop["cap"])
     schema("clone", ("clone",), loop.get("clone") or _UNSET,
-           note="" if loop.get("clone") else "needed above 1 run at once")
+           note="" if loop.get("clone") else "needed above 1 run at once unless the runtime file exists")
     schema("base", ("base",), loop["base"])
     for key in ("grace_min", "ttl_min", "inflight_ttl_min", "turn_budget_s"):
         schema(key, (key,), loop[key])
