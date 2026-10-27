@@ -461,12 +461,12 @@ _COMMON = ('You have no GitHub credentials or network. Never claim a write succe
            'discarded when you exit: there is no person to hand files to, and work you did not '
            'publish through the broker is lost. End your turn with your write.')
 TOOLS = {
-    'reviewer': ('For your one authorized write use `python -m diaktoros.broker_client review '
+    'reviewer': ('For your one authorized write use `python -P -m diaktoros.broker_client review '
                  '--verdict APPROVE --body-file /work/review.txt` (or --verdict REQUEST_CHANGES). '
                  'The verdict must be exactly APPROVE or REQUEST_CHANGES; anything else is refused '
                  'without spending the write. A reviewer gets exactly one review. Before it, file '
                  'each issue-tier finding (one that does not block) as its own issue: '
-                 '`python -m diaktoros.broker_client file_issue --title "..." --body-file '
+                 '`python -P -m diaktoros.broker_client file_issue --title "..." --body-file '
                  '/tmp/issue1.md --label P3` (one line title of at most 120 characters, a body of at '
                  f'most {broker_client.FILED_ISSUE_BODY_MAX // 1024} KiB with the evidence and '
                  '`file:line`, labels only from the list in your instructions, none if no list is '
@@ -474,7 +474,7 @@ TOOLS = {
                  'and answers with the issue number; a title already filed from this PR is '
                  'refused. A blocking finding is never an issue: it is REQUEST_CHANGES. '),
     'fixer': ('To publish, name the files you changed and write a commit message: '
-              '`python -m diaktoros.broker_client push --files src/a.py src/b.py '
+              '`python -P -m diaktoros.broker_client push --files src/a.py src/b.py '
               '--message-file /tmp/commit.txt` (or `--message "..."`; paths are under `/work`). '
               'Add `--dry-run` first to check it without spending the write. Name every file you '
               'changed, added or deleted (a deleted file is named too; a rename is the old path '
@@ -489,7 +489,7 @@ TOOLS = {
               '`CODEOWNERS`. Only regular files: no symlink and no mode change. `/work` is a plain '
               'export with no `.git`, so keep track of which files you changed. Then write your answers to the findings to a file '
               '(for each: fixed at file:line, or why it is not a defect, with evidence; at most '
-              f'{broker_client.MAX_ANSWERS // 1024} KiB) and run `python -m diaktoros.broker_client '
+              f'{broker_client.MAX_ANSWERS // 1024} KiB) and run `python -P -m diaktoros.broker_client '
               'request_review --answers-file /tmp/answers.md`: the host posts the answers once as a '
               'PR comment by the fixer account, where the next reviewer and the adjudicator read '
               'them, then requests the review. It is the only way your answers leave the sandbox, '
@@ -501,16 +501,16 @@ TOOLS = {
               '{"base_head", "message", "files": [{"path", "content_b64", "sha256"}]} or '
               '{"base_head", "message", "patch_b64", "sha256"}.) '),
     'adjudicator': ('`/work` is read-only; write files under `/tmp`. To deliver your ruling use '
-                    '`python -m diaktoros.broker_client ruling --verdict ACCEPT '
+                    '`python -P -m diaktoros.broker_client ruling --verdict ACCEPT '
                     '--body-file /tmp/ruling.txt` (or REJECT/RESPEC). An adjudicator gets '
                     'exactly one ruling and cannot review, push or merge. '),
-    'triage': ('To deliver your triage use `python -m diaktoros.broker_client triage --label bug '
+    'triage': ('To deliver your triage use `python -P -m diaktoros.broker_client triage --label bug '
                '--label P2` (one `--label` per label, from the list above, spelled exactly; none '
                'at all when none fits), adding `--comment-file /tmp/comment.txt` only if this loop '
                'allows a comment. You get exactly one triage write; you cannot review, push, close '
                'or edit the issue. '),
     'issue_fixer': ('To open the PR, name the files you changed, a commit message, a PR title and a '
-                    'description file: `python -m diaktoros.broker_client open_pr --files '
+                    'description file: `python -P -m diaktoros.broker_client open_pr --files '
                     'src/a.py src/b.py --message "..." --title "..." --body-file /tmp/pr.md` '
                     '(paths are under `/work`; add `--dry-run` first to check it without spending '
                     'the write). Add `--repro <module.Class.test_name>...` to name the unittest '
@@ -521,7 +521,7 @@ TOOLS = {
                     f'limits as a fixer push apply: at most {safe_push.MAX_PATCH_PATHS} files, a '
                     f'diff of at most {safe_push.MAX_PATCH // 1024} KiB, regular files only, '
                     'nothing under `.github/`. If you cannot fix the issue, instead run '
-                    '`python -m diaktoros.broker_client issue_comment --body-file /tmp/why.md`. '
+                    '`python -P -m diaktoros.broker_client issue_comment --body-file /tmp/why.md`. '
                     'To ask one question or post a plan instead (the issue is handed back until a '
                     'maintainer replies), add `--ask question` or `--ask plan` to issue_comment. '
                     'You get exactly one of the two; you cannot review, merge or close anything. '),
@@ -769,7 +769,9 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                         if scope.role == 'issue_fixer' else None)))
             server = broker_ipc.serve_in_thread(broker)
             try:
-                command = ['/opt/venv/bin/python', '-m', 'diaktoros.inference_proxy',
+                # -P (#1373): /work, the cwd, is the tree under review; a `diaktoros` package
+                # there must never shadow the trusted bridge on sys.path.
+                command = ['/opt/venv/bin/python', '-P', '-m', 'diaktoros.inference_proxy',
                            'bridge', '--', '/opt/venv/bin/python', '/opt/venv/bin/hermes', 'chat',
                            '--query-file', '/opt/query', '--oneshot', '-Q',
                            '--provider', provider, '-m', model, '-t', 'terminal,file',
