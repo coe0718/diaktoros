@@ -73,6 +73,20 @@ class EntryPoint(Harness):
         gate_call.assert_not_called()
         self.assertFalse(t.held("reviewer", 7, t.HEAD_B))
 
+    def test_a_crashing_gate_is_reported_and_exits_2(self):
+        t.reset(prs={"7": t.pr(7)})
+        entry = mock.Mock()
+        entry.decide.side_effect = RuntimeError("/private/path gate blew up")
+        with mock.patch.object(actions, "_script", return_value=entry):
+            result = actions.review(self.loop(), 7)
+            rc, out = t.run_cli(t.parser_for({}).parse_args(
+                ["review", "--loop", "widgets", "--pr", "7"]))
+        self.assertEqual(result["code"], 2)
+        self.assertIn("the gate did not finish — it crashed (RuntimeError)", result["lines"][-1])
+        self.assertNotIn("/private/path", result["lines"][-1])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("the gate did not finish", out)
+
     def test_a_migration_holds_the_review(self):
         t.reset(prs={"7": t.pr(7)})
         with mock.patch("diaktoros.migrate.migrating", return_value={"from": "x"}), \

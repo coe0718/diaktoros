@@ -379,6 +379,12 @@ def _review(loop, args, emit=print):
         emit(f"#{args.pr} @ {head[:7]}: the gate did not finish — "
               "no answer; check `explain` before asking again")
         return 2
+    except Exception as exc:  # noqa: BLE001 - a crashed gate is an answer too, never a traceback
+        # The webhook path's gate_failures.run turns a crash into exit 2; in-process the same
+        # outcome is reported here (#1046 review F1), named by its type, never its text.
+        emit(f"#{args.pr} @ {head[:7]}: the gate did not finish — it crashed "
+             f"({type(exc).__name__}); check `explain` before asking again")
+        return 2
     reasons = logged(gate_lines if isinstance(gate_lines, list) else [])
     committed = _reviewer_runs(loop["repo"], args.pr, head) > before[0]
     if committed and reasons and "turn held:" in reasons[-1]:
