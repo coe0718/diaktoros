@@ -719,7 +719,7 @@ def cmd_set(args) -> int:
         print("refused: --read-token needs a login — the gates cannot read GitHub as nobody")
         return 2
     for pair in getattr(args, "token", None) or []:
-        split = _split_token_pair(pair)
+        split = cli_common._split_token_pair(pair)
         if split is None:
             return 2
         login, path = split
@@ -1629,21 +1629,6 @@ def _triage_change_flags(args) -> list[str]:
             or (name == "fix_label" and getattr(args, name, None) == "")]
 
 
-def _split_token_pair(pair: str) -> tuple[str, str] | None:
-    """Parse one ``--token login=/path/to/pat`` for `set` and `triage`: ``(login, path)`` with the
-    login stripped, or ``None`` after printing the refusal (no ``=``, or an empty login that
-    would write a ``tokens[""]`` entry nothing can use)."""
-    if "=" not in pair:
-        print(f"--token expects login=/path/to/pat, got {pair!r}")
-        return None
-    login, path = pair.split("=", 1)
-    login = login.strip()
-    if not login:
-        print(f"refused: --token expects login=/path/to/pat, got {pair!r} with an empty login")
-        return None
-    return login, path
-
-
 def _is_seat_or_reader_login(loop: dict, login: str) -> bool:
     """Whether ``login`` is a seat (reviewer, fixer) or the current reader: the accounts whose
     token files `set --token` and `triage --token` never rebind (a seat's moves through the
@@ -1767,7 +1752,7 @@ def cmd_triage(args) -> int:
         return 2
     tokens = dict(loop.get("tokens") or {})
     for pair in args.token or []:
-        split = _split_token_pair(pair)
+        split = cli_common._split_token_pair(pair)
         if split is None:
             return 2
         who, file = split
@@ -1988,7 +1973,7 @@ def cmd_identity(args) -> int:
             return 2
         login, spec = split
     else:
-        split = _split_token_pair(args.pat)
+        split = cli_common._split_token_pair(args.pat)
         if split is None:
             return 2
         login, spec = split
