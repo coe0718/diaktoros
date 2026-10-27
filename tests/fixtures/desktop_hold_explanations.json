@@ -10,7 +10,7 @@
     "automatic_resume": "unknown",
     "next_eligible_start": 1234.0,
     "operator_action": "inspect",
-    "text": "Recorded run is waiting; the policy-specific reason is not structured yet. Ledger only (partial). Waiting for: host recheck. Automatic resume: unknown. Recorded earliest eligibility: 1970-01-01T00:20:34Z. Operator action: inspect."
+    "text": "Recorded run is waiting; the policy-specific reason is not structured yet. Ledger only (partial). Waiting for: host recheck. Recorded earliest recheck: 1970-01-01T00:20:34Z."
   },
   "run_failed": {
     "schema": 1,
@@ -23,7 +23,7 @@
     "automatic_resume": "unknown",
     "next_eligible_start": null,
     "operator_action": "inspect",
-    "text": "Recorded run failed; inspect host eligibility before any operator action. Ledger only (partial). Waiting for: unknown. Automatic resume: unknown. Recorded earliest eligibility: unknown. Operator action: inspect."
+    "text": "Recorded run failed. Ledger only (partial). Waiting for: unknown. Recorded earliest recheck: unknown."
   },
   "run_cancelled": {
     "schema": 1,
@@ -36,7 +36,7 @@
     "automatic_resume": "unknown",
     "next_eligible_start": null,
     "operator_action": "inspect",
-    "text": "Recorded run was cancelled; inspect host eligibility before any operator action. Ledger only (partial). Waiting for: unknown. Automatic resume: unknown. Recorded earliest eligibility: unknown. Operator action: inspect."
+    "text": "Recorded run was cancelled. Ledger only (partial). Waiting for: unknown. Recorded earliest recheck: unknown."
   },
   "external_write_guard": {
     "schema": 1,
@@ -49,7 +49,7 @@
     "automatic_resume": "never",
     "next_eligible_start": null,
     "operator_action": "inspect",
-    "text": "External write outcome requires inspection; never replay this run. Ledger only (partial). Waiting for: operator inspection. Automatic resume: never. Recorded earliest eligibility: unknown. Operator action: inspect."
+    "text": "Recorded run has external write evidence or an uncertain outcome. Ledger only (partial). Waiting for: operator inspection. Recorded earliest recheck: unknown."
   },
   "unknown": {
     "schema": 1,
@@ -62,6 +62,6 @@
     "automatic_resume": "unknown",
     "next_eligible_start": null,
     "operator_action": "inspect",
-    "text": "The ledger does not establish a supported hold explanation. Ledger only (partial). Waiting for: unknown. Automatic resume: unknown. Recorded earliest eligibility: unknown. Operator action: inspect."
+    "text": "The ledger does not establish a supported hold explanation. Ledger only (partial). Waiting for: unknown. Recorded earliest recheck: unknown."
   }
 }
