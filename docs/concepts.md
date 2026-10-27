@@ -101,7 +101,9 @@ The broker enforces these rules before it spends the review write (#475):
 - At a later head, a new finding must cite a file changed in that round (the host compares the
   previous head with this one), or say `missed earlier`; the report counts those against the
   reviewer. GitHub cuts a compare's file list at 300 files without saying so, so a list that
-  reaches 300 is not trusted: the whole PR's files count as changed that round.
+  reaches 300 is not trusted: the PR's files against base count as changed that round. A
+  file the round reverted to base is not among them, so a new finding citing it is still
+  refused (it can say `missed earlier`).
 - An `APPROVE` is refused while any finding is open (not `fixed`/`withdrawn`) and while the
   review raises a new one. Mark them fixed or withdrawn, or request changes.
 - A state for an id that was never recorded is refused, as is restating a known id as a new

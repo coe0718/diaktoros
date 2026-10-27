@@ -83,6 +83,13 @@ class Findings(unittest.TestCase):
         body = "F1: fixed\nF2: open\nF3: zz/late.py: regression\n"
         self.assertEqual(self._check_with_compare(capped, capped + ["zz/late.py"], body), "")
 
+    def test_capped_compare_fallback_does_not_cover_a_file_reverted_to_base(self):
+        # The round reverted zz/reverted.py to base: it changed this round, but it is no longer
+        # in the PR's file list, so the fallback (PR files against base) does not include it.
+        capped = [f"f{i}.py" for i in range(300)]
+        body = "F1: fixed\nF2: open\nF3: zz/reverted.py: regression\n"
+        self.assertIn("cites no file", self._check_with_compare(capped, capped[:10], body))
+
     def test_complete_compare_listing_still_refuses_an_unchanged_file(self):
         short = [f"f{i}.py" for i in range(300 - 1)]
         body = "F1: fixed\nF2: open\nF3: zz/late.py: regression\n"
