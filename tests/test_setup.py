@@ -100,15 +100,30 @@ class Detection(unittest.TestCase):
 
     def test_selftest_never_advises_the_filesystem_root(self):
         from unittest.mock import patch as mock_patch
-        # A target like /usr/bin/python3 (or a shallower one) has no install directory of its own
-        # to derive; the report must still render and must not name "/".
-        for target in ("/usr/bin/python3", "/python3"):
+        # runtime_for returns None when the literal and resolved link targets share no root but
+        # "/" (e.g. /bin/python3 -> /usr/bin/python3.14). It is mocked to None here to exercise
+        # the report's no-directory branch; the report must still render and must not name "/".
+        # /usr/bin/python3 is not such a target (runtime_for derives /usr): the sibling test
+        # above asserts the real derivation without mocking it.
+        for target in ("/bin/python3", "/python3"):
             with self.subTest(target=target), \
                     mock_patch("diaktoros.selftest._interpreter_outside", return_value=target), \
                     mock_patch.object(runtime_detect, "runtime_for", return_value=None):
                 _, fix = self.runtime_advice(self.paths["venv"], self.paths["runtime"])
                 self.assertNotIn("set runtime to / ", fix)
                 self.assertNotIn("set runtime to None", fix)
+
+    def test_runtime_for_is_none_only_when_the_common_root_is_the_filesystem_root(self):
+        # Real runtime_for, faked link targets: /bin/python3 -> /usr/bin/python3.14 shares only
+        # "/", while /usr/bin/python3 -> /usr/bin/python3.14 shares /usr.
+        venv = self.paths["venv"]
+        for literal, expected in (("/bin/python3", None), ("/usr/bin/python3", pathlib.Path("/usr"))):
+            with self.subTest(literal=literal), \
+                    patch.object(runtime_detect.os, "readlink", return_value=literal), \
+                    patch.object(runtime_detect.os.path, "realpath",
+                                 return_value="/usr/bin/python3.14"), \
+                    patch.object(runtime_detect.Path, "is_symlink", return_value=True):
+                self.assertEqual(runtime_detect.runtime_for(venv), expected)
 
     def test_rustups_default_toolchain_wins_and_the_proxy_never_counts(self):
         rustup = self.root / "rustup"
