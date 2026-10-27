@@ -170,6 +170,21 @@ def _credential_label(loop: dict, login: str) -> str:
     return f"App {app.get('app_id')}, key {app.get('key_file')}" if app else ""
 
 
+def _split_token_pair(pair: str) -> tuple[str, str] | None:
+    """Parse one ``--token login=/path/to/pat`` for `init`, `set` and `triage`: ``(login, path)``
+    with the login stripped, or ``None`` after printing the refusal (no ``=``, or an empty login
+    that would write a ``tokens[""]`` entry nothing can use)."""
+    if "=" not in pair:
+        print(f"--token expects login=/path/to/pat, got {pair!r}")
+        return None
+    login, path = pair.split("=", 1)
+    login = login.strip()
+    if not login:
+        print(f"refused: --token expects login=/path/to/pat, got {pair!r} with an empty login")
+        return None
+    return login, path
+
+
 def _split_app_pair(pair: str) -> tuple[str, dict] | None:
     """Parse one ``--app LOGIN=APP_ID:/abs/key.pem`` (#1163): ``(login, {"app_id", "key_file"})``,
     or ``None`` after printing the refusal. The key file must pass the same checks as a token file

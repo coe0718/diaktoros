@@ -250,10 +250,10 @@ def cmd_init(args) -> int:
     d = settings_form.settings_defaults(cli_common._SETTINGS)
     tokens = {}
     for pair in args.token or []:
-        if "=" not in pair:
-            print(f"--token expects login=/path/to/pat, got {pair!r}")
+        split = cli_common._split_token_pair(pair)
+        if split is None:
             return 2
-        login, path = pair.split("=", 1)
+        login, path = split
         try:
             credentials.check_token_file(path, f"--token {login}")
         except config.ConfigError as exc:
