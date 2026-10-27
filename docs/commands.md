@@ -1601,9 +1601,10 @@ An open run at an older head is left alone, because the claim supersedes it. `--
 only that seat's run. `--seat triage` / `issue_fixer` take an issue number in `--pr`. `status`
 and `explain` show a cancelled run as an operator's cancel, with the `retry` that re-arms it.
 
-On the Desktop, the same cancel is the confirmed `cancel` action (`GET`/`POST /actions`). The
-preview names the runs it would stop; if any of them starts, ends or appears before you
-confirm, the confirmation is stale and nothing is cancelled.
+The Desktop host has the same cancel as the confirmed `cancel` action (`GET`/`POST /actions`).
+The preview names the runs it would stop. If any of them starts, ends or appears before you
+confirm, the confirmation is stale and nothing is cancelled. The page has no control for it
+yet: that's #1372.
 
 <!-- flags:cancel -->
 | flag | value | default | what it does |
