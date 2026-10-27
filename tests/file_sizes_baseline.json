@@ -4,7 +4,7 @@
     "diaktoros/cli/install.py": 1359,
     "diaktoros/cli/lifecycle.py": 1015,
     "diaktoros/cli/operations.py": 1096,
-    "diaktoros/cli/settings.py": 2427,
+    "diaktoros/cli/settings.py": 2412,
     "diaktoros/config/__init__.py": 2083,
     "diaktoros/desktop_api.py": 1055,
     "diaktoros/doctor.py": 2726,
