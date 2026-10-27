@@ -46,6 +46,10 @@ def drain(loop: dict, st: state_mod.LoopState, seat: str, quiet: bool = False, *
     queued = st.queue_items(seat)
     items = {k: v for k, v in (queued if isinstance(queued, dict) else {}).items()
              if state_mod.mark_at(v) is not None}
+    if expected is not None:
+        # Only what was confirmed (#1407 review, F1): an entry queued after the check is never
+        # woken by this drain, whatever the queue holds by now.
+        items = {k: v for k, v in items.items() if _confirmed(expected, k, v)}
     if not items:
         return 0
     capacity = config.seat_concurrency(loop, seat)
@@ -66,9 +70,13 @@ def drain(loop: dict, st: state_mod.LoopState, seat: str, quiet: bool = False, *
             # A free *other* slot is not permission to wake this PR twice.
             note(key, "left", "this PR's run already holds the seat")
             continue
-        outcome, why, fire = _drain_check(loop, st, seat, key, items[key])
+        outcome, why, fire = _drain_check(loop, st, seat, key, items[key], bound=expected is not None)
         if fire is None:
             note(key, outcome, why)
+            continue
+        if expected is not None and st.queue_items(seat).get(key) != items[key]:
+            # The entry changed or left the queue during the checks: not the one confirmed.
+            note(key, "left", "the entry changed since it was confirmed")
             continue
         if _wake(loop, st, seat, key, items[key], fire, quiet, note):
             started += 1
@@ -120,6 +128,11 @@ def _wake(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: dict,
     return False
 
 
+def _confirmed(expected: list, key: str, entry: dict) -> bool:
+    """Whether this queue entry is one the operator confirmed: same key, head and time."""
+    return [str(key), str((entry or {}).get("head") or ""), state_mod.mark_at(entry)] in expected
+
+
 def _queue_number(key: str):
     try:
         return int(str(key).split("#")[-1])
@@ -132,7 +145,8 @@ def _note_rest(note, keys, why: str) -> None:
         note(key, "left", why)
 
 
-def _drain_check(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: dict):
+def _drain_check(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: dict,
+                 bound: bool = False):
     """Whether one queued entry is still a request to wake ``seat``: ``(outcome, why, fire)``.
 
     ``fire`` is ``(number, head, event, payload, tag)`` when the route should be woken;
@@ -182,14 +196,18 @@ def _drain_check(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry
         # replay, and not an unverified POST. A new head or a closed PR clears it above.
         log(f"drain: {key} was declined by the gate ({entry.get('reason')}) — left as is")
         return "left", "the gate declined it", None
-    return _pr_check(loop, st, seat, key, entry, number, pr, head)
+    return _pr_check(loop, st, seat, key, entry, number, pr, head, bound)
 
 
 def _pr_check(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: dict,
-              number: int, pr: dict, head: str):
-    """The checks on an open PR at the queued head: retargets, eligibility, then the verdicts."""
+              number: int, pr: dict, head: str, bound: bool = False):
+    """The checks on an open PR at the queued head: retargets, eligibility, then the verdicts.
+    A ``bound`` (confirmed) drain never reconciles a retarget: that starts a fresh review and
+    rewrites both seats' queues, which no confirmation of one seat's queue covers (#1407)."""
     base = (pr.get("base") or {}).get("ref") or ""
     stacked = (st.watch().get("stacked_wait") or {}).get(str(number))
+    if isinstance(stacked, dict) and stacked.get("base") != base and bound:
+        return "left", "retargeted since it was queued — the watchdog's sweep reconciles it", None
     if isinstance(stacked, dict) and stacked.get("base") != base:
         if base == loop["base"] and transition.record(loop, st, number, head, base):
             status, detail = transition.start_fresh_review(loop, st, number, live=pr)
