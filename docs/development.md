@@ -5,6 +5,7 @@
 ## Contents
 
 - [Working on the plugin](#working-on-the-plugin)
+- [File and function sizes](#file-and-function-sizes-1349)
 - [Offline test lanes](#offline-test-lanes)
 - [Installed-mode checks](#installed-mode-checks)
 - [Real-Hermes verticals with local fakes](#real-hermes-verticals-with-local-fakes)
@@ -20,6 +21,25 @@ The plugin and its standalone tests use Python's standard library. There is no p
 The code under `diaktoros/` implements the host control plane; `scripts/` supplies route/gate/watchdog entry points; root `__init__.py` integrates with Hermes. The reviewed repository is not the plugin checkout. Production contained turns export **committed Hermes source**, so editing that source worktree without committing does not change the source snapshot a turn runs. Do not modify real accounts/tokens or armed routes merely to run unit tests.
 
 Before editing a boundary, read its implementation and the targeted tests in the [source map](#change-specific-source-and-test-map). For an integration change, inspect the pinned Hermes checkout too: the plugin's parser, provider or gateway assumptions depend on that version. Consult [Hermes documentation](https://hermes-agent.nousresearch.com/docs) for Hermes setup; use this repository's CI as the reference for its tested integration recipe.
+
+### File and function sizes (#1349)
+
+Agents read whole files and keep them in context for the rest of a turn, so code files and
+functions are capped, and the cap only tightens. `tests/test_file_sizes.py` runs the check in the
+unit suite, for `diaktoros/` and `scripts/`:
+
+- **A new file** may have at most 800 lines, and **a new function** at most 80. Split anything
+  bigger into cohesive pieces.
+- **A file already in `tests/file_sizes_baseline.json`** may not grow past its baseline, or past
+  1,500 lines if its baseline is under that. **A baselined function** may not grow past its
+  baseline.
+- **When a baselined file or function shrinks**, or drops back under its cap, the check asks for
+  the baseline to follow. Run `python3 tests/file_sizes.py --write`: it lowers and removes
+  entries, and never raises or adds one.
+- **A rename or a move** makes a function new under its new name. Move its baseline entry to the
+  new name in the same PR. That's a hand edit of the JSON, so a reviewer sees it.
+
+`python3 tests/file_sizes.py` on its own lists anything over its limit.
 
 ## Offline test lanes
 
