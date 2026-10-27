@@ -1041,8 +1041,9 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
     # settings form's values at read time.
     init.add_argument("--concurrency", type=int, default=None,
                       help=f"default PRs per seat at once: 1 = serialized (default: {both}, "
-                           "from the plugin settings). Above 1 needs --clone, because each "
-                           "run then gets its own clone. Override per seat with "
+                           "from the plugin settings). Above 1 needs --clone unless the "
+                           "isolated worker's runtime file exists, because each "
+                           "run then gets its own clone or sandbox. Override per seat with "
                            "--reviewer-concurrency / --fixer-concurrency.")
     init.add_argument("--reviewer-concurrency", type=int, default=None,
                       help="PRs the reviewer may work at once (overrides --concurrency; "

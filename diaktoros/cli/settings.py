@@ -2089,7 +2089,7 @@ def add_set(sub) -> None:  # noqa: ANN001
                         help="loop id (its config file name; `list` shows them)")
     change.add_argument("--concurrency", type=int,
                         help="default PRs per seat at once (1 = serialized; above 1 needs a "
-                             "clone, since each run gets its own)")
+                             "clone unless the isolated worker's runtime file exists, since each run gets its own)")
     change.add_argument("--reviewer-concurrency", type=int, default=None,
                         help="how many PRs the reviewer may work at once")
     change.add_argument("--fixer-concurrency", type=int, default=None,

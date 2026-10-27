@@ -67,6 +67,21 @@ class IsolatedConcurrency(unittest.TestCase):
         loop = config.normalize(loop_with(2, clone=str(self.home / "clone")))
         self.assertEqual(config.seat_concurrency(loop, "reviewer"), 2)
 
+    def test_every_concurrency_help_and_doc_row_names_the_runtime_file_exception(self):
+        """init/set --concurrency help and their docs/commands.md rows agree with normalize."""
+        import commands_doc
+        root = commands_doc.parser()
+        docs = (Path(__file__).resolve().parents[1] / "docs" / "commands.md").read_text()
+        for verb in ("init", "set"):
+            sub = commands_doc.verbs(root)[verb]
+            helps = [a.help for a in sub._actions if "--concurrency" in a.option_strings]
+            self.assertEqual(len(helps), 1, verb)
+            self.assertIn("runtime file", helps[0], verb)
+        rows = [l for l in docs.splitlines() if l.startswith("| `--concurrency`")]
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertIn("runtime file", row)
+
     def test_shared_checkout_path_still_queues_an_unisolatable_parallel_run(self):
         """take_seat (the legacy shared-clone path) never starts an unisolated run above 1."""
         self.write_runtime()

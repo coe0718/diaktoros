@@ -500,7 +500,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--reviewer-agent` | `REVIEWER_AGENT` |  | display name for the reviewer (default: profile) |
 | `--fixer-agent` | `FIXER_AGENT` |  | display name for the fixer |
 | `--cap` | `CAP` | `3` | verdicts allowed before adjudication |
-| `--concurrency` | `CONCURRENCY` |  | default PRs per seat at once: 1 = serialized (default: 1, from the plugin settings). Above 1 needs --clone, because each run then gets its own clone. Override per seat with --reviewer-concurrency / --fixer-concurrency. |
+| `--concurrency` | `CONCURRENCY` |  | default PRs per seat at once: 1 = serialized (default: 1, from the plugin settings). Above 1 needs --clone unless the isolated worker's runtime file exists, because each run then gets its own clone or sandbox. Override per seat with --reviewer-concurrency / --fixer-concurrency. |
 | `--reviewer-concurrency` | `REVIEWER_CONCURRENCY` |  | PRs the reviewer may work at once (overrides --concurrency; default: the loop's, settings 1) |
 | `--fixer-concurrency` | `FIXER_CONCURRENCY` |  | PRs the fixer may work at once (overrides --concurrency; default: the loop's, settings 1) |
 | `--shadow-concurrency` | `SHADOW_CONCURRENCY` |  | shadow reviews that may run at once, >= 1 (the shadow seat's own value: --concurrency does not reach it) (default: the plugin setting, else 1) |
@@ -613,7 +613,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
-| `--concurrency` | `CONCURRENCY` |  | default PRs per seat at once (1 = serialized; above 1 needs a clone, since each run gets its own) |
+| `--concurrency` | `CONCURRENCY` |  | default PRs per seat at once (1 = serialized; above 1 needs a clone unless the isolated worker's runtime file exists, since each run gets its own) |
 | `--reviewer-concurrency` | `REVIEWER_CONCURRENCY` |  | how many PRs the reviewer may work at once |
 | `--fixer-concurrency` | `FIXER_CONCURRENCY` |  | how many PRs the fixer may work at once |
 | `--shadow-concurrency` | `SHADOW_CONCURRENCY` |  | how many shadow reviews may run at once (>= 1; only the shadow seat's own value: the loop default does not reach it) |
