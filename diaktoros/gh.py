@@ -568,6 +568,16 @@ def issue_comments_read(loop: dict, number: int) -> tuple[list[dict] | None, str
                        "comment", MAX_COMMENT_PAGES)
 
 
+# A repository's labels, read in full for triage's label meanings (#1411): 500 labels at most.
+MAX_LABEL_PAGES = 5
+
+
+def labels_read(loop: dict) -> tuple[list[dict] | None, str]:
+    """Every label in the loop's repository, or ``(None, reason)`` — never the first page alone."""
+    return _read_pages(loop, f"/repos/{loop['repo']}/labels?per_page=100", "label",
+                       MAX_LABEL_PAGES, login=loop.get("read_token"))
+
+
 def issue_events_read(loop: dict, number: int) -> tuple[list[dict] | None, str]:
     """Every timeline event on an issue/PR (who labeled it, when), or ``(None, reason)`` (#477)."""
     return _read_pages(loop, f"/repos/{loop['repo']}/issues/{number}/events?per_page=100",
