@@ -1,6 +1,6 @@
 {
   "files": {
-    "diaktoros/broker_ipc.py": 1564,
+    "diaktoros/broker_ipc.py": 1566,
     "diaktoros/cli/install.py": 1359,
     "diaktoros/cli/lifecycle.py": 1015,
     "diaktoros/cli/operations.py": 1096,
