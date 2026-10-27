@@ -1,9 +1,9 @@
 """Host-owned one-shot actions shared by CLI and Desktop.
 
 Desktop confirmations never retarget a newer head or queue generation. The reviewer gate
-runs as a call bound to a confirmed head (#1046: ``review``); the page's confirmed review
-control is a follow-up, so Desktop still refuses it. The drain entry point cannot bind an
-entire confirmed snapshot: Desktop refuses it rather than interpreting a confirmation as
+runs as a call bound to a confirmed head (#1046: ``review``), and a drain binds a confirmed
+queue snapshot (#1047: ``drain_confirmed``). The page's confirmed controls for both are a
+follow-up, so Desktop still refuses them rather than interpreting a confirmation as
 open-ended consent.
 The CLI retains its explicit operator semantics (including grants and seat selection).
 """
@@ -76,7 +76,10 @@ def plan(loop, action, pr=None, seat=None):
         return _cancel_plan(loop, pr, seat, out)
     if action == "drain":
         if pr is None and seat in ("reviewer", "fixer"):
-            out["reason"] = "drain cannot bind the confirmed queue snapshot; use the host CLI"
+            # The core binds a confirmed queue snapshot now (#1047: ``drain_confirmed``); the
+            # page's confirmed control is the follow-up, so the offer stays refused here.
+            out["reason"] = ("the Desktop drain control is not wired yet (its confirmed "
+                             "snapshot is the seat's queue); use the host CLI")
         return out
     if type(pr) is not int or pr <= 0 or seat is not None:
         return out
@@ -298,6 +301,74 @@ def perform_escalate(loop, pr, reason="", *, expected_head=None, withdraw=False)
 
 def perform_drain(loop, seat="reviewer"):
     return _capture(_drain, loop, seat)
+
+
+def drain_snapshot(loop, seat):
+    """The queue a confirmed drain binds (#1047): ``state.queue_snapshot`` of the seat's queue."""
+    return state_mod.queue_snapshot(state_mod.state_for(loop), seat)
+
+
+def drain_confirmed(loop, seat, expected):
+    """Drain exactly the queue the operator confirmed (#1047), and say what happened per run.
+
+    ``expected`` is the ``drain_snapshot`` that was shown. If the seat's live queue is not that
+    queue, nothing is started, dropped or pruned (``stale``). Otherwise the watchdog's own
+    per-entry checks run, up to the seat's free slots, and each queued entry is reported:
+    ``started``, ``left`` (still queued), ``dropped`` (no longer a valid request) or
+    ``uncertain`` (a POST that may have been sent). Nothing process-wide changes: the GitHub
+    budget, log lines and decision recorder are this call's (``gh.gate_scope``,
+    ``util.gate_call``), as for the review entry point (#1046).
+
+    Returns ``{"ok", "status", "started", "outcomes"}``. ``status`` is ``stale``, ``refused``,
+    ``nothing queued``, ``nothing to start`` (every entry was dropped as no longer valid),
+    ``started`` (at least one started and none was left queued), ``partial`` (some left
+    queued) or ``unknown`` (an uncertain POST, or the budget ran out). A started run is queued
+    for the worker, not finished.
+    """
+    from . import migrate, util
+    out = {"ok": False, "status": "refused", "started": 0, "outcomes": []}
+    if seat not in ("reviewer", "fixer"):
+        out["outcomes"].append({"key": "", "number": None, "outcome": "refused",
+                                "why": "unknown drain seat"})
+        return out
+    if migrate.migrating() is not None:
+        out["outcomes"].append({"key": "", "number": None, "outcome": "refused",
+                                "why": "a migration holds the install"})
+        return out
+    armed, _error = gate.hooks_read(loop)
+    if not armed:
+        out["outcomes"].append({"key": "", "number": None, "outcome": "refused",
+                                "why": "hooks are paused or unreadable — nothing drained"})
+        return out
+    with _LOCK:        # loading the script briefly extends sys.path; never two at once
+        watchdog = _script("watchdog")
+    report = []
+    budget = watchdog.WATCHDOG_BUDGET_S
+    try:
+        with util.gate_call(), gh.gate_scope(time.monotonic() + budget,
+                                             per_call=min(watchdog.WATCHDOG_PER_CALL_S, budget)):
+            started = watchdog.drain(loop, state_mod.state_for(loop), seat, quiet=True,
+                                     expected=expected, report=report)
+    except gh.GateBudgetExceeded:
+        out.update(status="unknown", outcomes=report)
+        return out
+    outcomes = {entry["outcome"] for entry in report}
+    if "stale" in outcomes:
+        status = "stale"
+    elif not report:
+        status = "nothing queued"
+    elif "uncertain" in outcomes:
+        status = "unknown"
+    elif "left" in outcomes:
+        status = "partial"
+    elif not started:
+        status = "nothing to start"     # every entry was dropped as no longer a valid request
+    else:
+        status = "started"
+    out.update(ok=status in ("started", "nothing queued", "nothing to start"), status=status,
+               started=started,
+               outcomes=report)
+    return out
 
 
 def _drain(loop, seat):

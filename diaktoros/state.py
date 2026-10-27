@@ -119,6 +119,15 @@ def _mark_live(entry, now: float, ttl: float) -> bool:
     return at is not None and 0 <= now - at <= ttl
 
 
+def queue_snapshot(st, seat: str) -> list:
+    """A seat queue's confirmable identity (#1047): ``[[key, head, at], ...]`` sorted by key,
+    for the well-formed entries the drain would look at. Equal snapshots are the same queue."""
+    queued = st.queue_items(seat)
+    queued = queued if isinstance(queued, dict) else {}
+    return sorted([str(key), str((entry or {}).get("head") or ""), mark_at(entry)]
+                  for key, entry in queued.items() if mark_at(entry) is not None)
+
+
 def mark_at(entry) -> float | None:
     """A lock mark's or queue entry's ``at`` epoch, or ``None`` when it cannot be aged.
 

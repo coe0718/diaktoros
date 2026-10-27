@@ -17,8 +17,8 @@ description: >-
   no control for it yet (#1372).
   Desktop also previews re-review, escalation and drain through a shared host owner; confirmed
   escalation parks the selected head and spends an adjudicator turn, with exact-marker readback.
-  Re-review and drain currently refuse in Desktop: re-review until the page's confirmed control is
-  wired to the head-bound core entry point, drain because its core cannot bind a safe confirmation.
+  Re-review and drain currently refuse in Desktop until the page's confirmed controls are wired to
+  their core entry points: re-review bound to the confirmed head, drain to the confirmed queue.
   Tokens remain host-only; stale confirmations refuse and partial/unknown results are not success.
 author: Jeremy Coe
 homepage: https://github.com/coe0718/diaktoros

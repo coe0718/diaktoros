@@ -137,9 +137,11 @@ confirmed head and any grant as arguments, and changes nothing process-wide (no 
 swap, no signal handler, no process budget or decision recorder; its GitHub budget and recorder
 are the call's). Given a confirmed head that the PR has left, nothing is asked and nothing is
 written. Desktop still refuses re-review until its confirmed control is wired to that entry
-point; `--another-round` and `--reconsider` stay host-CLI only. Drain stays a deliberate
-Desktop refusal until its entry point can bind a confirmed queue snapshot: the drain watchdog
-selects a changing whole-seat queue. No route invokes a subprocess CLI or
+point; `--another-round` and `--reconsider` stay host-CLI only. The drain's
+entry point (`one_shot_action.drain_confirmed`, #1047) binds a confirmed queue snapshot: if the
+seat's live queue is not that queue, nothing is started, dropped or pruned. Each queued run's
+outcome is reported, and a partial or uncertain one is not success. Desktop still refuses drain
+until its confirmed control is wired to that entry point. No route invokes a subprocess CLI or
 monkeypatches the host to make a button work. Unconfirmed drain completion exits 2, not success. The
 selector also refuses corrupt markers and uncertain/quarantined ledger outcomes for escalation.
 Existing retry, pause/resume and seat configuration are unchanged. Diaktoros never merges.
