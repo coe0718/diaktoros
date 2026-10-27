@@ -24,7 +24,7 @@ platforms:
   # Linux only: every seat turn runs in bubblewrap (user namespaces), which macOS lacks.
   - linux
 python_dependencies: []
-# Settings the operator can edit in the desktop (Capabilities → Plugins → review loop). They are
+# Settings the operator can edit in the desktop (Capabilities → Plugins → Diaktoros). They are
 # the defaults a NEW loop starts from, and what `hermes dk apply --loop <id>` pushes onto
 # an existing one — a form that silently renumbered a running loop would be a nasty thing to debug.
 # Mirrored by diaktoros/config/settings_form.py SETTINGS_SCHEMA; the test suite asserts the two agree, because a

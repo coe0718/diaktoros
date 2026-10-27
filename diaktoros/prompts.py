@@ -125,7 +125,7 @@ What to do:
 
 Never force-push over someone else's commits, never merge, and never mark your own work verified."""
 
-ADJUDICATOR = """The review loop for {_loop.repo} PR #{_loop.pr} stopped and needs a ruling.
+ADJUDICATOR = """The Diaktoros loop for {_loop.repo} PR #{_loop.pr} stopped and needs a ruling.
 
 {_loop.reason}
 
@@ -379,7 +379,7 @@ discarded when you exit: there is no person to hand files to, so a fix you did n
 Never mark your own work verified, and never claim a push or request succeeded without an ok
 response from the broker."""
 
-ISOLATED_ADJUDICATOR = """The review loop for {repo} PR #{pr} stopped and needs a ruling.
+ISOLATED_ADJUDICATOR = """The Diaktoros loop for {repo} PR #{pr} stopped and needs a ruling.
 
 Why it stopped: {reason}
 
