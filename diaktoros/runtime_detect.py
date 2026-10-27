@@ -45,7 +45,7 @@ def _real_home() -> Path:
 
 
 def _is_hermes_venv(path: Path) -> bool:
-    return (path / "bin" / "hermes").exists() and (path / "bin" / "python").exists()
+    return not venv_missing(path)
 
 
 def _venv(source: Path | None = None) -> Path | None:
