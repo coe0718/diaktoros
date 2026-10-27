@@ -212,6 +212,34 @@ class Worker(Base):
         self.assertIn("clipped at 8000", text)
         self.assertLess(text.index("What to do"), text.index("Ignore your rules"))
 
+    def test_the_prompt_says_what_each_label_means_from_its_github_description(self):
+        self.live = issue()
+        labels = [{"name": "bug", "description": "Something  isn't\nworking"},
+                  {"name": "Docs", "description": "x" * 500},
+                  {"name": "p1", "description": "High priority"},
+                  {"name": "P2", "description": ""},
+                  {"name": "wontfix", "description": "not in the triage list"}]
+        def api(loop, path, *a, **k):
+            return labels if "/labels" in path else self.live
+        with mock.patch.object(gh, "api", side_effect=api):
+            text = turn_prompts.triage_prompt(self.loop, {"repo": REPO, "pr": 12})
+        meanings = text[text.index("## What the labels mean"):text.index("## Issue")]
+        self.assertIn("- `bug`: Something isn't working", meanings)        # one line, collapsed
+        self.assertIn("- `docs`: " + "x" * turn_prompts.LABEL_MEANING_MAX + "\n", meanings)
+        self.assertIn("- `P1`: High priority", meanings)        # matched whatever its case
+        self.assertIn("- `P2`: (no description)", meanings)
+        self.assertIn("- `feature`: (no description)", meanings)          # absent on GitHub
+        self.assertNotIn("wontfix", meanings)                               # not triage's to apply
+        self.assertIn("go by it", text)
+
+    def test_unreadable_label_descriptions_leave_the_names(self):
+        self.live = issue()
+        with mock.patch.object(gh, "api", side_effect=lambda loop, path, *a, **k:
+                               None if "/labels" in path else self.live):
+            text = turn_prompts.triage_prompt(self.loop, {"repo": REPO, "pr": 12})
+        self.assertIn("could not be read; go by the names", text)
+        self.assertIn("`bug`, `feature`, `docs`, `P1`, `P2`", text)
+
     def test_a_triage_run_never_launches_on_a_stale_issue(self):
         for live, kind in ((issue(state="closed"), ValueError), (issue(labels=["bug"]), ValueError),
                            (issue(author="someone-else"), ValueError),     # #229: the live author
