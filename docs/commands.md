@@ -1368,6 +1368,7 @@ loops without triage.
 
 ```bash
 hermes dk review --loop "<loop-id>" --pr 12
+hermes dk review --loop "<loop-id>" --pr 12 --reconsider "the issue's requirement must be met, not deferred"
 ```
 
 The real reviewer gate decides, fed a `ready_for_review` event built from the live PR, so the
@@ -1377,12 +1378,23 @@ write, as usual. It prints `review queued` (exit 0), or `no review started —` 
 reason (exit 1). Exit 2 when the loop or the PR cannot be read, several loops are configured and
 no `--loop` names one, or the gate did not finish within 120 seconds.
 
+`--reconsider REASON` sends a head that **already has a verdict** back for one fresh review: for
+example, an approved fixer PR that a maintainer says must still meet a requirement. Your reason
+goes into the reviewer's prompt as a requirement, next to the maintainers' PR comments. If that
+review requests changes, the fixer takes it as usual. An approval adds no round, since only
+changes-requested verdicts count toward the cap. One per head: a second reconsider of the same
+head is refused, and a new head gets its own review. It's the host operator's alone. No webhook
+or GitHub comment can start one, so a re-request on GitHub still gets "head already has a
+reviewer's verdict". It can't be combined with `--another-round`, and it's refused at a head
+that has no verdict yet (a plain `review` asks for one) or that is escalated to adjudication.
+
 <!-- flags:review -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
 | `--pr` | `PR` | **required** | the pull request to review |
 | `--another-round` |  |  | allow exactly one more verdict on a review-only PR that has reached its review cap (maintainer or operator only) |
+| `--reconsider` | `REASON` |  | send a head that already has a verdict back for one fresh review, with your reason as a requirement; a changes-requested result goes to the fixer (one per head; host operator only) |
 <!-- /flags -->
 
 ### depends

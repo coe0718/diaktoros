@@ -1,8 +1,10 @@
 """Host-owned one-shot actions shared by CLI and Desktop.
 
-Desktop confirmations never retarget a newer head or queue generation. The legacy
-reviewer and drain entry points cannot bind an entire confirmed snapshot: Desktop
-refuses those actions rather than interpreting a confirmation as open-ended consent.
+Desktop confirmations never retarget a newer head or queue generation. The reviewer gate
+runs as a call bound to a confirmed head (#1046: ``review``); the page's confirmed review
+control is a follow-up, so Desktop still refuses it. The drain entry point cannot bind an
+entire confirmed snapshot: Desktop refuses it rather than interpreting a confirmation as
+open-ended consent.
 The CLI retains its explicit operator semantics (including grants and seat selection).
 """
 from __future__ import annotations
@@ -19,7 +21,6 @@ import secrets
 import sqlite3
 import sys
 import threading
-import signal
 import time
 from types import SimpleNamespace
 from typing import cast
@@ -85,10 +86,11 @@ def plan(loop, action, pr=None, seat=None):
             out["reason"] = "PR head unavailable; nothing authorized"
             return out
         out["head"] = head
-        # The reviewer main owns stdin, process-wide logging and gate context. It is not
-        # a thread-safe confirmed operation; do not temporarily monkeypatch a live host.
         if action == "review":
-            out["reason"] = "review cannot safely bind a confirmed snapshot in this host; use the host CLI"
+            # The core entry point binds a confirmed head now (#1046: ``review(expected_head=)``);
+            # the page's confirmed control is the follow-up, so the offer stays refused here.
+            out["reason"] = ("the Desktop review control is not wired yet (its confirmed snapshot "
+                             "is the head); use the host CLI")
             return out
         decision = _escalation_decision(loop, pr, live=live)
         out["reason"] = decision["public_reason"]
@@ -155,29 +157,33 @@ def _script(name):
     return module
 
 
-def _run_reviewer(payload):
-    # CLI-only adapter: the unchanged webhook gate owns every eligibility rule.
-    from . import util
-    from . import gate_failures
-    previous = sys.stdin
-    recorder = util._DECISION_RECORDER
-    budget = dict(gh._GATE)
-    record_failures = gh._RECORD_FAILURES
-    handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGALRM, signal.SIGTERM)}
-    timer = signal.getitimer(signal.ITIMER_REAL)
+def _run_reviewer(payload, reconsider=None) -> list[str]:
+    """The unchanged webhook gate's decision on one payload, as a call (#1046): it owns every
+    eligibility rule. Returns the lines it logged.
+
+    Nothing process-wide changes: no stdin or stdout swap, no signal handler or timer, no
+    process budget or decision recorder. The GitHub budget, the failed-read flag and the
+    decision recorder are this call's (``gh.gate_scope``, ``util.gate_call``), so concurrent
+    calls in one host never see each other's. The budget is the webhook gate's own; there is no
+    signal backstop, so a hang outside a GitHub read is bounded by those reads' deadline only.
+    Raises ``gh.GateBudgetExceeded`` when the budget runs out, and ``SystemExit`` with a
+    non-zero code when the gate refused its input.
+    """
+    from . import gate_failures, util
     try:
-        sys.stdin = io.StringIO(json.dumps(payload))
-        with contextlib.redirect_stdout(io.StringIO()):
-            gate_failures.run("gate_reviewer", _script("gate_reviewer").main)
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, *timer)
-        for sig, handler in handlers.items():
-            signal.signal(sig, handler)
-        sys.stdin = previous
-        util._DECISION_RECORDER = recorder
-        gh._GATE.clear()
-        gh._GATE.update(budget)
-        gh._RECORD_FAILURES = record_failures
+        limit, _rows = gate_failures.effective_timeout()
+    except Exception:  # noqa: BLE001 - never let the fit check stop the gate
+        limit = None
+    budget, _backstop = gate_failures.plan(limit or gate_failures.GATEWAY_DEFAULT_TIMEOUT_S)
+    with _LOCK:        # loading the script briefly extends sys.path; never two at once
+        decide = _script("gate_reviewer").decide
+    with util.gate_call() as call, gh.gate_scope(time.monotonic() + budget):
+        try:
+            decide(payload, reconsider=reconsider)
+        except SystemExit as exc:
+            if exc.code not in (None, 0):
+                raise
+    return list(call["logs"])
 
 
 def _capture(operation, *args):
@@ -188,9 +194,27 @@ def _capture(operation, *args):
         return {"ok": code == 0, "code": code, "lines": output.getvalue().splitlines()}
 
 
-def perform_review(loop, pr, another_round=False):
+def perform_review(loop, pr, another_round=False, reconsider=None):
     """CLI semantics, without a CLI subprocess; returns printable lines and exit code."""
-    return _capture(_review, loop, SimpleNamespace(pr=pr, another_round=another_round))
+    return review(loop, pr, another_round=another_round, reconsider=reconsider)
+
+
+def review(loop, pr, *, expected_head=None, another_round=False, reconsider=None):
+    """Ask the reviewer gate for a review of ``pr`` (#1046): the one entry point for the CLI's
+    ``hermes dk review`` and the Desktop's confirmed review.
+
+    Everything it needs is an argument, and it returns its outcome: ``{"ok", "code", "lines",
+    "head"}``. Nothing process-wide is changed (``_run_reviewer``), so two calls may run at
+    once. ``expected_head`` (a Desktop confirmation) is the head the operator was shown: if the
+    PR is at another head now, nothing is asked and nothing is written. ``reconsider`` (#1334)
+    is a maintainer's reason for one fresh review at a head that already has a verdict.
+    """
+    lines = []
+    args = SimpleNamespace(pr=pr, another_round=another_round, reconsider=reconsider,
+                           expected_head=expected_head)
+    code = _review(loop, args, emit=lines.append)
+    head = args.__dict__.get("head", "")
+    return {"ok": code == 0, "code": code, "lines": lines, "head": head}
 
 
 def perform_escalate(loop, pr, reason="", *, expected_head=None, withdraw=False):
@@ -238,7 +262,29 @@ def _drain(loop, seat):
     return 0
 
 
-def _reviewer_runs(repo: str, number: int, head: str) -> int:
+RECONSIDER_MAX = 2000
+
+
+def _reconsider_refusal(loop, number, pr, head, reason) -> str:
+    """Why a maintainer's reconsider (#1334) cannot start here, or ``""``. One per head: a head
+    already reconsidered is refused (the ledger's turn key would keep only the first anyway)."""
+    from .run_supervisor import RECONSIDER_KEY
+    if not isinstance(reason, str) or not reason.strip():
+        return "a reconsider needs a reason (what the head must meet)"
+    if len(reason) > RECONSIDER_MAX:
+        return f"the reason is longer than {RECONSIDER_MAX} characters"
+    reviews = gh.reviews(loop, number)
+    if not isinstance(reviews, list):
+        return "the reviews could not be read"
+    if not gate.reviewed_at_head(reviews, loop, head):
+        return ("this head has no reviewer's verdict yet — `hermes dk review` (without "
+                "--reconsider) asks for one")
+    if _reviewer_runs(loop["repo"], number, head, RECONSIDER_KEY):
+        return "this head was already reconsidered (one per head) — a new head gets its own review"
+    return ""
+
+
+def _reviewer_runs(repo: str, number: int, head: str, turn_key: str | None = None) -> int:
     """How many reviewer runs the ledger holds for this head (read-only; 0 without a ledger)."""
     import sqlite3
     from . import run_supervisor
@@ -247,48 +293,69 @@ def _reviewer_runs(repo: str, number: int, head: str) -> int:
         return 0
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
     try:
+        if turn_key is not None:
+            return con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND head=? AND "
+                               "seat='reviewer' AND turn_key=?",
+                               (repo, number, head, turn_key)).fetchone()[0]
         return con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND head=? AND "
                            "seat='reviewer'", (repo, number, head)).fetchone()[0]
     finally:
         con.close()
 
 
-def _review(loop, args):
+def _review(loop, args, emit=print):
+    from . import migrate
+    if migrate.migrating() is not None:
+        # A migration holds the install (#431): no gate acts under names being moved.
+        emit(f"#{args.pr}: a migration holds the install — nothing started; ask again after it")
+        return 2
     pr = gh.pr(loop, args.pr)
     if not isinstance(pr, dict) or pr.get("number") != args.pr:
-        print(f"#{args.pr}: the PR could not be read from GitHub — nothing started")
+        emit(f"#{args.pr}: the PR could not be read from GitHub — nothing started")
         return 2
-    head = (pr.get("head") or {}).get("sha") or ""
+    head = args.head = (pr.get("head") or {}).get("sha") or ""
+    expected = str(getattr(args, "expected_head", None) or "").strip().lower()
+    if expected and head.lower() != expected:
+        # The confirmation was for another head (#1046): never ask for a review of this one.
+        emit(f"#{args.pr}: refused: the PR is at {head[:7]} now, not the {expected[:7]} you "
+             "confirmed — nothing started; preview again")
+        return 2
     st = state_mod.state_for(loop)
     key = gate.seat_key(loop, args.pr)
+    reconsider = getattr(args, "reconsider", None)
+    if reconsider is not None:
+        refusal = _reconsider_refusal(loop, args.pr, pr, head, reconsider)
+        if refusal:
+            emit(f"#{args.pr} @ {head[:7]}: {refusal}; nothing started")
+            return 1
     if getattr(args, "another_round", False):
         # One more verdict on a review-only PR that hit its cap. The operator running this on the
         # host is the maintainer; the grant is recorded against this head and verdict count, so it
         # buys exactly one verdict and a repeat of the command changes nothing.
         author = ((pr.get("user") or {}).get("login") or "").lower()
         if author not in config.review_only(loop):
-            print(f"#{args.pr}: {author or 'its author'} is not review-only — only a review-only "
+            emit(f"#{args.pr}: {author or 'its author'} is not review-only — only a review-only "
                   "PR has a review cap to lift; nothing granted")
             return 1
         reviews = gh.reviews(loop, args.pr)
         if not isinstance(reviews, list):
-            print(f"#{args.pr}: the reviews could not be read — nothing granted")
+            emit(f"#{args.pr}: the reviews could not be read — nothing granted")
             return 2
         rounds = len(gate.verdicts(reviews, loop))
         if rounds < config.review_only_cap(loop):
-            print(f"#{args.pr}: {rounds} of {config.review_only_cap(loop)} verdicts spent — the "
+            emit(f"#{args.pr}: {rounds} of {config.review_only_cap(loop)} verdicts spent — the "
                   "cap is not reached; nothing to grant")
             return 1
         if gate.reviewed_at_head(reviews, loop, head):
             # The gate declines a head that already has a verdict before it looks at the cap, so a
             # grant here would be spent on nothing and not match the author's next push.
-            print(f"#{args.pr} @ {head[:7]}: head already has a verdict — push the change, then "
+            emit(f"#{args.pr} @ {head[:7]}: head already has a verdict — push the change, then "
                   "grant another round; nothing granted")
             return 1
         if not st.review_cap_grant(args.pr, head, rounds):
-            print(f"#{args.pr} @ {head[:7]}: another round is already granted for this head")
+            emit(f"#{args.pr} @ {head[:7]}: another round is already granted for this head")
         else:
-            print(f"#{args.pr} @ {head[:7]}: another round granted — one more verdict")
+            emit(f"#{args.pr} @ {head[:7]}: another round granted — one more verdict")
 
     def queued():
         entry = (st.queue_all().get("reviewer") or {}).get(key) or {}
@@ -297,39 +364,43 @@ def _review(loop, args):
     payload = {"action": "ready_for_review", "number": args.pr, "pull_request": pr,
                "repository": {"full_name": loop["repo"]},
                "sender": {"login": loop.get("read_token") or "operator"}}
-    gate_errors = io.StringIO()
+    if reconsider is not None:
+        # The reason goes with the turn into the reviewer's prompt (#1334); written first.
+        st.reconsider_record(args.pr, head, reconsider)
     try:
-        with contextlib.redirect_stderr(gate_errors):
-            _run_reviewer(payload)
+        gate_lines = _run_reviewer(payload, reconsider=reconsider) if reconsider is not None \
+            else _run_reviewer(payload)
     except SystemExit as exc:
         if exc.code not in (None, 0):
-            print(f"#{args.pr} @ {head[:7]}: the gate did not finish — "
+            emit(f"#{args.pr} @ {head[:7]}: the gate did not finish — "
                   "no answer; check `explain` before asking again")
             return 2
     except (gh.GateBudgetExceeded, TimeoutError):
-        print(f"#{args.pr} @ {head[:7]}: the gate did not finish — "
+        emit(f"#{args.pr} @ {head[:7]}: the gate did not finish — "
               "no answer; check `explain` before asking again")
         return 2
-    reasons = logged(gate_errors.getvalue().splitlines())
+    reasons = logged(gate_lines if isinstance(gate_lines, list) else [])
     committed = _reviewer_runs(loop["repo"], args.pr, head) > before[0]
     if committed and reasons and "turn held:" in reasons[-1]:
-        print(f"#{args.pr} @ {head[:7]}: review not verified — {reasons[-1]}")
+        emit(f"#{args.pr} @ {head[:7]}: review not verified — {reasons[-1]}")
         return 2
     if committed:
         from .run_supervisor import record_operator_action
-        record_operator_action(loop["repo"], args.pr, "review")
-        print(f"#{args.pr} @ {head[:7]}: review queued for the isolated worker "
+        record_operator_action(loop["repo"], args.pr, "reconsider" if reconsider is not None
+                               else "review")
+        emit(f"#{args.pr} @ {head[:7]}: review queued for the isolated worker "
               f"(`hermes dk explain --loop {loop['id']} --pr {args.pr}` follows it)")
         return 0
     waiting = queued()
     if waiting and waiting != before[1]:
         from .run_supervisor import record_operator_action
-        record_operator_action(loop["repo"], args.pr, "review")
+        record_operator_action(loop["repo"], args.pr, "reconsider" if reconsider is not None
+                               else "review")
         reason = waiting.get("reason") or "the reviewer seat is busy"
-        print(f"#{args.pr} @ {head[:7]}: review queued, waiting — {reason}")
+        emit(f"#{args.pr} @ {head[:7]}: review queued, waiting — {reason}")
         return 0
     reason = reasons[-1] if reasons else "the reviewer gate declined without a reason"
-    print(f"#{args.pr} @ {head[:7]}: no review started — {reason}")
+    emit(f"#{args.pr} @ {head[:7]}: no review started — {reason}")
     return 1
 
 

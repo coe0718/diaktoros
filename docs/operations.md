@@ -867,8 +867,9 @@ pending is partial; missing/changed/unreadable read-back is unknown. Neither is 
 the consumed preview offers no follow-up control without another safe read.
 
 **Re-review and Drain are currently refused in Desktop.** A re-review would ask the existing
-reviewer gate for a fresh review (not erase a verdict or bypass its cap); its script currently
-owns process-global input/signals/context, unsafe inside the threaded Desktop host. A drain
+reviewer gate for a fresh review (not erase a verdict or bypass its cap). Its core entry point
+now runs as a call bound to a confirmed head (#1046), with nothing process-wide changed; the
+page's confirmed control for it is a follow-up. A drain
 would start queued work for a seat and may lead to GitHub writes; its whole-seat watchdog
 entry point cannot bind an exact confirmed queue snapshot. These are disclosed refusals, not
 inert buttons or weaker gates. The CLI still calls those core entry points through the shared

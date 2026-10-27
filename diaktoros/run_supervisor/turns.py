@@ -146,8 +146,10 @@ class ClaimAndLaunch:
                 # posted in the GitHub UI): a second would spend another round.
                 # The same-head retarget's fresh-review turn exists to review
                 # again at this head, so it is exempt.
-                # A dispute re-review (#894) exists to review again at this head, too.
-                if not str(row['turn_key'] or '').startswith(('retarget:', run_supervisor.DISPUTE_KEY)):
+                # A dispute re-review (#894) exists to review again at this head, too, and so
+                # does a maintainer's reconsider (#1334).
+                if not str(row['turn_key'] or '').startswith(('retarget:', run_supervisor.DISPUTE_KEY,
+                                                             run_supervisor.RECONSIDER_KEY)):
                     from .. import gate
                     reviews = pr_facts.effective_reviews(loop, row, gh.reviews(loop, row['pr']),
                                                          self.db)

@@ -695,7 +695,13 @@ def cmd_review(args) -> int:
     loop = _one_loop(args)
     if loop is None:
         return 2
-    result = one_shot_action.perform_review(loop, args.pr, getattr(args, "another_round", False))
+    reconsider = getattr(args, "reconsider", None)
+    reconsider = reconsider if isinstance(reconsider, str) else None   # argparse: str or None
+    if reconsider is not None and getattr(args, "another_round", False):
+        print("--reconsider and --another-round ask for different things; use one")
+        return 2
+    result = one_shot_action.perform_review(loop, args.pr, getattr(args, "another_round", False),
+                                            reconsider=reconsider)
     for line in result["lines"]:
         print(line)
     return result["code"]
@@ -916,6 +922,10 @@ def add_review(sub) -> None:  # noqa: ANN001
     review.add_argument("--another-round", action="store_true",
                         help="allow exactly one more verdict on a review-only PR that has "
                              "reached its review cap (maintainer or operator only)")
+    review.add_argument("--reconsider", metavar="REASON",
+                        help="send a head that already has a verdict back for one fresh review, "
+                             "with your reason as a requirement; a changes-requested result goes "
+                             "to the fixer (one per head; host operator only)")
     review.set_defaults(func=cmd_review)
 
 

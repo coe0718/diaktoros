@@ -132,11 +132,15 @@ and missing, replaced or unreadable read-back is unknown. No success from launch
 The renderer consumes the preview on submission and requires a new safe preview for follow-up.
 Errors use bounded fixed categories, not transport diagnostics or configured token paths.
 
-Re-review and drain are deliberate Desktop refusals until their core entry points can bind safe
-confirmed identities: the reviewer script owns process-global context; the drain watchdog
-selects a changing whole-seat queue. No route invokes a subprocess CLI or monkeypatches the
-host to make a button work. Their CLI paths remain available through the shared owner, with
-`--another-round` restricted to CLI; unconfirmed drain completion exits 2, not success. The
+The reviewer gate runs as a call (`one_shot_action.review`, #1046): it takes the PR, a
+confirmed head and any grant as arguments, and changes nothing process-wide (no stdin or stdout
+swap, no signal handler, no process budget or decision recorder; its GitHub budget and recorder
+are the call's). Given a confirmed head that the PR has left, nothing is asked and nothing is
+written. Desktop still refuses re-review until its confirmed control is wired to that entry
+point; `--another-round` and `--reconsider` stay host-CLI only. Drain stays a deliberate
+Desktop refusal until its entry point can bind a confirmed queue snapshot: the drain watchdog
+selects a changing whole-seat queue. No route invokes a subprocess CLI or
+monkeypatches the host to make a button work. Unconfirmed drain completion exits 2, not success. The
 selector also refuses corrupt markers and uncertain/quarantined ledger outcomes for escalation.
 Existing retry, pause/resume and seat configuration are unchanged. Diaktoros never merges.
 

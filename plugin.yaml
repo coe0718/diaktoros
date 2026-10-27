@@ -14,7 +14,8 @@ description: >-
   unknown hook state is not paused. It does not stop running turns or sweeper recovery.
   Desktop also previews re-review, escalation and drain through a shared host owner; confirmed
   escalation parks the selected head and spends an adjudicator turn, with exact-marker readback.
-  Re-review and drain currently refuse because their core cannot bind a safe confirmation.
+  Re-review and drain currently refuse in Desktop: re-review until the page's confirmed control is
+  wired to the head-bound core entry point, drain because its core cannot bind a safe confirmation.
   Tokens remain host-only; stale confirmations refuse and partial/unknown results are not success.
 author: Jeremy Coe
 homepage: https://github.com/coe0718/diaktoros

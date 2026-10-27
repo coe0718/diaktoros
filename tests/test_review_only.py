@@ -267,6 +267,22 @@ class Gates(fg.Base):
                 self.loop, row, [], change=pr_facts.PRChange("RECORD", "", author="fixer"))
             self.assertNotIn("the PR's author", fixer)
 
+    def test_a_reconsider_turn_s_prompt_carries_the_maintainers_reason(self):
+        # #1334: the rendered reviewer prompt, not just its section.
+        from diaktoros.run_supervisor import RECONSIDER_KEY
+        self.st.reconsider_record(7, HEAD, "meet the issue's requirement")
+        with mock.patch.object(gh, "issue_comments_read", return_value=([], "")):
+            text = turn_prompts.isolated_prompt(
+                self.loop, {"seat": "reviewer", "repo": fg.REPO, "pr": 7, "head": HEAD,
+                            "turn_key": RECONSIDER_KEY},
+                [], change=pr_facts.PRChange("RECORD", "", author="fixer"))
+            plain = turn_prompts.isolated_prompt(
+                self.loop, {"seat": "reviewer", "repo": fg.REPO, "pr": 7, "head": HEAD,
+                            "turn_key": ""},
+                [], change=pr_facts.PRChange("RECORD", "", author="fixer"))
+        self.assertIn("> meet the issue's requirement", text)
+        self.assertNotIn("meet the issue's requirement", plain)
+
     def explain(self, verdicts=None):
         local = {"held": {}, "queued_seat": "", "queued_reason": "", "inflight_review": False,
                  "inflight_fix": False, "marker": {}, "parked": False, "delivery_status": "",
