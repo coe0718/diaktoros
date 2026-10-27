@@ -610,7 +610,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
              client_identity: str = '', review_diff: str | None = None,
              prefetch_timeout: int = deps.FETCH_TIMEOUT, progress=None,
              merged: dict | None = None, steps: int | None = None,
-             reasoning_effort: str = '') -> int:
+             reasoning_effort: str = '', stop=None) -> int:
     """Stage a live PR head, start host capabilities, execute Hermes within bwrap.
 
     ``api_mode`` picks the proxy contract and the sandbox's provider config; ``credential`` (a
@@ -633,6 +633,10 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
     bounded by ``prefetch_timeout`` and runs *before* the sandbox's own ``timeout`` starts, so it
     never shortens the seat's turn. ``progress``, when given (the worker's ledger writer), is told
     when the prefetch starts and how it ended, so a slow one is visible as what it is.
+
+    ``stop``, when given (the worker's cancel event, #1148), is checked before the sandbox starts
+    and polled while it runs: once set, the sandbox's process group is killed exactly as at the
+    turn budget and ``contained.Stopped`` is raised, with what it printed in ``observed``.
     """
     if scope.repo != loop.get('repo') or scope.role not in TOOLS:
         raise TurnDenied('scope mismatch')
@@ -776,6 +780,9 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                            '--ignore-rules', '--max-turns', str(steps),
                            '--run-budget', str(timeout)]
                 grace = KILL_GRACE_S
+                if stop is not None and stop.is_set():
+                    raise contained.Stopped()
+                stopping = {"stop": stop} if stop is not None else {}
                 try:
                     result = contained.run(code=code, venv=venv, runtime=runtime,
                         home=home, checkout=checkout, rust=rust, query=query, entry=command,
@@ -786,7 +793,20 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                         dependency_caches={r.ecosystem: r.cache for r in prefetched if r.ready},
                         # A ruling is judgement, not a change: the adjudicator's tree is mounted
                         # read-only so nothing it runs can dress up the head it rules on.
-                        checkout_writable=scope.role not in ('adjudicator', 'triage'))
+                        checkout_writable=scope.role not in ('adjudicator', 'triage'),
+                        **stopping)
+                except contained.Stopped as exc:
+                    # An operator's cancel (#1148): the same kill as the budget's, and the same
+                    # record of what the turn printed and was last doing.
+                    if observed is not None:
+                        doing = getattr(inference, 'last_activity', '')
+                        observed['thinking'] = getattr(inference, 'thinking', None)
+                        observed.update(usage_of(inference))
+                        observed.update(
+                            stdout=_decoded(exc.output)[-4000:]
+                            + (f"\n[last agent activity before the stop] {doing}" if doing else ""),
+                            stderr=_decoded(exc.stderr)[-4000:])
+                    raise
                 except subprocess.TimeoutExpired as exc:
                     # contained.run has already SIGKILLed the sandbox's process group. Keep what
                     # it printed and what the agent was last doing (the proxy saw its last call):

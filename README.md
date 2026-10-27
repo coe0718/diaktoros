@@ -24,6 +24,7 @@ Every capability below is on `main` and driven by the command named beside it. R
 | **History** | Seat turns, timings, verdicts and cost over a window | `hermes dk stats` |
 | **Why a PR is stuck** | The current gate, and what has to happen next | `hermes dk explain` |
 | **Re-arm a failed run** | Retry a run that failed before writing anything | `hermes dk retry` |
+| **Stop a run** | Cancel a queued, waiting or running run; only a retry re-arms it | `hermes dk cancel` |
 | **Queue** | A queued run starts once its seat frees | `hermes dk drain` |
 | **Disk** | Local review artifacts for merged or closed PRs are reclaimed | `hermes dk cleanup` |
 | **Backup and restore** | One private archive of everything the plugin owns | `hermes dk backup`, `hermes dk restore` |

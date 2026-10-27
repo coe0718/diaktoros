@@ -11,7 +11,9 @@ description: >-
   Desktop page re-arms a failed run the CLI's retry would re-arm: same checks, the loop's own
   ledger only, and never a GitHub read for Retry. Confirmed Desktop pause/resume reads and
   toggles GitHub webhooks through the same host operation and admin-token resolution as arm;
-  unknown hook state is not paused. It does not stop running turns or sweeper recovery.
+  unknown hook state is not paused; pause/resume does not stop running turns or sweeper recovery.
+  A confirmed Desktop cancel stops the exact queued or running runs it previewed, through the same
+  host operation as `hermes dk cancel`.
   Desktop also previews re-review, escalation and drain through a shared host owner; confirmed
   escalation parks the selected head and spends an adjudicator turn, with exact-marker readback.
   Re-review and drain currently refuse because their core cannot bind a safe confirmation.

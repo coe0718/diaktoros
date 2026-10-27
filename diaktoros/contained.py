@@ -333,6 +333,19 @@ def write_etc(directory: Path, uid: int | None = None, gid: int | None = None) -
     return directory
 
 
+class Stopped(Exception):
+    """The caller's ``stop`` event was set: the sandbox's process group was killed (#1148).
+    ``output`` and ``stderr`` are what it printed before, like a ``TimeoutExpired``'s."""
+
+    def __init__(self, output: bytes = b"", stderr: bytes = b""):
+        super().__init__("stopped by the caller")
+        self.output, self.stderr = output, stderr
+
+
+# How often a running sandbox checks its caller's ``stop`` event (#1148).
+STOP_POLL_S = 1.0
+
+
 def run(*, timeout: int = 180, **kwargs) -> subprocess.CompletedProcess:
     # Refused by name before anything is staged or started (#16), not left to a bare
     # FileNotFoundError from Popen.
@@ -344,7 +357,9 @@ def run(*, timeout: int = 180, **kwargs) -> subprocess.CompletedProcess:
         return _run(timeout=timeout, etc_dir=write_etc(Path(etc)), **kwargs)
 
 
-def _run(*, timeout: int, **kwargs) -> subprocess.CompletedProcess:
+def _run(*, timeout: int, stop=None, **kwargs) -> subprocess.CompletedProcess:
+    """``stop``, when given, is a ``threading.Event``: once set, the sandbox's process group is
+    killed exactly as at the deadline and ``Stopped`` is raised (an operator's cancel, #1148)."""
     # Parent environment is discarded, not merely filtered by a fragile denylist.
     home = str(Path(kwargs["home"]).resolve(strict=True))
     argv = command(**kwargs)
@@ -360,11 +375,14 @@ def _run(*, timeout: int, **kwargs) -> subprocess.CompletedProcess:
             for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
                 selector.register(stream, selectors.EVENT_READ, name)
             while selector.get_map():
+                if stop is not None and stop.is_set():
+                    raise Stopped(bytes(output["stdout"]), bytes(output["stderr"]))
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise subprocess.TimeoutExpired(argv, timeout, bytes(output["stdout"]),
                                                     bytes(output["stderr"]))
-                for key, _ in selector.select(remaining):
+                wait = remaining if stop is None else min(remaining, STOP_POLL_S)
+                for key, _ in selector.select(wait):
                     chunk = os.read(key.fileobj.fileno(), 65536)
                     if not chunk:
                         selector.unregister(key.fileobj)

@@ -107,6 +107,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | link a later bug to the approved PR that shipped it | [`regression`](#regression) |
 | find out why a webhook started nothing | [`trace`](#trace) |
 | run a failed turn again | [`retry`](#retry) |
+| stop a queued, waiting or running turn | [`cancel`](#cancel) |
 | finish a half-written issue fix | [`continue`](#continue) |
 | start a queued turn now | [`drain`](#drain) |
 | settle an observer notice whose delivery is uncertain | [`observer`](#observer) |
@@ -1561,7 +1562,8 @@ hermes dk retry --loop "<loop-id>" --pr 12 --seat fixer
 ```
 
 It selects the newest offerable ledger head (a GitHub PR read breaks a supersession tie).
-It can re-arm `failed`, `waiting` and push-policy-cancelled turns, not arbitrary cancellations.
+It can re-arm `failed`, `waiting`, push-policy-cancelled and [`cancel`](#cancel)led turns, not
+arbitrary cancellations.
 `--seat triage` / `issue_fixer` use an issue number in `--pr`, despite that option's PR wording. A run that **may have written** (it posted a review,
 pushed, or ended `uncertain`) is never replayed: `retry` refuses it and prints how to inspect
 and reconcile it instead.
@@ -1572,6 +1574,44 @@ and reconcile it instead.
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
 | `--pr` | `PR` | **required** | the pull request whose failed run to re-arm |
 | `--seat` | `reviewer` \| `fixer` \| `adjudicator` \| `triage` \| `issue_fixer` \| `shadow` |  | only that seat's run (default: whichever failed at the PR's newest head; a shadow run only when named) |
+<!-- /flags -->
+
+### cancel
+
+Stops an isolated run that is queued, waiting to retry, or running. Only `retry` re-arms a
+cancelled run. A redelivered event or a watchdog sweep doesn't, and a new head queues a fresh
+run as usual.
+
+```bash
+hermes dk cancel --loop "<loop-id>" --pr 12
+hermes dk cancel --loop "<loop-id>" --pr 12 --seat reviewer
+hermes dk cancel --loop "<loop-id>" --run "<run-id>"
+```
+
+- **Not started yet** (pending, waiting, claimed): cancelled at once.
+- **Launching or running:** the worker that owns the turn stops it, within a few seconds. It
+  kills the sandbox the same way the turn budget does, and frees the seat. An adjudicator's
+  breach marker is handed back. The command waits up to 30 seconds and prints how the run ended.
+  If the turn had already started writing (a review receipt, a push intent, a ruling), the run
+  ends `uncertain` rather than `cancelled`. It's never replayed, so inspect and reconcile it.
+- **Already finished** (succeeded, failed, cancelled, uncertain): refused, with its state.
+
+`--pr` alone cancels every open run at the PR's current head, shadow included, and lists each.
+An open run at an older head is left alone, because the claim supersedes it. `--seat` cancels
+only that seat's run. `--seat triage` / `issue_fixer` take an issue number in `--pr`. `status`
+and `explain` show a cancelled run as an operator's cancel, with the `retry` that re-arms it.
+
+On the Desktop, the same cancel is the confirmed `cancel` action (`GET`/`POST /actions`). The
+preview names the runs it would stop; if any of them starts, ends or appears before you
+confirm, the confirmation is stale and nothing is cancelled.
+
+<!-- flags:cancel -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
+| `--run` | `RUN` |  | the run id to cancel (`status` lists it) |
+| `--pr` | `PR` |  | cancel every open run at this PR's current head (an issue number for triage and issue_fixer) |
+| `--seat` | `reviewer` \| `fixer` \| `adjudicator` \| `triage` \| `issue_fixer` \| `shadow` |  | with --pr: only that seat's run |
 <!-- /flags -->
 
 ### continue
