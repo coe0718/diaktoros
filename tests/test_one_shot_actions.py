@@ -253,32 +253,34 @@ class ConfirmedActions(fixtures.Base):
         self.assertFalse(result["ok"], result)
         self.assertEqual(result["status"], "unknown")
 
-    def test_cli_reviewer_preserves_gate_signal_timeout_context(self):
+    def test_the_reviewer_gate_runs_as_a_call_and_changes_nothing_process_wide(self):
+        # #1046: no stdin/stdout swap, no signal handler or timer, and the gate's own budget,
+        # failed-read flag and decision recorder are the call's — even when the gate sets them.
         import signal
         import sys
-        from diaktoros import gate_failures, util
-        stdin = sys.stdin
+        from diaktoros import util
+        stdin, stdout = sys.stdin, sys.stdout
         recorder = util._DECISION_RECORDER
         budget = dict(gh._GATE)
         failures = gh._RECORD_FAILURES
         handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGALRM, signal.SIGTERM)}
         timer = signal.getitimer(signal.ITIMER_REAL)
+        seen = {}
         entry = mock.Mock()
-        def run_gate(name, main):
-            self.assertEqual(name, "gate_reviewer")
-            self.assertIs(main, entry.main)
-            signal.signal(signal.SIGALRM, signal.SIG_IGN)
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
-            signal.setitimer(signal.ITIMER_REAL, 120)
-            gh._GATE["test-context"] = True
-            gh._RECORD_FAILURES = not failures
-            util._DECISION_RECORDER = object()
+        def decide(payload, reconsider=None):
+            seen.update(payload=payload, reconsider=reconsider, stdin=sys.stdin, stdout=sys.stdout,
+                        deadline=gh.remaining() is not None)
+            gh.record_failures()
+            util.set_decision_recorder(object())
+            gh.begin_gate(0.0)
+            util.log("a reason")
             raise TimeoutError("gate alarm")
-        with mock.patch.object(actions, "_script", return_value=entry), \
-                mock.patch.object(gate_failures, "run", side_effect=run_gate):
+        entry.decide = decide
+        with mock.patch.object(actions, "_script", return_value=entry):
             with self.assertRaises(TimeoutError):
-                actions._run_reviewer({"number": 7})
-        self.assertIs(sys.stdin, stdin)
+                actions._run_reviewer({"number": 7}, reconsider="why")
+        self.assertEqual(seen, {"payload": {"number": 7}, "reconsider": "why", "stdin": stdin,
+                                "stdout": stdout, "deadline": True})
         self.assertIs(util._DECISION_RECORDER, recorder)
         self.assertEqual(gh._GATE, budget)
         self.assertEqual(gh._RECORD_FAILURES, failures)

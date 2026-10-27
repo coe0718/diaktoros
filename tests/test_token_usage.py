@@ -40,6 +40,32 @@ class Meter(unittest.TestCase):
             self.assertEqual((meter.tokens_in, meter.tokens_out, meter.cost), want)
         self.assertFalse(meter.cost_known)
 
+    def test_anthropic_prompt_cache_counts_as_input(self):
+        # #1336: Anthropic's input_tokens leaves out cache reads and writes, which on an agent turn
+        # are nearly all of the input; a daily token cap that ignored them would never fire.
+        cached = "".join(
+            f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in (
+                {"type": "message_start", "message": {"usage": {
+                    "input_tokens": 12, "cache_read_input_tokens": 180000,
+                    "cache_creation_input_tokens": 4000, "output_tokens": 1}}},
+                {"type": "message_delta", "usage": {"output_tokens": 300}})).encode()
+        meter = UsageMeter()
+        for i in range(0, len(cached), 11):
+            meter.feed(cached[i:i + 11], True)
+        meter.finish()
+        self.assertEqual((meter.tokens_in, meter.tokens_out), (184012, 300))
+        # A later event that repeats the usage must not count the cache twice.
+        meter = UsageMeter()
+        meter.feed(b'{"usage": {"input_tokens": 12, "cache_read_input_tokens": 100}}', False)
+        meter.finish()
+        self.assertEqual(meter.tokens_in, 112)
+        # OpenAI-style prompt_tokens already include their cached part: nothing is added.
+        meter = UsageMeter()
+        meter.feed(b'{"usage": {"prompt_tokens": 50, "prompt_tokens_details": {"cached_tokens": 40},'
+                   b' "cache_read_input_tokens": 999}}', False)
+        meter.finish()
+        self.assertEqual(meter.tokens_in, 50)
+
     def test_reported_zero_cost_is_known(self):
         for body, stream in ((b'{"usage": {"prompt_tokens": 5, "cost": 0}}', False),
                              (b'data: {"usage": {"output_tokens": 3, "cost": 0.0}}\n', True)):

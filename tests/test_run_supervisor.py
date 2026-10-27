@@ -92,6 +92,27 @@ class Lifecycle(unittest.TestCase):
     def launches(self):
         return self.events.read_text().splitlines() if self.events.exists() else []
 
+    def test_a_worker_runs_the_plugin_s_code_whatever_directory_starts_it(self):
+        # #1373: `python -m` puts the current directory first on sys.path. A worker started
+        # from a checkout of another revision (a decoy `diaktoros` here) must still run this one.
+        decoy = self.root / "checkout"
+        (decoy / "diaktoros" / "run_supervisor").mkdir(parents=True)
+        marker = self.root / "decoy-imported"
+        (decoy / "diaktoros" / "__init__.py").write_text(
+            f"open({str(marker)!r}, 'w').write('decoy')\n")
+        (decoy / "diaktoros" / "run_supervisor" / "__init__.py").write_text("")
+        (decoy / "diaktoros" / "run_supervisor" / "__main__.py").write_text("raise SystemExit(9)\n")
+        sup = self.supervisor()
+        previous = os.getcwd()
+        os.chdir(decoy)
+        try:
+            sup.enqueue("d", "o/r", 1, "sha", "reviewer")
+        finally:
+            os.chdir(previous)
+        self.wait(sup, "d", "succeeded")
+        self.assertFalse(marker.exists(), "the worker imported the decoy package")
+        self.assertEqual(self.launches(), ["launched"])
+
     def test_production_blocks_without_agent_fallback(self):
         sup = Supervisor(self.db)
         self.assertEqual(sup.enqueue("d", "o/r", 1, "sha", "reviewer"), SILENT)

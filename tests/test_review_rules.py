@@ -61,6 +61,14 @@ class ReviewerRule(unittest.TestCase):
         self.assertIn("**A filter leaves out what it should.**", text)
         self.assertIn("name one thing it must leave out and check that it does", text)
 
+    def test_reviewer_prompt_states_the_compare_cap(self):
+        # #936: findings.changed_files takes the whole PR as changed once a compare lists 300
+        # files; the prompt must not tell the reviewer to label those findings `missed earlier`.
+        from diaktoros import findings
+        text = flat(prompts.ISOLATED_REVIEWER)
+        self.assertIn(f"cuts a compare's file list at {findings.COMPARE_FILES_CAP} files", text)
+        self.assertIn("any file in the whole PR counts as changed that round", text)
+
     def test_reviewer_prompt_demands_the_line(self):
         text = flat(prompts.ISOLATED_REVIEWER)
         self.assertIn("`Not verified:` line", text)

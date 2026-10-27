@@ -1,0 +1,19 @@
+{
+  "repo": "owner/widgets",
+  "loop": "widgets",
+  "pr": 7,
+  "cap": 3,
+  "stuck": [],
+  "turns": [],
+  "turns_total": 0,
+  "verdicts": {},
+  "rulings": [],
+  "rulings_total": 0,
+  "breach": null,
+  "ledger_available": false,
+  "findings": [],
+  "decisions": [],
+  "shadows": [],
+  "shadows_older": 0,
+  "read_at": 1800000000
+}

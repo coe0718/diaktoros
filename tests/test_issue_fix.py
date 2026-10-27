@@ -153,6 +153,15 @@ class Gate(Base):
         self.run_gate(self.labeled(label="Agent-Fix"))
         self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix")])
 
+    def test_an_operator_agents_fix_label_hands_off_and_a_strangers_does_not(self):
+        # #757 (the shadow on #1329): an operator agent speaks with maintainer authority, so its
+        # fix label starts the fix; anyone else's is still silent.
+        self.loop = {**self.loop, "operator_agents": ["quill-bot"]}
+        self.run_gate(self.labeled(label="Agent-Fix", sender="stranger"))
+        self.assertEqual(self.enqueued, [])
+        self.run_gate(self.labeled(label="Agent-Fix", sender="Quill-Bot"))
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix")])
+
     def test_the_fix_handoff_is_recorded_as_accepted(self):
         # #1244 (live trial): the agent-fix label that started the fix was missing from the log.
         from diaktoros import util

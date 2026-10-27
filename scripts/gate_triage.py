@@ -40,7 +40,7 @@ def fix(loop: dict, payload: dict) -> None:
         silence("payload has no issue number")
     number = issue["number"]
     sender = str((payload.get("sender") or {}).get("login") or "").lower()
-    if sender not in triage.get("maintainers", []):
+    if sender not in config.maintainers(loop):      # triage.maintainers and operator_agents (#757)
         silence(f"issue #{number}: {sender or 'an unknown account'} applied the fix label, and "
                 "is not in triage.maintainers")
     if not config.issue_fixes_enabled(loop):

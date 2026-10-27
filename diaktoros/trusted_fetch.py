@@ -354,9 +354,16 @@ def _extract(archive: bytes, directory: pathlib.Path,
 
 
 def _base_head(loop: dict, repo: str, head: str, reader: str) -> None:
-    """An issue fix's base commit (#214): ``head`` must still be on the loop's base branch."""
-    compare = _json(loop, f"/repos/{repo}/compare/{head}...{loop.get('base')}", reader)
-    if not isinstance(compare, dict) or compare.get("status") not in ("identical", "ahead"):
+    """An issue fix's base commit (#214): ``head`` must still be on the loop's base branch.
+
+    Asked base-first (``base...head``): when ``head`` is on the base, the merge base is ``head``
+    itself, so GitHub's answer lists no files and no commits however far the base has moved
+    on. Asked the other way round it listed every file and commit since ``head``, which outgrew
+    the metadata bound once the base was 50 commits ahead, and every queued issue fix failed
+    staging with "GitHub response exceeds bounds" (2026-10-27).
+    """
+    compare = _json(loop, f"/repos/{repo}/compare/{loop.get('base')}...{head}", reader)
+    if not isinstance(compare, dict) or compare.get("status") not in ("identical", "behind"):
         raise FetchDenied("base commit is no longer on the base branch")
 
 

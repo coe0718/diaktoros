@@ -254,11 +254,13 @@ def _hook_origin(loop: dict, drifted: dict) -> dict:
 
 def _ensure_hooks(loop: dict, token_login: str | None, dry_run: bool,
                   outcome: dict | None = None) -> int:
-    """``apply --hooks``: make this loop's two repo hooks what its routes need, the way ``init
-    --hooks`` would have for a new loop (``init`` refuses an existing one).
+    """``apply --hooks``: make each of this loop's repo hooks what its routes need (reviewer and
+    fixer, plus triage when it is enabled; none under a GitHub App's ingress, see
+    ``config.hook_roles``), the way ``init --hooks`` would have for a new loop (``init``
+    refuses an existing one).
 
-    Per seat, hooks are matched by route name and one is kept by #106's ``_keep_one`` (active
-    first). A seat with none gets one created, paused until ``arm``. The kept hook is repointed at
+    Per hook role, hooks are matched by route name and one is kept by #106's ``_keep_one`` (active
+    first). A role with none gets one created, paused until ``arm``. The kept hook is repointed at
     the route's exact URL with ``_patch_hook_url`` (full config: the route's secret, the hook's own
     TLS setting, json), and given the gate's event if it lacks it. Extra hooks are only named. The
     listing is read first and nothing is written if it cannot be trusted; returns an exit code.
@@ -608,6 +610,15 @@ def cmd_set(args) -> int:
             return 2
         if names != (loop.get("human_paths") or []):
             changes["human_paths"] = names
+    if getattr(args, "ci_covers", None) is not None or getattr(args, "no_ci_coverage", False):
+        try:
+            covers = config.parse_ci_coverage(
+                [] if args.no_ci_coverage else args.ci_covers, "--ci-covers")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
+        if covers != (loop.get("ci_coverage") or {}):
+            changes["ci_coverage"] = covers
     if getattr(args, "generated", None) is not None or getattr(args, "no_generated", False):
         try:
             names = config.parse_generated(
@@ -619,13 +630,16 @@ def cmd_set(args) -> int:
             changes["generated"] = names
     if getattr(args, "no_shadow", False) or getattr(args, "shadow_profile", None) is not None \
             or getattr(args, "shadow_every", None) is not None \
-            or getattr(args, "shadow_escalate", None) is not None:
+            or getattr(args, "shadow_escalate", None) is not None \
+            or getattr(args, "shadow_file_issues", None) is not None:
         from ..config import settings_form
         try:
             shadow = settings_form.shadow_block(
                 loop.get("shadow"), "off" if args.no_shadow else args.shadow_profile,
-                args.shadow_every, "--shadow-profile/--shadow-every/--shadow-escalate",
-                escalate=getattr(args, "shadow_escalate", None))   # "on" with --no-shadow: refused
+                args.shadow_every,
+                "--shadow-profile/--shadow-every/--shadow-escalate/--shadow-file-issues",
+                escalate=getattr(args, "shadow_escalate", None),   # "on" with --no-shadow: refused
+                file_issues=getattr(args, "shadow_file_issues", None))
         except config.ConfigError as exc:
             print(f"refused: {exc}")
             return 2
@@ -640,6 +654,15 @@ def cmd_set(args) -> int:
             return 2
         if names != (loop.get("review_only") or []):
             changes["review_only"] = names
+    if getattr(args, "operator_agent", None) is not None or getattr(args, "no_operator_agents", False):
+        try:
+            agents = config.check_operator_agents(
+                [] if args.no_operator_agents else args.operator_agent, loop, "--operator-agent")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
+        if agents != (loop.get("operator_agents") or []):
+            changes["operator_agents"] = agents
     if getattr(args, "ci_fix_cap", None) is not None:
         try:
             value = (None if str(args.ci_fix_cap).strip() in ("0", "")
@@ -1265,7 +1288,8 @@ def _apply(args) -> int:
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci", "merge_check",
                 "ingress", "ingress_app",
                 "fix_ci", "fixer_scope_lock", "ci_fix_cap", "review_only_update", "required_checks", "human_paths",
-                "generated", "review_only", "review_only_cap", "review_only_daily", "shadow"):
+                "generated", "ci_coverage", "review_only", "operator_agents", "review_only_cap",
+                "review_only_daily", "shadow"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     # The form also pushes triage.auto_fix_* and observer.weekly_report (#781): compare them, or a
@@ -2145,6 +2169,11 @@ def add_set(sub) -> None:  # noqa: ANN001
                           help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated); replaces the list")
     reviewed.add_argument("--no-review-only", action="store_true",
                           help="clear the review-only list")
+    agents = change.add_mutually_exclusive_group()
+    agents.add_argument("--operator-agent", action="append", default=None,
+                        help="a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated); replaces the list")
+    agents.add_argument("--no-operator-agents", action="store_true",
+                        help="clear the operator-agents list")
     required = change.add_mutually_exclusive_group()
     required.add_argument("--required-check", action="append", default=None,
                           help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates); replaces the list")
@@ -2160,11 +2189,18 @@ def add_set(sub) -> None:  # noqa: ANN001
                         help="shadow one in this many reviewer turns, 1-1000 (needs a shadow profile)")
     change.add_argument("--shadow-escalate", choices=("on", "off"), default=None,
                         help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1")
+    change.add_argument("--shadow-file-issues", choices=("on", "off"), default=None,
+                        help="on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914); needs a shadow profile")
     humans = change.add_mutually_exclusive_group()
     humans.add_argument("--human-path", action="append", default=None,
                         help="a glob pattern for paths only a human may approve (repeat it); replaces the list")
     humans.add_argument("--no-human-paths", action="store_true",
                         help="clear the list: no path is reserved for a human")
+    covers = change.add_mutually_exclusive_group()
+    covers.add_argument("--ci-covers", action="append", default=None, metavar="CHECK=COVERS",
+                        help="what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it); replaces the map")
+    covers.add_argument("--no-ci-coverage", action="store_true",
+                        help="clear the map: the reviewer is told nothing about what a check covers")
     generated = change.add_mutually_exclusive_group()
     generated.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
                            help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox (repeat it); replaces the list")

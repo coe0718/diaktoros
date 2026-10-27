@@ -612,7 +612,7 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
 
 def push(loop: dict, *, repo: str, number: int, head: str, role: str,
          branch: str, manifest: object, merge: dict | None = None,
-         ci_fix: bool = False) -> dict:
+         ci_fix: bool = False, shadow_fix: float | None = None) -> dict:
     """Create Git objects and lease-advance only the gate-scoped PR branch.
 
     The trusted caller supplies scope from the gate, never from the manifest. All
@@ -630,7 +630,13 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
     # A conflict turn (#303) runs on an approved or unreviewed PR, so it has no changes-requested
     # verdict to answer. ``merge`` is host-built (RunScope), never the seat's: an ordinary push
     # still needs the live verdict.
-    verdict = merge is None and not ci_fix   # a CI-fix turn (#306) answers no verdict either
+    verdict = merge is None and not ci_fix and shadow_fix is None   # nor a CI fix (#306)
+    if shadow_fix is not None:
+        # #1004 part 3: the work order is the adjudicator's REJECT of an upheld shadow review,
+        # not a changes-requested review (the head is approved): it must still stand here.
+        from . import gate
+        if gate.upheld_shadow_ruling(loop, number, head) != shadow_fix:
+            raise broker.BrokerDenied("upheld shadow ruling no longer current")
     scope_check = verdict and role == "fixer"   # only a fix round answering findings (#482)
     login = broker.authorize(loop, repo=repo, number=number, head=head,
                              role=role, branch=branch, operation="push", require_verdict=verdict)

@@ -248,7 +248,9 @@ DEFAULTS: dict = {
     "required_checks": [],    # the checks that gate an approval (#368); [] = every check gates
     "human_paths": [],        # globs whose changes only a human may approve (#478)
     "generated": [],          # generated files the host regenerates on a conflict (#551); [] = off
+    "ci_coverage": {},        # what each required check covers, for the reviewer (#756); {} = off
     "review_only": [],        # authors reviewed but never fixed (#191); [] = fixers only
+    "operator_agents": [],    # agents that post as the operator's account (#757); [] = none named
     "review_only_update": False,  # push a clean merge of the base into a review-only PR (opt-in)
     "review_only_cap": None,   # verdicts per review-only PR; None = the loop's `cap`
     "review_only_daily": None,  # reviewer turns a day on review-only PRs; None = no cap
@@ -481,6 +483,65 @@ def check_required_checks(value, where: str) -> list[str]:
     return names
 
 
+CI_COVERAGE_MAX = 50
+CI_COVERS_MAX = 200
+
+
+def check_ci_coverage(value, where: str) -> dict[str, str]:
+    """The operator's map of check name -> what that check covers (#756), e.g. ``{"tests (3.14)":
+    "full unit suite and harness"}``; {} = the reviewer is told nothing about it. Names are as
+    GitHub shows them (no ``=`` or ``;;``, which the one-line forms use), the text one printable
+    line. Host-owned: never read from a PR."""
+    if value is None:
+        return {}
+    bad = f"{where}: 'ci_coverage' must map check names to a line saying what each covers"
+    if not isinstance(value, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+        raise ConfigError(bad)
+    out = {name.strip(): covers.strip() for name, covers in value.items()}
+    if (len(value) > CI_COVERAGE_MAX or len(out) != len(value)
+            or not all(0 < len(n) <= REQUIRED_CHECK_NAME_MAX and n.isprintable()
+                       and "=" not in n and ";;" not in n for n in out)
+            or not all(0 < len(c) <= CI_COVERS_MAX and c.isprintable() and ";;" not in c
+                       for c in out.values())):
+        raise ConfigError(f"{bad}: at most {CI_COVERAGE_MAX} unique names (1-"
+                          f"{REQUIRED_CHECK_NAME_MAX} printable characters, no '=' or ';;'), "
+                          f"each text 1-{CI_COVERS_MAX} printable characters, no ';;'")
+    if any(name.lower() == MERGE_CHECK_NAME for name in out):
+        raise ConfigError(f"{where}: 'ci_coverage' cannot name {MERGE_CHECK_NAME}, the loop's "
+                          "own merge check, which the reviewer never reads as CI")
+    return out
+
+
+def parse_ci_coverage(entries, where: str) -> dict[str, str]:
+    """``NAME=COVERS`` strings (the CLI and the form's spelling) -> ``ci_coverage``."""
+    parsed: dict[str, str] = {}
+    for text in entries:
+        name, sep, covers = str(text).partition("=")
+        if not sep:
+            raise ConfigError(f"{where}: 'ci_coverage' entry {text!r} must be NAME=COVERS")
+        if name.strip() in parsed:
+            raise ConfigError(f"{where}: 'ci_coverage' names {name.strip()!r} twice")
+        parsed[name.strip()] = covers
+    return check_ci_coverage(parsed, where)
+
+
+def split_ci_coverage(text) -> list[str]:
+    """The settings form's one line: entries separated by ``;;``."""
+    return [part.strip() for part in str(text or "").split(";;") if part.strip()]
+
+
+def ci_coverage_text(coverage) -> str:
+    """The inverse of ``split_ci_coverage`` (for ``show``)."""
+    return " ;; ".join(f"{name}={covers}" for name, covers in (coverage or {}).items())
+
+
+def ci_coverage(loop: dict) -> dict[str, str]:
+    """The check name -> what it covers map; {} = off."""
+    value = loop.get("ci_coverage")
+    return dict(value) if isinstance(value, dict) else {}
+
+
 HUMAN_PATHS_MAX = 50
 HUMAN_PATH_MAX = 200
 
@@ -630,10 +691,46 @@ def _check_logins(value, key: str, where: str) -> list[str]:
 def check_review_only(value, loop: dict, where: str) -> list[str]:
     """Review-only authors (#191): GitHub logins, lowercased, unique, and neither a fixer nor a
     reviewer — a fixer's PR is fixed, and a reviewer never reviews its own."""
+    names = _check_login_list(value, "review_only", where)
+    clash = sorted(set(names) & (set(loop.get("fixers") or []) | set(loop.get("reviewers") or [])))
+    if clash:
+        raise ConfigError(f"{where}: {', '.join(clash)} cannot be review-only and also a fixer "
+                          "or a reviewer")
+    return names
+
+
+def check_operator_agents(value, loop: dict, where: str) -> list[str]:
+    """``operator_agents`` (#757): logins of agents that post as the operator's own account.
+    Lowercased, unique, and none of them a seat's account: a seat speaks for the loop, not for
+    the operator, and one login can't be both."""
+    names = _check_login_list(value, "operator_agents", where)
+    clash = sorted(set(names) & seat_accounts(loop))
+    if clash:
+        raise ConfigError(f"{where}: {', '.join(clash)} cannot be an operator agent and also a "
+                          "fixer, a reviewer or another seat's account")
+    return names
+
+
+def operator_agents(loop: dict) -> set[str]:
+    """Logins that speak with maintainer authority but are agents, not the operator in person
+    (``operator_agents``, #757). Only a label: the authority is ``triage.maintainers``."""
+    names = loop.get("operator_agents")
+    return {str(name).lower() for name in names} if isinstance(names, list) else set()
+
+
+def maintainer_kind(loop: dict, login: str) -> str:
+    """How a maintainer is named wherever the loop shows one (#757): ``operator agent`` for a
+    login in ``operator_agents``, else ``maintainer``. The one place that wording lives."""
+    return "operator agent" if str(login).lower() in operator_agents(loop) else "maintainer"
+
+
+def _check_login_list(value, key: str, where: str) -> list[str]:
+    """A list of GitHub logins, lowercased, unique, at most ``REVIEW_ONLY_MAX`` (``review_only``
+    and ``operator_agents``)."""
     if value in (None, ""):
         return []
     if not isinstance(value, list) or not all(isinstance(name, str) for name in value):
-        raise ConfigError(f"{where}: 'review_only' must be a list of GitHub logins")
+        raise ConfigError(f"{where}: {key!r} must be a list of GitHub logins")
     # A login never contains a comma, so "a,b" is two logins on every path: the settings form
     # always split them, and `--review-only a,b` now does too (it used to fail as one login).
     parts = [part.strip().lower() for name in value for part in name.split(",")]
@@ -647,13 +744,20 @@ def check_review_only(value, loop: dict, where: str) -> list[str]:
         ([f"{len(names)} logins, more than {REVIEW_ONLY_MAX}"] if len(names) > REVIEW_ONLY_MAX
          else [])
     if problems:
-        raise ConfigError(f"{where}: 'review_only' must be at most {REVIEW_ONLY_MAX} unique "
+        raise ConfigError(f"{where}: {key!r} must be at most {REVIEW_ONLY_MAX} unique "
                           f"GitHub logins ({'; '.join(problems)})")
-    clash = sorted(set(names) & (set(loop.get("fixers") or []) | set(loop.get("reviewers") or [])))
-    if clash:
-        raise ConfigError(f"{where}: {', '.join(clash)} cannot be review-only and also a fixer "
-                          "or a reviewer")
     return names
+
+
+def seat_accounts(loop: dict) -> set[str]:
+    """Every GitHub account a seat of this loop acts as (lowercased): the fixers, the reviewers
+    and each seat's login. Their commits should come from a seat turn only (#757)."""
+    names = set(loop.get("fixers") or []) | set(loop.get("reviewers") or [])
+    if isinstance(loop.get("seats"), dict):
+        names |= {seat_login(loop, role) for role in ("reviewer", "fixer", "triage")}
+        names.add(adjudicator_login(loop))
+    names.add(str(loop.get("reviewer_seat") or ""))
+    return {str(name).strip().lower() for name in names if str(name).strip()}
 
 
 def _check_review_only_limit(value, key: str, where: str) -> int | None:
@@ -964,9 +1068,11 @@ def auto_fix_eligible(loop: dict, present) -> bool:
 
 def maintainers(loop: dict) -> set[str]:
     """The loop's maintainers (``triage.maintainers``, lowercased), trusted to direct it: hand an
-    issue to the fixer (#214) and ask the reviewer for a fresh review (#375). Empty without triage."""
+    issue to the fixer (#214) and ask the reviewer for a fresh review (#375), plus the
+    ``operator_agents`` (#757): agents that post as the operator's account and speak with the
+    same authority. Empty without either."""
     names = (loop.get("triage") or {}).get("maintainers") or []
-    return {str(name).strip().lower() for name in names if str(name).strip()}
+    return {str(name).strip().lower() for name in names if str(name).strip()} | operator_agents(loop)
 
 
 def hook_roles(loop: dict) -> tuple[str, ...]:
@@ -1001,9 +1107,20 @@ def shadow_escalate(loop: dict) -> bool:
     return (loop.get("shadow") or {}).get("escalate") is True
 
 
+def shadow_file_issues(loop: dict) -> bool:
+    """Whether the host files the issues a shadow review asked for (#914), once the real review
+    exists and did not file them. Off unless the loop opts in."""
+    return (loop.get("shadow") or {}).get("file_issues") is True
+
+
+# At most this many shadow-found issues a day per loop (#914): a second model's issue-tier output
+# is useful, and unbounded it is noise.
+SHADOW_ISSUES_DAILY = 5
+
+
 def normalize_shadow(raw, where: str) -> dict:
     """The ``shadow`` block (#218): ``profile`` (required to turn it on), ``every`` and
-    ``escalate`` (#1004), or ``{}``.
+    ``escalate`` (#1004) and ``file_issues`` (#914), or ``{}``.
 
     A shadow review is a second reviewer model in no-write mode: it never posts, so it needs no
     route, login or token, only the profile its model and account come from. Its limits
@@ -1012,8 +1129,9 @@ def normalize_shadow(raw, where: str) -> dict:
     """
     if raw in (None, {}):
         return {}
-    if not isinstance(raw, dict) or not set(raw) <= {"profile", "every", "escalate"}:
-        raise ConfigError(f"{where}: shadow may only hold 'profile', 'every' and 'escalate'")
+    if not isinstance(raw, dict) or not set(raw) <= {"profile", "every", "escalate", "file_issues"}:
+        raise ConfigError(f"{where}: shadow may only hold 'profile', 'every', 'escalate' and "
+                          "'file_issues'")
     profile = str(raw.get("profile") or "").strip()
     if not profile:
         raise ConfigError(f"{where}: shadow.profile is required (the Hermes profile shadow "
@@ -1036,6 +1154,11 @@ def normalize_shadow(raw, where: str) -> dict:
             raise ConfigError(f"{where}: shadow.escalate needs shadow.every 1: a head the "
                               "sampling skips would have no second review to hold it")
         shadow["escalate"] = raw["escalate"]
+    if raw.get("file_issues") not in (None, ""):
+        if not isinstance(raw["file_issues"], bool):
+            raise ConfigError(f"{where}: shadow.file_issues must be true or false, "
+                              f"got {raw['file_issues']!r}")
+        shadow["file_issues"] = raw["file_issues"]
     return shadow
 
 
@@ -1562,6 +1685,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     loop["required_checks"] = check_required_checks(loop["required_checks"], where)
     loop["human_paths"] = check_human_paths(loop["human_paths"], where)
     loop["generated"] = check_generated(loop["generated"], where)
+    loop["ci_coverage"] = check_ci_coverage(loop["ci_coverage"], where)
     if loop.get("ingress") not in INGRESS_MODES:
         raise ConfigError(f"{where}: 'ingress' must be one of {', '.join(INGRESS_MODES)}")
     loop["ingress_app"] = str(loop.get("ingress_app") or "").strip()
@@ -1708,6 +1832,8 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         seats[seat]["concurrency"] = _as_int(raw, f"seats.{seat}.concurrency", where)
         if seats[seat]["concurrency"] < 1:
             raise ConfigError(f"{where}: seats.{seat}.concurrency must be >= 1 (1 = serialized)")
+
+    loop["operator_agents"] = check_operator_agents(loop.get("operator_agents"), loop, where)
 
     loop["turn_budget_s"] = _check_budget(
         DEFAULT_TURN_BUDGET_S if loop.get("turn_budget_s") in (None, "") else loop["turn_budget_s"],

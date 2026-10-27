@@ -1227,6 +1227,27 @@ class LoopState:
         """Whether a maintainer's grant covers the next verdict: same head, no verdict since."""
         return self.review_cap_entry(number).get("grant") == {"head": head, "rounds": rounds}
 
+    # -- a maintainer's reconsider (#1334) -------------------------------------
+
+    RECONSIDER_REASON_MAX = 2000
+
+    def reconsider_record(self, number: int, head: str, reason: str) -> None:
+        """A maintainer's reason for one fresh review at ``head`` (``review --reconsider``), for
+        that turn's prompt. Written before the gate queues the turn; the latest head's wins."""
+        with self.locked():
+            path = self.dir / "reconsider.json"
+            data = self._load(path, {})
+            data = data if isinstance(data, dict) else {}
+            data[str(number)] = {"head": head, "reason": str(reason)[:self.RECONSIDER_REASON_MAX],
+                                 "at": time.time()}
+            self._save_strict(path, data)
+
+    def reconsider_get(self, number: int, head: str) -> dict | None:
+        """The maintainer's reconsider of this PR at ``head``, or None."""
+        data = self._load(self.dir / "reconsider.json", {})
+        entry = data.get(str(number)) if isinstance(data, dict) else None
+        return entry if isinstance(entry, dict) and entry.get("head") == head else None
+
     # -- numbered review findings (#475) --------------------------------------
 
     def findings_all(self) -> dict:
@@ -1242,6 +1263,16 @@ class LoopState:
             data = self.findings_all()
             data[str(number)] = entry
             self._save_strict(self.dir / "findings.json", data)
+
+    # -- merges already read for an override (#220) ---------------------------
+
+    def override_checked(self) -> dict:
+        """PR number -> the merged head whose reviews were already read for an override."""
+        raw = self._load(self.dir / "override-checked.json", {})
+        return raw if isinstance(raw, dict) else {}
+
+    def override_checked_put(self, data: dict) -> None:
+        self._save(self.dir / "override-checked.json", data)
 
     # The findings ledger as a shadow review was queued (#218): its prompt shows only the
     # reviews posted before then, so the broker judges its review against this, never against
