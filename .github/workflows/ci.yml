@@ -27,6 +27,9 @@ jobs:
   # `tests (3.x)` names that loops already list in required_checks.
   tests:
     runs-on: ubuntu-24.04
+    # A hung test must not hold a runner for GitHub's 6-hour default (seen on #1407's
+    # unit shard, 2026-10-27). Each limit is several times the job's normal run.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -51,6 +54,9 @@ jobs:
   unit:
     name: unit (${{ matrix.python }}, ${{ matrix.shard }}/3)
     runs-on: ubuntu-24.04
+    # A hung test must not hold a runner for GitHub's 6-hour default (seen on #1407's
+    # unit shard, 2026-10-27). Each limit is several times the job's normal run.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -84,6 +90,9 @@ jobs:
   # run also scans with Hermes main, so a stricter upstream scanner shows up before an update does.
   plugin-guard:
     runs-on: ubuntu-24.04
+    # A hung test must not hold a runner for GitHub's 6-hour default (seen on #1407's
+    # unit shard, 2026-10-27). Each limit is several times the job's normal run.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -120,6 +129,9 @@ jobs:
   # keeps the pin in one place without keeping a copy of the action's steps that could drift.
   plugin-validate:
     runs-on: ubuntu-24.04
+    # A hung test must not hold a runner for GitHub's 6-hour default (seen on #1407's
+    # unit shard, 2026-10-27). Each limit is several times the job's normal run.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -148,6 +160,9 @@ jobs:
   installed-mode:
     name: ${{ matrix.part == 'harness' && 'installed-mode' || 'installed-mode (resolver)' }}
     runs-on: ubuntu-24.04
+    # A hung test must not hold a runner for GitHub's 6-hour default (seen on #1407's
+    # unit shard, 2026-10-27). Each limit is several times the job's normal run.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
