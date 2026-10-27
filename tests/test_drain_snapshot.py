@@ -79,8 +79,8 @@ class Drain(unittest.TestCase):
         self.assertEqual([row[:2] for row in shown], [[f"{t.REPO}#7", t.HEAD_A]])
         with self.answer():
             result = self.drain(shown)
-        self.assertEqual((result["ok"], result["status"], result["started"]), (True, "started", 1))
-        self.assertEqual([(o["number"], o["outcome"]) for o in result["outcomes"]], [(7, "started")])
+        self.assertEqual((result["ok"], result["status"], result["sent"]), (True, "sent", 1))
+        self.assertEqual([(o["number"], o["outcome"]) for o in result["outcomes"]], [(7, "sent")])
         self.assertEqual(self.fired, ["drain-review-7"])
 
     def test_a_queue_that_changed_since_the_confirmation_starts_nothing(self):
@@ -91,7 +91,7 @@ class Drain(unittest.TestCase):
         before = self.st().queue_items("reviewer")
         with self.answer():
             result = self.drain(shown)
-        self.assertEqual((result["ok"], result["status"], result["started"]), (False, "stale", 0))
+        self.assertEqual((result["ok"], result["status"], result["sent"]), (False, "stale", 0))
         self.assertEqual(self.fired, [], "no worker was woken")
         self.assertEqual(self.st().queue_items("reviewer"), before, "nothing dropped or pruned")
 
@@ -175,7 +175,7 @@ class Drain(unittest.TestCase):
                 self.answer():
             result = self.drain(shown)
         self.assertEqual(self.fired, ["drain-review-7"])
-        self.assertEqual((result["status"], result["started"]), ("started", 1))
+        self.assertEqual((result["status"], result["sent"]), ("sent", 1))
         self.assertIn(f"{t.REPO}#8", self.st().queue_items("reviewer"), "left for its own turn")
 
     def test_an_entry_that_changes_during_the_checks_is_not_woken(self):
@@ -210,7 +210,7 @@ class Drain(unittest.TestCase):
                 self.answer():
             result = self.drain(shown)
         self.assertEqual(self.fired, [])
-        self.assertEqual((result["status"], result["started"]), ("partial", 0))
+        self.assertEqual((result["status"], result["sent"]), ("partial", 0))
         self.assertEqual(result["outcomes"][0]["why"], "the entry changed since it was confirmed")
 
     def test_a_concurrent_drain_cannot_mark_an_entry_this_drain_claimed(self):
@@ -236,7 +236,7 @@ class Drain(unittest.TestCase):
             result = self.drain(shown)
         self.assertEqual(marked, [False], "the other drain's mark lost to this drain's claim")
         self.assertEqual(self.fired, ["drain-review-7"])
-        self.assertEqual((result["status"], result["started"]), ("started", 1))
+        self.assertEqual((result["status"], result["sent"]), ("sent", 1))
 
     def test_a_sweep_past_its_checks_cannot_send_what_a_confirmed_drain_sent(self):
         # #1407 round 3 F1: the sweep finishes its checks, the confirmed drain claims and sends,
@@ -272,7 +272,7 @@ class Drain(unittest.TestCase):
             return True
         with mock.patch.object(routes, "fire", side_effect=fire):
             result = self.drain(shown)
-        self.assertEqual((result["ok"], result["status"], result["started"]), (False, "unknown", 0))
+        self.assertEqual((result["ok"], result["status"], result["sent"]), (False, "unknown", 0))
         self.assertEqual(result["outcomes"][0]["outcome"], "uncertain")
         self.assertNotIn("drain", self.st().queue_items("reviewer")[f"{t.REPO}#7"],
                          "the newer request stays, unclaimed, for its own turn")
@@ -292,9 +292,31 @@ class Drain(unittest.TestCase):
             return True
         with mock.patch.object(routes, "fire", side_effect=fire):
             result = self.drain(shown)
-        self.assertEqual((result["ok"], result["status"], result["started"]), (False, "unknown", 0))
-        self.assertEqual(result["outcomes"][0]["outcome"], "uncertain")
-        self.assertIn("no run for this head is in the run ledger", result["outcomes"][0]["why"])
+        # Answered, and nothing claims the run started: whether one did is the ledger's.
+        self.assertEqual(result["outcomes"][0]["outcome"], "sent")
+        self.assertNotIn("started", [o["outcome"] for o in result["outcomes"]])
+
+    def test_a_confirmed_drain_never_claims_a_start_it_cannot_attribute(self):
+        # #1407 round 5 F1: a concurrent direct event replaces the claim, queues its own
+        # same-head run, and removes its replacement; this POST queued nothing. The ledger
+        # cannot tell the runs apart, so a confirmed drain reports "sent", never "started".
+        t.reset(prs={"7": t.pr(7)})
+        self.queue(7)
+        shown = actions.drain_snapshot(self.loop(), "reviewer")
+
+        def fire(route, event, payload, tag, host, on_attempt=None, on_unsent=None):
+            self.fired.append(tag)
+            on_attempt and on_attempt()
+            self.queue(7)
+            self.gate_queues(7, t.HEAD_A, "reviewer")       # an unrelated same-head run
+            self.st().queue_pop("reviewer", f"{t.REPO}#7")
+            return True
+        with mock.patch.object(routes, "fire", side_effect=fire):
+            result = self.drain(shown)
+        self.assertNotIn("started", [o["outcome"] for o in result["outcomes"]])
+        self.assertNotIn("started", result)
+        self.assertEqual(result["outcomes"][0]["outcome"], "sent")
+        self.assertIn("whether a run started is the run ledger's", result["outcomes"][0]["why"])
 
     def test_a_same_head_request_queued_during_the_hold_check_is_kept(self):
         # #1407 round 4 F6: the removal compared only the head, so a newer same-head request
@@ -410,9 +432,9 @@ class Drain(unittest.TestCase):
         with mock.patch("diaktoros.config.seat_concurrency", return_value=2), \
                 mock.patch.object(gh, "pr", side_effect=spent_on_8), self.answer():
             result = self.drain(shown)
-        self.assertEqual((result["ok"], result["status"], result["started"]), (False, "unknown", 1))
+        self.assertEqual((result["ok"], result["status"], result["sent"]), (False, "unknown", 1))
         self.assertEqual(sorted((o["number"], o["outcome"]) for o in result["outcomes"]),
-                         [(7, "started"), (8, "left")])
+                         [(7, "sent"), (8, "left")])
 
     def test_a_confirmed_drain_never_reconciles_a_retarget(self):
         # #1407 review F4: the sweep's stacked-retarget branch starts a fresh review and

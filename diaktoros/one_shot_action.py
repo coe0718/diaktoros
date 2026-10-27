@@ -319,14 +319,15 @@ def drain_confirmed(loop, seat, expected):
     budget, log lines and decision recorder are this call's (``gh.gate_scope``,
     ``util.gate_call``), as for the review entry point (#1046).
 
-    Returns ``{"ok", "status", "started", "outcomes"}``. ``status`` is ``stale``, ``refused``,
+    Returns ``{"ok", "status", "sent", "outcomes"}``. ``status`` is ``stale``, ``refused``,
     ``nothing queued``, ``nothing to start`` (every entry was dropped as no longer valid),
-    ``started`` (at least one started and none was left queued), ``partial`` (some left
-    queued) or ``unknown`` (an uncertain POST, or the budget ran out). A started run is queued
-    for the worker, not finished.
+    ``sent`` (at least one request sent and answered, none left queued), ``partial`` (some
+    left queued) or ``unknown`` (an uncertain POST, or the budget ran out). ``sent`` is never
+    "started": nothing ties a run in the ledger to one POST, so whether a run started is the
+    run ledger's to say (``status``), as for ``hermes dk drain``.
     """
     from . import migrate, util
-    out = {"ok": False, "status": "refused", "started": 0, "outcomes": []}
+    out = {"ok": False, "status": "refused", "sent": 0, "outcomes": []}
     if not _snapshot_shape(expected):
         # None is the unconfirmed sweep's (#1407 review, F2): never a confirmation.
         out["outcomes"].append({"key": "", "number": None, "outcome": "refused",
@@ -352,7 +353,7 @@ def drain_confirmed(loop, seat, expected):
     try:
         with util.gate_call(), gh.gate_scope(time.monotonic() + budget,
                                              per_call=min(watchdog.WATCHDOG_PER_CALL_S, budget)):
-            started = watchdog.drain(loop, state_mod.state_for(loop), seat, quiet=True,
+            sent = watchdog.drain(loop, state_mod.state_for(loop), seat, quiet=True,
                                      expected=expected, report=report)
     except gh.GateBudgetExceeded:
         # Starts already made stand; every confirmed entry not reached is left (F3).
@@ -361,7 +362,7 @@ def drain_confirmed(loop, seat, expected):
         report += [{"key": key, "number": _queue_number(key), "outcome": "left",
                     "why": "the GitHub budget ran out before it was reached"}
                    for key, *_rest in expected if key not in seen]
-        out.update(status="unknown", started=sum(e["outcome"] == "started" for e in report),
+        out.update(status="unknown", sent=sum(e["outcome"] == "sent" for e in report),
                    outcomes=report)
         return out
     outcomes = {entry["outcome"] for entry in report}
@@ -373,12 +374,12 @@ def drain_confirmed(loop, seat, expected):
         status = "unknown"
     elif "left" in outcomes:
         status = "partial"
-    elif not started:
+    elif not sent:
         status = "nothing to start"     # every entry was dropped as no longer a valid request
     else:
-        status = "started"
-    out.update(ok=status in ("started", "nothing queued", "nothing to start"), status=status,
-               started=started,
+        status = "sent"
+    out.update(ok=status in ("sent", "nothing queued", "nothing to start"), status=status,
+               sent=sent,
                outcomes=report)
     return out
 

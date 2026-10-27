@@ -6,9 +6,11 @@ was observed at: each one is re-checked against live GitHub before its route is 
 gate the route reaches decides the turn. Nothing here merges, pushes or reviews.
 
 ``drain`` can bind a confirmed queue snapshot (``expected``, from ``state.queue_snapshot``) and
-report per entry what it did (``report``): ``started``, ``left`` (still queued), ``dropped`` (no
-longer a valid request), ``uncertain`` (a POST that may have been sent) or ``stale`` (the queue
-was not the one confirmed, so nothing happened).
+report per entry what it did (``report``): ``started`` (the sweep's: the gate took the entry),
+``sent`` (a confirmed drain's: the gate answered the POST; whether a run started is the run
+ledger's), ``left`` (still queued), ``dropped`` (no longer a valid request), ``uncertain`` (a
+POST that may have been sent) or ``stale`` (the queue was not the one confirmed, so nothing
+happened).
 """
 from __future__ import annotations
 
@@ -106,9 +108,10 @@ def _wake(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: dict,
     """POST the queued request to the seat's route; True when the gate took it (the run is
     queued). False stops the drain: the POST was not sent, or may have been sent unanswered.
     ``entry`` is the drain's claim; ``give_back``, the entry it replaced, is restored if
-    nothing was sent (#1407). A ``bound`` (confirmed) drain counts a start only when the run
-    ledger shows the gate queued a run for this PR, head and seat since the claim: the entry
-    leaving the queue is not proof, since another path can replace and then remove it."""
+    nothing was sent (#1407). A ``bound`` (confirmed) drain reports ``sent``, never
+    ``started``: the gate answered this POST, but nothing ties a run in the ledger to it (the
+    ledger keys a turn by repo, PR, head and seat, not by delivery), so whether a run started
+    is the run ledger's to say (``status``, ``explain``)."""
     number, head, event, payload, tag = fire
     attempted = False
 
@@ -127,11 +130,11 @@ def _wake(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: dict,
     # because no private runtime exists. Only the gate can remove its observed queue
     # entry, after Supervisor.enqueue succeeds. Never pop a replacement here.
     current = st.queue_items(seat).get(key)
-    if posted and current is None and bound and not _run_since(loop, seat, number, head,
-                                                                entry["drain"]["at"]):
-        note(key, "uncertain", "the entry left the queue, but no run for this head is in the "
-                               "run ledger since the claim")
-        return False
+    if posted and current is None and bound:
+        st.note(f"drained {seat} for {key}")
+        note(key, "sent", f"the gate answered the request for head {head[:7]}; whether a run "
+                          "started is the run ledger's (status)")
+        return True
     if posted and current is None:
         st.note(f"drained {seat} for {key}")
         if not quiet:
@@ -174,24 +177,6 @@ def _in_flight(st: state_mod.LoopState, seat: str, key: str, entry: dict):
 def _confirmed(expected: list, key: str, entry: dict) -> bool:
     """Whether this queue entry is one the operator confirmed: same key, head and time."""
     return [str(key), str((entry or {}).get("head") or ""), state_mod.mark_at(entry)] in expected
-
-
-def _run_since(loop: dict, seat: str, number: int, head: str, since: float) -> bool:
-    """Whether the run ledger holds a run for this PR, head and seat written since ``since``:
-    the gate's own record that it queued (or re-armed) the turn. Unreadable is not proof."""
-    from . import run_supervisor
-    try:
-        con = run_supervisor.read_only_connect(run_supervisor.production_ledger())
-        if con is None:
-            return False
-        try:
-            return con.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
-                               "AND updated>=?", (loop["repo"], number, head, seat,
-                                                  since)).fetchone() is not None
-        finally:
-            con.close()
-    except Exception:  # noqa: BLE001 - an unreadable ledger is no proof of a start
-        return False
 
 
 def _changed():
