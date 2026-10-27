@@ -7,26 +7,49 @@ import re
 import unittest
 
 WORKFLOW = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
+# A job's header under ``jobs:``: two spaces, its id, a colon, and at most a comment after it.
+HEADER = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(?:#.*)?$")
+TIMEOUT = re.compile(r"^    timeout-minutes:\s*\d+\s*(?:#.*)?$")
 
 
-def jobs(text: str) -> dict[str, str]:
-    """Each job under ``jobs:`` and the text of its block."""
-    body = text.split("\njobs:\n", 1)[1]
-    found = {}
-    for block in re.split(r"\n(?=  [A-Za-z0-9_-]+:\n)", "\n" + body):
-        match = re.match(r"\n?  ([A-Za-z0-9_-]+):\n", block)
+def jobs(text: str) -> dict[str, list[str]]:
+    """Each job under ``jobs:`` and its lines, read line by line."""
+    found: dict[str, list[str]] = {}
+    current = None
+    inside = False
+    for line in text.splitlines():
+        if not line.startswith(" ") and line.strip():
+            inside, current = line.rstrip() == "jobs:", None    # a top-level key ends the jobs
+            continue
+        match = HEADER.match(line) if inside else None
         if match:
-            found[match.group(1)] = block
+            current = match.group(1)
+            found[current] = []
+        elif current is not None:
+            found[current].append(line)
     return found
+
+
+def missing(text: str) -> list[str]:
+    return sorted(name for name, lines in jobs(text).items()
+                  if not any(TIMEOUT.match(line) for line in lines))
 
 
 class Timeouts(unittest.TestCase):
     def test_every_job_has_a_time_limit(self):
-        found = jobs(WORKFLOW.read_text())
-        self.assertGreaterEqual(len(found), 6, sorted(found))
-        missing = [name for name, block in found.items()
-                   if not re.search(r"^    timeout-minutes: \d+$", block, re.M)]
-        self.assertEqual(missing, [], "jobs without timeout-minutes")
+        text = WORKFLOW.read_text()
+        self.assertGreaterEqual(len(jobs(text)), 6, sorted(jobs(text)))
+        self.assertEqual(missing(text), [], "jobs without timeout-minutes")
+
+    def test_a_job_the_check_must_not_miss(self):
+        # #1415 review F1: a header with an inline comment is a job too, never part of the one
+        # before it; and a step's own timeout-minutes is not the job's.
+        text = ("on: push\njobs:\n  guarded:\n    runs-on: x\n    timeout-minutes: 5\n"
+                "  runaway: # added later\n    runs-on: x\n"
+                "  stepped:\n    runs-on: x\n    steps:\n      - run: y\n        timeout-minutes: 3\n"
+                "  quoted:   \n    runs-on: x\n    timeout-minutes: 9  # generous\n")
+        self.assertEqual(sorted(jobs(text)), ["guarded", "quoted", "runaway", "stepped"])
+        self.assertEqual(missing(text), ["runaway", "stepped"])
 
 
 if __name__ == "__main__":
