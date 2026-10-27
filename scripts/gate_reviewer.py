@@ -56,7 +56,17 @@ def loop_worked_on(loop: dict, st, number: int, pr: dict) -> bool:
 
 
 def main() -> None:
-    payload = json.load(sys.stdin)
+    decide(json.load(sys.stdin))
+
+
+def decide(payload: dict, reconsider: str | None = None) -> None:
+    """The gate itself, on one payload: queue the review, or ``silence`` with the reason.
+
+    ``main`` feeds it the webhook's stdin; the host's review entry point
+    (``one_shot_action.review``, #1046) calls it directly inside a gate call, so nothing
+    process-wide is touched. ``reconsider`` (#1334) is only ever the host's: a maintainer's
+    reason for one fresh review at a head that already has a verdict. No webhook sets it.
+    """
     loop, st = gate.context(payload)
     pr = gate.pr_of(payload)
     action = payload.get("action", "")
@@ -160,8 +170,13 @@ def main() -> None:
     reviews = transition.effective_reviews(loop, st, number, head, gate.fetch_reviews(loop, number))
     if not isinstance(reviews, list):
         silence("host review receipts unreadable — not guessing which reviews count")
-    dispute_key = ""
-    if gate.reviewed_at_head(reviews, loop, head):
+    dispute_key = reconsider_key = ""
+    if gate.reviewed_at_head(reviews, loop, head) and reconsider is not None:
+        # #1334: a maintainer sends a reviewed head back for one fresh review. One per head: the
+        # turn key is the same for every reconsider of it, so the ledger keeps only the first.
+        from diaktoros.run_supervisor import RECONSIDER_KEY
+        reconsider_key = RECONSIDER_KEY
+    elif gate.reviewed_at_head(reviews, loop, head):
         # #894: after the fixer disputed the verdict at this head, a maintainer's request asks
         # for one review there, keyed by the dispute so it runs once per dispute. Everything
         # else at a reviewed head is still refused (#401: a dispute itself never re-requests).
@@ -186,7 +201,8 @@ def main() -> None:
                 f"{held.get('why') or 'reserved paths'})")
     dismissed = [int(r['id']) for r in gate.reviews_at_head(reviews, loop, head)
                  if gh.review_state(r) == 'DISMISSED' and type(r.get('id')) is int and r['id'] > 0]
-    turn_key = dispute_key or (f'dismissed:{max(dismissed)}' if dismissed else fresh_key)
+    turn_key = (reconsider_key or dispute_key
+                or (f'dismissed:{max(dismissed)}' if dismissed else fresh_key))
     if st.inflight(f"review:{number}:{head}"):
         silence(f"a review for head {head[:7]} is already out")
 
