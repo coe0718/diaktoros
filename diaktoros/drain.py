@@ -13,6 +13,7 @@ was not the one confirmed, so nothing happened).
 from __future__ import annotations
 
 import time
+import uuid
 
 from . import config, gate, gh, review_kick, routes, transition
 from . import state as state_mod
@@ -48,8 +49,11 @@ def drain(loop: dict, st: state_mod.LoopState, seat: str, quiet: bool = False, *
              if state_mod.mark_at(v) is not None}
     if expected is not None:
         # Only what was confirmed (#1407 review, F1): an entry queued after the check is never
-        # woken by this drain, whatever the queue holds by now.
+        # woken by this drain, whatever the queue holds by now. One that changed or left the
+        # queue since the check is reported, never read as an empty queue (F5).
         items = {k: v for k, v in items.items() if _confirmed(expected, k, v)}
+        _note_rest(note, sorted(row[0] for row in expected if row[0] not in items),
+                   "the entry changed or left the queue since it was confirmed")
     if not items:
         return 0
     capacity = config.seat_concurrency(loop, seat)
@@ -74,11 +78,18 @@ def drain(loop: dict, st: state_mod.LoopState, seat: str, quiet: bool = False, *
         if fire is None:
             note(key, outcome, why)
             continue
-        if expected is not None and st.queue_items(seat).get(key) != items[key]:
-            # The entry changed or left the queue during the checks: not the one confirmed.
-            note(key, "left", "the entry changed since it was confirmed")
-            continue
-        if _wake(loop, st, seat, key, items[key], fire, quiet, note):
+        entry = items[key]
+        if expected is not None:
+            # Claim the confirmed entry before the POST (F1): one compare-and-swap, so nothing
+            # that changed it since the checks is ever sent, and no lock is held across the
+            # POST (the gate it reaches takes the queue lock to answer).
+            claimed = dict(entry, drain={"at": time.time(), "id": uuid.uuid4().hex})
+            if not st.queue_swap_if(seat, key, entry, claimed):
+                note(key, "left", "the entry changed since it was confirmed")
+                continue
+            entry = claimed
+        if _wake(loop, st, seat, key, entry, fire, quiet, note, give_back=items[key]
+                 if expected is not None else None):
             started += 1
             if started < free:
                 continue
@@ -92,9 +103,10 @@ def drain(loop: dict, st: state_mod.LoopState, seat: str, quiet: bool = False, *
 
 
 def _wake(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: dict, fire: tuple,
-          quiet: bool, note) -> bool:
+          quiet: bool, note, give_back: dict | None = None) -> bool:
     """POST the queued request to the seat's route; True when the gate took it (the run is
-    queued). False stops the drain: the POST was not sent, or may have been sent unanswered."""
+    queued). False stops the drain: the POST was not sent, or may have been sent unanswered.
+    ``give_back`` (a confirmed drain's claimed entry, #1407) is restored if nothing was sent."""
     number, head, event, payload, tag = fire
     attempted = False
 
@@ -124,8 +136,27 @@ def _wake(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: dict,
                             "route delivery uncertain — manual reconciliation required")
         note(key, "uncertain", "the route POST may have been sent without the gate's answer")
     else:
+        if give_back is not None:
+            st.queue_swap_if(seat, key, entry, give_back)     # never sent: no longer claimed
         note(key, "left", "the route POST was not sent")
     return False
+
+
+# A confirmed drain's claim older than this was left by a drain that stopped between the claim
+# and its POST's answer: it may have been sent, so it is an unverified POST from then on.
+DRAIN_CLAIM_S = 600.0
+
+
+def _in_flight(st: state_mod.LoopState, seat: str, key: str, entry: dict):
+    """An entry another (confirmed) drain has claimed: left alone while it is sending; once the
+    claim is stale, marked an unverified POST, as the drain itself marks an unanswered one."""
+    at = entry["drain"].get("at")
+    if isinstance(at, (int, float)) and time.time() - at < DRAIN_CLAIM_S:
+        return "left", "a confirmed drain is sending it", None
+    st.queue_replace_if(seat, key, entry, entry.get("head", ""), entry.get("url", ""),
+                        "route delivery uncertain — manual reconciliation required")
+    log(f"drain: {key} was claimed by a drain that never answered — manual reconciliation required")
+    return "left", "an unverified POST — manual reconciliation required", None
 
 
 def _confirmed(expected: list, key: str, entry: dict) -> bool:
@@ -155,6 +186,8 @@ def _drain_check(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry
     if str(entry.get("reason") or "").startswith("route delivery uncertain —"):
         log(f"drain: {key} has an unverified POST — manual reconciliation required")
         return "left", "an unverified POST — manual reconciliation required", None
+    if isinstance(entry.get("drain"), dict):
+        return _in_flight(st, seat, key, entry)
     if config.is_fixer_push_hold(entry) and not config.unattended_fixer_push_enabled(loop):
         # Held for the operator, not for capacity: nothing to wake until the loop opts in.
         # Once it has, this entry drains like any other — the fixer gate re-checks the live

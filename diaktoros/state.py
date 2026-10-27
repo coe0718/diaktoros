@@ -535,6 +535,18 @@ class LoopState:
             self._save_queue(data)
             return True
 
+    def queue_swap_if(self, seat: str, key: str, expected: dict, new: dict) -> bool:
+        """Replace this seat's entry with exactly ``new`` only if it is still ``expected`` — one
+        compare-and-swap under the queue lock (#1407: a confirmed drain claims its entry this
+        way before the POST, and gives it back if nothing was sent)."""
+        with self._queue_lock():
+            data = _mapping(self._load(self.pending, {}))
+            if _seat_read(data, seat).get(key) != expected:
+                return False
+            _seat(data, seat)[key] = new
+            self._save_queue(data)
+            return True
+
     def queue_items(self, seat: str) -> dict:
         """This seat's queue entries, ``{key: entry}``.
 

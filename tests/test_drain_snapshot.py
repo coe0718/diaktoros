@@ -183,6 +183,100 @@ class Drain(unittest.TestCase):
         self.assertEqual(self.fired, [])
         self.assertEqual(result["outcomes"][0]["why"], "the entry changed since it was confirmed")
 
+    def test_an_entry_replaced_after_the_last_check_is_never_sent(self):
+        # #1407 round 2 F1: a concurrent drain marks it uncertain after the checks, before the
+        # POST. The claim (a compare-and-swap) fails, so nothing is sent twice.
+        from diaktoros import drain as drain_mod
+        t.reset(prs={"7": t.pr(7)})
+        self.queue(7)
+        shown = actions.drain_snapshot(self.loop(), "reviewer")
+        real = drain_mod._drain_check
+
+        def check_then_replace(loop, st, seat, key, entry, bound=False):
+            out = real(loop, st, seat, key, entry, bound=bound)
+            st.queue_replace_if(seat, key, entry, entry["head"], entry["url"],
+                                "route delivery uncertain — manual reconciliation required")
+            return out
+        with mock.patch.object(drain_mod, "_drain_check", side_effect=check_then_replace), \
+                self.answer():
+            result = self.drain(shown)
+        self.assertEqual(self.fired, [])
+        self.assertEqual((result["status"], result["started"]), ("partial", 0))
+        self.assertEqual(result["outcomes"][0]["why"], "the entry changed since it was confirmed")
+
+    def test_a_concurrent_drain_cannot_mark_an_entry_this_drain_claimed(self):
+        # #1407 round 2 F1, as the reviewer's probe interleaves it: another drain read the entry
+        # before this one claimed it, and marks it uncertain just before this POST. Its write is
+        # a compare-and-swap against what it read, so it fails: one send, no double mark.
+        from diaktoros import drain as drain_mod
+        t.reset(prs={"7": t.pr(7)})
+        self.queue(7)
+        st, key = self.st(), f"{t.REPO}#7"
+        seen_before_claim = st.queue_items("reviewer")[key]
+        shown = actions.drain_snapshot(self.loop(), "reviewer")
+        real = drain_mod._wake
+        marked = []
+
+        def other_drain_marks_then_wake(loop, st, seat, key, entry, *a, **k):
+            marked.append(st.queue_replace_if(
+                seat, key, seen_before_claim, seen_before_claim["head"],
+                seen_before_claim["url"], "route delivery uncertain — manual reconciliation required"))
+            return real(loop, st, seat, key, entry, *a, **k)
+        with mock.patch.object(drain_mod, "_wake", side_effect=other_drain_marks_then_wake), \
+                self.answer():
+            result = self.drain(shown)
+        self.assertEqual(marked, [False], "the other drain's mark lost to this drain's claim")
+        self.assertEqual(self.fired, ["drain-review-7"])
+        self.assertEqual((result["status"], result["started"]), ("started", 1))
+
+    def test_a_confirmed_entry_gone_before_selection_is_reported_not_an_empty_queue(self):
+        # #1407 round 2 F5: removed right after the snapshot check.
+        t.reset(prs={"7": t.pr(7)})
+        self.queue(7)
+        shown = actions.drain_snapshot(self.loop(), "reviewer")
+        real = state_mod.queue_snapshot
+
+        def check_then_remove(st, seat):
+            out = real(st, seat)
+            st.queue_pop(seat, f"{t.REPO}#7")
+            return out
+        with mock.patch.object(state_mod, "queue_snapshot", side_effect=check_then_remove), \
+                self.answer():
+            result = self.drain(shown)
+        self.assertEqual((result["ok"], result["status"]), (False, "partial"))
+        self.assertEqual([(o["number"], o["outcome"], o["why"]) for o in result["outcomes"]],
+                         [(7, "left", "the entry changed or left the queue since it was confirmed")])
+
+    def test_an_unsent_post_gives_the_claim_back(self):
+        t.reset(prs={"7": t.pr(7)})
+        self.queue(7)
+        before = self.st().queue_items("reviewer")[f"{t.REPO}#7"]
+        with mock.patch.object(routes, "fire", return_value=False):
+            result = self.drain(actions.drain_snapshot(self.loop(), "reviewer"))
+        self.assertEqual(result["outcomes"][0]["why"], "the route POST was not sent")
+        self.assertEqual(self.st().queue_items("reviewer")[f"{t.REPO}#7"], before)
+
+    def test_a_claimed_entry_is_left_alone_and_a_stale_claim_is_an_unverified_post(self):
+        from diaktoros import drain as drain_mod
+        t.reset(prs={"7": t.pr(7)})
+        self.queue(7)
+        st, key = self.st(), f"{t.REPO}#7"
+        entry = st.queue_items("reviewer")[key]
+        st.queue_swap_if("reviewer", key, entry, dict(entry, drain={"at": 10**12, "id": "x"}))
+        watchdog = actions._script("watchdog")
+        with self.answer():
+            self.assertEqual(watchdog.drain(self.loop(), st, "reviewer", quiet=True), 0)
+        self.assertEqual(self.fired, [])
+        self.assertIn("drain", st.queue_items("reviewer")[key], "a live claim is left alone")
+        claimed = st.queue_items("reviewer")[key]
+        stale = dict(claimed, drain={"at": 1.0, "id": "x"})
+        st.queue_swap_if("reviewer", key, claimed, stale)
+        with self.answer():
+            watchdog.drain(self.loop(), st, "reviewer", quiet=True)
+        self.assertEqual(self.fired, [])
+        self.assertTrue(st.queue_items("reviewer")[key]["reason"].startswith("route delivery uncertain"))
+        self.assertGreater(drain_mod.DRAIN_CLAIM_S, 0)
+
     def test_no_or_a_malformed_snapshot_is_never_a_confirmation(self):
         # #1407 review F2: None disables the check for the sweep; the confirmed door refuses it.
         t.reset(prs={"7": t.pr(7)})
