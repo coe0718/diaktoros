@@ -229,6 +229,63 @@ class Drain(unittest.TestCase):
         self.assertEqual(self.fired, ["drain-review-7"])
         self.assertEqual((result["status"], result["started"]), ("started", 1))
 
+    def test_a_sweep_past_its_checks_cannot_send_what_a_confirmed_drain_sent(self):
+        # #1407 round 3 F1: the sweep finishes its checks, the confirmed drain claims and sends,
+        # then the sweep resumes. Its own claim fails, so there is one POST, not two.
+        from diaktoros import drain as drain_mod
+        t.reset(prs={"7": t.pr(7)})
+        self.queue(7)
+        shown = actions.drain_snapshot(self.loop(), "reviewer")
+        real, results = drain_mod._drain_check, {}
+
+        def sweep_check_then_confirmed_drain(loop, st, seat, key, entry, bound=False):
+            out = real(loop, st, seat, key, entry, bound=bound)
+            if not bound and "confirmed" not in results:
+                results["confirmed"] = self.drain(shown)
+            return out
+        with mock.patch.object(drain_mod, "_drain_check", side_effect=sweep_check_then_confirmed_drain), \
+                self.answer(consume=False):
+            swept = actions._script("watchdog").drain(self.loop(), self.st(), "reviewer", quiet=True)
+        self.assertEqual(self.fired, ["drain-review-7"], "one POST")
+        self.assertEqual(swept, 0)
+        self.assertEqual(results["confirmed"]["outcomes"][0]["outcome"], "uncertain")
+
+    def test_a_new_request_during_the_post_is_uncertain_not_a_start(self):
+        # #1407 round 3 F1: a webhook replaces the claimed entry while the POST is out.
+        t.reset(prs={"7": t.pr(7)})
+        self.queue(7)
+        shown = actions.drain_snapshot(self.loop(), "reviewer")
+
+        def fire(route, event, payload, tag, host, on_attempt=None, on_unsent=None):
+            self.fired.append(tag)
+            on_attempt and on_attempt()
+            self.queue(7)                                   # the gate's queue_add of a newer event
+            return True
+        with mock.patch.object(routes, "fire", side_effect=fire):
+            result = self.drain(shown)
+        self.assertEqual((result["ok"], result["status"], result["started"]), (False, "unknown", 0))
+        self.assertEqual(result["outcomes"][0]["outcome"], "uncertain")
+        self.assertNotIn("drain", self.st().queue_items("reviewer")[f"{t.REPO}#7"],
+                         "the newer request stays, unclaimed, for its own turn")
+
+    def test_a_removal_that_loses_its_compare_is_reported_changed_not_dropped(self):
+        # #1407 round 3 F6: #7 is requeued while its closed PR is being read.
+        t.reset(prs={"7": t.pr(7, state="closed")})
+        self.queue(7)
+        shown = actions.drain_snapshot(self.loop(), "reviewer")
+        real_pr = gh.pr
+
+        def pr_then_requeue(loop, number):
+            out = real_pr(loop, number)
+            self.queue(7)
+            return out
+        with mock.patch.object(gh, "pr", side_effect=pr_then_requeue), self.answer():
+            result = self.drain(shown)
+        self.assertEqual((result["ok"], result["status"]), (False, "partial"))
+        self.assertEqual([(o["outcome"], o["why"]) for o in result["outcomes"]],
+                         [("left", "the entry changed during the checks")])
+        self.assertIn(f"{t.REPO}#7", self.st().queue_items("reviewer"))
+
     def test_a_confirmed_entry_gone_before_selection_is_reported_not_an_empty_queue(self):
         # #1407 round 2 F5: removed right after the snapshot check.
         t.reset(prs={"7": t.pr(7)})
