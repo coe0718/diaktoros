@@ -1223,8 +1223,7 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
     init.add_argument("--fix-daily-turns", type=int, default=None,
                       help="issue-fix turns per day: refused here, a new loop has no fix "
                            "label; set it with `triage --fix-daily-turns N` (0 = ignore)")
-    init.add_argument("--hooks", action="store_true",
-                      help="create the GitHub hooks too, paused until `arm`")
+    init.add_argument("--hooks", action="store_true", help="create the GitHub hooks too, paused until `arm`")
     init.add_argument("--arm", action="store_true",
                       help="with --hooks: create them armed (live at once) instead of paused")
     init.add_argument("--admin-token", default="", help="login whose token can create hooks")

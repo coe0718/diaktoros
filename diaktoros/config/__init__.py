@@ -61,6 +61,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request
 
 from .. import envnames
+from . import flags
 
 # Seat identity: *who* a seat is. A profile decides the model, the budget and the credentials the
 # run happens with; a login decides the GitHub attribution. Both are per loop — two repositories can
@@ -1684,9 +1685,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     loop = {**DEFAULTS, **raw}
     where = f"{source or loop.get('id', '<inline>')}"
     check_known_keys(raw, where)
-    if type(loop["unattended_fixer_push"]) is not bool:
-        raise ConfigError(f"{where}: 'unattended_fixer_push' must be a JSON boolean; "
-                          "only explicit true authorizes unattended fixer pushes")
+    flags.check(loop, where)
     loop["fixer_check"] = check_fixer_check(loop["fixer_check"], where)
     loop["required_checks"] = check_required_checks(loop["required_checks"], where)
     loop["human_paths"] = check_human_paths(loop["human_paths"], where)
@@ -1704,21 +1703,6 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     if loop.get("merge_check") not in MERGE_CHECK_MODES:
         raise ConfigError(f"{where}: 'merge_check' must be one of {', '.join(MERGE_CHECK_MODES)} "
                           "(auto: on when the reviewer is a GitHub App)")
-    if type(loop["review_after_ci"]) is not bool:
-        raise ConfigError(f"{where}: 'review_after_ci' must be a JSON boolean (true holds a "
-                          "review until the head's checks finish)")
-    if type(loop["review_only_update"]) is not bool:
-        raise ConfigError(f"{where}: 'review_only_update' must be a JSON boolean (true lets the "
-                          "host push a clean merge of the base into a review-only PR)")
-    if type(loop["fixer_scope_lock"]) is not bool:
-        raise ConfigError(f"{where}: 'fixer_scope_lock' must be a JSON boolean (true holds a "
-                          "fix round that changes files its findings do not name)")
-    if type(loop["fix_ci"]) is not bool:
-        raise ConfigError(f"{where}: 'fix_ci' must be a JSON boolean (true hands a failed "
-                          "required check on a fixer's PR to the fixer)")
-    if type(loop["attribution"]) is not bool:
-        raise ConfigError(f"{where}: 'attribution' must be a JSON boolean (true signs what the "
-                          "loop posts; false turns it off)")
 
     repo = str(loop.get("repo") or "").strip()
     if repo.count("/") != 1:

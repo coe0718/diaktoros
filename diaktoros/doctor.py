@@ -2662,16 +2662,12 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     checks.extend(check_seat_models(loop))
     checks.extend(check_seat_extras(loop))
     checks.append(check_fixer_push(loop))
-    update = check_review_only_update(loop, offline)
-    if update:
-        checks.append(update)
+    checks.extend(filter(None, [check_review_only_update(loop, offline)]))
     checks.append(check_fix_ci(loop))
     checks.append(check_attribution(loop))
     checks.append(check_authorship(loop, offline))
     checks.append(check_sandbox_caps(loop))
-    identity = check_adjudicator_identity(loop)
-    if identity:
-        checks.append(identity)
+    checks.extend(filter(None, [check_adjudicator_identity(loop)]))
     checks.extend(check_tokens(loop))
     checks.extend(check_app_live(loop, login, offline) for login in sorted(loop.get("apps") or {}))
     checks.append(check_read_token(loop))
