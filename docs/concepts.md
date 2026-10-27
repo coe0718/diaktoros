@@ -167,7 +167,7 @@ hermes dk arm --loop ID --pause
 ## Capacity, time and recovery
 
 - **One PR, one seat:** reviewer/fixer activity is serialized per PR even when other PRs run in parallel. The handoff—not a model's assertion—releases the next role.
-- **Per-seat concurrency:** each seat has its own slots. Above one, a local clone is required; every turn still gets an independent exact-head export, not a shared working checkout.
+- **Per-seat concurrency:** each seat has its own slots. Above one, a local clone is required unless the isolated worker's runtime file exists; every turn still gets an independent exact-head export, not a shared working checkout.
 - **Turn budget:** default 900 seconds, builds/tests included; valid range 60–14400. The agent is asked to wrap up at 80%; the sandbox is terminated shortly after the limit. Budget-exhausted work is not automatically retried unchanged.
 - **Run ledger:** shared SQLite state deduplicates turns, tracks leases/capacity and records writes. Failed pre-write turns can retry after 2, 4 and 8 minutes (four total attempts). A lost worker or ambiguous write can become `uncertain`; it is not automatically replayed.
 - **Pacing:** provider usage-window holds and optional daily turn caps limit starts without treating every quota wait as a spent retry. Profiles alone do not isolate provider quota.

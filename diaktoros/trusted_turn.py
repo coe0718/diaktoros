@@ -467,10 +467,11 @@ TOOLS = {
                  'without spending the write. A reviewer gets exactly one review. Before it, file '
                  'each issue-tier finding (one that does not block) as its own issue: '
                  '`python -P -m diaktoros.broker_client file_issue --title "..." --body-file '
-                 '/tmp/issue1.md --label P3` (one line title of at most 120 characters, a body of at '
+                 '/tmp/issue1.md --label bug --label P3` (one line title of at most 120 characters, a body of at '
                  f'most {broker_client.FILED_ISSUE_BODY_MAX // 1024} KiB with the evidence and '
                  '`file:line`, labels only from the list in your instructions, none if no list is '
-                 f'given; at most {broker.FILED_ISSUES_MAX} per review). It files as your account '
+                 'given, otherwise one type label and one priority label; '
+                 f'at most {broker.FILED_ISSUES_MAX} per review). It files as your account '
                  'and answers with the issue number; a title already filed from this PR is '
                  'refused. A blocking finding is never an issue: it is REQUEST_CHANGES. '),
     'fixer': ('To publish, name the files you changed and write a commit message: '

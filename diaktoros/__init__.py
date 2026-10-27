@@ -1,4 +1,4 @@
-"""Hermes review loop — deterministic control plane for unattended agent PR review.
+"""Diaktoros — deterministic control plane for unattended agent PR review.
 
 Two agents, one repository: a **fixer** pushes work and asks for review, a **reviewer**
 returns a verdict, the fixer answers it, and the budget is counted in verdicts rather

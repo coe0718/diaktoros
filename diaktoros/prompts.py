@@ -125,7 +125,7 @@ What to do:
 
 Never force-push over someone else's commits, never merge, and never mark your own work verified."""
 
-ADJUDICATOR = """The review loop for {_loop.repo} PR #{_loop.pr} stopped and needs a ruling.
+ADJUDICATOR = """The Diaktoros loop for {_loop.repo} PR #{_loop.pr} stopped and needs a ruling.
 
 {_loop.reason}
 
@@ -257,7 +257,10 @@ What to do:
    - **issue** — everything else (usually P2/P3): real, but not worth another round. With only
      issue-tier findings the verdict is APPROVE. File each one yourself, before the review,
      through the broker's `file_issue` command (below): a one-line title, the finding with its
-     evidence and `file:line` as the body, and labels from {issue_labels}. List what you filed
+     evidence and `file:line` as the body, and labels from {issue_labels}. Each filed issue
+     carries exactly one type label (a listed label that is not a priority, such as `bug`) and
+     exactly one priority label (`P0`–`P3`); the broker refuses an issue with no type label
+     when the list has one. List what you filed
      in the review under **Issues filed**, with the numbers the broker returned; a finding the
      broker refused to file goes under **Issues to file** instead, so the operator can.
 4. **Requirements.** When the PR closes an issue, the issue and its maintainers' comments are
@@ -383,7 +386,7 @@ discarded when you exit: there is no person to hand files to, so a fix you did n
 Never mark your own work verified, and never claim a push or request succeeded without an ok
 response from the broker."""
 
-ISOLATED_ADJUDICATOR = """The review loop for {repo} PR #{pr} stopped and needs a ruling.
+ISOLATED_ADJUDICATOR = """The Diaktoros loop for {repo} PR #{pr} stopped and needs a ruling.
 
 Why it stopped: {reason}
 

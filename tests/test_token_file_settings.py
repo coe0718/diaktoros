@@ -222,6 +222,14 @@ class TokenFileSettingsTests(unittest.TestCase):
                                     r"empty login")
         self.assertNotIn("", self.loop_json().get("tokens") or {})
 
+    def test_init_token_refuses_an_empty_login(self):
+        """#1023: `init --token "=/path"` would write an unusable tokens[""] entry."""
+        good = self.pat("empty-login-init", 0o600)
+        for pair in (f"={good}", f"  ={good}"):
+            with self.subTest(pair=pair):
+                self.assert_refused([*self.init_argv(), "--token", pair], r"empty login")
+        self.assertFalse(self.loop_file().exists())
+
     # -- plugin settings → apply / init -----------------------------------------------------
 
     def test_apply_maps_settings_to_tokens(self):
