@@ -18,7 +18,9 @@ def jobs(text: str) -> dict[str, list[str]]:
     current = None
     inside = False
     for line in text.splitlines():
-        if not line.startswith(" ") and line.strip():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue                       # blank or comment-only: never structure (#1415 F2)
+        if not line.startswith(" "):
             inside, current = line.rstrip() == "jobs:", None    # a top-level key ends the jobs
             continue
         match = HEADER.match(line) if inside else None
@@ -50,6 +52,15 @@ class Timeouts(unittest.TestCase):
                 "  quoted:   \n    runs-on: x\n    timeout-minutes: 9  # generous\n")
         self.assertEqual(sorted(jobs(text)), ["guarded", "quoted", "runaway", "stepped"])
         self.assertEqual(missing(text), ["runaway", "stepped"])
+
+
+class RealWorkflow(unittest.TestCase):
+    def test_a_job_added_after_a_comment_is_still_checked(self):
+        # #1415 review F2: an unindented comment inside ``jobs:`` is not a top-level key.
+        text = WORKFLOW.read_text().rstrip("\n") + ("\n# added job below\n  runaway:\n"
+                                                    "    runs-on: ubuntu-24.04\n")
+        self.assertEqual(missing(text), ["runaway"])
+        self.assertEqual(missing(WORKFLOW.read_text()), [])
 
 
 if __name__ == "__main__":
