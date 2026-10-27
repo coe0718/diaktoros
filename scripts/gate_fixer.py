@@ -239,7 +239,8 @@ def main() -> None:
 
     if review_only:
         # #191: the fixer never touches a review-only author's PR. The verdict goes back to the
-        # author (their push and request start the next review); no cap, no adjudication.
+        # author (their push and request start the next review). The PR spends no fixer rounds and
+        # is never adjudicated; its verdicts still have a cap (review_only_cap).
         observer.notify(loop, st, "verdict", number, pr_head, identity=review.get("id"),
                         outcome="changes requested", actor=gate.reviewer_login(review),
                         next_turn=f"{author}: returned to the author (review-only — no fixer)",
