@@ -20,7 +20,7 @@ SETTINGS_SCHEMA: dict = {
                            "(cap - 1 fixes)"},
     "reviewer_concurrency": {"label": "Reviews at once", "type": "int", "default": 1,
                              "description": "Reviews that may run at once; everything above this "
-                                            "queues. Above 1 needs a clone path, so each run gets "
+                                            "queues. Above 1 needs a clone path or the isolated worker's runtime file (`setup` writes it), so each run gets "
                                             "its own sandbox."},
     "fixer_concurrency": {"label": "Fixes at once", "type": "int", "default": 1,
                           "description": "Fixes that may run at once; everything above this queues"},
@@ -36,8 +36,8 @@ SETTINGS_SCHEMA: dict = {
                                           "while the loop has issue triage on. Blank = not set "
                                           "here: the loop keeps its own value (default: 1, "
                                           "serialized)"},
-    "clone": {"label": "Clone path (required above 1)", "type": "str", "default": "",
-              "description": "Local clone the runs isolate from — required above 1, because a "
+    "clone": {"label": "Clone path (optional with the runtime file)", "type": "str", "default": "",
+              "description": "Local clone the runs isolate from; above 1 it is required unless the isolated worker's runtime file exists, because a "
                              "parallel run in a shared checkout produces wrong verdicts"},
     "base": {"label": "Base branch", "type": "str", "default": "main",
              "description": "Base branch the loop watches"},

@@ -1585,6 +1585,9 @@ def check_clone(loop: dict) -> Check:
     """The clone the runs isolate from — and the one rail that would delete it if it were wrong."""
     raw = str(loop.get("clone") or "")
     if not raw:
+        if config.isolated_runtime_configured():
+            return Check("clone", VERIFIED, "none configured — every turn runs in its own "
+                                            "exact-head export, so concurrency above 1 needs no clone")
         return Check("clone", VERIFIED, "none configured — runs work in the checkout they find "
                                         "(fine at concurrency 1)")
     path = pathlib.Path(raw).expanduser()

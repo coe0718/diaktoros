@@ -45,8 +45,8 @@ Defaults are for a fresh form; existing loops retain values when a field is abse
 | Field | Type / fresh default | Accepted value | Destination and behavior |
 | --- | --- | --- | --- |
 | `cap` | int / `3` | Whole verdict count >= 2 | `cap`; at the cap, a configured adjudicator can rule. The cap counts verdicts, not pushes. |
-| `reviewer_concurrency` | int / `1` | Whole number >= 1 | Effective reviewer capacity; see inheritance below. Above 1 requires a nonblank clone. |
-| `fixer_concurrency` | int / `1` | Whole number >= 1 | Effective fixer capacity; above 1 requires a nonblank clone. Does not enable unattended pushes. |
+| `reviewer_concurrency` | int / `1` | Whole number >= 1 | Effective reviewer capacity; see inheritance below. Above 1 requires a nonblank clone unless the runtime file exists (see configuration). |
+| `fixer_concurrency` | int / `1` | Whole number >= 1 | Effective fixer capacity; above 1 requires a nonblank clone unless the runtime file exists. Does not enable unattended pushes. |
 | `shadow_concurrency` | str / `""` | Whole number >= 1, or blank | `seats.shadow.concurrency`: shadow reviews that may run at once; the rest queue. Always the seat's own value, since the loop-level `concurrency` does not reach this seat. Takes effect only while the loop has a shadow profile. Blank keeps the loop's own value (default 1). |
 | `triage_concurrency` | str / `""` | Whole number >= 1, or blank | `seats.triage.concurrency`: issue triages that may run at once; the rest queue. Always the seat's own value (the loop default does not reach it). Takes effect only while the loop has issue triage on. Blank keeps the loop's own value (default 1). |
 | `clone` | str / `""` | Local clone path | `clone`; a blank form keeps the loop's clone. Actual checkout usability is a separate doctor/selftest check. |
@@ -144,7 +144,8 @@ Capacity is per seat, not one shared reviewer-plus-fixer pool:
 `set --concurrency` subsequently affects only unpinned working seats. A form that explicitly
 owns both seat values can reconcile their pins again. Adjudicator/triage do not inherit the
 working-seat concurrency default. Concurrency above 1 requires a clone for reviewer/fixer
-at normalization, even though production turns are sandbox-isolated at concurrency 1 too.
+at normalization unless the isolated worker's runtime file (`diaktoros-runtime.json`) exists:
+with it every production turn is sandbox-isolated, so nothing is shared.
 
 `turn_budget_s` is a loop default, not a reset of `seats.<seat>.turn_budget_s`. Form apply does
 not clear per-seat turn budgets or daily caps. Queued and running ledger rows retain the
