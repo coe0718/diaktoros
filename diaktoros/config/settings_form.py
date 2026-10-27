@@ -185,6 +185,13 @@ SETTINGS_SCHEMA: dict = {
                     "description": "GitHub logins whose PRs the reviewer reviews but the fixer "
                                    "never touches: a changes-requested verdict goes back to the "
                                    "author. Not a fixer or a reviewer. Blank = not set here"},
+    "operator_agents": {"label": "Operator agents (comma-separated)", "type": "str",
+                        "default": "",
+                        "description": "GitHub logins of agents that post as the operator's own "
+                                       "account (an assistant, a docs or bug-hunting agent). Their "
+                                       "comments reach the seats as maintainer data, labelled "
+                                       "operator agent; not a fixer, a reviewer or another seat's "
+                                       "account. Blank = not set here"},
     "review_only_cap": {"label": "Review-only verdict cap", "type": "str", "default": "",
                         "description": "Verdicts the reviewer may give one review-only PR before it "
                                        "stops until a maintainer grants another round, a whole "
@@ -239,6 +246,12 @@ SETTINGS_SCHEMA: dict = {
                                        "is running, or after it requested changes (#1004). "
                                        "Needs shadow every = 1. Blank = not set here: the loop "
                                        "keeps its own value (default: off)"},
+    "shadow_file_issues": {"label": "File the shadow's issues", "type": "str", "default": "",
+                           "description": "on: the issues a shadow review asks to file are filed "
+                                          "by the reader once the real review exists and did not "
+                                          "file them, labelled shadow-found, at most 5 a day "
+                                          "(#914). Blank = not set here: the loop keeps its own "
+                                          "value (default: off)"},
     "human_paths": {"label": "Human-only paths (comma-separated globs)", "type": "str",
                     "default": "",
                     "description": "Glob patterns, e.g. '.github/**, scripts/release*'. If a "
@@ -371,13 +384,16 @@ def _on_off_value(value, where: str, name: str):
     raise config.ConfigError(f"{where}: {name} must be on or off, got {value!r}")
 
 
-def shadow_block(current, profile, every, where: str, escalate=None) -> dict | None:
+def shadow_block(current, profile, every, where: str, escalate=None,
+                 file_issues=None) -> dict | None:
     """The ``shadow`` block (#218) after a form, ``init``/``setup`` or ``set`` names a profile,
-    ``every`` and/or ``escalate`` (#1004); None when none was named. ``off`` as the profile turns
-    shadow reviews off. ``every`` and ``escalate on`` need a profile, already set or named with
-    it; ``escalate off`` without one changes nothing."""
+    ``every``, ``escalate`` (#1004) and/or ``file_issues`` (#914); None when none was named.
+    ``off`` as the profile turns shadow reviews off. ``every`` and ``escalate on`` or
+    ``file_issues on`` need a profile, already set or named with it; ``off`` without one
+    changes nothing."""
     escalate = _on_off_value(escalate, where, "shadow escalate")
-    if profile is None and every is None and escalate is None:
+    file_issues = _on_off_value(file_issues, where, "shadow file issues")
+    if profile is None and every is None and escalate is None and file_issues is None:
         return None
     shadow = dict(current or {})
     if profile is not None:
@@ -396,6 +412,14 @@ def shadow_block(current, profile, every, where: str, escalate=None) -> dict | N
             shadow["escalate"] = True
         else:
             shadow.pop("escalate", None)
+    if file_issues is not None:
+        if file_issues and not shadow.get("profile"):
+            raise config.ConfigError(f"{where}: shadow file issues needs a shadow profile "
+                                     "(name one with it)")
+        if file_issues:
+            shadow["file_issues"] = True
+        else:
+            shadow.pop("file_issues", None)
     return config.normalize_shadow(shadow, where)
 
 
@@ -471,6 +495,9 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     if _form_value(settings, "review_only") is not None:
         overlaid["review_only"] = [name.strip() for name in str(d["review_only"]).split(",")
                                    if name.strip()]
+    if _form_value(settings, "operator_agents") is not None:
+        overlaid["operator_agents"] = [name.strip() for name in str(d["operator_agents"]).split(",")
+                                       if name.strip()]
     if _form_value(settings, "ci_fix_cap") is not None:
         overlaid["ci_fix_cap"] = config.check_ci_fix_cap(config._form_int(d["ci_fix_cap"].strip()), "settings")
     for key in ("review_only_cap", "review_only_daily"):
@@ -492,7 +519,8 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
         overlaid["fixer_check"] = config.check_fixer_check(d["fixer_check"], "settings")
     shadow = shadow_block(overlaid.get("shadow"), _form_value(settings, "shadow_profile"),
                           _form_value(settings, "shadow_every"), "settings",
-                          escalate=_form_value(settings, "shadow_escalate"))
+                          escalate=_form_value(settings, "shadow_escalate"),
+                          file_issues=_form_value(settings, "shadow_file_issues"))
     if shadow is not None:
         overlaid["shadow"] = shadow
     # Turn knobs (#309): validated like the CLI/loop file, and only when the form names them.

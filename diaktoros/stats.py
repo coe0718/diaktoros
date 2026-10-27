@@ -18,6 +18,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import config
 from .ledger import LOCK_WAIT_S
 
 SEATS = ("reviewer", "fixer", "issue_fixer", "triage", "adjudicator")
@@ -589,6 +590,48 @@ def regressions(db: Path, repo: str, since: float, until: float) -> dict | None:
             "from": first}
 
 
+def overrides(db: Path, repo: str, since: float, until: float) -> dict | None:
+    """Where a human overrode the loop (#220), by the time of the override (the merge) in
+    ``[since, until)``. Only the merge over a changes-requested is recorded so far; dismissed
+    reviews, reversed rulings and reverted pushes are not, so zero here is not zero overrides.
+    ``findings`` is how many numbered findings (#475) were still open across them, and
+    ``categories`` how many of those per category (``findings.CATEGORIES``; a record made without
+    one counts as ``other``). None without a ledger."""
+    db = Path(db)
+    if not db.exists():
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    try:
+        con.row_factory = sqlite3.Row
+        try:
+            rows = con.execute("SELECT pr, head, seat, model, findings, merged_at FROM overrides "
+                               "WHERE repo=? AND kind='merged_over_changes' AND merged_at>=? "
+                               "AND merged_at<? ORDER BY merged_at, pr", (repo, since, until)
+                               ).fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+    finally:
+        con.close()
+    cases, models, categories, found = [], Counter(), Counter(), 0
+    for row in rows:
+        try:
+            listed = json.loads(row["findings"])
+        except (TypeError, ValueError):
+            listed = []
+        # Each finding is {"id", "category"}; a bare id (no category recorded) is "other".
+        pairs = [(str(item.get("id")), str(item.get("category") or "other"))
+                 if isinstance(item, dict) else (str(item), "other")
+                 for item in (listed if isinstance(listed, list) else [])]
+        models[row["model"] or "unknown"] += 1
+        categories.update(category for _, category in pairs)
+        found += len(pairs)
+        cases.append({"pr": row["pr"], "head": row["head"][:7], "seat": row["seat"],
+                      "model": row["model"] or "unknown",
+                      "findings": [f"{fid} ({category})" for fid, category in pairs]})
+    return {"merged_over_changes": len(rows), "models": dict(sorted(models.items())),
+            "findings": found, "categories": dict(categories.most_common()), "cases": cases}
+
+
 FIX_READS_MAX = 100
 
 
@@ -888,6 +931,7 @@ def report(loop: dict, db: Path, since: float, until: float | None = None,
         def pr_state(number):
             return fix_hold.pr_state(loop, number)
     return {"repo": repo, "loop": loop.get("id", ""), "since": since, "until": until,
+            "operator_agents": sorted(config.operator_agents(loop)),      # #757
             "turns": ledger(db, repo, since, until),
             "turns_before": ledger(db, repo, before, since),
             "reviews": review_window(db, repo, since, until),
@@ -897,6 +941,7 @@ def report(loop: dict, db: Path, since: float, until: float | None = None,
             "fixes": fix_outcomes(db, repo, since, until, pr_state),
             "findings": finding_outcomes(db, repo, since, until, tracked),
             "regressions": regressions(db, repo, since, until),
+            "overrides": overrides(db, repo, since, until),
             "shadows": shadow_outcomes(db, repo, since, until, tracked),
             "stuck": stuck(db, repo, until)}
 
@@ -937,6 +982,9 @@ def report_text(data: dict) -> str:
     days = (data["until"] - data["since"]) / 86400
     out = [f"{data['repo']} (loop {data['loop']}) · {_day(data['since'])} → "
            f"{_day(data['until'])} ({days:.1f} days)"]
+    if data.get("operator_agents"):
+        out.append("operator agents (post as the operator's account; steps counted apart as "
+                   "\"agent hold\"): " + ", ".join(data["operator_agents"]))
     reviews = data["reviews"]
     if reviews is None:
         return "\n".join(out + ["no run ledger yet"])
@@ -977,6 +1025,18 @@ def report_text(data: dict) -> str:
                       else " · none linked yet (`hermes dk regression`)"))
         out += [f"  #{link['issue']} ← PR #{link['pr']} approved at {link['head']} "
                 f"({link['model']})" for link in broke["links"][:10]]
+    over = data.get("overrides")
+    if over is not None:
+        out.append(f"human overrides: {over['merged_over_changes']} merged over a "
+                   "changes-requested"
+                   + (" · " + ", ".join(f"{name} {n}" for name, n in over["models"].items())
+                      if over["models"] else "")
+                   + (f" · {over['findings']} open finding(s) overridden: "
+                      + ", ".join(f"{name} {n}" for name, n in over["categories"].items())
+                      if over["findings"] else ""))
+        out += [f"  #{case['pr']} merged at {case['head']} over {case['seat']} ({case['model']})"
+                + (f": {', '.join(case['findings'])}" if case["findings"] else "")
+                for case in over["cases"][:10]]
     shadows = data.get("shadows")
     if shadows:
         paired = shadows["findings"]

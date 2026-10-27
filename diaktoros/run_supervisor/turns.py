@@ -146,8 +146,10 @@ class ClaimAndLaunch:
                 # posted in the GitHub UI): a second would spend another round.
                 # The same-head retarget's fresh-review turn exists to review
                 # again at this head, so it is exempt.
-                # A dispute re-review (#894) exists to review again at this head, too.
-                if not str(row['turn_key'] or '').startswith(('retarget:', run_supervisor.DISPUTE_KEY)):
+                # A dispute re-review (#894) exists to review again at this head, too, and so
+                # does a maintainer's reconsider (#1334).
+                if not str(row['turn_key'] or '').startswith(('retarget:', run_supervisor.DISPUTE_KEY,
+                                                             run_supervisor.RECONSIDER_KEY)):
                     from .. import gate
                     reviews = pr_facts.effective_reviews(loop, row, gh.reviews(loop, row['pr']),
                                                          self.db)
@@ -179,8 +181,15 @@ class ClaimAndLaunch:
                 # maintainer's requested re-review: an approval then supersedes the ruling.
                 rereview = (str(row['turn_key'] or '').startswith(run_supervisor.DISPUTE_KEY)
                             and ((marker or {}).get('escalated') or {}).get('by') == 'dispute')
-                if escalated_loop is not None and not rereview and gate.escalated(marker,
-                                                                                 row['head']):
+                # Nor is the fix of a shadow review the adjudicator upheld (#1004 part 3): that
+                # ruling is why it exists, and its marker stays at the head. Whether the ruling
+                # still stands is _claim_read_fixer's (upheld_shadow_ruling).
+                upheld = (row['seat'] == 'fixer'
+                          and str(row['turn_key'] or '').startswith(run_supervisor.SHADOW_FIX_KEY)
+                          and ((marker or {}).get('escalated') or {}).get('by')
+                          == gate.SHADOW_ESCALATION)
+                if (escalated_loop is not None and not rereview and not upheld
+                        and gate.escalated(marker, row['head'])):
                     read.superseded = 'escalated to adjudication at this head'
             except Exception as exc:
                 read.read_error = read.read_error or f'{type(exc).__name__}: {exc}'[:200]
@@ -245,6 +254,12 @@ class ClaimAndLaunch:
                 read.superseded = 'fixer verdict superseded'
             elif pr.get('state') != 'open' or pr.get('draft') is not False:
                 read.retry_read = True
+            elif str(row['turn_key'] or '').startswith(run_supervisor.SHADOW_FIX_KEY):
+                # #1004 part 3: no reviewer verdict either (the head is approved); the
+                # adjudicator's upholding ruling is its work order, and it must still stand.
+                ruled = gate.upheld_shadow_ruling(loop, row['pr'], row['head'], db=self.db)
+                if ruled is None or row['turn_key'] != f"{run_supervisor.SHADOW_FIX_KEY}{int(ruled)}":
+                    read.superseded = 'upheld shadow ruling no longer current'
             elif (str(row['turn_key'] or '').startswith(run_supervisor.CONFLICT_KEY)
                   or ci_fix.is_ci_fix(row['turn_key'])):
                 # #303: a conflict turn answers no verdict (the PR may be approved, or
@@ -339,6 +354,9 @@ class ClaimAndLaunch:
         """Worker-only host control plane; never pass credentials to bwrap."""
         from .. import trusted_turn
         turn = _Turn(run_id, owner, int(self.budget_of(run_id)))
+        # An operator's stop (#1148: contained.Stopped, TurnCancelled) ends like any failed turn
+        # here; complete_uncertain sees the request and makes it cancelled, never retried (or
+        # uncertain after a write-ahead record).
         try:
             self._production_turn(turn)
         except trusted_turn.TurnBudgetExceeded as exc:
@@ -444,6 +462,9 @@ class ClaimAndLaunch:
         prompt = launch.prompt
         if run_supervisor.unpublished_before(row):
             prompt = run_supervisor.PUBLISH_NUDGE + prompt
+        cancel = self._cancels.get(run_id)
+        if cancel is not None and cancel.is_set():
+            raise run_supervisor.TurnCancelled(run_supervisor.OPERATOR_STOPPED)  # before any launch
         # Each turn is counted once, against its own pool (#772).
         pacing.count_turn(loop['id'], pacing.REVIEW_ONLY_SEAT if ro_turn else row['seat'])
         change, merged = launch.change, launch.merged
@@ -465,7 +486,9 @@ class ClaimAndLaunch:
               work_root=config.state_dir(loop) / "isolated-runs", observed=turn.observed,
               # The prefetch phase lands in the ledger as it happens (#51): a slow one shows
               # as "fetching", not as a silent turn, and its outcome outlives the run.
-              progress=lambda text: self.record_dependencies(run_id, owner, text))
+              progress=lambda text: self.record_dependencies(run_id, owner, text),
+              # An operator's cancel (#1148) stops the sandbox the way the budget does.
+              stop=cancel)
         # A non-zero sandbox exit with nothing on the write-ahead record is the model or
         # provider failing (429/5xx, OAuth refresh, crash): worth a backed-off retry.
         turn.retry = turn.rc != 0
@@ -709,7 +732,39 @@ class ClaimAndLaunch:
             return self._prepare_conflict_launch(turn, head)
         if row['seat'] == 'fixer' and ci_fix.is_ci_fix(row['turn_key']):
             return self._prepare_ci_fix_launch(turn, head)
+        if row['seat'] == 'fixer' and str(row['turn_key'] or '').startswith(run_supervisor.SHADOW_FIX_KEY):
+            return self._prepare_shadow_fix_launch(turn, head)
         return self._prepare_verdict_launch(turn, head)
+
+    def _prepare_shadow_fix_launch(self, turn: _Turn, head: dict) -> _Launch | None:
+        """#1004 part 3: the fixer answers a shadow review the adjudicator upheld. The ruling is
+        re-read now (a moved head or a later ruling ends the run), and the push is allowed only
+        while it still stands (``RunScope.shadow_fix``, checked by the broker)."""
+        from .. import broker_ipc, gate, gh
+        row, loop = turn.row, turn.loop
+        ruled = gate.upheld_shadow_ruling(loop, row['pr'], row['head'], db=self.db)
+        if ruled is None or row['turn_key'] != f"{run_supervisor.SHADOW_FIX_KEY}{int(ruled)}":
+            raise ValueError('upheld shadow ruling no longer current')
+        if self._policy_hold(turn):
+            return None
+        reviews = pr_facts.effective_reviews(loop, row, gh.reviews(loop, row['pr']), self.db)
+        if not isinstance(reviews, list):
+            raise run_supervisor.RetryableError('reviews or receipts unreadable before launch')
+        try:
+            final = (row['retries'] or 0) + 1 >= run_supervisor.MAX_RETRIES
+            change = pr_facts.pr_change(loop, row, final=final)
+            prompt = (turn_prompts.isolated_prompt(loop, row, reviews, None, change)
+                      + turn_prompts.upheld_shadow_section(row, ruled))
+        except ValueError as exc:
+            if str(exc) == 'PR unreadable' or str(exc).startswith('PR files unreadable'):
+                raise run_supervisor.RetryableError(str(exc)) from None
+            raise
+        partial = change.partial if change else ''
+        self.record_view(turn.run_id, turn.owner, partial)
+        return _Launch(prompt, broker_ipc.RunScope(
+            row["repo"], row["pr"], row["head"], row["seat"], head["ref"], row['id'],
+            str(self.db), row['generation'], partial_view=partial, shadow_fix=ruled),
+            change=change)
 
     def _policy_hold(self, turn: _Turn) -> bool:
         """Every write this fixer turn would make is refused (#81): hold it instead of
@@ -959,7 +1014,7 @@ class ClaimAndLaunch:
             run_id, owner, turn.rc, turn.error, stopped=turn.stopped, retry=turn.retry,
             detail=run_supervisor.output_detail(observed.get('stdout'), observed.get('stderr')),
             paced_until=turn.paced_until, cancel=turn.cancel)
-        if turn.breach is not None and state in ('waiting', 'failed'):
+        if turn.breach is not None and state in ('waiting', 'failed', 'cancelled'):
             # This run marked the breach 'adjudicating' and made no ruling: hand the
             # marker back so its retry (or a re-arm) can claim it again.
             try:

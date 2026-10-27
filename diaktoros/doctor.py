@@ -205,8 +205,8 @@ def shim_fix(loop: dict) -> str:
 
 
 def hooks_fix(loop: dict, what: str) -> str:
-    """``apply --hooks`` reconciles this loop's two repo hooks with its routes; ``init --hooks``
-    refuses an existing loop."""
+    """``apply --hooks`` reconciles this loop's repo hooks (every role in ``config.hook_roles``) with
+    its routes; ``init --hooks`` refuses an existing loop."""
     from .cli import common as cli_common   # the one wording of what a hook write needs (#106)
     return (f"`hermes dk apply --loop {loop['id']} --hooks --admin-token <login>` {what} "
             f"({cli_common.hook_write_need(loop, '<login>')})")
@@ -529,8 +529,12 @@ def check_triage(loop: dict) -> list[Check]:
                             f"{', '.join(triage['authors'])} · {len(triage['labels'])} labels"))
     # #1217: with no maintainers, no comment reaches the seats and no re-request starts a review.
     names = sorted(config.maintainers(loop))
+    agents = config.operator_agents(loop)
+    people = [n for n in names if n not in agents]       # #757: agents are named apart
     checks.append(Check("triage:maintainers", VERIFIED,
-                        f"{', '.join(names)} (their comments reach both seats)") if names else
+                        f"{', '.join(people) or 'none in person'}"
+                        + (f" · operator agents: {', '.join(sorted(agents))}" if agents else "")
+                        + " (their comments reach both seats)") if names else
                   Check("triage:maintainers", UNKNOWN,
                         "no maintainers: no one's PR or issue comments reach the seats, and no "
                         "re-request starts a fresh review",
@@ -1798,6 +1802,43 @@ def check_attribution(loop: dict) -> Check:
                  f"trailer (`hermes dk set --loop {lid} --attribution on` to sign it)")
 
 
+def check_authorship(loop: dict, offline: bool = False) -> Check:
+    """Commits on open loop PRs that show as a seat's account but that no seat turn pushed (#757).
+    Report-only: a finding is a warning (``unknown``), never a failure, and blocks nothing."""
+    from . import authorship
+    name = "authorship"
+    agents = sorted(config.operator_agents(loop))
+    named = (f" · operator agents (post as the operator's account): {', '.join(agents)}"
+             if agents else "")
+    if offline:
+        return Check(name, UNKNOWN, "not probed (--offline): PR commits not read" + named)
+    prs, error = gh.open_prs_read(loop)
+    if prs is None:
+        return Check(name, UNKNOWN, f"open PRs unreadable ({error}): authorship not checked")
+    pushed, error = authorship.pushed_heads(loop)
+    if error:
+        return Check(name, UNKNOWN, f"push journal unreadable ({error}): authorship not checked")
+    found, unread = [], []
+    numbers = [pr.get("number") for pr in prs if isinstance(pr.get("number"), int)]
+    for number in numbers[:authorship.PRS_MAX]:
+        stray, problem = authorship.scan(loop, number, pushed)
+        if problem:
+            unread.append(f"#{number}: {problem}")
+        found += [f"#{number} {authorship.line(entry)}" for entry in stray]
+    if found:
+        return Check(name, UNKNOWN, "misattributed: " + "; ".join(found[:5])
+                     + (f" (+{len(found) - 5} more)" if len(found) > 5 else "") + named,
+                     "give each agent its own GitHub account and git email (docs/accounts.md); "
+                     "this check never blocks a turn")
+    if unread or len(numbers) > authorship.PRS_MAX:
+        return Check(name, UNKNOWN, "no misattributed commit found, but "
+                     + ("; ".join(unread[:3]) if unread else
+                        f"only the first {authorship.PRS_MAX} of {len(numbers)} open PRs were read")
+                     + named)
+    return Check(name, VERIFIED, f"no commit on {len(numbers)} open PR(s) shows as a seat's "
+                 f"account without a seat turn pushing it" + named)
+
+
 def check_state_dir(loop: dict) -> Check:
     path = pathlib.Path(str(loop["state_dir"])).expanduser()
     if path.exists() and not path.is_dir():
@@ -2623,6 +2664,7 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
         checks.append(update)
     checks.append(check_fix_ci(loop))
     checks.append(check_attribution(loop))
+    checks.append(check_authorship(loop, offline))
     checks.append(check_sandbox_caps(loop))
     identity = check_adjudicator_identity(loop)
     if identity:

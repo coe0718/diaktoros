@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import os
 from pathlib import Path
 import sys
@@ -27,10 +29,45 @@ def logged(lines) -> list[str]:
 _LEAK_SITE = Path(__file__).resolve().parents[1] / "tests" / "leaksite" / "sitecustomize.py"
 
 
+# A gate run in-process (#1046): its log lines, ``silence`` answer and decision recorder belong
+# to the call, not the process, so two calls in one host never see each other's.
+_GATE_CALL: contextvars.ContextVar = contextvars.ContextVar("diaktoros_gate_call", default=None)
+
+
+@contextlib.contextmanager
+def gate_call():
+    """Run a gate's code as a call (#1046): within it, ``log`` lines are collected (not written
+    to stderr), ``silence`` prints nothing, and ``set_decision_recorder`` binds only this call.
+    Yields ``{"logs": [...], "recorder": None}``. Context-local, so concurrent calls on other
+    threads each have their own."""
+    call = {"logs": [], "recorder": None}
+    token = _GATE_CALL.set(call)
+    try:
+        yield call
+    finally:
+        _GATE_CALL.reset(token)
+
+
+def set_decision_recorder(recorder) -> None:
+    """Record every later ``silence(reason)``: for this gate call when one is running, for the
+    whole process otherwise (a gate script)."""
+    global _DECISION_RECORDER
+    call = _GATE_CALL.get()
+    if call is not None:
+        call["recorder"] = recorder
+    else:
+        _DECISION_RECORDER = recorder
+
+
 def log(message: str, quiet: bool = False) -> None:
-    """Diagnostics go to stderr always — a gate's stdout is a protocol, not a console."""
+    """Diagnostics go to stderr always — a gate's stdout is a protocol, not a console. Inside a
+    ``gate_call`` they are the call's, collected instead."""
     if not quiet:
-        print(f"{LOG_PREFIX} {message}", file=sys.stderr)
+        call = _GATE_CALL.get()
+        if call is not None:
+            call["logs"].append(f"{LOG_PREFIX} {message}")
+        else:
+            print(f"{LOG_PREFIX} {message}", file=sys.stderr)
 
 
 def leak_guard() -> str | None:
@@ -79,14 +116,17 @@ def silence(reason: str = "", decision: str = "declined") -> NoReturn:
     is ours", and the type checker needs to agree that the code after it is reachable only
     for events that passed.
     """
+    call = _GATE_CALL.get()
+    recorder = call["recorder"] if call is not None else _DECISION_RECORDER
     if reason:
         log(reason)
-        if _DECISION_RECORDER is not None:
+        if recorder is not None:
             try:
-                _DECISION_RECORDER(reason, decision)
+                recorder(reason, decision)
             except BaseException:  # noqa: BLE001 - never change the gate's answer
                 pass
-    print("[SILENT]")
+    if call is None:
+        print("[SILENT]")     # the route's answer; a gate call (#1046) has no route
     raise SystemExit(0)
 
 

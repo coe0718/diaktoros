@@ -26,7 +26,7 @@ import time
 
 from . import config, gate, scope_lock
 from .run_supervisor import (ISSUE_SEATS, WATCH_INTERVAL_S, Supervisor, open_listing,
-                             policy_cancelled, write_evidence)
+                             operator_cancelled, policy_cancelled, write_evidence)
 
 # The seats ``retry`` accepts (the CLI parser's own list). A shadow run is retried only by name.
 SEATS = ("reviewer", "fixer", "adjudicator", "triage", "issue_fixer", "shadow")
@@ -49,11 +49,12 @@ def bounded(text: object, limit: int = REASON_MAX) -> str:
 
 
 def offered(row: dict) -> bool:
-    """Whether ``retry`` would *attempt* this row at its head: failed, waiting, uncertain, or a
-    cancellation the fixer push policy caused (the one an operator retry recovers). Any other
-    cancellation is superseded — a new head gets its own turn."""
+    """Whether ``retry`` would *attempt* this row at its head: failed, waiting, uncertain, a
+    cancellation the fixer push policy caused, or an operator's cancel (#1148) — the ones an
+    operator retry recovers. Any other cancellation is superseded — a new head gets its own turn."""
     return row["state"] in ("failed", "waiting", "uncertain") or (
-        row["state"] == "cancelled" and policy_cancelled(row["error"]))
+        row["state"] == "cancelled" and (policy_cancelled(row["error"])
+                                         or operator_cancelled(row["error"])))
 
 
 def rows_for(con, repo: str, pr: int, seat: str | None = None) -> list[dict]:

@@ -28,7 +28,7 @@ Distinct models are a useful review strategy, but source validation requires dis
 
 | Role | Work | Broker capability / limit |
 | --- | --- | --- |
-| Reviewer | Inspect exact-head code/diff and run tests | One APPROVE or REQUEST_CHANGES review; plain COMMENT reviews are not permitted. A REQUEST_CHANGES is refused unless each numbered blocking finding (`F1: path:line: ...`) cites a line inside the PR's diff, or, for a missing test or docs update, names a changed file and says `missing`; anything outside the diff is an issue to file, not a block. Not enforced for a seat shown only part of the change (it may block and say what it could not see) |
+| Reviewer | Inspect exact-head code/diff and run tests | One APPROVE or REQUEST_CHANGES review; plain COMMENT reviews are not permitted. A REQUEST_CHANGES is refused unless each numbered blocking finding (`F1 [category]: path:line: ...`, the category one of `correctness`, `test`, `requirement`, `docs`, `security` or `other`) cites a line inside the PR's diff, or, for a missing test or docs update, names a changed file and says `missing`; anything outside the diff is an issue to file, not a block. Not enforced for a seat shown only part of the change (it may block and say what it could not see) |
 | Fixer | Answer a current changes-requested verdict | With push opt-in: one bounded push, then answers/review-request handoff; partial-view restrictions can limit it to answers only |
 | Adjudicator (optional) | Rule after the changes-requested budget is exhausted | One ACCEPT / REJECT / RESPEC ruling; optional distinct account posts a comment; no merge, push or review |
 | Triage (optional) | Label allowlisted issues from a configured label set | Bounded labels and optional comment; defaults to reviewer login, never reader |
@@ -101,7 +101,9 @@ The broker enforces these rules before it spends the review write (#475):
 - At a later head, a new finding must cite a file changed in that round (the host compares the
   previous head with this one), or say `missed earlier`; the report counts those against the
   reviewer. GitHub cuts a compare's file list at 300 files without saying so, so a list that
-  reaches 300 is not trusted: the whole PR's files count as changed that round.
+  reaches 300 is not trusted: the PR's files against base count as changed that round. A
+  file the round reverted to base is not among them, so a new finding citing it is still
+  refused (it can say `missed earlier`).
 - An `APPROVE` is refused while any finding is open (not `fixed`/`withdrawn`) and while the
   review raises a new one. Mark them fixed or withdrawn, or request changes.
 - A state for an id that was never recorded is refused, as is restating a known id as a new

@@ -11,10 +11,14 @@ description: >-
   Desktop page re-arms a failed run the CLI's retry would re-arm: same checks, the loop's own
   ledger only, and never a GitHub read for Retry. Confirmed Desktop pause/resume reads and
   toggles GitHub webhooks through the same host operation and admin-token resolution as arm;
-  unknown hook state is not paused. It does not stop running turns or sweeper recovery.
+  unknown hook state is not paused; pause/resume does not stop running turns or sweeper recovery.
+  The host also offers a confirmed cancel action (`/actions`) that stops the exact queued or
+  running runs it previewed, through the same host operation as `hermes dk cancel`; the page has
+  no control for it yet (#1372).
   Desktop also previews re-review, escalation and drain through a shared host owner; confirmed
   escalation parks the selected head and spends an adjudicator turn, with exact-marker readback.
-  Re-review and drain currently refuse because their core cannot bind a safe confirmation.
+  Re-review and drain currently refuse in Desktop: re-review until the page's confirmed control is
+  wired to the head-bound core entry point, drain because its core cannot bind a safe confirmation.
   Tokens remain host-only; stale confirmations refuse and partial/unknown results are not success.
 author: Jeremy Coe
 homepage: https://github.com/coe0718/diaktoros
@@ -210,6 +214,11 @@ config_schema:
     type: str
     default: ""
     description: "GitHub logins whose PRs the reviewer reviews but the fixer never touches: a changes-requested verdict goes back to the author. Not a fixer or a reviewer. Blank = not set here"
+  operator_agents:
+    label: "Operator agents (comma-separated)"
+    type: str
+    default: ""
+    description: "GitHub logins of agents that post as the operator's own account (an assistant, a docs or bug-hunting agent). Their comments reach the seats as maintainer data, labelled operator agent; not a fixer, a reviewer or another seat's account. Blank = not set here"
   review_only_cap:
     label: "Review-only verdict cap"
     type: str
@@ -255,6 +264,11 @@ config_schema:
     type: str
     default: ""
     description: "on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004). Needs shadow every = 1. Blank = not set here: the loop keeps its own value (default: off)"
+  shadow_file_issues:
+    label: "File the shadow's issues"
+    type: str
+    default: ""
+    description: "on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914). Blank = not set here: the loop keeps its own value (default: off)"
   human_paths:
     label: "Human-only paths (comma-separated globs)"
     type: str

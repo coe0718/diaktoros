@@ -116,6 +116,17 @@ CREATE TABLE IF NOT EXISTS filed_issues (
  created REAL NOT NULL, updated REAL NOT NULL,
  PRIMARY KEY (run_id, seq), UNIQUE (repo, pr, title_key)
 );
+-- An issue a shadow review asked to file (#914): its broker is no-write, so the request is recorded
+-- here, never posted by the seat. The host files it once the real review exists at that head and
+-- the reviewer did not file the same finding (shadow_issues.file_pending), as the reader, labelled
+-- shadow-found. state: recorded → posting → posted (issue_number), duplicate, uncertain or denied.
+CREATE TABLE IF NOT EXISTS shadow_issues (
+ run_id TEXT NOT NULL REFERENCES runs(id), seq INTEGER NOT NULL, repo TEXT NOT NULL,
+ pr INTEGER NOT NULL, head TEXT NOT NULL, title TEXT NOT NULL, title_key TEXT NOT NULL,
+ body TEXT NOT NULL, labels TEXT NOT NULL, state TEXT NOT NULL, issue_number INTEGER,
+ error TEXT, created REAL NOT NULL, updated REAL NOT NULL,
+ PRIMARY KEY (run_id, seq), UNIQUE (repo, pr, title_key)
+);
 -- An operator's explicit step on a PR (#678), recorded after it took effect, for the report:
 -- retry (a run re-armed), escalate, review (a fresh review asked for), hold (a maintainer's
 -- hold began). Only counted; nothing decides from it.
@@ -131,6 +142,15 @@ CREATE TABLE IF NOT EXISTS regressions (
  repo TEXT NOT NULL, issue INTEGER NOT NULL, pr INTEGER NOT NULL, head TEXT NOT NULL,
  review_id INTEGER NOT NULL, model TEXT, state TEXT NOT NULL, created REAL NOT NULL,
  updated REAL NOT NULL, PRIMARY KEY (repo, issue, pr)
+);
+-- A human overrode the loop (#220). kind merged_over_changes: the PR merged at a head where the
+-- reviewer's latest live verdict was changes-requested. seat/model: the reviewer run that posted
+-- that verdict (model NULL when the ledger has none); findings: the F-numbers still open then (a
+-- JSON list). One row per (PR, head, kind). Only recorded and reported; nothing decides from it.
+CREATE TABLE IF NOT EXISTS overrides (
+ repo TEXT NOT NULL, pr INTEGER NOT NULL, head TEXT NOT NULL, kind TEXT NOT NULL,
+ seat TEXT NOT NULL, model TEXT, review_id INTEGER NOT NULL, findings TEXT NOT NULL,
+ merged_at REAL NOT NULL, created REAL NOT NULL, PRIMARY KEY (repo, pr, head, kind)
 );
 -- Facts about the ledger itself for the operator outbox, e.g. that it vanished and was
 -- recreated empty. Delivered once by notify(), claim-before-send like every other notice.
@@ -189,6 +209,9 @@ _MIGRATIONS = (
     ("tokens_in", "ALTER TABLE runs ADD COLUMN tokens_in INTEGER", ()),
     ("tokens_out", "ALTER TABLE runs ADD COLUMN tokens_out INTEGER", ()),
     ("cost", "ALTER TABLE runs ADD COLUMN cost REAL", ()),
+    # An operator's `hermes dk cancel` of a launching or running turn (#1148): when it was asked.
+    # The owning worker's heartbeat reads it and stops the sandbox; NULL: never asked.
+    ("cancel_requested", "ALTER TABLE runs ADD COLUMN cancel_requested REAL", ()),
 )
 # Worker stderr (one diagnostic line, or a traceback) goes to <ledger>.workers.log, rotated
 # once to .1 by the host when it passes this size.
@@ -290,6 +313,43 @@ def _issue_fix_cancellations() -> tuple[str, ...]:
 ISSUE_FIX_CANCELLATIONS = _issue_fix_cancellations()
 POLICY_CANCELLATIONS = (FIXER_NOT_ADMITTED, FIXER_PUSH_REVOKED, _FIXER_NOT_ADMITTED_BEFORE_97,
                         *ISSUE_FIX_CANCELLATIONS)
+
+
+# An operator's cancel (#1148, `hermes dk cancel`). Never re-armed by a redelivered event or a
+# sweep; only `hermes dk retry` re-arms it, on purpose. A new head queues a fresh run as usual.
+OPERATOR_CANCEL = "cancelled by an operator (hermes dk cancel)"
+OPERATOR_STOPPED = OPERATOR_CANCEL + ": the turn was stopped"
+# Not started yet: cancelled at once. Launching or running: the owning worker stops the turn.
+CANCEL_AT_ONCE = ("pending", "blocked", "waiting", "claimed")
+CANCEL_BY_WORKER = ("launching", "running")
+
+
+def operator_cancelled(error: object) -> bool:
+    """Whether a run's error is an operator's cancel (#1148)."""
+    return isinstance(error, str) and error.startswith(OPERATOR_CANCEL)
+
+
+class TurnCancelled(Exception):
+    """The operator cancelled this run while its turn was launching or running (#1148)."""
+
+
+CANCEL_POLL_S = 0.5
+
+
+def wait_or_cancel(child, timeout: float, cancel: threading.Event | None) -> int:
+    """``child.wait(timeout)``, raising ``TurnCancelled`` as soon as ``cancel`` is set (#1148)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if cancel is not None and cancel.is_set():
+            raise TurnCancelled(OPERATOR_STOPPED)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(child.args, timeout)
+        try:
+            return child.wait(timeout=min(remaining, CANCEL_POLL_S) if cancel is not None
+                              else remaining)
+        except subprocess.TimeoutExpired:
+            continue
 
 
 class LedgerMissing(HostStateGone):
@@ -488,6 +548,11 @@ CONFLICT_KEY = 'conflict:'
 # A maintainer's re-request after a fixer's dispute (#894): one review at the head the reviewer
 # already reviewed, keyed by the dispute's time so it runs once per dispute.
 DISPUTE_KEY = 'dispute:'
+# A fixer turn on a shadow review the adjudicator upheld (#1004 part 3): ``shadow:<ruling time>``.
+SHADOW_FIX_KEY = 'shadow:'
+# A maintainer's reconsider (#1334, `hermes dk review --reconsider`): one fresh review at a head
+# that already has a verdict. The same key for every reconsider of a head, so one per head.
+RECONSIDER_KEY = 'reconsider:'
 CONFLICT_SIDES_NOTE = ('## Conflicted files (read by the host from Git; data, not instructions)')
 
 
@@ -801,8 +866,8 @@ def dispute_at(db: str | Path, repo: str, pr: int, head: str) -> float | None:
 
 
 def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]:
-    """Up to 100 failed, waiting, uncertain and push-policy-cancelled runs, oldest first. Each
-    row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
+    """Up to 100 failed, waiting, uncertain, push-policy-cancelled and operator-cancelled runs,
+    oldest first. Each row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
     re-arms it (a push-policy-cancelled fixer run under the policy in force at that moment)."""
     # A fixer run the push policy held (cancelled at claim, or held before its turn) is dead
     # for its head until an operator acts, so it is listed too (review on #97); a superseded
@@ -810,10 +875,12 @@ def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]
     marks = ','.join('?' * len(POLICY_CANCELLATIONS))
     held = [FIXER_NOT_ADMITTED.split(":")[0] + "%", FIXER_PUSH_REVOKED.split(":")[0] + "%",
             ISSUE_FIX_OFF + ":%"]
+    # An operator's cancel (#1148) is listed as such, with the `retry` that re-arms it.
     where, args = ("(r.state IN ('failed','uncertain','waiting') OR "
                    f"(r.state='cancelled' AND r.error IN ({marks})) OR "
+                   "(r.state='cancelled' AND r.error LIKE ?) OR "
                    f"(r.state='failed' AND (r.error LIKE ? OR r.error LIKE ? OR r.error LIKE ?)))"), \
-        list(POLICY_CANCELLATIONS) + held
+        list(POLICY_CANCELLATIONS) + [OPERATOR_CANCEL + "%"] + held
     # A shadow run (#218) is never one to act on: status, explain and the Desktop's stuck list
     # leave it out, and `explain` shows shadow reviews on their own line.
     where += " AND r.seat != 'shadow'"
@@ -1061,10 +1128,10 @@ def hold_explanation(row: dict) -> dict:
     if uncertain:
         code = 'external_write_guard'
     text = {
-        'external_write_guard': 'External write outcome requires inspection; never replay this run.',
+        'external_write_guard': 'Recorded run has external write evidence or an uncertain outcome.',
         'run_waiting': 'Recorded run is waiting; the policy-specific reason is not structured yet.',
-        'run_failed': 'Recorded run failed; inspect host eligibility before any operator action.',
-        'run_cancelled': 'Recorded run was cancelled; inspect host eligibility before any operator action.',
+        'run_failed': 'Recorded run failed.',
+        'run_cancelled': 'Recorded run was cancelled.',
         'unknown': 'The ledger does not establish a supported hold explanation.',
     }[code]
     due = row.get('retry_at')
@@ -1080,8 +1147,7 @@ def hold_explanation(row: dict) -> dict:
     automatic = 'never' if uncertain else 'unknown'
     due_text = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(due)) if due is not None else 'unknown'
     text += (f" Ledger only (partial). Waiting for: {waiting.replace('_', ' ')}. "
-             f"Automatic resume: {automatic}. Recorded earliest eligibility: {due_text}. "
-             "Operator action: inspect.")
+             f"Recorded earliest recheck: {due_text}.")
     return {'schema': 1, 'reason_code': code, 'run_id': run_id, 'head': head,
             'evidence_source': 'run_ledger', 'completeness': 'partial',
             'waiting_for': waiting, 'automatic_resume': automatic,
@@ -1099,13 +1165,20 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
         return 'outcome uncertain — never replayed; inspect external state'
     if row['state'] == 'waiting' and str(row.get('error') or '').startswith('held: '):
         due = max(0, int((row['retry_at'] or 0) - time.time()))
-        return (f"waits for the reset, no retry spent — starts in {due}s on the next event or "
-                "armed watchdog sweep")
+        return (f"no retry spent — recorded earliest recheck in {due}s on the next event or "
+                "armed watchdog sweep; a start still depends on host eligibility")
     if row['state'] == 'waiting':
         due = max(0, int((row['retry_at'] or 0) - time.time()))
         return (f"attempt {(row['retries'] or 0) + 1} of {MAX_RETRIES} due in {due}s "
-                "(starts on the next event or armed watchdog sweep)")
-    if (row['state'] == 'cancelled' and policy_cancelled(row['error'])) or policy_hold(row['error']):
+                "(recorded earliest recheck on the next event or armed watchdog sweep; "
+                "a start still depends on host eligibility)")
+    if row['state'] == 'cancelled' and operator_cancelled(row['error']) and row.get('write') is None:
+        # Not a failure (#1148): nothing re-arms it but this, on purpose.
+        return (f"cancelled by an operator, no external write — a new head queues a fresh run; "
+                f"to re-arm this one: hermes dk retry --loop {loop_id} --pr {row['pr']} "
+                f"--seat {row['seat']}")
+    if row['write'] is None and ((row['state'] == 'cancelled' and policy_cancelled(row['error']))
+                                 or policy_hold(row['error'])):
         # The retry names the row's own seat: `retry --seat fixer` filters an issue_fixer row out.
         if row['seat'] == 'issue_fixer':
             return (f"no external write — issue fixes are off or no longer allowed: they need "
@@ -1275,6 +1348,9 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
                 or not set(self.capacity) <= set(SEATS)):
             raise ValueError("positive seat capacities required")
         self.lease_seconds = lease_seconds
+        # run id -> set once an operator asks to stop that turn (#1148); the owner's heartbeat
+        # sets it, and the turn's sandbox wait reads it.
+        self._cancels: dict[str, threading.Event] = {}
         self.child_timeout = child_timeout
         self.create = create
         self.existing_only = existing_only
@@ -1856,6 +1932,10 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
                 wrote = write_evidence(con, prior['id'])
                 if wrote is not None:
                     outcome += f': {wrote} — reconcile, never replayed'
+                elif prior['state'] == 'cancelled' and operator_cancelled(prior['error']):
+                    # An operator stopped it (#1148): an event never undoes that.
+                    outcome += (": cancelled by an operator — only `hermes dk retry` re-arms it; "
+                                "a new head queues a fresh run")
                 elif prior['error'] == FIXER_NOT_ADMITTED and prior['push_admitted'] != 1:
                     # Never upgraded by an event: re-arming would only be cancelled again.
                     outcome += (": fixer push not admitted — a redelivered event never upgrades "
@@ -1894,14 +1974,16 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
             con.execute("UPDATE runs SET budget=? WHERE id=?", (float(budget), run_id))
         con.execute("UPDATE runs SET state='pending', owner=NULL, lease=NULL, pid=NULL, "
                     "launch_intent=NULL, outcome=NULL, attempts=0, retry_at=NULL, "
+                    "cancel_requested=NULL, "
                     "retries=CASE WHEN ? THEN 0 ELSE retries END, updated=? WHERE id=?",
                     (1 if reset else 0, time.time(), run_id))
         con.execute("DELETE FROM operator_notices WHERE run_id=?", (run_id,))
 
     def retry(self, run_id: str, budget: float | None = None) -> str:
-        """Operator re-arm of a failed or waiting run that never wrote, or of a fixer run the
-        push policy cancelled at claim (#53; ``policy_cancelled``). Any other cancellation is
-        superseded (head moved, PR closed) and refused: a new head gets its own turn.
+        """Operator re-arm of a failed or waiting run that never wrote, of a fixer run the
+        push policy cancelled at claim (#53; ``policy_cancelled``), or of a run an operator
+        cancelled (#1148). Any other cancellation is superseded (head moved, PR closed) and
+        refused: a new head gets its own turn.
 
         ``budget``, when given, is the loop's seat budget now (#49): a turn killed at its
         budget is re-armed on the raised one, not the budget recorded when it was enqueued.
@@ -1990,7 +2072,8 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
                 con.execute('COMMIT')
                 raise ValueError(f"refused: run is {row['state']}, not failed, waiting or "
                                  "cancelled")
-            if row['state'] == 'cancelled' and not policy_cancelled(row['error']):
+            if row['state'] == 'cancelled' and not (policy_cancelled(row['error'])
+                                                    or operator_cancelled(row['error'])):
                 # Superseded (head moved, PR closed): re-arming it would only be cancelled again
                 # by the claim; a new head gets its own turn (the same line runs_view draws).
                 con.execute('COMMIT')
@@ -2009,6 +2092,52 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
             con.execute('COMMIT')
         return 'pending'
 
+    def cancel(self, run_id: str) -> dict:
+        """An operator's cancel of one run (#1148). Returns ``{"was": state, "state": state}``;
+        raises ValueError naming the state of a run that has already finished.
+
+        A run that has not started (``CANCEL_AT_ONCE``) is cancelled now, in this transaction:
+        ``OPERATOR_CANCEL`` keeps every redelivery and sweep from re-arming it, and only
+        ``retry`` does. A claimed run loses its owner, so its worker never launches it. A
+        launching or running turn is the owning worker's to stop: the request is recorded
+        (``cancel_requested``), the state is left alone, and the worker's heartbeat stops the
+        sandbox through the turn budget's own kill, then ends the run as ``cancelled`` — or
+        ``uncertain`` when it holds write-ahead evidence (``complete_uncertain``).
+        """
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            row = con.execute('SELECT state FROM runs WHERE id=?', (run_id,)).fetchone()
+            if row is None:
+                con.execute('COMMIT')
+                raise ValueError(f'no run {run_id}')
+            was, now = row['state'], time.time()
+            if was in CANCEL_AT_ONCE:
+                # Pre-launch by construction; a write-ahead record here would be a ledger that
+                # cannot be trusted, so it is quarantined instead of cleared.
+                wrote = write_records(con, run_id)
+                state = 'uncertain' if wrote is not None else 'cancelled'
+                error = (f"{OPERATOR_CANCEL} after it may have written ({wrote}) — never replayed; "
+                         "inspect and reconcile" if wrote is not None else OPERATOR_CANCEL)
+                con.execute("UPDATE runs SET state=?, error=?, owner=NULL, lease=NULL, "
+                            "retry_at=NULL, updated=?, finished=? WHERE id=? AND state=?",
+                            (state, error, now, now, run_id, was))
+            elif was in CANCEL_BY_WORKER:
+                state = 'stopping'
+                con.execute("UPDATE runs SET cancel_requested=COALESCE(cancel_requested, ?), "
+                            "updated=? WHERE id=? AND state=?", (now, now, run_id, was))
+            else:
+                con.execute('COMMIT')
+                raise ValueError(f"refused: run is {was} — it has already finished")
+            con.execute('COMMIT')
+        return {"was": was, "state": state}
+
+    def cancel_requested(self, run_id: str, owner: str) -> bool:
+        """Whether an operator asked to stop this owner's turn (#1148)."""
+        with self._connect() as con:
+            row = con.execute("SELECT cancel_requested FROM runs WHERE id=? AND owner=?",
+                              (run_id, owner)).fetchone()
+        return row is not None and row['cancel_requested'] is not None
+
     def _spawn(self):
         # Trusted supervisor process only, never the credential-owning gateway agent.
         if not self.fixture_mode and not self.production_config:
@@ -2021,7 +2150,8 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
         from ..config.host_guards import (TEST_GUARD_SENTINEL_ENV, TEST_HOME_GUARD_ENV,
                                          TEST_REAL_HOME_ENV, guard_real_home)
         host_home = guard_real_home(self.hermes_home or Path(os.environ.get("HERMES_HOME", os.environ["HOME"])).resolve(strict=True))
-        env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+        plugin_root = Path(__file__).resolve().parents[2]
+        env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(plugin_root),
                "HOME": str(host_home), "HERMES_HOME": str(host_home),
                envnames.name("TEST_FIXTURE"): "1" if self.fixture_mode else "0"}
         # The worker's environment is built from scratch; keep the test tripwire armed in it.
@@ -2040,7 +2170,11 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
         _WORKERS[:] = [worker for worker in _WORKERS if worker.poll() is None]
         log = self._worker_log()
         try:
-            _WORKERS.append(subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL,
+            # ``python -m`` puts the current directory first on sys.path, ahead of PYTHONPATH:
+            # started from a checkout of another revision, the worker would run that code
+            # (#1373). In the plugin root, the package it imports is this one.
+            _WORKERS.append(subprocess.Popen(args, env=env, cwd=str(plugin_root),
+                                             stdin=subprocess.DEVNULL,
                                              stdout=subprocess.DEVNULL,
                                              stderr=log if log is not None else subprocess.DEVNULL,
                                              close_fds=True, start_new_session=True))
@@ -2098,9 +2232,11 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
             self._spawn()
         return SILENT
 
-    def _heartbeat(self, run_id: str, owner: str, stop: threading.Event) -> None:
+    def _heartbeat(self, run_id: str, owner: str, stop: threading.Event,
+                   cancel: threading.Event | None = None) -> None:
         # Only the owning worker can extend a live lease. An expired lease is
-        # never silently revived after recovery has quarantined the turn.
+        # never silently revived after recovery has quarantined the turn. Each beat also
+        # reads an operator's cancel (#1148) into ``cancel``, which stops the turn.
         reported = set()
         while not stop.wait(max(0.01, min(self.lease_seconds / 3, 5))):
             try:
@@ -2109,6 +2245,10 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
                     con.execute("UPDATE runs SET lease=?, updated=? WHERE id=? AND owner=? "
                                 "AND state IN ('launching','running') AND lease>=?",
                                 (now + self.lease_seconds, now, run_id, owner, now))
+                    asked = con.execute("SELECT cancel_requested FROM runs WHERE id=? AND owner=?",
+                                        (run_id, owner)).fetchone()
+                if cancel is not None and asked is not None and asked['cancel_requested'] is not None:
+                    cancel.set()
             except (sqlite3.Error, LedgerMissing) as exc:
                 # Recovery will quarantine this run if persistence stays down; a worker whose
                 # ledger is gone never recreates it and ends when its run does. Each distinct
@@ -2137,8 +2277,10 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
         cancellation: no relaunch, listed and recovered by an operator ``retry``. A run
         ``paced_until`` a time (#219: the seat's usage window is closed, or its daily cap is
         reached) waits until then *without* spending a retry — it was never the turn's fault —
-        under the same rule: only when nothing was written. Returns the state written, or None
-        when this owner no longer holds the run.
+        under the same rule: only when nothing was written. A run an operator asked to stop
+        (#1148, ``cancel_requested``) that would wait or fail is ``cancelled`` instead, never
+        retried — or ``uncertain`` when it holds a write-ahead record. Returns the state written,
+        or None when this owner no longer holds the run.
         """
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
@@ -2181,6 +2323,21 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
                     error = f'retry limit ({retries} attempts): {error}'
             else:
                 state = 'failed'
+            asked = con.execute('SELECT cancel_requested FROM runs WHERE id=? AND owner=?',
+                                (run_id, owner)).fetchone()
+            if (asked is not None and asked['cancel_requested'] is not None
+                    and state in ('waiting', 'failed') and not ineligible):
+                # An operator asked to stop this turn (#1148), whether the worker stopped it or
+                # it ended first: never retried. Cancelled before any write; after a write-ahead
+                # record it may have written, so it is quarantined, never replayed.
+                wrote = write_records(con, run_id)
+                retry_at = None
+                if wrote is None:
+                    state, error = 'cancelled', OPERATOR_STOPPED
+                else:
+                    state = 'uncertain'
+                    error = (f"{OPERATOR_CANCEL} after it may have written ({wrote}) — never "
+                             "replayed; inspect and reconcile")
             changed = con.execute(
                 "UPDATE runs SET state=?, outcome=?, error=?, detail=?, "
                 "retries=?, retry_at=?, lease=NULL, updated=?, finished=? WHERE id=? AND owner=? "
@@ -2311,15 +2468,20 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
         budget = self.budget_of(run_id)
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
-            con.execute("UPDATE runs SET state='launching', launch_intent=?, lease=?, "
-                        "updated=? WHERE id=? AND owner=? AND state='claimed'",
-                        (time.time(), time.time() + budget + self.lease_seconds,
-                         time.time(), run_id, owner))
+            launched = con.execute(
+                "UPDATE runs SET state='launching', launch_intent=?, lease=?, "
+                "updated=? WHERE id=? AND owner=? AND state='claimed'",
+                (time.time(), time.time() + budget + self.lease_seconds,
+                 time.time(), run_id, owner)).rowcount
             con.execute("COMMIT")
+        if not launched:
+            # The claim is gone (an operator's cancel, #1148, or recovery): never launch it.
+            return
         # From here onward recovery must NEVER launch this job again.
         heartbeat_stop = threading.Event()
+        cancel = self._cancels[run_id] = threading.Event()
         heartbeat = threading.Thread(target=self._heartbeat,
-                                     args=(run_id, owner, heartbeat_stop), daemon=True)
+                                     args=(run_id, owner, heartbeat_stop, cancel), daemon=True)
         heartbeat.start()
         try:
             if self.production_config is not None:
@@ -2329,6 +2491,7 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
         finally:
             heartbeat_stop.set()
             heartbeat.join(timeout=2)
+            self._cancels.pop(run_id, None)
 
     def _run_fixture(self, run_id: str, owner: str, budget: float | None = None) -> None:
         assert self.fixture_command is not None
@@ -2339,7 +2502,9 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
         error = None
         stopped = True
         retry = False
+        cancelled = False
         detail = None
+        cancel = self._cancels.get(run_id)
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             try:
                 child = subprocess.Popen(self.fixture_command,
@@ -2356,8 +2521,17 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
                                 "WHERE id=? AND owner=? AND state='launching'",
                                 (child.pid, time.time() + self.lease_seconds, time.time(), run_id, owner))
                 try:
-                    rc = child.wait(timeout=budget)
+                    rc = wait_or_cancel(child, budget, cancel)
                     retry = rc != 0
+                except TurnCancelled:
+                    # The fixture's stand-in for the operator's stop (#1148): the same group kill.
+                    try:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    child.wait()
+                    # complete_uncertain ends it as cancelled (or uncertain after a write).
+                    error, cancelled = OPERATOR_STOPPED, True
                 except subprocess.TimeoutExpired:
                     # The child may have exited since wait() raised: a gone group must not
                     # replace the true "child timeout" with a launch/wait error.
@@ -2385,7 +2559,7 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch):
                 # A failed launch remains failed, not retryable: spawn may have occurred. A
                 # child that exited or timed out with nothing on the write-ahead record waits.
                 self.complete_uncertain(run_id, owner, rc, error, stopped=stopped,
-                                        retry=retry, detail=detail)
+                                        retry=retry and not cancelled, detail=detail)
                 # A completed child releases the seat and allows waiting work to advance.
                 self.recover()
 

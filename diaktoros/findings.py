@@ -2,7 +2,7 @@
 
 The reviewer numbers each blocking finding in its review body, one per line::
 
-    F1: path/to/file.py: what is wrong          (a new finding)
+    F1 [test]: path/to/file.py: what is wrong   (a new finding, with its category)
     F2: missed earlier: what is wrong           (new, but about code not changed this round)
     F1: fixed | open | withdrawn [reason]       (the state of an earlier finding)
 
@@ -18,13 +18,20 @@ import time
 
 STATES = ("fixed", "open", "withdrawn")
 MISSED = "missed earlier"
+# What kind of defect a blocking finding is (#220): the reviewer tags it after the id,
+# `F1 [test]: …`. No tag, or one not listed, is `other`. The weekly report counts the findings a
+# human overrode per category.
+CATEGORIES = ("correctness", "test", "requirement", "docs", "security", "other")
+_TAG = r"(?:\[[A-Za-z-]+\][\s:]*)?"
+_CATEGORY = re.compile(r"^\s*\[([A-Za-z-]+)\]")
 _LINE = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?(F\d+)\b(.*)$")
-_STATUS = re.compile(r"^[\s:*\-–—]*(fixed|open|withdrawn)\b", re.IGNORECASE)
+_STATUS = re.compile(r"^[\s:*\-–—]*" + _TAG + r"(fixed|open|withdrawn)\b", re.IGNORECASE)
 
 
 # For an id not yet known a state needs the word to be the whole line plus an optional reason:
 # 'F3: open file handle leaks' and 'F4: Fixed-size buffer' are new findings, not states.
-_BARE_STATUS = re.compile(r"^[\s:*\-–—]*(fixed|open|withdrawn)(?:\*\*)?(?:\s*$|\s*[:;,.(]|\s+[-–—]\s)",
+# check_citations parses without the known ids, so a tagged state line must read as one here too.
+_BARE_STATUS = re.compile(r"^[\s:*\-–—]*" + _TAG + r"(fixed|open|withdrawn)(?:\*\*)?(?:\s*$|\s*[:;,.(]|\s+[-–—]\s)",
                           re.IGNORECASE)
 
 
@@ -41,6 +48,13 @@ def parse(body: str, known=()) -> list[tuple[str, str, str]]:
             out.append((found.group(1), status.group(1).lower() if status else "new",
                         found.group(2).strip()))
     return out
+
+
+def category_of(rest: str) -> str:
+    """The category a finding line's text is tagged with, or ``other``."""
+    found = _CATEGORY.match(rest or "")
+    name = found.group(1).lower() if found else ""
+    return name if name in CATEGORIES else "other"
 
 
 def open_ids(entry: dict) -> list[str]:
@@ -61,8 +75,10 @@ def changed_files(loop: dict, number: int, prev_head: str | None, head: str) -> 
     """Files changed in this round (the whole PR in the first), or None when unreadable.
 
     A compare listing that reaches GitHub's cap may be cut, so it is not a complete set: the
-    round's files are then taken as the whole PR's (paginated, like the first round). That is a
-    superset, so a finding is never refused for citing a changed file past the cap."""
+    round's files are then taken as the whole PR's (paginated, like the first round).
+    That covers every file that still differs from base, so a finding is never refused for
+    citing one past the cap. A file the round reverted to base is not in the PR's list, so
+    a finding citing it is still refused."""
     from . import gh
     if prev_head:
         data = gh.api(loop, f"/repos/{loop['repo']}/compare/{prev_head}...{head}")
@@ -204,7 +220,7 @@ def apply(entry: dict, head: str, body: str, at: float | None = None) -> dict:
     for fid, kind, rest in parse(body, entry["findings"]):
         if kind == "new":
             entry["findings"][fid] = {
-                "state": "open", "text": rest[:300], "head": head,
+                "state": "open", "text": rest[:300], "head": head, "category": category_of(rest),
                 "missed": later and MISSED in rest.lower(),
                 "at": time.time() if at is None else at}
         elif fid in entry["findings"]:

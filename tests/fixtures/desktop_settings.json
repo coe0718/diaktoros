@@ -219,6 +219,12 @@
         "default": "",
         "description": "GitHub logins whose PRs the reviewer reviews but the fixer never touches: a changes-requested verdict goes back to the author. Not a fixer or a reviewer. Blank = not set here"
       },
+      "operator_agents": {
+        "label": "Operator agents (comma-separated)",
+        "type": "str",
+        "default": "",
+        "description": "GitHub logins of agents that post as the operator's own account (an assistant, a docs or bug-hunting agent). Their comments reach the seats as maintainer data, labelled operator agent; not a fixer, a reviewer or another seat's account. Blank = not set here"
+      },
       "review_only_cap": {
         "label": "Review-only verdict cap",
         "type": "str",
@@ -272,6 +278,12 @@
         "type": "str",
         "default": "",
         "description": "on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004). Needs shadow every = 1. Blank = not set here: the loop keeps its own value (default: off)"
+      },
+      "shadow_file_issues": {
+        "label": "File the shadow's issues",
+        "type": "str",
+        "default": "",
+        "description": "on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914). Blank = not set here: the loop keeps its own value (default: off)"
       },
       "human_paths": {
         "label": "Human-only paths (comma-separated globs)",
@@ -377,6 +389,7 @@
       "auto_fix_daily": "",
       "fix_daily_turns": "",
       "review_only": "",
+      "operator_agents": "",
       "review_only_cap": "",
       "observer_weekly_report": "",
       "ci_fix_cap": "",
@@ -386,6 +399,7 @@
       "shadow_profile": "",
       "shadow_every": "",
       "shadow_escalate": "",
+      "shadow_file_issues": "",
       "human_paths": "",
       "ci_coverage": "",
       "generated": "",
@@ -435,6 +449,7 @@
       "auto_fix_daily": "default",
       "fix_daily_turns": "default",
       "review_only": "default",
+      "operator_agents": "default",
       "review_only_cap": "default",
       "observer_weekly_report": "default",
       "ci_fix_cap": "default",
@@ -444,6 +459,7 @@
       "shadow_profile": "default",
       "shadow_every": "default",
       "shadow_escalate": "default",
+      "shadow_file_issues": "default",
       "human_paths": "default",
       "ci_coverage": "default",
       "generated": "default",

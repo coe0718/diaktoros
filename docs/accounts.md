@@ -17,6 +17,20 @@ The reader, reviewer and fixer must be three distinct GitHub accounts with three
 | Hook admin | `"<admin-login>"` or reader | Create/arm/pause/delete repository hooks | `--admin-token`; file must already be mapped |
 | Triage (optional) | Reviewer by default | Apply bounded issue labels, optionally comment | Issue configuration; never the reader |
 
+### One GitHub account per agent
+
+Give every agent that writes to the repository its own GitHub account and its own git author email (the account's `ID+login@users.noreply.github.com` address, or a verified email on that account only). GitHub shows a commit under the account its **author email** belongs to, not the account that pushed it. An agent that commits with another agent's email (a leftover `git config user.email`, a shared machine) makes the pull request history say that account wrote code it did not, and nothing fails when it happens.
+
+Agents that have to post as your own account (an assistant, a docs agent, a bug-hunting agent) are named in `operator_agents`: `set --operator-agent LOGIN` (repeatable; `--no-operator-agents` clears it), `init`, `setup` or the settings form. A login there:
+
+- speaks with maintainer authority, as if it were in `triage.maintainers`: its comments reach the seats, it can hold a PR, and its `continue` reply and fix label are honoured. This is no extra trust: whatever your account can do, the agent can;
+- is **labelled** as an operator agent, not as you, in the comments the seats read, in `explain`, in `doctor`, and in the weekly report (an agent's hold is counted as `agent hold`, apart from a person's `hold`);
+- cannot also be a fixer, a reviewer or another seat's account.
+
+The loop cannot tell two agents that share one account apart: the list names logins, not agents. If you need to tell them apart, give them accounts.
+
+**Authorship check.** `doctor` (check `authorship`) and `explain` list a commit on a loop PR that GitHub attributes to a seat's account, but that no seat turn pushed (the broker's `broker-audit.jsonl` has no push that made it). It is a warning: it never blocks a turn, a push or a merge. It cannot fire when the commit's author email maps to no GitHub account, for a commit pushed before the audit journal began, or with `doctor --offline`; `doctor` reads the commits of at most 30 open PRs, and a PR with more than 500 commits reads as "not checked"; both are said, never taken as clean.
+
 The owner-reader often also serves as hook admin. That PAT then has hook-write permission even though gate decisions use it for reads. “Reader” describes its role, **not an assertion that the token is always read-only**. For strict read-only reader credentials, use a separately mapped admin where supported, or create/toggle hooks manually.
 
 A distinct adjudicator profile can rule without a fourth GitHub token: its ruling is recorded and reported to the operator, not posted as a comment. An observer feed uses a chat destination, not a GitHub identity or review seat.

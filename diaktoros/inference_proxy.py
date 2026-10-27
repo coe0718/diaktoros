@@ -255,6 +255,16 @@ ACTIVITY_LIMIT = 1200
 REPLY_COPY = 64 * 1024
 
 
+# The input an Anthropic reply reports beside ``input_tokens`` (which excludes them). OpenAI-style
+# ``prompt_tokens`` already includes its cached part, so nothing is added there.
+ANTHROPIC_CACHE_FIELDS = ('cache_read_input_tokens', 'cache_creation_input_tokens')
+
+
+def _count(value) -> int | None:
+    """A token count, or None for a missing or malformed one (a bool is not a count)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
 def _usage_in(event) -> tuple[int, int, float | None]:
     """(tokens in, tokens out, cost) one reply object reports, wherever its mode puts it: a
     top-level ``usage`` (chat, Responses buffered), ``message.usage`` (Anthropic stream start),
@@ -270,8 +280,12 @@ def _usage_in(event) -> tuple[int, int, float | None]:
         for slot, names in ((0, ('prompt_tokens', 'input_tokens')),
                             (1, ('completion_tokens', 'output_tokens'))):
             for name in names:
-                value = usage.get(name)
-                if isinstance(value, int) and not isinstance(value, bool) and value > best[slot]:
+                value = _count(usage.get(name))
+                if name == 'input_tokens' and value is not None:
+                    # Anthropic's input_tokens leaves out the prompt cache (#1336): the reads and
+                    # writes come separately, and on an agent turn they are nearly all of it.
+                    value += sum(_count(usage.get(extra)) or 0 for extra in ANTHROPIC_CACHE_FIELDS)
+                if value is not None and value > best[slot]:
                     best[slot] = value
         cost = usage.get('cost')
         if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost >= 0 \
