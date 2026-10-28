@@ -132,12 +132,34 @@ class Drain(unittest.TestCase):
         self.assertEqual([row[0] for row in actions.drain_snapshot(self.loop(), "reviewer")],
                          [f"{t.REPO}#7", f"{t.REPO}#8"])
 
-    def test_an_unanswered_post_is_unknown(self):
+    def test_a_2xx_the_gate_left_queued_is_sent_and_marked_unverified(self):
+        # #1407 round 7 F8: every 2xx is "sent" (#1047's amended "Done when"). An entry the gate
+        # left is marked an unverified POST, as the sweep marks it: never left claimed, and never
+        # restored as the entry a slower reader could send again.
         t.reset(prs={"7": t.pr(7)})
         self.queue(7)
+        before = self.st().queue_items("reviewer")[f"{t.REPO}#7"]
         with self.answer(consume=False):
             result = self.drain(actions.drain_snapshot(self.loop(), "reviewer"))
-        self.assertEqual((result["ok"], result["status"]), (False, "unknown"))
+        self.assertEqual((result["ok"], result["status"], result["sent"]), (False, "sent", 1))
+        self.assertEqual(result["outcomes"][0]["outcome"], "sent")
+        after = self.st().queue_items("reviewer")[f"{t.REPO}#7"]
+        self.assertNotIn("drain", after)
+        self.assertNotEqual(after, before)
+        self.assertTrue(after["reason"].startswith("route delivery uncertain"))
+
+    def test_an_unanswered_post_is_unknown(self):
+        # No 2xx after the POST was attempted: it may have been sent.
+        t.reset(prs={"7": t.pr(7)})
+        self.queue(7)
+
+        def fire(route, event, payload, tag, host, on_attempt=None, on_unsent=None):
+            self.fired.append(tag)
+            on_attempt and on_attempt()
+            return False
+        with mock.patch.object(routes, "fire", side_effect=fire):
+            result = self.drain(actions.drain_snapshot(self.loop(), "reviewer"))
+        self.assertEqual((result["ok"], result["status"], result["sent"]), (False, "unknown", 0))
         self.assertEqual(result["outcomes"][0]["outcome"], "uncertain")
 
     def test_paused_hooks_refuse_before_anything(self):
@@ -257,9 +279,9 @@ class Drain(unittest.TestCase):
             swept = actions._script("watchdog").drain(self.loop(), self.st(), "reviewer", quiet=True)
         self.assertEqual(self.fired, ["drain-review-7"], "one POST")
         self.assertEqual(swept, 0)
-        self.assertEqual(results["confirmed"]["outcomes"][0]["outcome"], "uncertain")
+        self.assertEqual(results["confirmed"]["outcomes"][0]["outcome"], "sent")
 
-    def test_a_new_request_during_the_post_is_uncertain_not_a_start(self):
+    def test_a_new_request_during_the_post_is_sent_and_kept(self):
         # #1407 round 3 F1: a webhook replaces the claimed entry while the POST is out.
         t.reset(prs={"7": t.pr(7)})
         self.queue(7)
@@ -272,8 +294,8 @@ class Drain(unittest.TestCase):
             return True
         with mock.patch.object(routes, "fire", side_effect=fire):
             result = self.drain(shown)
-        self.assertEqual((result["ok"], result["status"], result["sent"]), (False, "unknown", 0))
-        self.assertEqual(result["outcomes"][0]["outcome"], "uncertain")
+        self.assertEqual((result["ok"], result["status"], result["sent"]), (False, "sent", 1))
+        self.assertEqual(result["outcomes"][0]["outcome"], "sent")
         self.assertNotIn("drain", self.st().queue_items("reviewer")[f"{t.REPO}#7"],
                          "the newer request stays, unclaimed, for its own turn")
 

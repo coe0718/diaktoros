@@ -130,7 +130,14 @@ def _wake(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: dict,
     # because no private runtime exists. Only the gate can remove its observed queue
     # entry, after Supervisor.enqueue succeeds. Never pop a replacement here.
     current = st.queue_items(seat).get(key)
-    if posted and current is None and bound:
+    if posted and bound:
+        # Every 2xx is "sent" (#1047's amended "Done when"), however the gate left the queue.
+        # A claim the gate left untouched is marked as the sweep marks it, an unverified POST:
+        # a fresh entry, so no reader holding the pre-claim entry can send it again. An entry
+        # the gate (or a newer request) replaced is left as it is.
+        if current == entry:
+            st.queue_replace_if(seat, key, entry, entry["head"], entry.get("url", ""),
+                                "route delivery uncertain — manual reconciliation required")
         st.note(f"drained {seat} for {key}")
         note(key, "sent", f"the route accepted the request for head {head[:7]} (HTTP 2xx); "
                           "whether the gate queued a run is the run ledger's (status)")
