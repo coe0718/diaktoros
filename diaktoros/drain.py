@@ -7,8 +7,8 @@ gate the route reaches decides the turn. Nothing here merges, pushes or reviews.
 
 ``drain`` can bind a confirmed queue snapshot (``expected``, from ``state.queue_snapshot``) and
 report per entry what it did (``report``): ``started`` (the sweep's: the gate took the entry),
-``sent`` (a confirmed drain's: the gate answered the POST; whether a run started is the run
-ledger's), ``left`` (still queued), ``dropped`` (no longer a valid request), ``uncertain`` (a
+``sent`` (a confirmed drain's: the route accepted the POST; whether the gate queued a run is
+the run ledger's, #1417), ``left`` (still queued), ``dropped`` (no longer a valid request), ``uncertain`` (a
 POST that may have been sent) or ``stale`` (the queue was not the one confirmed, so nothing
 happened).
 """
@@ -132,8 +132,8 @@ def _wake(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: dict,
     current = st.queue_items(seat).get(key)
     if posted and current is None and bound:
         st.note(f"drained {seat} for {key}")
-        note(key, "sent", f"the gate answered the request for head {head[:7]}; whether a run "
-                          "started is the run ledger's (status)")
+        note(key, "sent", f"the route accepted the request for head {head[:7]} (HTTP 2xx); "
+                          "whether the gate queued a run is the run ledger's (status)")
         return True
     if posted and current is None:
         st.note(f"drained {seat} for {key}")

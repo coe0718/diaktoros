@@ -79,7 +79,7 @@ class Drain(unittest.TestCase):
         self.assertEqual([row[:2] for row in shown], [[f"{t.REPO}#7", t.HEAD_A]])
         with self.answer():
             result = self.drain(shown)
-        self.assertEqual((result["ok"], result["status"], result["sent"]), (True, "sent", 1))
+        self.assertEqual((result["ok"], result["status"], result["sent"]), (False, "sent", 1))
         self.assertEqual([(o["number"], o["outcome"]) for o in result["outcomes"]], [(7, "sent")])
         self.assertEqual(self.fired, ["drain-review-7"])
 
@@ -316,7 +316,8 @@ class Drain(unittest.TestCase):
         self.assertNotIn("started", [o["outcome"] for o in result["outcomes"]])
         self.assertNotIn("started", result)
         self.assertEqual(result["outcomes"][0]["outcome"], "sent")
-        self.assertIn("whether a run started is the run ledger's", result["outcomes"][0]["why"])
+        self.assertIn("whether the gate queued a run is the run ledger's", result["outcomes"][0]["why"])
+        self.assertEqual((result["ok"], result["status"]), (False, "sent"))   # never a success
 
     def test_a_same_head_request_queued_during_the_hold_check_is_kept(self):
         # #1407 round 4 F6: the removal compared only the head, so a newer same-head request

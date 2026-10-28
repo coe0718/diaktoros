@@ -322,9 +322,10 @@ def drain_confirmed(loop, seat, expected):
     Returns ``{"ok", "status", "sent", "outcomes"}``. ``status`` is ``stale``, ``refused``,
     ``nothing queued``, ``nothing to start`` (every entry was dropped as no longer valid),
     ``sent`` (at least one request sent and answered, none left queued), ``partial`` (some
-    left queued) or ``unknown`` (an uncertain POST, or the budget ran out). ``sent`` is never
-    "started": nothing ties a run in the ledger to one POST, so whether a run started is the
-    run ledger's to say (``status``), as for ``hermes dk drain``.
+    left queued) or ``unknown`` (an uncertain POST, or the budget ran out). ``sent`` means the
+    route accepted the POST, never "started", and is not success (``ok`` is false): nothing
+    ties a run in the ledger to one POST, so whether a run started is the run ledger's to say
+    (``status``), as for ``hermes dk drain``, until the gate acknowledges the claim (#1417).
     """
     from . import migrate, util
     out = {"ok": False, "status": "refused", "sent": 0, "outcomes": []}
@@ -378,7 +379,9 @@ def drain_confirmed(loop, seat, expected):
         status = "nothing to start"     # every entry was dropped as no longer a valid request
     else:
         status = "sent"
-    out.update(ok=status in ("sent", "nothing queued", "nothing to start"), status=status,
+    # ``sent`` is not success (#1047's amended "Done when"): the route accepted the POST, and
+    # whether a run started is unconfirmed until the gate acknowledges the claim (#1417).
+    out.update(ok=status in ("nothing queued", "nothing to start"), status=status,
                sent=sent,
                outcomes=report)
     return out
