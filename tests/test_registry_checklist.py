@@ -28,7 +28,7 @@ def diff(path, *added):
 DIFFS = {
     "command": diff("diaktoros/cli/__init__.py", "    p = sub.add_parser('wave', help='wave')"),
     "event": diff("diaktoros/observer.py", "    'waved',"),
-    "doctor_check": diff("diaktoros/doctor.py", '    return Check("wave", VERIFIED, "ok")'),
+    "doctor_check": diff("diaktoros/doctor/__init__.py", '    return Check("wave", VERIFIED, "ok")'),
     "setting": diff("diaktoros/config/__init__.py", '    "wave": {"label": "Wave", "type": "bool"},'),
     "setting_yaml": diff("plugin.yaml", "  wave:"),
     "broker_refusal": diff("diaktoros/broker.py", "        raise ProtocolError('no wave')"),

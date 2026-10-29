@@ -20,10 +20,11 @@ from .. import (
 def cmd_doctor(args) -> int:
     """Read-only preflight: is this installation able to run the loop at all?
 
-    Every check is in ``doctor.py`` — what each state means and, deliberately, everything this
-    verb does *not* do (it writes nothing, and it never fires a route: a synthetic POST at a
-    seat's route is a real agent run). This is the installation-level counterpart of the
-    per-PR diagnosis in the watchdog, for the question `init` cannot answer about itself.
+    Every check is in the ``doctor`` package — what each state means and, deliberately,
+    everything this verb does *not* do (it writes nothing, and it never fires a route: a
+    synthetic POST at a seat's route is a real agent run). This is the installation-level
+    counterpart of the per-PR diagnosis in the watchdog, for the question `init` cannot answer
+    about itself.
     """
     try:
         loops = [config.load_id(args.loop)] if args.loop else config.all_loops()
