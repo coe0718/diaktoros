@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import config, observer, routes
+from diaktoros.config import blocks  # noqa: E402
 from diaktoros.state import LoopState
 
 import _ledger_guard  # noqa: E402
@@ -158,10 +159,10 @@ class ObserverTierTests(unittest.TestCase):
 
     def test_normalize_urgent_settings(self):
         raw = {"route": "a", "urgent_route": "b", "urgent_deliver": "discord"}
-        obs = config.normalize_observer(raw)
+        obs = blocks.normalize_observer(raw)
         self.assertEqual((obs["urgent_route"], obs["urgent_deliver"]), ("b", "discord"))
-        self.assertIn("misconfigured", config.normalize_observer({"route": "a", "urgent_route": "a"}))
-        self.assertNotIn("urgent_route", config.normalize_observer({"route": "a"}))
+        self.assertIn("misconfigured", blocks.normalize_observer({"route": "a", "urgent_route": "a"}))
+        self.assertNotIn("urgent_route", blocks.normalize_observer({"route": "a"}))
         self.assertEqual(config.seat_profile({"observer": obs}, "observer_urgent"), "default")
 
 

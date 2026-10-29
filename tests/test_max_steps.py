@@ -19,6 +19,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros import config, inference_proxy  # noqa: E402
+from diaktoros.config import blocks  # noqa: E402
 
 LOOP_ID = "steps"
 
@@ -41,9 +42,9 @@ class Resolution(unittest.TestCase):
         for bad in (0, 7, 201, True, "40", 1.5):
             with self.subTest(value=bad), self.assertRaisesRegex(config.ConfigError, "max_steps"):
                 config._check_max_steps(bad, "seats.fixer.max_steps", "f")
-        self.assertEqual(config._triage_seat({"max_steps": 12}, "f"), {"max_steps": 12})
+        self.assertEqual(blocks._triage_seat({"max_steps": 12}, "f"), {"max_steps": 12})
         with self.assertRaisesRegex(config.ConfigError, "max_steps"):
-            config._triage_seat({"max_steps": 300}, "f")
+            blocks._triage_seat({"max_steps": 300}, "f")
 
 
 class Cli(unittest.TestCase):

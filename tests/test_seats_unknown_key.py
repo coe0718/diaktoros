@@ -8,6 +8,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 from diaktoros import config  # noqa: E402
+from diaktoros.config import blocks  # noqa: E402
 
 
 def _raw(**seats) -> dict:
@@ -34,7 +35,7 @@ class UnknownSeatName(unittest.TestCase):
 
     def test_normalized_output_reads_back(self):
         loop = config.normalize(_raw())
-        config.check_known_keys({"seats": loop["seats"]}, "x")
+        blocks.check_known_keys({"seats": loop["seats"]}, "x")
 
 
 if __name__ == "__main__":

@@ -29,6 +29,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import broker, broker_ipc, config, gh, ledger, prompts, run_supervisor  # noqa: E402
+from diaktoros.config import blocks  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 HEAD = "a" * 40
@@ -290,7 +291,7 @@ class ChainBound(unittest.TestCase):
                            "fix_label": "agent-fix", "maintainers": ["m"],
                            "fix_daily_turns": 0}}
         with self.assertRaisesRegex(config.ConfigError, "fix_daily_turns"):
-            config.normalize_triage(loop["triage"], loop, "f")
+            blocks.normalize_triage(loop["triage"], loop, "f")
 
 
 class Prompt(unittest.TestCase):

@@ -20,6 +20,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_partial_view_no_approve as fixture  # noqa: E402
 from diaktoros import broker, config, gh, ledger, shadow_issues  # noqa: E402
+from diaktoros.config import blocks  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
@@ -31,10 +32,10 @@ APPROVED = [{"id": 9, "state": "APPROVED", "commit_id": HEAD, "submitted_at": "2
 
 class Setting(unittest.TestCase):
     def test_file_issues_is_a_bool_and_off_by_default(self):
-        self.assertEqual(config.normalize_shadow({"profile": "p", "file_issues": True}, "x"),
+        self.assertEqual(blocks.normalize_shadow({"profile": "p", "file_issues": True}, "x"),
                          {"profile": "p", "file_issues": True})
         with self.assertRaisesRegex(config.ConfigError, "file_issues must be true or false"):
-            config.normalize_shadow({"profile": "p", "file_issues": "yes"}, "x")
+            blocks.normalize_shadow({"profile": "p", "file_issues": "yes"}, "x")
         self.assertFalse(config.shadow_file_issues({"shadow": {"profile": "p"}}))
         self.assertTrue(config.shadow_file_issues({"shadow": {"profile": "p", "file_issues": True}}))
 
