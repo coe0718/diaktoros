@@ -42,6 +42,7 @@ from . import install as cli_install
 from . import lifecycle as cli_lifecycle
 from . import operations as cli_operations
 from . import reports as cli_reports
+from . import set_parser
 from . import settings as cli_settings
 from . import triage_command
 from . import update as cli_update
@@ -104,10 +105,10 @@ from .settings import (
     cmd_apply,
     cmd_fixer_push,
     cmd_identity,
-    cmd_set,
     cmd_settings,
     cmd_show,
 )
+from .set_command import cmd_set  # noqa: F401
 from .triage_command import cmd_triage  # noqa: F401
 
 # -- verbs ----------------------------------------------------------------------
@@ -175,7 +176,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         cli_update.add_update(sub)
         cli_checks.add_corpus(sub)
         cli_reports.add_models(sub)
-        cli_settings.add_set(sub)
+        set_parser.add_set(sub)
         cli_settings.add_identity(sub)
         cli_settings.add_apply(sub)
         cli_settings.add_settings(sub)
