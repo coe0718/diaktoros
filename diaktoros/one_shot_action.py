@@ -26,6 +26,7 @@ from types import SimpleNamespace
 from typing import cast
 
 from . import config, gate, gh, run_supervisor, state as state_mod, transition
+from .run_supervisor import views
 from .ledger import LOCK_WAIT_S
 from .util import logged, now_iso
 
@@ -118,7 +119,7 @@ def _cancel_found(loop, pr, seat):
     db = run_supervisor.production_ledger()
     if not db.exists():
         return None
-    con = run_supervisor.read_only_connect(db)
+    con = views.read_only_connect(db)
     if con is None:
         return None
     try:

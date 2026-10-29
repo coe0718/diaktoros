@@ -23,6 +23,7 @@ import unittest
 from unittest import mock
 
 from diaktoros import config, desktop_api, ledger, retry_action, run_supervisor
+from diaktoros.run_supervisor import views
 from diaktoros.run_supervisor import FIXER_NOT_ADMITTED, Supervisor
 
 REPO = "acme/widgets"
@@ -189,7 +190,7 @@ class NowCarriesTheBackendVerdict(Fixture):
     def test_an_unreadable_ledger_offers_no_action(self):
         view = desktop_api.now_view("widgets")
         self.assertEqual(view["runs"], [])
-        with mock.patch.object(run_supervisor, "read_only_connect", return_value=None):
+        with mock.patch.object(views, "read_only_connect", return_value=None):
             self.assertEqual(desktop_api._with_retry(self.db, REPO, [], self.loop), [])
 
     def test_a_failed_retry_read_is_not_reported_as_a_missing_ledger(self):
@@ -200,7 +201,7 @@ class NowCarriesTheBackendVerdict(Fixture):
         self.assertFalse(run["retry"]["eligible"])
         self.assertIn("could not be read", run["retry"]["reason"])
         self.assertNotIn("no run ledger", run["retry"]["reason"])
-        with mock.patch.object(run_supervisor, "read_only_connect", return_value=None):
+        with mock.patch.object(views, "read_only_connect", return_value=None):
             [run] = desktop_api._with_retry(self.db, REPO, rows, self.loop)
         self.assertIn("no run ledger", run["retry"]["reason"])
 
@@ -682,7 +683,7 @@ class OneCodePath(unittest.TestCase):
                                                  "offered": rows, "rearmable": rows,
                                                  "blocked": {}, "disputed": False,
                                                  "message": ""}), \
-                 mock.patch.object(retry_action, "open_listing", return_value=None), \
+                 mock.patch.object(views, "open_listing", return_value=None), \
                  mock.patch.object(retry_action.scope_lock, "release", return_value=None), \
                  mock.patch.object(Supervisor, "retry", return_value="pending") as retried, \
                  mock.patch.object(Supervisor, "record_operator_action") as recorded, \
@@ -705,7 +706,7 @@ class OneCodePath(unittest.TestCase):
                                    return_value={"head": HEAD, "head7": HEAD[:7], "rows": rows,
                                                  "offered": rows, "rearmable": [], "blocked": {},
                                                  "disputed": False, "message": ""}), \
-                 mock.patch.object(retry_action, "open_listing", return_value=None), \
+                 mock.patch.object(views, "open_listing", return_value=None), \
                  mock.patch.object(retry_action.scope_lock, "release", return_value=None), \
                  mock.patch.object(Supervisor, "retry",
                                    side_effect=ValueError("refused: run is uncertain (a worker "

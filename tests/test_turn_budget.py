@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 from diaktoros import (broker_ipc, cli, config, doctor, gate, gh,  # noqa: E402
                          run_supervisor, seat_model, selftest, trusted_turn)
+from diaktoros.run_supervisor import views  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
@@ -984,7 +985,7 @@ class GateToProductionWorker(unittest.TestCase):
             self.assertNotIn(wrong, row["error"])
         sup = self.ledger()
         [view] = [r for r in sup.status() if r["id"] == row["id"]]
-        line = run_supervisor.describe_run(view, "widgets")
+        line = views.describe_run(view, "widgets")
         self.assertIn("may have written (fixer push recorded) — never replayed", line)
         for wrong in ("raise the turn budget", "re-arm", "no external write"):
             self.assertNotIn(wrong, line)

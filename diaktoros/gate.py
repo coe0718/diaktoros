@@ -227,7 +227,7 @@ def shadow_open_heads(db=None) -> set[tuple[int, str]]:
     path = pathlib.Path(db or run_supervisor.production_ledger())
     if not path.exists():
         return set()
-    con = run_supervisor.read_only_connect(path)
+    con = run_supervisor.views.read_only_connect(path)
     if con is None:
         return set()
     try:
@@ -267,7 +267,7 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
         # A loop whose ledger was never created holds no shadow review (shadow review of #1097).
         return "", "", f"no run ledger yet, so no shadow review of {short} exists: nothing to wait for"
     try:
-        con = run_supervisor.read_only_connect(path)
+        con = run_supervisor.views.read_only_connect(path)
         if con is None:
             return "pending", f"the run ledger is unreadable, so the shadow review at {short} is unknown", ""
         try:
@@ -358,7 +358,7 @@ def upheld_shadow_ruling(loop: dict, number: int, head: str, db=None) -> float |
     path = Path(db or run_supervisor.production_ledger())
     if not path.exists():
         return None
-    con = run_supervisor.read_only_connect(path)
+    con = run_supervisor.views.read_only_connect(path)
     if con is None:
         return None
     try:
@@ -423,7 +423,7 @@ def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) 
     mine = (isinstance(marker, dict) and marker.get("head") == head
             and (marker.get("escalated") or {}).get("by") == SHADOW_ESCALATION)
     try:
-        con = run_supervisor.read_only_connect(db or run_supervisor.production_ledger())
+        con = run_supervisor.views.read_only_connect(db or run_supervisor.production_ledger())
         if con is None:
             return "ledger unreadable"
         try:
@@ -863,8 +863,8 @@ def _adjudication_next(loop: dict, head: str) -> str:
 
 def _ruled(loop: dict, number: int, head: str) -> str | None:
     """The adjudicator's verdict at this head, if it has ruled (the watchdog reads the same)."""
-    from .run_supervisor import ruling_at
-    return ruling_at(config.host_path("ledger"), loop["repo"], number, head)
+    from .run_supervisor import views
+    return views.ruling_at(config.host_path("ledger"), loop["repo"], number, head)
 
 
 def seat_capacity(loop: dict, st: state_mod.LoopState, seat: str) -> tuple[int, int]:
@@ -1297,9 +1297,9 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     # the gate's answer, not a missing one (#509): the run itself is reported as the blocker.
     ledgered = set()
     if head:
-        from .run_supervisor import turn_state
+        from .run_supervisor import views
         for seat in ("reviewer", "fixer"):
-            if turn_state(config.host_path("ledger"), repo, number, head, seat) in LIVE_TURN:
+            if views.turn_state(config.host_path("ledger"), repo, number, head, seat) in LIVE_TURN:
                 ledgered.add(seat)
     # Parked for a ruling (or its delivery pending), both gates stop on purpose: no "gate did not
     # start one" line, which would read as something stuck while the ruling is the next event.

@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_issue_fix import BASE, LABEL, REPO, Base, issue  # noqa: E402
 
 from diaktoros import cli, config, gh, ledger, observer, run_supervisor, seat_model  # noqa: E402
+from diaktoros.run_supervisor import views  # noqa: E402
 from diaktoros import state as state_mod, trusted_turn  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
@@ -72,8 +73,8 @@ class ClosedPrHistory(unittest.TestCase):
 
     def test_failed_run_on_a_pr_absent_from_the_listing_is_history(self):
         self.listing([8])
-        rows = run_supervisor.read_only_view(self.db, "acme/widgets", None)
-        live, history, unknown = run_supervisor.split_history(rows, self.loop)
+        rows = views.read_only_view(self.db, "acme/widgets", None)
+        live, history, unknown = views.split_history(rows, self.loop)
         self.assertEqual([r["pr"] for r in live], [8])
         self.assertEqual([r["pr"] for r in history], [7])
         self.assertFalse(unknown)
@@ -184,7 +185,7 @@ class IneligibleBeforeLaunch(Base):
                                    (run_id,)).fetchone())
             queued = con.execute("SELECT COUNT(*) FROM operator_notices").fetchone()[0]
             sup.notify(lambda message: notices.append(message))
-            seen = run_supervisor.runs_view(con)
+            seen = views.runs_view(con)
         return row, notices, queued, seen
 
     def test_relabelled_auto_offered_issue_is_cancelled_without_a_failure_notice(self):

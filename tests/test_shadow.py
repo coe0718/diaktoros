@@ -21,6 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from diaktoros import ci, config, gate, gh, run_supervisor, seat_model, stats, trusted_turn  # noqa: E402
+from diaktoros.run_supervisor import views  # noqa: E402
 from diaktoros.run_supervisor import Supervisor, pr_facts, turn_prompts  # noqa: E402
 
 HEAD = "a" * 40
@@ -309,7 +310,7 @@ class Display(Compare):
     def test_a_pending_shadow_is_not_in_the_prs_queue(self):
         self.add("shadow")
         self.add("reviewer", pr=9)
-        self.assertEqual([r["seat"] for r in run_supervisor.pending_view(self.db, "acme/widgets")],
+        self.assertEqual([r["seat"] for r in views.pending_view(self.db, "acme/widgets")],
                          ["reviewer"])
 
     def test_a_failed_shadow_is_not_a_run_to_act_on(self):
@@ -317,7 +318,7 @@ class Display(Compare):
         self.add("reviewer", "failed", pr=9)
         with closing(sqlite3.connect(self.db)) as con:
             con.row_factory = sqlite3.Row
-            seats = [r["seat"] for r in run_supervisor.runs_view(con, "acme/widgets")]
+            seats = [r["seat"] for r in views.runs_view(con, "acme/widgets")]
         self.assertEqual(seats, ["reviewer"])
 
     def test_explain_prints_them_and_the_drawer_carries_them(self):

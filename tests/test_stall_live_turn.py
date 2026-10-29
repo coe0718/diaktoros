@@ -17,7 +17,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import gate, gh, run_supervisor  # noqa: E402
+from diaktoros import gate, gh  # noqa: E402
+from diaktoros.run_supervisor import views  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
 LONG_AGO = "2020-01-01T00:00:00Z"
@@ -39,7 +40,7 @@ class LiveTurnIsNotAStall(fg.Base):
                 mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
                 mock.patch.object(gh, "open_prs", return_value=[fg.LIVE]), \
                 mock.patch.object(gh, "reviews", return_value=reviews), \
-                mock.patch.object(run_supervisor, "turn_state", side_effect=turn_state), \
+                mock.patch.object(views, "turn_state", side_effect=turn_state), \
                 mock.patch.object(watchdog, "retry_pending_breaches"), \
                 mock.patch.object(watchdog.routes, "fire"), \
                 mock.patch.object(watchdog.observer, "notify"), \

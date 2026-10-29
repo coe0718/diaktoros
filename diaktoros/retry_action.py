@@ -25,8 +25,8 @@ from __future__ import annotations
 import time
 
 from . import config, gate, scope_lock
-from .run_supervisor import (ISSUE_SEATS, WATCH_INTERVAL_S, Supervisor, open_listing,
-                             operator_cancelled, policy_cancelled, write_evidence)
+from .run_supervisor import (ISSUE_SEATS, Supervisor, operator_cancelled, policy_cancelled,
+                             views, write_evidence)
 
 # The seats ``retry`` accepts (the CLI parser's own list). A shadow run is retried only by name.
 SEATS = ("reviewer", "fixer", "adjudicator", "triage", "issue_fixer", "shadow")
@@ -149,7 +149,7 @@ def page_targets(con, repo: str, loop: dict | None = None) -> dict:
         groups.setdefault((row["pr"], row["seat"]), []).append(row)
     out: dict = {}
     policy_off = fixer_policy(loop) if loop is not None else ""
-    listing = open_listing(loop) if loop is not None else None
+    listing = views.open_listing(loop) if loop is not None else None
     for (pr, seat), group in groups.items():
         offerable_rows = [row for row in group if offered(row)]
         head = (newest(offerable_rows) if offerable_rows else newest(group))["head"]
@@ -187,11 +187,11 @@ def pr_open(loop: dict, pr: int, listing: dict | None = None, read_pr=None):
     (the Desktop) a PR the listing still names is left to the worker's own claim-time read, and a
     PR it omits is refused. No listing at all is not evidence either way.
     """
-    listing = open_listing(loop) if listing is None else listing
+    listing = views.open_listing(loop) if listing is None else listing
     if listing is None:
         return None
     absent = pr not in listing["numbers"]
-    if absent or time.time() - listing["at"] > WATCH_INTERVAL_S:
+    if absent or time.time() - listing["at"] > views.WATCH_INTERVAL_S:
         if read_pr is None:
             return False if absent else None
         live = read_pr()
@@ -209,7 +209,7 @@ def closed_refusal(loop: dict, pr: int, offered_rows: list[dict], listing: dict 
     number and never are. ``perform`` refuses with this text and the Desktop's row verdict
     (``page_targets``) withholds its button with the same text.
     """
-    listing = open_listing(loop) if listing is None else listing
+    listing = views.open_listing(loop) if listing is None else listing
     if listing is not None and any(row["state"] == "failed" and row["seat"] not in ISSUE_SEATS
                                    for row in offered_rows):
         if pr_open(loop, pr, listing, read_pr) is False:

@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from diaktoros import cancel_action, contained, ledger, retry_action, run_supervisor
+from diaktoros.run_supervisor import views
 from diaktoros.run_supervisor import OPERATOR_CANCEL, OPERATOR_STOPPED, Supervisor
 
 HEAD = 'a' * 40
@@ -180,10 +181,10 @@ class NotStarted(Base):
         sup.cancel(sup.get('d')['id'])
         [row] = sup.status(REPO, 1)
         self.assertEqual((row['state'], row['error']), ('cancelled', OPERATOR_CANCEL))
-        step = run_supervisor.next_step(row, 'loop')
+        step = views.next_step(row, 'loop')
         self.assertIn('cancelled by an operator', step)
         self.assertIn('hermes dk retry --loop loop --pr 1 --seat reviewer', step)
-        self.assertNotIn('failed', run_supervisor.describe_run(row, 'loop').split(' — ')[0])
+        self.assertNotIn('failed', views.describe_run(row, 'loop').split(' — ')[0])
 
     def test_retry_rearms_an_operator_cancel_and_clears_the_stop_request(self):
         sup = self.sup()

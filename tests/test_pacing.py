@@ -23,6 +23,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from diaktoros import (config, gate, gh, inference_proxy, pacing, run_supervisor,  # noqa: E402
                          seat_model, trusted_turn)
+from diaktoros.run_supervisor import views
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.inference_proxy import PATH, InferenceCapability, _UnixHTTP  # noqa: E402
@@ -255,7 +256,7 @@ class ProductionWorker(unittest.TestCase):
         self.assertEqual((row["state"], row["retries"]), ("waiting", 0))
         self.assertAlmostEqual(row["retry_at"], reset, delta=2)
         self.assertTrue(row["error"].startswith("held: fixer usage window (openai-codex) — resumes "))
-        self.assertIn("no retry spent", run_supervisor.next_step(row))
+        self.assertIn("no retry spent", views.next_step(row))
         self.assertIsNotNone(pacing.held(self.account), "the account is held for the next turn")
 
     def test_a_429d_turn_that_wrote_is_not_paced(self):

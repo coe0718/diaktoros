@@ -817,7 +817,7 @@ def shadow_reviews_for(db: Path, repo: str, pr: int) -> tuple[list[dict], int]:
     how many older ones were left out. Read-only; ``([], 0)`` without a ledger or a review."""
     from . import findings as findings_mod, run_supervisor
     # Through the one read-only door: `explain` and the Desktop drawer create no -wal/-shm files.
-    con = run_supervisor.read_only_connect(db)
+    con = run_supervisor.views.read_only_connect(db)
     if con is None:
         return [], 0
     try:
