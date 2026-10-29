@@ -43,6 +43,7 @@ from . import lifecycle as cli_lifecycle
 from . import operations as cli_operations
 from . import reports as cli_reports
 from . import settings as cli_settings
+from . import triage_command
 from . import update as cli_update
 from ..util import logged
 # Every command lives in its own module with its parser (#676): register_cli below lists them in
@@ -106,8 +107,8 @@ from .settings import (
     cmd_set,
     cmd_settings,
     cmd_show,
-    cmd_triage,
 )
+from .triage_command import cmd_triage  # noqa: F401
 
 # -- verbs ----------------------------------------------------------------------
 
@@ -183,7 +184,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         cli_checks.add_protect(sub)
         cli_checks.add_app_webhook(sub)
         cli_checks.add_create_apps(sub)
-        cli_settings.add_triage(sub)
+        triage_command.add_triage(sub)
         cli_settings.add_fixer_push(sub)
         cli_operations.add_retry(sub)
         cli_operations.add_cancel(sub)
