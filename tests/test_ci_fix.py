@@ -133,6 +133,21 @@ class Worker(sm.Worker):
         self.assertIn("CI failed on your pull request", seen["prompt"])
         self.assertTrue(seen["prompt"].endswith("JOBS"))
 
+    def test_an_always_run_size_check_keeps_the_no_push_exception(self):
+        # #1436 review: the CI-fix prompt says not to push when a size limit is the only failure,
+        # and the always-run check appended to it says to publish anyway. Assembled through the
+        # launch, the check's section must carry the CI-fix exception, after its publish-anyway.
+        seen, row, _ = self.fix_run(RED, {"fixer_check": "python3 tests/file_sizes.py"})
+        self.assertEqual(row[0], "succeeded")
+        text = " ".join(seen["prompt"].split())
+        self.assertIn("When that is the only failure, do not push", text)
+        self.assertIn("## Always-run check (set by the loop's operator)", text)
+        self.assertIn("**publish anyway**", text)
+        exception = ("The one exception, in this CI-fix turn: when all that fails is a size limit "
+                     "the repository enforces, don't publish (step 2 above).")
+        self.assertIn(exception, text)
+        self.assertLess(text.index("**publish anyway**"), text.index(exception))
+
     def test_a_head_that_went_green_is_not_fixed(self):
         seen, row, _ = self.fix_run(ci.CIState(passed=["tests (3.11)"]))
         self.assertEqual((seen, row[0]), ({}, "failed"))

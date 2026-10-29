@@ -872,7 +872,7 @@ class ClaimAndLaunch:
         prompt = (prompts.render_isolated('ci_fix', repo=row['repo'], pr=row['pr'],
                                           url=gh.pr_url(loop, row['pr']),
                                           head=row['head'])
-                  + prompts.fixer_check_section(loop)
+                  + prompts.fixer_check_section(loop, ci_fix=True)
                   + prompts.registry_section(None)
                   + ci_fix.section(loop, state, names))
         return _Launch(prompt, broker_ipc.RunScope(

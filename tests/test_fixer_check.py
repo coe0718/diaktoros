@@ -89,6 +89,10 @@ class Prompts(unittest.TestCase):
             self.assertIn("Set `CHANGED` to every path you changed", text)          # #362
             self.assertIn("name those modules in the PR description and note that CI will "
                           "catch them", text)                                       # #390
+            # A fix round or issue fix publishes anyway, a size limit included: the CI-fix
+            # turn's no-push exception (#1436) is that turn's alone.
+            self.assertIn("**publish anyway**", text)
+            self.assertNotIn("The one exception, in this CI-fix turn", text)
         # Instruction from the operator, before the data sections.
         self.assertLess(fixer.index("Always-run check"), fixer.index("RECORD"))
         self.assertLess(issue.index("Always-run check"), issue.index("## Issue"))
