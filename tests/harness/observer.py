@@ -548,6 +548,23 @@ def group_observer_cli() -> None:
     check("resumed feed retains queue", observer.unsettled(st), 1)
     st.observations.write_text(json.dumps({"entries": {"old": {"status": "delivered"}}}))
 
+    # The urgent tier through `set` (#1349: its route write had no check): its own deliver-only
+    # route, never a route another role holds, and gone again when it is cleared.
+    rc, out = call_set(observer_urgent_route="feed-urgent")
+    check("urgent route → accepted", rc, 0)
+    subs = json.loads(SUBS.read_text())
+    check("  its route is installed, deliver-only", subs["feed-urgent"]["deliver_only"], True)
+    check("  for the observer's profile", subs["feed-urgent"]["profile"], "another")
+    rc, out = call_set(observer_urgent_route="feed-review")
+    check("urgent route cannot take a seat's route", rc, 2)
+    check("  the seat's route is untouched",
+          json.loads(SUBS.read_text())["feed-review"], subs["feed-review"])
+    rc, out = call_set(observer_urgent_route="")
+    check("clearing the urgent route → accepted", rc, 0)
+    check("  its route is removed", "feed-urgent" in json.loads(SUBS.read_text()), False)
+    check("  and the feed is one route again",
+          "urgent_route" in config.load_id("feed")["observer"], False)
+
     rc, out = call_set(observer_mute=True)
     check("mute → accepted", rc, 0)
     check("  written", config.load_id("feed")["observer"]["mute"], True)

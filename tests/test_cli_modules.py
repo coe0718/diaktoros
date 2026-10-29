@@ -24,7 +24,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "diaktoros" / "cli"
 MODULES = ("reports", "operations", "lifecycle", "install", "checks", "settings", "set_command",
            "apply_command", "triage_command", "identity_command")
-SHARED = ("common", "route_sync")              # helpers several groups use: no commands, never imports cli
+SHARED = ("common", "route_sync", "set_adjudication")  # helper modules: no commands, never import cli
 
 
 def _defined(path: pathlib.Path) -> set[str]:
