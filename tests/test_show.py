@@ -4,6 +4,7 @@ import json
 import unittest
 
 from diaktoros import cli, config, observer, show
+from diaktoros.config import blocks  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from test_token_file_settings import TokenFileSettingsTests as _Base, SENTINEL
 
@@ -83,7 +84,7 @@ class ShowTests(_Base):
         self.assertIn("adjudicator.route", rows)
 
     def test_observer_keys_match_the_normalizer(self):
-        norm = config.normalize_observer({"route": "r", "events": ["stall"], "digest_min": 5,
+        norm = blocks.normalize_observer({"route": "r", "events": ["stall"], "digest_min": 5,
                                           "weekly_report": "mon 09:00",
                                           "urgent_route": "u", "urgent_profile": "p",
                                           "urgent_deliver": "d"})

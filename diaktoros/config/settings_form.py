@@ -8,6 +8,7 @@ the package so a test that patches one reaches this module too.
 from __future__ import annotations
 
 from .. import config
+from ..config import blocks
 
 
 # Plugin-level settings. The desktop's Capabilities → Plugins form renders `config_schema` from
@@ -420,7 +421,7 @@ def shadow_block(current, profile, every, where: str, escalate=None,
             shadow["file_issues"] = True
         else:
             shadow.pop("file_issues", None)
-    return config.normalize_shadow(shadow, where)
+    return blocks.normalize_shadow(shadow, where)
 
 
 def apply_settings(loop_raw: dict, settings: dict | None) -> dict:

@@ -17,6 +17,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import config, gate, gh, observer, pr_hold, run_supervisor, state as state_mod, stats  # noqa: E402
+from diaktoros.config import blocks  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 
 
@@ -42,11 +43,11 @@ class Schedule(unittest.TestCase):
         for bad in ("monday 09:00", "mon 9:00", "mon 24:00", "mon 09:60", "", None, 9):
             with self.assertRaises(ValueError, msg=repr(bad)):
                 config.check_weekly_report(bad)
-        feed = config.normalize_observer({"route": "r", "weekly_report": "fri 17:30"})
+        feed = blocks.normalize_observer({"route": "r", "weekly_report": "fri 17:30"})
         self.assertEqual(feed["weekly_report"], "fri 17:30")
-        broken = config.normalize_observer({"route": "r", "weekly_report": "friday"})
+        broken = blocks.normalize_observer({"route": "r", "weekly_report": "friday"})
         self.assertIn("observer.weekly_report", broken["misconfigured"])   # said, never silent
-        self.assertNotIn("weekly_report", config.normalize_observer({"route": "r"}))
+        self.assertNotIn("weekly_report", blocks.normalize_observer({"route": "r"}))
         self.assertIn("weekly report fri 17:30 UTC", observer.describe(feed))
 
 

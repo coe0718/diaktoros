@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import (broker, config, gh, github_app, run_supervisor, safe_push,  # noqa: E402
                        selftest, trusted_fetch)
+from diaktoros.config import blocks  # noqa: E402
 from diaktoros.config import credentials  # noqa: E402
 
 OPENSSL = shutil.which("openssl", path="/usr/bin:/bin:/usr/local/bin")
@@ -84,9 +85,9 @@ class Base(unittest.TestCase):
 
 class Config(unittest.TestCase):
     def test_an_app_identity_is_its_bot_login_with_an_id_and_a_key(self):
-        got = config.check_apps({BOT: {"app_id": APP_ID, "key_file": "/k/r.pem"}}, {}, "w")
+        got = blocks.check_apps({BOT: {"app_id": APP_ID, "key_file": "/k/r.pem"}}, {}, "w")
         self.assertEqual(got, {BOT: {"app_id": APP_ID, "key_file": "/k/r.pem"}})
-        self.assertEqual(config.check_apps(None, {}, "w"), {})
+        self.assertEqual(blocks.check_apps(None, {}, "w"), {})
 
     def test_malformed_app_identities_are_refused(self):
         good = {"app_id": APP_ID, "key_file": "/k/r.pem"}
@@ -100,11 +101,11 @@ class Config(unittest.TestCase):
                           ({BOT: "r.pem"}, "must be"),
                           ([BOT], "object")):
             with self.subTest(apps=apps), self.assertRaisesRegex(config.ConfigError, why):
-                config.check_apps(apps, {}, "w")
+                blocks.check_apps(apps, {}, "w")
 
     def test_one_identity_uses_one_credential(self):
         with self.assertRaisesRegex(config.ConfigError, "both 'tokens' and 'apps'"):
-            config.check_apps({BOT: {"app_id": APP_ID, "key_file": "/k/r.pem"}},
+            blocks.check_apps({BOT: {"app_id": APP_ID, "key_file": "/k/r.pem"}},
                               {"Acme-Reviewer[bot]": "/k/r.pat"}, "w")
 
     def test_the_credentials_map_holds_pat_files_and_app_keys(self):
