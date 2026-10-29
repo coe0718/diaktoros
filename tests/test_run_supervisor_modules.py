@@ -23,7 +23,7 @@ from diaktoros import run_supervisor  # noqa: E402
 
 PACKAGE = pathlib.Path(run_supervisor.__file__).resolve().parent
 ROOT = PACKAGE.parents[1]
-SUBMODULES = ("pr_facts", "turn_prompts", "records", "views", "notices", "intake")
+SUBMODULES = ("pr_facts", "turn_prompts", "records", "views", "notices", "intake", "workers")
 
 
 def _top_level_names(path: pathlib.Path) -> set[str]:
@@ -77,11 +77,11 @@ class Split(unittest.TestCase):
             self.assertNotIn(f"class {name}", (PACKAGE / "__init__.py").read_text())
 
     def test_every_mixins_methods_live_only_there(self):
-        # The notice and intake mixins (#1349) too: each method has one home, and neither
+        # The notice, intake and worker mixins (#1349) too: each method has one home, and neither
         # Supervisor nor another mixin defines it again.
-        from diaktoros.run_supervisor import Supervisor, intake, notices, records, turns
+        from diaktoros.run_supervisor import Supervisor, intake, notices, records, turns, workers
         mixins = (records.LedgerRecords, turns.ClaimAndLaunch, notices.OperatorNotices,
-                  intake.RunIntake)
+                  intake.RunIntake, workers.WorkerLifecycle)
         own = {cls: {n for n in vars(cls) if not n.startswith("__")} for cls in mixins}
         for cls in mixins:
             self.assertIn(cls, Supervisor.__mro__)
@@ -92,6 +92,7 @@ class Split(unittest.TestCase):
                     self.assertFalse(own[cls] & own[other], f"{cls.__name__} and {other.__name__}")
         self.assertIn("notify", own[notices.OperatorNotices])
         self.assertIn("submit", own[intake.RunIntake])
+        self.assertIn("recover", own[workers.WorkerLifecycle])
 
     def test_nothing_imports_a_moved_name_from_the_package(self):
         moved = {n for sub in SUBMODULES for n in _top_level_names(PACKAGE / f"{sub}.py")}
