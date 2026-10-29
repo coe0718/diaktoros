@@ -141,8 +141,10 @@ class Drain(unittest.TestCase):
         before = self.st().queue_items("reviewer")[f"{t.REPO}#7"]
         with self.answer(consume=False):
             result = self.drain(actions.drain_snapshot(self.loop(), "reviewer"))
-        self.assertEqual((result["ok"], result["status"], result["sent"]), (False, "sent", 1))
-        self.assertEqual(result["outcomes"][0]["outcome"], "sent")
+        # The 2xx counts as sent, and the entry left behind is reported too (F9).
+        self.assertEqual((result["ok"], result["status"], result["sent"]), (False, "partial", 1))
+        self.assertEqual([o["outcome"] for o in result["outcomes"]], ["sent", "left"])
+        self.assertIn("manual reconciliation required", result["outcomes"][1]["why"])
         after = self.st().queue_items("reviewer")[f"{t.REPO}#7"]
         self.assertNotIn("drain", after)
         self.assertNotEqual(after, before)

@@ -135,12 +135,15 @@ def _wake(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: dict,
         # A claim the gate left untouched is marked as the sweep marks it, an unverified POST:
         # a fresh entry, so no reader holding the pre-claim entry can send it again. An entry
         # the gate (or a newer request) replaced is left as it is.
-        if current == entry:
-            st.queue_replace_if(seat, key, entry, entry["head"], entry.get("url", ""),
-                                "route delivery uncertain — manual reconciliation required")
         st.note(f"drained {seat} for {key}")
         note(key, "sent", f"the route accepted the request for head {head[:7]} (HTTP 2xx); "
                           "whether the gate queued a run is the run ledger's (status)")
+        if current == entry:
+            st.queue_replace_if(seat, key, entry, entry["head"], entry.get("url", ""),
+                                "route delivery uncertain — manual reconciliation required")
+            # The caller must see the work left behind (#1407 review, F9), not only the 2xx.
+            note(key, "left", "the gate left it queued: marked an unverified POST — manual "
+                              "reconciliation required")
         return True
     if posted and current is None:
         st.note(f"drained {seat} for {key}")
