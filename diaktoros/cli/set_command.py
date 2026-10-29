@@ -15,121 +15,18 @@ from .. import (
     state as state_mod,
 )
 from . import common as cli_common
+from . import set_adjudication
 from . import triage_command
 from ..config import credentials
-from ..config import settings_form
 from .common import BRANCH_PUSH_REFUSAL
 
 
-def _set_adjudication(args, loop: dict) -> int:
-    """``set --adjudicator-profile P`` / ``--adjudicator-route NAME`` / ``--adjudicator off``.
-
-    On: the route is written the way ``init --adjudicator-route`` writes it (ownership check,
-    intent record, shim) and the ``adjudicator`` block with it. Off: the route, its intent record
-    and its shim go, and so does the block; the ledger's breach markers and rulings stay.
-    A failed route write puts the config and the registry back.
-    """
-    path = config.config_dir() / f"{loop['id']}.json"
-    current = dict(loop.get("adjudicator") or {})
-    old_route = str(current.get("route") or "")
-    if getattr(args, "adjudicator", None) == "off":
-        if getattr(args, "adjudicator_profile", None) or getattr(args, "adjudicator_route", None):
-            print("refused: --adjudicator off cannot be combined with --adjudicator-profile "
-                  "or --adjudicator-route")
-            return 2
-        if not old_route:
-            print(f"[{loop['id']}] adjudication already off")
-            return 0
-        seats = {seat: dict(cfg) for seat, cfg in loop["seats"].items()}
-        adj_seat = seats.pop("adjudicator", None) or {}
-        adj_seat.pop("login", None)
-        if adj_seat:
-            seats["adjudicator"] = adj_seat
-        try:
-            updated = config.normalize({**loop, "adjudicator": {}, "seats": seats})
-        except config.ConfigError as exc:
-            print(f"refused: {exc}")
-            return 2
-        previous_config = path.read_bytes()
-        previous_route = routes.route(old_route)
-        try:
-            cli_common._write_config(updated)
-            routes.remove_route(old_route)
-            route_intent.forget(loop, [old_route])
-        except Exception as exc:
-            try:
-                routes.restore_entries({old_route: previous_route})
-                cli_common._restore_config(path, previous_config)
-            except Exception as rollback_exc:
-                print(f"ROLLBACK FAILED: {rollback_exc} — inspect {path} and route {old_route}")
-                return 2
-            print(f"adjudication off FAILED: {exc}; config and route restored")
-            return 2
-        shims = gate_shims.remove({**loop, "seats": {}, "triage": {}, "observer": {}},
-                                  [updated, *[other for other in config.all_loops()
-                                              if other["id"] != loop["id"]]])
-        print(f"[{loop['id']}] adjudication off: route {old_route} removed — a spent cap now "
-              "writes only the breach marker (existing markers and rulings stay in the ledger)")
-        for line in shims:
-            print(f"  {line}")
-        return 0
-
-    d = settings_form.settings_defaults(cli_common._SETTINGS)
-    profile = (str(getattr(args, "adjudicator_profile", None) or "").strip()
-               or str(current.get("profile") or "") or d["adjudicator_profile"] or "default")
-    route = (str(getattr(args, "adjudicator_route", None) or "").strip() or old_route
-             or cli_common.routes_for(loop)["adjudicator"])
-    try:
-        updated = config.normalize({**loop, "adjudicator": {**current, "route": route,
-                                                            "profile": profile}})
-        config.webhook_host(updated.get("host"), required=True)
-        credentials.verify_seats(updated, {"adjudicator"})
-        cli_common._verify_routes(updated, {"adjudicator"})
-        gate_shims.install(updated, dry_run=True, report=False)
-    except config.ConfigError as exc:
-        print(f"refused: {exc}")
-        return 2
-    if (updated.get("adjudicator") or {}) == current and routes.route(route):
-        print(f"[{loop['id']}] adjudication already on (route {route}, profile {profile})")
-        return 0
-    previous_config = path.read_bytes()
-    names = {route, *([old_route] if old_route else [])}
-    previous_routes = {name: routes.route(name) for name in names}
-    try:
-        cli_common._write_config(updated)
-        cli_common._install_routes(updated, roles=("adjudicator",))
-        route_intent.record_live(updated, [route])
-    except Exception as exc:
-        try:
-            routes.restore_entries(previous_routes)
-            cli_common._restore_config(path, previous_config)
-        except Exception as rollback_exc:
-            print(f"ROLLBACK FAILED: {rollback_exc} — inspect {path} and route {route}")
-            return 2
-        print(f"adjudication install FAILED: {exc}; config and route restored")
-        return 2
-    print(f"[{loop['id']}] adjudication on: profile {profile}, route {route} written")
-    if old_route and old_route != route:
-        try:
-            route_intent.forget(updated, [old_route])
-            routes.remove_route(old_route)
-            print(f"  old route {old_route} removed")
-        except (OSError, ValueError) as exc:
-            print(f"warning: old adjudicator route {old_route!r} remains; remove it manually: {exc}")
-    shims_ok = cli_common._install_shims(updated)
-    print("  no repo hook is needed: the loop wakes the adjudicator itself when the cap is spent")
-    print(f"  next: hermes dk doctor --loop {loop['id']}")
-    return 0 if shims_ok else 1
+class _Refused(Exception):
+    """A ``set`` step refused and has said why; ``cmd_set`` returns 2 (#1349)."""
 
 
-def cmd_set(args) -> int:
-    """Change a loop's settings in place, through the same validation ``init`` uses.
-
-    Seat prompts are rendered from the payload at fire time; observer destination changes also
-    reconcile the delivery-only route before updating config. The rails still apply — ``concurrency``
-    above 1 without a ``clone`` is refused here exactly as it is at init, because a parallel run
-    that cannot be isolated would share a checkout.
-    """
+def _load_loop(args) -> dict:
+    """The loop ``set`` changes, or the one reader repair a refused file allows."""
     try:
         loop = config.load_id(args.loop)
     except config.ConfigError as exc:
@@ -143,18 +40,13 @@ def cmd_set(args) -> int:
             loop = None
         if loop is None:
             print(f"no such loop: {exc}")
-            return 2
+            raise _Refused
         print(f"repairing {args.loop}: it has no read_token; setting the reader named by --read-token")
+    return loop
 
-    adj_done = False
-    if (getattr(args, "adjudicator_profile", None) or getattr(args, "adjudicator_route", None)
-            or getattr(args, "adjudicator", None)):
-        rc = _set_adjudication(args, loop)
-        if rc:
-            return rc
-        adj_done = True
-        loop = config.load_id(args.loop)
 
+def _host_arg(args) -> str | None:
+    """``--host``, stripped and checked: a blank one is refused, not ignored."""
     host = args.host
     if host is not None:
         # A blank or whitespace host is not "unchanged": it would strip the loop of the origin
@@ -168,7 +60,12 @@ def cmd_set(args) -> int:
             config.webhook_host(host, required=True)
         except config.ConfigError as exc:
             print(f"refused: {exc}")
-            return 2
+            raise _Refused
+    return host
+
+
+def _flag_changes(args, loop: dict, host: str | None) -> dict:
+    """The top-level scalar settings that differ from the loop's."""
     wanted = {"concurrency": args.concurrency, "cap": args.cap, "base": args.base,
               "clone": args.clone, "grace_min": args.grace_min,
               "marker_grace_min": args.marker_grace_min, "ttl_min": args.ttl_min,
@@ -182,9 +79,14 @@ def cmd_set(args) -> int:
     if (wanted["review_only_update"] and not loop.get("review_only_update")
             and not getattr(args, "acknowledge_branch_push", False)):
         print(BRANCH_PUSH_REFUSAL)
-        return 2
+        raise _Refused
     changes = {k: v for k, v in wanted.items()
                if v is not None and v != "" and v != loop.get(k)}
+    return changes
+
+
+def _list_changes(args, loop: dict, changes: dict) -> None:
+    """The list and block settings: each flag, or its ``--no-`` form, replaces the whole value."""
     if getattr(args, "required_check", None) is not None or getattr(args, "no_required_checks",
                                                                      False):
         try:
@@ -192,7 +94,7 @@ def cmd_set(args) -> int:
                 [] if args.no_required_checks else args.required_check, "--required-check")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
-            return 2
+            raise _Refused
         if names != (loop.get("required_checks") or []):
             changes["required_checks"] = names
     if getattr(args, "human_path", None) is not None or getattr(args, "no_human_paths", False):
@@ -201,7 +103,7 @@ def cmd_set(args) -> int:
                 [] if args.no_human_paths else args.human_path, "--human-path")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
-            return 2
+            raise _Refused
         if names != (loop.get("human_paths") or []):
             changes["human_paths"] = names
     if getattr(args, "ci_covers", None) is not None or getattr(args, "no_ci_coverage", False):
@@ -210,7 +112,7 @@ def cmd_set(args) -> int:
                 [] if args.no_ci_coverage else args.ci_covers, "--ci-covers")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
-            return 2
+            raise _Refused
         if covers != (loop.get("ci_coverage") or {}):
             changes["ci_coverage"] = covers
     if getattr(args, "generated", None) is not None or getattr(args, "no_generated", False):
@@ -219,7 +121,7 @@ def cmd_set(args) -> int:
                 [] if args.no_generated else args.generated, "--generated")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
-            return 2
+            raise _Refused
         if names != (loop.get("generated") or []):
             changes["generated"] = names
     if getattr(args, "no_shadow", False) or getattr(args, "shadow_profile", None) is not None \
@@ -236,7 +138,7 @@ def cmd_set(args) -> int:
                 file_issues=getattr(args, "shadow_file_issues", None))
         except config.ConfigError as exc:
             print(f"refused: {exc}")
-            return 2
+            raise _Refused
         if shadow is not None and shadow != (loop.get("shadow") or {}):
             changes["shadow"] = shadow
     if getattr(args, "review_only", None) is not None or getattr(args, "no_review_only", False):
@@ -245,7 +147,7 @@ def cmd_set(args) -> int:
                                              loop, "--review-only")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
-            return 2
+            raise _Refused
         if names != (loop.get("review_only") or []):
             changes["review_only"] = names
     if getattr(args, "operator_agent", None) is not None or getattr(args, "no_operator_agents", False):
@@ -254,16 +156,20 @@ def cmd_set(args) -> int:
                 [] if args.no_operator_agents else args.operator_agent, loop, "--operator-agent")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
-            return 2
+            raise _Refused
         if agents != (loop.get("operator_agents") or []):
             changes["operator_agents"] = agents
+
+
+def _limit_changes(args, loop: dict, changes: dict) -> None:
+    """The caps and the check names; ``0`` or blank removes a cap."""
     if getattr(args, "ci_fix_cap", None) is not None:
         try:
             value = (None if str(args.ci_fix_cap).strip() in ("0", "")
                      else config.check_ci_fix_cap(args.ci_fix_cap, "--ci-fix-cap"))
         except config.ConfigError as exc:
             print(f"refused: {exc}")
-            return 2
+            raise _Refused
         if value != loop.get("ci_fix_cap"):
             changes["ci_fix_cap"] = value
     for key in ("review_only_cap", "review_only_daily"):
@@ -275,7 +181,7 @@ def cmd_set(args) -> int:
                 wanted, key, f"--{key.replace('_', '-')}")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
-            return 2
+            raise _Refused
         if value != loop.get(key):
             changes[key] = value
     # '' is a real value here: it clears the check.
@@ -284,7 +190,7 @@ def cmd_set(args) -> int:
             check = config.check_fixer_check(args.fixer_check, "--fixer-check")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
-            return 2
+            raise _Refused
         if check != (loop.get("fixer_check") or ""):
             changes["fixer_check"] = check
 
@@ -295,9 +201,12 @@ def cmd_set(args) -> int:
     if getattr(args, "ingress_app", None) is not None and args.ingress_app.strip() != (loop.get("ingress_app") or ""):
         changes["ingress_app"] = args.ingress_app.strip()
 
-    seats = {seat: dict(cfg) for seat, cfg in loop["seats"].items()}
-    seat_changes = {}
 
+def _credentials(args, loop: dict) -> tuple:
+    """The reader's and adjudicator's logins and the token/App maps ``set`` leaves.
+
+    Returns (tokens, apps, adj_before, adj_after, read_before, read_after, adj_changed,
+    read_changed)."""
     # The adjudicator's optional comment identity and the reader. `set` maps only *their*
     # credentials: the seats' token files move through the settings form and `apply`, which owns
     # the in-flight rules.
@@ -311,11 +220,11 @@ def cmd_set(args) -> int:
     read_after = read_before if read_wanted is None else read_wanted.strip()
     if read_wanted is not None and not read_after:
         print("refused: --read-token needs a login — the gates cannot read GitHub as nobody")
-        return 2
+        raise _Refused
     for pair in getattr(args, "token", None) or []:
         split = cli_common._split_token_pair(pair)
         if split is None:
-            return 2
+            raise _Refused
         login, path = split
         owner = next((name for name in (adj_after, read_after if read_wanted is not None else "")
                       if name and login.lower() == name.lower()), "")
@@ -325,12 +234,12 @@ def cmd_set(args) -> int:
                   f"(--admin-token); {login!r} is a seat or the current reader — seat token files "
                   "move through the plugin settings and `apply`, and a reader moves with "
                   "--read-token")
-            return 2
+            raise _Refused
         try:
             credentials.check_token_file(path, f"--token {login}")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
-            return 2
+            raise _Refused
         for key in [k for k in tokens if str(k).lower() == login.lower()]:
             del tokens[key]
         for key in [k for k in apps if str(k).lower() == login.lower()]:
@@ -340,7 +249,7 @@ def cmd_set(args) -> int:
     for pair in getattr(args, "app", None) or []:
         split = cli_common._split_app_pair(pair)
         if split is None:
-            return 2
+            raise _Refused
         login, spec = split
         owner = next((name for name in (adj_after, read_after if read_wanted is not None else "")
                       if name and login.lower() == name.lower()), "")
@@ -349,7 +258,7 @@ def cmd_set(args) -> int:
                   f"--adjudicator-login; {login!r} is a seat or the current reader — a seat's "
                   "credential moves through the plugin settings and `apply` (or `init --app`), "
                   "and a reader moves with --read-token")
-            return 2
+            raise _Refused
         for key in [k for k in apps if str(k).lower() == login.lower()]:
             del apps[key]
         for key in [k for k in tokens if str(k).lower() == login.lower()]:
@@ -364,6 +273,13 @@ def cmd_set(args) -> int:
     read_changed = (read_after != read_before
                     or cli_common._credential_label({"tokens": tokens, "apps": apps}, read_after)
                     != cli_common._credential_label(loop, read_after))
+    return (tokens, apps, adj_before, adj_after, read_before, read_after, adj_changed,
+            read_changed)
+
+
+def _seat_capacity(args, loop: dict, seats: dict, seat_changes: dict, adj_before: str,
+                   adj_after: str) -> None:
+    """The adjudicator seat's login and each seat's own concurrency."""
     if adj_after != adj_before:
         adj_seat = dict(seats.get("adjudicator") or {})
         if adj_after:
@@ -371,7 +287,7 @@ def cmd_set(args) -> int:
                 print("refused: this loop has no adjudicator route, so nothing rules — an "
                       "adjudicator login would never post; turn adjudication on first with "
                       f"`hermes dk set --loop {loop['id']} --adjudicator-profile PROFILE`")
-                return 2
+                raise _Refused
             adj_seat["login"] = adj_after
         else:
             adj_seat.pop("login", None)
@@ -390,6 +306,10 @@ def cmd_set(args) -> int:
         if value is not None and value != config.seat_concurrency(loop, seat):
             seats.setdefault(seat, {})["concurrency"] = value
             seat_changes[seat] = value
+
+
+def _seat_budgets(args, loop: dict, seats: dict, changes: dict) -> dict:
+    """Each seat's turn budget, daily caps and steps, as ``{label: (was, now)}``."""
     budget_changes = {}
     for seat, value in (("reviewer", getattr(args, "reviewer_turn_budget", None)),
                          ("fixer", getattr(args, "fixer_turn_budget", None))):
@@ -454,7 +374,11 @@ def cmd_set(args) -> int:
             seats[seat]["max_steps"] = value
         else:
             seats[seat].pop("max_steps", None)
+    return budget_changes
 
+
+def _observer_block(args, loop: dict) -> dict:
+    """The observer block the flags leave."""
     # The observer is a nested block, so it is collected the same way the seats are: flags the
     # operator did not pass leave the existing answer alone, and a flag that means "drop it"
     # (--observer-disable) is explicit rather than implied by an empty string.
@@ -480,7 +404,7 @@ def cmd_set(args) -> int:
                 observer_cfg["weekly_report"] = config.check_weekly_report(weekly)
             except ValueError as exc:
                 print(f"refused: --observer-weekly-report: {exc}")
-                return 2
+                raise _Refused
         else:
             observer_cfg.pop("weekly_report", None)   # blank = no weekly report
     for key in ("urgent_route", "urgent_profile", "urgent_deliver"):
@@ -496,24 +420,17 @@ def cmd_set(args) -> int:
             # configuration error the operator would only discover by finding no notices.
             print("no observer feed on this loop — name one with --observer-route / "
                   "--observer-profile first")
-            return 2
+            raise _Refused
     if args.observer_mute:
         observer_cfg["mute"] = True
     if args.observer_unmute:
         observer_cfg["mute"] = False
+    return observer_cfg
 
-    if (not changes and not seat_changes and not budget_changes and not adj_changed
-            and not read_changed
-            and observer_cfg == (loop.get("observer") or {})):
-        if adj_done:
-            return 0
-        print("nothing to change — pass at least one setting "
-              "(--concurrency, --reviewer-concurrency, --fixer-concurrency, "
-              "--shadow-concurrency, --triage-concurrency, --cap, --clone, "
-              "--turn-budget, "
-              "--observer-profile, ...)")
-        return 0
 
+def _validated(loop: dict, changes: dict, seats: dict, observer_cfg: dict, tokens: dict,
+               apps: dict, read_after: str, read_changed: bool, adj_changed: bool) -> tuple:
+    """The normalized loop, its credentials checked; returns (updated, app_route)."""
     try:
         updated = config.normalize({**loop, **changes, "seats": seats, "observer": observer_cfg,
                                     "tokens": tokens, "apps": apps, "read_token": read_after})
@@ -541,9 +458,13 @@ def cmd_set(args) -> int:
             cli_common._verify_routes(updated, {"app"})
     except config.ConfigError as exc:
         print(f"refused: {exc}")
-        return 2
+        raise _Refused
+    return updated, app_route
 
-    shims_ok = True
+
+def _observer_move(loop: dict, updated: dict) -> tuple:
+    """Whether the observer's destinations move, refused while notices are unsettled; marks a
+    disabled feed's tombstone. Returns (before, after, destination_changed, urgent_changed)."""
     before = loop.get("observer") or {}
     after = updated.get("observer") or {}
     # Disabling stops new notices and removes the route, but leaves the outbox intact.
@@ -567,26 +488,34 @@ def cmd_set(args) -> int:
             outstanding = observer.unsettled(state_mod.state_for(loop))
         except (OSError, ValueError) as exc:
             print(f"observer ledger cannot be checked — destination unchanged: {exc}")
-            return 2
+            raise _Refused
         if outstanding:
             print(f"refused: {outstanding} observer notice(s) are unsettled; retry/resolve "
                   "them before changing the route, profile, delivery or host")
-            return 2
+            raise _Refused
     if after:
         updated.pop("observer_disabled", None)
     elif before:
         updated["observer_disabled"] = old_target
+    return before, after, destination_changed, urgent_changed
+
+
+def _observer_route(loop: dict, updated: dict, before: dict, after: dict,
+                    destination_changed: bool) -> bool:
+    """Write the observer's route and its intent when its destination moves; False when a
+    shim could not be written."""
+    shims_ok = True
     if destination_changed and after:
         name = after["route"]
         reserved = {cfg.get("route") for cfg in loop["seats"].values()}
         reserved.add((loop.get("adjudicator") or {}).get("route"))
         if name in reserved:
             print("refused: observer route must not replace a seat or adjudicator route")
-            return 2
+            raise _Refused
         existing = routes.route(name)
         if existing and name != before.get("route"):
             print(f"refused: route {name!r} already exists and is not this observer's route")
-            return 2
+            raise _Refused
         try:
             host = config.webhook_host(updated.get("host"), required=True)
             written = routes.new_route(name, profile=config.seat_profile(updated, "observer"),
@@ -596,7 +525,7 @@ def cmd_set(args) -> int:
                                        description=f"{updated['repo']} — read-only observer feed")
         except (OSError, ValueError, config.ConfigError) as exc:
             print(f"observer route could not be reconciled; loop config unchanged: {exc}")
-            return 2
+            raise _Refused
         try:
             route_intent.record(updated, {name: written})
         except (OSError, ValueError) as exc:
@@ -606,8 +535,14 @@ def cmd_set(args) -> int:
             except (OSError, ValueError) as rollback_exc:
                 print(f"ROLLBACK FAILED: {rollback_exc} — inspect route {name!r} manually")
             print(f"observer route intent could not be recorded; loop config unchanged: {exc}")
-            return 2
+            raise _Refused
         shims_ok = cli_common._install_shims(updated)
+    return shims_ok
+
+
+def _urgent_route(loop: dict, updated: dict, before: dict, after: dict, urgent_changed: bool,
+                  shims_ok: bool) -> bool:
+    """Write the observer's urgent route when it changes."""
     if urgent_changed and after.get("urgent_route"):
         urgent = after["urgent_route"]
         reserved = {cfg.get("route") for cfg in loop["seats"].values()}
@@ -616,7 +551,7 @@ def cmd_set(args) -> int:
         if urgent in reserved or (existing and urgent != before.get("urgent_route")):
             print(f"refused: route {urgent!r} is already in use and is not this observer's "
                   "urgent route")
-            return 2
+            raise _Refused
         try:
             host = config.webhook_host(updated.get("host"), required=True)
             written = routes.new_route(
@@ -628,8 +563,15 @@ def cmd_set(args) -> int:
             route_intent.record(updated, {urgent: written})
         except (OSError, ValueError, config.ConfigError) as exc:
             print(f"observer urgent route could not be reconciled; loop config unchanged: {exc}")
-            return 2
+            raise _Refused
         shims_ok = cli_common._install_shims(updated) and shims_ok
+    return shims_ok
+
+
+def _app_route(loop: dict, updated: dict, app_route: str) -> list:
+    """Install the App's route with the config (#1239), both restored on failure; returns the
+    shim lines to print."""
+    shim_lines = []
     if app_route and app_route != config.app_route(loop):
         loop_file = config.config_dir() / f"{updated['id']}.json"
         previous_config = loop_file.read_bytes()
@@ -647,10 +589,14 @@ def cmd_set(args) -> int:
                 cli_common._restore_config(loop_file, previous_config)
             except Exception as rollback_exc:
                 print(f"ROLLBACK FAILED: {rollback_exc} — inspect {loop_file} and route {app_route}")
-                return 2
+                raise _Refused
             print(f"App route install FAILED: {exc}; config and route restored")
-            return 2
-    path = cli_common._write_config(updated)
+            raise _Refused
+    return shim_lines
+
+
+def _retire_routes(updated: dict, before: dict, after: dict, destination_changed: bool) -> None:
+    """Remove the observer routes this change replaced; a failure only warns."""
     if before.get("urgent_route") and before["urgent_route"] != after.get("urgent_route"):
         try:
             route_intent.forget(updated, [before["urgent_route"]])
@@ -664,6 +610,12 @@ def cmd_set(args) -> int:
             routes.remove_route(before["route"])
         except (OSError, ValueError) as exc:
             print(f"warning: old observer route {before['route']!r} remains; remove it manually: {exc}")
+
+
+def _print_summary(loop: dict, updated: dict, path, changes: dict, seat_changes: dict,
+                   budget_changes: dict, read_before: str, read_after: str, adj_before: str,
+                   adj_after: str, app_route: str, shim_lines: list) -> None:
+    """What changed, then what to run next."""
     for key, value in changes.items():
         print(f"  {key}: {loop.get(key)!r} → {value!r}")
     for seat, value in seat_changes.items():
@@ -720,6 +672,68 @@ def cmd_set(args) -> int:
         print("  turn budget now: " + cli_common._budget_line(updated)
               + "   (queued turns keep the budget they were enqueued with)")
 
+
+def cmd_set(args) -> int:
+    """Change a loop's settings in place, through the same validation ``init`` uses.
+
+    Seat prompts are rendered from the payload at fire time; observer destination changes also
+    reconcile the delivery-only route before updating config. The rails still apply — ``concurrency``
+    above 1 without a ``clone`` is refused here exactly as it is at init, because a parallel run
+    that cannot be isolated would share a checkout.
+    """
+    try:
+        return _set(args)
+    except _Refused:
+        return 2
+
+
+def _set(args) -> int:
+    """``cmd_set``'s steps, in order; a step that refuses raises ``_Refused``."""
+    loop = _load_loop(args)
+    adj_done = False
+    if (getattr(args, "adjudicator_profile", None) or getattr(args, "adjudicator_route", None)
+            or getattr(args, "adjudicator", None)):
+        rc = set_adjudication._set_adjudication(args, loop)
+        if rc:
+            return rc
+        adj_done = True
+        loop = config.load_id(args.loop)
+
+    host = _host_arg(args)
+    changes = _flag_changes(args, loop, host)
+    _list_changes(args, loop, changes)
+    _limit_changes(args, loop, changes)
+    seats = {seat: dict(cfg) for seat, cfg in loop["seats"].items()}
+    seat_changes = {}
+
+    (tokens, apps, adj_before, adj_after, read_before, read_after, adj_changed,
+     read_changed) = _credentials(args, loop)
+    _seat_capacity(args, loop, seats, seat_changes, adj_before, adj_after)
+    budget_changes = _seat_budgets(args, loop, seats, changes)
+    observer_cfg = _observer_block(args, loop)
+
+    if (not changes and not seat_changes and not budget_changes and not adj_changed
+            and not read_changed
+            and observer_cfg == (loop.get("observer") or {})):
+        if adj_done:
+            return 0
+        print("nothing to change — pass at least one setting "
+              "(--concurrency, --reviewer-concurrency, --fixer-concurrency, "
+              "--shadow-concurrency, --triage-concurrency, --cap, --clone, "
+              "--turn-budget, "
+              "--observer-profile, ...)")
+        return 0
+
+    updated, app_route = _validated(loop, changes, seats, observer_cfg, tokens, apps, read_after,
+                                    read_changed, adj_changed)
+    before, after, destination_changed, urgent_changed = _observer_move(loop, updated)
+    shims_ok = _observer_route(loop, updated, before, after, destination_changed)
+    shims_ok = _urgent_route(loop, updated, before, after, urgent_changed, shims_ok)
+    shim_lines = _app_route(loop, updated, app_route)
+    path = cli_common._write_config(updated)
+    _retire_routes(updated, before, after, destination_changed)
+    _print_summary(loop, updated, path, changes, seat_changes, budget_changes, read_before,
+                   read_after, adj_before, adj_after, app_route, shim_lines)
     for line in cli_common._parallel_lines(updated):
         # The seat notes only when the loop default moved: that is when they explain something.
         if "concurrency" in changes or not line.startswith("note:"):
