@@ -51,9 +51,9 @@ from datetime import datetime
 from typing import NamedTuple
 from urllib.parse import urlsplit
 
-from . import ci, config, gh, isolation, observer, route_intent, routes
-from .config import host_guards
-from .config import credentials
+from .. import ci, config, gh, isolation, observer, route_intent, routes
+from ..config import host_guards
+from ..config import credentials
 
 VERIFIED = "verified"
 ABSENT = "absent"
@@ -96,7 +96,7 @@ class Check:
 
 
 def plugin_root() -> pathlib.Path:
-    return pathlib.Path(__file__).resolve().parents[1]
+    return pathlib.Path(__file__).resolve().parents[2]
 
 
 def scripts_dir() -> pathlib.Path:
@@ -207,7 +207,7 @@ def shim_fix(loop: dict) -> str:
 def hooks_fix(loop: dict, what: str) -> str:
     """``apply --hooks`` reconciles this loop's repo hooks (every role in ``config.hook_roles``) with
     its routes; ``init --hooks`` refuses an existing loop."""
-    from .cli import common as cli_common   # the one wording of what a hook write needs (#106)
+    from ..cli import common as cli_common   # the one wording of what a hook write needs (#106)
     return (f"`hermes dk apply --loop {loop['id']} --hooks --admin-token <login>` {what} "
             f"({cli_common.hook_write_need(loop, '<login>')})")
 
@@ -338,8 +338,8 @@ def check_watchdog_last_run(loop: dict) -> Check:
     simply has not fired yet is not proof of a fault. Only a proven-stale stamp fails.
     """
     import time as _time
-    from . import state as state_mod
-    from .util import epoch
+    from .. import state as state_mod
+    from ..util import epoch
     st = state_mod.state_for(loop)
     raw = st.watch().get("last_run")
     if not raw:
@@ -411,7 +411,7 @@ def check_runtime_paths(loop: dict) -> list[Check]:
     on every turn while doctor says nothing. Each path is checked independently so the
     operator sees exactly which one is wrong; a missing runtime file is reported as such.
     """
-    from . import runtime_detect, seat_model
+    from .. import runtime_detect, seat_model
     path = config.host_path("runtime")
     if not path.exists():
         return [Check("runtime:file", ABSENT,
@@ -478,7 +478,7 @@ def check_node() -> Check:
     Optional, so an absent Node is a reported skip, never a failure: a seat then has no ``node``
     and JavaScript suites stay unverified, as before.
     """
-    from . import runtime_detect
+    from .. import runtime_detect
     root, version = runtime_detect.node_version()
     if root is None:
         return Check("runtime:node", SKIPPED,
@@ -510,7 +510,7 @@ def check_triage(loop: dict) -> list[Check]:
     checks = [_check_profile(config.seat_profile(loop, "triage"), "triage")]
     login = config.triage_login(loop)
     path = gh.token_path(loop, login) if login else None
-    from . import github_app
+    from .. import github_app
     if path is None and login and github_app.is_app(loop, login):
         checks.append(check_app_identity(loop, login, "credential:triage"))
     elif path is None or not path.is_file() or path.stat().st_size == 0:
@@ -550,7 +550,7 @@ def check_adjudicator_profile(loop: dict) -> Check:
 
 def runtime_settings() -> tuple[dict | None, Check | None]:
     """The runtime file's settings for the model checks, or a check explaining why not."""
-    from . import seat_model
+    from .. import seat_model
     path = config.host_path("runtime")
     if not path.exists():
         return None, None
@@ -570,7 +570,7 @@ def check_seat_models(loop: dict) -> list[Check]:
     without resolving (or refreshing) any credential. ``selftest`` resolves the credential and
     makes one tiny completion per seat.
     """
-    from . import seat_model
+    from .. import seat_model
     settings, problem = runtime_settings()
     checks = [problem] if problem else []
     if settings is not None and seat_model.legacy_override(settings) is not None:
@@ -630,7 +630,7 @@ def check_seat_extras(loop: dict) -> list[Check]:
     read-only description as ``model:<seat>``: no credential is resolved. A seat whose provider
     could not be read, or a probe that could not answer, is ``unknown`` — never ``verified``.
     """
-    from . import seat_model
+    from .. import seat_model
     runtime = config.host_path("runtime")
     settings, problem = runtime_settings()
     venv = str((settings or {}).get("venv") or "")
@@ -740,7 +740,7 @@ def check_app_identity(loop: dict, login: str, name: str) -> Check:
     and private, and this host can sign an App JWT. Metadata only: the key is never opened. Its
     live principal and installation are checked by ``selftest`` and by the broker before each
     write, as a PAT's identity is."""
-    from . import github_app
+    from .. import github_app
     entry = github_app.entry(loop, login) or {}
     path = github_app.key_path(loop, login)
     app = f"GitHub App {entry.get('app_id')}"
@@ -769,7 +769,7 @@ def check_app_live(loop: dict, login: str, offline: bool) -> Check:
     (``GET /app``: the id and the bot login match) and the App is installed on this repository
     (``GET /repos/<repo>/installation``). Both are reads made with the App's own JWT; no token is
     minted and nothing is written."""
-    from . import github_app
+    from .. import github_app
     name = f"app-live:{login}"
     if offline:
         return Check(name, UNKNOWN, "not probed (--offline) — the App and its installation not read")
@@ -804,7 +804,7 @@ def check_credential(loop: dict, seat: str) -> Check:
     """The gates use gh.token_path, not the profile's GH_TOKEN environment variable."""
     login = str(loop["seats"][seat].get("login") or "")
     tokens = loop.get("tokens") or {}
-    from . import github_app
+    from .. import github_app
     if login and gh.token_path(loop, login) is None and github_app.is_app(loop, login):
         return check_app_identity(loop, login, f"credential:{seat}")
     if login:
@@ -864,7 +864,7 @@ def check_adjudicator_identity(loop: dict) -> Check | None:
                          "set seats.adjudicator.login to its own account, or remove it for "
                          "operator-only rulings")
     path = gh.token_path(loop, login)
-    from . import github_app
+    from .. import github_app
     if path is None and github_app.is_app(loop, login):
         found = check_app_identity(loop, login, "credential:adjudicator")
         if found.status != VERIFIED:
@@ -1044,7 +1044,7 @@ def _intent_overlay(loop: dict, data: dict, checks: list[Check]) -> list[Check]:
 def _missing_route_fix(loop: dict) -> str:
     """``init`` refuses an existing loop, so a lost route is written back by ``apply``. (With an
     intent record, ``_intent_overlay`` replaces this with ``doctor --repair``, same secret.)"""
-    from . import gate_shims
+    from .. import gate_shims
     return gate_shims.recreate_fix(loop)
 
 
@@ -1073,7 +1073,7 @@ def _prompt_fix(loop: dict, name: str) -> str:
     """The remedy for a route whose prompt no longer proves it is ours: the same one apply prints
     (``gate_shims.divergence``) — repair from the record when it holds the real prompt, else
     move the entry aside and recreate it."""
-    from . import gate_shims
+    from .. import gate_shims
     found = gate_shims.divergence(loop, contract=True).get(name)
     return found[1] if found else REPAIR_FIX
 
@@ -1323,7 +1323,7 @@ def check_gate_timeouts(loop: dict) -> list[Check]:
     same setting (the smaller one, when either the host or the profile's own gateway may serve
     the route) and shrink their budget to fit, so a low value is safe but starves them of time.
     """
-    from . import gate_failures as gf
+    from .. import gate_failures as gf
     checks = []
     for profile, roles in gate_timeout_profiles(loop).items():
         name = f"gate:timeout:{profile}"
@@ -1390,7 +1390,7 @@ def check_gateway_rate_limit(loop: dict) -> Check:
     it, and ``setup``/``arm`` cannot. The watchdog's triage sweep (``triage_sweep``) re-queues an
     issue whose delivery was dropped; a dropped review or fix wake has no such backstop yet.
     """
-    from . import gate_failures as gf
+    from .. import gate_failures as gf
     hosts: dict[pathlib.Path, str] = {}
     for profile in gate_timeout_profiles(loop):
         try:
@@ -1445,7 +1445,7 @@ def check_shim(loop: dict) -> Check:
     # byte-for-byte identity with the shim init actually generates; a dead assignment, commented
     # line or altered subprocess invocation cannot pass merely by mentioning WATCHDOG.
     live = str(scripts_dir() / "watchdog.py")
-    from . import cli
+    from .. import cli
     expected = cli.SHIM.format(watchdog=pathlib.Path(live))
     if text != expected:
         return Check("cron:shim", MISMATCH, f"{path} differs from init's executable shim for {live}",
@@ -1657,7 +1657,7 @@ def check_sandbox_caps(loop: dict) -> Check:
     for one turn can still take a small host down when several seats run at once. This reports the
     worst case at *this* loop's concurrency beside what the host has available.
     """
-    from . import contained
+    from .. import contained
     per_turn = contained.CHECKOUT_SIZE + contained.SCRATCH_SIZE
     turns = (config.seat_concurrency(loop, "reviewer")
              + config.seat_concurrency(loop, "fixer") + 1)
@@ -1793,7 +1793,7 @@ def check_review_only_update(loop: dict, offline: bool = False) -> Check | None:
 
 def check_attribution(loop: dict) -> Check:
     """Whether what the loop posts is signed (#197). Both answers are valid; this only says which."""
-    from . import attribution
+    from .. import attribution
     lid = shlex.quote(str(loop.get("id") or "<id>"))
     if attribution.enabled(loop):
         return Check("attribution", VERIFIED,
@@ -1808,7 +1808,7 @@ def check_attribution(loop: dict) -> Check:
 def check_authorship(loop: dict, offline: bool = False) -> Check:
     """Commits on open loop PRs that show as a seat's account but that no seat turn pushed (#757).
     Report-only: a finding is a warning (``unknown``), never a failure, and blocks nothing."""
-    from . import authorship
+    from .. import authorship
     name = "authorship"
     agents = sorted(config.operator_agents(loop))
     named = (f" · operator agents (post as the operator's account): {', '.join(agents)}"
@@ -1928,7 +1928,7 @@ def _hook_listing(loop: dict) -> list | None:
 def check_app_webhook(loop: dict, offline: bool) -> Check:
     """#1239: the App's webhook, read with the App's JWT, must post to this loop's App route with
     every event it needs; until then the loop receives nothing, however healthy the rest reads."""
-    from . import app_ingress
+    from .. import app_ingress
     app = loop.get("ingress_app")
     fix = f"hermes dk app-webhook --loop {loop['id']} --set"
     if offline:
@@ -2252,7 +2252,7 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
 
 def latest_decision(loop: dict, seat: str) -> str:
     """The route's gate's latest recorded decision (#209), as a suffix for the hook line."""
-    from . import gate_decisions
+    from .. import gate_decisions
     try:
         entry = gate_decisions.latest_per_gate(loop).get(f"gate_{seat}")
     except Exception:  # noqa: BLE001 - a diagnostic line never fails the check
@@ -2332,7 +2332,7 @@ def _safe_report_text(text: str) -> str:
 def check_gateway_scripts(loop: dict) -> list[Check]:
     """Each installed route's script, resolved exactly as the gateway resolves it (issue #105):
     under the serving profile's ``scripts/``, a real file inside it, and this plugin's shim."""
-    from . import gate_shims
+    from .. import gate_shims
     status_of = {"ok": VERIFIED, "absent": ABSENT, "mismatch": MISMATCH}
     return [Check(name, status_of[status], detail, fix)
             for name, status, detail, fix in gate_shims.live_checks(loop)]
@@ -2345,7 +2345,7 @@ def check_host_names() -> Check:
            if (config.home() / config.HOST_FILES[key][1]).exists()]
     # The ledger's side files (its "a ledger existed" marker, the worker log) carry its old name
     # too, and are left behind if only the ledger moved.
-    from .migrate import ledger_sides
+    from ..migrate import ledger_sides
     ledger_old = config.home() / config.HOST_FILES["ledger"][1]
     old += [str(side.relative_to(config.home())) for side in ledger_sides(ledger_old)]
     if not old:
@@ -2526,7 +2526,7 @@ def check_merge_check(loop: dict, offline: bool) -> Check | None:
     (in App mode pinned to the reviewer App) when the loop posts it, never required when it does
     not, and no required approvals in App mode (GitHub never counts the App's). None when the loop
     does not post the check and nothing requires it."""
-    from . import protection
+    from .. import protection
     lid = shlex.quote(str(loop.get("id") or "<id>"))
     posting = config.merge_check_on(loop)
     if offline:

@@ -21,7 +21,7 @@ from diaktoros import broker, gh, safe_push  # noqa: E402
 
 # The only modules that may still name /user: the seam itself, and the read-only diagnostics
 # that read a PAT's own response headers (expiry, scopes), which M1b makes App-aware.
-USER_CALLERS = {"diaktoros/gh.py", "diaktoros/doctor.py", "diaktoros/selftest.py"}
+USER_CALLERS = {"diaktoros/gh.py", "diaktoros/doctor/__init__.py", "diaktoros/selftest.py"}
 
 
 class Seam(unittest.TestCase):
