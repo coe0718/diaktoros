@@ -25,7 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from diaktoros import ledger  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros import (broker_client, broker_ipc, config, gh, review_receipt,  # noqa: E402
-                         run_supervisor, trusted_turn)
+                         trusted_turn)
+from diaktoros.run_supervisor import views  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 import test_pr_change as pc  # noqa: E402  (its World fakes gh.fetch for pr_change)
 
@@ -407,22 +408,22 @@ class HostRecordsTheView(pc.Base):
                  mock.patch.object(trusted_turn, "run_turn", side_effect=turn), \
                  mock.patch.object(sup, "recover"):
                 sup._run_production(run_id, "w")
-            views = run_supervisor.view_view(sup.db, REPO, 7)
-        return seen, views
+            view_rows = views.view_view(sup.db, REPO, 7)
+        return seen, view_rows
 
     def test_an_unreadable_file_list_is_recorded_before_launch(self):
         world = pc.World([pc.changed(1)])
         world.gone[pc.FILES] = "HTTP 404 {}"
-        seen, views = self.run_worker(world)
+        seen, view_rows = self.run_worker(world)
         self.assertIn("HTTP 404", seen["ledger"])           # durable before the seat starts
         self.assertEqual(seen["scope"].partial_view, seen["ledger"])
-        self.assertEqual([(v["seat"], v["head"]) for v in views], [("reviewer", HEAD)])
-        self.assertIn("HTTP 404", views[0]["partial_view"])
+        self.assertEqual([(v["seat"], v["head"]) for v in view_rows], [("reviewer", HEAD)])
+        self.assertIn("HTTP 404", view_rows[0]["partial_view"])
 
     def test_a_whole_change_is_recorded_complete(self):
-        seen, views = self.run_worker(pc.World([pc.changed(1)]))
+        seen, view_rows = self.run_worker(pc.World([pc.changed(1)]))
         self.assertEqual((seen["ledger"], seen["scope"].partial_view), ("", ""))
-        self.assertEqual(views, [])
+        self.assertEqual(view_rows, [])
 
 
 class LaunchPathRefuses(pc.Base):

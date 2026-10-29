@@ -11,7 +11,7 @@
     "diaktoros/gate_failures.py": 1319,
     "diaktoros/inference_proxy.py": 1122,
     "diaktoros/observer.py": 1019,
-    "diaktoros/run_supervisor/__init__.py": 2728,
+    "diaktoros/run_supervisor/__init__.py": 2356,
     "diaktoros/run_supervisor/turns.py": 1031,
     "diaktoros/safe_push.py": 964,
     "diaktoros/seat_model.py": 1352,

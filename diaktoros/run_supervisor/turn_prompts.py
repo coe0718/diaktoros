@@ -5,6 +5,7 @@ data. The facts they read are pr_facts's; the core's rules are reached through t
 from __future__ import annotations
 
 from .. import run_supervisor
+from ..run_supervisor import views
 from . import pr_facts
 
 _READ = object()      # "read the newest shadow review now", as opposed to one already read
@@ -184,7 +185,7 @@ def newest_shadow_review(row):
     ruling answers, so a review landing in between cannot make them differ."""
     import sqlite3
     try:
-        con = run_supervisor.read_only_connect(run_supervisor.production_ledger())
+        con = views.read_only_connect(run_supervisor.production_ledger())
         if con is None:
             raise sqlite3.OperationalError("no ledger")
         try:
@@ -221,7 +222,7 @@ def upheld_shadow_section(row, ruled: float, found=_READ) -> str:
         found = newest_shadow_review(row)
     ruling = ''
     try:
-        con = run_supervisor.read_only_connect(run_supervisor.production_ledger())
+        con = views.read_only_connect(run_supervisor.production_ledger())
         if con is not None:
             try:
                 got = con.execute("SELECT body FROM rulings WHERE repo=? AND pr=? AND head=? AND "

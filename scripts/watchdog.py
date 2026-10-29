@@ -1153,7 +1153,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                 kind = (f"{PUSH_OFF_KIND} — changes requested {ago(mins)} at head "
                         f"{head[:7]} waits for you: run "
                         f"`{config.fixer_push_enable_command(loop)}` (or fix it by hand)")
-        elif at_head and (disputed := run_supervisor.dispute_at(
+        elif at_head and (disputed := run_supervisor.views.dispute_at(
                 run_supervisor.production_ledger(), loop["repo"], number, head)) is not None \
                 and disputed > epoch(latest.get("submitted_at")) \
                 and not live_turn(loop, number, head, "fixer"):
@@ -1346,8 +1346,8 @@ LIVE_TURN = ("pending", "claimed", "launching", "running", "waiting")
 
 def live_turn(loop: dict, number: int, head: str, seat: str) -> bool:
     """Whether ``seat``'s turn on this PR head is queued or running in the run ledger."""
-    from diaktoros.run_supervisor import turn_state
-    return turn_state(config.host_path("ledger"), loop["repo"], number, head, seat) in LIVE_TURN
+    from diaktoros.run_supervisor import views
+    return views.turn_state(config.host_path("ledger"), loop["repo"], number, head, seat) in LIVE_TURN
 
 
 def stall_key(number: int, head: str, kind: str) -> str:
@@ -1370,12 +1370,12 @@ def parked_kind(loop: dict, marker: dict, number: int, head: str,
     """
     if not isinstance(marker, dict) or marker.get("head") != head:
         return None
-    from diaktoros.run_supervisor import ruling_at, turn_state
+    from diaktoros.run_supervisor import views
     # A shadow marker can be re-armed at its head for a later dissent (#1111): only its own
     # round's ruling ends it, not the earlier round's.
     shadow = (marker.get("escalated") or {}).get("by") == gate.SHADOW_ESCALATION
-    if ruling_at(config.host_path("ledger"), loop["repo"], number, head,
-                 turn_key=f"breach:{marker.get('rounds')}" if shadow else None):
+    if views.ruling_at(config.host_path("ledger"), loop["repo"], number, head,
+                       turn_key=f"breach:{marker.get('rounds')}" if shadow else None):
         return ""             # ruled: the decision is the operator's, and the ruling said so
     if marker.get("status") != "adjudicating":
         mins = age_min(marker.get("at"))
@@ -1383,8 +1383,8 @@ def parked_kind(loop: dict, marker: dict, number: int, head: str,
             return (f"parked awaiting adjudication {lasting(mins)} "
                     f"(marker {marker.get('at') or 'unknown'})")
         return ""
-    run = turn_state(config.host_path("ledger"), loop["repo"],
-                     number, head, "adjudicator")
+    run = views.turn_state(config.host_path("ledger"), loop["repo"],
+                           number, head, "adjudicator")
     if run in LIVE_TURN:
         return ""
     since = marker.get("adjudicating_at") or marker.get("at")

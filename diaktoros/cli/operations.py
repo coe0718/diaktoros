@@ -114,10 +114,10 @@ def _dependency_lines(loop: dict, pr: int | None = None, limit: int = 5) -> list
 
     Read-only; an absent or unreadable ledger is simply no lines (status/explain say the rest).
     """
-    from ..run_supervisor import dependency_view, describe_dependencies
-    rows = dependency_view(config.host_path("ledger"), loop["repo"], pr,
-                           limit)
-    return [describe_dependencies(row) for row in rows or []]
+    from ..run_supervisor import views
+    rows = views.dependency_view(config.host_path("ledger"), loop["repo"], pr,
+                                 limit)
+    return [views.describe_dependencies(row) for row in rows or []]
 
 
 def _view_lines(loop: dict, pr: int, head: str | None, limit: int = 3) -> list[str]:
@@ -126,9 +126,9 @@ def _view_lines(loop: dict, pr: int, head: str | None, limit: int = 3) -> list[s
     Only the current head's: a new head gets a new change record. Read-only; an absent or
     unreadable ledger is no lines.
     """
-    from ..run_supervisor import describe_view, view_view
-    rows = view_view(_ledger_path(), loop["repo"], pr, limit) or []
-    return [describe_view(row) for row in rows if head and row["head"] == head]
+    from ..run_supervisor import views
+    rows = views.view_view(_ledger_path(), loop["repo"], pr, limit) or []
+    return [views.describe_view(row) for row in rows if head and row["head"] == head]
 
 
 def cmd_status(args) -> int:
@@ -335,23 +335,23 @@ def _ledger_path() -> pathlib.Path:
 def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> list[dict]:
     """The isolated run ledger's failed/waiting/uncertain rows for this loop, read-only (#53).
     Prints them and returns them ([] when there is no readable ledger)."""
-    from ..run_supervisor import describe_run, pending_view, read_only_view, split_history
+    from ..run_supervisor import views
 
     ledger = _ledger_path()
     if not ledger.exists():
         return []
-    queue = pending_view(ledger, loop["repo"]) or []
+    queue = views.pending_view(ledger, loop["repo"]) or []
     for place, row in enumerate(queue, 1):
         if pr is None or row["pr"] == pr:
             print(f"{prefix}queue {place} of {len(queue)}: {row['seat']} #{row['pr']} "
                   f"@ {str(row['head'])[:7]} — {row['why']}")
-    rows = read_only_view(ledger, loop["repo"], pr)
+    rows = views.read_only_view(ledger, loop["repo"], pr)
     if rows is None:
         print(f"{prefix}run ledger unreadable ({ledger})")
         return []
     # A failed run on a PR the watchdog's last complete listing does not show open is history
     # (#723): counted apart, never offered for re-arm. The ledger rows are not touched.
-    rows, history, unknown = split_history(rows, loop)
+    rows, history, unknown = views.split_history(rows, loop)
     if history:
         if pr is None:
             print(f"{prefix}{len(history)} failed turn(s) on closed PRs, history "
@@ -366,7 +366,7 @@ def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> l
         print(f"{prefix}note: no open-PR listing from the watchdog yet — whether these PRs are "
               "still open is unknown")
     for row in rows[-limit:]:
-        print(prefix + describe_run(row, loop["id"]))
+        print(prefix + views.describe_run(row, loop["id"]))
         if row.get("detail") and pr is not None:
             for line in str(row["detail"]).splitlines()[-6:]:
                 print(f"{' ' * len(prefix)}| {line[:200]}")
@@ -768,7 +768,7 @@ def cmd_explain(args) -> int:
     retry.
     """
     from .. import state as state_mod
-    from ..run_supervisor import next_step
+    from ..run_supervisor import views
 
     if args.loop:
         try:
@@ -857,7 +857,7 @@ def cmd_explain(args) -> int:
         if not blockers:
             print(f"  {'blocked:':<12}nothing — no guard is holding this PR back")
         print(f"  {'next:':<12}"
-              + (next_step(held[-1], loop["id"]) if held else report['next']['action']))
+              + (views.next_step(held[-1], loop["id"]) if held else report['next']['action']))
     return 0
 
 

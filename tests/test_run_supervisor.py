@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 from diaktoros import (broker, broker_ipc, config, gate, ledger, run_supervisor, seat_model,
                          trusted_turn)
+from diaktoros.run_supervisor import views
 from diaktoros.config import host_guards  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
 from diaktoros.hostdirs import HostStateGone
@@ -533,8 +534,8 @@ class Lifecycle(unittest.TestCase):
                 with patch.object(sys, "argv", ["run_supervisor", argv[0], str(db), *argv[1:]]), \
                         patch.object(run_supervisor, "_has_content",
                                      vanishing(run_supervisor._has_content, db)), \
-                        patch.object(run_supervisor, "read_only_connect",
-                                     vanishing(run_supervisor.read_only_connect, db)), \
+                        patch.object(views, "read_only_connect",
+                                     vanishing(views.read_only_connect, db)), \
                         contextlib.redirect_stderr(err), contextlib.redirect_stdout(out), \
                         self.assertRaises(SystemExit) as raised:
                     run_supervisor.main()

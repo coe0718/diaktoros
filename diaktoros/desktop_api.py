@@ -36,6 +36,7 @@ import time
 
 from . import (arm_action, config, doctor, findings, gate_decisions, pacing, retry_action, route_intent,
                run_supervisor, stats)
+from .run_supervisor import views
 from .config import settings_form
 
 SINCE_CHOICES = ("24h", "7d", "30d")
@@ -561,7 +562,7 @@ def _with_retry(db, repo: str, runs: list[dict], loop: dict) -> list[dict]:
     if not runs:
         return out
     try:
-        con = run_supervisor.read_only_connect(db)
+        con = views.read_only_connect(db)
         if con is None:
             return out
         try:
@@ -628,7 +629,7 @@ def retry_view(loop_id: str | None, pr: int, seat: str, head: str | None = None)
 def _runs_after(db, repo: str, pr: int) -> list[dict]:
     """This PR's ledger rows as they stand now — the read-back a successful retry answers with."""
     try:
-        con = run_supervisor.read_only_connect(db)
+        con = views.read_only_connect(db)
         if con is None:
             return []
         try:
@@ -726,7 +727,7 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
     view["findings"] = _findings(loop, pr)
     view["decisions"] = _decisions(loop, pr)
     db = run_supervisor.production_ledger()
-    con = run_supervisor.read_only_connect(db)
+    con = views.read_only_connect(db)
     if con is None:                                 # no ledger: unavailable, not verified empty
         view["breach"] = _breach(loop, pr)
         return view
@@ -736,12 +737,12 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
         stamp = {row["id"]: (row["created"], row["updated"]) for row in con.execute(
             "SELECT id, created, updated FROM runs WHERE repo=? AND pr=?", (repo, pr))}
         # The host's own "what moves it" line, for the runs that are actually not moving.
-        for row in run_supervisor.runs_view(con, repo, pr):
+        for row in views.runs_view(con, repo, pr):
             created, _ = stamp.get(row["id"], (None, None))
             view["stuck"].append({"seat": row["seat"], "head": _recorded_head(row["head"]),
                                   "state": row["state"], "since": created,
-                                  "next": run_supervisor.next_step(row, loop["id"]),
-                                  "explanation": run_supervisor.hold_explanation(row)})
+                                  "next": views.next_step(row, loop["id"]),
+                                  "explanation": views.hold_explanation(row)})
         # The newest TURNS_MAX rows, shown oldest first: the latest turns are the ones that say
         # whether the PR is still moving. ``turns_total`` lets the page say the list is cut.
         view["turns_total"] = _count(con, "runs", repo, pr)

@@ -86,7 +86,7 @@ def driver(spec_path: str) -> None:
     from unittest import mock
     from diaktoros import config, gh, safe_push, seat_model, trusted_fetch, trusted_turn
     from diaktoros import state as state_mod
-    from diaktoros.run_supervisor import Supervisor, describe_run, write_evidence
+    from diaktoros.run_supervisor import Supervisor, write_evidence, views
 
     spec = json.loads(Path(spec_path).read_text())
     root, seat = Path(spec['root']), spec.get('seat', 'reviewer')
@@ -199,7 +199,7 @@ def driver(spec_path: str) -> None:
         notices = []
         sup.notify(notices.append)
         status = sup.status()
-        described = [describe_run(row, loop['id']) for row in status]
+        described = [views.describe_run(row, loop['id']) for row in status]
         # The seat is free again: the waiting turn is claimable right now.
         claimed = sup._claim()
         result = {**first, 'worker_rearmed': len(spawned), 'writes': list(writes),

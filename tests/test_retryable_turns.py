@@ -15,6 +15,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import ledger, run_supervisor
+from diaktoros.run_supervisor import views
 from diaktoros.run_supervisor import MAX_REARMS, MAX_RETRIES, Supervisor
 
 HEAD = 'a' * 40
@@ -291,8 +292,8 @@ class ClaimTimeReads(Base):
                 self.assertAlmostEqual(row['retry_at'] - time.time(),
                                        run_supervisor.backoff(attempt), delta=5)
                 # status/explain show it, with the reason and when it is tried again.
-                [view] = run_supervisor.read_only_view(self.db, 'o/r', 1)
-                line = run_supervisor.describe_run(view, 'widgets')
+                [view] = views.read_only_view(self.db, 'o/r', 1)
+                line = views.describe_run(view, 'widgets')
                 self.assertIn('claim-time read failed: PR unreadable', line)
                 self.assertIn(f'attempt {attempt + 1} of {MAX_RETRIES} due in', line)
                 self.assertEqual(self.notices(self.s), [])
@@ -305,7 +306,7 @@ class ClaimTimeReads(Base):
         [notice] = self.notices(self.s)
         self.assertIn('claim-time read failed', notice)
         self.assertIn('No external write was made', notice)
-        [view] = run_supervisor.read_only_view(self.db, 'o/r', 1)
+        [view] = views.read_only_view(self.db, 'o/r', 1)
         self.assertIsNone(view['write'])                              # pre-write: re-armable
         self.assertEqual(self.s.retry(row['id']), 'pending')          # the operator re-arms it
 
@@ -333,7 +334,7 @@ class ClaimTimeReads(Base):
         row = self.s.get('review')
         self.assertEqual((row['state'], row['error']),
                          ('failed', 'review generation unavailable: stale or unresolvable generation'))
-        self.assertIsNone(run_supervisor.read_only_view(self.db, 'o/r', 1)[0]['write'])
+        self.assertIsNone(views.read_only_view(self.db, 'o/r', 1)[0]['write'])
         self.assertEqual(self.s.submit('retargeted-back', 'o/r', 1, HEAD, 'reviewer'), 'rearmed')
 
 

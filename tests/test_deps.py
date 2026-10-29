@@ -662,13 +662,13 @@ class TurnPrefetchTests(unittest.TestCase):
         self.assertTrue(progress[1].startswith("nothing to prefetch"))
 
     def test_a_finished_run_is_never_shown_as_still_fetching(self):
-        from diaktoros.run_supervisor import describe_dependencies
+        from diaktoros.run_supervisor import views
         row = {"seat": "reviewer", "pr": 351, "head": "b" * 40, "state": "succeeded",
                "deps": "fetching — started 16:09:23Z, bounded at 300s, before the turn budget starts"}
-        self.assertEqual(describe_dependencies(row),
+        self.assertEqual(views.describe_dependencies(row),
                          "reviewer #351 @ bbbbbbb succeeded — prefetch outcome not recorded "
                          "(fetching — started 16:09:23Z)")
-        self.assertIn("— fetching — started", describe_dependencies({**row, "state": "running"}))
+        self.assertIn("— fetching — started", views.describe_dependencies({**row, "state": "running"}))
 
     def test_a_failing_progress_sink_never_fails_the_turn(self):
         from diaktoros import trusted_turn
@@ -704,19 +704,19 @@ class LedgerTests(unittest.TestCase):
         return run_id
 
     def test_only_the_owner_of_a_live_run_records_and_it_is_bounded(self):
-        from diaktoros.run_supervisor import Supervisor, dependency_view
+        from diaktoros.run_supervisor import Supervisor, views
         sup = Supervisor(self.root / "ledger.sqlite", production_config=self.runtime,
                          hermes_home=self.root)
         run_id = self.row(sup)
         sup.record_dependencies(run_id, "w", "rust: unavailable — " + "z" * 5000 + "\x1b[31m")
         sup.record_dependencies(run_id, "intruder", "rust: ready — forged")
-        [view] = dependency_view(sup.db, REPO, 7)
+        [view] = views.dependency_view(sup.db, REPO, 7)
         self.assertTrue(view["deps"].startswith("rust: unavailable — zzz"))
         self.assertLessEqual(len(view["deps"]), deps.LEDGER_MAX)
         self.assertNotIn("\x1b", view["deps"])
         self.assertEqual((view["seat"], view["pr"], view["state"]), ("reviewer", 7, "running"))
-        self.assertEqual(dependency_view(sup.db, REPO, 8), [])
-        self.assertIsNone(dependency_view(self.root / "absent.sqlite", REPO))
+        self.assertEqual(views.dependency_view(sup.db, REPO, 8), [])
+        self.assertIsNone(views.dependency_view(self.root / "absent.sqlite", REPO))
         # status JSON (python -m diaktoros.run_supervisor status) carries it for failed runs.
         with ledger.connect(sup.db) as con:
             con.execute("UPDATE runs SET state='failed' WHERE id=?", (run_id,))
@@ -726,7 +726,7 @@ class LedgerTests(unittest.TestCase):
     def test_the_worker_records_every_phase_the_turn_reports(self):
         from types import SimpleNamespace
         from diaktoros import config, gh, run_supervisor, seat_model, trusted_turn
-        from diaktoros.run_supervisor import Supervisor, dependency_view, describe_dependencies
+        from diaktoros.run_supervisor import Supervisor, views
         sup = Supervisor(self.root / "ledger.sqlite", production_config=self.runtime,
                          hermes_home=self.root)
         run_id = self.row(sup, state="launching")
@@ -734,7 +734,7 @@ class LedgerTests(unittest.TestCase):
 
         def run_turn(_loop, _scope, **kw):
             kw["progress"]("fetching — started 12:00:00Z, bounded at 300s")
-            seen.append(dependency_view(sup.db, REPO, 7)[0]["deps"])
+            seen.append(views.dependency_view(sup.db, REPO, 7)[0]["deps"])
             kw["progress"]("rust: unavailable — Cargo.lock pins a git dependency")
             return 0
         loop = {"id": "widgets", "repo": REPO, "read_token": "read",
@@ -753,10 +753,10 @@ class LedgerTests(unittest.TestCase):
              mock.patch.object(sup, "recover"):
             sup._run_production(run_id, "w")
         self.assertEqual(seen, ["fetching — started 12:00:00Z, bounded at 300s"])
-        [row] = dependency_view(sup.db, REPO, 7)
+        [row] = views.dependency_view(sup.db, REPO, 7)
         self.assertEqual(row["deps"], "rust: unavailable — Cargo.lock pins a git dependency")
         self.assertEqual(row["state"], "succeeded")
-        self.assertEqual(describe_dependencies(row),
+        self.assertEqual(views.describe_dependencies(row),
                          "reviewer #7 @ aaaaaaa succeeded — rust: unavailable — Cargo.lock pins "
                          "a git dependency")
 

@@ -10,6 +10,7 @@ import uuid
 from unittest import mock
 
 from diaktoros import config, desktop_api, ledger, run_supervisor
+from diaktoros.run_supervisor import views
 from diaktoros.cli import operations
 
 
@@ -28,13 +29,13 @@ class LedgerExplanations(unittest.TestCase):
     def row(self, state='waiting', error='held: private /home/private ghp_SECRET', due=1234):
         with ledger.connect(self.db) as con:
             con.execute('UPDATE runs SET state=?,error=?,retry_at=?', (state, error, due))
-        rows = run_supervisor.read_only_view(self.db, self.loop['repo'], 7)
+        rows = views.read_only_view(self.db, self.loop['repo'], 7)
         self.assertTrue(rows)
         return rows[0]
 
     def test_real_ledger_cli_and_desktop_share_explanation(self):
         row = self.row()
-        explanation = run_supervisor.hold_explanation(row)
+        explanation = views.hold_explanation(row)
         fixture = pathlib.Path(__file__).parent / 'fixtures/desktop_hold_explanations.json'
         self.assertEqual(explanation, json.loads(fixture.read_text())['run_waiting'])
         with mock.patch.object(config, 'readable_loops', return_value=([self.loop], [])), \
@@ -59,7 +60,7 @@ class LedgerExplanations(unittest.TestCase):
                       'held: reviewer daily turn cap reached', 'held: human path',
                       'held: isolated worker unavailable', 'held: conflict', 'held: escalation'):
             with self.subTest(error=error):
-                result = run_supervisor.hold_explanation(self.row(error=error))
+                result = views.hold_explanation(self.row(error=error))
                 self.assertEqual(result['reason_code'], 'run_waiting')
                 self.assertEqual(result['waiting_for'], 'host_recheck')
                 self.assertEqual(result['automatic_resume'], 'unknown')
@@ -75,14 +76,14 @@ class LedgerExplanations(unittest.TestCase):
                 if state != 'uncertain' and write is None:
                     continue
                 with self.subTest(state=state, write=write):
-                    result = run_supervisor.hold_explanation(row)
+                    result = views.hold_explanation(row)
                     self.assertEqual(result['reason_code'], 'external_write_guard')
                     self.assertEqual(result['operator_action'], 'inspect')
                     self.assertEqual(result['automatic_resume'], 'never')
                     self.assertIsNone(result['next_eligible_start'])
                     self.assertNotIn('retry', result['text'].lower())
                     self.assertNotIn('SECRET', json.dumps(result))
-                    guidance = run_supervisor.next_step(row)
+                    guidance = views.next_step(row)
                     self.assertNotIn('re-arm:', guidance)
                     self.assertNotIn('hermes dk retry', guidance)
                     self.assertNotIn('starts', guidance)
@@ -93,18 +94,18 @@ class LedgerExplanations(unittest.TestCase):
                        {'retry_at': float('nan')}, {'retry_at': -1},
                        {'retry_at': True}, {'retry_at': 1e100}):
             with self.subTest(change=change):
-                result = run_supervisor.hold_explanation(dict(base, **change))
+                result = views.hold_explanation(dict(base, **change))
                 self.assertIsNone(result['next_eligible_start'])
                 self.assertEqual(result['operator_action'], 'inspect')
         missing = dict(base)
         del missing['write']
-        self.assertEqual(run_supervisor.hold_explanation(missing)['reason_code'], 'unknown')
-        redacted = run_supervisor.hold_explanation(dict(base, id='/private/token', head='ghp_SECRET'))
+        self.assertEqual(views.hold_explanation(missing)['reason_code'], 'unknown')
+        redacted = views.hold_explanation(dict(base, id='/private/token', head='ghp_SECRET'))
         self.assertIsNone(redacted['run_id'])
         self.assertIsNone(redacted['head'])
         self.assertNotIn('SECRET', json.dumps(redacted))
         for state, reason in [('failed', 'run_failed'), ('cancelled', 'run_cancelled')]:
-            result = run_supervisor.hold_explanation(dict(base, state=state, write=None))
+            result = views.hold_explanation(dict(base, state=state, write=None))
             self.assertEqual(result['reason_code'], reason)
             self.assertEqual(result['automatic_resume'], 'unknown')
 
@@ -113,9 +114,9 @@ class LedgerExplanations(unittest.TestCase):
         with ledger.connect(self.db) as con:
             con.execute('INSERT INTO review_receipts(run_id,state,generation,principal_id,created) '
                         'VALUES(?,?,?,?,?)', (row['id'], 'pending', 'generation', 42, 1))
-        rows = run_supervisor.read_only_view(self.db, self.loop['repo'], 7)
+        rows = views.read_only_view(self.db, self.loop['repo'], 7)
         self.assertTrue(rows)
-        result = run_supervisor.hold_explanation(rows[0])
+        result = views.hold_explanation(rows[0])
         self.assertEqual(result['reason_code'], 'external_write_guard')
         self.assertEqual(result['automatic_resume'], 'never')
         self.assertIsNone(result['next_eligible_start'])
@@ -124,7 +125,7 @@ class LedgerExplanations(unittest.TestCase):
         for state in ('waiting', 'failed', 'cancelled', 'uncertain'):
             guarded = self.row(state=state, error=run_supervisor.POLICY_CANCELLATIONS[0])
             self.assertIsNotNone(guarded['write'])
-            advice = run_supervisor.next_step(guarded, 'widgets')
+            advice = views.next_step(guarded, 'widgets')
             self.assertNotIn('hermes dk retry', advice)
             self.assertNotIn('no external write', advice)
             self.assertNotIn('hermes dk retry', self.desktop_view()['stuck'][0]['next'])
@@ -134,7 +135,7 @@ class LedgerExplanations(unittest.TestCase):
                  'run_cancelled': self.row(state='cancelled', error=run_supervisor.POLICY_CANCELLATIONS[0]),
                  'external_write_guard': self.row(state='uncertain')}
         cases['unknown'] = dict(cases['run_waiting'], state='future_state')
-        result = {name: run_supervisor.hold_explanation(row) for name, row in cases.items()}
+        result = {name: views.hold_explanation(row) for name, row in cases.items()}
         fixture = pathlib.Path(__file__).parent / 'fixtures/desktop_hold_explanations.json'
         self.assertEqual(result, json.loads(fixture.read_text()))
 
@@ -163,7 +164,7 @@ class LedgerExplanations(unittest.TestCase):
             with self.subTest(state=state):
                 row = self.row(state=state, error=error)
                 stuck = self.desktop_view()['stuck'][0]
-                self.assertEqual(stuck['next'], run_supervisor.next_step(row, 'widgets'))
+                self.assertEqual(stuck['next'], views.next_step(row, 'widgets'))
                 text = stuck['explanation']['text']
                 self.assertNotIn('Automatic resume:', text)
                 self.assertNotIn('Operator action:', text)
@@ -185,7 +186,7 @@ class LedgerExplanations(unittest.TestCase):
             with self.subTest(error=error):
                 row = self.row(error=error)
                 with mock.patch.object(run_supervisor.time, 'time', return_value=1200):
-                    advice = run_supervisor.next_step(row)
+                    advice = views.next_step(row)
                 self.assertIn('recorded earliest recheck', advice)
                 self.assertIn('34s', advice)
                 self.assertNotIn('starts', advice)
@@ -241,7 +242,7 @@ class LedgerExplanations(unittest.TestCase):
         before = self.db.read_bytes()
         with mock.patch.object(self.sup, '_spawn', side_effect=AssertionError('spawn')):
             for _ in range(3):
-                run_supervisor.hold_explanation(row)
+                views.hold_explanation(row)
         self.assertEqual(before, self.db.read_bytes())
 
 

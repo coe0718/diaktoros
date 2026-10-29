@@ -27,8 +27,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diaktoros import cli, config, gate, gh, ledger, run_supervisor, seat_model  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
-from diaktoros.run_supervisor import (FIXER_NOT_ADMITTED, FIXER_PUSH_REVOKED,  # noqa: E402
-                                        Supervisor, describe_run, read_only_view)
+from diaktoros.run_supervisor import FIXER_NOT_ADMITTED, FIXER_PUSH_REVOKED, Supervisor, views  # noqa: E402
 
 REPO, HEAD = "acme/widgets", "a" * 40
 PR = {"number": 7, "state": "open", "draft": False, "user": {"login": "dev"},
@@ -85,8 +84,8 @@ class CancelledFixer(unittest.TestCase):
         return code, out.getvalue()
 
     def visible(self):
-        [view] = read_only_view(self.db, REPO, 7)
-        return describe_run(view, "widgets")
+        [view] = views.read_only_view(self.db, REPO, 7)
+        return views.describe_run(view, "widgets")
 
     def test_revoked_between_admission_and_claim_is_visible_then_recovers(self):
         # His sequence: admitted while pushes were on, then pushes turned off before the claim.
@@ -191,7 +190,7 @@ class CancelledFixer(unittest.TestCase):
         self.assertIn("nothing to retry", out)
         self.assertNotIn("re-armed", out)
         resume.assert_not_called()
-        self.assertEqual(read_only_view(self.db, REPO, 7), [])
+        self.assertEqual(views.read_only_view(self.db, REPO, 7), [])
         with ledger.connect(self.db) as con:
             run_id = con.execute("SELECT id FROM runs").fetchone()[0]
         with self.assertRaisesRegex(ValueError, "a new head gets its own turn"):
@@ -219,8 +218,7 @@ class CancelledFixer(unittest.TestCase):
         # Arbiter on #97: runs_view kept its own SQL copy (LIKE, case-insensitive) of the Python
         # prefix test, so a "Fixer push revoked: …" row was listed with a retry remedy that
         # retry then refused. One definition, keyed off the constants, decides all three.
-        from diaktoros.run_supervisor import (POLICY_CANCELLATIONS, next_step,
-                                                policy_cancelled)
+        from diaktoros.run_supervisor import POLICY_CANCELLATIONS, policy_cancelled, views
         self.sup.submit("fix-1", REPO, 7, HEAD, "fixer")
         with ledger.connect(self.db) as con:
             run_id = con.execute("SELECT id FROM runs").fetchone()[0]
@@ -234,11 +232,11 @@ class CancelledFixer(unittest.TestCase):
                 with ledger.connect(self.db) as con:
                     con.execute("UPDATE runs SET state='cancelled', error=?, retries=0",
                                 (error,))
-                listed = read_only_view(self.db, REPO, 7)
+                listed = views.read_only_view(self.db, REPO, 7)
                 self.assertEqual(bool(listed), policy_cancelled(error))
                 if listed:
                     self.assertIn("retry --loop widgets --pr 7 --seat fixer",
-                                  next_step(listed[0], "widgets"))
+                                  views.next_step(listed[0], "widgets"))
                     self.assertEqual(self.sup.retry(run_id), "pending")
                 else:
                     with self.assertRaises(ValueError):
@@ -260,7 +258,7 @@ class CancelledFixer(unittest.TestCase):
             con.execute("UPDATE runs SET state='succeeded', updated=100 WHERE head=?", (b,))
             con.execute("UPDATE runs SET state='failed', error='turn exited with status 3', "
                         "updated=200, created=1 WHERE head=?", (a,))
-        [view] = read_only_view(self.db, REPO, 7)                     # what status/explain list
+        [view] = views.read_only_view(self.db, REPO, 7)                     # what status/explain list
         self.assertEqual(view["head"], a)
         with mock.patch.object(gate, "resume_isolated", return_value=True):
             code, out = self.cli(cli.cmd_retry, loop="widgets", pr=7, seat=None)
@@ -289,9 +287,9 @@ class CancelledFixer(unittest.TestCase):
         with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='cancelled', error=? WHERE seat='issue_fixer'",
                         (FIXER_PUSH_REVOKED,))
-        [view] = read_only_view(self.db, REPO, 7)
+        [view] = views.read_only_view(self.db, REPO, 7)
         self.assertEqual(view["seat"], "issue_fixer")
-        line = describe_run(view, "widgets")
+        line = views.describe_run(view, "widgets")
         self.assertIn("hermes dk retry --loop widgets --pr 7 --seat issue_fixer", line)
         self.assertNotIn("--seat fixer", line)
         self.assertIn("issue fixes", line)
@@ -339,9 +337,9 @@ class CancelledFixer(unittest.TestCase):
                     self.assertNotIn("fixer pushes are off", row["error"])
                 # The cancellation is one the view lists and `retry` recovers, remedy included.
                 self.assertTrue(run_supervisor.policy_cancelled(row["error"]))
-                [view] = read_only_view(self.db, REPO, 7)
-                self.assertIn(cause, describe_run(view, "widgets"))
-                self.assertIn("--seat issue_fixer", describe_run(view, "widgets"))
+                [view] = views.read_only_view(self.db, REPO, 7)
+                self.assertIn(cause, views.describe_run(view, "widgets"))
+                self.assertIn("--seat issue_fixer", views.describe_run(view, "widgets"))
 
     def test_retry_of_an_issue_fix_is_refused_while_issue_fixes_are_off(self):
         run_id = self.issue_fix_run_id()
@@ -367,7 +365,7 @@ class CancelledFixer(unittest.TestCase):
         self.sup.submit("fix-1", REPO, 7, HEAD, "fixer")
         with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='cancelled', error='fixer verdict superseded'")
-        self.assertEqual(read_only_view(self.db, REPO, 7), [])
+        self.assertEqual(views.read_only_view(self.db, REPO, 7), [])
 
 
 if __name__ == "__main__":

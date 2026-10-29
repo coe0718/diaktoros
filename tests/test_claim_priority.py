@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from diaktoros import ledger, run_supervisor
-from diaktoros.run_supervisor import (CLAIM_AGE_STEP_S, CONFLICT_KEY, Supervisor, pending_view)
+from diaktoros.run_supervisor import CLAIM_AGE_STEP_S, CONFLICT_KEY, Supervisor, views
 
 
 class ClaimPriority(unittest.TestCase):
@@ -57,7 +57,7 @@ class ClaimPriority(unittest.TestCase):
     def test_status_view_shows_order_and_why(self):
         self.mixed()
         self.enqueue("old-issue", "issue_fixer", 9, "issue-fix", age=3 * CLAIM_AGE_STEP_S + 1)
-        view = pending_view(self.db, "o/r")
+        view = views.pending_view(self.db, "o/r")
         self.assertEqual([r["seat"] for r in view][:2], ["issue_fixer", "fixer"])
         self.assertIn("aged up", view[0]["why"])
         self.assertIn("CI-fix", view[1]["why"])
