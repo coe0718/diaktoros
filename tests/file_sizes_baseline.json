@@ -42,7 +42,6 @@
     "diaktoros/cli/set_adjudication.py::_set_adjudication": 99,
     "diaktoros/cli/set_parser.py::add_set": 186,
     "diaktoros/cli/triage_command.py::cmd_triage": 211,
-    "diaktoros/config/__init__.py::normalize": 181,
     "diaktoros/config/blocks.py::normalize_triage": 99,
     "diaktoros/config/settings_form.py::apply_settings": 159,
     "diaktoros/contained.py::command": 140,
