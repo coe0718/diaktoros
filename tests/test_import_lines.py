@@ -12,6 +12,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 MAX_ON_ONE_LINE = 3
 FILES = [ROOT / "scripts" / "watchdog.py", ROOT / "diaktoros" / "cli" / "__init__.py",
          ROOT / "diaktoros" / "cli" / "settings.py",  # every new setting edits it (#676)
+         ROOT / "diaktoros" / "cli" / "triage_command.py",   # and this since the split (#1349)
          *sorted((ROOT / "scripts").glob("gate_*.py"))]
 
 
