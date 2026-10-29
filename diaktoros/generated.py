@@ -1,7 +1,7 @@
 """Conflicts confined to generated files, settled by the host without a fixer turn (#551).
 
 The loop file's ``generated`` list names, per entry, the repo-relative paths a command
-regenerates (``config.check_generated``). When the host's merge of the base into a PR head
+regenerates (``config.lists.check_generated``). When the host's merge of the base into a PR head
 conflicts **only** in registered paths, ``regenerate`` runs each affected entry's command in the
 sandbox (``contained.run``: no model, no tokens, no network) on the merged tree *as it is*, markers
 included: the generator rewrites what it owns, so a conflict inside a generated block disappears
@@ -20,7 +20,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from . import config, contained, safe_push, trusted_fetch, util
+from . import contained, safe_push, trusted_fetch, util
+from .config import lists
 
 GENERATE_TIMEOUT_S = 120
 FILE_MAX = safe_push.MAX_FILE          # per registered file, as a push carries it
@@ -35,7 +36,7 @@ WRAPPER = ('cmd=$1; shift; sh -c "$cmd" >&2 || exit 1; '
 def conflicted_entries(loop: dict, conflicted: list[str]) -> list[dict] | None:
     """The ``generated`` entries holding the conflicted paths, or ``None`` when the shortcut does
     not apply: it is off, nothing conflicts, or a conflicted path is not registered."""
-    entries = config.generated(loop)
+    entries = lists.generated(loop)
     registered = {path for entry in entries for path in entry["paths"]}
     if not entries or not conflicted or not set(conflicted) <= registered:
         return None
@@ -63,7 +64,7 @@ def regenerate(loop: dict, merged: dict, settings: dict, *, work_root) -> dict[s
     to a fixer turn (the reason is logged)."""
     entries = conflicted_entries(loop, merged["conflicted"])
     if entries is None:
-        if config.generated(loop) and merged["conflicted"]:
+        if lists.generated(loop) and merged["conflicted"]:
             util.log("generated files: a conflicted path is not registered; normal conflict turn")
         return None
     from . import trusted_turn

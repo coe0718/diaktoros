@@ -20,6 +20,7 @@ from .. import (
 )
 from . import common as cli_common
 from ..config import credentials
+from ..config import lists
 from ..config import settings_form
 from .common import BRANCH_PUSH_REFUSAL, SHARED_JOB_NAMES, _hook_route_name
 
@@ -398,20 +399,20 @@ def cmd_init(args) -> int:
                     or str(d.get("ingress") or "").strip().lower() or "repo-hooks"),
         "ingress_app": (getattr(args, "ingress_app", None) or str(d.get("ingress_app") or "").strip()),
         # The checks that gate an approval (#368); none named = every check gates.
-        "required_checks": (config.split_check_names(d["required_checks"])
+        "required_checks": (lists.split_check_names(d["required_checks"])
                             if getattr(args, "required_check", None) is None
                             else [name for name in args.required_check if name.strip()]),
         # Paths only a human may approve (#478).
-        "human_paths": (config.split_human_paths(d["human_paths"])
+        "human_paths": (lists.split_human_paths(d["human_paths"])
                         if getattr(args, "human_path", None) is None
                         else [name for name in args.human_path if name.strip()]),
         # Generated files the host regenerates on a conflict (#551).
-        "generated": config.parse_generated(
-            config.split_generated(d["generated"]) if getattr(args, "generated", None) is None
+        "generated": lists.parse_generated(
+            lists.split_generated(d["generated"]) if getattr(args, "generated", None) is None
             else args.generated, "--generated"),
         # What each CI check covers, told to the reviewer (#756).
-        "ci_coverage": config.parse_ci_coverage(
-            config.split_ci_coverage(d["ci_coverage"]) if getattr(args, "ci_covers", None) is None
+        "ci_coverage": lists.parse_ci_coverage(
+            lists.split_ci_coverage(d["ci_coverage"]) if getattr(args, "ci_covers", None) is None
             else args.ci_covers, "--ci-covers"),
         # Authors reviewed but never fixed (#191).
         "review_only": ([name.strip() for name in str(d["review_only"]).split(",") if name.strip()]
@@ -428,7 +429,7 @@ def cmd_init(args) -> int:
         return 2
     # #539: CI-fix turns per PR; a flag wins over the form; empty = the default.
     try:
-        raw["ci_fix_cap"] = config.check_ci_fix_cap(
+        raw["ci_fix_cap"] = lists.check_ci_fix_cap(
             getattr(args, "ci_fix_cap", None) if getattr(args, "ci_fix_cap", None) is not None
             else d["ci_fix_cap"], "init")
     except config.ConfigError as exc:
@@ -438,7 +439,7 @@ def cmd_init(args) -> int:
     for key in ("review_only_cap", "review_only_daily"):
         flag = getattr(args, key, None)
         try:
-            raw[key] = config._check_review_only_limit(
+            raw[key] = lists._check_review_only_limit(
                 flag if flag is not None else d[key], key, "init")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
@@ -856,20 +857,20 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     if getattr(args, "ingress_app", None):
         argv.append(f"--ingress-app={args.ingress_app}")
     required = (args.required_check if args.required_check is not None else
-                config.split_check_names(_ask(
+                lists.split_check_names(_ask(
                     "the CI checks that must pass before an approval, comma-separated, exactly as "
                     "GitHub names them (blank: every check)", d["required_checks"], interactive)))
     argv += [f"--required-check={name}" for name in required]
     humans = (args.human_path if getattr(args, "human_path", None) is not None else
-              config.split_human_paths(_ask(
+              lists.split_human_paths(_ask(
                   "glob patterns for paths only a human may approve, comma-separated "
                   "(blank: none)", d["human_paths"], interactive)))
     argv += [f"--human-path={name}" for name in humans]
     generated = (args.generated if getattr(args, "generated", None) is not None else
-                 config.split_generated(d["generated"]))
+                 lists.split_generated(d["generated"]))
     argv += [f"--generated={entry}" for entry in generated]
     covers = (args.ci_covers if getattr(args, "ci_covers", None) is not None else
-              config.split_ci_coverage(d["ci_coverage"]))
+              lists.split_ci_coverage(d["ci_coverage"]))
     argv += [f"--ci-covers={entry}" for entry in covers]
     shadow = (args.shadow_profile if getattr(args, "shadow_profile", None) is not None else
               _ask("a Hermes profile for shadow reviews: a second reviewer model whose verdicts "

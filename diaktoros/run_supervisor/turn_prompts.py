@@ -92,8 +92,8 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, shadow=_
         text += issue_facts.section(loop, row['pr'])
         # The head's CI, read now (the broker re-reads it before an APPROVE): the reviewer must
         # not approve a red head, and the fixer learns which checks to make pass.
-        from .. import ci
-        from .. import config as config_mod
+        from .. import ci, config as config_mod
+        from ..config import lists
         state = ci.read(loop, row['head'])
         required = config_mod.required_checks(loop)
         text += ci.section(state, required)
@@ -102,7 +102,7 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, shadow=_
             from .. import ci_tests
             text += ci_tests.section(ci_tests.read(loop, state, required, row['head']))
             # #756: what the green checks at this head cover, from the operator's map.
-            text += ci.coverage_section(state, required, config_mod.ci_coverage(loop))
+            text += ci.coverage_section(state, required, lists.ci_coverage(loop))
         if seat == 'reviewer':
             # #539: commits CI-fix turns pushed unreviewed, so this review checks none weakened
             # a test.

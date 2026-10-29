@@ -10,6 +10,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros import config  # noqa: E402
+from diaktoros.config import lists  # noqa: E402
 from diaktoros.cli import install as cli_install  # noqa: E402
 from test_init_concurrency import Base, LOOP_FILE, LOOP_ID  # noqa: E402
 
@@ -80,11 +81,11 @@ class MergeCheckCli(Base):
         # #1233: the loop never reads its own check as CI, so requiring it would refuse every
         # approval.
         from diaktoros import ci
-        self.assertEqual(config.MERGE_CHECK_NAME, ci.MERGE_CHECK)
+        self.assertEqual(lists.MERGE_CHECK_NAME, ci.MERGE_CHECK)
         for names in (["diaktoros/review"], ["tests", "Diaktoros/Review "]):
             with self.subTest(names), self.assertRaisesRegex(config.ConfigError, "branch"):
-                config.check_required_checks(names, "loop")
-        self.assertEqual(config.check_required_checks(["diaktoros/review-lint"], "loop"),
+                lists.check_required_checks(names, "loop")
+        self.assertEqual(lists.check_required_checks(["diaktoros/review-lint"], "loop"),
                          ["diaktoros/review-lint"])
         self.assertEqual(self.init()[0], 0)
         before = LOOP_FILE.read_bytes()
