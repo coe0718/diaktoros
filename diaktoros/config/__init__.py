@@ -1008,6 +1008,30 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     where = f"{source or loop.get('id', '<inline>')}"
     blocks.check_known_keys(raw, where)
     flags.check(loop, where)
+    # Each step reads what the ones before it set, so their order is the order of the refusals.
+    _check_lists_and_modes(loop, where)
+    _check_identity(loop, where)
+    raw_seats = loop.get("seats") if isinstance(loop.get("seats"), dict) else {}
+    seats = _check_seats(loop, where)
+    _check_reviewer_and_adjudicator(loop, seats, where)
+    loop["observer"] = blocks.normalize_observer(loop.get("observer"))
+    _check_limits(loop, where)
+    _check_tokens(loop, where)
+    _add_optional_seats(loop, seats, raw_seats, where)
+    _check_roots(loop, where)
+    _check_run_concurrency(loop, seats, where)
+    loop["operator_agents"] = lists.check_operator_agents(loop.get("operator_agents"), loop, where)
+    _check_turn_limits(loop, seats, where)
+    _check_isolation(loop, where)
+    loop["host"] = webhook_host(loop.get("host"))
+    if not loop.get("state_dir"):
+        loop["state_dir"] = str(default_state_dir(loop["id"]))
+    return loop
+
+
+def _check_lists_and_modes(loop: dict, where: str) -> None:
+    """The list settings, ``ingress`` (and its App) and ``merge_check``."""
+    from . import lists   # here, not module level (#676)
     loop["fixer_check"] = lists.check_fixer_check(loop["fixer_check"], where)
     loop["required_checks"] = lists.check_required_checks(loop["required_checks"], where)
     loop["human_paths"] = lists.check_human_paths(loop["human_paths"], where)
@@ -1026,6 +1050,10 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         raise ConfigError(f"{where}: 'merge_check' must be one of {', '.join(MERGE_CHECK_MODES)} "
                           "(auto: on when the reviewer is a GitHub App)")
 
+
+def _check_identity(loop: dict, where: str) -> None:
+    """``repo`` and ``id``, the fixers, reviewers and review-only authors, and the skill's name."""
+    from . import lists   # here, not module level (#676)
     repo = str(loop.get("repo") or "").strip()
     if repo.count("/") != 1:
         raise ConfigError(f"{where}: 'repo' must be 'owner/name', got {repo!r}")
@@ -1044,7 +1072,9 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     if isinstance(loop.get("skill"), str) and loop["skill"].startswith(OLD_SKILL_PREFIX):
         loop["skill"] = SKILL_PREFIX + loop["skill"][len(OLD_SKILL_PREFIX):]
 
-    raw_seats = loop.get("seats") if isinstance(loop.get("seats"), dict) else {}
+
+def _check_seats(loop: dict, where: str) -> dict:
+    """The reviewer and fixer seats, each with its own route; returns them (``loop['seats']``)."""
     seats = {}
     if not isinstance(loop.get("seats"), dict):
         raise ConfigError(f"{where}: 'seats' must be an object with reviewer and fixer")
@@ -1066,7 +1096,11 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         # bound to it can only be one of the two. Refused on load, not only at init/apply.
         raise ConfigError(f"{where}: seats.reviewer.route and seats.fixer.route are both "
                           f"{seats['reviewer']['route']!r} — each seat needs its own route")
+    return seats
 
+
+def _check_reviewer_and_adjudicator(loop: dict, seats: dict, where: str) -> None:
+    """``reviewer_seat``, and the ``adjudicator`` block (a route-less one is dropped)."""
     loop["reviewer_seat"] = str(loop.get("reviewer_seat")
                                or seats["reviewer"].get("login") or "").lower()
     if not loop["reviewer_seat"]:
@@ -1084,8 +1118,10 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         adj.setdefault("profile", "default")
     loop["adjudicator"] = adj
 
-    loop["observer"] = blocks.normalize_observer(loop.get("observer"))
 
+def _check_limits(loop: dict, where: str) -> None:
+    """``cap``, the review-only limits and ``ci_fix_cap``."""
+    from . import lists   # here, not module level (#676)
     loop["cap"] = _as_int(loop["cap"], "cap", where)
     if loop["cap"] < 2:
         raise ConfigError(f"{where}: 'cap' is the number of verdicts allowed; must be >= 2")
@@ -1094,6 +1130,10 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         loop[key] = lists._check_review_only_limit(loop.get(key), key, where)
     loop["ci_fix_cap"] = lists.check_ci_fix_cap(loop.get("ci_fix_cap"), where)
 
+
+def _check_tokens(loop: dict, where: str) -> None:
+    """``tokens`` (absolute paths), ``apps``, and the named reader, ``read_token``."""
+    from . import blocks   # here, not module level (#676)
     loop["tokens"] = {k: str(v) for k, v in (loop.get("tokens") or {}).items()}
     for login, token_path in loop["tokens"].items():
         # A relative path would resolve from whatever the current directory is at use time.
@@ -1110,6 +1150,11 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
                           "own account, with its own entry in 'tokens': `hermes dk set "
                           f"--loop {loop.get('id') or '<id>'} --read-token LOGIN --token "
                           f"LOGIN=/abs/path/to/pat` writes both; {FOUR_IDENTITY_RULE}")
+
+
+def _add_optional_seats(loop: dict, seats: dict, raw_seats: dict, where: str) -> None:
+    """The adjudicator, triage and shadow seats, with the ``triage`` and ``shadow`` blocks."""
+    from . import blocks   # here, not module level (#676)
     adjudicator_seat = blocks._adjudicator_seat(raw_seats.get("adjudicator"), loop, where)
     if adjudicator_seat:
         seats["adjudicator"] = adjudicator_seat
@@ -1121,6 +1166,11 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     shadow_seat = blocks._triage_seat(raw_seats.get("shadow"), where, "shadow")
     if shadow_seat:
         seats["shadow"] = shadow_seat
+
+
+def _check_roots(loop: dict, where: str) -> None:
+    """``roots``: none may be a directory cleanup must not delete children of."""
+    from . import blocks   # here, not module level (#676)
     loop["roots"] = [str(p) for p in (loop.get("roots") or [])]
     for root in loop["roots"]:
         reason = blocks.dangerous_root(root)
@@ -1128,6 +1178,9 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
             raise ConfigError(f"{where}: root {root!r} is {reason}; cleanup deletes PR-named "
                               f"children of every root, so a root must be a dedicated directory")
 
+
+def _check_run_concurrency(loop: dict, seats: dict, where: str) -> None:
+    """``concurrency``, the loop's and each seat's."""
     # `or 1` here would swallow a literal 0 into "serialized", which is the worst kind of silent
     # correction: the operator asked for something invalid and got a loop that looks configured.
     raw_capacity = loop.get("concurrency")
@@ -1145,8 +1198,9 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         if seats[seat]["concurrency"] < 1:
             raise ConfigError(f"{where}: seats.{seat}.concurrency must be >= 1 (1 = serialized)")
 
-    loop["operator_agents"] = lists.check_operator_agents(loop.get("operator_agents"), loop, where)
 
+def _check_turn_limits(loop: dict, seats: dict, where: str) -> None:
+    """``turn_budget_s``, and each seat's budget, daily turns and tokens, and step limit."""
     loop["turn_budget_s"] = _check_budget(
         DEFAULT_TURN_BUDGET_S if loop.get("turn_budget_s") in (None, "") else loop["turn_budget_s"],
         "'turn_budget_s'", where)
@@ -1164,6 +1218,9 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
             seats[seat]["max_steps"] = _check_max_steps(
                 seats[seat]["max_steps"], f"seats.{seat}.max_steps", where)
 
+
+def _check_isolation(loop: dict, where: str) -> None:
+    """More than one run at once needs isolation: a clone or the isolated worker."""
     if not loop.get("clone") and not isolated_runtime_configured():
         # Above one run at once, isolation is not a preference: with no clone to isolate from and
         # no isolated worker to launch the turns, two runs would share whatever checkout they
@@ -1175,11 +1232,6 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
                     f"{where}: seats.{seat}.concurrency > 1 requires 'clone' "
                     f"(runs must be isolated), or the isolated worker's runtime file "
                     f"{host_path('runtime')} (`hermes dk setup` writes it)")
-
-    loop["host"] = webhook_host(loop.get("host"))
-    if not loop.get("state_dir"):
-        loop["state_dir"] = str(default_state_dir(loop["id"]))
-    return loop
 
 
 def load_file(path: pathlib.Path) -> dict:
