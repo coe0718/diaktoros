@@ -119,6 +119,15 @@ def _mark_live(entry, now: float, ttl: float) -> bool:
     return at is not None and 0 <= now - at <= ttl
 
 
+def queue_snapshot(st, seat: str) -> list:
+    """A seat queue's confirmable identity (#1047): ``[[key, head, at], ...]`` sorted by key,
+    for the well-formed entries the drain would look at. Equal snapshots are the same queue."""
+    queued = st.queue_items(seat)
+    queued = queued if isinstance(queued, dict) else {}
+    return sorted([str(key), str((entry or {}).get("head") or ""), mark_at(entry)]
+                  for key, entry in queued.items() if mark_at(entry) is not None)
+
+
 def mark_at(entry) -> float | None:
     """A lock mark's or queue entry's ``at`` epoch, or ``None`` when it cannot be aged.
 
@@ -523,6 +532,18 @@ class LoopState:
                 return False
             _seat(data, seat)[key] = {"at": time.time(), "head": head, "url": url,
                                       "reason": reason, "id": uuid.uuid4().hex}
+            self._save_queue(data)
+            return True
+
+    def queue_swap_if(self, seat: str, key: str, expected: dict, new: dict) -> bool:
+        """Replace this seat's entry with exactly ``new`` only if it is still ``expected`` — one
+        compare-and-swap under the queue lock (#1407: a confirmed drain claims its entry this
+        way before the POST, and gives it back if nothing was sent)."""
+        with self._queue_lock():
+            data = _mapping(self._load(self.pending, {}))
+            if _seat_read(data, seat).get(key) != expected:
+                return False
+            _seat(data, seat)[key] = new
             self._save_queue(data)
             return True
 

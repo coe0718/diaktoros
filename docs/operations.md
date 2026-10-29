@@ -870,8 +870,9 @@ the consumed preview offers no follow-up control without another safe read.
 reviewer gate for a fresh review (not erase a verdict or bypass its cap). Its core entry point
 now runs as a call bound to a confirmed head (#1046), with nothing process-wide changed; the
 page's confirmed control for it is a follow-up. A drain
-would start queued work for a seat and may lead to GitHub writes; its whole-seat watchdog
-entry point cannot bind an exact confirmed queue snapshot. These are disclosed refusals, not
+would start queued work for a seat and may lead to GitHub writes. Its core entry point now
+binds the confirmed queue snapshot (#1047: if the seat's queue changed, nothing starts) and
+reports each queued run's outcome; the page's control for it is a follow-up too. These are disclosed refusals, not
 inert buttons or weaker gates. The CLI still calls those core entry points through the shared
 host owner; `review --another-round` remains CLI-only. Drain now exits 2 with an unconfirmed
 outcome instead of claiming success merely because the watchdog returned. Inspect `explain`

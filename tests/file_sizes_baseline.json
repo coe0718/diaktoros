@@ -20,7 +20,7 @@
     "diaktoros/state.py": 1387,
     "diaktoros/stats.py": 1287,
     "diaktoros/trusted_turn.py": 859,
-    "scripts/watchdog.py": 1759
+    "scripts/watchdog.py": 1594
   },
   "functions": {
     "diaktoros/arm_action.py::set_hooks": 136,
@@ -88,7 +88,6 @@
     "scripts/gate_reviewer.py::decide": 194,
     "scripts/watchdog.py::_sweep_loop_locked": 525,
     "scripts/watchdog.py::act_on_conflicts": 89,
-    "scripts/watchdog.py::drain": 168,
     "scripts/watchdog.py::reconcile_stacked": 99,
     "scripts/watchdog.py::run": 86
   }

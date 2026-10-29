@@ -6,7 +6,7 @@ Reads cover loop config, the run ledger, installation health and GitHub hook sta
 via the same ``arm_action`` operation as CLI ``arm``. Hooks use the existing host credential
 resolution and return no credentials or paths. ``GET /actions`` previews host-owned eligibility;
 ``POST /actions`` performs confirmed escalation and reads back its exact marker, and a confirmed
-cancel of the exact runs it previewed (#1148; the page's control is #1372). Review/drain currently refuse unsafe confirmations. ``/health?probe=1`` remains local-only.
+cancel of the exact runs it previewed (#1148; the page's control is #1372). Review/drain stay refused until the page's controls are wired to their bound core entry points. ``/health?probe=1`` remains local-only.
 The logic lives in ``diaktoros.desktop_api``; this module maps exceptions and validates body shape.
 """
 from __future__ import annotations
