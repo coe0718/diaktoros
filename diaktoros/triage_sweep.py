@@ -11,7 +11,7 @@ that ``status`` prints; a failed, cancelled or still-active run stays noted. Tha
 first in every sweep, so it also happens when triage is turned off and when the open-issues read
 fails (#1136); it still needs the private runtime's run ledger.
 
-An issue is queued when ``run_supervisor.triage_blocker`` has nothing against it (open, not a pull
+An issue is queued when ``issue_inputs.triage_blocker`` has nothing against it (open, not a pull
 request, author in ``triage.authors``, no label from ``triage.labels``), it has no triage row in the
 run ledger in any state, it is no newer than ``GRACE_S`` (the gate may still be on its way) and no
 older than ``HORIZON_S`` (a backlog from before the loop was armed is not triaged in bulk). An
@@ -24,7 +24,8 @@ from __future__ import annotations
 
 import time
 
-from . import config, gate, gh, run_supervisor
+from . import config, gate, gh
+from .run_supervisor import issue_inputs
 from .util import epoch, log
 
 GRACE_S = 300.0
@@ -40,7 +41,7 @@ def candidates(loop: dict, issues: list, queued: set[int], now: float) -> list[i
         number = issue.get("number") if isinstance(issue, dict) else None
         if type(number) is not int or number < 1 or number in queued:
             continue
-        if run_supervisor.triage_blocker(loop, issue):
+        if issue_inputs.triage_blocker(loop, issue):
             continue
         if fix_label and fix_label in {str((label or {}).get("name") or "").casefold()
                                        for label in issue.get("labels") or []

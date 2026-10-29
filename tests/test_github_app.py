@@ -23,8 +23,9 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import (broker, config, gh, github_app, run_supervisor, safe_push,  # noqa: E402
+from diaktoros import (broker, config, gh, github_app, safe_push,  # noqa: E402
                        selftest, trusted_fetch)
+from diaktoros.run_supervisor import issue_inputs  # noqa: E402
 from diaktoros.config import blocks  # noqa: E402
 from diaktoros.config import credentials  # noqa: E402
 
@@ -367,14 +368,14 @@ class EveryCredentialCheck(Broker):
 
     def test_the_triage_authorizer_takes_an_app_login(self):
         self.loop["triage"] = {"route": "w-triage"}            # labels as the reviewer seat (App)
-        with mock.patch.object(run_supervisor, "triage_issue"):
+        with mock.patch.object(issue_inputs, "triage_issue"):
             self.assertEqual(self.assertPastMapping(
                 lambda: broker.authorize_triage(self.loop, repo=REPO, number=7)), BOT)
 
     def test_the_issue_fix_authorizer_takes_an_app_seat(self):
         with mock.patch.object(config, "issue_fixes_enabled", return_value=True), \
-                mock.patch.object(run_supervisor, "issue_fix_issue"), \
-                mock.patch.object(run_supervisor, "issue_fix_dependencies"):
+                mock.patch.object(issue_inputs, "issue_fix_issue"), \
+                mock.patch.object(issue_inputs, "issue_fix_dependencies"):
             self.assertEqual(self.assertPastMapping(
                 lambda: broker.authorize_issue_fix(self.loop, repo=REPO, number=7)), "fix")
 

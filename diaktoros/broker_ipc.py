@@ -973,7 +973,7 @@ class RunBroker:
         The response is ok once the triage is durable; the GitHub writes follow from the host's
         current configuration and live issue, and their outcome is recorded, never retried.
         """
-        from .run_supervisor import TRIAGE_COMMENT_MAX, Supervisor
+        from .run_supervisor import Supervisor, issue_inputs
         if (self.scope.role != "triage" or not isinstance(request, dict)
                 or set(request) != {"operation", "labels", "body"}
                 or request["operation"] != "triage"):
@@ -989,9 +989,9 @@ class RunBroker:
                 or len({x.casefold() for x in labels}) != len(labels)):
             raise ProtocolError(f"labels must be at most {most} distinct names from the loop's "
                                 "list; nothing was written, resubmit")
-        if not isinstance(body, str) or len(body.strip()) > TRIAGE_COMMENT_MAX:
-            raise ProtocolError(f"the comment must be text of at most {TRIAGE_COMMENT_MAX} "
-                                "characters; nothing was written, resubmit")
+        if not isinstance(body, str) or len(body.strip()) > issue_inputs.TRIAGE_COMMENT_MAX:
+            raise ProtocolError(f"the comment must be text of at most {issue_inputs.TRIAGE_COMMENT_MAX}"
+                                " characters; nothing was written, resubmit")
         if body.strip() and not triage.get("comment"):
             raise ProtocolError("this loop applies labels only — drop the comment; nothing was "
                                 "written, resubmit")
@@ -1040,7 +1040,7 @@ class RunBroker:
         replayed.
         """
         from . import fix_hold, run_supervisor, state as state_mod
-        from .run_supervisor import Supervisor
+        from .run_supervisor import Supervisor, issue_inputs
         if self.scope.role != "issue_fixer" or not isinstance(request, dict):
             raise ProtocolError("operation out of scope")
         operation = request.get("operation")
@@ -1092,7 +1092,7 @@ class RunBroker:
                 if kind:
                     fix_hold.check_ask(st, number)         # one open ask; the asks are capped
                 elif operation == "open_pr" and fix_hold.plan_required(
-                        st, number, run_supervisor.issue_fix_issue(current, number)):
+                        st, number, issue_inputs.issue_fix_issue(current, number)):
                     raise ValueError("this issue needs a plan first: post it with issue_comment "
                                      "--ask plan and wait for a maintainer's /loop approve")
             except (ValueError, run_supervisor.RetryableError) as exc:

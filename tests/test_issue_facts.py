@@ -9,7 +9,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from diaktoros import gh, issue_facts, run_supervisor  # noqa: E402
+from diaktoros import gh, issue_facts  # noqa: E402
+from diaktoros.run_supervisor import issue_inputs  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 
@@ -87,8 +88,8 @@ class Prompts(unittest.TestCase):
         fake = Fake()
         issue = {"number": 5, "state": "open", "user": {"login": "o"}, "title": "T5",
                  "body": "BODY5", "labels": [], "html_url": "https://github.com/acme/w/issues/5"}
-        with mock.patch.object(run_supervisor, "issue_fix_issue", return_value=issue), \
-                mock.patch.object(run_supervisor, "issue_fix_dependencies"), \
+        with mock.patch.object(issue_inputs, "issue_fix_issue", return_value=issue), \
+                mock.patch.object(issue_inputs, "issue_fix_dependencies"), \
                 mock.patch.object(gh, "issue_comments_read", side_effect=fake.comments):
             text = turn_prompts.issue_fix_prompt(LOOP, {"repo": "acme/w", "pr": 5, "head": "c" * 40})
         self.assertIn("MAINTAINER-REQ", text)

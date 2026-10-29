@@ -26,6 +26,7 @@ from diaktoros import ledger  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros import (broker, broker_ipc, config, contained, gate, gh, prompts,  # noqa: E402
                          run_supervisor, trusted_turn)
+from diaktoros.run_supervisor import issue_inputs  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 REPO = "acme/widgets"
@@ -280,7 +281,7 @@ class Worker(Base):
                            (None, run_supervisor.RetryableError)):
             self.live = live
             with self.subTest(live=live), self.assertRaises(kind):
-                run_supervisor.triage_issue(self.loop, 12)
+                issue_inputs.triage_issue(self.loop, 12)
 
     def test_a_recorded_triage_is_write_evidence_so_it_is_never_rearmed(self):
         sup, run_id = self.triage_row()

@@ -31,7 +31,7 @@ import socket
 import stat
 
 SOCKET = '/run/review-loop/broker/broker.sock'
-TRIAGE_COMMENT_MAX = 1000          # run_supervisor.TRIAGE_COMMENT_MAX; this file runs standalone
+TRIAGE_COMMENT_MAX = 1000          # run_supervisor.issue_inputs.TRIAGE_COMMENT_MAX; runs standalone
 MAX_FRAME = 768 * 1024           # broker_ipc.MAX_PUSH_REQUEST
 # A push or review is several GitHub calls plus git fetch/push (each up to 90s), all
 # host-side. Wait for the answer instead of timing out mid-write; the turn deadline is

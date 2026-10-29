@@ -90,7 +90,7 @@ class Resuming(base.Gate):
                                   lambda loop, n: (self.comments, ""))
         patch.start()
         self.addCleanup(patch.stop)
-        run = mock.patch("diaktoros.run_supervisor.issue_fix_issue", lambda loop, n: self.live)
+        run = mock.patch("diaktoros.run_supervisor.issue_inputs.issue_fix_issue", lambda loop, n: self.live)
         run.start()
         self.addCleanup(run.stop)
 

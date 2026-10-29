@@ -616,96 +616,6 @@ def unpublished_before(row) -> bool:
     return UNPUBLISHED in (row['error'] or '')
 
 
-TRIAGE_TITLE_MAX = 256
-TRIAGE_BODY_MAX = 8000
-TRIAGE_COMMENT_MAX = 1000
-
-
-def triage_issue(loop: dict, number: int) -> dict:
-    """The live issue a triage run may act on, or raise (#213).
-
-    Read as the reader, right before launch and again by the broker before any write: an issue
-    that closed, turned out to be a pull request, changed author, or that a person has since
-    labelled from the triage list is no longer this run's to triage.
-    """
-    from .. import gh
-    triage = loop.get('triage') or {}
-    if not triage.get('route'):
-        raise ValueError('issue triage is off for this loop')
-    issue = gh.api(loop, f"/repos/{loop['repo']}/issues/{number}", login=loop['read_token'])
-    if not isinstance(issue, dict) or issue.get('number') != number:
-        raise RetryableError('issue unreadable (GitHub read failed)')
-    why = triage_blocker(loop, issue)
-    if why:
-        raise ValueError(why)
-    return issue
-
-
-def triage_blocker(loop: dict, issue: dict) -> str:
-    """Why this issue is not (or no longer) triage's, or ``''`` when it is (#213, #849).
-
-    The one rule for the run's launch, the broker's write and the watchdog's recovery sweep.
-    """
-    triage = loop.get('triage') or {}
-    if 'pull_request' in issue:
-        return 'not an issue (a pull request)'
-    if issue.get('state') != 'open':
-        return 'issue no longer open'
-    author = str((issue.get('user') or {}).get('login') or '').lower()
-    if author not in (triage.get('authors') or ()):
-        return 'issue author is not in triage.authors'
-    present = {str((label or {}).get('name') or '').casefold()
-               for label in issue.get('labels') or [] if isinstance(label, dict)}
-    if present & {name.casefold() for name in triage.get('labels') or []}:
-        return 'issue already carries a triage label (a person labelled it)'
-    return ''
-
-
-def issue_fix_issue(loop: dict, number: int) -> dict:
-    """The live issue an issue-fix run may act on, or raise (#214).
-
-    Read as the reader at the gate, before launch and again by the broker before any write: it
-    must still be an open issue (not a PR) by an allowlisted author, still carrying the fix
-    label a maintainer applied.
-    """
-    from .. import config, gh
-    triage = loop.get('triage') or {}
-    if not triage.get('route') or not triage.get('fix_label'):
-        raise ValueError('issue fixes are off for this loop')
-    issue = gh.api(loop, f"/repos/{loop['repo']}/issues/{number}", login=loop['read_token'])
-    if not isinstance(issue, dict) or issue.get('number') != number:
-        raise RetryableError('issue unreadable (GitHub read failed)')
-    if 'pull_request' in issue:
-        raise ValueError('not an issue (a pull request)')
-    if issue.get('state') != 'open':
-        raise IssueIneligible('no longer eligible: the issue is no longer open')
-    if str((issue.get('user') or {}).get('login') or '').lower() not in triage.get('authors', ()):
-        raise IssueIneligible('no longer eligible: the issue author is not in triage.authors')
-    present = {str((label or {}).get('name') or '').casefold()
-               for label in issue.get('labels') or [] if isinstance(label, dict)}
-    # A maintainer's fix label, or (#232) a triage label the loop auto-offers (never with P0-P2).
-    if (triage['fix_label'].casefold() not in present
-            and not config.auto_fix_eligible(loop, present)):
-        offered = [str(x) for x in triage.get('auto_fix_labels') or []]
-        if offered and config.issue_fixes_enabled(loop):
-            raise IssueIneligible(
-                f"no longer eligible: neither the fix label ({triage['fix_label']!r}) nor an "
-                f"auto-offer label ({', '.join(offered)}) is on it (an auto-offer label never "
-                "counts beside a P0-P2 label)")
-        raise IssueIneligible(f"no longer eligible: the {triage['fix_label']!r} label is no "
-                              "longer on the issue")
-    return issue
-
-
-def issue_fix_dependencies(loop: dict, number: int) -> None:
-    """Raise ``RetryableError`` while a declared prerequisite of the issue is unmet or
-    unreadable (#775): checked at launch and at the broker's publication boundary."""
-    from .. import issue_deps
-    why = issue_deps.hold_reason(loop, number)
-    if why:
-        raise RetryableError(f'issue #{number} {why}')
-
-
 def write_records(con, run_id: str) -> str | None:
     """The host's write-ahead record of an external write this run began, if any.
 
@@ -792,95 +702,7 @@ def policy_hold(error: object) -> bool:
                                        or error.startswith(FIXER_PUSH_OFF))
 
 
-# Claim order (#481): finish work before starting more. Lower class goes first; a pending row
-# climbs one class per CLAIM_AGE_STEP_S waited, so the lowest class runs within
-# (classes - 1) * CLAIM_AGE_STEP_S of arrival even while higher classes keep arriving.
-CLAIM_CLASSES = ('CI-fix/conflict turn', 'fix round', 'review', 'new issue fix')
-CLAIM_AGE_STEP_S = 900.0
-
-
-def claim_class(row) -> int:
-    """The priority class (index into ``CLAIM_CLASSES``) of a run row."""
-    from .. import ci_fix
-    seat, key = row['seat'], str(row['turn_key'] or '')
-    if seat == 'fixer' and (key.startswith(CONFLICT_KEY) or ci_fix.is_ci_fix(key)):
-        return 0
-    if seat in ('fixer', 'adjudicator'):
-        return 1
-    return 3 if seat == 'issue_fixer' else 2
-
-
-def claim_rank(row, now: float) -> tuple:
-    """Sort key for a pending row: aged class, then arrival. The one definition the worker's
-    claim and the status/explain queue view share."""
-    aged = int(max(0.0, now - float(row['created'])) // CLAIM_AGE_STEP_S)
-    return (max(0, claim_class(row) - aged), row['created'], row['id'])
-
-
-def claim_order(rows, now: float | None = None) -> list:
-    now = time.time() if now is None else now
-    return sorted(rows, key=lambda r: claim_rank(r, now))
-
-
-def claim_why(row, now: float) -> str:
-    cls, eff = claim_class(row), claim_rank(row, now)[0]
-    text = CLAIM_CLASSES[cls]
-    if eff < cls:
-        text += f", aged up to {CLAIM_CLASSES[eff]} priority after {int(now - float(row['created']))}s"
-    return text
-
-
 ISSUE_SEATS = ('triage', 'issue_fixer')
-
-
-# Seats whose turns a held PR (#477) waits out; an issue fix's number is an issue, not a PR.
-PR_HOLD_SEATS = ('reviewer', 'fixer', 'adjudicator')
-INFLIGHT_LABEL = {'reviewer': 'review', 'fixer': 'fix'}
-
-
-def claim_seat(loop: dict, row, budget: float):
-    """Claim ``row``'s seat in the loop's ``locks.json`` and mark its head in flight, for the
-    life of the run (#98). Best effort: the run ledger is what enforces capacity; these are
-    what ``explain``, ``status``, the queue drain and the watchdog's clocks read. Returns what
-    ``release_seat`` needs, or None when nothing was written."""
-    try:
-        from .. import gate, state as state_mod
-        st = state_mod.state_for(loop)
-        key = gate.seat_key(loop, row['pr'])
-        # Exclusive (#727): it stamps the gate's run-less claim, but never evicts another live
-        # run's. Then that run keeps the entry, this one has nothing of its own to release, and
-        # the run ledger is what refuses the duplicate.
-        if not st.acquire(row['seat'], key, row['head'], f"isolated run {row['id']}",
-                          budget=budget, run=row['id'], exclusive=True):
-            return None
-    except Exception:
-        return None
-    # The claim is written: from here on its release must stay reachable, whatever the mark
-    # does (a failed mark write must not orphan the claim).
-    mark = (f"{INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}"
-            if row['seat'] in INFLIGHT_LABEL else None)
-    if mark:
-        try:
-            st.inflight(mark, record=True)
-        except Exception:
-            mark = None
-    return st, row['seat'], key, row['head'], mark, row['id']
-
-
-def release_seat(claim, state: str | None) -> None:
-    """Free a run's claim and in-flight mark once it has ended — unless it ended ``uncertain``
-    (or its end could not be recorded): then the claim stays as the seat's visible occupancy
-    until an operator reconciles it, with its TTL and the "that run died" report as backstop."""
-    if claim is None or state in (None, 'uncertain'):
-        return
-    st, seat, key, head, mark, run = claim
-    try:
-        # Only this run's own claim; its mark goes with it. A newer run that has claimed the
-        # same seat/PR/head (a retry, a re-armed turn) keeps both (#98).
-        if st.release_if(seat, key, head, run=run) and mark:
-            st.inflight_clear(mark)
-    except Exception:
-        pass
 
 
 def _pid_reused(pid: int, launched: float | None) -> bool:
@@ -1383,7 +1205,6 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch, notices.OperatorNo
                                         retry=retry and not cancelled, detail=detail)
                 # A completed child releases the seat and allows waiting work to advance.
                 self.recover()
-
 
 
 def main():

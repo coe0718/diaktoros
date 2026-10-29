@@ -46,9 +46,9 @@ def fix(loop: dict, payload: dict) -> None:
     if not config.issue_fixes_enabled(loop):
         silence(f"issue #{number}: issue fixes need unattended fixer pushes on — "
                 f"{config.fixer_push_enable_command(loop)}")
-    from diaktoros import run_supervisor
+    from diaktoros.run_supervisor import issue_inputs
     try:
-        live = run_supervisor.issue_fix_issue(loop, number)
+        live = issue_inputs.issue_fix_issue(loop, number)
     except Exception as exc:
         silence(f"issue #{number} not handed to the fixer: {exc}")
     from diaktoros import fix_hold

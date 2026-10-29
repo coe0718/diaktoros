@@ -411,6 +411,7 @@ def authorize_triage(loop: dict, *, repo: str, number: int) -> str:
     a person who labelled it first wins, and the triage is skipped.
     """
     from . import config, run_supervisor
+    from .run_supervisor import issue_inputs
     if not _REPO.fullmatch(repo) or repo != loop.get("repo"):
         raise BrokerDenied("wrong repository")
     if type(number) is not int or number <= 0:
@@ -431,7 +432,7 @@ def authorize_triage(loop: dict, *, repo: str, number: int) -> str:
             or account["login"].casefold() != login.casefold()):
         raise BrokerDenied("token principal cannot be verified")
     try:
-        run_supervisor.triage_issue(loop, number)
+        issue_inputs.triage_issue(loop, number)
     except run_supervisor.RetryableError as exc:
         raise BrokerDenied(str(exc)) from None
     except ValueError as exc:
@@ -467,6 +468,7 @@ def authorize_issue_fix(loop: dict, *, repo: str, number: int) -> str:
     the fix label a maintainer applied.
     """
     from . import config, run_supervisor
+    from .run_supervisor import issue_inputs
     if not _REPO.fullmatch(repo) or repo != loop.get("repo"):
         raise BrokerDenied("wrong repository")
     if type(number) is not int or number <= 0:
@@ -492,8 +494,8 @@ def authorize_issue_fix(loop: dict, *, repo: str, number: int) -> str:
             or account["login"].casefold() != fixer.casefold()):
         raise BrokerDenied("token principal cannot be verified")
     try:
-        run_supervisor.issue_fix_issue(loop, number)
-        run_supervisor.issue_fix_dependencies(loop, number)
+        issue_inputs.issue_fix_issue(loop, number)
+        issue_inputs.issue_fix_dependencies(loop, number)
     except (run_supervisor.RetryableError, ValueError) as exc:
         raise BrokerDenied(str(exc)) from None
     return fixer

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from .. import ledger, run_supervisor, util
-from . import pr_facts, turn_prompts
+from . import claims, pr_facts, turn_prompts
 
 
 @dataclass
@@ -80,7 +80,7 @@ class ClaimAndLaunch:
         with self._connect() as con:
             candidates = con.execute("SELECT * FROM runs WHERE state='pending' "
                                      "ORDER BY created,id").fetchall()
-        for row in run_supervisor.claim_order(candidates):
+        for row in claims.claim_order(candidates):
             read = _ClaimRead()
             if self.production_config and row['seat'] == 'reviewer':
                 self._claim_read_reviewer(row, read)
@@ -193,7 +193,7 @@ class ClaimAndLaunch:
                     read.superseded = 'escalated to adjudication at this head'
             except Exception as exc:
                 read.read_error = read.read_error or f'{type(exc).__name__}: {exc}'[:200]
-        if row['seat'] in run_supervisor.PR_HOLD_SEATS and not read.superseded:
+        if row['seat'] in claims.PR_HOLD_SEATS and not read.superseded:
             # A maintainer holds this PR (#477): the row waits, pending, like a draft's, and
             # starts after release. An unreadable hold is not "not held": it waits too.
             from .. import config, pr_hold
@@ -413,7 +413,7 @@ class ClaimAndLaunch:
         # triage run is issue-keyed and held by the ledger alone.
         # A shadow turn (#218) holds neither: it is not the PR's review, and a claim or an
         # in-flight mark would read as one (the gate's "a review is already out").
-        turn.claim = (run_supervisor.claim_seat(loop, row, turn.budget)
+        turn.claim = (claims.claim_seat(loop, row, turn.budget)
                       if row['seat'] not in ('triage', 'issue_fixer', run_supervisor.SHADOW) else None)
         if row['seat'] == 'issue_fixer' and not config.issue_fixes_enabled(loop):
             # The policy may have changed since the gate: a turn that could not publish is
@@ -1024,7 +1024,7 @@ class ClaimAndLaunch:
                     turn.breach[0].breach_resume(turn.row['pr'], turn.row['head'], turn.breach[1])
             except Exception:
                 pass
-        run_supervisor.release_seat(turn.claim, state)
+        claims.release_seat(turn.claim, state)
         if not shadow:
             # A shadow turn is no part of the loop (#218): its failure pages nobody.
             self.failure_notice(run_id, state)
