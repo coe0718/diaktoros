@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import pathlib
-import shlex
 
 from .. import (
     config,
@@ -17,19 +16,6 @@ from .. import (
 from . import common as cli_common
 from . import route_sync
 from ..config import credentials
-
-
-def _shim_refusal(exc: OSError) -> str:
-    """Why the watchdog shim could not be written, and a chmod that can repair it: on a path that
-    exists — a shim not created yet means its directory (or the nearest existing ancestor)
-    refused the write (#354)."""
-    failed = pathlib.Path(exc.filename or doctor.shim_path())
-    target = failed
-    while not target.exists() and target.parent != target:
-        target = target.parent
-    return (f"  refused: cannot write the watchdog shim at {failed} ({exc.strerror or exc}); "
-            f"make {target} writable (e.g. `chmod u+w -- {shlex.quote(str(target))}`) and "
-            "re-run `apply --watchdog-shim`")
 
 
 def _triage_lines(loop: dict) -> list[str]:

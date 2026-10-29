@@ -4,7 +4,6 @@ which routes and hooks a change moves, rebinds, recreates or leaves, used by ``a
 """
 from __future__ import annotations
 
-
 from .. import (
     config,
     gate_shims,

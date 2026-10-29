@@ -42,6 +42,8 @@ from . import install as cli_install
 from . import lifecycle as cli_lifecycle
 from . import operations as cli_operations
 from . import reports as cli_reports
+from . import apply_command
+from . import identity_command
 from . import set_parser
 from . import settings as cli_settings
 from . import triage_command
@@ -101,10 +103,12 @@ from .reports import (
     cmd_stats,
     cmd_trace,
 )  # noqa: F401
-from .settings import (
-    cmd_apply,
+from .apply_command import cmd_apply  # noqa: F401
+from .identity_command import (  # noqa: F401
     cmd_fixer_push,
     cmd_identity,
+)
+from .settings import (  # noqa: F401
     cmd_settings,
     cmd_show,
 )
@@ -177,8 +181,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         cli_checks.add_corpus(sub)
         cli_reports.add_models(sub)
         set_parser.add_set(sub)
-        cli_settings.add_identity(sub)
-        cli_settings.add_apply(sub)
+        identity_command.add_identity(sub)
+        apply_command.add_apply(sub)
         cli_settings.add_settings(sub)
         cli_settings.add_show(sub)
         cli_checks.add_arm(sub)
@@ -186,7 +190,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         cli_checks.add_app_webhook(sub)
         cli_checks.add_create_apps(sub)
         triage_command.add_triage(sub)
-        cli_settings.add_fixer_push(sub)
+        identity_command.add_fixer_push(sub)
         cli_operations.add_retry(sub)
         cli_operations.add_cancel(sub)
         cli_operations.add_continue(sub)
