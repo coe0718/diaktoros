@@ -217,21 +217,37 @@ def _upgrade_prompts(loop: dict, intent: dict, label: str) -> tuple[set, str]:
     registry with the same secret. ``intent`` is updated in place. Returns the upgraded names
     and an alert line when the record could not be written ("" otherwise).
     """
-    stale = {}
-    for role, name in routes_of(loop).items():
-        want = intent.get(name)
-        if (isinstance(want, dict) and want.get("script") == GATE_SCRIPT[role]
-                and want.get("prompt") != ROUTE_PROMPT[role]):
-            stale[name] = dict(want, prompt=ROUTE_PROMPT[role])
-    if not stale:
-        return set(), ""
-    try:
-        record(loop, stale)
-    except (OSError, IntentError) as exc:
-        return set(), (f"⚠️ Diaktoros {label} — could not upgrade the recorded route prompts "
-                       f"({', '.join(sorted(stale))}): {exc}")
-    intent.update(stale)
-    return set(stale), ""
+    stale = {name: (role, want.get("prompt")) for role, name in routes_of(loop).items()
+             if isinstance(want := intent.get(name), dict) and want.get("script") == GATE_SCRIPT[role]
+             and want.get("prompt") != ROUTE_PROMPT[role]}
+    upgraded = set()
+    for name, (role, seen) in sorted(stale.items()):
+        try:
+            if _set_prompt(loop, name, role, seen):
+                upgraded.add(name)
+        except (OSError, IntentError) as exc:
+            return upgraded, (f"⚠️ Diaktoros {label} — could not upgrade the recorded prompt of "
+                              f"route {name}: {exc}")
+    if upgraded:
+        # Re-read the record (#1418 review, F1): whatever a concurrent rebind or rotation
+        # recorded meanwhile is what the heal restores, never this sweep's older snapshot.
+        intent.clear()
+        intent.update(load(loop) or {})
+    return upgraded, ""
+
+
+def _set_prompt(loop: dict, name: str, role: str, seen) -> bool:
+    """Replace only this route's recorded prompt, under the record's lock and only if the record
+    still holds the prompt that was read: a concurrent rebind or secret rotation is kept."""
+    with _lock(loop) as target:
+        current = load(loop) or {}
+        entry = current.get(name)
+        if (not isinstance(entry, dict) or entry.get("script") != GATE_SCRIPT[role]
+                or entry.get("prompt") != seen):
+            return False
+        current[name] = dict(entry, prompt=ROUTE_PROMPT[role])
+        _write(target, loop, current)
+        return True
 
 
 def drift(loop: dict, registry: dict, intent: dict) -> dict:

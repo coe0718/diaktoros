@@ -359,3 +359,35 @@ class PromptUpgrade(Fixture):
         self.assertIsNotNone(fix)
         self.assertIn("--repair", fix[1])
         self.assertNotIn("remove that entry", fix[1])
+
+    def test_a_rebind_during_the_upgrade_keeps_its_new_secret_and_profile(self):
+        # #1418 review F1: the sweep read the record, then a rotation was recorded (registry and
+        # record both) before the sweep wrote. Its first read returns that older snapshot.
+        self.old_install()
+        snapshot = route_intent.load(self.loop)
+        self.native(lambda data: data["widgets-review"].update(secret="new-secret",
+                                                              profile="new-profile"))
+        route_intent.record_live(self.loop, ["widgets-review"])
+        real, reads = route_intent.load, []
+
+        def first_read_is_the_snapshot(loop):
+            reads.append(1)
+            return snapshot if len(reads) == 1 else real(loop)
+        with mock.patch.object(route_intent, "load", side_effect=first_read_is_the_snapshot):
+            route_intent.heal(self.loop)
+        recorded = route_intent.load(self.loop)["widgets-review"]
+        live = self.live()["widgets-review"]
+        self.assertEqual((recorded["secret"], recorded["profile"]), ("new-secret", "new-profile"))
+        self.assertEqual((live["secret"], live["profile"]), ("new-secret", "new-profile"))
+        self.assertEqual(recorded["prompt"], prompts.REVIEWER, "and still upgraded")
+
+    def test_doctor_does_not_name_the_repair_when_the_record_has_another_profile(self):
+        # #1418 review F2: the repair would restore the recorded (wrong) profile.
+        from diaktoros import gate_shims
+        self.old_install()
+        intent = route_intent.load(self.loop)
+        route_intent.record(self.loop, {"widgets-review": dict(intent["widgets-review"],
+                                                               profile="old-profile")})
+        fix = gate_shims.divergence(self.loop, contract=True).get("widgets-review")
+        self.assertIsNotNone(fix)
+        self.assertNotIn("--repair", fix[1])
