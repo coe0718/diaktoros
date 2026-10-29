@@ -31,7 +31,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import cli, config, doctor, routes  # noqa: E402
 from diaktoros.cli import route_sync  # noqa: E402
-from diaktoros.cli import triage_command  # noqa: E402
+from diaktoros.cli import apply_command  # noqa: E402
 from diaktoros.cli import install as cli_install  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
 # By file, not as ``tests.hermes_prereqs``: in CI's installed-mode lane Hermes's own ``tests``
@@ -2211,11 +2211,11 @@ class ShimRefusal(unittest.TestCase):
             scripts = pathlib.Path(tmp) / "scripts"
             scripts.mkdir()
             missing = scripts / "review-loop-watchdog.sh"
-            line = triage_command._shim_refusal(PermissionError(13, "Permission denied", str(missing)))
+            line = apply_command._shim_refusal(PermissionError(13, "Permission denied", str(missing)))
             self.assertIn(f"cannot write the watchdog shim at {missing}", line)
             self.assertIn(f"chmod u+w -- {scripts}`", line)
             missing.write_text("x")
-            line = triage_command._shim_refusal(PermissionError(13, "Permission denied", str(missing)))
+            line = apply_command._shim_refusal(PermissionError(13, "Permission denied", str(missing)))
             self.assertIn(f"chmod u+w -- {missing}`", line)
 
 if __name__ == "__main__":
