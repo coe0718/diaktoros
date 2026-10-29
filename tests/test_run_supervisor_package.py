@@ -34,12 +34,13 @@ class Entry(unittest.TestCase):
 
     def test_the_worker_pythonpath_is_the_plugin_root(self):
         # _spawn sets PYTHONPATH, and the worker's cwd (#1373), to Path(__file__).resolve()
-        # .parents[2]: from diaktoros/run_supervisor/__init__.py that is the checkout holding
-        # diaktoros/.
-        root = pathlib.Path(run_supervisor.__file__).resolve().parents[2]
+        # .parents[2]: from diaktoros/run_supervisor/workers.py (where _spawn lives, #1349)
+        # that is the checkout holding diaktoros/.
+        from diaktoros.run_supervisor import workers
+        root = pathlib.Path(workers.__file__).resolve().parents[2]
         self.assertEqual(root, ROOT)
         self.assertTrue((root / "diaktoros" / "run_supervisor" / "__main__.py").is_file())
-        source = pathlib.Path(run_supervisor.__file__).read_text()
+        source = pathlib.Path(workers.__file__).read_text()
         self.assertIn('plugin_root = Path(__file__).resolve().parents[2]', source)
         self.assertIn('"PYTHONPATH": str(plugin_root)', source)
         self.assertIn('cwd=str(plugin_root)', source)
