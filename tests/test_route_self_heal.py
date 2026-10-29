@@ -310,3 +310,52 @@ class OptimisticWriteTest(Fixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PromptUpgrade(Fixture):
+    """A version that rewords a gate prompt upgrades the installed routes in place (2026-10-28:
+    #1389 reworded the adjudicator prompt, and every existing adjudicator route then failed
+    doctor with "does not carry the adjudicator gate's prompt", which the heal could not fix)."""
+
+    def old_install(self, record=True):
+        """An install from before the reword: routes and record both carry the old prompt."""
+        before = self.install(record=False)
+        self.native(lambda data: data["widgets-review"].update(prompt="the previous reviewer prompt"))
+        if record:
+            route_intent.record_live(self.loop, ["widgets-review", "widgets-fix"], replace=True)
+        return before
+
+    def test_a_recorded_route_gets_this_versions_prompt_with_its_secret(self):
+        before = self.old_install()
+        lines = route_intent.heal(self.loop)
+        live = self.live()["widgets-review"]
+        self.assertEqual(live["prompt"], prompts.REVIEWER)
+        self.assertEqual(live["secret"], before["widgets-review"]["secret"], "same secret")
+        self.assertEqual(route_intent.load(self.loop)["widgets-review"]["prompt"], prompts.REVIEWER)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("widgets-review: its gate prompt was upgraded to this version's", lines[0])
+        self.assertEqual(self.live()["other-plugin"]["prompt"], "p", "someone else's untouched")
+        self.assertEqual(route_intent.heal(self.loop), [], "once")
+
+    def test_an_unrecorded_route_with_another_prompt_is_never_taken_over(self):
+        self.old_install(record=False)
+        route_intent.heal(self.loop)
+        self.assertEqual(self.live()["widgets-review"]["prompt"], "the previous reviewer prompt")
+        self.assertNotIn("widgets-review", route_intent.load(self.loop) or {})
+
+    def test_a_recorded_route_of_another_gate_is_not_upgraded(self):
+        self.old_install()
+        intent = route_intent.load(self.loop)
+        intent["widgets-review"] = dict(intent["widgets-review"], script="something_else.py")
+        route_intent.record(self.loop, {"widgets-review": intent["widgets-review"]})
+        self.assertEqual(route_intent._upgrade_prompts(self.loop, route_intent.load(self.loop),
+                                                       "[x]"), (set(), ""))
+
+    def test_doctor_names_the_repair_for_a_recorded_route(self):
+        from diaktoros import gate_shims
+        self.old_install()
+        self.loop["seats"]["reviewer"]["profile"] = "rev"
+        fix = gate_shims.divergence(self.loop, contract=True).get("widgets-review")
+        self.assertIsNotNone(fix)
+        self.assertIn("--repair", fix[1])
+        self.assertNotIn("remove that entry", fix[1])

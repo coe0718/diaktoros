@@ -208,6 +208,32 @@ def _adoptable(loop: dict, registry: dict, known: dict) -> dict:
     return found
 
 
+def _upgrade_prompts(loop: dict, intent: dict, label: str) -> tuple[set, str]:
+    """Bring this loop's recorded routes up to this version's gate prompts (an upgrade).
+
+    The record is the plugin's own, so it is the proof a route is ours, not the prompt's wording,
+    which changes between versions. A recorded route of the right gate script whose prompt is
+    not this version's has its record's prompt replaced; the heal then writes it to the live
+    registry with the same secret. ``intent`` is updated in place. Returns the upgraded names
+    and an alert line when the record could not be written ("" otherwise).
+    """
+    stale = {}
+    for role, name in routes_of(loop).items():
+        want = intent.get(name)
+        if (isinstance(want, dict) and want.get("script") == GATE_SCRIPT[role]
+                and want.get("prompt") != ROUTE_PROMPT[role]):
+            stale[name] = dict(want, prompt=ROUTE_PROMPT[role])
+    if not stale:
+        return set(), ""
+    try:
+        record(loop, stale)
+    except (OSError, IntentError) as exc:
+        return set(), (f"⚠️ Diaktoros {label} — could not upgrade the recorded route prompts "
+                       f"({', '.join(sorted(stale))}): {exc}")
+    intent.update(stale)
+    return set(stale), ""
+
+
 def drift(loop: dict, registry: dict, intent: dict) -> dict:
     """name → differing watched fields (``["missing"]`` when erased), for this loop's names only."""
     role_of = {name: role for role, name in routes_of(loop).items()}
@@ -267,6 +293,8 @@ def heal(loop: dict, *, adopt: bool = True) -> list[str]:
                 intent.update(found)
             except (OSError, IntentError) as exc:
                 lines.append(f"⚠️ Diaktoros {label} — could not record route intent: {exc}")
+    upgraded, line = _upgrade_prompts(loop, intent, label)
+    lines += [line] if line else []
     expected = {name: entry for name, entry in intent.items()
                 if name in set(routes_of(loop).values())}
     if not expected or not drift(loop, registry, expected):
@@ -278,6 +306,10 @@ def heal(loop: dict, *, adopt: bool = True) -> list[str]:
     except (OSError, ValueError) as exc:
         return lines + [f"⚠️ Diaktoros {label} — route registry changed by another writer and "
                         f"could NOT be restored (fail closed): {exc}"]
+    for name in [n for n, fields in restored.items() if n in upgraded and fields == ["prompt"]]:
+        lines.append(f"🔧 Diaktoros {label} — route {name}: its gate prompt was upgraded to this "
+                     "version's (same secret, so GitHub's hook still authenticates)")
+        del restored[name]
     if restored:
         lines.append(f"🔧 Diaktoros {label} — restored {len(restored)} route(s) another "
                      "registry writer erased or changed (same secret, so GitHub's hook still "
