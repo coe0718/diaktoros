@@ -317,8 +317,15 @@ def heal(loop: dict, *, adopt: bool = True) -> list[str]:
         return lines
     try:
         role_of = {name: role for role, name in routes_of(loop).items()}
+        names = set(expected)
+
+        def current():
+            # Read under the registry lock (#1418 F1): a rebind recorded after this sweep's read
+            # is what is restored, never the older snapshot.
+            fresh = load(loop) or {}
+            return {name: entry for name, entry in fresh.items() if name in names}
         restored, conflicts = routes.heal_entries(
-            expected, {name: watched(role_of[name]) for name in expected}, owned)
+            current, {name: watched(role_of[name]) for name in expected}, owned)
     except (OSError, ValueError) as exc:
         return lines + [f"⚠️ Diaktoros {label} — route registry changed by another writer and "
                         f"could NOT be restored (fail closed): {exc}"]

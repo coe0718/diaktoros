@@ -384,10 +384,33 @@ class PromptUpgrade(Fixture):
     def test_doctor_does_not_name_the_repair_when_the_record_has_another_profile(self):
         # #1418 review F2: the repair would restore the recorded (wrong) profile.
         from diaktoros import gate_shims
+        # The state that matters (shadow review, F3): the record holds THIS version's prompt
+        # but a stale profile; the live route has the configured profile and the old prompt.
+        # Main's old check (record prompt == this version's) recommended the repair here, and
+        # the repair would have restored the stale profile.
         self.old_install()
         intent = route_intent.load(self.loop)
-        route_intent.record(self.loop, {"widgets-review": dict(intent["widgets-review"],
-                                                               profile="old-profile")})
+        route_intent.record(self.loop, {"widgets-review": dict(
+            intent["widgets-review"], profile="old-profile", prompt=prompts.REVIEWER)})
+        self.assertEqual(self.live()["widgets-review"]["profile"], "rev")
         fix = gate_shims.divergence(self.loop, contract=True).get("widgets-review")
         self.assertIsNotNone(fix)
         self.assertNotIn("--repair", fix[1])
+
+    def test_a_rebind_just_before_the_registry_restore_is_kept(self):
+        # #1418 review round 2: a rebind (registry, then record) completes after the heal read
+        # the record and right before it writes the registry. The record is re-read under the
+        # registry lock, so the new secret and profile stand.
+        self.old_install()
+        self.native(lambda data: data["widgets-review"].update(secret="drifted"))  # a heal is due
+        real = routes.heal_entries
+
+        def rebind_then_heal(expected, fields, owned):
+            self.native(lambda data: data["widgets-review"].update(secret="new-secret",
+                                                                  profile="new-profile"))
+            route_intent.record_live(self.loop, ["widgets-review"])
+            return real(expected, fields, owned)
+        with mock.patch.object(routes, "heal_entries", side_effect=rebind_then_heal):
+            route_intent.heal(self.loop)
+        live = self.live()["widgets-review"]
+        self.assertEqual((live["secret"], live["profile"]), ("new-secret", "new-profile"))
