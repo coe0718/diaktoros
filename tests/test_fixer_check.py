@@ -20,6 +20,7 @@ from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros import cli, config, prompts, run_supervisor  # noqa: E402
+from diaktoros.config import lists  # noqa: E402
 from diaktoros.cli import install as cli_install  # noqa: E402
 
 CHECK = 'python3 -m unittest discover -s tests -p "test_home_guard.py" && echo "${HOME}"'
@@ -36,7 +37,7 @@ class Setting(unittest.TestCase):
     def test_default_is_none_and_only_one_printable_line_is_accepted(self):
         self.assertEqual(config.normalize(raw())["fixer_check"], "")
         self.assertEqual(config.normalize(raw(fixer_check=f"  {CHECK} "))["fixer_check"], CHECK)
-        for bad in (["a"], 3, "a\nb", "a\x1bb", "x" * (config.FIXER_CHECK_MAX + 1)):
+        for bad in (["a"], 3, "a\nb", "a\x1bb", "x" * (lists.FIXER_CHECK_MAX + 1)):
             with self.subTest(value=bad), self.assertRaises(config.ConfigError):
                 config.normalize(raw(fixer_check=bad))
 

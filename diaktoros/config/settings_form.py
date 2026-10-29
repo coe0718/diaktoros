@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from .. import config
 from ..config import blocks
+from ..config import lists
 
 
 # Plugin-level settings. The desktop's Capabilities → Plugins form renders `config_schema` from
@@ -500,24 +501,24 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
         overlaid["operator_agents"] = [name.strip() for name in str(d["operator_agents"]).split(",")
                                        if name.strip()]
     if _form_value(settings, "ci_fix_cap") is not None:
-        overlaid["ci_fix_cap"] = config.check_ci_fix_cap(config._form_int(d["ci_fix_cap"].strip()), "settings")
+        overlaid["ci_fix_cap"] = lists.check_ci_fix_cap(config._form_int(d["ci_fix_cap"].strip()), "settings")
     for key in ("review_only_cap", "review_only_daily"):
         if _form_value(settings, key) is not None:
-            overlaid[key] = config._check_review_only_limit(config._form_int(d[key].strip()), key, "settings")
+            overlaid[key] = lists._check_review_only_limit(config._form_int(d[key].strip()), key, "settings")
     if _form_value(settings, "required_checks") is not None:
-        overlaid["required_checks"] = config.check_required_checks(
-            config.split_check_names(d["required_checks"]), "settings")
+        overlaid["required_checks"] = lists.check_required_checks(
+            lists.split_check_names(d["required_checks"]), "settings")
     if _form_value(settings, "human_paths") is not None:
-        overlaid["human_paths"] = config.check_human_paths(
-            config.split_human_paths(d["human_paths"]), "settings")
+        overlaid["human_paths"] = lists.check_human_paths(
+            lists.split_human_paths(d["human_paths"]), "settings")
     if _form_value(settings, "ci_coverage") is not None:
-        overlaid["ci_coverage"] = config.parse_ci_coverage(
-            config.split_ci_coverage(d["ci_coverage"]), "settings")
+        overlaid["ci_coverage"] = lists.parse_ci_coverage(
+            lists.split_ci_coverage(d["ci_coverage"]), "settings")
     if _form_value(settings, "generated") is not None:
-        overlaid["generated"] = config.parse_generated(
-            config.split_generated(d["generated"]), "settings")
+        overlaid["generated"] = lists.parse_generated(
+            lists.split_generated(d["generated"]), "settings")
     if _form_value(settings, "fixer_check") is not None:
-        overlaid["fixer_check"] = config.check_fixer_check(d["fixer_check"], "settings")
+        overlaid["fixer_check"] = lists.check_fixer_check(d["fixer_check"], "settings")
     shadow = shadow_block(overlaid.get("shadow"), _form_value(settings, "shadow_profile"),
                           _form_value(settings, "shadow_every"), "settings",
                           escalate=_form_value(settings, "shadow_escalate"),

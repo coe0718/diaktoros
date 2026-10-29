@@ -19,6 +19,7 @@ import _ci_green  # noqa: E402
 import test_adjudicator_isolated as tai  # noqa: E402  (REPO, HEAD)
 import test_required_checks as trc  # noqa: E402
 from diaktoros import ci, config, gh, issue_facts  # noqa: E402
+from diaktoros.config import lists  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 
@@ -29,20 +30,20 @@ HEADING = "## What the CI checks at this head cover"
 class Setting(unittest.TestCase):
     def test_default_validation_and_spellings(self):
         self.assertEqual(config.normalize(trc.raw())["ci_coverage"], {})
-        self.assertEqual(config.ci_coverage(config.normalize(trc.raw(ci_coverage=MAP))), MAP)
+        self.assertEqual(lists.ci_coverage(config.normalize(trc.raw(ci_coverage=MAP))), MAP)
         for bad in ("tests", ["a"], {"": "x"}, {"a": ""}, {"a": 3}, {"a=b": "x"}, {"a": "x;;y"},
                     {"a\nb": "x"}, {"x" * 101: "y"}, {"a": "y" * 201}, {"diaktoros/review": "x"},
                     {f"c{i}": "x" for i in range(51)}, {"a": "x", " a": "y"}):
             with self.subTest(value=bad), self.assertRaises(config.ConfigError):
                 config.normalize(trc.raw(ci_coverage=bad))
-        self.assertEqual(config.parse_ci_coverage(
-            config.split_ci_coverage("tests (3.14)=full suite ;; lint=style"), "t"),
+        self.assertEqual(lists.parse_ci_coverage(
+            lists.split_ci_coverage("tests (3.14)=full suite ;; lint=style"), "t"),
             {"tests (3.14)": "full suite", "lint": "style"})
-        self.assertEqual(config.ci_coverage_text({"a": "b", "c": "d"}), "a=b ;; c=d")
+        self.assertEqual(lists.ci_coverage_text({"a": "b", "c": "d"}), "a=b ;; c=d")
         with self.assertRaises(config.ConfigError):
-            config.parse_ci_coverage(["no equals sign"], "t")
+            lists.parse_ci_coverage(["no equals sign"], "t")
         with self.assertRaises(config.ConfigError):
-            config.parse_ci_coverage(["a=b", "a=c"], "t")
+            lists.parse_ci_coverage(["a=b", "a=c"], "t")
 
     def test_the_form_moves_it_only_when_it_names_it(self):
         self.assertNotIn("ci_coverage", settings_form.apply_settings(trc.raw(), {}))

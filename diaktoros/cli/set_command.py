@@ -18,6 +18,7 @@ from . import common as cli_common
 from . import set_adjudication
 from . import triage_command
 from ..config import credentials
+from ..config import lists
 from .common import BRANCH_PUSH_REFUSAL
 
 
@@ -90,7 +91,7 @@ def _list_changes(args, loop: dict, changes: dict) -> None:
     if getattr(args, "required_check", None) is not None or getattr(args, "no_required_checks",
                                                                      False):
         try:
-            names = config.check_required_checks(
+            names = lists.check_required_checks(
                 [] if args.no_required_checks else args.required_check, "--required-check")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
@@ -99,7 +100,7 @@ def _list_changes(args, loop: dict, changes: dict) -> None:
             changes["required_checks"] = names
     if getattr(args, "human_path", None) is not None or getattr(args, "no_human_paths", False):
         try:
-            names = config.check_human_paths(
+            names = lists.check_human_paths(
                 [] if args.no_human_paths else args.human_path, "--human-path")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
@@ -108,7 +109,7 @@ def _list_changes(args, loop: dict, changes: dict) -> None:
             changes["human_paths"] = names
     if getattr(args, "ci_covers", None) is not None or getattr(args, "no_ci_coverage", False):
         try:
-            covers = config.parse_ci_coverage(
+            covers = lists.parse_ci_coverage(
                 [] if args.no_ci_coverage else args.ci_covers, "--ci-covers")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
@@ -117,7 +118,7 @@ def _list_changes(args, loop: dict, changes: dict) -> None:
             changes["ci_coverage"] = covers
     if getattr(args, "generated", None) is not None or getattr(args, "no_generated", False):
         try:
-            names = config.parse_generated(
+            names = lists.parse_generated(
                 [] if args.no_generated else args.generated, "--generated")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
@@ -143,7 +144,7 @@ def _list_changes(args, loop: dict, changes: dict) -> None:
             changes["shadow"] = shadow
     if getattr(args, "review_only", None) is not None or getattr(args, "no_review_only", False):
         try:
-            names = config.check_review_only([] if args.no_review_only else args.review_only,
+            names = lists.check_review_only([] if args.no_review_only else args.review_only,
                                              loop, "--review-only")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
@@ -152,7 +153,7 @@ def _list_changes(args, loop: dict, changes: dict) -> None:
             changes["review_only"] = names
     if getattr(args, "operator_agent", None) is not None or getattr(args, "no_operator_agents", False):
         try:
-            agents = config.check_operator_agents(
+            agents = lists.check_operator_agents(
                 [] if args.no_operator_agents else args.operator_agent, loop, "--operator-agent")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
@@ -166,7 +167,7 @@ def _limit_changes(args, loop: dict, changes: dict) -> None:
     if getattr(args, "ci_fix_cap", None) is not None:
         try:
             value = (None if str(args.ci_fix_cap).strip() in ("0", "")
-                     else config.check_ci_fix_cap(args.ci_fix_cap, "--ci-fix-cap"))
+                     else lists.check_ci_fix_cap(args.ci_fix_cap, "--ci-fix-cap"))
         except config.ConfigError as exc:
             print(f"refused: {exc}")
             raise _Refused
@@ -177,7 +178,7 @@ def _limit_changes(args, loop: dict, changes: dict) -> None:
         if wanted is None:
             continue
         try:
-            value = None if str(wanted).strip() in ("0", "") else config._check_review_only_limit(
+            value = None if str(wanted).strip() in ("0", "") else lists._check_review_only_limit(
                 wanted, key, f"--{key.replace('_', '-')}")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
@@ -187,7 +188,7 @@ def _limit_changes(args, loop: dict, changes: dict) -> None:
     # '' is a real value here: it clears the check.
     if getattr(args, "fixer_check", None) is not None:
         try:
-            check = config.check_fixer_check(args.fixer_check, "--fixer-check")
+            check = lists.check_fixer_check(args.fixer_check, "--fixer-check")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
             raise _Refused

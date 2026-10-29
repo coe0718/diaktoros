@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_conflict_turn as tct  # noqa: E402
 import test_seat_models as sm  # noqa: E402
 from diaktoros import config, contained, generated, safe_push, show, trusted_turn  # noqa: E402
+from diaktoros.config import lists  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 
 GEN = [{"paths": ["docs/commands.md"], "command": "regen --write"}]
@@ -201,28 +202,28 @@ class Setting(tct.unittest.TestCase):
            "reviewers": ["r"]}
 
     def test_validation(self):
-        self.assertEqual(config.check_generated(None, "x"), [])
+        self.assertEqual(lists.check_generated(None, "x"), [])
         for bad in ("docs", [{"paths": [], "command": "c"}], [{"paths": ["../a"], "command": "c"}],
                     [{"paths": ["/a"], "command": "c"}], [{"paths": ["a/./b"], "command": "c"}],
                     [{"paths": ["a"], "command": "c\nd"}], [{"paths": ["a"], "command": ""}],
                     [{"paths": ["a"], "command": "c"}, {"paths": ["a"], "command": "d"}],
                     [{"paths": ["a"], "command": "c", "x": 1}], [{"paths": ["a"]}]):
             with self.subTest(bad=bad), self.assertRaises(config.ConfigError):
-                config.check_generated(bad, "x")
-        self.assertEqual(config.check_generated(GEN, "x"), GEN)
+                lists.check_generated(bad, "x")
+        self.assertEqual(lists.check_generated(GEN, "x"), GEN)
         self.assertEqual(config.DEFAULTS["generated"], [])
 
     def test_form_cli_and_show(self):
         text = "docs/commands.md=regen --write"
-        self.assertEqual(config.parse_generated(config.split_generated(text), "f"), GEN)
+        self.assertEqual(lists.parse_generated(lists.split_generated(text), "f"), GEN)
         self.assertIn("generated", settings_form.SETTINGS_SCHEMA)
         self.assertNotIn("generated", settings_form.apply_settings(dict(self.RAW), {}))
         self.assertEqual(settings_form.apply_settings(dict(self.RAW), {"generated": text})["generated"],
                          GEN)
         with self.assertRaises(config.ConfigError):
             settings_form.apply_settings(dict(self.RAW), {"generated": "no-equals"})
-        self.assertEqual(config.generated_text(GEN), text)
-        self.assertEqual(config.generated({"generated": GEN}), GEN)
+        self.assertEqual(lists.generated_text(GEN), text)
+        self.assertEqual(lists.generated({"generated": GEN}), GEN)
 
 
 if __name__ == "__main__":

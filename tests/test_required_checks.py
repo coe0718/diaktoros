@@ -20,6 +20,7 @@ from diaktoros.config import settings_form  # noqa: E402
 import test_ci_gate as cg  # noqa: E402
 import test_seat_models as sm  # noqa: E402
 from diaktoros import ci, cli, config, observer  # noqa: E402
+from diaktoros.config import lists  # noqa: E402
 from diaktoros.cli import install as cli_install  # noqa: E402
 from diaktoros.run_supervisor import CI_HOLD  # noqa: E402
 
@@ -44,9 +45,9 @@ class Setting(unittest.TestCase):
                 config.normalize(raw(required_checks=bad))
 
     def test_split_keeps_matrix_commas(self):
-        self.assertEqual(config.split_check_names(" tests (3.11), lint ,, test (ubuntu-24.04, 3.11)"),
+        self.assertEqual(lists.split_check_names(" tests (3.11), lint ,, test (ubuntu-24.04, 3.11)"),
                          ["tests (3.11)", "lint", "test (ubuntu-24.04, 3.11)"])
-        self.assertEqual(config.split_check_names(""), [])
+        self.assertEqual(lists.split_check_names(""), [])
 
     def test_the_form_moves_it_only_when_it_names_it(self):
         self.assertNotIn("required_checks", settings_form.apply_settings(raw(), {}))
