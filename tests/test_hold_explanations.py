@@ -23,7 +23,7 @@ class LedgerExplanations(unittest.TestCase):
         self.loop = {'id': 'widgets', 'repo': 'owner/widgets', 'cap': 3,
                      'state_dir': str(pathlib.Path(self.temp.name) / 'state')}
         with mock.patch.object(self.sup, '_spawn'), \
-                mock.patch.object(run_supervisor.uuid, 'uuid4', return_value=uuid.UUID(int=1)):
+                mock.patch.object(uuid, 'uuid4', return_value=uuid.UUID(int=1)):
             self.sup.enqueue('delivery', self.loop['repo'], 7, 'a' * 40, 'reviewer')
 
     def row(self, state='waiting', error='held: private /home/private ghp_SECRET', due=1234):
