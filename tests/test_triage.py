@@ -479,8 +479,8 @@ class ApplyHooksHelp(unittest.TestCase):
         self.assertIn("triage", help_text)
 
     def test_ensure_hooks_docstring_does_not_claim_two_hooks(self):
-        from diaktoros.cli import settings as cli_settings
-        doc = " ".join(cli_settings._ensure_hooks.__doc__.split())
+        from diaktoros.cli import route_sync
+        doc = " ".join(route_sync._ensure_hooks.__doc__.split())
         self.assertNotIn("two repo hooks", doc)
         self.assertIn("triage", doc)
 

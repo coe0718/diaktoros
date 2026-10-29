@@ -18,7 +18,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros import cli, config, doctor, gate_shims, gh, routes  # noqa: E402
-from diaktoros.cli import settings as cli_settings  # noqa: E402
+from diaktoros.cli import route_sync  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
 
 LOOP_ID = "triaged"
@@ -296,7 +296,7 @@ class TriageVerb(unittest.TestCase):
         def reuse(loop, login, dry_run, outcome=None):
             outcome.update(created=[], kept={"triage": existing})
             return 0
-        with mock.patch.object(cli_settings, "_ensure_hooks", side_effect=reuse):
+        with mock.patch.object(route_sync, "_ensure_hooks", side_effect=reuse):
             rc, out = self.enable(*admin)
         self.assertIn("hook 7 kept (active)", out)
         self.assertNotIn("created paused", out)
@@ -305,7 +305,7 @@ class TriageVerb(unittest.TestCase):
         def create(loop, login, dry_run, outcome=None):
             outcome.update(created=["triage"], kept={})
             return 0
-        with mock.patch.object(cli_settings, "_ensure_hooks", side_effect=create):
+        with mock.patch.object(route_sync, "_ensure_hooks", side_effect=create):
             rc, out = self.enable(*admin)
         self.assertIn("hook created (paused)", out)
         self.assertIn("next: hermes dk arm", out)

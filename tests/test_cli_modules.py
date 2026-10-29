@@ -22,8 +22,9 @@ from diaktoros import cli  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "diaktoros" / "cli"
-MODULES = ("reports", "operations", "lifecycle", "install", "checks", "settings")
-SHARED = ("common",)              # helpers several groups use: no commands, never imports cli
+MODULES = ("reports", "operations", "lifecycle", "install", "checks", "settings", "set_command",
+           "apply_command", "triage_command", "identity_command")
+SHARED = ("common", "route_sync")              # helpers several groups use: no commands, never imports cli
 
 
 def _defined(path: pathlib.Path) -> set[str]:
