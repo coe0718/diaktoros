@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from diaktoros import ledger, run_supervisor
-from diaktoros.run_supervisor import CLAIM_AGE_STEP_S, CONFLICT_KEY, Supervisor, views
+from diaktoros import ledger
+from diaktoros.run_supervisor import CONFLICT_KEY, Supervisor, views, claims
 
 
 class ClaimPriority(unittest.TestCase):
@@ -51,17 +51,17 @@ class ClaimPriority(unittest.TestCase):
 
     def test_aged_low_class_goes_first(self):
         self.mixed()
-        self.enqueue("old-issue", "issue_fixer", 9, "issue-fix", age=3 * CLAIM_AGE_STEP_S + 1)
+        self.enqueue("old-issue", "issue_fixer", 9, "issue-fix", age=3 * claims.CLAIM_AGE_STEP_S + 1)
         self.assertEqual(self.claimed_order()[0], "old-issue")
 
     def test_status_view_shows_order_and_why(self):
         self.mixed()
-        self.enqueue("old-issue", "issue_fixer", 9, "issue-fix", age=3 * CLAIM_AGE_STEP_S + 1)
+        self.enqueue("old-issue", "issue_fixer", 9, "issue-fix", age=3 * claims.CLAIM_AGE_STEP_S + 1)
         view = views.pending_view(self.db, "o/r")
         self.assertEqual([r["seat"] for r in view][:2], ["issue_fixer", "fixer"])
         self.assertIn("aged up", view[0]["why"])
         self.assertIn("CI-fix", view[1]["why"])
-        self.assertEqual(run_supervisor.claim_class({"seat": "reviewer", "turn_key": ""}), 2)
+        self.assertEqual(claims.claim_class({"seat": "reviewer", "turn_key": ""}), 2)
 
     def printed(self, pr):
         import contextlib
@@ -75,7 +75,7 @@ class ClaimPriority(unittest.TestCase):
 
     def test_cli_status_and_explain_print_queue_order_and_why(self):
         self.mixed()
-        self.enqueue("old-issue", "issue_fixer", 9, "issue-fix", age=3 * CLAIM_AGE_STEP_S + 1)
+        self.enqueue("old-issue", "issue_fixer", 9, "issue-fix", age=3 * claims.CLAIM_AGE_STEP_S + 1)
         status = self.printed(None).splitlines()
         self.assertEqual(len(status), 6)
         self.assertIn("queue 1 of 6: issue_fixer #9", status[0])

@@ -21,6 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from diaktoros import ci, config, gate, gh, run_supervisor, seat_model, stats, trusted_turn  # noqa: E402
+from diaktoros.run_supervisor import claims  # noqa: E402
 from diaktoros.run_supervisor import views  # noqa: E402
 from diaktoros.run_supervisor import Supervisor, pr_facts, turn_prompts  # noqa: E402
 
@@ -410,7 +411,7 @@ class ProductionTurn(unittest.TestCase):
                 mock.patch.object(turn_prompts, "isolated_prompt", side_effect=prompt), \
                 mock.patch.object(pr_facts, "pr_change", return_value=None), \
                 mock.patch.object(trusted_turn, "run_turn", side_effect=turn), \
-                mock.patch.object(run_supervisor, "claim_seat",
+                mock.patch.object(claims, "claim_seat",
                                   side_effect=AssertionError("a shadow claims no seat")), \
                 mock.patch.object(Supervisor, "failure_notice",
                                   side_effect=AssertionError("a shadow pages nobody")), \

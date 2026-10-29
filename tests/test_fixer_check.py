@@ -19,7 +19,8 @@ import run_tests as t  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
-from diaktoros import cli, config, prompts, run_supervisor  # noqa: E402
+from diaktoros import cli, config, prompts  # noqa: E402
+from diaktoros.run_supervisor import issue_inputs  # noqa: E402
 from diaktoros.config import lists  # noqa: E402
 from diaktoros.cli import install as cli_install  # noqa: E402
 
@@ -76,9 +77,9 @@ class Prompts(unittest.TestCase):
              mock.patch("diaktoros.issue_facts.section", return_value=""), \
              mock.patch("diaktoros.gh.issue_comments_read", return_value=([], None)):
             fixer = turn_prompts.isolated_prompt(loop, row, [], change=change)
-        with mock.patch.object(run_supervisor, "issue_fix_issue",
+        with mock.patch.object(issue_inputs, "issue_fix_issue",
                                return_value={"title": "T", "body": "B"}), \
-             mock.patch.object(run_supervisor, "issue_fix_dependencies"), \
+             mock.patch.object(issue_inputs, "issue_fix_dependencies"), \
              mock.patch("diaktoros.gh.issue_comments_read", return_value=([], "")):
             issue = turn_prompts.issue_fix_prompt(loop, {**row, "seat": "issue_fixer"})
         for text in (fixer, issue):

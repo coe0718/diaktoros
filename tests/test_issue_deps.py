@@ -364,11 +364,12 @@ class Deps(GateFixture):
 
     def test_the_launch_prompt_is_refused_during_preparation(self):
         from diaktoros import run_supervisor
-        with mock.patch.object(run_supervisor, "issue_fix_issue",
+        from diaktoros.run_supervisor import issue_inputs
+        with mock.patch.object(issue_inputs, "issue_fix_issue",
                                lambda loop, n: self.issues[n]):
             self.st.issue_dep_add(12, 5, {"by": "operator"})
             with self.assertRaises(run_supervisor.RetryableError):
-                run_supervisor.issue_fix_dependencies(self.loop, 12)
+                issue_inputs.issue_fix_dependencies(self.loop, 12)
 
     def test_an_unreadable_dependency_holds_the_queued_row(self):
         self.st.issue_dep_add(12, 5, {"by": "operator"})

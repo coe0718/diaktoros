@@ -23,7 +23,8 @@ from diaktoros import run_supervisor  # noqa: E402
 
 PACKAGE = pathlib.Path(run_supervisor.__file__).resolve().parent
 ROOT = PACKAGE.parents[1]
-SUBMODULES = ("pr_facts", "turn_prompts", "records", "views", "notices", "intake", "workers")
+SUBMODULES = ("pr_facts", "turn_prompts", "records", "views", "notices", "intake", "workers", "claims",
+              "issue_inputs")
 
 
 def _top_level_names(path: pathlib.Path) -> set[str]:

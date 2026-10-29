@@ -23,6 +23,7 @@ import time
 
 from .. import envnames, run_supervisor, util
 from ..hostdirs import WORKER_ENV, in_worker
+from . import claims
 
 
 class WorkerLifecycle:
@@ -293,8 +294,8 @@ class WorkerLifecycle:
                 # Only the claim this run wrote: the ledger row left `uncertain` above, so a
                 # newer run may already hold this seat/PR/head, and keeps its claim and mark.
                 if (st.release_if(row['seat'], gate.seat_key(loop, row['pr']), row['head'],
-                                  run=run_id) and row['seat'] in run_supervisor.INFLIGHT_LABEL):
-                    st.inflight_clear(f"{run_supervisor.INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}")
+                                  run=run_id) and row['seat'] in claims.INFLIGHT_LABEL):
+                    st.inflight_clear(f"{claims.INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}")
         except Exception:
             pass
         return True

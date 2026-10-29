@@ -113,7 +113,7 @@ def reply_to(loop: dict, ask: dict, comments: list) -> tuple[str, str] | None:
 
 def sweep_asks(loop: dict, st, lines: list[str]) -> None:
     """Resume each open ask a maintainer answered: save the handoff, queue a fresh turn."""
-    from . import run_supervisor
+    from .run_supervisor import issue_inputs
     for number, ask in sorted(st.fix_ask_open().items()):
         comments, error = gh.issue_comments_read(loop, number)
         if comments is None:
@@ -125,7 +125,7 @@ def sweep_asks(loop: dict, st, lines: list[str]) -> None:
         login, body = found
         st.fix_ask_resolve(number, body[:ASK_REPLY_MAX], login, ask.get("kind") == "plan")
         try:
-            run_supervisor.issue_fix_issue(loop, number)
+            issue_inputs.issue_fix_issue(loop, number)
             base, outcome = queue_fix(loop, number, f"issue-fix:ask{st.fix_ask_count(number)}")
         except Exception as exc:
             lines.append(f"⚠️ issue #{number}: reply seen, fix not queued: "
@@ -216,8 +216,9 @@ def _release(loop: dict, st, number: int, lines: list[str], drop, pr: int, why: 
     """Queue a waiting issue's fix from the base's current commit, after re-checking that it is
     still eligible; ``drop`` clears the wait it came from. Best effort, like the sweep."""
     from . import run_supervisor
+    from .run_supervisor import issue_inputs
     try:
-        live = run_supervisor.issue_fix_issue(loop, number)
+        live = issue_inputs.issue_fix_issue(loop, number)
     except run_supervisor.RetryableError:
         return
     except Exception as exc:                      # closed, unlabelled, ...: nothing to fix now
@@ -375,12 +376,12 @@ def auto_offer(loop: dict, number: int) -> str:
     and no P0/P1/P2, no open PR may already fix it, a finding from an unmerged PR is held, and
     the lineage depth and the daily cap bound it. Best effort: never raises.
     """
-    from . import run_supervisor
+    from .run_supervisor import issue_inputs
     try:
         if not config.auto_fix_labels(loop):
             return ""
         try:
-            live = run_supervisor.issue_fix_issue(loop, number)   # open, allowlisted, eligible
+            live = issue_inputs.issue_fix_issue(loop, number)   # open, allowlisted, eligible
         except Exception as exc:
             return f"not auto-offered: {exc}"
         depth = gate.isolated_supervisor(loop).filed_depth(loop["repo"], number)

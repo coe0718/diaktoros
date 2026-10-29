@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 from diaktoros import (broker_ipc, cli, config, doctor, gate, gh,  # noqa: E402
                          run_supervisor, seat_model, selftest, trusted_turn)
+from diaktoros.run_supervisor import claims  # noqa: E402
 from diaktoros.run_supervisor import views  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
@@ -866,18 +867,18 @@ class GateToProductionWorker(unittest.TestCase):
         st = state_mod.state_for(self.loop)
         key, mark = gate.seat_key(self.loop, 8), f"fix:8:{HEAD}"
         row = {"id": "older", "seat": "fixer", "pr": 8, "head": HEAD}
-        older = run_supervisor.claim_seat(self.loop, row, 2700)
+        older = claims.claim_seat(self.loop, row, 2700)
         st.acquire("fixer", key, HEAD, "isolated run newer", budget=2700, run="newer")
         st.inflight(mark, record=True)
-        run_supervisor.release_seat(older, "failed")
+        claims.release_seat(older, "failed")
         self.assertEqual(st.live_locks("fixer").get(key, {}).get("run"), "newer")
         self.assertTrue(st.inflight(mark))
         # A run that claims while another run's claim is live no longer evicts it (#727).
-        self.assertIsNone(run_supervisor.claim_seat(self.loop, {**row, "id": "blocked"}, 2700))
+        self.assertIsNone(claims.claim_seat(self.loop, {**row, "id": "blocked"}, 2700))
         self.assertEqual(st.live_locks("fixer").get(key, {}).get("run"), "newer")
         # Its own claim is still freed when nobody replaced it.
         self.assertTrue(st.release_if("fixer", key, HEAD, run="newer"))
-        run_supervisor.release_seat(run_supervisor.claim_seat(self.loop, {**row, "id": "again"},
+        claims.release_seat(claims.claim_seat(self.loop, {**row, "id": "again"},
                                                                2700), "failed")
         self.assertNotIn(key, st.live_locks("fixer"))
         self.assertFalse(st.inflight(mark))

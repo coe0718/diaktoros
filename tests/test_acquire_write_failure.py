@@ -114,7 +114,7 @@ class StrictMutations(unittest.TestCase):
             self.st.inflight_clear(f"review:7:{HEAD}")
 
     def test_claim_seat_keeps_its_claim_releasable_when_the_mark_cannot_be_written(self):
-        from diaktoros.run_supervisor import claim_seat
+        from diaktoros.run_supervisor import claims
         row = {"seat": "reviewer", "pr": 7, "head": HEAD, "id": "run-1"}
         before = list(state.CLAIMS)
         self.addCleanup(lambda: state.CLAIMS.__setitem__(slice(None), before))
@@ -127,7 +127,7 @@ class StrictMutations(unittest.TestCase):
 
         with mock.patch.object(state, "state_for", return_value=self.st), \
                 mock.patch.object(state.LoopState, "_save_strict", fail_inflight):
-            claim = claim_seat(self.loop, row, 900)
+            claim = claims.claim_seat(self.loop, row, 900)
         self.assertIsNotNone(claim)                         # the claim itself is on disk
         self.assertIsNone(claim[4])                         # no mark was written, none to clear
         self.assertIn(KEY, self.st.active("reviewer"))

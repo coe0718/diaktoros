@@ -15,6 +15,7 @@ import sqlite3
 import time
 
 from .. import ledger, run_supervisor
+from . import claims
 
 
 def pending_view(db: str | Path, repo: str) -> list[dict] | None:
@@ -28,7 +29,7 @@ def pending_view(db: str | Path, repo: str) -> list[dict] | None:
             # A pending shadow (#218) is no part of the PR's queue.
             rows = con.execute("SELECT * FROM runs WHERE state='pending' AND repo=? AND "
                                + run_supervisor.NOT_SHADOW, (repo,)).fetchall()
-            return [{**dict(r), 'why': run_supervisor.claim_why(r, now)} for r in run_supervisor.claim_order(rows, now)]
+            return [{**dict(r), 'why': claims.claim_why(r, now)} for r in claims.claim_order(rows, now)]
         finally:
             con.close()
     except sqlite3.Error:
