@@ -310,3 +310,107 @@ class OptimisticWriteTest(Fixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PromptUpgrade(Fixture):
+    """A version that rewords a gate prompt upgrades the installed routes in place (2026-10-28:
+    #1389 reworded the adjudicator prompt, and every existing adjudicator route then failed
+    doctor with "does not carry the adjudicator gate's prompt", which the heal could not fix)."""
+
+    def old_install(self, record=True):
+        """An install from before the reword: routes and record both carry the old prompt."""
+        before = self.install(record=False)
+        self.native(lambda data: data["widgets-review"].update(prompt="the previous reviewer prompt"))
+        if record:
+            route_intent.record_live(self.loop, ["widgets-review", "widgets-fix"], replace=True)
+        return before
+
+    def test_a_recorded_route_gets_this_versions_prompt_with_its_secret(self):
+        before = self.old_install()
+        lines = route_intent.heal(self.loop)
+        live = self.live()["widgets-review"]
+        self.assertEqual(live["prompt"], prompts.REVIEWER)
+        self.assertEqual(live["secret"], before["widgets-review"]["secret"], "same secret")
+        self.assertEqual(route_intent.load(self.loop)["widgets-review"]["prompt"], prompts.REVIEWER)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("widgets-review: its gate prompt was upgraded to this version's", lines[0])
+        self.assertEqual(self.live()["other-plugin"]["prompt"], "p", "someone else's untouched")
+        self.assertEqual(route_intent.heal(self.loop), [], "once")
+
+    def test_an_unrecorded_route_with_another_prompt_is_never_taken_over(self):
+        self.old_install(record=False)
+        route_intent.heal(self.loop)
+        self.assertEqual(self.live()["widgets-review"]["prompt"], "the previous reviewer prompt")
+        self.assertNotIn("widgets-review", route_intent.load(self.loop) or {})
+
+    def test_a_recorded_route_of_another_gate_is_not_upgraded(self):
+        self.old_install()
+        intent = route_intent.load(self.loop)
+        intent["widgets-review"] = dict(intent["widgets-review"], script="something_else.py")
+        route_intent.record(self.loop, {"widgets-review": intent["widgets-review"]})
+        self.assertEqual(route_intent._upgrade_prompts(self.loop, route_intent.load(self.loop),
+                                                       "[x]"), (set(), ""))
+
+    def test_doctor_names_the_repair_for_a_recorded_route(self):
+        from diaktoros import gate_shims
+        self.old_install()
+        self.loop["seats"]["reviewer"]["profile"] = "rev"
+        fix = gate_shims.divergence(self.loop, contract=True).get("widgets-review")
+        self.assertIsNotNone(fix)
+        self.assertIn("--repair", fix[1])
+        self.assertNotIn("remove that entry", fix[1])
+
+    def test_a_rebind_during_the_upgrade_keeps_its_new_secret_and_profile(self):
+        # #1418 review F1: the sweep read the record, then a rotation was recorded (registry and
+        # record both) before the sweep wrote. Its first read returns that older snapshot.
+        self.old_install()
+        snapshot = route_intent.load(self.loop)
+        self.native(lambda data: data["widgets-review"].update(secret="new-secret",
+                                                              profile="new-profile"))
+        route_intent.record_live(self.loop, ["widgets-review"])
+        real, reads = route_intent.load, []
+
+        def first_read_is_the_snapshot(loop):
+            reads.append(1)
+            return snapshot if len(reads) == 1 else real(loop)
+        with mock.patch.object(route_intent, "load", side_effect=first_read_is_the_snapshot):
+            route_intent.heal(self.loop)
+        recorded = route_intent.load(self.loop)["widgets-review"]
+        live = self.live()["widgets-review"]
+        self.assertEqual((recorded["secret"], recorded["profile"]), ("new-secret", "new-profile"))
+        self.assertEqual((live["secret"], live["profile"]), ("new-secret", "new-profile"))
+        self.assertEqual(recorded["prompt"], prompts.REVIEWER, "and still upgraded")
+
+    def test_doctor_does_not_name_the_repair_when_the_record_has_another_profile(self):
+        # #1418 review F2: the repair would restore the recorded (wrong) profile.
+        from diaktoros import gate_shims
+        # The state that matters (shadow review, F3): the record holds THIS version's prompt
+        # but a stale profile; the live route has the configured profile and the old prompt.
+        # Main's old check (record prompt == this version's) recommended the repair here, and
+        # the repair would have restored the stale profile.
+        self.old_install()
+        intent = route_intent.load(self.loop)
+        route_intent.record(self.loop, {"widgets-review": dict(
+            intent["widgets-review"], profile="old-profile", prompt=prompts.REVIEWER)})
+        self.assertEqual(self.live()["widgets-review"]["profile"], "rev")
+        fix = gate_shims.divergence(self.loop, contract=True).get("widgets-review")
+        self.assertIsNotNone(fix)
+        self.assertNotIn("--repair", fix[1])
+
+    def test_a_rebind_just_before_the_registry_restore_is_kept(self):
+        # #1418 review round 2: a rebind (registry, then record) completes after the heal read
+        # the record and right before it writes the registry. The record is re-read under the
+        # registry lock, so the new secret and profile stand.
+        self.old_install()
+        self.native(lambda data: data["widgets-review"].update(secret="drifted"))  # a heal is due
+        real = routes.heal_entries
+
+        def rebind_then_heal(expected, fields, owned):
+            self.native(lambda data: data["widgets-review"].update(secret="new-secret",
+                                                                  profile="new-profile"))
+            route_intent.record_live(self.loop, ["widgets-review"])
+            return real(expected, fields, owned)
+        with mock.patch.object(routes, "heal_entries", side_effect=rebind_then_heal):
+            route_intent.heal(self.loop)
+        live = self.live()["widgets-review"]
+        self.assertEqual((live["secret"], live["profile"]), ("new-secret", "new-profile"))

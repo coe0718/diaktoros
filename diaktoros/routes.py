@@ -484,7 +484,9 @@ def restore_entries(entries: dict[str, dict | None]) -> None:
 def heal_entries(expected: dict[str, dict], fields, owned) -> tuple[dict, dict]:
     """Put back the plugin's own routes a non-cooperating writer erased or rewrote.
 
-    ``expected`` is the plugin's intent record (name → full entry); ``fields`` is the watched
+    ``expected`` is the plugin's intent record (name → full entry), or a callable returning it:
+    then it is read under the registry lock, right before the compare, so a rebind recorded
+    since the caller's read is what is restored (#1418). ``fields`` is the watched
     keys, one tuple for every name or a name → tuple map. Under the lock, against the
     live bytes, each name is: left alone when every watched ``field`` already matches; restored
     when missing, or present and still ``owned(entry)`` (one of this plugin's gate scripts);
@@ -498,7 +500,8 @@ def heal_entries(expected: dict[str, dict], fields, owned) -> tuple[dict, dict]:
     def edit(data: dict):
         restored: dict = {}
         conflicts: dict = {}
-        for name, want in expected.items():
+        wanted = expected() if callable(expected) else expected
+        for name, want in wanted.items():
             live = data.get(name)
             if live is None:
                 data[name] = dict(want)

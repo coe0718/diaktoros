@@ -265,7 +265,7 @@ def divergence(loop: dict, *, include_missing: bool = True, contract: bool = Fal
                 if "prompt" not in drift:
                     fix = (f"`hermes dk apply --loop {lid}` (rewrites it from the loop "
                            "config, secret kept)")
-                elif recorded is not None and recorded.get("prompt") == route_intent.ROUTE_PROMPT[role]:
+                elif restorable:   # the record has the loop's gate and profile (#1418 F2)
                     fix = repair
                 else:
                     fix = (f"remove that entry (its prompt no longer proves it is this plugin's), "

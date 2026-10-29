@@ -208,6 +208,48 @@ def _adoptable(loop: dict, registry: dict, known: dict) -> dict:
     return found
 
 
+def _upgrade_prompts(loop: dict, intent: dict, label: str) -> tuple[set, str]:
+    """Bring this loop's recorded routes up to this version's gate prompts (an upgrade).
+
+    The record is the plugin's own, so it is the proof a route is ours, not the prompt's wording,
+    which changes between versions. A recorded route of the right gate script whose prompt is
+    not this version's has its record's prompt replaced; the heal then writes it to the live
+    registry with the same secret. ``intent`` is updated in place. Returns the upgraded names
+    and an alert line when the record could not be written ("" otherwise).
+    """
+    stale = {name: (role, want.get("prompt")) for role, name in routes_of(loop).items()
+             if isinstance(want := intent.get(name), dict) and want.get("script") == GATE_SCRIPT[role]
+             and want.get("prompt") != ROUTE_PROMPT[role]}
+    upgraded = set()
+    for name, (role, seen) in sorted(stale.items()):
+        try:
+            if _set_prompt(loop, name, role, seen):
+                upgraded.add(name)
+        except (OSError, IntentError) as exc:
+            return upgraded, (f"⚠️ Diaktoros {label} — could not upgrade the recorded prompt of "
+                              f"route {name}: {exc}")
+    if upgraded:
+        # Re-read the record (#1418 review, F1): whatever a concurrent rebind or rotation
+        # recorded meanwhile is what the heal restores, never this sweep's older snapshot.
+        intent.clear()
+        intent.update(load(loop) or {})
+    return upgraded, ""
+
+
+def _set_prompt(loop: dict, name: str, role: str, seen) -> bool:
+    """Replace only this route's recorded prompt, under the record's lock and only if the record
+    still holds the prompt that was read: a concurrent rebind or secret rotation is kept."""
+    with _lock(loop) as target:
+        current = load(loop) or {}
+        entry = current.get(name)
+        if (not isinstance(entry, dict) or entry.get("script") != GATE_SCRIPT[role]
+                or entry.get("prompt") != seen):
+            return False
+        current[name] = dict(entry, prompt=ROUTE_PROMPT[role])
+        _write(target, loop, current)
+        return True
+
+
 def drift(loop: dict, registry: dict, intent: dict) -> dict:
     """name → differing watched fields (``["missing"]`` when erased), for this loop's names only."""
     role_of = {name: role for role, name in routes_of(loop).items()}
@@ -267,17 +309,30 @@ def heal(loop: dict, *, adopt: bool = True) -> list[str]:
                 intent.update(found)
             except (OSError, IntentError) as exc:
                 lines.append(f"⚠️ Diaktoros {label} — could not record route intent: {exc}")
+    upgraded, line = _upgrade_prompts(loop, intent, label)
+    lines += [line] if line else []
     expected = {name: entry for name, entry in intent.items()
                 if name in set(routes_of(loop).values())}
     if not expected or not drift(loop, registry, expected):
         return lines
     try:
         role_of = {name: role for role, name in routes_of(loop).items()}
+        names = set(expected)
+
+        def current():
+            # Read under the registry lock (#1418 F1): a rebind recorded after this sweep's read
+            # is what is restored, never the older snapshot.
+            fresh = load(loop) or {}
+            return {name: entry for name, entry in fresh.items() if name in names}
         restored, conflicts = routes.heal_entries(
-            expected, {name: watched(role_of[name]) for name in expected}, owned)
+            current, {name: watched(role_of[name]) for name in expected}, owned)
     except (OSError, ValueError) as exc:
         return lines + [f"⚠️ Diaktoros {label} — route registry changed by another writer and "
                         f"could NOT be restored (fail closed): {exc}"]
+    for name in [n for n, fields in restored.items() if n in upgraded and fields == ["prompt"]]:
+        lines.append(f"🔧 Diaktoros {label} — route {name}: its gate prompt was upgraded to this "
+                     "version's (same secret, so GitHub's hook still authenticates)")
+        del restored[name]
     if restored:
         lines.append(f"🔧 Diaktoros {label} — restored {len(restored)} route(s) another "
                      "registry writer erased or changed (same secret, so GitHub's hook still "
