@@ -353,7 +353,7 @@ class BrokerWrite(Base):
         def api(loop, path, method="GET", body=None, login=None):
             self.calls.append((path, method, body, login))
             if path == "/user":
-                return {"login": login, "id": 5}
+                return {"login": login, "id": sum(map(ord, login))}   # one account per login (C2)
             if path.endswith("/labels") and method == "POST":
                 return [{"name": name} for name in body["labels"]]
             if method == "POST":
@@ -444,7 +444,8 @@ class BrokerWrite(Base):
         def failing(loop, path, method="GET", body=None, login=None):
             if method == "POST":
                 raise OSError("connection reset")
-            return {"login": login, "id": 5} if path == "/user" else self.live
+            return ({"login": login, "id": sum(map(ord, login))} if path == "/user"   # (C2)
+                    else self.live)
         gh.api.side_effect = failing
         server = self.start()
         self.assertTrue(self.send(server, self.triage(["bug"]))["ok"])
