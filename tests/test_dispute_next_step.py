@@ -105,6 +105,32 @@ class Explain(Dispute):
                 self.assertFalse([b for b in report["blockers"] if "did not start one" in b])
 
 
+class CapStep(fg.Base):
+    """A spent cap with no marker (#575): ``hermes dk escalate`` sends the head now, unless a fix
+    run is live, when it would only wait for the next verdict (#1481 review): the push is next."""
+
+    def explain(self, inflight_fix):
+        local = {"held": {}, "queued_seat": "", "queued_reason": "", "inflight_review": False,
+                 "inflight_fix": inflight_fix, "marker": {}, "parked": False,
+                 "delivery_status": "", "capacity": {"reviewer": (0, 1), "fixer": (0, 1)},
+                 "stale_queues": [], "seat": "", "queue": "", "inflight": "", "escalation": "",
+                 "sweep": ""}
+        self.loop["adjudicator"] = {"route": "one-breach"}
+        with mock.patch.object(gate, "_explain_state", return_value=local):
+            return gate.explain(self.loop, self.st, 7, {
+                "pr": fg.LIVE, "reviews": [fg.verdict(rid) for rid in (1, 2, 3)], "armed": True,
+                "read_at": time.time()})["next"]
+
+    def test_escalate_is_the_step_unless_a_fix_run_is_live(self):
+        self.set_push(True)
+        idle, fixing = self.explain(False), self.explain(True)
+        self.assertEqual(idle["kind"], "operator")
+        self.assertIn(f"hermes dk escalate --loop {self.loop['id']} --pr 7", idle["action"])
+        self.assertEqual(fixing["kind"], "fixer-push")
+        self.assertNotIn("escalate", fixing["action"])
+        self.assertIn("reviewer gate then sends it for a ruling", fixing["action"])
+
+
 class MaintainerRerequest(Dispute):
     """#894: after a dispute, a maintainer's re-request gets one review at the reviewed head."""
 

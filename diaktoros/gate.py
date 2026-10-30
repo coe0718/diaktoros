@@ -1297,15 +1297,16 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     stale_held = {seat for seat, entry in held.items() if entry.get("head") != head}
     # An isolated turn already in the ledger at this head (queued, held for CI, running) is
     # the gate's answer, not a missing one (#509): the run itself is reported as the blocker.
-    ledgered, disputed, db = set(), False, config.host_path("ledger")
+    ledgered, db = set(), config.host_path("ledger")
+    from .run_supervisor import views
     if head:
-        from .run_supervisor import views
         for seat in ("reviewer", "fixer"):
             if views.turn_state(db, repo, number, head, seat) in LIVE_TURN:
                 ledgered.add(seat)
-        # The fixer's answer to the verdict (#894), as the sweep reads it.
-        disputed = (bool(at_head) and "fixer" not in ledgered and not inflight_fix
-                    and views.disputed(db, repo, number, head, latest) is not None)
+    fix_live = "fixer" in held or inflight_fix or "fixer" in ledgered
+    # The fixer's answer to the verdict (#894), as the sweep reads it (a verdict at head: a head).
+    disputed = (bool(at_head) and not fix_live
+                and views.disputed(db, repo, number, head, latest) is not None)
     # Parked for a ruling (or its delivery pending), both gates stop on purpose: no "gate did not
     # start one" line, which would read as something stuck while the ruling is the next event.
     ruling = parked or pending_delivery
@@ -1405,9 +1406,8 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             if head_states and not reviewed:
                 blockers.append(f"non-verdict review at head {short} ({'/'.join(head_states)}) "
                                 "does not suppress a fresh reviewer request")
-            if (at_head and "fixer" not in held and not inflight_fix and not queued_seat
-                    and not push_off and not review_only and not ruling
-                    and "fixer" not in ledgered and not disputed):
+            if (at_head and not fix_live and not queued_seat and not push_off and not review_only
+                    and not ruling and not disputed):
                 blockers.append(f"the changes-requested verdict at head {short} has no fix run out "
                                 f"— the fixer gate did not start one for that delivery")
             if (request_pending and not held and not inflight_review and not at_head
@@ -1543,16 +1543,19 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         kind = "adjudication"
         action = _adjudication_next(loop, head)
     elif cap_spent and not review_only:
+        # No marker (#575). A live fix run ends first: its push meets the cap at the reviewer gate
+        # (escalating now waits for a next verdict). Else escalate: the sweep raises the marker
+        # only at a head it saw arrive, never one open since arming (#1481 review).
         if not adjudicated:
             kind = "adjudication"
             action = _adjudication_next(loop, head)
+        elif fix_live:
+            kind = "fixer-push"
+            action = fix_push + "with the cap spent, the reviewer gate then sends it for a ruling"
         else:
-            # The sweep raises it (#575) only at a head it saw arrive: one open since the loop was
-            # armed is left alone until it changes (#1481 review), so the step that always works.
             kind = "operator"
             action = (f"`hermes dk escalate --loop {loop['id']} --pr {number}` sends head {short} "
-                      "for a ruling (the watchdog's sweep raises the missing marker itself only at "
-                      "a head it saw arrive) — no ruling is underway yet")
+                      "for a ruling — no ruling is underway yet")
     elif push_off_held:
         kind = "operator"
         action = (f"operator decision: unattended fixer pushes are off for this loop, so the "
