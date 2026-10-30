@@ -30,7 +30,7 @@ from unittest.mock import patch
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import cli, config, doctor, routes  # noqa: E402
-from diaktoros.doctor import hook_checks  # noqa: E402
+from diaktoros.doctor import cron_checks, hook_checks  # noqa: E402
 from diaktoros.cli import route_sync  # noqa: E402
 from diaktoros.cli import apply_command  # noqa: E402
 from diaktoros.cli import install as cli_install  # noqa: E402
@@ -1234,7 +1234,7 @@ class DoctorApplyUninstall(Base):
         self.assertIn("restored the watchdog shim", lines[0])
         self.assertEqual(shim.read_text(), good)
         self.assertEqual(shim.stat().st_mode & 0o777, 0o755)
-        self.assertEqual(doctor.check_shim(loop).status, doctor.VERIFIED)
+        self.assertEqual(cron_checks.check_shim(loop).status, doctor.VERIFIED)
         # Pinned to another plugin path.
         shim.write_text(good.replace(str(doctor.scripts_dir()), "/gone/plugin/scripts"))
         self.assertEqual(len(gate_shims.heal_watchdog_shim()), 1)
@@ -2021,22 +2021,22 @@ class HookAndCronRemedies(Base):
 
     def test_cron_remedies_run_as_printed(self):
         self.install()
-        check = doctor.check_shim(config.load_id("widgets"))
+        check = cron_checks.check_shim(config.load_id("widgets"))
         self.assertEqual(check.status, doctor.ABSENT)
         self.run_printed(check.fix)
-        self.assertEqual(doctor.check_shim(config.load_id("widgets")).status, doctor.VERIFIED)
+        self.assertEqual(cron_checks.check_shim(config.load_id("widgets")).status, doctor.VERIFIED)
         doctor.shim_path().write_text("print('stale')\n")
-        check = doctor.check_shim(config.load_id("widgets"))
+        check = cron_checks.check_shim(config.load_id("widgets"))
         self.assertEqual(check.status, doctor.MISMATCH)
         self.run_printed(check.fix)
-        self.assertEqual(doctor.check_shim(config.load_id("widgets")).status, doctor.VERIFIED)
-        job = doctor.check_cron_job(config.load_id("widgets"))
+        self.assertEqual(cron_checks.check_shim(config.load_id("widgets")).status, doctor.VERIFIED)
+        job = cron_checks.check_cron_job(config.load_id("widgets"))
         self.assertEqual(job.status, doctor.ABSENT)
         self.assertNotIn("init", job.fix)
         self.assertIn("hermes cron create", job.fix)
         (doctor.cron_store().parent).mkdir(parents=True, exist_ok=True)
         doctor.cron_store().write_text("not json")
-        job = doctor.check_cron_job(config.load_id("widgets"))
+        job = cron_checks.check_cron_job(config.load_id("widgets"))
         self.assertNotIn("init", job.fix)
 
 _CRON_DRIVER = textwrap.dedent("""
@@ -2082,7 +2082,7 @@ class CronJobRemedies(Base):
         return json.loads(path.read_text())["jobs"]
 
     def check(self):
-        return doctor.check_cron_job(config.load_id("widgets"))
+        return cron_checks.check_cron_job(config.load_id("widgets"))
 
     def named(self):
         return [job for job in self.store() if job.get("name") == self.NAME]

@@ -19,7 +19,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import (broker, broker_ipc, cli, contained, doctor, gh,  # noqa: E402
                          inference_proxy, review_receipt, selftest, trusted_fetch, trusted_turn)
-from diaktoros.doctor import hook_checks  # noqa: E402
+from diaktoros.doctor import cron_checks, hook_checks  # noqa: E402
 
 HEAD = "c" * 40
 SECRETS = {"reader": "READER-SECRET-0a1b2c3d", "reviewer": "ghp_" + "R" * 36,
@@ -123,8 +123,8 @@ class SelftestBase(unittest.TestCase):
             mock.patch.object(trusted_fetch, "stage", side_effect=self.stage),
             mock.patch.object(inference_proxy._NoRedirectConnection, "post", autospec=True,
                               side_effect=self.model_post),
-            mock.patch.object(doctor, "check_shim", return_value=_ok("cron:shim")),
-            mock.patch.object(doctor, "check_cron_job", return_value=_ok("cron:job")),
+            mock.patch.object(cron_checks, "check_shim", return_value=_ok("cron:shim")),
+            mock.patch.object(cron_checks, "check_cron_job", return_value=_ok("cron:job")),
             mock.patch.object(hook_checks, "check_gateway", return_value=_ok("gateway")),
         ]
         for patch in patches:

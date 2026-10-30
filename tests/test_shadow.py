@@ -63,12 +63,12 @@ class Config(unittest.TestCase):
 
 class Doctor(unittest.TestCase):
     def checks(self, shadow):
-        from diaktoros import doctor
+        from diaktoros.doctor import seat_checks
         loop = config.normalize({**RAW, "shadow": {"profile": shadow}})
-        with mock.patch.object(doctor, "runtime_settings", return_value=({}, None)), \
+        with mock.patch.object(seat_checks, "runtime_settings", return_value=({}, None)), \
                 mock.patch.object(seat_model, "describe_seat",
                                   return_value=("ok", "described", "")):
-            return {c.name: c for c in doctor.check_seat_models(loop)}
+            return {c.name: c for c in seat_checks.check_seat_models(loop)}
 
     def test_the_shadow_seats_model_is_checked_and_must_be_its_own_profile(self):
         from diaktoros import doctor

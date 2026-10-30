@@ -20,6 +20,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 import sys
 sys.path.insert(0, str(ROOT))
 from diaktoros import config, doctor  # noqa: E402
+from diaktoros.doctor import cron_checks  # noqa: E402
 
 
 def _loop(**extra) -> dict:
@@ -92,7 +93,7 @@ class WatchdogLastRun(unittest.TestCase):
         stale = time.strftime("%Y-%m-%dT%H:%M:%SZ",
                               time.gmtime(time.time() - 40 * 60))   # 40m > 2× 15m
         self.watch_file(stale)
-        check = doctor.check_watchdog_last_run(self.loop)
+        check = cron_checks.check_watchdog_last_run(self.loop)
         self.assertEqual(check.status, doctor.MISMATCH, check.detail)
         self.assertIn("older than 2×", check.detail)
         self.assertIn("watchdog", check.name)
@@ -101,26 +102,26 @@ class WatchdogLastRun(unittest.TestCase):
         self.cron_store(minutes=15)
         fresh = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 5 * 60))
         self.watch_file(fresh)
-        check = doctor.check_watchdog_last_run(self.loop)
+        check = cron_checks.check_watchdog_last_run(self.loop)
         self.assertEqual(check.status, doctor.VERIFIED, check.detail)
 
     def test_missing_last_run_is_unknown(self):
         self.cron_store(minutes=15)
         self.watch_file(None)
-        check = doctor.check_watchdog_last_run(self.loop)
+        check = cron_checks.check_watchdog_last_run(self.loop)
         self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
         self.assertIn("no last_run", check.detail)
 
     def test_unparseable_last_run_is_unknown(self):
         self.cron_store(minutes=15)
         self.watch_file("not-a-timestamp")
-        check = doctor.check_watchdog_last_run(self.loop)
+        check = cron_checks.check_watchdog_last_run(self.loop)
         self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
         self.assertIn("not a parseable timestamp", check.detail)
 
     def test_no_schedule_in_cron_store_is_unknown(self):
         self.watch_file(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
-        check = doctor.check_watchdog_last_run(self.loop)
+        check = cron_checks.check_watchdog_last_run(self.loop)
         self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
         self.assertIn("schedule interval", check.detail)
 
@@ -130,7 +131,7 @@ class WatchdogLastRun(unittest.TestCase):
         boundary = time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                  time.gmtime(time.time() - 30 * 60 + 5))
         self.watch_file(boundary)
-        check = doctor.check_watchdog_last_run(self.loop)
+        check = cron_checks.check_watchdog_last_run(self.loop)
         self.assertEqual(check.status, doctor.VERIFIED, check.detail)
 
 

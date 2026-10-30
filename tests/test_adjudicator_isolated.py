@@ -708,13 +708,14 @@ class Config(unittest.TestCase):
 
     def test_doctor_reports_only_a_configured_identity(self):
         from diaktoros import doctor
-        self.assertIsNone(doctor.check_adjudicator_identity(config.normalize(json.loads(json.dumps(self.raw)))))
-        check = doctor.check_adjudicator_identity(self.load({"login": "adj"}))
+        from diaktoros.doctor import identity_checks
+        self.assertIsNone(identity_checks.check_adjudicator_identity(config.normalize(json.loads(json.dumps(self.raw)))))
+        check = identity_checks.check_adjudicator_identity(self.load({"login": "adj"}))
         self.assertEqual((check.name, check.status), ("credential:adjudicator", doctor.VERIFIED))
         loop = self.load({"login": "adj"})
         os.link(self.tokens["fix"], Path(self.tmp.name) / "hard.pat")
         loop["tokens"]["adj"] = str(Path(self.tmp.name) / "hard.pat")
-        self.assertEqual(doctor.check_adjudicator_identity(loop).status, doctor.MISMATCH)
+        self.assertEqual(identity_checks.check_adjudicator_identity(loop).status, doctor.MISMATCH)
 
 
 if __name__ == "__main__":

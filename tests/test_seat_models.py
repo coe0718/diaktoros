@@ -25,6 +25,7 @@ from diaktoros import ledger  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros import cli, config, doctor, gh, seat_model, trusted_turn  # noqa: E402
+from diaktoros.doctor import seat_checks  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 HEAD = "a" * 40
@@ -611,7 +612,7 @@ class DoctorAndModels(Base):
 
     def test_doctor_shows_each_seat_without_touching_credentials(self):
         self.write_runtime(self.settings)
-        checks = {c.name: c for c in doctor.check_seat_models(self.loop)}
+        checks = {c.name: c for c in seat_checks.check_seat_models(self.loop)}
         self.assertEqual({n: c.status for n, c in checks.items()},
                          {"model:reviewer": doctor.VERIFIED, "model:fixer": doctor.VERIFIED,
                           "model:adjudicator": doctor.VERIFIED})
@@ -628,13 +629,13 @@ class DoctorAndModels(Base):
     def test_doctor_fails_an_unresolvable_seat_and_warns_on_legacy(self):
         loop = {**self.loop, "adjudicator": {"route": "breach", "profile": "default"}}
         self.write_runtime(self.settings)
-        checks = {c.name: c for c in doctor.check_seat_models(loop)}
+        checks = {c.name: c for c in seat_checks.check_seat_models(loop)}
         self.assertEqual(checks["model:adjudicator"].status, doctor.ABSENT)
         self.assertIn("will be held", checks["model:adjudicator"].detail)
         self.write_runtime({**self.settings, "model": "legacy-model",
                             "upstream": "https://legacy.test/v1/chat/completions",
                             "key_file": self.key_file("legacy.key", "LEGACY-KEY-5555")})
-        checks = {c.name: c for c in doctor.check_seat_models(loop)}
+        checks = {c.name: c for c in seat_checks.check_seat_models(loop)}
         self.assertEqual(checks["model:adjudicator"].status, doctor.UNKNOWN)
         self.assertIn("LEGACY", checks["model:adjudicator"].detail)
         self.assertEqual(checks["runtime:legacy-model"].status, doctor.UNKNOWN)
@@ -762,7 +763,7 @@ class ReaderChain(Base):
         runtime = self.home / "diaktoros-runtime.json"
         runtime.write_text(json.dumps(self.settings))
         runtime.chmod(0o600)
-        checks = {c.name: c for c in doctor.check_seat_models(self.loop)}
+        checks = {c.name: c for c in seat_checks.check_seat_models(self.loop)}
         self.assertEqual(checks["model:reviewer"].status, doctor.ABSENT)
         self.assertIn("will be held", checks["model:reviewer"].detail)
         self.assertIn("diaktoros-runtime.json", checks["model:reviewer"].fix)
@@ -793,7 +794,7 @@ class ProviderExtras(Base):
         runtime = self.home / "diaktoros-runtime.json"
         runtime.write_text(json.dumps(settings or {**self.settings, "venv": venv or self.bare}))
         runtime.chmod(0o600)
-        return {c.name: c for c in doctor.check_seat_extras(loop or self.loop)}
+        return {c.name: c for c in seat_checks.check_seat_extras(loop or self.loop)}
 
     def test_the_table_names_the_anthropic_extra_and_its_import(self):
         self.assertEqual(seat_model.HERMES_EXTRAS["anthropic"]["module"], "anthropic")
@@ -892,7 +893,7 @@ class ProviderExtras(Base):
         write_profile(self.home, "rev", {"default": "m", "provider": "custom",
                                          "base_url": "https://[::1"})
         self.extras(self.full)
-        models = {c.name: c for c in doctor.check_seat_models(self.loop)}
+        models = {c.name: c for c in seat_checks.check_seat_models(self.loop)}
         self.assertEqual(models["model:reviewer"].status, doctor.ABSENT)
         self.assertIn("Invalid IPv6 URL", models["model:reviewer"].detail)
         check = self.extras(self.full)["extras:reviewer"]
@@ -912,7 +913,7 @@ class ProviderExtras(Base):
         self.assertIn("ValueError", check.detail)
         with mock.patch.object(seat_model, "describe_seat",
                                side_effect=ValueError("Invalid IPv6 URL")):
-            models = {c.name: c for c in doctor.check_seat_models(self.loop)}
+            models = {c.name: c for c in seat_checks.check_seat_models(self.loop)}
         self.assertEqual(models["model:reviewer"].status, doctor.UNKNOWN)
         self.assertIn("ValueError", models["model:reviewer"].detail)
         write_profile(self.home, "rev", {"default": "m", "provider": "custom",
@@ -945,8 +946,8 @@ class ProviderExtras(Base):
         empty.mkdir()
         settings = {**self.settings, "source": str(empty)}
         self.extras(settings=settings)
-        models = {c.name: c for c in doctor.check_seat_models(self.loop)}
-        extras = {c.name: c for c in doctor.check_seat_extras(self.loop)}
+        models = {c.name: c for c in seat_checks.check_seat_models(self.loop)}
+        extras = {c.name: c for c in seat_checks.check_seat_extras(self.loop)}
         for seat in ("reviewer", "fixer", "adjudicator"):
             self.assertEqual(models[f"model:{seat}"].status, doctor.ABSENT, seat)
             self.assertIn("Hermes is not importable from", models[f"model:{seat}"].detail)
@@ -958,8 +959,8 @@ class ProviderExtras(Base):
         # and a "not needed" from doctor's own table is a warning, not a pass.
         (self.root / "hermes-agent" / "hermes_cli" / "runtime_provider_custom.py").unlink()
         self.extras(self.bare)
-        models = {c.name: c for c in doctor.check_seat_models(self.loop)}
-        extras = {c.name: c for c in doctor.check_seat_extras(self.loop)}
+        models = {c.name: c for c in seat_checks.check_seat_models(self.loop)}
+        extras = {c.name: c for c in seat_checks.check_seat_extras(self.loop)}
         for seat in ("fixer", "adjudicator"):
             self.assertEqual(models[f"model:{seat}"].status, doctor.UNKNOWN, seat)
             self.assertIn("NOT by Hermes", models[f"model:{seat}"].detail)
@@ -971,7 +972,7 @@ class ProviderExtras(Base):
         self.assertEqual(extras["extras:reviewer"].status, doctor.ABSENT)
         # and with the package present, only the "not needed" verdict stays a warning
         self.extras(self.full)
-        extras = {c.name: c for c in doctor.check_seat_extras(self.loop)}
+        extras = {c.name: c for c in seat_checks.check_seat_extras(self.loop)}
         self.assertEqual(extras["extras:reviewer"].status, doctor.VERIFIED)
         self.assertEqual(extras["extras:adjudicator"].status, doctor.UNKNOWN)
 
@@ -983,13 +984,13 @@ class ProviderExtras(Base):
         rt.write_text(rt.read_text() + "\ndef _parse_api_mode(raw):\n"
                       "    raise ValueError('bad model.api_mode')\n")
         self.extras(self.full)
-        models = {c.name: c for c in doctor.check_seat_models(self.loop)}
+        models = {c.name: c for c in seat_checks.check_seat_models(self.loop)}
         check = models["model:reviewer"]
         self.assertEqual(check.status, doctor.ABSENT)
         self.assertIn("bad model.api_mode", check.detail)
         self.assertIn("will be held", check.detail)
         self.assertNotIn("NOT by Hermes", check.detail)
-        self.assertEqual({c.name: c for c in doctor.check_seat_extras(self.loop)}[
+        self.assertEqual({c.name: c for c in seat_checks.check_seat_extras(self.loop)}[
             "extras:reviewer"].status, doctor.SKIPPED)
         with redirect_stdout(io.StringIO()):
             self.assertEqual(doctor.report(self.loop, list(models.values())), 1)
@@ -1026,7 +1027,7 @@ class ProviderExtras(Base):
             return answer if profile == "rev" else real(profile, mode, settings, *a, **k)
         with mock.patch.object(seat_model, "run_resolver", side_effect=fake):
             return (self.extras(venv or self.bare),
-                    {c.name: c for c in doctor.check_seat_models(self.loop)})
+                    {c.name: c for c in seat_checks.check_seat_models(self.loop)})
 
     def test_with_hermes_the_entry_decides_not_model_api_mode(self):
         # Arbiter's repro, as Hermes answers it: entry at api.anthropic.com, model.api_mode chat.
@@ -1090,9 +1091,9 @@ class ProviderExtras(Base):
     def test_an_unresolved_model_skips_the_extras_line(self):
         write_profile(self.home, "fix", {"default": "fix-model"})              # no provider
         self.write_runtime_for(self.full)
-        models = {c.name: c for c in doctor.check_seat_models(self.loop)}
+        models = {c.name: c for c in seat_checks.check_seat_models(self.loop)}
         self.assertEqual(models["model:fixer"].status, doctor.ABSENT)
-        check = {c.name: c for c in doctor.check_seat_extras(self.loop)}["extras:fixer"]
+        check = {c.name: c for c in seat_checks.check_seat_extras(self.loop)}["extras:fixer"]
         self.assertEqual(check.status, doctor.SKIPPED)
         self.assertFalse(check.failed)
         self.assertEqual(check.detail, "skipped: model unresolved (see model:fixer)")
@@ -1160,29 +1161,29 @@ class ProviderExtras(Base):
 
     def test_the_probe_asks_the_venvs_own_python(self):
         full, bare = (str(pathlib.Path(v) / "bin" / "python") for v in (self.full, self.bare))
-        self.assertIs(doctor.venv_has_module(full, "anthropic"), True)
-        self.assertIs(doctor.venv_has_module(bare, "anthropic"), False)
-        self.assertIs(doctor.venv_has_module(bare, "anthropic.types"), False)   # parent missing
+        self.assertIs(seat_checks.venv_has_module(full, "anthropic"), True)
+        self.assertIs(seat_checks.venv_has_module(bare, "anthropic"), False)
+        self.assertIs(seat_checks.venv_has_module(bare, "anthropic.types"), False)   # parent missing
 
     def test_a_python_that_cannot_answer_is_undecided(self):
         odd = self.root / "odd" / "python"
         odd.parent.mkdir()
         odd.write_text("#!/bin/sh\nexit 3\n")
         odd.chmod(0o755)
-        self.assertIsNone(doctor.venv_has_module(str(odd), "anthropic"))
+        self.assertIsNone(seat_checks.venv_has_module(str(odd), "anthropic"))
         odd.write_text("#!/bin/sh\nexec sleep 5\n")
-        with mock.patch.object(doctor, "EXTRA_PROBE_TIMEOUT", 0.3):
-            self.assertIsNone(doctor.venv_has_module(str(odd), "anthropic"))
-        self.assertIsNone(doctor.venv_has_module(str(self.root / "missing" / "python"), "anthropic"))
+        with mock.patch.object(seat_checks, "EXTRA_PROBE_TIMEOUT", 0.3):
+            self.assertIsNone(seat_checks.venv_has_module(str(odd), "anthropic"))
+        self.assertIsNone(seat_checks.venv_has_module(str(self.root / "missing" / "python"), "anthropic"))
 
     def test_an_undecided_probe_is_unknown_not_verified(self):
-        with mock.patch.object(doctor, "venv_has_module", return_value=None):
+        with mock.patch.object(seat_checks, "venv_has_module", return_value=None):
             check = self.extras(self.full)["extras:reviewer"]
         self.assertEqual(check.status, doctor.UNKNOWN)
         self.assertIn("could not answer", check.detail)
 
     def test_no_runtime_file_is_unknown(self):
-        checks = {c.name: c for c in doctor.check_seat_extras(self.loop)}
+        checks = {c.name: c for c in seat_checks.check_seat_extras(self.loop)}
         self.assertEqual(checks["extras:reviewer"].status, doctor.UNKNOWN)
         self.assertIn("diaktoros-runtime.json", checks["extras:reviewer"].detail)
 
@@ -1202,7 +1203,7 @@ class ProviderExtras(Base):
 
     def test_the_preflight_runs_the_check(self):
         self.extras(self.bare)
-        with mock.patch.object(doctor, "check_seat_extras", wraps=doctor.check_seat_extras) as spy:
+        with mock.patch.object(seat_checks, "check_seat_extras", wraps=seat_checks.check_seat_extras) as spy:
             checks = doctor.check_loop(self.loop, offline=True)
         spy.assert_called_once()
         self.assertIn("extras:reviewer", [c.name for c in checks])

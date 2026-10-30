@@ -18,7 +18,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros import cli, config, doctor, gate_shims, gh, routes  # noqa: E402
-from diaktoros.doctor import route_checks  # noqa: E402
+from diaktoros.doctor import route_checks, seat_checks  # noqa: E402
 from diaktoros.cli import route_sync  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
 
@@ -109,7 +109,7 @@ class TriageVerb(unittest.TestCase):
         self.assertEqual(config.maintainers(loop), set())
         self.assertIn("maintainers: none", out)
         from diaktoros import doctor
-        check = {c.name: c for c in doctor.check_triage(loop)}["triage:maintainers"]
+        check = {c.name: c for c in seat_checks.check_triage(loop)}["triage:maintainers"]
         self.assertEqual(check.status, doctor.UNKNOWN)
         self.assertIn("--maintainer", check.fix)
 
@@ -265,7 +265,7 @@ class TriageVerb(unittest.TestCase):
         self.assertEqual(posted, [["pull_request"], ["pull_request_review"], ["issues"]])
         names = [check.name for check in route_checks.check_routes(loop)]
         self.assertIn(f"route:{ROUTE}", names)
-        triage = {check.name: check for check in doctor.check_triage(loop)}
+        triage = {check.name: check for check in seat_checks.check_triage(loop)}
         self.assertEqual(triage["profile:triage"].status, doctor.VERIFIED)
 
     def test_dry_run_names_the_hook_reconciliation_keeps(self):

@@ -249,13 +249,13 @@ class JunkWatch(unittest.TestCase):
         self.assertEqual(self.st.watch(), {"last_run": 5})
 
     def test_callers_of_watch_survive_a_non_mapping(self):
-        from diaktoros import doctor
+        from diaktoros.doctor import cron_checks
         st = self.st
         for junk in ["junk-string", ["a", "b"], 7]:
             with self.subTest(junk=junk):
                 st.watch_file.write_text(json.dumps(junk))
                 with mock.patch.object(state, "state_for", return_value=st):
-                    doctor.check_watchdog_last_run(st.loop)       # must not raise
+                    cron_checks.check_watchdog_last_run(st.loop)       # must not raise
                 with mock.patch.object(transition.gh, "reviews_read", return_value=([], None)):
                     self.assertIsNone(transition.record(st.loop, st, 7, HEAD, "main"))
 

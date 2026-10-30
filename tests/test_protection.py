@@ -14,6 +14,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from diaktoros import ci, config, doctor, gh, protection  # noqa: E402
+from diaktoros.doctor import identity_checks  # noqa: E402
 from diaktoros.cli import checks as cli_checks, install as cli_install  # noqa: E402
 
 APP = 5416187
@@ -205,7 +206,7 @@ class Doctor(Fake):
     def test_doctor_runs_it(self):
         with mock.patch.object(doctor, "check_merge_check",
                                return_value=doctor.Check("merge-check", doctor.VERIFIED, "x")) as m, \
-                mock.patch.object(doctor, "check_token_expiry_scopes", return_value=[]), \
+                mock.patch.object(identity_checks, "check_token_expiry_scopes", return_value=[]), \
                 mock.patch.object(doctor, "check_labels", return_value=None), \
                 mock.patch.object(doctor, "check_branch_protection", return_value=None):
             names = [c.name for c in doctor.check_environment(app_loop(), False)]

@@ -26,6 +26,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 from diaktoros import broker_ipc, contained, doctor, inference_proxy, seat_model, trusted_turn  # noqa: E402
+from diaktoros.doctor import seat_checks  # noqa: E402
 from diaktoros.inference_proxy import (CONTRACTS, Credential, InferenceCapability,  # noqa: E402
                                          RefreshingCredential, StaticCredential, _UnixHTTP)
 import test_seat_models as tsm  # noqa: E402
@@ -571,7 +572,7 @@ class OAuthResolution(OAuthBase):
         runtime = self.home / "diaktoros-runtime.json"
         runtime.write_text(json.dumps(self.settings))
         runtime.chmod(0o600)
-        checks = {c.name: c for c in doctor.check_seat_models(loop)}
+        checks = {c.name: c for c in seat_checks.check_seat_models(loop)}
         self.assertEqual(checks["model:reviewer"].status, doctor.VERIFIED)
         self.assertIn("openai-codex / gpt-5.3-codex-900k [codex_responses, OAuth (host-refreshed)]",
                       checks["model:reviewer"].detail)
