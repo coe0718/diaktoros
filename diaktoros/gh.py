@@ -33,7 +33,7 @@ import urllib.parse
 import urllib.request
 from typing import NamedTuple
 
-from .util import log
+from .util import log, login_entry
 from . import envnames
 
 API = "https://api.github.com"
@@ -152,8 +152,7 @@ def _outcome(method: str, path: str, response: "Response") -> "Response":
 
 
 def token_path(loop: dict, login: str | None = None) -> pathlib.Path | None:
-    name = login or loop.get("read_token")
-    raw = (loop.get("tokens") or {}).get(name)
+    raw = login_entry(loop.get("tokens"), login or loop.get("read_token"))
     return pathlib.Path(str(raw)).expanduser() if raw else None
 
 

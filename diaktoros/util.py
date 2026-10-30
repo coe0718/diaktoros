@@ -143,6 +143,18 @@ def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def login_entry(table, login: str | None):
+    """``table``'s entry for ``login`` (a ``tokens`` or ``apps`` map): the exact key first, then
+    any case, as validation matches logins; None when there is none. GitHub logins are
+    case-insensitive, so a seat spelled ``Rev-Bot`` finds the ``rev-bot`` token (#1474)."""
+    if not login or not isinstance(table, dict):
+        return None
+    if login in table:
+        return table[login]
+    folded = login.casefold()
+    return next((v for k, v in table.items() if str(k).casefold() == folded), None)
+
+
 def iso_at(when: float) -> str:
     """A local mark's epoch as the same UTC ISO-8601 GitHub stamps its own timestamps with.
 

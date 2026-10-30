@@ -21,7 +21,7 @@ import os
 
 import json
 
-from . import config, observer
+from . import config, observer, util
 from .config import settings_form
 from .config import lists
 
@@ -116,9 +116,8 @@ def _rows(loop: dict) -> list[_Row]:
     for role, key in config.TOKEN_FILE_SETTINGS.items():
         login = config.seat_login(loop, role) if role != "adjudicator" \
             else config.adjudicator_login(loop)
-        match = {str(k).lower(): v for k, v in tokens.items()}.get(login.lower()) if login else None
-        app = {str(k).lower(): v for k, v in (loop.get("apps") or {}).items()}.get(
-            login.lower()) if login and not match else None
+        match = util.login_entry(tokens, login)
+        app = util.login_entry(loop.get("apps"), login) if not match else None
         for field, app_field in (("app_id", "app_id"), ("app_key_file", "key_file")):
             schema(f"{role}_{field}", ("apps",),
                    (app.get(app_field) if isinstance(app, dict) else None) or _UNSET,

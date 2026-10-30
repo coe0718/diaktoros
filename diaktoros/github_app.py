@@ -31,7 +31,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import gh
+from . import gh, util
 
 JWT_TTL_S = 540                 # GitHub allows at most 10 minutes; the clock may run ahead
 REUSE_MARGIN_S = 600            # a token is replaced ten minutes before it expires
@@ -58,15 +58,7 @@ class AppError(gh.GitHubError):
 
 def entry(loop: dict, login: str | None) -> dict | None:
     """The ``apps`` entry for ``login`` (exact, then case-insensitive), or ``None``."""
-    if not login:
-        return None
-    apps = loop.get("apps") or {}
-    if not isinstance(apps, dict):
-        return None
-    found = apps.get(login)
-    if found is None:
-        folded = login.casefold()
-        found = next((v for k, v in apps.items() if str(k).casefold() == folded), None)
+    found = util.login_entry(loop.get("apps"), login)
     return found if isinstance(found, dict) else None
 
 
