@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_fixer_gating as fg  # noqa: E402
 import test_stall_live_turn as sl  # noqa: E402
-from diaktoros import gate, run_supervisor  # noqa: E402
+from diaktoros import gate, gh, run_supervisor  # noqa: E402
 
 LONG_AGO = "2020-01-01T00:00:00Z"
 VERDICT = [{"id": 1, "state": "CHANGES_REQUESTED", "commit_id": fg.HEAD,
@@ -153,6 +153,24 @@ class CapStep(fg.Base):
         self.assertIn("reviewer gate then sends it for a ruling", fixing["action"])
         # The operator sees why escalate, not the sweep (#1481 review: it was only a comment).
         self.assertIn("only at a head it saw arrive", idle["action"])
+
+    def test_a_run_on_an_old_head_holds_escalate_as_it_does_explain(self):
+        # #1481 review: escalate counts every run of the PR, on any head; with one in flight it
+        # only records the request for the next verdict. explain must not promise a ruling then.
+        from diaktoros import one_shot_action
+        self.set_push(True)
+        old = "b" * 40
+        sup = run_supervisor.Supervisor(run_supervisor.production_ledger())
+        with mock.patch.object(sup, "_spawn"):
+            sup.enqueue("old-fix", fg.REPO, 7, old, "fixer")
+        with closing(sqlite3.connect(sup.db)) as con, con:
+            con.execute("UPDATE runs SET state='running' WHERE delivery='old-fix'")
+        step = self.explain(False, held={"fixer": {"head": old, "at": time.time()}})
+        self.assertEqual(step["kind"], "release")
+        self.assertTrue(step["action"].startswith("1 run(s) for this PR are in flight; once they end"))
+        with mock.patch.object(gh, "reviews", return_value=[fg.verdict(rid) for rid in (1, 2, 3)]):
+            decision = one_shot_action._escalation_decision(self.loop, 7, live=fg.LIVE)
+        self.assertIn("1 run(s) for this PR are in flight", decision["reason"])
 
     def test_a_fixer_lock_on_an_old_head_is_no_live_fix(self):
         # #1481 review: an old-head run cannot finish this head, so escalate is still the step.

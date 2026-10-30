@@ -1554,8 +1554,13 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             kind = "fixer-push"
             action = fix_push + "with the cap spent, the reviewer gate then sends it for a ruling"
         else:
-            kind = "operator"
-            action = (f"`hermes dk escalate --loop {loop['id']} --pr {number}` sends head {short} "
+            # Escalate's own rule: a run on any head, or one of unknown outcome, holds it.
+            from . import one_shot_action
+            busy, unknown = one_shot_action.escalation_blockers(loop, number)
+            kind = "release" if busy or unknown else "operator"
+            action = ((f"{busy} run(s) for this PR are in flight; once they end, " if busy else
+                       "a run's outcome is unknown; once it is reconciled, " if unknown else "")
+                      + f"`hermes dk escalate --loop {loop['id']} --pr {number}` sends head {short} "
                       "for a ruling (the watchdog raises a missing marker itself only at a head it "
                       "saw arrive, never one open since the loop was armed) — no ruling is underway yet")
     elif push_off_held:
