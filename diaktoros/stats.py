@@ -252,10 +252,8 @@ def now(db: Path, repo: str, at: float | None = None) -> dict | None:
 
 
 def _iso(text) -> float | None:
-    try:
-        return datetime.fromisoformat(str(text).replace("Z", "+00:00")).timestamp()
-    except (TypeError, ValueError):
-        return None
+    from .util import iso_epoch
+    return iso_epoch(text if isinstance(text, str) else None)
 
 
 def github(loop: dict, since: float) -> dict:

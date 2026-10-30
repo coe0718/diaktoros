@@ -21,11 +21,8 @@ MISSING_WAIT_S = 30 * 60
 
 
 def _epoch(review: dict) -> float | None:
-    from datetime import datetime
-    try:
-        return datetime.fromisoformat(review["submitted_at"].replace("Z", "+00:00")).timestamp()
-    except Exception:
-        return None
+    from .util import iso_epoch
+    return iso_epoch(review.get("submitted_at") if isinstance(review, dict) else None)
 
 
 def assess(loop: dict, state: ci.CIState | None, approved_at: float | None,

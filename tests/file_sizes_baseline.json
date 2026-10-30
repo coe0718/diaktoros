@@ -54,7 +54,7 @@
     "diaktoros/contained.py::command": 175,
     "diaktoros/continue_run.py::inspect": 110,
     "diaktoros/desktop_api.py::pr_view": 84,
-    "diaktoros/doctor/cron_checks.py::check_cron_job": 140,
+    "diaktoros/doctor/cron_checks.py::check_cron_job": 137,
     "diaktoros/doctor/hook_checks.py::check_hook": 94,
     "diaktoros/doctor/route_checks.py::check_adjudicator_route": 87,
     "diaktoros/doctor/route_checks.py::check_route": 83,

@@ -227,9 +227,6 @@ def current_reviews(reviews, entry, loop):
 
 
 def _after(timestamp, boundary):
-    from datetime import datetime, timezone
-    try:
-        return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone(
-            timezone.utc).timestamp() > boundary
-    except (ValueError, TypeError, OverflowError):
-        return False
+    from .util import iso_epoch
+    at = iso_epoch(timestamp)
+    return at is not None and at > boundary

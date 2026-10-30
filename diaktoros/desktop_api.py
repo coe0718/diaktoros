@@ -35,7 +35,7 @@ import stat
 import time
 
 from . import (arm_action, config, doctor, findings, gate_decisions, pacing, retry_action, route_intent,
-               run_supervisor, stats)
+               run_supervisor, stats, util)
 from .run_supervisor import views
 from .config import settings_form
 
@@ -436,7 +436,6 @@ def _record_watchdog(loop):
     Arbitrary queue/lock alert keys and base branch names are deliberately not projected.
     Cooldown keys contain only seven head characters, so never join them to a current head.
     """
-    from datetime import datetime
     data = _record_json(config.state_dir(loop) / 'watchdog.json')
     if not isinstance(data, dict):
         raise ValueError('watchdog memory')
@@ -447,7 +446,7 @@ def _record_watchdog(loop):
                 r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)', stamp)):
             raise ValueError('sweep timestamp')
         rows.append({'kind': 'sweep', 'at': _record_number(
-            datetime.fromisoformat(stamp.replace('Z', '+00:00')).timestamp())})
+            util.iso_epoch(stamp))})
     for source, kind in (('heads', 'head'), ('head_history', 'head_history')):
         entries = data.get(source, {})
         if not isinstance(entries, dict):

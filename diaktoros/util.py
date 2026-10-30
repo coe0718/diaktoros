@@ -199,21 +199,24 @@ def iso_at(when: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(when)) if when else ""
 
 
-def epoch(iso: str | None) -> float:
-    """GitHub timestamps are UTC ISO-8601. Parse as UTC, never as local time."""
-    if not iso:
-        return 0.0
-    import calendar
-
+def iso_epoch(value) -> float | None:
+    """An ISO-8601 timestamp as epoch seconds, or None when there is none or it is unreadable.
+    ``Z`` and any offset are honoured; a stamp with no zone is UTC, as GitHub's are, never the
+    host's local time. The one reading of a timestamp (C3): the copies dropped offsets or read a
+    zoneless stamp as local time."""
+    from datetime import datetime, timezone
+    if not isinstance(value, str) or not value.strip():
+        return None
     try:
-        return float(calendar.timegm(time.strptime(str(iso)[:19], "%Y-%m-%dT%H:%M:%S")))
-    except Exception:
-        try:
-            from datetime import datetime
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
 
-            return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp()
-        except Exception:
-            return 0.0
+
+def epoch(iso: str | None) -> float:
+    """``iso_epoch``, with 0.0 for a missing or unreadable stamp (the watchdog's clocks)."""
+    return iso_epoch(iso) or 0.0
 
 
 def age_min(iso: str | None) -> float | None:

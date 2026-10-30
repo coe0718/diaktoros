@@ -9,9 +9,8 @@ from __future__ import annotations
 import json
 import pathlib
 import re
-from datetime import datetime
 
-from .. import config, doctor
+from .. import config, doctor, util
 
 
 def check_watchdog_last_run(loop: dict) -> doctor.Check:
@@ -237,11 +236,7 @@ def check_cron_job(loop: dict) -> doctor.Check:
                             f"{job_id} has no valid stored schedule (display text does not schedule work)",
                             replace)
     next_run = job.get("next_run_at")
-    try:
-        if not isinstance(next_run, str) or not next_run.strip():
-            raise ValueError("missing next run")
-        datetime.fromisoformat(next_run.replace("Z", "+00:00"))
-    except ValueError:
+    if util.iso_epoch(next_run) is None:
         return doctor.Check("cron:job", doctor.MISMATCH,
                             f"{job_id} has no valid next_run_at — cannot verify the next wake "
                             "(the scheduler may recompute a missing value for a recurring job)",
