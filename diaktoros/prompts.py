@@ -35,10 +35,22 @@ def no_git_proof(indent: str) -> str:
     return textwrap.fill(text, width=99, initial_indent=indent, subsequent_indent=indent) + "\n"
 
 
+def size_limit_rule(first: str, indent: str, then: str) -> str:
+    """What a fixer does when a check fails on a size limit the repository enforces (#1349): never
+    squeeze code under it, since splitting a file is a maintainer's call. One text for every fixer
+    prompt; ``then`` is what this turn does instead (publish and say so, or don't push)."""
+    import textwrap
+    text = ("**Don't squeeze code under a size limit.** If a check fails because a file or "
+            "function is over a size limit the repository enforces, don't compress code to fit it "
+            "(no joined lines, deleted comments or docstrings, or shortened names): splitting it "
+            "is a maintainer's call. " + then)
+    return textwrap.fill(text, width=99, initial_indent=first, subsequent_indent=indent) + "\n"
+
+
 def code_rules(what: str, where: str) -> str:
     """The fixer's rules for the code it writes (#512), one text for every fixer prompt:
     ``what`` is the work ("fix", "issue"), ``where`` where it reports ("your answers")."""
-    return f"""   Five rules for the code you write:
+    return f"""   Six rules for the code you write:
    - **Reuse before writing.** Before adding a function, search the package for an existing one
      that does the same check, and call it or extend it instead of copying it. If the logic must
      be shared between two callers, factor it into one function both use.
@@ -53,6 +65,9 @@ def code_rules(what: str, where: str) -> str:
      to wait, who goes next), find every other place that decides the same question (its
      callers, the prompt or notice that explains it, `explain`, `doctor`, the sweep) and make
      them agree. One rule stated two ways is a bug.
+""" + size_limit_rule(
+        "   - ", "     ", f"Write the change as you otherwise would, publish it, and say in {where} "
+        "which file or function is over which limit.") + """\
    - **Prove the test fails without the fix.**
 """ + no_git_proof("     ")
 
@@ -531,6 +546,8 @@ What to do:
 2. Fix the cause in the code. Do not weaken, skip or delete a test to make it pass, and do not
    touch `.github/`: the broker refuses workflow files. If the failure is not in this PR's code
    (a flaky job, an outage, a workflow problem), do not push: say so in your summary.
+""" + size_limit_rule("   ", "   ", "When that is the only failure, do not push: say in your "
+                          "summary which file or function is over which limit.") + """\
 3. Verify the fix: run what failed, and the always-run check if one follows this message. Only
    the touched tests, never the whole suite: CI reruns everything on the new head. If the failing
    check caught a real defect only indirectly, add a test that fails without your fix and name
@@ -629,11 +646,15 @@ def registry_section(diff: str | None) -> str:
             + "\n".join(f"- {text}" for _, text in rows))
 
 
-def fixer_check_section(loop: dict) -> str:
+def fixer_check_section(loop: dict, ci_fix: bool = False) -> str:
     """The loop's always-run check, as an instruction from the operator (#338 follow-up): the
     repository checks CI runs on every change, which a fixer running only its touched tests would
     otherwise miss. Empty when the loop names none. Appended after the rendered template, so a
-    command's own braces (``${VAR}``) are never mistaken for a template field."""
+    command's own braces (``${VAR}``) are never mistaken for a template field.
+
+    ``ci_fix``: the CI-fix turn, whose prompt says not to push when a size limit is the only
+    failure (``size_limit_rule``); publish-anyway keeps that one exception there, so the two
+    never contradict each other (#1436 review)."""
     command = str(loop.get("fixer_check") or "").strip()
     if not command:
         return ""
@@ -648,7 +669,9 @@ def fixer_check_section(loop: dict) -> str:
             "description exactly what did not pass or did not run: work you do not publish is "
             "lost, and a PR that states its gaps is still reviewed. Never end the turn "
             "unpublished because the check did not pass (#542). "
-            "If it cannot run in this sandbox, say so in your answers or PR description. If it "
+            + ("The one exception, in this CI-fix turn: when all that fails is a size limit the "
+               "repository enforces, don't publish (step 2 above). " if ci_fix else "")
+            + "If it cannot run in this sandbox, say so in your answers or PR description. If it "
             "passes but its output reports modules it did not run (for example `not run (past "
             "the ... budget; CI runs them): ...`), the zero exit code does not mean those tests "
             "ran: name those modules in the PR description and note that CI will catch them.\n\n"
