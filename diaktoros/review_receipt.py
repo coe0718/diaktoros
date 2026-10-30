@@ -5,7 +5,6 @@ not part of this branch. Never infer parent association from head SHA alone.
 """
 import json
 import re
-import sqlite3
 import time
 
 from . import gh, ledger
@@ -98,7 +97,7 @@ def _partial_view(con, run_id):
 
 def partial_view(db, run_id):
     """Read-only: why the host could not show this run the whole change, or ''."""
-    con = sqlite3.connect(f'file:{db}?mode=ro', uri=True, timeout=ledger.LOCK_WAIT_S)
+    con = ledger.read_only(db)
     try:
         return _partial_view(con, run_id)
     finally:
@@ -254,7 +253,7 @@ def confirmed_receipts(db, repo, number, head, base):
         return {}
     if not db or not os.path.exists(db):
         return {}
-    con = sqlite3.connect(f'file:{db}?mode=ro', uri=True, timeout=ledger.LOCK_WAIT_S)
+    con = ledger.read_only(db)
     try:
         rows = con.execute(
             "SELECT r.review_id, r.verdict, r.principal_id, r.generation FROM review_receipts r "

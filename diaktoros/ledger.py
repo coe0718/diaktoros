@@ -65,6 +65,17 @@ def where(exc: BaseException) -> str:
     return f" (during {name})" if name else ""
 
 
+def read_only(path, *, immutable: bool = False) -> sqlite3.Connection:
+    """A connection that opens the ledger at ``path`` for reading only, never creating a file:
+    the path is URI-quoted, so a ``#`` or ``?`` in it never opens (and creates) another one.
+    ``mode=ro`` keeps SQLite's locking, so a read sees whole transactions while others write.
+    ``immutable`` drops that locking: only for a report read while no WAL is live
+    (``views.read_only_connect``)."""
+    from urllib.parse import quote
+    return sqlite3.connect(f"file:{quote(str(path))}?{'immutable=1' if immutable else 'mode=ro'}",
+                           uri=True, timeout=LOCK_WAIT_S)
+
+
 @contextlib.contextmanager
 def connect(path, *, row_factory=None, pragmas: tuple[str, ...] = (),
             opener: Callable[[], sqlite3.Connection] | None = None,

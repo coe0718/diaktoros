@@ -154,14 +154,13 @@ def cmd_identity(args) -> int:
            config.adjudicator_login(loop) if seat == "adjudicator" else config.seat_login(loop, seat))
     # Refuse while this identity is acting: a run would finish as the old login on a new mapping.
     try:
-        import sqlite3
         db = run_supervisor.production_ledger()
         busy = uncertain = 0
         if db.exists():
             seats = _identity_runs(loop, seat)
             which = "" if seats is None else f" AND seat IN ({','.join('?' * len(seats))})"
             from .. import ledger
-            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=ledger.LOCK_WAIT_S)
+            con = ledger.read_only(db)
             try:
                 rows = con.execute(
                     f"SELECT state FROM runs WHERE repo=?{which}"

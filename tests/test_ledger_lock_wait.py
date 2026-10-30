@@ -55,8 +55,10 @@ class Waits(unittest.TestCase):
         # private file, marked so on its line.
         # Found, not listed (#676): a list kept naming `cli` after its ledger connections moved
         # to cli_operations, and nothing checked the module that had them.
+        # A ``ledger.read_only`` open counts: it carries the wait itself (B5).
         paths = sorted(path for path in (ROOT / "diaktoros").rglob("*.py")
-                       if re.search(r"\b(?:sqlite3|ledger)\.connect\(", path.read_text()))
+                       if re.search(r"\b(?:sqlite3|ledger)\.connect\(|\bread_only\(",
+                                    path.read_text()))
         names = {path.relative_to(ROOT / "diaktoros").with_suffix("").as_posix() for path in paths}
         # #644: the ledger reads the escalation selector needs moved with it from cli/operations
         # to the shared one_shot_action owner, so the enumerated set moved too.
@@ -85,6 +87,43 @@ class Waits(unittest.TestCase):
                     if None in keywords:
                         continue                    # ledger.connect's pass-through (**kwargs)
                     self.assertIn("LOCK_WAIT_S", keywords.get("timeout", ""), where)
+
+
+class ReadOnly(unittest.TestCase):
+    """Duplication audit (B5): every read-only open is ``ledger.read_only``, with the path quoted.
+    A hand-written ``file:{db}?mode=ro`` read ``a#b/runs.sqlite`` as the file ``a`` (the rest is
+    a URI fragment), created it, and failed on its missing tables."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.db = self.root / "a#b?c" / "runs.sqlite"
+        Supervisor(self.db).enqueue("d1", "acme/widgets", 7, "a" * 40, "reviewer")
+
+    def test_a_hash_in_the_path_reads_that_ledger_and_creates_nothing(self):
+        from diaktoros import stats
+        before = sorted(p.name for p in self.root.iterdir())
+        for immutable in (False, True):
+            with self.subTest(immutable=immutable):
+                con = ledger.read_only(self.db, immutable=immutable)
+                try:
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 1)
+                    with self.assertRaises(sqlite3.OperationalError):
+                        con.execute("DELETE FROM runs")              # and it is read-only
+                finally:
+                    con.close()
+        # A reader that went through it: the report sees the run, not an empty stray file.
+        self.assertEqual(review_receipt.partial_view(self.db, "nope"), "")
+        self.assertIsNotNone(stats.ledger(self.db, "acme/widgets", 0))
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), before)
+
+    def test_no_read_only_uri_is_written_outside_ledger_read_only(self):
+        for path in [*(ROOT / "diaktoros").rglob("*.py"), *(ROOT / "scripts").glob("*.py")]:
+            if path == ROOT / "diaktoros" / "ledger.py":
+                continue
+            with self.subTest(path.relative_to(ROOT).as_posix()):
+                self.assertNotRegex(path.read_text(), r"mode=ro|immutable=1")
 
 
 class LockTimeouts(unittest.TestCase):

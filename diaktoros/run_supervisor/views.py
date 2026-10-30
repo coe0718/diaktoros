@@ -135,15 +135,12 @@ def read_only_connect(db: str | Path):
     is absent. With no live WAL, ``immutable`` keeps even a read-only connection from creating
     -wal/-shm files; with one, those files already exist.
 
-    Every read-only reader goes through here, ``runs_view``'s callers included, so the policy has
-    one home."""
+    The report readers go through here, ``runs_view``'s callers included; every read-only open
+    is ``ledger.read_only``, so the policy has one home."""
     path = Path(db)
     if not path.is_file():
         return None
-    from urllib.parse import quote
-    live = Path(f'{path}-wal').exists()
-    con = sqlite3.connect(f"file:{quote(str(path))}?{'mode=ro' if live else 'immutable=1'}",
-                          uri=True, timeout=ledger.LOCK_WAIT_S)
+    con = ledger.read_only(path, immutable=not Path(f'{path}-wal').exists())
     con.row_factory = sqlite3.Row
     return con
 

@@ -26,7 +26,7 @@ import tarfile
 import tempfile
 import time
 
-from .ledger import LOCK_WAIT_S
+from .ledger import read_only
 from .config import credentials
 from . import config, gate_shims, route_intent, routes, run_supervisor
 
@@ -61,7 +61,7 @@ def _regular_files(root: pathlib.Path) -> list[pathlib.Path]:
 
 def _snapshot_ledger(src: pathlib.Path, dest: pathlib.Path) -> None:
     """SQLite's online backup: a consistent copy while other connections write."""
-    source = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    source = read_only(src)
     try:
         target = sqlite3.connect(dest)  # private new file
         try:
