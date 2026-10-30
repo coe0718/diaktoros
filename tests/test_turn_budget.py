@@ -348,15 +348,15 @@ class MarkerGraceFollowsTheRuling(unittest.TestCase):
         self.watchdog = _watchdog()
         self.watchdog.TEST = False                   # the real grace clocks
 
-    def sweep(self, budget, status, age_s, run_state=None, ruled=None):
+    def sweep(self, budget, status, age_s, run_state=None, ruled=None, dismissed=0):
         # Each sweep gets its own loop state and run ledger (a marker keeps its first "at").
         self.calls = getattr(self, "calls", 0) + 1
         home = self.home / f"call-{self.calls}"
         home.mkdir()
         with mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}):
-            return self._sweep(home, budget, status, age_s, run_state, ruled)
+            return self._sweep(home, budget, status, age_s, run_state, ruled, dismissed)
 
-    def _sweep(self, home, budget, status, age_s, run_state, ruled=None):
+    def _sweep(self, home, budget, status, age_s, run_state, ruled=None, dismissed=0):
         wd, now = self.watchdog, time.time()
         raw = _loop(state_dir=str(home / "loop-state"),
                     read_token="reviewer", cap=3,
@@ -391,6 +391,8 @@ class MarkerGraceFollowsTheRuling(unittest.TestCase):
         verdicts = [{"id": n, "state": "CHANGES_REQUESTED", "commit_id": HEAD,
                      "submitted_at": "2026-01-01T00:00:00Z",
                      "user": {"login": "reviewer", "id": 2}} for n in (1, 2, 3)]
+        for verdict in verdicts[len(verdicts) - dismissed:]:
+            verdict["state"] = "DISMISSED"                  # the operator dismissed it
         with mock.patch.object(wd.gate, "hooks_read", return_value=(True, "")), \
              mock.patch.object(wd.gh, "open_prs", return_value=[pr]), \
              mock.patch.object(wd.gh, "reviews", return_value=verdicts), \
@@ -433,6 +435,20 @@ class MarkerGraceFollowsTheRuling(unittest.TestCase):
         # A ruling at another head does not excuse this one.
         [line] = self.sweep(900, "adjudicating", late, "succeeded", ruled=("REJECT", "c" * 40))
         self.assertIn("no adjudicator run is live (succeeded)", line)
+
+    def test_a_dismissed_verdict_ends_the_marker_ruled_or_not(self):
+        # Duplication audit (B1): below the cap the marker no longer holds the head (#780,
+        # gate.breach_holds), so the head is the gates' again and a stall there is reported. A
+        # ruled marker used to hide it ("the operator's"); an unruled one called it parked.
+        late = 14400 + 3600
+        for name, args in (("ruled", dict(run_state="succeeded", ruled=("REJECT", HEAD))),
+                           ("unruled", {})):
+            with self.subTest(name):
+                [line] = self.sweep(900, "adjudicating", late, dismissed=1, **args)
+                self.assertNotIn("adjudicat", line)
+        # At the cap the ruled marker is still the operator's.
+        self.assertEqual(self.sweep(900, "adjudicating", late, "succeeded",
+                                    ruled=("REJECT", HEAD)), [])
 
     def test_a_marker_awaiting_its_run_keeps_marker_grace(self):
         for budget in (900, 7200, 14400):

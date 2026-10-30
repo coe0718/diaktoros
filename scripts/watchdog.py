@@ -659,17 +659,9 @@ def scan_conflicts(loop: dict, st: state_mod.LoopState) -> int:
     conflict_live: dict[int, dict] = {}
     unknown: list[tuple[int, str, str]] = []
     for pr in prs:
-        if not isinstance(pr, dict):
+        if (listed := config.loop_pr(loop, pr)) is None:
             continue
-        author = ((pr.get("user") or {}).get("login") or "").lower()
-        if author not in config.reviewed_authors(loop) or pr.get("draft"):
-            continue
-        if (pr.get("base") or {}).get("ref") != loop["base"]:
-            continue
-        number = pr.get("number")
-        head = (pr.get("head") or {}).get("sha") or ""
-        if not number or not head:
-            continue
+        number, head, author = listed
         hold, hold_error = pr_hold.read(loop, number)
         if hold or hold_error:
             continue                          # a held or unreadable hold: the sweep's to judge
@@ -1021,17 +1013,9 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     open_numbers = {str(p.get("number")) for p in prs if isinstance(p, dict)}
     kicks = {k: v for k, v in kicks.items() if k in open_numbers}
     for pr in prs:
-        if not isinstance(pr, dict):
+        if (listed := config.loop_pr(loop, pr)) is None:
             continue
-        author = ((pr.get("user") or {}).get("login") or "").lower()
-        if author not in config.reviewed_authors(loop) or pr.get("draft"):
-            continue
-        if (pr.get("base") or {}).get("ref") != loop["base"]:
-            continue
-        number = pr.get("number")
-        head = (pr.get("head") or {}).get("sha") or ""
-        if not number or not head:
-            continue
+        number, head, author = listed
         # #477: a PR a maintainer holds is left alone: no stall, no conflict turn. The hold is
         # recorded for `status` and the drain; a failed read keeps the last record (never
         # "released" by a read that failed) and is said with the other failed reads.
@@ -1105,16 +1089,18 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                    else [])
         changes = gate.verdicts(reviews, loop)
         marker = breach.get(f"{loop['repo']}#{number}") or {}
-        if (gate.breach_delivery_status(marker, head) == "delivery-pending"
-                and gate.breach_holds(marker, head, len(changes), loop["cap"])):
-            continue  # failed delivery is not a silent stall; the retry owns it while it holds
+        # A marker that no longer holds (#780) parks nothing, ruled or not. One that holds with
+        # its delivery failed is not a silent stall either: the retry owns it.
+        holds = gate.breach_holds(marker, head, len(changes), loop["cap"])
+        if holds and gate.breach_delivery_status(marker, head) == "delivery-pending":
+            continue
         observed_at = current_heads[str(number)]["observed_at"]
         head_postdates_arming = TEST or observed_at is not None
         kind = ""
 
         # A marker at this head is the escalation: whether it is a stall is its own question
         # (parked_kind), and it is never "no escalation marker" while it is young (#98).
-        parked = parked_kind(loop, marker, number, head, marker_grace)
+        parked = parked_kind(loop, marker, number, head, marker_grace) if holds else None
         # A review-only PR has no fixer and no adjudication: changes requested is back with its author (#191).
         review_only = author in config.review_only(loop)
         if parked is not None:
