@@ -693,6 +693,10 @@ class Config(unittest.TestCase):
         self.assertEqual(config.seat_concurrency(loop, "adjudicator"), 2)
         self.assertEqual(config.normalize(loop)["seats"]["adjudicator"], {"login": "adj", "concurrency": 2})
 
+    def test_a_login_spelled_in_another_case_finds_its_own_token(self):
+        # #1474: its credential is found in any case, and its own file is not "another's".
+        self.assertEqual(config.adjudicator_login(self.load({"login": "Adj"})), "Adj")
+
     def test_loop_default_concurrency_does_not_apply(self):
         raw = {**json.loads(json.dumps(self.raw)), "concurrency": 3, "clone": "/nonexistent"}
         self.assertEqual(config.seat_concurrency(config.normalize(raw), "adjudicator"), 1)

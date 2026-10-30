@@ -89,6 +89,21 @@ def _same_token_file(first, second) -> bool:
         return True                        # cannot tell them apart: treat as shared, never as safe
 
 
+def case_clash(loop: dict) -> str:
+    """Two credential keys that are one login spelled in two cases, or ``""``. GitHub logins
+    ignore case and every lookup takes the exact key first, then any case (``util.login_entry``),
+    so a map with ``Rev-Bot`` and ``rev-bot`` would let a lookup and a check pick different files
+    (#1475 review): it is refused, never resolved."""
+    seen = {}
+    for table in ("tokens", "apps"):
+        for key in loop.get(table) or {}:
+            first = seen.setdefault(str(key).casefold(), f"{table}.{key}")
+            if first != f"{table}.{key}":
+                return (f"{first} and {table}.{key} are one login in two spellings — GitHub logins "
+                        "ignore case; keep one")
+    return ""
+
+
 def reader_problem(loop: dict) -> str:
     """Why the reader is not its own identity, or ``""`` when it is (or no reader is named).
 
@@ -100,6 +115,8 @@ def reader_problem(loop: dict) -> str:
     reader = str(loop.get("read_token") or "").strip()
     if not reader:
         return ""
+    if clash := case_clash(loop):
+        return clash
     others = [(f"{seat} seat", config.seat_login(loop, seat)) for seat in config.SEAT_KEYS]
     others.append(("adjudicator comment login", config.adjudicator_login(loop)))
     for role, login in others:
@@ -141,6 +158,8 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
     file the operator owns and this CLI does not print.
     """
     where = loop.get("id") or loop.get("repo") or "<inline>"
+    if clash := case_clash(loop):
+        raise config.ConfigError(f"{where}: {clash}")
     tokens = {str(k).lower(): str(v or "") for k, v in (loop.get("tokens") or {}).items()}
     for login, raw_path in sorted(tokens.items()):
         if not raw_path:
