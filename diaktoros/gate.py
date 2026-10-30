@@ -1297,15 +1297,16 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     stale_held = {seat for seat, entry in held.items() if entry.get("head") != head}
     # An isolated turn already in the ledger at this head (queued, held for CI, running) is
     # the gate's answer, not a missing one (#509): the run itself is reported as the blocker.
-    ledgered, db = set(), config.host_path("ledger")
+    db = config.host_path("ledger")
     from .run_supervisor import views
-    if head:
-        for seat in ("reviewer", "fixer"):
-            if views.turn_state(db, repo, number, head, seat) in LIVE_TURN:
-                ledgered.add(seat)
-    fix_live = "fixer" in held or inflight_fix or "fixer" in ledgered
-    # The fixer's answer to the verdict (#894), as the sweep reads it (a verdict at head: a head).
-    disputed = (bool(at_head) and not fix_live
+    turns = {seat: views.turn_state(db, repo, number, head, seat)
+             for seat in ("reviewer", "fixer")} if head else {}
+    ledgered = {seat for seat, turn in turns.items() if turn in LIVE_TURN}
+    # A fix for this head: a lock on an old head cannot finish it (#1481 review).
+    fix_live = ("fixer" in held and "fixer" not in stale_held) or inflight_fix or "fixer" in ledgered
+    # The fixer's answer to the verdict (#894), as the sweep reads it: there an uncertain turn is
+    # not a live one, so it hides no dispute (#1481 review). A verdict at head means a head.
+    disputed = (bool(at_head) and ("fixer" not in ledgered or turns["fixer"] == "uncertain")
                 and views.disputed(db, repo, number, head, latest) is not None)
     # Parked for a ruling (or its delivery pending), both gates stop on purpose: no "gate did not
     # start one" line, which would read as something stuck while the ruling is the next event.
@@ -1555,7 +1556,8 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         else:
             kind = "operator"
             action = (f"`hermes dk escalate --loop {loop['id']} --pr {number}` sends head {short} "
-                      "for a ruling — no ruling is underway yet")
+                      "for a ruling (the watchdog raises a missing marker itself only at a head it "
+                      "saw arrive, never one open since the loop was armed) — no ruling is underway yet")
     elif push_off_held:
         kind = "operator"
         action = (f"operator decision: unattended fixer pushes are off for this loop, so the "

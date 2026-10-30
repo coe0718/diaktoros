@@ -105,12 +105,34 @@ class Explain(Dispute):
                 self.assertFalse([b for b in report["blockers"] if "did not start one" in b])
 
 
+class UncertainTurn(Dispute):
+    """#1481 review: the sweep counts an uncertain fixer turn as not live, so a dispute behind it
+    goes for a ruling; explain must read it the same way, never as a replay."""
+
+    explain = fg.Surfaces.explain
+
+    def test_an_uncertain_fixer_turn_hides_no_dispute_on_either_path(self):
+        self.arm_long_ago()
+        self.loop["adjudicator"] = {"route": "one-breach"}
+        self.dispute()
+        uncertain = mock.patch.object(run_supervisor.views, "turn_state",
+                                      side_effect=lambda db, repo, pr, head, seat:
+                                      "uncertain" if seat == "fixer" else None)
+        with uncertain:
+            report = self.explain()
+        self.assertEqual(report["next"]["kind"], "adjudication")
+        self.assertNotIn("re-deliver", report["next"]["action"])
+        with uncertain, mock.patch.object(gate, "breach", return_value="new") as breach:
+            self.sweep(VERDICT)
+        breach.assert_called_once()
+
+
 class CapStep(fg.Base):
     """A spent cap with no marker (#575): ``hermes dk escalate`` sends the head now, unless a fix
     run is live, when it would only wait for the next verdict (#1481 review): the push is next."""
 
-    def explain(self, inflight_fix):
-        local = {"held": {}, "queued_seat": "", "queued_reason": "", "inflight_review": False,
+    def explain(self, inflight_fix, held=None):
+        local = {"held": held or {}, "queued_seat": "", "queued_reason": "", "inflight_review": False,
                  "inflight_fix": inflight_fix, "marker": {}, "parked": False,
                  "delivery_status": "", "capacity": {"reviewer": (0, 1), "fixer": (0, 1)},
                  "stale_queues": [], "seat": "", "queue": "", "inflight": "", "escalation": "",
@@ -129,6 +151,16 @@ class CapStep(fg.Base):
         self.assertEqual(fixing["kind"], "fixer-push")
         self.assertNotIn("escalate", fixing["action"])
         self.assertIn("reviewer gate then sends it for a ruling", fixing["action"])
+        # The operator sees why escalate, not the sweep (#1481 review: it was only a comment).
+        self.assertIn("only at a head it saw arrive", idle["action"])
+
+    def test_a_fixer_lock_on_an_old_head_is_no_live_fix(self):
+        # #1481 review: an old-head run cannot finish this head, so escalate is still the step.
+        stale = self.explain(False, held={"fixer": {"head": "b" * 40, "at": time.time()}})
+        self.assertEqual(stale["kind"], "operator")
+        self.assertIn("hermes dk escalate", stale["action"])
+        current = self.explain(False, held={"fixer": {"head": fg.HEAD, "at": time.time()}})
+        self.assertEqual(current["kind"], "fixer-push")
 
 
 class MaintainerRerequest(Dispute):

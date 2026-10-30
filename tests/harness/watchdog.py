@@ -898,6 +898,7 @@ def group_explain() -> None:
     check("  explain on that head: escalate sends it",
           "hermes dk escalate --loop widgets --pr 7" in out, True)
     check("  and no sweep is promised there", "next armed watchdog sweep raises" in out, False)
+    check("  and it says why the sweep will not", "only at a head it saw arrive" in out, True)
 
     without_adjudicator(loop_id="widgets-solo")
     rc, out = explain(loop="widgets-solo")
