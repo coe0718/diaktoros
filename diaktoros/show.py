@@ -171,8 +171,6 @@ def _rows(loop: dict) -> list[_Row]:
         if (key in ("fix_ci", "fixer_scope_lock") and loop[key]
                 and not config.unattended_fixer_push_enabled(loop)):
             rows[-1].note = f"on, but inert: needs unattended fixer pushes ({enable})"
-    if loop["fix_ci"] and not config.unattended_fixer_push_enabled(loop):
-        rows[-1].note = f"on, but inert: needs unattended fixer pushes ({enable})"
     app_in = config.app_ingress(loop)
     schema("ingress", ("ingress",), loop.get("ingress") or "repo-hooks",
            note=(f"events arrive through {loop.get('ingress_app')}'s webhook (route "

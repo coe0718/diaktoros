@@ -97,7 +97,7 @@
     "diaktoros/selftest.py::check_bwrap": 148,
     "diaktoros/selftest.py::check_identities": 101,
     "diaktoros/selftest.py::check_runtime": 107,
-    "diaktoros/show.py::_rows": 318,
+    "diaktoros/show.py::_rows": 315,
     "diaktoros/stats.py::finding_outcomes": 87,
     "diaktoros/stats.py::fix_outcomes": 92,
     "diaktoros/stats.py::report_text": 147,
