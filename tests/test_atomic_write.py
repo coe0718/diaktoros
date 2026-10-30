@@ -9,6 +9,7 @@ rotation, a cache directory swap) are named, function by function, in ``DIFFEREN
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import ast
+from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -22,17 +23,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diaktoros import util  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-# The functions that publish by rename on their own, each for a reason the helper does not cover.
-# A function, not its file: another rename in the same file is not excused (#1473 review).
+# The renames that publish on their own, each for a reason the helper does not cover: the exact
+# operations, counted, in a function named by its qualified name. Another rename in the same file,
+# in the same function or in a second function of that name is not excused (#1473 review).
 DIFFERENT = {
-    "diaktoros/util.py::atomic_write": "the helper itself",
-    "diaktoros/routes.py::_write_registry": "RegistryDurabilityError: published, directory unsynced",
-    "diaktoros/backup.py::_put": "a restore streams a member to its target",
-    "diaktoros/migrate.py::move_state_dir": "renames a loop's state directory; nothing is written",
-    "diaktoros/migrate.py::_move_ledger_file": "renames a ledger file; nothing is written",
-    "diaktoros/migrate.py::files_step": "renames a loop's files; nothing is written",
-    "diaktoros/run_supervisor/workers.py::_worker_log": "rotates a worker log",
-    "diaktoros/deps.py::prefetch_rust": "retires and restores a dependency-cache directory",
+    "diaktoros/util.py::atomic_write": (
+        "the helper itself", {"tempfile.mkstemp": 1, "os.replace": 1}),
+    "diaktoros/routes.py::_write_registry": (
+        "RegistryDurabilityError: published, directory unsynced",
+        {"tempfile.mkstemp": 1, "os.replace": 1}),
+    "diaktoros/backup.py::_put": ("a restore streams a member to its target", {"os.replace": 1}),
+    "diaktoros/migrate.py::move_state_dir": (
+        "renames a loop's state directory; nothing is written", {"os.rename": 1}),
+    "diaktoros/migrate.py::_move_ledger_file": (
+        "renames a ledger file and its sidecar; nothing is written", {"os.rename": 2}),
+    "diaktoros/migrate.py::files_step": ("renames a loop's files; nothing is written",
+                                         {"os.rename": 1}),
+    "diaktoros/run_supervisor/workers.py::WorkerLifecycle._worker_log": (
+        "rotates a worker log", {"os.replace": 1}),
+    "diaktoros/deps.py::prefetch_rust": ("retires and restores a dependency-cache directory",
+                                         {"cache.rename": 1, "retired.rename": 1}),
 }
 # The writers that publish through the helper; a writer that stops calling it fails here.
 CALLERS = {
@@ -40,8 +50,8 @@ CALLERS = {
     "diaktoros/cli/common.py::_restore_config_locked", "diaktoros/gate_decisions.py::record",
     "diaktoros/gate_shims.py::_write", "diaktoros/gate_shims.py::heal_watchdog_shim",
     "diaktoros/observer.py::_save", "diaktoros/pacing.py::_save", "diaktoros/route_intent.py::_write",
-    "diaktoros/run_supervisor/__init__.py::__init__", "diaktoros/runtime_detect.py::write",
-    "diaktoros/state.py::_atomic_publish", "diaktoros/state.py::_transition_write",
+    "diaktoros/run_supervisor/__init__.py::Supervisor.__init__", "diaktoros/runtime_detect.py::write",
+    "diaktoros/state.py::_atomic_publish", "diaktoros/state.py::LoopState._transition_write",
 }
 BY_HAND = {"os.replace", "os.rename", "tempfile.mkstemp", "tempfile.NamedTemporaryFile"}
 
@@ -51,30 +61,40 @@ def sources(root: Path) -> list[Path]:
 
 
 def calls(source: str):
-    """Each call in ``source`` as ``(function it is in, line, call node)``."""
+    """Each call in ``source`` as ``(qualified name of its function, line, call node)``."""
     found = []
 
-    def visit(node, func):
+    def visit(node, scope):
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute | ast.Name):
-                found.append((func, child.lineno, child))
-            inner = isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef)
-            visit(child, child.name if inner else func)
+                found.append((scope, child.lineno, child))
+            inner = isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+            visit(child, f"{scope}.{child.name}".lstrip(".") if inner else scope)
 
-    visit(ast.parse(source), None)
+    visit(ast.parse(source), "")
     return found
 
 
-def by_hand(rel: str, source: str) -> list[str]:
-    """The rename-publishes in ``source`` outside the functions ``DIFFERENT`` excuses."""
-    out = []
-    for func, line, node in calls(source):
+def renames(source: str) -> dict[str, Counter]:
+    """Each function's rename-publish operations, counted, by qualified name."""
+    found = {}
+    for func, _, node in calls(source):
         named = ast.unparse(node.func)
         # Path.replace / Path.rename onto another path (str.replace takes two args).
         path_move = isinstance(node.func, ast.Attribute) and node.func.attr in ("replace", "rename") \
             and len(node.args) == 1
-        if (named in BY_HAND or path_move) and f"{rel}::{func}" not in DIFFERENT:
-            out.append(f"{rel}:{line} {named} in {func}")
+        if named in BY_HAND or path_move:
+            found.setdefault(func, Counter())[named] += 1
+    return found
+
+
+def by_hand(rel: str, source: str) -> list[str]:
+    """The rename-publishes in ``source`` beyond the operations ``DIFFERENT`` excuses."""
+    out = []
+    for func, ops in renames(source).items():
+        excused = Counter(DIFFERENT.get(f"{rel}::{func}", ("", {}))[1])
+        out += [f"{rel} {named} ×{extra} in {func or '<module>'}"
+                for named, extra in (ops - excused).items()]
     return out
 
 
@@ -140,26 +160,34 @@ class OneHome(unittest.TestCase):
             with self.subTest(rel):
                 self.assertEqual(by_hand(rel, path.read_text()), [])
 
-    def test_an_excused_file_excuses_only_its_function_and_nested_scripts_are_scanned(self):
-        # #1473 review: an exception file passed any new rename, and scripts/ was not recursed.
-        routes = (ROOT / "diaktoros/routes.py").read_text()
-        rogue = "\n\ndef rogue(a, b):\n    os.replace(a, b)\n"
-        self.assertEqual(len(by_hand("diaktoros/routes.py", routes + rogue)), 1)
+    def test_an_exception_excuses_its_operations_only_and_nested_scripts_are_scanned(self):
+        # #1473 review: an excused file, then an excused function, passed any further rename.
+        rel, rogue = "diaktoros/routes.py", "os.replace(a, b)"
+        routes = (ROOT / rel).read_text()
+        func = next(node for node in ast.walk(ast.parse(routes))
+                    if isinstance(node, ast.FunctionDef) and node.name == "_write_registry")
+        lines = routes.splitlines(keepends=True)
+        first = func.body[0]
+        inside = "".join(lines[:first.lineno - 1]) + " " * first.col_offset + rogue + "\n" \
+            + "".join(lines[first.lineno - 1:])
+        for case, source in (("another function", f"{routes}\n\ndef other(a, b):\n    {rogue}\n"),
+                             ("the excused function", inside),
+                             ("a second function of its name",
+                              f"{routes}\n\ndef _write_registry(a, b):\n    {rogue}\n")):
+            with self.subTest(case):
+                self.assertEqual(len(by_hand(rel, source)), 1, by_hand(rel, source))
         with tempfile.TemporaryDirectory() as temp:
             nested = Path(temp) / "scripts" / "nested" / "rogue.py"
             nested.parent.mkdir(parents=True)
             nested.write_text(rogue)
             self.assertEqual(sources(Path(temp)), [nested])
 
-    def test_every_exception_still_renames_in_its_function(self):
-        for key, why in DIFFERENT.items():
+    def test_every_exception_is_exactly_the_operations_its_function_has(self):
+        for key, (why, ops) in DIFFERENT.items():
             rel, func = key.split("::")
             with self.subTest(key):
                 self.assertTrue(why)
-                names = {ast.unparse(node.func) for f, _, node in calls((ROOT / rel).read_text())
-                         if f == func}
-                self.assertTrue(names & BY_HAND or any(n.endswith((".replace", ".rename"))
-                                                       for n in names), names)
+                self.assertEqual(renames((ROOT / rel).read_text()).get(func), Counter(ops))
 
 
 class Callers(unittest.TestCase):
