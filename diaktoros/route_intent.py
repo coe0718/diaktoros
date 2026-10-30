@@ -32,9 +32,9 @@ import fcntl
 import json
 import os
 import pathlib
-import tempfile
 
 from . import config, prompts, routes
+from .util import atomic_write
 
 INTENT_FILE = "route-intent.json"
 VERSION = 1
@@ -138,26 +138,8 @@ def load(loop: dict) -> dict | None:
 
 def _write(target: pathlib.Path, loop: dict, entries: dict) -> None:
     body = json.dumps({"version": VERSION, "loop": loop.get("id"), "repo": loop.get("repo"),
-                       "routes": entries}, indent=2, sort_keys=True).encode()
-    fd, temp = tempfile.mkstemp(prefix=f".{INTENT_FILE}.", dir=target.parent)
-    try:
-        try:
-            os.fchmod(fd, 0o600)
-            view = memoryview(body)
-            while view:
-                view = view[os.write(fd, view):]
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.replace(temp, target)
-        directory = os.open(target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    finally:
-        if os.path.exists(temp):
-            os.unlink(temp)
+                       "routes": entries}, indent=2, sort_keys=True)
+    atomic_write(target, body)
 
 
 def record(loop: dict, entries: dict, *, replace: bool = False) -> None:

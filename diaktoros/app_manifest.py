@@ -164,11 +164,9 @@ def load_session(key_dir: Path) -> dict:
 
 def save_session(key_dir: Path, session: dict) -> None:
     """What was made, per run (``run_key``), without a key or secret: a rerun skips these."""
+    from .util import atomic_write
     key_dir.mkdir(parents=True, exist_ok=True)
-    tmp = key_dir / (SESSION + ".tmp")
-    tmp.write_text(json.dumps(session, indent=2, sort_keys=True))
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, key_dir / SESSION)
+    atomic_write(key_dir / SESSION, json.dumps(session, indent=2, sort_keys=True))
 
 
 class _Round:

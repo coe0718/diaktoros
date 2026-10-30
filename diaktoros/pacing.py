@@ -23,7 +23,7 @@ import math
 import re
 import time
 
-from . import config, hostdirs
+from . import config, hostdirs, util
 
 # No provider's window is longer than a week; a reset beyond that is not believed.
 MAX_WAIT_S = 7 * 24 * 3600
@@ -221,9 +221,7 @@ def _load(file) -> dict:
 
 
 def _save(file, data: dict) -> None:
-    tmp = file.with_name(file.name + ".tmp")
-    tmp.write_text(json.dumps(data, sort_keys=True))
-    tmp.replace(file)
+    util.atomic_write(file, json.dumps(data, sort_keys=True))
 
 
 def hold(key: str, until: float, reason: str) -> None:

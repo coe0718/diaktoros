@@ -41,13 +41,12 @@ import json
 import os
 import pathlib
 import re
-import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 from . import config, gh, hostdirs, prompts, route_intent, routes, state
-from .util import log, now_iso
+from .util import atomic_write, log, now_iso
 
 # The transitions an observer may subscribe to. These names are the loop's vocabulary for what
 # happened; the same strings are what `--observer-events` accepts and what the ledger stores.
@@ -285,37 +284,11 @@ def unsettled(st) -> int:
 
 def _save(path: pathlib.Path, data: dict) -> None:
     """Durably publish a claim; callers catch failures without blocking their seat."""
-    temp = None
     try:
-        body = json.dumps(data, indent=2).encode()
-        fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-        try:
-            os.fchmod(fd, 0o600)
-            view = memoryview(body)
-            while view:
-                written = os.write(fd, view)
-                if written <= 0:
-                    raise OSError("short write to the observer ledger")
-                view = view[written:]
-        finally:
-            os.fsync(fd)
-            os.close(fd)
-        os.replace(temp, path)
-        temp = None
-        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        atomic_write(path, json.dumps(data, indent=2))
     except Exception as exc:
         log(f"observer ledger write failed ({path.name}): {exc}")
         raise
-    finally:
-        if temp and os.path.exists(temp):
-            try:
-                os.unlink(temp)
-            except OSError:
-                pass
 
 
 def _prune(data: dict, now: float) -> None:

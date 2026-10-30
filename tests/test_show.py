@@ -110,6 +110,58 @@ class ShowTests(_Base):
         self.assertEqual(rows["ci_fix_cap"]["source"], "default")
         self.assertEqual(rows["reviewer_login"]["source"], "loop file")
 
+    def test_every_fixer_push_hint_is_the_command_that_runs(self):
+        # Duplication audit (B3): the hint said `hermes dk fixer-push --enable`, which the CLI
+        # refuses (no --loop, no --acknowledge-pr-race).
+        self.install()
+        path = self.loop_file()
+        data = json.loads(path.read_text())
+        data.update({"fix_ci": True, "fixer_scope_lock": True, "unattended_fixer_push": False})
+        path.write_text(json.dumps(data))
+        rows = {r["name"]: r for r in json.loads(
+            self.run_cli(["show", "--loop", "widgets", "--json"])[1])["settings"]}
+        enable = "hermes dk fixer-push --loop widgets --enable --acknowledge-pr-race"
+        self.assertEqual(config.fixer_push_enable_command("widgets"), enable)
+        for name in ("unattended_fixer_push", "fix_ci", "fixer_scope_lock"):
+            with self.subTest(name):
+                self.assertIn(f"({enable})", rows[name]["note"])
+        # A second copy of the fix_ci note, written after the loop to whichever row was last,
+        # called an off fixer_scope_lock "on, but inert" (#1477).
+        data["fixer_scope_lock"] = False
+        path.write_text(json.dumps(data))
+        rows = {r["name"]: r for r in json.loads(
+            self.run_cli(["show", "--loop", "widgets", "--json"])[1])["settings"]}
+        self.assertIn("inert", rows["fix_ci"]["note"])
+        self.assertEqual(rows["fixer_scope_lock"]["state"], "off")
+        self.assertNotIn("inert", rows["fixer_scope_lock"]["note"])
+
+    @staticmethod
+    def hand_spelled(source: str) -> list[int]:
+        """Lines of strings in ``source`` naming ``dk fixer-push``, docstrings aside: a hint the
+        operator would type, which must come from ``config.fixer_push_enable_command``."""
+        import ast
+        tree = ast.parse(source)
+        docs = {id(node.body[0].value) for node in ast.walk(tree)
+                if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+                and node.body and isinstance(node.body[0], ast.Expr)}
+        return [node.lineno for node in ast.walk(tree)
+                if isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and id(node) not in docs and "dk fixer-push" in node.value]
+
+    def test_no_hint_spells_the_fixer_push_command_by_hand(self):
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[1]
+        home = root / "diaktoros" / "config" / "__init__.py"
+        for path in [*(root / "diaktoros").rglob("*.py"), *(root / "scripts").rglob("*.py")]:
+            if path != home:
+                with self.subTest(path.relative_to(root).as_posix()):
+                    self.assertEqual(self.hand_spelled(path.read_text()), [])
+        # #1477 review: the bare command was one of the broken hints; a docstring is not a hint.
+        for hint in ('"(hermes dk fixer-push)"', 'f"run `hermes dk fixer-push --loop {x} --enable`"',
+                     '"hermes dk " "fixer-push --enable"'):
+            with self.subTest(hint):
+                self.assertEqual(self.hand_spelled(f'"""``hermes dk fixer-push``."""\nnote = {hint}\n'), [2])
+
     def test_a_loop_file_value_wins_and_text_groups_on_first(self):
         self.install()
         path = self.loop_file()

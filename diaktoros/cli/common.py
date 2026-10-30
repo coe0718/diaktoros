@@ -8,11 +8,9 @@ here reaches every caller.
 from __future__ import annotations
 
 import json
-import os
 import pathlib
 import shlex
 import shutil
-import tempfile
 import time
 
 from .. import (
@@ -690,15 +688,7 @@ def _write_config_locked(loop: dict, *, policy_change: bool = False) -> pathlib.
         loop = {**loop, 'unattended_fixer_push': current['unattended_fixer_push']}
     payload = json.dumps({k: v for k, v in loop.items() if v not in ({}, [], "")},
                          indent=2, sort_keys=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{loop['id']}.", suffix=".tmp", dir=directory)
-    try:
-        with os.fdopen(fd, "w") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        pathlib.Path(temporary).unlink(missing_ok=True)
+    util.atomic_write(path, payload)
     return path
 
 
@@ -719,15 +709,7 @@ def _restore_config(path: pathlib.Path, data: bytes) -> None:
 
 
 def _restore_config_locked(path: pathlib.Path, data: bytes) -> None:
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.stem}.", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        pathlib.Path(temporary).unlink(missing_ok=True)
+    util.atomic_write(path, data)
 
 
 def _parallel_lines(loop: dict) -> list[str]:
