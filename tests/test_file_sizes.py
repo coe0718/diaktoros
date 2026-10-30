@@ -33,15 +33,15 @@ class Rules(unittest.TestCase):
                                     {"big.py::f": 120, "new.py::g": fs.FUNCTION_MAX}), [])
 
     def test_a_file_over_the_ceiling_may_not_grow_and_one_under_may_grow_to_it(self):
-        self.assertIn("big.py: 2001 lines", self.check({"big.py": 2001, "mid.py": 900},
+        self.assertIn("big.py: size 2001", self.check({"big.py": 2001, "mid.py": 900},
                                                         {"big.py::f": 120})[0])
         self.assertEqual(self.check({"big.py": 2000, "mid.py": fs.FILE_CEILING},
                                     {"big.py::f": 120}), [])
-        self.assertIn("mid.py: 1501 lines", self.check({"big.py": 2000, "mid.py": 1501},
+        self.assertIn("mid.py: size 1501", self.check({"big.py": 2000, "mid.py": 1501},
                                                         {"big.py::f": 120})[0])
 
     def test_a_baselined_function_may_not_grow(self):
-        self.assertIn("big.py::f: 121 lines, grown past its baseline 120",
+        self.assertIn("big.py::f: size 121, grown past its baseline 120",
                       self.check({"big.py": 2000, "mid.py": 900}, {"big.py::f": 121})[0])
 
     def test_a_shrink_asks_for_the_baseline_to_be_lowered(self):
@@ -91,11 +91,31 @@ class Measuring(unittest.TestCase):
                     def method(self):
                         return 2
                 '''))
+            text = (root / "diaktoros" / "m.py").read_text()
             files, functions = fs.measure(root)
-        self.assertEqual(files, {"diaktoros/m.py": 16})
-        self.assertEqual(functions, {"diaktoros/m.py::top": 4, "diaktoros/m.py::top.inner": 2,
-                                     "diaktoros/m.py::C.method": 2,
-                                     "diaktoros/m.py::C.method#2": 2})
+        self.assertEqual(files, {"diaktoros/m.py": fs.size(text)})
+        self.assertEqual(set(functions), {"diaktoros/m.py::top", "diaktoros/m.py::top.inner",
+                                          "diaktoros/m.py::C.method", "diaktoros/m.py::C.method#2"})
+        # From the def line on: the decorator is not part of the function's size.
+        self.assertEqual(functions["diaktoros/m.py::top"],
+                         fs.size("def top():\n    def inner():\n        return 1\n    return inner"))
+
+    def test_layout_never_moves_a_size_and_text_always_does(self):
+        # The reason the ratchet measures characters (#1349): a fix turn once joined lines to
+        # pass it. Joined, wrapped or re-indented, the same code is the same size.
+        wrapped = ('init.add_argument("--hooks", action="store_true",\n'
+                   '                  help="create the GitHub hooks too, paused until arm")\n')
+        joined = 'init.add_argument("--hooks", action="store_true", help="create the GitHub hooks too, paused until arm")\n'
+        indented = "    " + wrapped.replace("\n ", "\n     ")
+        self.assertEqual(fs.size(wrapped), fs.size(joined))
+        self.assertEqual(fs.size(wrapped), fs.size(indented))
+        self.assertEqual(fs.size(wrapped), fs.size(wrapped + "\n\n\n"))
+        # A comment is text an agent reads: it counts.
+        self.assertGreater(fs.size(wrapped + "# " + "why " * 20 + "\n"), fs.size(wrapped))
+        # Line equivalents round up: CHARS_PER_LINE characters are one, one more is two.
+        self.assertEqual(fs.size("x" * fs.CHARS_PER_LINE), 1)
+        self.assertEqual(fs.size("x" * (fs.CHARS_PER_LINE + 1)), 2)
+        self.assertEqual(fs.size(" \n\t "), 0)
 
     def test_tests_are_not_scanned(self):
         self.assertFalse(any(path.parts[-2] == "tests" for path in fs.code_files()))
