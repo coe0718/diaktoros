@@ -209,6 +209,12 @@ def _rulings_at(con, repo: str, number: int, head: str, turn_key: str | None = N
                            "ORDER BY created DESC", args).fetchall()
 
 
+def _latest_shadow_review(con, repo: str, number: int, head: str):
+    """The newest shadow review of a head, as ``(verdict, created, run_id)``, or None."""
+    return con.execute("SELECT verdict, created, run_id FROM shadow_reviews WHERE repo=? AND pr=? "
+                       "AND head=? ORDER BY created DESC LIMIT 1", (repo, number, head)).fetchone()
+
+
 def ruling_answers(ruling, review_run: str, review_created: float) -> bool:
     """Whether a ruling (a ``_rulings_at`` row) answers this shadow review (#1112): the one its
     prompt showed, by run id. A ruling from before that was recorded (NULL) falls back to the
@@ -272,10 +278,7 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
             return "pending", f"the run ledger is unreadable, so the shadow review at {short} is unknown", ""
         try:
             try:
-                review = con.execute("SELECT verdict, created, run_id FROM shadow_reviews "
-                                     "WHERE repo=? AND pr=? AND head=? "
-                                     "ORDER BY created DESC LIMIT 1",
-                                     (loop["repo"], number, head)).fetchone()
+                review = _latest_shadow_review(con, loop["repo"], number, head)
             except sqlite3.OperationalError:
                 review = None              # a ledger from before shadow reviews: none recorded
             run = con.execute("SELECT state, created FROM runs WHERE repo=? AND pr=? AND head=? "
@@ -362,9 +365,7 @@ def upheld_shadow_ruling(loop: dict, number: int, head: str, db=None) -> float |
     if con is None:
         return None
     try:
-        review = con.execute("SELECT verdict, created, run_id FROM shadow_reviews WHERE repo=? "
-                             "AND pr=? AND head=? ORDER BY created DESC LIMIT 1",
-                             (loop["repo"], number, head)).fetchone()
+        review = _latest_shadow_review(con, loop["repo"], number, head)
         if review is None or str(review[0]) != "REQUEST_CHANGES":
             return None
         ruling = next((r for r in _rulings_at(con, loop["repo"], number, head)
@@ -427,9 +428,7 @@ def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) 
         if con is None:
             return "ledger unreadable"
         try:
-            row = con.execute("SELECT verdict, created, run_id FROM shadow_reviews WHERE repo=? "
-                              "AND pr=? AND head=? ORDER BY created DESC LIMIT 1",
-                              (loop["repo"], number, head)).fetchone()
+            row = _latest_shadow_review(con, loop["repo"], number, head)
             # The ruling on this marker's round, if it is in.
             ruled = next(iter(_rulings_at(con, loop["repo"], number, head,
                                           f"breach:{marker.get('rounds')}")), None) if mine else None
@@ -1226,10 +1225,10 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             reviewed = reviewed_at_head(reviews, loop, head)
             head_states = sorted({gh.review_state(r) for r in reviews_at_head(reviews, loop, head)})
 
-    stale_line = ""
+    stale_line, watch = "", st.watch()
     if approved and head:
         from . import stale_approval
-        found = stale_approval.record(st.watch(), number)
+        found = stale_approval.record(watch, number)
         if found and found.get("head") == head:
             stale_line = stale_approval.line(found)
             blockers.append(stale_line)
@@ -1261,7 +1260,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
 
     # -- local state: who holds it, what waits, what is marked -------------------------------
     local = _explain_state(loop, st, key, number, head, now)
-    pending_stack = (st.watch().get("stacked_wait") or {}).get(str(number))
+    pending_stack = (watch.get("stacked_wait") or {}).get(str(number))
     if stacked and isinstance(pending_stack, dict):
         if (pending_stack.get("head") == head and pending_stack.get("base") == base and
                 pending_stack.get("base_sha") == ((pr or {}).get("base") or {}).get("sha") and
@@ -1548,9 +1547,12 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             kind = "adjudication"
             action = _adjudication_next(loop, head)
         else:
-            kind = "retry"
-            action = (f"the next armed watchdog sweep raises the missing breach marker at head "
-                      f"{short} and hands it to adjudication (#575) — no ruling is underway yet")
+            # The sweep raises it (#575) only at a head it saw arrive: one open since the loop was
+            # armed is left alone until it changes (#1481 review), so the step that always works.
+            kind = "operator"
+            action = (f"`hermes dk escalate --loop {loop['id']} --pr {number}` sends head {short} "
+                      "for a ruling (the watchdog's sweep raises the missing marker itself only at "
+                      "a head it saw arrive) — no ruling is underway yet")
     elif push_off_held:
         kind = "operator"
         action = (f"operator decision: unattended fixer pushes are off for this loop, so the "
