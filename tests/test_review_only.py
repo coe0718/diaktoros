@@ -59,6 +59,22 @@ class Setting(unittest.TestCase):
             with self.subTest(value=bad), self.assertRaises(config.ConfigError):
                 config.normalize(raw(review_only=bad))
 
+    def test_a_listed_pr_is_the_loops_only_with_every_part_in_place(self):
+        loop = config.normalize(raw(review_only=[OWNER]))
+        good = {"number": 7, "draft": False, "user": {"login": "Fix"},
+                "base": {"ref": loop["base"]}, "head": {"sha": HEAD}}
+        self.assertEqual(config.loop_pr(loop, good), (7, HEAD, "fix"))
+        self.assertEqual(config.loop_pr(loop, {**good, "user": {"login": OWNER}}),
+                         (7, HEAD, OWNER))                     # a review-only author's too
+        for name, pr in (("not a dict", ["pr"]), ("draft", {**good, "draft": True}),
+                         ("stranger", {**good, "user": {"login": "someone"}}),
+                         ("no author", {**good, "user": None}),
+                         ("other base", {**good, "base": {"ref": "stacked"}}),
+                         ("no number", {**good, "number": None}),
+                         ("no head", {**good, "head": {}})):
+            with self.subTest(name):
+                self.assertIsNone(config.loop_pr(loop, pr))
+
     def test_never_also_a_fixer_or_a_reviewer(self):
         for name in ("fix", "rev", "FIX"):
             with self.subTest(name=name), self.assertRaises(config.ConfigError) as caught:

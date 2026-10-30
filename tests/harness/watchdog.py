@@ -242,8 +242,10 @@ def group_watchdog() -> None:
     state_file("watchdog.json").write_text(json.dumps({"armed_since": time.time() - 86400}))
     out, _, _ = run("watchdog.py", None, "--loop", "widgets")
     check("stall: verdict with no fix", "fixer never pushed" in out, True)
-    # #563: an unreadable marker time is not "just now": the parked stall is still raised.
-    reset(prs={"7": pr(7)})
+    # #563: an unreadable marker time is not "just now": the parked stall is still raised. The
+    # cap is spent (three verdicts at earlier heads): a marker below it parks nothing (#1442).
+    spent_earlier = [review(REVIEWER, head=h * 40, rid=n) for n, h in ((1, "c"), (2, "d"), (3, "e"))]
+    reset(prs={"7": {**pr(7), "reviews": spent_earlier}})
     state_file("watchdog.json").write_text(json.dumps({"armed_since": time.time() - 86400}))
     state_file("breach.json").write_text(json.dumps(
         {f"{REPO}#7": {"pr": 7, "head": HEAD_A, "rounds": 3, "cap": 3, "at": "garbage",
@@ -253,7 +255,7 @@ def group_watchdog() -> None:
           "parked awaiting adjudication since an unreadable time" in out, True)
 
     # shape 3: parked awaiting adjudication
-    reset(prs={"7": pr(7)})
+    reset(prs={"7": {**pr(7), "reviews": spent_earlier}})
     state_file("watchdog.json").write_text(json.dumps({"armed_since": time.time() - 86400}))
     state_file("breach.json").write_text(json.dumps(
         {f"{REPO}#7": {"pr": 7, "head": HEAD_A, "rounds": 3, "cap": 3, "at": "2026-01-01T00:00:00Z",

@@ -538,6 +538,19 @@ def reviewed_authors(loop: dict) -> set[str]:
     return set(loop.get("fixers") or []) | review_only(loop)
 
 
+def loop_pr(loop: dict, pr) -> tuple[int, str, str] | None:
+    """A listed PR's ``(number, head, author)`` when it is the loop's to serve: a reviewed
+    author's, not a draft, on the loop's base, with a number and a head. None otherwise."""
+    if not isinstance(pr, dict) or pr.get("draft"):
+        return None
+    author = ((pr.get("user") or {}).get("login") or "").lower()
+    number, head = pr.get("number"), (pr.get("head") or {}).get("sha") or ""
+    if (author not in reviewed_authors(loop) or (pr.get("base") or {}).get("ref") != loop["base"]
+            or not number or not head):
+        return None
+    return number, head, author
+
+
 def required_checks(loop: dict) -> list[str]:
     """The checks that gate an approval, the CI hold and the fixer hand-off; [] = all of them."""
     names = loop.get("required_checks")
