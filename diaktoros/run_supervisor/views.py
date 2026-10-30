@@ -14,7 +14,7 @@ from pathlib import Path
 import sqlite3
 import time
 
-from .. import ledger, run_supervisor
+from .. import config, ledger, run_supervisor
 from . import claims
 
 
@@ -323,13 +323,12 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
         if row['seat'] == 'issue_fixer':
             return (f"no external write — issue fixes are off or no longer allowed: they need "
                     f"triage on, a fix label (`hermes dk triage --loop {loop_id} --fix-label "
-                    f"LABEL --maintainer LOGIN`) and unattended fixer pushes (`hermes dk "
-                    f"fixer-push --loop {loop_id} --enable --acknowledge-pr-race`); once they "
+                    f"LABEL --maintainer LOGIN`) and unattended fixer pushes "
+                    f"(`{config.fixer_push_enable_command(loop_id)}`); once they "
                     f"are on, re-admit it: `hermes dk retry --loop {loop_id} --pr "
                     f"{row['pr']} --seat issue_fixer` (a redelivered event never does)")
         return (f"no external write — if unattended fixer pushes are off, turn them on "
-                f"(`hermes dk fixer-push --loop {loop_id} --enable "
-                f"--acknowledge-pr-race`), then re-admit it: `hermes dk retry --loop "
+                f"(`{config.fixer_push_enable_command(loop_id)}`), then re-admit it: `hermes dk retry --loop "
                 f"{loop_id} --pr {row['pr']} --seat {row['seat']}` (an operator retry admits it "
                 f"under the policy then in force; a redelivered event never does)")
     if row['write'] is None:

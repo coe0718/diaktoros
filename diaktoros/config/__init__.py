@@ -276,8 +276,11 @@ def unattended_fixer_push_enabled(loop: dict) -> bool:
 FIXER_PUSH_HOLD = "fixer held: unattended fixer pushes are off for this loop"
 
 
-def fixer_push_enable_command(loop: dict) -> str:
-    return f"hermes dk fixer-push --loop {loop['id']} --enable --acknowledge-pr-race"
+def fixer_push_enable_command(loop: dict | str) -> str:
+    """The command that turns unattended fixer pushes on, for a loop or a loop id: the one
+    spelling every hint uses, since the CLI refuses it without ``--loop`` and the race flag."""
+    loop_id = loop if isinstance(loop, str) else loop['id']
+    return f"hermes dk fixer-push --loop {loop_id} --enable --acknowledge-pr-race"
 
 
 def fixer_push_hold_reason(loop: dict) -> str:

@@ -207,9 +207,7 @@ class RunIntake:
                                               f"{first['repo']} is unusable ({exc})")
                 if not policy_off and (loop is None
                                        or not config.unattended_fixer_push_enabled(loop)):
-                    command = (config.fixer_push_enable_command(loop) if loop else
-                               'hermes dk fixer-push --loop LOOP --enable '
-                               '--acknowledge-pr-race')
+                    command = config.fixer_push_enable_command(loop or "LOOP")
                     policy_off = (f"refused: unattended fixer pushes are off for "
                                   f"{first['repo']}, so a fixer turn could not publish; run "
                                   f"`{command}` first, then retry")

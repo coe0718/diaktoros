@@ -161,6 +161,7 @@ def _rows(loop: dict) -> list[_Row]:
                  f"which now covers other PRs only"
                  if config.review_only_daily(loop) else
                  "unset: review-only turns count against seats.reviewer.daily_turns"))
+    enable = config.fixer_push_enable_command(loop)
     for key, off in (
             ("review_only_update", "a conflicting review-only PR gets a notice, no merge push"),
             ("review_after_ci", "a review starts at once, with whatever CI has finished"),
@@ -169,9 +170,7 @@ def _rows(loop: dict) -> list[_Row]:
         schema(key, (key,), bool(loop[key]), on=bool(loop[key]), off=off)
         if (key in ("fix_ci", "fixer_scope_lock") and loop[key]
                 and not config.unattended_fixer_push_enabled(loop)):
-            rows[-1].note = "on, but inert: needs unattended fixer pushes (hermes dk fixer-push)"
-    if loop["fix_ci"] and not config.unattended_fixer_push_enabled(loop):
-        rows[-1].note = "on, but inert: needs unattended fixer pushes (hermes dk fixer-push)"
+            rows[-1].note = f"on, but inert: needs unattended fixer pushes ({enable})"
     app_in = config.app_ingress(loop)
     schema("ingress", ("ingress",), loop.get("ingress") or "repo-hooks",
            note=(f"events arrive through {loop.get('ingress_app')}'s webhook (route "
@@ -226,7 +225,7 @@ def _rows(loop: dict) -> list[_Row]:
           bool(loop["unattended_fixer_push"]),
           "per-repository consent to unattended fixer pushes; never inherited from the form",
           on=bool(loop["unattended_fixer_push"]),
-          off="a changes-requested verdict waits for you (hermes dk fixer-push --enable)")
+          off=f"a changes-requested verdict waits for you ({enable})")
     for seat in ("reviewer", "fixer", "adjudicator", "triage", "shadow"):
         for key in SEAT_FILE_KEYS:
             if seat == "shadow" and key in ("route", "profile", "login", "agent"):
