@@ -17,6 +17,41 @@ LOG_PREFIX = "[diaktoros]"
 LOG_PREFIXES = (LOG_PREFIX, "[review-loop]")
 
 
+def atomic_write(path, data: str | bytes, *, mode: int = 0o600, before_replace=None) -> None:
+    """Publish ``data`` to ``path`` whole or not at all, and durably before returning: a temp file
+    beside it (``mode`` from creation, never wider), fsync, ``before_replace()`` (a last check,
+    which may raise to publish nothing), ``os.replace``, then fsync of the directory, so the new
+    name survives a crash. The temp file never outlives a failure. The one home of the rule."""
+    import tempfile
+    path = Path(path)
+    view = memoryview(data.encode() if isinstance(data, str) else data)
+    fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        try:
+            os.fchmod(fd, mode)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OSError(f"short write to {path}")
+                view = view[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        if before_replace is not None:
+            before_replace()
+        os.replace(temp, path)
+        temp = None
+        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if temp is not None:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temp)
+
+
 def logged(lines) -> list[str]:
     """What each of ``lines`` the plugin logged says, without its prefix (either spelling)."""
     return [line.split("] ", 1)[1] for line in lines

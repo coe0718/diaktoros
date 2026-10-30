@@ -27,7 +27,6 @@ import json
 import math
 import os
 import pathlib
-import tempfile
 import threading
 import time
 import uuid
@@ -35,7 +34,7 @@ from collections.abc import Callable
 
 from . import config, hostdirs
 from .config import settings_form
-from .util import log, now_iso
+from .util import atomic_write, log, now_iso
 
 # Per-thread depth of the state lock we already hold, keyed by lock path. ``flock`` is tied to
 # the open file description, so a second ``open`` + ``flock`` in the same thread would deadlock
@@ -78,26 +77,10 @@ def _atomic_write(path: pathlib.Path, data) -> None:
 def _atomic_publish(path: pathlib.Path, text: str) -> None:
     """Publish ``text`` to ``path``: temp file, fsync, ``os.replace``, fsync of the directory.
 
-    The one place the module's durability rule lives; ``_save_queue`` and ``_prune_log`` call it
-    rather than repeating the dance, so neither can skip a step.
+    ``_save_queue`` and ``_prune_log`` call it rather than repeating the dance, so neither can
+    skip a step; the rule itself is ``util.atomic_write``'s.
     """
-    name = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=f".{path.stem}-",
-                                         delete=False) as file:
-            name = file.name
-            file.write(text)
-            file.flush()
-            os.fsync(file.fileno())
-        os.replace(name, path)
-        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    finally:
-        if name and os.path.exists(name):
-            os.unlink(name)
+    atomic_write(path, text)
 
 
 def _mark_live(entry, now: float, ttl: float) -> bool:
@@ -1371,21 +1354,7 @@ class LoopState:
             if entry is None:
                 return prior
             data[str(number)] = entry
-            fd, name = tempfile.mkstemp(dir=self.dir, prefix=".stack-transitions-")
-            try:
-                with os.fdopen(fd, "w") as out:
-                    json.dump(data, out)
-                    out.flush()
-                    os.fsync(out.fileno())
-                os.replace(name, self.transitions_file)
-                directory = os.open(self.dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-                try:
-                    os.fsync(directory)
-                finally:
-                    os.close(directory)
-            finally:
-                if os.path.exists(name):
-                    os.unlink(name)
+            atomic_write(self.transitions_file, json.dumps(data))
             return entry
 
     def associated_review(self, number: int, identity: str, review_id: int) -> bool:

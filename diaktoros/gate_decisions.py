@@ -13,7 +13,6 @@ import fcntl
 import json
 import os
 import sys
-import tempfile
 
 from . import config, util
 from .util import LOG_PREFIX
@@ -56,10 +55,7 @@ def record(loop: dict, gate: str, payload: dict, decision: str, reason: str) -> 
                 out.write(line)
             lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
             if len(lines) > KEEP:
-                handle, name = tempfile.mkstemp(prefix=".gate-decisions-", dir=directory)
-                with os.fdopen(handle, "w", encoding="utf-8") as out:
-                    out.writelines(lines[-KEEP:])
-                os.replace(name, path)
+                util.atomic_write(path, "".join(lines[-KEEP:]))
         finally:
             os.close(fd)
     except Exception as exc:  # noqa: BLE001 - best effort by design

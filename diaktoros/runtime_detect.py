@@ -29,6 +29,7 @@ import shutil
 import sys
 
 from . import config
+from .util import atomic_write
 
 HOST_KEYS = ("source", "venv", "runtime", "rust")
 # Keys of the runtime file that are not host paths, kept as they are when setup rewrites it.
@@ -292,13 +293,7 @@ def write(settings: dict) -> Path:
     """Write the runtime file private (0600) and atomically; return its path."""
     file = path()
     file.parent.mkdir(parents=True, exist_ok=True)
-    tmp = file.with_name(file.name + ".tmp")
-    tmp.unlink(missing_ok=True)
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w") as handle:
-        os.fchmod(handle.fileno(), 0o600)
-        handle.write(json.dumps(settings, indent=2, sort_keys=True) + "\n")
-    os.replace(tmp, file)
+    atomic_write(file, json.dumps(settings, indent=2, sort_keys=True) + "\n")
     return file
 
 
