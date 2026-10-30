@@ -6,7 +6,7 @@
     "diaktoros/cli/operations.py": 1096,
     "diaktoros/config/__init__.py": 1405,
     "diaktoros/desktop_api.py": 1055,
-    "diaktoros/doctor/__init__.py": 2725,
+    "diaktoros/doctor/__init__.py": 1939,
     "diaktoros/gate.py": 1891,
     "diaktoros/gate_failures.py": 1319,
     "diaktoros/inference_proxy.py": 1122,

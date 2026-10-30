@@ -54,6 +54,7 @@ class Flow(app_cli.Base):
 
     def test_doctor_reads_the_apps_webhook(self):
         from diaktoros import doctor
+        from diaktoros.doctor import hook_checks
         for change, status, words in (
                 ({}, doctor.VERIFIED, "posts to https://gateway.example/webhooks/dk-app-acme-reader"),
                 ({"url": "https://example.com/dk-spike"}, doctor.MISMATCH,
@@ -65,7 +66,7 @@ class Flow(app_cli.Base):
             with self.subTest(change=change):
                 saved = dict(self.webhook)
                 self.webhook.update(change)
-                check = doctor.check_app_webhook(self.loop(), offline=False)
+                check = hook_checks.check_app_webhook(self.loop(), offline=False)
                 self.webhook.clear()
                 self.webhook.update(saved)
                 self.assertEqual(check.status, status, check)
@@ -75,8 +76,9 @@ class Flow(app_cli.Base):
 
     def test_doctor_and_explain_carry_the_apps_lines(self):
         from diaktoros import doctor
+        from diaktoros.doctor import hook_checks
         with mock.patch.object(doctor.gh, "api", return_value=[]):
-            names = [c.name for c in doctor.check_hooks(self.loop(), offline=False)]
+            names = [c.name for c in hook_checks.check_hooks(self.loop(), offline=False)]
         self.assertEqual(names, ["hooks", "app-webhook"])
         rc, out = self.run_cli(["explain", "--loop", "widgets", "--pr", "7"])
         self.assertIn("armed — events arrive through acme-reader[bot]'s webhook", out)
@@ -178,6 +180,7 @@ class Flow(app_cli.Base):
 
     def test_doctor_names_a_leftover_repo_hook_to_a_seat_route(self):
         from diaktoros import doctor, route_intent
+        from diaktoros.doctor import hook_checks
         loop = self.loop()
         seat = route_intent.routes_of(loop)["reviewer"]
         other = {"id": 9, "config": {"url": "https://gateway.example/webhooks/someone-else"},
@@ -189,7 +192,7 @@ class Flow(app_cli.Base):
                                        ({"message": "Not Found"}, doctor.UNKNOWN, "not looked for")):
             with self.subTest(status=status), \
                     mock.patch.object(doctor.gh, "api", return_value=listing):
-                check = doctor.check_leftover_hooks(loop, offline=False)
+                check = hook_checks.check_leftover_hooks(loop, offline=False)
             self.assertEqual(check.status, status, check)
             self.assertIn(words, check.detail)
 
@@ -226,8 +229,9 @@ class Flow(app_cli.Base):
         self.assertNotEqual(rc, 0, out)
         self.assertIn("not armed: the App's route dk-app-acme-reader is not installed", out)
         from diaktoros import doctor
+        from diaktoros.doctor import hook_checks
         with mock.patch.object(doctor.gh, "api", return_value=[]):     # no hooks: still not green
-            check = doctor.check_leftover_hooks(self.loop(), offline=False)
+            check = hook_checks.check_leftover_hooks(self.loop(), offline=False)
         self.assertEqual(check.status, doctor.UNKNOWN, check)
         self.assertIn("that route is not installed", check.detail)
         rc, out = self.run_cli(["doctor", "--loop", "widgets", "--offline", "--repair"])

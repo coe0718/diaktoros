@@ -274,6 +274,7 @@ class ArmVerifyTests(unittest.TestCase):
 
     def test_a_route_binding_another_profile_is_the_wrong_agent_not_armed(self):
         from diaktoros import doctor
+        from diaktoros.doctor import route_checks
         self.write_registry({"widgets-review": "someone-else", "widgets-fix": "fixer"})
         fake = FakeGitHub(hooks(False))
         rc, out = self.arm(fake)
@@ -300,18 +301,18 @@ class ArmVerifyTests(unittest.TestCase):
         self.assertIn("hook 1 → paused (read back)", out)
         # doctor says the same thing about the same loop.
         from diaktoros import routes
-        check = doctor.check_route(config.load_id("widgets"), routes.all_routes(), "reviewer")
+        check = route_checks.check_route(config.load_id("widgets"), routes.all_routes(), "reviewer")
         self.assertEqual(check.status, doctor.MISMATCH)
         self.assertIn("the wake would run the wrong agent", check.detail)
 
     def test_the_registry_url_is_the_one_credited(self):
-        from diaktoros import doctor
+        from diaktoros.doctor import hook_checks
         loop = config.load_id("widgets")
-        self.assertEqual(doctor.seat_hook_url(loop, "widgets-review"),
+        self.assertEqual(hook_checks.seat_hook_url(loop, "widgets-review"),
                          f"{HOST}/p/reviewer/webhooks/widgets-review")
         self.write_registry({"widgets-review": "default", "widgets-fix": "fixer"})
         loop["seats"]["reviewer"]["profile"] = "default"
-        self.assertEqual(doctor.seat_hook_url(loop, "widgets-review"),
+        self.assertEqual(hook_checks.seat_hook_url(loop, "widgets-review"),
                          f"{HOST}/webhooks/widgets-review")
 
     def test_host_case_alone_is_the_same_url(self):
@@ -354,6 +355,7 @@ class ArmVerifyTests(unittest.TestCase):
         # only, so ".../widgets-review/" is a 404. Arming refuses it (and names why); pausing
         # still finds it as this install's hook and stops it; doctor calls it a MISMATCH.
         from diaktoros import doctor
+        from diaktoros.doctor import hook_checks
         slashed = hooks(False)
         slashed[1]["config"]["url"] = f"{HOST}/p/reviewer/webhooks/widgets-review/"
         for start in (False, True):
@@ -372,8 +374,8 @@ class ArmVerifyTests(unittest.TestCase):
         rc, out = self.arm(fake, pause=True)
         self.assertEqual(rc, 0, out)
         self.assertIn("hook 1 → paused (read back)", out)
-        check = doctor.check_hook(config.load_id("widgets"), [slashed[1]], "reviewer",
-                                  "widgets-review", f"{HOST}/p/reviewer/webhooks/widgets-review")
+        check = hook_checks.check_hook(config.load_id("widgets"), [slashed[1]], "reviewer",
+                                       "widgets-review", f"{HOST}/p/reviewer/webhooks/widgets-review")
         self.assertEqual(check.status, doctor.MISMATCH)
         self.assertIn("the gateway does not route it (404)", check.detail)
         self.assertIn("drop the trailing slash", check.fix)
@@ -385,6 +387,7 @@ class ArmVerifyTests(unittest.TestCase):
         # and exited 0 while `gate.hooks_read` correctly reported the seat unarmed. The hook must
         # be named (and arm must fail), the same way the trailing-slash spelling already is.
         from diaktoros import doctor
+        from diaktoros.doctor import hook_checks
         encoded = hooks(False)
         encoded[1]["config"]["url"] = f"{HOST}/p/reviewer/webhooks/widgets-review%2F"
         fake = FakeGitHub(encoded)
@@ -399,21 +402,22 @@ class ArmVerifyTests(unittest.TestCase):
         rc, out = self.arm(FakeGitHub(encoded), pause=True)
         self.assertIn("hook 1", out)
         # And doctor refuses it as a MISMATCH rather than reporting ABSENT.
-        check = doctor.check_hook(config.load_id("widgets"), [encoded[1]], "reviewer",
-                                  "widgets-review", f"{HOST}/p/reviewer/webhooks/widgets-review")
+        check = hook_checks.check_hook(config.load_id("widgets"), [encoded[1]], "reviewer",
+                                       "widgets-review", f"{HOST}/p/reviewer/webhooks/widgets-review")
         self.assertNotEqual(check.status, doctor.ABSENT,
                             "a %2F hook must be named, not reported as no hook at all")
 
     def test_a_query_string_is_the_same_route_url(self):
         # The gateway's router matches the path only, so "?x=1" is delivered like the bare URL.
         from diaktoros import doctor
+        from diaktoros.doctor import hook_checks
         listing = hooks(False)
         listing[1]["config"]["url"] = f"{HOST}/p/reviewer/webhooks/widgets-review?x=1"
         rc, out = self.arm(FakeGitHub(listing))
         self.assertEqual(rc, 0, out)
         self.assertIn("hook 1 → active (read back)", out)
-        check = doctor.check_hook(config.load_id("widgets"), [listing[1]], "reviewer",
-                                  "widgets-review", f"{HOST}/p/reviewer/webhooks/widgets-review")
+        check = hook_checks.check_hook(config.load_id("widgets"), [listing[1]], "reviewer",
+                                       "widgets-review", f"{HOST}/p/reviewer/webhooks/widgets-review")
         # Not a URL mismatch (later branches may still leave it unproven on delivery evidence).
         self.assertNotEqual(check.status, doctor.MISMATCH, check.detail)
         self.assertNotIn("another path", check.detail)
@@ -492,6 +496,7 @@ class ArmVerifyTests(unittest.TestCase):
 
     def test_doctor_names_the_actual_cause_of_a_mismatch(self):
         from diaktoros import doctor
+        from diaktoros.doctor import hook_checks
         loop = config.load_id("widgets")
         url = f"{HOST}/p/reviewer/webhooks/widgets-review"
         for posted, cause in ((f"{HOST}/p/someone-else/webhooks/widgets-review", "another profile"),
@@ -500,7 +505,7 @@ class ArmVerifyTests(unittest.TestCase):
                               (f"{HOST}/hooks/x/webhooks/widgets-review", "another path")):
             hook = {"id": 1, "active": True, "events": ["pull_request"],
                     "config": {"url": posted, "content_type": "json"}}
-            check = doctor.check_hook(loop, [hook], "reviewer", "widgets-review", url)
+            check = hook_checks.check_hook(loop, [hook], "reviewer", "widgets-review", url)
             self.assertEqual(check.status, doctor.MISMATCH, posted)
             self.assertIn(f"posts to {cause}", check.detail)
 

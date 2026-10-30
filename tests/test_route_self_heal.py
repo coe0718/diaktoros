@@ -21,6 +21,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import cli, doctor, prompts, route_intent, routes  # noqa: E402
+from diaktoros.doctor import route_checks  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
 HOST = "https://gateway.example"
@@ -225,7 +226,7 @@ class WatchdogAndDoctorTest(Fixture):
         before = self.subs.read_bytes()
         checks = [doctor.Check("route:widgets-review", doctor.VERIFIED, "rev"),
                   doctor.Check("route:widgets-fix", doctor.VERIFIED, "fix")]
-        out = doctor._intent_overlay(self.loop, data, checks)
+        out = route_checks._intent_overlay(self.loop, data, checks)
         self.assertEqual(out[0].status, doctor.MISMATCH)
         self.assertIn("secret", out[0].detail)
         self.assertIn("--repair", out[0].fix)

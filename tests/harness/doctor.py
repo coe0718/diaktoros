@@ -48,6 +48,7 @@ def pinned_host_memory():
 
 
 from diaktoros import doctor as _doctor_module  # the same object the harness namespace re-exports
+from diaktoros.doctor import hook_checks  # noqa: E402
 from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
 
 _doctor_module._host_memory = pinned_host_memory
@@ -1134,10 +1135,10 @@ def group_doctor() -> None:
     check("  and says to start it", "❌ gateway" in out
           and "hermes gateway status" in out, True)
 
-    reachable, detail = doctor.gateway_reachable("http://127.0.0.1:1")
+    reachable, detail = hook_checks.gateway_reachable("http://127.0.0.1:1")
     check("the probe itself refuses a dead port", reachable, False)
     check("  with the address it tried", "127.0.0.1:1" in detail, True)
-    reachable, detail = doctor.gateway_reachable(HOST)
+    reachable, detail = hook_checks.gateway_reachable(HOST)
     check("and accepts the live gateway", reachable, True)
 
     section("doctor — unknown is not absent")

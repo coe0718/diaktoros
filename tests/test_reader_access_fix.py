@@ -12,6 +12,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from diaktoros import config, doctor, gh, route_intent, routes, selftest  # noqa: E402
+from diaktoros.doctor import hook_checks  # noqa: E402
 
 PAT_READER = {"id": "w", "repo": "acme/w", "base": "main", "read_token": "reader",
               "tokens": {"reader": "/t"}, "apps": {}, "host": "https://gw.example"}
@@ -26,8 +27,8 @@ class FixLines(unittest.TestCase):
                 mock.patch.object(route_intent, "routes_of", return_value={"reviewer": "w-review"}), \
                 mock.patch.object(routes, "url_for", return_value="https://gw.example/p/x"), \
                 mock.patch.object(gh, "api", return_value=None):
-            [app] = doctor.check_hooks(APP_READER, False)
-            [pat] = doctor.check_hooks(PAT_READER, False)
+            [app] = hook_checks.check_hooks(APP_READER, False)
+            [pat] = hook_checks.check_hooks(PAT_READER, False)
         self.assertIn(APP_FIX, app.fix)
         self.assertNotIn("read:repo_hook", app.fix)
         self.assertIn("read:repo_hook", pat.fix)
@@ -39,7 +40,7 @@ class FixLines(unittest.TestCase):
                 mock.patch.object(route_intent, "routes_of", return_value={"reviewer": "w-review"}), \
                 mock.patch.object(routes, "url_for", return_value="https://gw.example/p/x"), \
                 mock.patch.object(gh, "api", return_value=None):
-            [app] = doctor.check_hooks(APP_READER, False)
+            [app] = hook_checks.check_hooks(APP_READER, False)
         self.assertNotIn("read:repo_hook", app.detail)
         self.assertIn("Webhooks: Read", app.detail)              # the App's own need, named
         unread = gh.Response(None, "HTTP 403", 403, {})
@@ -50,8 +51,8 @@ class FixLines(unittest.TestCase):
 
     def test_doctor_hook_deliveries(self):
         with mock.patch.object(gh, "fetch", return_value=(None, "HTTP 403")):
-            app = doctor.check_deliveries(APP_READER, 5, "w-review")
-            pat = doctor.check_deliveries(PAT_READER, 5, "w-review")
+            app = hook_checks.check_deliveries(APP_READER, 5, "w-review")
+            pat = hook_checks.check_deliveries(PAT_READER, 5, "w-review")
         self.assertIn(APP_FIX, app.fix)
         self.assertIn("read:repo_hook", pat.fix)
 

@@ -20,8 +20,9 @@ from unittest import mock
 
 TESTS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS.parent))
-from diaktoros import (broker, cli, config, deps, doctor, gh, isolation, route_intent,  # noqa: E402
+from diaktoros import (broker, cli, config, deps, gh, isolation, route_intent,  # noqa: E402
                          routes, safe_push, selftest, state, trusted_fetch)
+from diaktoros.doctor import hook_checks  # noqa: E402
 from diaktoros.config import host_guards  # noqa: E402
 from diaktoros.cli import install as cli_install  # noqa: E402
 from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
@@ -790,9 +791,9 @@ class NoRealGitHub(unittest.TestCase):
         for host in ("https://gateway.example.invalid", "gateway.example.invalid"):
             with mock.patch("socket.create_connection") as connect:
                 with self.assertRaises(host_guards.RealNetworkError):
-                    doctor.gateway_reachable(host)
+                    hook_checks.gateway_reachable(host)
             connect.assert_not_called()
-        self.assertFalse(doctor.gateway_reachable("http://127.0.0.1:1")[0])
+        self.assertFalse(hook_checks.gateway_reachable("http://127.0.0.1:1")[0])
 
     def test_loopback_fakes_keep_working(self):
         for url in ("http://127.0.0.1:8080/x", "http://localhost/x", "http://[::1]:9/x",

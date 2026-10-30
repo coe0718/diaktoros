@@ -208,20 +208,23 @@ class Authorship(fg.Base):
         self.assertIn("authorship", names)
 
     def check_loop(self):
-        # Every other check is stubbed out: this asks only whether ``check_loop`` calls ours.
-        stubs = [name for name in dir(doctor) if name.startswith("check_") and name not in
-                 ("check_loop", "check_authorship")]
+        # Every other check is stubbed out: this asks only whether ``check_loop`` calls ours. The
+        # checks live in the core and its submodules (#1349); each is stubbed where it lives.
+        from diaktoros.doctor import hook_checks, route_checks
+        modules = (doctor, hook_checks, route_checks)
+        stubs = [(module, name) for module in modules for name in vars(module)
+                 if name.startswith("check_") and name not in ("check_loop", "check_authorship")]
         with contextlib.ExitStack() as stack:
-            for name in stubs:
-                value = getattr(doctor, name)
-                if callable(value):
+            for module, name in stubs:
+                if callable(getattr(module, name)):
                     stack.enter_context(mock.patch.object(
-                        doctor, name, return_value=doctor.Check(name, doctor.VERIFIED, "")))
+                        module, name, return_value=doctor.Check(name, doctor.VERIFIED, "")))
             # Families that return lists.
             for name in ("check_triage", "check_seat_models", "check_seat_extras", "check_tokens",
                          "check_routes", "check_gateway_scripts", "check_gate_timeouts",
                          "check_runtime_paths", "check_hooks", "check_environment"):
-                stack.enter_context(mock.patch.object(doctor, name, return_value=[]))
+                module = next(module for module in modules if name in vars(module))
+                stack.enter_context(mock.patch.object(module, name, return_value=[]))
             stack.enter_context(mock.patch.object(doctor, "check_review_only_update",
                                                   return_value=None))
             stack.enter_context(mock.patch.object(doctor, "check_adjudicator_identity",

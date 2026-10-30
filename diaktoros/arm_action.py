@@ -10,7 +10,8 @@ import json
 import secrets
 import time
 
-from . import config, doctor, gh
+from . import config, gh
+from .doctor import hook_checks
 
 # A process restart invalidates outstanding confirmations; none are persisted or sent as config.
 _CONFIRM_KEY = secrets.token_bytes(32)
@@ -62,30 +63,30 @@ def set_hooks(loop: dict, active: bool, token_login: str | None, *,
         # 404), another path, a retired gateway — or a route named inside another route's name —
         # is not that seat's hook. Pausing asks the ownership question instead: every hook this
         # install made is stopped, even once `uninstall` has removed the route it posted to.
-        own, foreign = doctor.split_route_hooks(loop, hooks, wanted, ownership=not active)
+        own, foreign = hook_checks.split_route_hooks(loop, hooks, wanted, ownership=not active)
     except config.ConfigError as exc:
         return [f"cannot tell this loop's hooks from anyone else's: {exc}",
                 f"fix: hermes dk set --loop {loop.get('id')} --host "
                 "https://your-gateway.example"], False
     out, ok = [], True
     failed: list[tuple[int, list[str]]] = []      # (hook id, the errors that decide its fix)
-    targets = {name: doctor.seat_route_target(loop, name) for name in wanted}
+    targets = {name: hook_checks.seat_route_target(loop, name) for name in wanted}
     role_of = {name: role for role, name in seats}
     for hook in foreign:
-        name = doctor.hook_route_name(hook)
+        name = hook_checks.hook_route_name(hook)
         want, reason = targets[name]
         if want is None and active:
             out.append(f"hook {hook['id']} posts to route {name!r}; {reason} — not armed, "
                        "left as it is")
             continue
-        why = doctor.hook_url_difference(str(hook["config"].get("url") or ""),
-                                         want or (doctor.install_hook_urls(loop, name) or [""])[0])
+        why = hook_checks.hook_url_difference(str(hook["config"].get("url") or ""),
+                                              want or (hook_checks.install_hook_urls(loop, name) or [""])[0])
         out.append(f"hook {hook['id']} posts to route {name!r} at {why} — not this seat's hook "
                    "(nothing this loop serves receives it), left as it is")
     matched: set[str] = set()
     miswired: list[int] = []
     for hook in own:
-        name = doctor.hook_route_name(hook)
+        name = hook_checks.hook_route_name(hook)
         matched.add(name)
         if active:
             # At the seat's URL but subscribed to the wrong event (or not JSON), or with a
@@ -262,23 +263,23 @@ def plan(loop: dict, token_login: str | None = None) -> dict:
         names = _common()._routes_of(loop)
         seats = {names[role]: role for role in config.hook_roles(loop) if names.get(role)}
         wanted = tuple(seats)
-        own, _ = doctor.split_route_hooks(loop, hooks, wanted, ownership=True)
-        exact, _ = doctor.split_route_hooks(loop, hooks, wanted, ownership=False)
-        targets = {name: doctor.seat_route_target(loop, name) for name in wanted}
+        own, _ = hook_checks.split_route_hooks(loop, hooks, wanted, ownership=True)
+        exact, _ = hook_checks.split_route_hooks(loop, hooks, wanted, ownership=False)
+        targets = {name: hook_checks.seat_route_target(loop, name) for name in wanted}
         if not own or not seats or any(
                 type(h.get('active')) is not bool or type(h.get('id')) is not int or
                 not isinstance(h.get('events'), list) or
                 any(not isinstance(event, str) for event in h['events']) for h in own):
             return result
-        matched = {doctor.hook_route_name(h) for h in own}
+        matched = {hook_checks.hook_route_name(h) for h in own}
         if not set(seats).issubset(matched):
             result['reason'] = 'Required loop hooks are missing.'
             return result
         # Resume is safe only if the same host operation would accept every owned hook.
         resume_ready = (len(exact) == len(own) and
                         all(targets[name][0] is not None for name in seats) and
-                        all(not _wake_problem(h, targets[doctor.hook_route_name(h)][0] or '',
-                                              seats[doctor.hook_route_name(h)]) for h in own))
+                        all(not _wake_problem(h, targets[hook_checks.hook_route_name(h)][0] or '',
+                                              seats[hook_checks.hook_route_name(h)]) for h in own))
         if all(h['active'] is False for h in own):
             result['state'] = 'paused'
             result['eligible'] = resume_ready
@@ -336,7 +337,7 @@ def confirmed_perform(loop: dict, action: str, confirmation: str) -> dict:
 
 
 def _wake_problem(hook: dict, wanted_url: str, role: str) -> str:
-    return (('' if doctor.exact_hook_url(str(hook['config'].get('url') or ''), wanted_url)
-             else doctor.SLASH_404) or doctor.hook_wake_problem(hook, role))
+    return (('' if hook_checks.exact_hook_url(str(hook['config'].get('url') or ''), wanted_url)
+             else hook_checks.SLASH_404) or hook_checks.hook_wake_problem(hook, role))
 
 

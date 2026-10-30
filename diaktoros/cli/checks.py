@@ -15,6 +15,7 @@ from .. import (
     gate_shims,
     route_intent,
 )
+from ..doctor import hook_checks
 
 
 def cmd_doctor(args) -> int:
@@ -29,7 +30,7 @@ def cmd_doctor(args) -> int:
     try:
         loops = [config.load_id(args.loop)] if args.loop else config.all_loops()
     except config.ConfigError as exc:
-        print(f"cannot preflight loop: {doctor._safe_report_text(str(exc))}")
+        print(f"cannot preflight loop: {hook_checks._safe_report_text(str(exc))}")
         return 2
     if not loops:
         print(f"no loops configured in {config.config_dir()} — run "
@@ -69,7 +70,7 @@ def cmd_selftest(args) -> int:
     try:
         loop = config.load_id(args.loop)
     except config.ConfigError as exc:
-        print(f"cannot selftest loop: {doctor._safe_report_text(str(exc))}")
+        print(f"cannot selftest loop: {hook_checks._safe_report_text(str(exc))}")
         return 2
     # Default to what production gives the reviewer seat, so a passing selftest proves the turn
     # fits the budget the unattended worker will actually enforce (#49).
@@ -94,7 +95,7 @@ def cmd_corpus(args) -> int:
         cases = corpus.load(directory)
         scores = config.state_dir(loop) / corpus.SCORES_FILE
     except (config.ConfigError, corpus.CorpusError) as exc:
-        print(f"cannot run corpus: {doctor._safe_report_text(str(exc))}")
+        print(f"cannot run corpus: {hook_checks._safe_report_text(str(exc))}")
         return 2
     if args.history:
         bad: list = []
@@ -117,14 +118,14 @@ def cmd_corpus(args) -> int:
         review = corpus.live_review(loop, settings, reviewer,
                                     args.timeout or config.turn_budget(loop, "reviewer"))
     except Exception as exc:
-        print(f"cannot run corpus: {doctor._safe_report_text(str(exc))}")
+        print(f"cannot run corpus: {hook_checks._safe_report_text(str(exc))}")
         return 2
     try:
         with selftest.github_read_only(), selftest.worker_tempdir():
             corpus.check_heads(loop, cases)
             results = corpus.replay(cases, review)
     except corpus.CorpusError as exc:
-        print(f"cannot run corpus: {doctor._safe_report_text(str(exc))}")
+        print(f"cannot run corpus: {hook_checks._safe_report_text(str(exc))}")
         return 2
     for r in results:
         print(f"{r['case']}: caught {len(r['caught'])} missed {len(r['missed'])}"

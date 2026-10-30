@@ -7,12 +7,12 @@ import pathlib
 
 from .. import (
     config,
-    doctor,
     gate_shims,
     gh,
     route_intent,
     routes,
 )
+from ..doctor import hook_checks
 from . import common as cli_common
 from . import route_sync
 from ..config import credentials
@@ -122,7 +122,7 @@ def cmd_triage(args) -> int:
         if admin:
             try:
                 listing = cli_common._hook_listing(loop, admin, require_active=False)
-                own, _other = doctor.split_route_hooks(loop, listing, [old_name], ownership=True)
+                own, _other = hook_checks.split_route_hooks(loop, listing, [old_name], ownership=True)
                 for hook in own:
                     gh.api(loop, f"/repos/{loop['repo']}/hooks/{hook['id']}", method="DELETE",
                            login=admin)

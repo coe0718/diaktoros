@@ -49,6 +49,7 @@ import tempfile
 from urllib.parse import urlsplit
 
 from . import config, doctor, envnames, gh
+from .doctor import hook_checks
 
 PASS, FAIL, WARN, SKIP = "pass", "fail", "warn", "skip"
 MARKS = {PASS: "✅", FAIL: "❌", WARN: "⚠️ ", SKIP: "⏭️ "}
@@ -139,7 +140,7 @@ _DOCTOR = {doctor.VERIFIED: PASS, doctor.ABSENT: FAIL, doctor.MISMATCH: FAIL,
 
 def _from_doctor(report: Report, step: str, check) -> None:
     report.add(step, check.name, _DOCTOR[check.status],
-               doctor._safe_report_text(check.detail), doctor._safe_report_text(check.fix or ""))
+               hook_checks._safe_report_text(check.detail), hook_checks._safe_report_text(check.fix or ""))
 
 
 # -- GitHub: GET only --------------------------------------------------------------------------
@@ -1139,7 +1140,7 @@ def check_ledger(report: Report, loop: dict, runtime_file: Path, settings: dict 
         else:
             report.add(step, "ledger:production", PASS, "the route's enqueue accepts this runtime file")
     for check in (doctor.check_state_dir(loop), doctor.check_shim(loop), doctor.check_cron_job(loop),
-                  doctor.check_gateway(loop, offline=False)):
+                  hook_checks.check_gateway(loop, offline=False)):
         _from_doctor(report, step, check)
     reason = observer.unusable(loop)
     if reason == "no observer configured":
@@ -1259,15 +1260,15 @@ def check_hook_signatures(report: Report, loop: dict, *, ping: bool = False,
     try:
         # uninstall's matcher: route name *and* this loop's gateway origin, so another
         # install's hook on the same route name is never pinged or counted as this loop's.
-        own, foreign = doctor.split_route_hooks(loop, hooks, names)
+        own, foreign = hook_checks.split_route_hooks(loop, hooks, names)
     except config.ConfigError as exc:
         report.add(step, "hooks:signature", FAIL, f"cannot tell this loop's hooks apart: {exc}",
                    f"hermes dk set --loop {loop['id']} --host https://your-gateway.example")
         return
-    ours = [(names[doctor.hook_route_name(hook)], hook) for hook in own]
+    ours = [(names[hook_checks.hook_route_name(hook)], hook) for hook in own]
     if not ours:
-        causes = sorted({doctor.hook_url_difference(str(h["config"].get("url") or ""),
-                                                    doctor.seat_hook_url(loop, doctor.hook_route_name(h)) or "")
+        causes = sorted({hook_checks.hook_url_difference(str(h["config"].get("url") or ""),
+                                                         hook_checks.seat_hook_url(loop, hook_checks.hook_route_name(h)) or "")
                          for h in foreign})
         elsewhere = (f"; {len(foreign)} hook(s) post to the same route names at other URLs "
                      f"({'; '.join(causes)}) and were not touched" if foreign else "")
@@ -1287,7 +1288,7 @@ def check_hook_signatures(report: Report, loop: dict, *, ping: bool = False,
             report.add(step, name, mark, f"{seat}: {detail}",
                        hook_ping.fix_line(loop) if mark == FAIL else "")
             continue
-        found = doctor.check_deliveries(loop, hook["id"], seat)
+        found = hook_checks.check_deliveries(loop, hook["id"], seat)
         if isinstance(found, doctor.Check):
             _from_doctor(report, step, found)
         elif found.startswith("no deliveries"):
