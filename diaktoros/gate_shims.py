@@ -33,9 +33,9 @@ from __future__ import annotations
 
 import os
 import pathlib
-import tempfile
 
 from . import config, route_intent, routes
+from .util import atomic_write
 
 GATE_SCRIPT = route_intent.GATE_SCRIPT
 MARKER = "# diaktoros gate shim"
@@ -330,20 +330,12 @@ def _plan(pairs) -> list[tuple[str, pathlib.Path, str, str]]:
 
 def _write(path: pathlib.Path, text: str) -> None:
     path.parent.mkdir(mode=0o755, exist_ok=True)
-    fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w") as stream:
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temp, MODE)
+
+    def still_ours():
         # Re-check just before publishing: never replace a file someone else put there meanwhile.
         if os.path.lexists(path) and (path.is_symlink() or not _ours(_read(path))):
             raise ShimError(f"{path} appeared and was not written by Diaktoros; left alone")
-        os.replace(temp, path)
-    finally:
-        if os.path.exists(temp):
-            os.unlink(temp)
+    atomic_write(path, text, mode=MODE, before_replace=still_ours)
 
 
 def install(loop: dict, *, dry_run: bool = False, pairs=None, report: bool = True) -> list[str]:
@@ -438,21 +430,12 @@ def heal_watchdog_shim() -> list[str]:
     wanted = cli.SHIM.format(watchdog=doctor.scripts_dir() / "watchdog.py")
     if text == wanted:
         return []
+    def unchanged():
+        now = None if path.is_symlink() else _read(path)
+        if now is None or not now.startswith(opening):
+            raise OSError(f"{path} changed meanwhile; left alone")
     try:
-        fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-        try:
-            with os.fdopen(fd, "w") as stream:
-                stream.write(wanted)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.chmod(temp, MODE)
-            now = None if path.is_symlink() else _read(path)
-            if now is None or not now.startswith(opening):
-                raise OSError(f"{path} changed meanwhile; left alone")
-            os.replace(temp, path)
-        finally:
-            if os.path.exists(temp):
-                os.unlink(temp)
+        atomic_write(path, wanted, mode=MODE, before_replace=unchanged)
     except OSError as exc:
         return [f"⚠️ Diaktoros: watchdog shim NOT restored ({exc}); {fix}"]
     return [f"🔧 Diaktoros: restored the watchdog shim {path} (it differed from this plugin's template)"]

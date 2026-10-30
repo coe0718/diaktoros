@@ -842,12 +842,7 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch, notices.OperatorNo
                              0o600))
         if presence is not None and not _names(presence, self.db):
             hostdirs.ensure(presence.parent)
-            temp = presence.with_name(presence.name + f".{os.getpid()}.tmp")
-            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
-                         0o600)
-            with os.fdopen(fd, "w") as out:
-                out.write(_canonical(self.db) + "\n")
-            os.replace(temp, presence)
+            util.atomic_write(presence, _canonical(self.db) + "\n")
 
     def record_launch(self, run_id: str, owner: str, prompt_rev: str, model: str) -> None:
         """The owning worker's record of the prompt revision and resolved model a turn launches
