@@ -693,6 +693,18 @@ class Config(unittest.TestCase):
         self.assertEqual(config.seat_concurrency(loop, "adjudicator"), 2)
         self.assertEqual(config.normalize(loop)["seats"]["adjudicator"], {"login": "adj", "concurrency": 2})
 
+    def test_a_login_spelled_in_another_case_finds_its_own_token(self):
+        # #1474: its credential is found in any case, and its own file is not "another's".
+        loop = self.load({"login": "Adj"})
+        self.assertEqual(config.adjudicator_login(loop), "Adj")
+        # #1475 review: init, set and apply check the written identity's file the same way; the
+        # check reads the mapped file itself, so a loose one is still refused under its spelling.
+        from diaktoros.config import credentials
+        credentials.verify_adjudicator_token(loop)
+        Path(self.tokens["adj"]).chmod(0o644)
+        with self.assertRaisesRegex(config.ConfigError, "'Adj'.*group/other can read it"):
+            credentials.verify_adjudicator_token(loop)
+
     def test_loop_default_concurrency_does_not_apply(self):
         raw = {**json.loads(json.dumps(self.raw)), "concurrency": 3, "clone": "/nonexistent"}
         self.assertEqual(config.seat_concurrency(config.normalize(raw), "adjudicator"), 1)

@@ -9,7 +9,7 @@ import os
 import pathlib
 import re
 
-from .. import config
+from .. import config, util
 
 
 def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
@@ -56,13 +56,13 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
         raise config.ConfigError(f"{where}: seats.adjudicator.login {login!r} is also the reader, a seat "
                           f"or an allowlisted reviewer/fixer — {config.FOUR_IDENTITY_RULE}")
     tokens = config.credentials_map(loop)          # a PAT or an App key (#1163)
-    if not tokens.get(login):
+    if not util.login_entry(tokens, login):
         raise config.ConfigError(f"{where}: seats.adjudicator.login {login!r} has no entry in 'tokens' "
                           "or 'apps' — an adjudicator identity without its own credential cannot "
                           "comment")
-    mine = config._path(tokens[login])
+    mine = config._path(util.login_entry(tokens, login))
     for other, raw_path in tokens.items():
-        if other == login or not raw_path:
+        if str(other).casefold() == login.casefold() or not raw_path:
             continue
         theirs = config._path(raw_path)
         same = os.path.realpath(mine) == os.path.realpath(theirs)
@@ -218,7 +218,7 @@ def normalize_triage(raw, loop: dict, where: str) -> dict:
     if who == str(loop.get("read_token") or "").lower():
         raise config.ConfigError(f"{where}: triage would label as the reader {who!r} — the reader only "
                           f"reads; {config.FOUR_IDENTITY_RULE}")
-    if not {str(k).lower() for k in config.credentials_map(loop)} & {who}:
+    if util.login_entry(config.credentials_map(loop), who) is None:
         raise config.ConfigError(f"{where}: no token mapped for the triage login {who!r} — add --token "
                           f"{who}=/path/to/pat (it needs issues: write on the repository)")
     return out

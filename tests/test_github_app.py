@@ -242,6 +242,24 @@ class Tokens(Base):
         self.assertEqual(gh.token(self.loop), "DUMMY_PAT_read")
         self.assertEqual(self.app_calls, [])
 
+    def test_a_login_finds_its_token_in_any_case_and_the_exact_key_wins(self):
+        # #1474: GitHub logins ignore case, and so does validation; the lookup matched exactly.
+        # Triage lower-cases its login, so a reviewer seat spelled ``Rev-Bot`` found no token.
+        from diaktoros.cli import common
+        fix = self.loop["tokens"].pop("fix")
+        self.loop["tokens"]["Rev-Bot"] = fix
+        self.loop.update(seats={"reviewer": {"login": "Rev-Bot"}}, triage={"route": "r"})
+        self.assertEqual(config.triage_login(self.loop), "rev-bot")
+        self.assertEqual(gh.token(self.loop, config.triage_login(self.loop)), "DUMMY_PAT_fix")
+        self.assertEqual(gh.token_path(self.loop, "REV-BOT"), Path(fix))
+        self.loop["tokens"]["rev-bot"] = self.loop["tokens"]["read"]
+        self.assertEqual(gh.token(self.loop, "rev-bot"), "DUMMY_PAT_read")      # exact first
+        self.assertEqual(gh.token(self.loop, "Rev-Bot"), "DUMMY_PAT_fix")
+        # The other lookups are the same one: the CLI's token ref and the App entry.
+        self.assertEqual(common._token_ref(self.loop, "REV-BOT"), fix)
+        self.assertEqual(github_app.entry(self.loop, BOT.upper()), self.loop["apps"][BOT])
+        self.assertEqual(common._app_ref(self.loop, BOT.upper()), self.loop["apps"][BOT])
+
     def test_the_key_is_a_credential_path_but_never_a_token_path(self):
         self.assertIsNone(gh.token_path(self.loop, BOT))
         self.assertEqual(gh.credential_path(self.loop, BOT), self.key)

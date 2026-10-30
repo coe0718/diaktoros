@@ -9,6 +9,7 @@ Expiry and scopes say an App has neither. selftest resolves each App identity to
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import copy
 import io
 import sys
 import unittest
@@ -19,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_app_cli as app_cli  # noqa: E402
 import test_token_file_settings as tfs  # noqa: E402
 from diaktoros import backup, config, doctor, gh, github_app, selftest  # noqa: E402
+from diaktoros.config import credentials, loop_checks  # noqa: E402
 from diaktoros.doctor import identity_checks, seat_checks  # noqa: E402
 
 BOT_REV, BOT_READ = app_cli.BOT_REV, app_cli.BOT_READ
@@ -47,6 +49,14 @@ class Doctor(AppLoop):
         self.assertIn(f"{BOT_REV} → GitHub App 2, key {self.rev_key}", got.detail)
         self.assertNotIn("--token", got.fix or "")
         self.assertEqual(identity_checks.check_credential(self.loop, "fixer").status, doctor.VERIFIED)
+
+    def test_a_reader_token_in_another_case_reads_as_mapped(self):
+        # #1475 review: doctor wanted the exact key while every GitHub call took any case.
+        self.loop["read_token"] = tfs.READER
+        self.loop["tokens"][tfs.READER.upper()] = str(self.pats["read"])
+        got = identity_checks.check_read_token(self.loop)
+        self.assertEqual(got.status, doctor.VERIFIED, got.detail)
+        self.assertIn("mapped in tokens", got.detail)
 
     def test_an_app_reader_and_every_credential_line_pass(self):
         self.assertEqual(identity_checks.check_read_token(self.loop).status, doctor.VERIFIED)
@@ -144,6 +154,74 @@ class Live(AppLoop):
         self.assertTrue({f"app-live:{BOT_REV}", f"app-live:{BOT_READ}"} <= names, names)
 
 
+class CaseVariants(AppLoop):
+    """#1474: a login finds its credential in any case, exact key first (``util.login_entry``).
+    One login under two spellings is refused, so no check can pick a file the lookup does not
+    (#1475 review)."""
+
+    def test_one_login_in_two_spellings_is_refused_by_every_check(self):
+        roles = {"read", "reviewer", "fixer"}
+        # The review's shape: the fixer's lookup takes FIX-ACCT (the reader's file), a check
+        # that folds keeps the last, Fix-Acct (its own), so "distinct files" passed.
+        reader = copy.deepcopy(self.loop)
+        reader.update(read_token=tfs.READER, tokens={tfs.READER: str(self.pats["read"]),
+                                                     tfs.FIX.upper(): str(self.pats["read"]),
+                                                     tfs.FIX.title(): str(self.pats["fix"])})
+        apps = copy.deepcopy(self.loop)
+        apps["apps"][BOT_REV.upper()] = dict(apps["apps"][BOT_REV])
+        for name, loop, spelled in (("tokens", reader, "tokens.FIX-ACCT and tokens.Fix-Acct"),
+                                    ("apps", apps, f"apps.{BOT_REV} and apps.{BOT_REV.upper()}")):
+            with self.subTest(name):
+                clash = credentials.case_clash(loop)
+                self.assertIn(spelled, clash)
+                self.assertEqual(credentials.reader_problem(loop), clash)
+                for checked in (roles, set()):      # refused even with no role to check
+                    with self.assertRaisesRegex(config.ConfigError, "one login in two spellings"):
+                        credentials.verify_credentials(copy.deepcopy(loop), checked)
+                with self.assertRaisesRegex(config.ConfigError, "one login in two spellings"):
+                    loop_checks._check_tokens(copy.deepcopy(loop), "widgets")
+        self.assertEqual(credentials.case_clash(self.loop), "")
+
+    def test_seats_sharing_a_file_are_refused_whatever_the_spelling(self):
+        # The reviewer/fixer check had no test; it now finds each seat's file by the one lookup.
+        loop = copy.deepcopy(self.loop)
+        loop["seats"]["fixer"]["login"] = tfs.FIX.title()
+        loop["apps"].pop(BOT_REV)
+        shared = loop["tokens"].pop(tfs.FIX)
+        loop["tokens"].update({tfs.FIX.upper(): shared, BOT_REV: shared})
+        with self.assertRaisesRegex(config.ConfigError, "the reviewer and the fixer read the same"):
+            credentials.verify_credentials(loop, {"reviewer", "fixer"})
+        loop["tokens"][BOT_REV] = str(self.pats["rev"])
+        credentials.verify_credentials(loop, {"reviewer", "fixer"})
+        # #1475 review: a file gone between its check and the comparison is refused, never
+        # taken as distinct.
+        real = Path.read_text
+
+        def read_then_vanish(path, *args, **kwargs):
+            text = real(path, *args, **kwargs)
+            if path == self.pats["rev"]:
+                path.unlink()
+            return text
+        with mock.patch.object(Path, "read_text", read_then_vanish), \
+                self.assertRaisesRegex(config.ConfigError, "reviewer seat .* cannot be told apart"):
+            credentials.verify_credentials(loop, {"reviewer", "fixer"})          # the reader's check
+        with self.assertRaisesRegex(config.ConfigError, "cannot verify reviewer/fixer"):
+            credentials._distinct_seat_files("widgets", self.pats["rev"], shared)  # and the seats'
+
+    def test_the_exact_key_wins_in_the_cli_and_show(self):
+        # A map that never went through load: the exact entry, never a variant, empty or not.
+        from diaktoros import show
+        from diaktoros.cli import common
+        self.assertEqual(common._token_ref({"tokens": {tfs.FIX: "", tfs.FIX.upper(): "/p"}},
+                                           tfs.FIX), "")
+        loop = copy.deepcopy(self.loop)
+        loop["tokens"] = {tfs.FIX: str(self.pats["fix"]), tfs.FIX.upper(): str(self.pats["rev"])}
+        loop["apps"][BOT_REV.upper()] = {"app_id": 99, "key_file": str(self.read_key)}
+        rows = {row["name"]: row for row in show.collect(loop, {})}
+        self.assertEqual(rows["fixer_token_file"]["value"], str(self.pats["fix"]))
+        self.assertEqual(rows["reviewer_app_id"]["value"], 2)
+
+
 class Selftest(AppLoop):
     def identities(self, principal):
         report = selftest.Report(io.StringIO())
@@ -158,6 +236,15 @@ class Selftest(AppLoop):
                                   else ({"login": login, "id": 3}, "")):
             ok = selftest.check_identities(report, self.loop)
         return ok, {r[1]: r for r in report.results}
+
+    def test_a_token_key_in_another_case_is_mapped(self):
+        # #1475 review: selftest wanted the exact key while every GitHub call took any case.
+        self.loop["tokens"] = {tfs.FIX.upper(): self.loop["tokens"][tfs.FIX]}
+        ids = {BOT_REV: 346013884, BOT_READ: 346012008}
+        ok, rows = self.identities(lambda login: {"login": login, "id": ids[login],
+                                                  "type": "Bot", "app_id": 9})
+        self.assertNotIn("no token file mapped", rows["github:fixer"][3])
+        self.assertEqual(rows["github:fixer"][2], selftest.PASS, rows["github:fixer"])
 
     def test_app_identities_resolve_to_their_bots_without_user(self):
         ids = {BOT_REV: 346013884, BOT_READ: 346012008}

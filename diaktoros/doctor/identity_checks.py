@@ -11,7 +11,7 @@ from __future__ import annotations
 import pathlib
 import time
 
-from .. import config, doctor, gh
+from .. import config, doctor, gh, util
 from ..config import credentials
 
 
@@ -230,7 +230,7 @@ def check_read_token(loop: dict) -> doctor.Check:
     if not name:
         return doctor.Check("read_token", doctor.ABSENT, "no login is named as the reader",
                             "run `hermes dk set --loop <id> --read-token <login> --token <login>=/path/to/pat`")
-    if name not in config.credentials_map(loop):
+    if util.login_entry(config.credentials_map(loop), name) is None:
         return doctor.Check("read_token", doctor.MISMATCH, f"read_token names {name!r}, which has no token file",
                             f"run `hermes dk set --loop <id> --token {name}=/path/to/pat` (or --app "
                             f"{name}=APP_ID:/abs/key.pem for a GitHub App reader): the gates read every "
@@ -241,7 +241,7 @@ def check_read_token(loop: dict) -> doctor.Check:
         # installs, "passes", and then never posts a review.
         return doctor.Check("read_token", doctor.MISMATCH, f"{problem} — {config.FOUR_IDENTITY_RULE}",
                             credentials.reader_fix(loop))
-    where = "apps, a GitHub App" if name not in (loop.get("tokens") or {}) else "tokens"
+    where = "tokens" if util.login_entry(loop.get("tokens"), name) else "apps, a GitHub App"
     return doctor.Check("read_token", doctor.VERIFIED, f"{name} (mapped in {where}; its own account and file)")
 
 
