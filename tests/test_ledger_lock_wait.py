@@ -118,12 +118,47 @@ class ReadOnly(unittest.TestCase):
         self.assertIsNotNone(stats.ledger(self.db, "acme/widgets", 0))
         self.assertEqual(sorted(p.name for p in self.root.iterdir()), before)
 
+    def test_a_missing_ledger_is_never_created_in_either_mode(self):
+        # #1471 review: ``immutable=1`` alone opens a missing file by creating it.
+        gone = self.root / "gone" / "runs.sqlite"
+        gone.parent.mkdir()
+        for immutable in (False, True):
+            with self.subTest(immutable=immutable), self.assertRaises(sqlite3.OperationalError):
+                ledger.read_only(gone, immutable=immutable)
+        # The report reader checks, then opens: a ledger removed in between is absent, not new.
+        with mock.patch.object(Path, "is_file", return_value=True):
+            self.assertIsNone(run_supervisor.views.read_only_connect(gone))
+        self.assertEqual(list(gone.parent.iterdir()), [])
+
+    @staticmethod
+    def uri_sites(source: str) -> list[tuple[int, str | None]]:
+        """Each string in ``source`` naming a read-only URI option, with its enclosing function."""
+        sites = []
+
+        def visit(node, func):
+            for child in ast.iter_child_nodes(node):
+                if (isinstance(child, ast.Constant) and isinstance(child.value, str)
+                        and re.search(r"mode=ro|immutable=1", child.value)):
+                    sites.append((child.lineno, func))
+                inner = isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                visit(child, child.name if inner else func)
+
+        visit(ast.parse(source), None)
+        return sites
+
+    def stray(self, path: Path, source: str) -> list[tuple[int, str | None]]:
+        """The read-only URI strings in ``source`` outside ``ledger.read_only`` itself."""
+        allowed = {"read_only"} if path == ROOT / "diaktoros" / "ledger.py" else set()
+        return [site for site in self.uri_sites(source) if site[1] not in allowed]
+
     def test_no_read_only_uri_is_written_outside_ledger_read_only(self):
         for path in [*(ROOT / "diaktoros").rglob("*.py"), *(ROOT / "scripts").glob("*.py")]:
-            if path == ROOT / "diaktoros" / "ledger.py":
-                continue
             with self.subTest(path.relative_to(ROOT).as_posix()):
-                self.assertNotRegex(path.read_text(), r"mode=ro|immutable=1")
+                self.assertEqual(self.stray(path, path.read_text()), [])
+        # The exemption is the helper, not its file (#1471 review).
+        ledger_py = ROOT / "diaktoros" / "ledger.py"
+        extra = ledger_py.read_text() + '\n\ndef another(path):\n    return f"file:{path}?mode=ro"\n'
+        self.assertEqual([func for _, func in self.stray(ledger_py, extra)], ["another"])
 
 
 class LockTimeouts(unittest.TestCase):

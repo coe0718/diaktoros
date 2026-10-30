@@ -70,9 +70,10 @@ def read_only(path, *, immutable: bool = False) -> sqlite3.Connection:
     the path is URI-quoted, so a ``#`` or ``?`` in it never opens (and creates) another one.
     ``mode=ro`` keeps SQLite's locking, so a read sees whole transactions while others write.
     ``immutable`` drops that locking: only for a report read while no WAL is live
-    (``views.read_only_connect``)."""
+    (``views.read_only_connect``). It keeps ``mode=ro``: alone, ``immutable=1`` creates a
+    missing file (#1471 review)."""
     from urllib.parse import quote
-    return sqlite3.connect(f"file:{quote(str(path))}?{'immutable=1' if immutable else 'mode=ro'}",
+    return sqlite3.connect(f"file:{quote(str(path))}?mode=ro{'&immutable=1' if immutable else ''}",
                            uri=True, timeout=LOCK_WAIT_S)
 
 

@@ -140,7 +140,12 @@ def read_only_connect(db: str | Path):
     path = Path(db)
     if not path.is_file():
         return None
-    con = ledger.read_only(path, immutable=not Path(f'{path}-wal').exists())
+    try:
+        con = ledger.read_only(path, immutable=not Path(f'{path}-wal').exists())
+    except sqlite3.OperationalError:
+        if path.exists():
+            raise
+        return None                       # removed since the check: absent, as above
     con.row_factory = sqlite3.Row
     return con
 
