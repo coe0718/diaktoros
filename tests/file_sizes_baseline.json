@@ -25,8 +25,6 @@
   },
   "functions": {
     "diaktoros/arm_action.py::set_hooks": 157,
-    "diaktoros/broker.py::authorize": 110,
-    "diaktoros/broker.py::authorize_ruling_comment": 85,
     "diaktoros/broker_client.py::main": 173,
     "diaktoros/broker_ipc.py::RunBroker._dispatch": 387,
     "diaktoros/broker_ipc.py::RunBroker._issue_fix_write": 129,

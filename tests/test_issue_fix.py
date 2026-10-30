@@ -418,7 +418,7 @@ class BrokerWrite(Base):
         def api(loop, path, method="GET", body=None, login=None):
             self.calls.append((path, method, body, login))
             if path == "/user":
-                return {"login": login, "id": 3}
+                return {"login": login, "id": sum(map(ord, login))}   # one account per login (C2)
             if path == f"/repos/{REPO}/pulls" and method == "POST":
                 return {"number": 40, "head": {"ref": body["head"]}}
             if method == "POST":
@@ -559,7 +559,8 @@ class BrokerWrite(Base):
         def api(loop, path, method="GET", body=None, login=None):
             if path == f"/repos/{REPO}/pulls" and method == "POST":
                 raise OSError("lost response")
-            return {"login": login, "id": 3} if path == "/user" else self.live
+            return ({"login": login, "id": sum(map(ord, login))} if path == "/user"   # (C2)
+                    else self.live)
         gh.api.side_effect = api
         with self.assertRaisesRegex(broker_ipc.ProtocolError, "PR could not be confirmed"):
             self.server._dispatch(self.open_pr())
