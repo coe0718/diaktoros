@@ -13,6 +13,7 @@ from .. import (
     route_intent,
     routes,
     state as state_mod,
+    util,
 )
 from . import common as cli_common
 from . import route_sync
@@ -121,7 +122,7 @@ def _apply(args) -> int:
         print(f"fix: {credentials.reader_fix(updated)}")
         return 2
     reader = str(updated.get("read_token") or "")
-    if reader.casefold() not in {str(k).casefold() for k in config.credentials_map(updated)}:
+    if util.login_entry(config.credentials_map(updated), reader) is None:
         # doctor fails this loop; apply must not report success over it either. A PAT or a
         # GitHub App identity (#1163) both count.
         print(f"settings refused: {updated['id']}: read_token {reader!r} has no entry in "

@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import stat
 
-from .. import config
+from .. import config, util
 
 
 def token_file_problem(value) -> str:
@@ -60,7 +60,7 @@ def verify_adjudicator_token(loop: dict) -> None:
     """
     login = config.adjudicator_login(loop)
     if login:
-        check_token_file(config.credentials_map(loop).get(login),
+        check_token_file(util.login_entry(config.credentials_map(loop), login),
                          f"credential file for the adjudicator login {login!r}")
 
 
@@ -78,15 +78,33 @@ def verify_token_settings(settings: dict | None, *, loop: dict | None = None) ->
         check_token_file(path, key)
 
 
-def _same_token_file(first, second) -> bool:
-    """Whether two token-file references name one file. Metadata only; the PAT is never read."""
+def _shared_token_file(first, second) -> str:
+    """How two token-file references may be one file, or ``""`` when they are provably two.
+    Metadata only; the PAT is never read. A file that cannot be compared (missing, unstatable)
+    is never taken as distinct: a missing one used to read as "not the same file" (#1475)."""
     mine, theirs = config._path(first), config._path(second)
+    same = "read the same token file — one account wearing two hats"
     if os.path.realpath(mine) == os.path.realpath(theirs):
-        return True
+        return same
     try:
-        return mine.exists() and theirs.exists() and mine.samefile(theirs)
-    except OSError:
-        return True                        # cannot tell them apart: treat as shared, never as safe
+        return same if mine.samefile(theirs) else ""
+    except OSError as exc:
+        return f"cannot be told apart by token file ({exc.strerror or exc})"
+
+
+def case_clash(loop: dict) -> str:
+    """Two credential keys that are one login spelled in two cases, or ``""``. GitHub logins
+    ignore case and every lookup takes the exact key first, then any case (``util.login_entry``),
+    so a map with ``Rev-Bot`` and ``rev-bot`` would let a lookup and a check pick different files
+    (#1475 review): it is refused, never resolved."""
+    seen = {}
+    for table in ("tokens", "apps"):
+        for key in loop.get(table) or {}:
+            first = seen.setdefault(str(key).casefold(), f"{table}.{key}")
+            if first != f"{table}.{key}":
+                return (f"{first} and {table}.{key} are one login in two spellings — GitHub logins "
+                        "ignore case; keep one")
+    return ""
 
 
 def reader_problem(loop: dict) -> str:
@@ -100,20 +118,21 @@ def reader_problem(loop: dict) -> str:
     reader = str(loop.get("read_token") or "").strip()
     if not reader:
         return ""
+    if clash := case_clash(loop):
+        return clash
     others = [(f"{seat} seat", config.seat_login(loop, seat)) for seat in config.SEAT_KEYS]
     others.append(("adjudicator comment login", config.adjudicator_login(loop)))
     for role, login in others:
         if login and login.casefold() == reader.casefold():
             return f"the reader {reader!r} is also the {role}"
-    tokens = {str(k).casefold(): v for k, v in config.credentials_map(loop).items()}
-    mine = tokens.get(reader.casefold())
+    tokens = config.credentials_map(loop)
+    mine = util.login_entry(tokens, reader)
     if not mine:
         return ""
     for role, login in others:
-        theirs = tokens.get(login.casefold()) if login else ""
-        if theirs and _same_token_file(mine, theirs):
-            return (f"the reader {reader!r} and the {role} {login!r} read the same token file — "
-                    "one account wearing two hats")
+        theirs = util.login_entry(tokens, login)
+        if theirs and (shared := _shared_token_file(mine, theirs)):
+            return f"the reader {reader!r} and the {role} {login!r} {shared}"
     return ""
 
 
@@ -141,6 +160,8 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
     file the operator owns and this CLI does not print.
     """
     where = loop.get("id") or loop.get("repo") or "<inline>"
+    if clash := case_clash(loop):
+        raise config.ConfigError(f"{where}: {clash}")
     tokens = {str(k).lower(): str(v or "") for k, v in (loop.get("tokens") or {}).items()}
     for login, raw_path in sorted(tokens.items()):
         if not raw_path:
@@ -169,11 +190,11 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
             problem = "it is empty"
         if problem:
             raise config.ConfigError(f"{where}: App key for {login!r}: {problem}")
-    tokens = {str(k).lower(): v for k, v in config.credentials_map(loop).items()}
+    tokens = config.credentials_map(loop)
 
     roles = set(roles or ())
     read_token = str(loop.get("read_token") or "").lower()
-    if roles and read_token and read_token not in tokens:
+    if roles and read_token and util.login_entry(tokens, read_token) is None:
         raise config.ConfigError(f"{where}: read_token {read_token!r} has no entry in 'tokens' "
                           "or 'apps' — the gates read GitHub as that login")
 
@@ -181,7 +202,7 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
         if seat not in roles:
             continue                       # a loop that predates this check keeps loading
         login = config.seat_login(loop, seat).lower()
-        if login and login not in tokens:
+        if login and util.login_entry(tokens, login) is None:
             raise config.ConfigError(f"{where}: no token mapped for the {seat} login {login!r} — add "
                               f"--token {login}=/path/to/pat (its own PAT file, never the "
                               "reader's)")
@@ -191,15 +212,22 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
         # Distinct role credentials: two seats sharing one PAT is one account wearing two hats, and
         # the loop's whole point is that a different account reviews the fixer's work.
         reviewer, fixer = config.seat_login(loop, "reviewer").lower(), config.seat_login(loop, "fixer").lower()
-        if reviewer in tokens and fixer in tokens and reviewer != fixer:
-            try:
-                same_file = config._path(tokens[reviewer]).samefile(config._path(tokens[fixer]))
-            except OSError as exc:
-                raise config.ConfigError(f"{where}: cannot verify reviewer/fixer token file identity: "
-                                  f"{exc}") from exc
-            if same_file:
-                raise config.ConfigError(f"{where}: the reviewer and the fixer read the same token file "
-                                  "— each seat needs its own credential")
+        mine, theirs = util.login_entry(tokens, reviewer), util.login_entry(tokens, fixer)
+        if mine and theirs and reviewer != fixer:
+            _distinct_seat_files(where, mine, theirs)
+
+
+def _distinct_seat_files(where: str, reviewer_file, fixer_file) -> None:
+    """Refuse a reviewer and a fixer reading one token file. A file that cannot be compared now
+    (gone since it was checked, or unstatable) is refused too, never taken as distinct (#1475)."""
+    try:
+        same_file = config._path(reviewer_file).samefile(config._path(fixer_file))
+    except OSError as exc:
+        raise config.ConfigError(f"{where}: cannot verify reviewer/fixer token file identity: "
+                                 f"{exc}") from exc
+    if same_file:
+        raise config.ConfigError(f"{where}: the reviewer and the fixer read the same token file "
+                                 "— each seat needs its own credential")
 
 
 def same_profile_home(first: str, second: str) -> bool:

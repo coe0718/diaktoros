@@ -8,7 +8,7 @@ from __future__ import annotations
 
 
 from .. import config
-from ..config import blocks, lists
+from ..config import blocks, credentials, lists
 
 
 def _check_lists_and_modes(loop: dict, where: str) -> None:
@@ -119,6 +119,8 @@ def _check_tokens(loop: dict, where: str) -> None:
         if problem:
             raise config.ConfigError(f"{where}: tokens.{login}: {problem}")
     loop["apps"] = blocks.check_apps(loop.get("apps"), loop["tokens"], where)
+    if clash := credentials.case_clash(loop):
+        raise config.ConfigError(f"{where}: {clash}")
     # The reader is named, never inferred: taking "the first token" would make whichever seat
     # happens to be listed first the account every gate reads GitHub as.
     loop["read_token"] = str(loop.get("read_token") or "").strip()

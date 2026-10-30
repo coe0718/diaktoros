@@ -162,6 +162,19 @@ class ShowTests(_Base):
             with self.subTest(hint):
                 self.assertEqual(self.hand_spelled(f'"""``hermes dk fixer-push``."""\nnote = {hint}\n'), [2])
 
+    def test_every_documented_fixer_push_command_runs(self):
+        # #1477 shadow review: the skill the fixer seat loads said `hermes dk fixer-push --enable`.
+        # Markdown cannot call the helper, so each command written there must be whole.
+        import pathlib
+        import re
+        root = pathlib.Path(__file__).resolve().parents[1]
+        for path in [*root.glob("*.md"), *(root / "docs").rglob("*.md"), *(root / "skill").rglob("*.md")]:
+            for command in re.findall(r"dk fixer-push\b[^`\n]*", path.read_text()):
+                with self.subTest(f"{path.relative_to(root)}: {command}"):
+                    self.assertIn("--loop ", command)
+                    if "--enable" in command:
+                        self.assertIn("--acknowledge-pr-race", command)
+
     def test_a_loop_file_value_wins_and_text_groups_on_first(self):
         self.install()
         path = self.loop_file()

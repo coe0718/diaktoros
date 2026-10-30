@@ -147,12 +147,7 @@ def _credential_lines(loop: dict) -> list[str]:
 
 def _app_ref(loop: dict, login: str) -> dict:
     """The ``apps`` entry for ``login`` (exact key first, then any case), or ``{}``."""
-    apps = loop.get("apps") or {}
-    if not login or not isinstance(apps, dict):
-        return {}
-    found = apps.get(login)
-    if found is None:
-        found = next((v for k, v in apps.items() if str(k).lower() == login.lower()), None)
+    found = util.login_entry(loop.get("apps"), login)
     return found if isinstance(found, dict) else {}
 
 
@@ -213,12 +208,7 @@ def _split_app_pair(pair: str) -> tuple[str, dict] | None:
 
 def _token_ref(loop: dict, login: str) -> str:
     """The token *path* mapped for ``login`` (exact key first, then any case), or ``""``."""
-    tokens = loop.get("tokens") or {}
-    if not login:
-        return ""
-    if tokens.get(login):
-        return str(tokens[login])
-    return next((str(v) for k, v in tokens.items() if str(k).lower() == login.lower() and v), "")
+    return str(util.login_entry(loop.get("tokens"), login) or "")
 
 
 def _budget_line(loop: dict) -> str:

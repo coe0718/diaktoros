@@ -68,13 +68,9 @@ def sweep(loop: dict, st, prs: list, watch: dict, log=lambda _msg: None) -> None
     previous = watch.get(KEY) if isinstance(watch.get(KEY), dict) else {}
     now = time.time()
     for pr in prs:
-        if not isinstance(pr, dict) or pr.get("draft"):
+        if (listed := config.loop_pr(loop, pr)) is None:
             continue
-        author = ((pr.get("user") or {}).get("login") or "").lower()
-        number, head = pr.get("number"), (pr.get("head") or {}).get("sha") or ""
-        if (author not in config.reviewed_authors(loop) or not number or not head
-                or (pr.get("base") or {}).get("ref") != loop["base"]):
-            continue
+        number, head, _ = listed
         old = previous.get(str(number))
         errors: list[str] = []
         reviews = transition.effective_reviews(loop, st, number, head,

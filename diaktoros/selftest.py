@@ -48,7 +48,7 @@ import sys
 import tempfile
 from urllib.parse import urlsplit
 
-from . import config, doctor, envnames, gh
+from . import config, doctor, envnames, gh, util
 from .doctor import cron_checks, hook_checks, identity_checks
 
 PASS, FAIL, WARN, SKIP = "pass", "fail", "warn", "skip"
@@ -818,7 +818,7 @@ def check_identities(report: Report, loop: dict) -> bool:
                        f"then `hermes dk apply --loop {loop.get('id') or '<id>'}` (a new "
                        "loop takes them from `init --reviewer/--reviewer-seat/--fixer`)")
             continue
-        raw = (loop.get("tokens") or {}).get(login)
+        raw = util.login_entry(loop.get("tokens"), login)
         from . import github_app
         if not raw and github_app.is_app(loop, login):
             # A GitHub App identity (#1163): its key, then its live bot principal — minted and

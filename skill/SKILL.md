@@ -92,7 +92,7 @@ reviewed unattended; you will not be woken for one.
 ## If you are the fixer
 
 You are only woken when the operator has opted this repository in to unattended fixer pushes
-(`hermes dk fixer-push --enable`); until then a changes-requested verdict is held for the
+(`hermes dk fixer-push --loop ID --enable --acknowledge-pr-race`); until then a changes-requested verdict is held for the
 operator and no fixer turn starts. Your one publish is a push followed by the review request.
 
 1. Read the verdict. Fix what was found — a rewrite that dodges the finding is not a fix, and the
