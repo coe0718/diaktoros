@@ -312,7 +312,7 @@ def ask_section(loop: dict, number: int, issue: dict) -> str:
     parts = []
     if fix_hold.plan_required(st, number, issue):
         parts.append("\n\n## Plan first\n\nThis issue needs an approved plan before any fix: do not "
-                     "open a PR. Write your plan to a file and post it with `python -m "
+                     "open a PR. Write your plan to a file and post it with `python -P -m "
                      "diaktoros.broker_client issue_comment --ask plan --body-file /tmp/plan.md`. "
                      "The broker refuses `open_pr` until a maintainer replies `/loop approve`; "
                      "you will then get a fresh turn.")

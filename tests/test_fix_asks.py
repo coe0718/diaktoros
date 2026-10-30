@@ -140,8 +140,13 @@ class Resuming(base.Gate):
 
     def test_the_plan_first_rule_is_in_the_prompt(self):
         live = issue(labels=("agent-fix", "plan-first"))
-        self.assertIn("Plan first", turn_prompts.ask_section(self.loop, 12, live))
+        text = turn_prompts.ask_section(self.loop, 12, live)
+        self.assertIn("Plan first", text)
         self.assertNotIn("Plan first", turn_prompts.ask_section(self.loop, 12, issue()))
+        # #1445 (the #1373 class): the agent runs this in the tree it is fixing, and plain
+        # `python -m` would put that tree first on sys.path, ahead of the trusted client.
+        self.assertIn("`python -P -m diaktoros.broker_client issue_comment --ask plan", text)
+        self.assertNotIn("python -m", text)
 
     def test_status_names_the_waiting_state(self):
         line = fix_hold.ask_line(12, self.st.fix_ask_open()[12])
