@@ -62,6 +62,39 @@ class OneReading(unittest.TestCase):
                 self.assertEqual(util.epoch(value), 0.0)
 
 
+class Caller(unittest.TestCase):
+    """A caller that compares a stamp with a boundary (#1488 review): the retarget filter."""
+
+    LOOP = {"reviewer_seat": "rev-bot"}
+
+    @staticmethod
+    def review(rid, submitted_at):
+        return {"id": rid, "submitted_at": submitted_at, "user": {"login": "someone", "type": "User"}}
+
+    def test_a_zoneless_review_is_read_as_utc_against_the_retarget_boundary(self):
+        from diaktoros import transition
+        reviews = [self.review(1, "2026-10-30T12:00:00"),           # the instant itself: not after
+                   self.review(2, "2026-10-30T12:00:01"),           # one second later: kept
+                   self.review(3, "2026-10-30T16:59:59+05:00")]     # 11:59:59Z: excluded
+        with mock.patch.dict(os.environ, {"TZ": "America/New_York"}):
+            time.tzset()
+            try:
+                kept = transition.current_reviews(reviews, {"old_review_ids": [], "at": NOON},
+                                                  self.LOOP)
+            finally:
+                os.environ.pop("TZ", None)
+        time.tzset()
+        self.assertEqual([r["id"] for r in kept], [2])
+
+    def test_a_missing_or_unreadable_boundary_rejects_every_review(self):
+        from diaktoros import transition
+        for at in (None, "noon", [NOON]):
+            with self.subTest(at=at):
+                self.assertEqual(transition.current_reviews(
+                    [self.review(2, "2026-10-30T12:00:01Z")], {"old_review_ids": [], "at": at},
+                    self.LOOP), [])
+
+
 class OneHome(unittest.TestCase):
     @staticmethod
     def parsers(source: str) -> list[tuple[str, int]]:

@@ -227,6 +227,11 @@ def current_reviews(reviews, entry, loop):
 
 
 def _after(timestamp, boundary):
+    """Whether the review at ``timestamp`` landed after the retarget ``boundary`` (an epoch). A
+    stamp or boundary that cannot be compared rejects the review (#1488 review)."""
     from .util import iso_epoch
     at = iso_epoch(timestamp)
-    return at is not None and at > boundary
+    try:
+        return at is not None and at > boundary
+    except TypeError:
+        return False
