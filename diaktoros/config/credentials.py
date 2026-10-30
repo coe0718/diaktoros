@@ -78,15 +78,18 @@ def verify_token_settings(settings: dict | None, *, loop: dict | None = None) ->
         check_token_file(path, key)
 
 
-def _same_token_file(first, second) -> bool:
-    """Whether two token-file references name one file. Metadata only; the PAT is never read."""
+def _shared_token_file(first, second) -> str:
+    """How two token-file references may be one file, or ``""`` when they are provably two.
+    Metadata only; the PAT is never read. A file that cannot be compared (missing, unstatable)
+    is never taken as distinct: a missing one used to read as "not the same file" (#1475)."""
     mine, theirs = config._path(first), config._path(second)
+    same = "read the same token file — one account wearing two hats"
     if os.path.realpath(mine) == os.path.realpath(theirs):
-        return True
+        return same
     try:
-        return mine.exists() and theirs.exists() and mine.samefile(theirs)
-    except OSError:
-        return True                        # cannot tell them apart: treat as shared, never as safe
+        return same if mine.samefile(theirs) else ""
+    except OSError as exc:
+        return f"cannot be told apart by token file ({exc.strerror or exc})"
 
 
 def case_clash(loop: dict) -> str:
@@ -128,9 +131,8 @@ def reader_problem(loop: dict) -> str:
         return ""
     for role, login in others:
         theirs = util.login_entry(tokens, login)
-        if theirs and _same_token_file(mine, theirs):
-            return (f"the reader {reader!r} and the {role} {login!r} read the same token file — "
-                    "one account wearing two hats")
+        if theirs and (shared := _shared_token_file(mine, theirs)):
+            return f"the reader {reader!r} and the {role} {login!r} {shared}"
     return ""
 
 
@@ -211,10 +213,21 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
         # the loop's whole point is that a different account reviews the fixer's work.
         reviewer, fixer = config.seat_login(loop, "reviewer").lower(), config.seat_login(loop, "fixer").lower()
         mine, theirs = util.login_entry(tokens, reviewer), util.login_entry(tokens, fixer)
-        # One file, or two that cannot be told apart (#1475 review: as the reader's check does).
-        if mine and theirs and reviewer != fixer and _same_token_file(mine, theirs):
-            raise config.ConfigError(f"{where}: the reviewer and the fixer read the same token file "
-                                     "— each seat needs its own credential")
+        if mine and theirs and reviewer != fixer:
+            _distinct_seat_files(where, mine, theirs)
+
+
+def _distinct_seat_files(where: str, reviewer_file, fixer_file) -> None:
+    """Refuse a reviewer and a fixer reading one token file. A file that cannot be compared now
+    (gone since it was checked, or unstatable) is refused too, never taken as distinct (#1475)."""
+    try:
+        same_file = config._path(reviewer_file).samefile(config._path(fixer_file))
+    except OSError as exc:
+        raise config.ConfigError(f"{where}: cannot verify reviewer/fixer token file identity: "
+                                 f"{exc}") from exc
+    if same_file:
+        raise config.ConfigError(f"{where}: the reviewer and the fixer read the same token file "
+                                 "— each seat needs its own credential")
 
 
 def same_profile_home(first: str, second: str) -> bool:

@@ -193,6 +193,20 @@ class CaseVariants(AppLoop):
             credentials.verify_credentials(loop, {"reviewer", "fixer"})
         loop["tokens"][BOT_REV] = str(self.pats["rev"])
         credentials.verify_credentials(loop, {"reviewer", "fixer"})
+        # #1475 review: a file gone between its check and the comparison is refused, never
+        # taken as distinct.
+        real = Path.read_text
+
+        def read_then_vanish(path, *args, **kwargs):
+            text = real(path, *args, **kwargs)
+            if path == self.pats["rev"]:
+                path.unlink()
+            return text
+        with mock.patch.object(Path, "read_text", read_then_vanish), \
+                self.assertRaisesRegex(config.ConfigError, "reviewer seat .* cannot be told apart"):
+            credentials.verify_credentials(loop, {"reviewer", "fixer"})          # the reader's check
+        with self.assertRaisesRegex(config.ConfigError, "cannot verify reviewer/fixer"):
+            credentials._distinct_seat_files("widgets", self.pats["rev"], shared)  # and the seats'
 
     def test_the_exact_key_wins_in_the_cli_and_show(self):
         # A map that never went through load: the exact entry, never a variant, empty or not.
