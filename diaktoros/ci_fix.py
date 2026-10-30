@@ -222,13 +222,9 @@ def sweep(loop: dict, st, prs: list, log=lambda _msg: None) -> None:
     from . import gate, observer
     required = config.required_checks(loop)
     for pr in prs:
-        if not isinstance(pr, dict) or pr.get("draft"):
+        if (listed := config.loop_pr(loop, pr)) is None:
             continue
-        author = ((pr.get("user") or {}).get("login") or "").lower()
-        number, head = pr.get("number"), (pr.get("head") or {}).get("sha") or ""
-        if (author not in config.reviewed_authors(loop) or not number or not head
-                or (pr.get("base") or {}).get("ref") != loop["base"]):
-            continue
+        number, head, author = listed
         state = ci.read(loop, head)               # unreadable CI is no notice
         failed = failing(state, required)
         if not failed:
