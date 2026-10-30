@@ -5,10 +5,11 @@ skipped steps: the loop-config writer and the gate shims never synced the direct
 file and the pacing state were never fsynced and used one fixed ``.tmp`` name, so two writers
 could publish each other's half-written file. Now the rule has one home; the writers that differ
 on purpose (the route registry's own durability error, a streamed restore, migration renames, log
-rotation, a cache directory swap) are named in ``DIFFERENT``.
+rotation, a cache directory swap) are named, function by function, in ``DIFFERENT``.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import ast
+import json
 import os
 from pathlib import Path
 import stat
@@ -21,15 +22,60 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diaktoros import util  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-# Writers that publish by rename on their own, each for a reason the helper does not cover.
+# The functions that publish by rename on their own, each for a reason the helper does not cover.
+# A function, not its file: another rename in the same file is not excused (#1473 review).
 DIFFERENT = {
-    "diaktoros/util.py": "the helper itself",
-    "diaktoros/routes.py": "RegistryDurabilityError: published but the directory sync failed",
-    "diaktoros/backup.py": "a restore streams a member to its target",
-    "diaktoros/migrate.py": "renames a loop's files; nothing is written",
-    "diaktoros/run_supervisor/workers.py": "rotates a worker log",
-    "diaktoros/deps.py": "retires and restores a dependency-cache directory",
+    "diaktoros/util.py::atomic_write": "the helper itself",
+    "diaktoros/routes.py::_write_registry": "RegistryDurabilityError: published, directory unsynced",
+    "diaktoros/backup.py::_put": "a restore streams a member to its target",
+    "diaktoros/migrate.py::move_state_dir": "renames a loop's state directory; nothing is written",
+    "diaktoros/migrate.py::_move_ledger_file": "renames a ledger file; nothing is written",
+    "diaktoros/migrate.py::files_step": "renames a loop's files; nothing is written",
+    "diaktoros/run_supervisor/workers.py::_worker_log": "rotates a worker log",
+    "diaktoros/deps.py::prefetch_rust": "retires and restores a dependency-cache directory",
 }
+# The writers that publish through the helper; a writer that stops calling it fails here.
+CALLERS = {
+    "diaktoros/app_manifest.py::save_session", "diaktoros/cli/common.py::_write_config_locked",
+    "diaktoros/cli/common.py::_restore_config_locked", "diaktoros/gate_decisions.py::record",
+    "diaktoros/gate_shims.py::_write", "diaktoros/gate_shims.py::heal_watchdog_shim",
+    "diaktoros/observer.py::_save", "diaktoros/pacing.py::_save", "diaktoros/route_intent.py::_write",
+    "diaktoros/run_supervisor/__init__.py::__init__", "diaktoros/runtime_detect.py::write",
+    "diaktoros/state.py::_atomic_publish", "diaktoros/state.py::_transition_write",
+}
+BY_HAND = {"os.replace", "os.rename", "tempfile.mkstemp", "tempfile.NamedTemporaryFile"}
+
+
+def sources(root: Path) -> list[Path]:
+    return sorted([*(root / "diaktoros").rglob("*.py"), *(root / "scripts").rglob("*.py")])
+
+
+def calls(source: str):
+    """Each call in ``source`` as ``(function it is in, line, call node)``."""
+    found = []
+
+    def visit(node, func):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute | ast.Name):
+                found.append((func, child.lineno, child))
+            inner = isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef)
+            visit(child, child.name if inner else func)
+
+    visit(ast.parse(source), None)
+    return found
+
+
+def by_hand(rel: str, source: str) -> list[str]:
+    """The rename-publishes in ``source`` outside the functions ``DIFFERENT`` excuses."""
+    out = []
+    for func, line, node in calls(source):
+        named = ast.unparse(node.func)
+        # Path.replace / Path.rename onto another path (str.replace takes two args).
+        path_move = isinstance(node.func, ast.Attribute) and node.func.attr in ("replace", "rename") \
+            and len(node.args) == 1
+        if (named in BY_HAND or path_move) and f"{rel}::{func}" not in DIFFERENT:
+            out.append(f"{rel}:{line} {named} in {func}")
+    return out
 
 
 class Helper(unittest.TestCase):
@@ -89,28 +135,73 @@ class Helper(unittest.TestCase):
 
 class OneHome(unittest.TestCase):
     def test_no_writer_publishes_by_rename_outside_the_helper(self):
-        for path in sorted([*(ROOT / "diaktoros").rglob("*.py"), *(ROOT / "scripts").glob("*.py")]):
+        for path in sources(ROOT):
             rel = path.relative_to(ROOT).as_posix()
-            if rel in DIFFERENT:
-                continue
-            for node in ast.walk(ast.parse(path.read_text())):
-                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
-                    continue
-                func = node.func
-                named = ast.unparse(func)
-                with self.subTest(f"{rel}:{node.lineno} {named}"):
-                    self.assertNotIn(named, {"os.replace", "os.rename", "tempfile.mkstemp",
-                                             "tempfile.NamedTemporaryFile"})
-                    # Path.replace / Path.rename onto another path (str.replace takes two args).
-                    if func.attr in ("replace", "rename") and len(node.args) == 1:
-                        self.fail(f"{rel}:{node.lineno}: {named}(...) publishes by hand")
-
-    def test_every_exception_still_has_its_reason(self):
-        for rel, why in DIFFERENT.items():
             with self.subTest(rel):
-                self.assertTrue((ROOT / rel).is_file())
-                self.assertRegex((ROOT / rel).read_text(), r"\.(replace|rename)\(")
+                self.assertEqual(by_hand(rel, path.read_text()), [])
+
+    def test_an_excused_file_excuses_only_its_function_and_nested_scripts_are_scanned(self):
+        # #1473 review: an exception file passed any new rename, and scripts/ was not recursed.
+        routes = (ROOT / "diaktoros/routes.py").read_text()
+        rogue = "\n\ndef rogue(a, b):\n    os.replace(a, b)\n"
+        self.assertEqual(len(by_hand("diaktoros/routes.py", routes + rogue)), 1)
+        with tempfile.TemporaryDirectory() as temp:
+            nested = Path(temp) / "scripts" / "nested" / "rogue.py"
+            nested.parent.mkdir(parents=True)
+            nested.write_text(rogue)
+            self.assertEqual(sources(Path(temp)), [nested])
+
+    def test_every_exception_still_renames_in_its_function(self):
+        for key, why in DIFFERENT.items():
+            rel, func = key.split("::")
+            with self.subTest(key):
                 self.assertTrue(why)
+                names = {ast.unparse(node.func) for f, _, node in calls((ROOT / rel).read_text())
+                         if f == func}
+                self.assertTrue(names & BY_HAND or any(n.endswith((".replace", ".rename"))
+                                                       for n in names), names)
+
+
+class Callers(unittest.TestCase):
+    def test_the_writers_that_publish_are_the_ones_that_call_the_helper(self):
+        found = set()
+        for path in sources(ROOT):
+            rel = path.relative_to(ROOT).as_posix()
+            found |= {f"{rel}::{func}" for func, _, node in calls(path.read_text())
+                      if ast.unparse(node.func).split(".")[-1] == "atomic_write"}
+        self.assertEqual(found, CALLERS)
+
+    def test_runtime_and_pacing_files_sync_and_never_share_a_temp_name(self):
+        # Both used one fixed ``<file>.tmp`` with no fsync: two writers could publish each
+        # other's half-written file (#1472).
+        from diaktoros import pacing, runtime_detect
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp) / "state" / "file.json"
+            target.parent.mkdir()
+            writers = {"runtime": (runtime_detect, lambda n: runtime_detect.write({"n": n})),
+                       "pacing": (pacing, lambda n: pacing._save(target, {"n": n}))}
+            for name, (module, write) in writers.items():
+                real_fsync, real_mkstemp, synced, temps = os.fsync, tempfile.mkstemp, [], []
+
+                def fsync(fd):
+                    synced.append("dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
+                    return real_fsync(fd)
+
+                def mkstemp(*args, **kwargs):
+                    fd, temp_name = real_mkstemp(*args, **kwargs)
+                    temps.append(Path(temp_name))
+                    return fd, temp_name
+
+                with self.subTest(name), mock.patch.object(runtime_detect, "path", return_value=target), \
+                        mock.patch.object(util.os, "fsync", fsync), \
+                        mock.patch.object(tempfile, "mkstemp", mkstemp):
+                    write(1)
+                    write(2)
+                    self.assertEqual(synced, ["file", "dir"] * 2)
+                    self.assertEqual(len(set(temps)), 2)
+                    self.assertEqual({t.parent for t in temps}, {target.parent})
+                    self.assertEqual(json.loads(target.read_text()), {"n": 2})
+                    self.assertEqual(sorted(p.name for p in target.parent.iterdir()), [target.name])
 
 
 if __name__ == "__main__":
