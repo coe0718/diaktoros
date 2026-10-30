@@ -182,6 +182,18 @@ class CaseVariants(AppLoop):
                     loop_checks._check_tokens(copy.deepcopy(loop), "widgets")
         self.assertEqual(credentials.case_clash(self.loop), "")
 
+    def test_seats_sharing_a_file_are_refused_whatever_the_spelling(self):
+        # The reviewer/fixer check had no test; it now finds each seat's file by the one lookup.
+        loop = copy.deepcopy(self.loop)
+        loop["seats"]["fixer"]["login"] = tfs.FIX.title()
+        loop["apps"].pop(BOT_REV)
+        shared = loop["tokens"].pop(tfs.FIX)
+        loop["tokens"].update({tfs.FIX.upper(): shared, BOT_REV: shared})
+        with self.assertRaisesRegex(config.ConfigError, "the reviewer and the fixer read the same"):
+            credentials.verify_credentials(loop, {"reviewer", "fixer"})
+        loop["tokens"][BOT_REV] = str(self.pats["rev"])
+        credentials.verify_credentials(loop, {"reviewer", "fixer"})
+
     def test_the_exact_key_wins_in_the_cli_and_show(self):
         # A map that never went through load: the exact entry, never a variant, empty or not.
         from diaktoros import show

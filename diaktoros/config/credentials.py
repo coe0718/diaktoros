@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import stat
 
-from .. import config
+from .. import config, util
 
 
 def token_file_problem(value) -> str:
@@ -60,7 +60,7 @@ def verify_adjudicator_token(loop: dict) -> None:
     """
     login = config.adjudicator_login(loop)
     if login:
-        check_token_file(config.credentials_map(loop).get(login),
+        check_token_file(util.login_entry(config.credentials_map(loop), login),
                          f"credential file for the adjudicator login {login!r}")
 
 
@@ -122,12 +122,12 @@ def reader_problem(loop: dict) -> str:
     for role, login in others:
         if login and login.casefold() == reader.casefold():
             return f"the reader {reader!r} is also the {role}"
-    tokens = {str(k).casefold(): v for k, v in config.credentials_map(loop).items()}
-    mine = tokens.get(reader.casefold())
+    tokens = config.credentials_map(loop)
+    mine = util.login_entry(tokens, reader)
     if not mine:
         return ""
     for role, login in others:
-        theirs = tokens.get(login.casefold()) if login else ""
+        theirs = util.login_entry(tokens, login)
         if theirs and _same_token_file(mine, theirs):
             return (f"the reader {reader!r} and the {role} {login!r} read the same token file — "
                     "one account wearing two hats")
@@ -188,11 +188,11 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
             problem = "it is empty"
         if problem:
             raise config.ConfigError(f"{where}: App key for {login!r}: {problem}")
-    tokens = {str(k).lower(): v for k, v in config.credentials_map(loop).items()}
+    tokens = config.credentials_map(loop)
 
     roles = set(roles or ())
     read_token = str(loop.get("read_token") or "").lower()
-    if roles and read_token and read_token not in tokens:
+    if roles and read_token and util.login_entry(tokens, read_token) is None:
         raise config.ConfigError(f"{where}: read_token {read_token!r} has no entry in 'tokens' "
                           "or 'apps' — the gates read GitHub as that login")
 
@@ -200,7 +200,7 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
         if seat not in roles:
             continue                       # a loop that predates this check keeps loading
         login = config.seat_login(loop, seat).lower()
-        if login and login not in tokens:
+        if login and util.login_entry(tokens, login) is None:
             raise config.ConfigError(f"{where}: no token mapped for the {seat} login {login!r} — add "
                               f"--token {login}=/path/to/pat (its own PAT file, never the "
                               "reader's)")
@@ -210,15 +210,11 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
         # Distinct role credentials: two seats sharing one PAT is one account wearing two hats, and
         # the loop's whole point is that a different account reviews the fixer's work.
         reviewer, fixer = config.seat_login(loop, "reviewer").lower(), config.seat_login(loop, "fixer").lower()
-        if reviewer in tokens and fixer in tokens and reviewer != fixer:
-            try:
-                same_file = config._path(tokens[reviewer]).samefile(config._path(tokens[fixer]))
-            except OSError as exc:
-                raise config.ConfigError(f"{where}: cannot verify reviewer/fixer token file identity: "
-                                  f"{exc}") from exc
-            if same_file:
-                raise config.ConfigError(f"{where}: the reviewer and the fixer read the same token file "
-                                  "— each seat needs its own credential")
+        mine, theirs = util.login_entry(tokens, reviewer), util.login_entry(tokens, fixer)
+        # One file, or two that cannot be told apart (#1475 review: as the reader's check does).
+        if mine and theirs and reviewer != fixer and _same_token_file(mine, theirs):
+            raise config.ConfigError(f"{where}: the reviewer and the fixer read the same token file "
+                                     "— each seat needs its own credential")
 
 
 def same_profile_home(first: str, second: str) -> bool:

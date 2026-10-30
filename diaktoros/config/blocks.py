@@ -218,7 +218,7 @@ def normalize_triage(raw, loop: dict, where: str) -> dict:
     if who == str(loop.get("read_token") or "").lower():
         raise config.ConfigError(f"{where}: triage would label as the reader {who!r} — the reader only "
                           f"reads; {config.FOUR_IDENTITY_RULE}")
-    if not {str(k).lower() for k in config.credentials_map(loop)} & {who}:
+    if util.login_entry(config.credentials_map(loop), who) is None:
         raise config.ConfigError(f"{where}: no token mapped for the triage login {who!r} — add --token "
                           f"{who}=/path/to/pat (it needs issues: write on the repository)")
     return out
