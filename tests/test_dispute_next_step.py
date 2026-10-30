@@ -57,7 +57,7 @@ class Dispute(fg.Base):
         self.assertNotIn("fixer never pushed", text)
         self.assertIn("disputed", text)
         self.assertIn("waiting for you", text)
-        self.assertIn("hermes dk escalate --pr 7", text)
+        self.assertIn(f"hermes dk escalate --loop {self.loop['id']} --pr 7", text)   # B4: names its loop
 
     def test_with_an_adjudicator_it_goes_for_a_ruling_once(self):
         self.arm_long_ago()
@@ -81,6 +81,28 @@ class Dispute(fg.Base):
                 self.arm_long_ago()
                 self.dispute(**kwargs)
                 self.assertIn("fixer never pushed", self.sweep(VERDICT))
+
+
+class Explain(Dispute):
+    """B4: ``explain`` on a disputed head says what the sweep says, not "the fixer gate did not
+    start one; re-deliver" — a re-delivered verdict asks the fixer again what it already answered."""
+
+    explain = fg.Surfaces.explain
+
+    def test_a_disputed_head_is_a_ruling_or_the_operators_call_never_a_replay(self):
+        self.assertEqual(self.explain()["next"]["kind"], "fixer-retry")      # no dispute yet
+        self.dispute()
+        for route, kind, says in ((None, "operator", f"hermes dk escalate --loop {self.loop['id']} "
+                                                     "--pr 7"),
+                                  ("one-breach", "adjudication", "watchdog sweep")):
+            with self.subTest(route=route):
+                self.loop["adjudicator"] = {"route": route} if route else {}
+                report = self.explain()
+                self.assertEqual(report["next"]["kind"], kind)
+                self.assertIn("disputed", report["next"]["action"])
+                self.assertIn(says, report["next"]["action"])
+                self.assertNotIn("re-deliver", report["next"]["action"])
+                self.assertFalse([b for b in report["blockers"] if "did not start one" in b])
 
 
 class MaintainerRerequest(Dispute):

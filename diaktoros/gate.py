@@ -1173,13 +1173,15 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     short = head[:7] if head else "?"
     base = str(((pr or {}).get("base") or {}).get("ref") or "")
     chain = facts.get("chain")
+    resolved = isinstance(chain, situation.Resolution)
     stacked = bool(base and base != loop["base"])
-    chain_reason = (chain.reason if isinstance(chain, situation.Resolution) else
-                    "parent chain not verified")
+    chain_reason = chain.reason if resolved else "parent chain not verified"
     if stacked and isinstance(facts.get("parent_readiness"), tuple):
         chain_reason += f"; parent approval: {facts['parent_readiness'][1]}"
-    chain_parents = (chain.parents if isinstance(chain, situation.Resolution) else ())
+    chain_parents = chain.parents if resolved else ()
     author = str(((pr or {}).get("user") or {}).get("login") or "").lower()
+    stranger = bool(author) and author not in config.reviewed_authors(loop)
+    served = f"this loop's fixers ({', '.join(loop['fixers'])}) or review-only authors"
     state = ("unknown" if pr is None
              else "merged" if (pr.get("merged") or pr.get("merged_at"))
              else str(pr.get("state") or "unknown"))
@@ -1233,9 +1235,9 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             blockers.append(stale_line)
 
     # -- the budget line ---------------------------------------------------------------------
+    unread = f"the review list could not be read ({reviews_error or 'no reason given'})"
     if reviews is None:
-        budget = (f"unknown — the review list could not be read "
-                  f"({reviews_error or 'no reason given'}); never guessed from a failed read")
+        budget = f"unknown — {unread}; never guessed from a failed read"
     elif at_head:
         last = [r for r in changes if isinstance(r, dict)][-1]
         budget = (f"{spent}/{cap} verdicts spent · {at_head} at head {short} — changes requested "
@@ -1263,7 +1265,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     if stacked and isinstance(pending_stack, dict):
         if (pending_stack.get("head") == head and pending_stack.get("base") == base and
                 pending_stack.get("base_sha") == ((pr or {}).get("base") or {}).get("sha") and
-                (not isinstance(chain, situation.Resolution) or
+                (not resolved or
                  (pending_stack.get("status") == chain.status and
                   pending_stack.get("reason") == chain.reason and
                   (not chain.identity or pending_stack.get("identity") == chain.identity.key)))):
@@ -1277,11 +1279,12 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     inflight_review = local["inflight_review"]
     inflight_fix = local["inflight_fix"]
     marker = local["marker"]
+    cap_spent = spent is not None and spent >= cap
+    adjudicated = bool((loop.get("adjudicator") or {}).get("route"))
     # A marker records a past escalation, not a permanent veto. A dismissed
     # verdict can lower the live count, and the reviewer gate then starts a new
     # review even when the marker still says awaiting-adjudication/adjudicating.
-    parked = local["parked"] and ((spent is not None and spent >= cap)
-                                  or escalated(marker, head))
+    parked = local["parked"] and (cap_spent or escalated(marker, head))
     # A ruling at this head ends adjudication: the marker stays, and the decision is a person's.
     ruled = _ruled(loop, number, head) if parked else None
     if parked and ruled == "ACCEPT" and ((marker or {}).get("escalated") or {}).get(
@@ -1295,12 +1298,15 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     stale_held = {seat for seat, entry in held.items() if entry.get("head") != head}
     # An isolated turn already in the ledger at this head (queued, held for CI, running) is
     # the gate's answer, not a missing one (#509): the run itself is reported as the blocker.
-    ledgered = set()
+    ledgered, disputed, db = set(), False, config.host_path("ledger")
     if head:
         from .run_supervisor import views
         for seat in ("reviewer", "fixer"):
-            if views.turn_state(config.host_path("ledger"), repo, number, head, seat) in LIVE_TURN:
+            if views.turn_state(db, repo, number, head, seat) in LIVE_TURN:
                 ledgered.add(seat)
+        # The fixer's answer to the verdict (#894), as the sweep reads it.
+        disputed = (bool(at_head) and "fixer" not in ledgered and not inflight_fix
+                    and views.disputed(db, repo, number, head, latest) is not None)
     # Parked for a ruling (or its delivery pending), both gates stop on purpose: no "gate did not
     # start one" line, which would read as something stuck while the ruling is the next event.
     ruling = parked or pending_delivery
@@ -1342,9 +1348,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                                 f"'paused' is not claimed: not seeing the hooks is not evidence they "
                                 f"are off")
             if reviews is None:
-                blockers.append(f"the review list could not be read "
-                                f"({reviews_error or 'no reason given'}) — the verdict count is "
-                                f"unknown, never guessed")
+                blockers.append(f"{unread} — the verdict count is unknown, never guessed")
             if not head:
                 blockers.append("PR head missing or malformed — no gate can authorize a run")
             if hold:
@@ -1366,9 +1370,8 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                                 "quarantined — fresh review situation; only a host-receipted "
                                 "post-boundary review counts (fresh reviewer turn: "
                                 f"{fresh.get('state') or 'not queued yet'})")
-            if author and author not in config.reviewed_authors(loop):
-                blockers.append(f"the author {author} is not one of this loop's fixers "
-                                f"({', '.join(loop['fixers'])}) or review-only authors")
+            if stranger:
+                blockers.append(f"the author {author} is not one of {served}")
             if shadow_held:
                 blockers.append(f"shadow review: {shadow_held}")
             if ruled:
@@ -1381,12 +1384,11 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             elif pending_delivery:
                 blockers.append(f"adjudicator delivery pending at head {short} — no ruling is "
                                 "promised until the route acknowledges delivery")
-            elif spent is not None and spent >= cap and not review_only:
+            elif cap_spent and not review_only:
                 blockers.append(f"{spent}/{cap} verdicts spent with no approval and no escalation "
                                 f"marker — the cap may not have fired (the watchdog reports this "
                                 f"shape too)")
-            if push_off_held and not parked and not pending_delivery and not (
-                    spent is not None and spent >= cap):
+            if push_off_held and not parked and not pending_delivery and not cap_spent:
                 blockers.append(f"{config.FIXER_PUSH_HOLD}: the changes-requested verdict at head "
                                 f"{short} starts no fixer turn until the loop opts in — "
                                 f"`{config.fixer_push_enable_command(loop)}`")
@@ -1406,7 +1408,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                                 "does not suppress a fresh reviewer request")
             if (at_head and "fixer" not in held and not inflight_fix and not queued_seat
                     and not push_off and not review_only and not ruling
-                    and "fixer" not in ledgered):
+                    and "fixer" not in ledgered and not disputed):
                 blockers.append(f"the changes-requested verdict at head {short} has no fix run out "
                                 f"— the fixer gate did not start one for that delivery")
             if (request_pending and not held and not inflight_review and not at_head
@@ -1422,6 +1424,9 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                                 f"fixer asks again")
 
     # -- the single next event ---------------------------------------------------------------
+    to_fixer = f"re-deliver the changes-requested review event for head {short} to the fixer gate "
+    fix_push = f"the fixer pushes a fix and re-requests review of head {short} — "
+    verdict_at = f"the reviewer's verdict at head {short} (round {(spent or 0) + 1} of {cap}) — "
     if pr is None:
         if pr_error:
             kind = "retry"
@@ -1453,16 +1458,15 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         action = ("mark the PR ready for review (the ready_for_review event) — the reviewer gate "
                   "ignores drafts")
     elif stacked:
-        kind = "wait" if isinstance(chain, situation.Resolution) and chain.status == "waiting" else "retry"
+        kind = "wait" if resolved and chain.status == "waiting" else "retry"
         action = (f"{chain_reason} — wait for a verified parent/base transition; "
                   "no automatic reviewer wake or gate authorization")
     elif boundary and transition.baseline_missing(boundary):
         kind = "wait"
         action = f"same-head retarget held permanently: {transition.MISSING_BASELINE}"
-    elif author and author not in config.reviewed_authors(loop):
+    elif stranger:
         kind = "none"
-        action = (f"nothing — the reviewer gate only serves PRs opened by this loop's fixers "
-                  f"({', '.join(loop['fixers'])}) or review-only authors")
+        action = f"nothing — the reviewer gate only serves PRs opened by {served}"
     elif reviews is None:
         kind = "retry"
         action = (f"retry the review list for {repo}#{number} "
@@ -1525,7 +1529,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                   f"review-only PR has no fixer, but its verdicts are capped at "
                   f"{config.review_only_cap(loop)} (`review_only_cap`, default the loop's "
                   f"`cap`); a maintainer's `--another-round` lifts it once reached")
-    elif pending_delivery and not (loop.get("adjudicator") or {}).get("route"):
+    elif pending_delivery and not adjudicated:
         kind = "adjudication"
         action = _adjudication_next(loop, head)
     elif pending_delivery:
@@ -1539,15 +1543,14 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     elif parked:
         kind = "adjudication"
         action = _adjudication_next(loop, head)
-    elif spent is not None and spent >= cap and not review_only:
-        if not (loop.get("adjudicator") or {}).get("route"):
+    elif cap_spent and not review_only:
+        if not adjudicated:
             kind = "adjudication"
             action = _adjudication_next(loop, head)
         else:
             kind = "retry"
-            action = (f"re-deliver the {'changes-requested review' if at_head else 'review request'} "
-                      f"event for head {short} to the {'fixer' if at_head else 'reviewer'} gate "
-                      "to create and deliver the missing breach marker — no ruling is underway yet")
+            action = (f"the next armed watchdog sweep raises the missing breach marker at head "
+                      f"{short} and hands it to adjudication (#575) — no ruling is underway yet")
     elif push_off_held:
         kind = "operator"
         action = (f"operator decision: unattended fixer pushes are off for this loop, so the "
@@ -1556,10 +1559,14 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                   f"watchdog sweep (or `hermes dk drain --loop {loop['id']} --seat fixer`) "
                   "then starts the fix run for this head; or fix it by hand, push, and re-request "
                   "review")
+    elif disputed:
+        kind = "adjudication" if adjudicated else "operator"
+        action = (f"the fixer disputed the review at head {short}, every finding as no defect — "
+                  + ("the next armed watchdog sweep sends it for a ruling" if kind == "adjudication"
+                     else "your decision: " + views.dispute_choices(loop["id"], number)))
     elif stale_held == {"reviewer"} and at_head:
         kind = "fixer-retry"
-        action = (f"re-deliver the changes-requested review event for head {short} to the fixer gate "
-                  "— that verdict hands off the PR and releases the stale reviewer lock")
+        action = to_fixer + "— that verdict hands off the PR and releases the stale reviewer lock"
     elif stale_held == {"fixer"} and request_pending:
         kind = "retry"
         action = (f"re-deliver the review_requested event for head {short} to the reviewer gate "
@@ -1570,12 +1577,10 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                   f"before re-driving the current head {short}; an old-head run cannot finish it")
     elif "reviewer" in held and not at_head:
         kind = "review-verdict"
-        action = (f"the reviewer's verdict at head {short} "
-                  f"(round {(spent or 0) + 1} of {cap}) — the reviewer holds the PR right now")
+        action = verdict_at + "the reviewer holds the PR right now"
     elif "fixer" in held:
         kind = "fixer-push"
-        action = (f"the fixer pushes a fix and re-requests review of head {short} — asking is what "
-                  f"hands the PR back, and it is what frees the fixer's slot")
+        action = fix_push + "asking is what hands the PR back, and it is what frees the fixer's slot"
     elif queued_seat:
         kind = "release"
         action = (f"a {queued_seat} slot frees — the queued run starts then (a verdict or a handoff "
@@ -1590,16 +1595,13 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                   "starts the queued run")
     elif inflight_review:
         kind = "review-verdict"
-        action = (f"the reviewer's verdict at head {short} (round {(spent or 0) + 1} of {cap}) — a "
-                  f"review for this head is already marked in flight")
+        action = verdict_at + "a review for this head is already marked in flight"
     elif inflight_fix:
         kind = "fixer-push"
-        action = (f"the fixer pushes a fix and re-requests review of head {short} — a fix run for "
-                  f"this head is already marked in flight")
+        action = fix_push + "a fix run for this head is already marked in flight"
     elif at_head:
         kind = "fixer-retry"
-        action = (f"re-deliver the changes-requested review event for head {short} to the fixer gate "
-                  "after checking why its run did not start — no fixer is running to push a fix")
+        action = to_fixer + "after checking why its run did not start — no fixer is running to push a fix"
     elif request_pending:
         kind = "retry"
         action = (f"a review run for head {short}: the pending request for "
@@ -1644,10 +1646,10 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     return {
         "pr": number, "repo": repo, "url": pr_url(loop, number), "state": state,
         "head": head, "cap": cap, "spent": spent, "at_head": at_head,
-        "chain": {"status": chain.status if isinstance(chain, situation.Resolution) else
+        "chain": {"status": chain.status if resolved else
                   ("unverified" if stacked else "direct"), "reason": chain_reason if stacked else "direct trunk base",
                   "parents": list(chain_parents),
-                  "identity": chain.identity.key if isinstance(chain, situation.Resolution) and chain.identity else ""},
+                  "identity": chain.identity.key if resolved and chain.identity else ""},
         "approved": approved, "stale_approval": stale_line, "reviewed": reviewed, "request_pending": request_pending,
         "read_at": iso_at(now),
         "state_line": state_line, "budget": budget, "seat": local["seat"], "queue": local["queue"],

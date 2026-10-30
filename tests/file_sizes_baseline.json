@@ -21,7 +21,7 @@
     "diaktoros/state.py": 1257,
     "diaktoros/stats.py": 1241,
     "diaktoros/trusted_turn.py": 939,
-    "scripts/watchdog.py": 1620
+    "scripts/watchdog.py": 1618
   },
   "functions": {
     "diaktoros/arm_action.py::set_hooks": 157,
@@ -61,7 +61,7 @@
     "diaktoros/doctor/seat_checks.py::check_seat_extras": 111,
     "diaktoros/drain.py::drain": 86,
     "diaktoros/gate.py::_explain_state": 118,
-    "diaktoros/gate.py::explain": 580,
+    "diaktoros/gate.py::explain": 579,
     "diaktoros/gate.py::shadow_state": 106,
     "diaktoros/gate_failures.py::gateway_webhook_setting": 117,
     "diaktoros/gate_failures.py::run": 151,
@@ -105,7 +105,7 @@
     "diaktoros/trusted_turn.py::run_turn": 288,
     "scripts/gate_fixer.py::main": 323,
     "scripts/gate_reviewer.py::decide": 237,
-    "scripts/watchdog.py::_sweep_loop_locked": 573,
+    "scripts/watchdog.py::_sweep_loop_locked": 571,
     "scripts/watchdog.py::act_on_conflicts": 108,
     "scripts/watchdog.py::read_health": 91,
     "scripts/watchdog.py::reconcile_stacked": 106,

@@ -880,7 +880,9 @@ def group_explain() -> None:
     reset(prs={"7": {**pr(7, head=HEAD_B), "reviews": spent_reviews}})
     rc, out = explain()
     check("cap spent with no marker: the gate never fired", "no escalation marker" in out, True)
-    check("  missing marker retries cap event", "create and deliver the missing breach marker" in out, True)
+    # #575: the sweep raises the missing marker itself; a re-delivered event is not the next step.
+    check("  missing marker: the sweep raises it", "sweep raises the missing breach marker" in out, True)
+    check("  missing marker: no replay asked", "re-deliver" in out, False)
 
     without_adjudicator(loop_id="widgets-solo")
     rc, out = explain(loop="widgets-solo")
