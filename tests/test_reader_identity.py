@@ -23,6 +23,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import cli, config, doctor
+from diaktoros.doctor import identity_checks
 from diaktoros.cli import operations as cli_operations
 from diaktoros.cli import common as cli_common  # noqa: E402
 
@@ -245,7 +246,7 @@ class ReaderIdentityTests(_Loop):
 
     def test_doctor_flags_a_reader_on_a_seat(self):
         self.install_legacy_shared_reader()
-        check = doctor.check_read_token(config.load_id("widgets"))
+        check = identity_checks.check_read_token(config.load_id("widgets"))
         self.assertEqual(check.status, doctor.MISMATCH)
         self.assertIn("also the reviewer seat", check.detail)
         self.assertIn("four-identity rule", check.detail)
@@ -261,7 +262,7 @@ class ReaderIdentityTests(_Loop):
         data = json.loads(self.loop_file().read_text())
         self.assertEqual(data["read_token"], "new-reader")
         self.assertEqual(data["tokens"]["new-reader"], str(new))
-        self.assertEqual(doctor.check_read_token(config.load_id("widgets")).status, doctor.VERIFIED)
+        self.assertEqual(identity_checks.check_read_token(config.load_id("widgets")).status, doctor.VERIFIED)
         # An already-mapped login needs no --token.
         rc, out = self.run_cli(["set", "--loop", "widgets", "--read-token", READER])
         self.assertEqual(rc, 0, out)
@@ -379,7 +380,7 @@ class ReaderIdentityTests(_Loop):
         self.assertIn("read_token: (none) → fresh-reader", out)
         loop = config.load_id("widgets")
         self.assertEqual(loop["read_token"], "fresh-reader")
-        self.assertEqual(doctor.check_read_token(loop).status, doctor.VERIFIED)
+        self.assertEqual(identity_checks.check_read_token(loop).status, doctor.VERIFIED)
         # The repair still holds the four-identity rule, and repairs nothing else.
         del data["tokens"]
         data["tokens"] = {REV: str(self.keys / "rev-pat"), FIX: str(self.keys / "fix-pat")}

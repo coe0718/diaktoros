@@ -136,8 +136,8 @@ def cmd_models(args) -> int:
     Changing a seat's model is changing that profile's model in Hermes (`hermes -p NAME model`);
     this only lists. Exit 1 when the profile, its provider or the catalog cannot answer.
     """
-    from .. import doctor, seat_model
-    from ..doctor import hook_checks
+    from .. import seat_model
+    from ..doctor import hook_checks, seat_checks
     if bool(args.profile) == bool(args.seat):
         print("pass exactly one of --profile-name NAME or --seat reviewer|fixer|adjudicator")
         return 2
@@ -163,7 +163,7 @@ def cmd_models(args) -> int:
     if problem:
         print(f"❌ {problem}")
         return 1
-    settings, bad = doctor.runtime_settings()
+    settings, bad = seat_checks.runtime_settings()
     try:
         answer = seat_model.run_resolver(profile, "models", settings if bad is None else None)
     except seat_model.SeatModelError as exc:

@@ -210,8 +210,9 @@ class Authorship(fg.Base):
     def check_loop(self):
         # Every other check is stubbed out: this asks only whether ``check_loop`` calls ours. The
         # checks live in the core and its submodules (#1349); each is stubbed where it lives.
-        from diaktoros.doctor import hook_checks, route_checks
-        modules = (doctor, hook_checks, route_checks)
+        from diaktoros.doctor import (cron_checks, hook_checks, identity_checks, route_checks,
+                                      seat_checks)
+        modules = (doctor, hook_checks, route_checks, identity_checks, seat_checks, cron_checks)
         stubs = [(module, name) for module in modules for name in vars(module)
                  if name.startswith("check_") and name not in ("check_loop", "check_authorship")]
         with contextlib.ExitStack() as stack:
@@ -227,7 +228,7 @@ class Authorship(fg.Base):
                 stack.enter_context(mock.patch.object(module, name, return_value=[]))
             stack.enter_context(mock.patch.object(doctor, "check_review_only_update",
                                                   return_value=None))
-            stack.enter_context(mock.patch.object(doctor, "check_adjudicator_identity",
+            stack.enter_context(mock.patch.object(identity_checks, "check_adjudicator_identity",
                                                   return_value=None))
             stack.enter_context(mock.patch.object(doctor, "check_duplicate_repo",
                                                   return_value=None))

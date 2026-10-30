@@ -18,6 +18,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import cli, config, doctor
+from diaktoros.doctor import cron_checks
 from diaktoros.cli import install as cli_install  # noqa: E402
 from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
 
@@ -183,7 +184,7 @@ class SharedJobTests(unittest.TestCase):
              "script": cli.SHIM_NAME, "no_agent": True, "enabled": True, "state": "scheduled",
              "schedule": {"kind": "interval", "minutes": 15},
              "next_run_at": "2030-01-01T00:00:00+00:00"}]}))
-        check = doctor.check_cron_job(config.load_id("widgets"))
+        check = cron_checks.check_cron_job(config.load_id("widgets"))
         self.assertTrue(check.failed, check.detail)
         self.assertIn("per-loop watchdog job", check.detail)
         self.assertIn("N² sweeps per tick", check.detail)
@@ -206,7 +207,7 @@ class SharedJobTests(unittest.TestCase):
 
     def test_migration_remedy_keeps_deliver_target_and_schedule(self):
         self._write_store([self._legacy("legacy1", 30, "telegram")])
-        check = doctor.check_cron_job(config.load_id("widgets"))
+        check = cron_checks.check_cron_job(config.load_id("widgets"))
         self.assertTrue(check.failed, check.detail)   # three loops: N² applies
         self.assertIn("cron create 30m", check.fix)
         self.assertIn("--deliver telegram", check.fix)
@@ -215,7 +216,7 @@ class SharedJobTests(unittest.TestCase):
     def test_migration_remedy_reports_disagreeing_jobs(self):
         self._write_store([self._legacy("legacy1", 30, "telegram"),
                            self._legacy("legacy2", 15, "local")])
-        check = doctor.check_cron_job(config.load_id("widgets"))
+        check = cron_checks.check_cron_job(config.load_id("widgets"))
         self.assertTrue(check.failed, check.detail)
         self.assertIn("disagree", check.fix)
         self.assertIn("legacy1: every 30m, deliver telegram", check.fix)
@@ -226,7 +227,7 @@ class SharedJobTests(unittest.TestCase):
         cron = self._legacy("legacy1", 30, "telegram")
         cron["schedule"] = {"kind": "cron", "expr": "0 9 * * *", "display": "0 9 * * *"}
         self._write_store([cron, self._legacy("legacy2", 15, "local")])
-        check = doctor.check_cron_job(config.load_id("widgets"))
+        check = cron_checks.check_cron_job(config.load_id("widgets"))
         self.assertIn("legacy1: 0 9 * * *, deliver telegram", check.fix)
         self.assertNotIn("every 0 9", check.fix)
         self.assertIn("legacy2: every 15m, deliver local", check.fix)
@@ -235,17 +236,17 @@ class SharedJobTests(unittest.TestCase):
         for loop_id in ("gadgets", "gizmos"):
             (config.config_dir() / f"{loop_id}.json").unlink()
         self._write_store([self._legacy("legacy1", 30, "telegram")])
-        check = doctor.check_cron_job(config.load_id("widgets"))
+        check = cron_checks.check_cron_job(config.load_id("widgets"))
         self.assertFalse(check.failed, check.detail)
         self.assertEqual(check.status, doctor.UNKNOWN)
         self.assertIn("--deliver telegram", check.fix)
         (config.config_dir() / "gadgets.json").write_text(json.dumps(raw_loop("gadgets")))
-        check = doctor.check_cron_job(config.load_id("widgets"))
+        check = cron_checks.check_cron_job(config.load_id("widgets"))
         self.assertTrue(check.failed, check.detail)
 
     def test_doctor_verifies_the_shared_job(self):
         cli_install._install_schedule({"id": "widgets"}, "15m", "local")
-        check = doctor.check_cron_job(config.load_id("widgets"))
+        check = cron_checks.check_cron_job(config.load_id("widgets"))
         self.assertFalse(check.failed, check.detail)
         self.assertEqual(check.status, doctor.VERIFIED, check.detail)
 

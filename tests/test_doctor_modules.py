@@ -21,7 +21,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from diaktoros import doctor  # noqa: E402
 
 PACKAGE = pathlib.Path(doctor.__file__).resolve().parent
-SUBMODULES = ("hook_checks", "route_checks")
+SUBMODULES = ("hook_checks", "route_checks", "identity_checks", "seat_checks", "cron_checks")
 
 
 def _top_level_names(path: pathlib.Path) -> set[str]:

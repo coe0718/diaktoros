@@ -49,7 +49,7 @@ import tempfile
 from urllib.parse import urlsplit
 
 from . import config, doctor, envnames, gh
-from .doctor import hook_checks
+from .doctor import cron_checks, hook_checks, identity_checks
 
 PASS, FAIL, WARN, SKIP = "pass", "fail", "warn", "skip"
 MARKS = {PASS: "✅", FAIL: "❌", WARN: "⚠️ ", SKIP: "⏭️ "}
@@ -823,7 +823,7 @@ def check_identities(report: Report, loop: dict) -> bool:
         if not raw and github_app.is_app(loop, login):
             # A GitHub App identity (#1163): its key, then its live bot principal — minted and
             # read with the App's own credentials, never GET /user.
-            check = doctor.check_app_identity(loop, login, name)
+            check = identity_checks.check_app_identity(loop, login, name)
             if check.status != doctor.VERIFIED:
                 ok = False
                 report.add(step, name, FAIL, check.detail, check.fix)
@@ -857,7 +857,7 @@ def check_identities(report: Report, loop: dict) -> bool:
             report.add(step, name, FAIL, f"{login}: no token file mapped",
                        f"run `hermes dk set --loop <id> --token {login}=/path/to/pat` (chmod 600)")
             continue
-        check = doctor.check_token(login, raw)
+        check = identity_checks.check_token(login, raw)
         if check.status != doctor.VERIFIED:
             ok = False
             report.add(step, name, FAIL, f"{login}: {check.detail}", check.fix)
@@ -1139,7 +1139,7 @@ def check_ledger(report: Report, loop: dict, runtime_file: Path, settings: dict 
                        f"`chmod 600 {runtime_file}`")
         else:
             report.add(step, "ledger:production", PASS, "the route's enqueue accepts this runtime file")
-    for check in (doctor.check_state_dir(loop), doctor.check_shim(loop), doctor.check_cron_job(loop),
+    for check in (doctor.check_state_dir(loop), cron_checks.check_shim(loop), cron_checks.check_cron_job(loop),
                   hook_checks.check_gateway(loop, offline=False)):
         _from_doctor(report, step, check)
     reason = observer.unusable(loop)

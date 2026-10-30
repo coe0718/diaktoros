@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import cli, config, doctor
+from diaktoros.doctor import identity_checks
 from diaktoros.config import credentials  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
@@ -311,20 +312,20 @@ class TokenFileSettingsTests(unittest.TestCase):
     def test_doctor_reports_token_file_path_exists_private(self):
         self.install("--adjudicator-login", ADJ, "--token", f"{ADJ}={self.pats['adj']}")
         loop = config.load_id("widgets")
-        rev = doctor.check_credential(loop, "reviewer")
+        rev = identity_checks.check_credential(loop, "reviewer")
         self.assertEqual(rev.status, doctor.VERIFIED, rev.detail)
         self.assertIn(f"{self.pats['rev']} (exists: yes, private: yes)", rev.detail)
-        adj = doctor.check_adjudicator_identity(loop)
+        adj = identity_checks.check_adjudicator_identity(loop)
         self.assertEqual(adj.status, doctor.VERIFIED, adj.detail)
         self.assertIn(f"{self.pats['adj']} (exists: yes, private: yes)", adj.detail)
         self.pats["fix"].chmod(0o644)
         self.pats["adj"].chmod(0o644)
-        fix = doctor.check_credential(loop, "fixer")
+        fix = identity_checks.check_credential(loop, "fixer")
         self.assertEqual(fix.status, doctor.MISMATCH)
         self.assertIn("private: no", fix.detail)
-        self.assertEqual(doctor.check_adjudicator_identity(loop).status, doctor.MISMATCH)
+        self.assertEqual(identity_checks.check_adjudicator_identity(loop).status, doctor.MISMATCH)
         self.pats["fix"].unlink()
-        missing = doctor.check_credential(loop, "fixer")
+        missing = identity_checks.check_credential(loop, "fixer")
         self.assertEqual(missing.status, doctor.ABSENT)
         self.assertIn("exists: no", missing.detail)
         buf = io.StringIO()
@@ -368,10 +369,10 @@ class TokenFileSettingsTests(unittest.TestCase):
     def test_doctor_token_line_refuses_a_foreign_owned_private_file(self):
         path = self.pats["rev"]
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(doctor.check_token("rev-bot", str(path)).status, doctor.VERIFIED)
+        self.assertEqual(identity_checks.check_token("rev-bot", str(path)).status, doctor.VERIFIED)
         with patch.object(credentials.os, "getuid", return_value=os.getuid() + 1):
-            check = doctor.check_token("rev-bot", str(path))
-            loop_checks = doctor.check_tokens({"tokens": {"rev-bot": str(path)}})
+            check = identity_checks.check_token("rev-bot", str(path))
+            loop_checks = identity_checks.check_tokens({"tokens": {"rev-bot": str(path)}})
         self.assertEqual(check.status, doctor.MISMATCH)
         self.assertIn("owned by uid", check.detail)
         self.assertEqual([c.status for c in loop_checks], [doctor.MISMATCH])
@@ -383,10 +384,10 @@ class TokenFileSettingsTests(unittest.TestCase):
         path = self.pats["rev"]
         self.addCleanup(os.chdir, os.getcwd())
         os.chdir(path.parent)
-        check = doctor.check_token("rev-bot", path.name)        # a 0600 file you own
+        check = identity_checks.check_token("rev-bot", path.name)        # a 0600 file you own
         self.assertEqual(check.status, doctor.MISMATCH)
         self.assertIn("not an absolute path", check.detail)
-        self.assertEqual(doctor.check_token("rev-bot", str(path)).status, doctor.VERIFIED)
+        self.assertEqual(identity_checks.check_token("rev-bot", str(path)).status, doctor.VERIFIED)
 
 
 if __name__ == "__main__":

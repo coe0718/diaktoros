@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_app_cli as app_cli  # noqa: E402
 import test_token_file_settings as tfs  # noqa: E402
 from diaktoros import backup, config, doctor, gh, github_app, selftest  # noqa: E402
+from diaktoros.doctor import identity_checks, seat_checks  # noqa: E402
 
 BOT_REV, BOT_READ = app_cli.BOT_REV, app_cli.BOT_READ
 BAD = (doctor.ABSENT, doctor.MISMATCH)
@@ -41,39 +42,39 @@ class AppLoop(app_cli.Base):
 
 class Doctor(AppLoop):
     def test_an_app_seat_reads_as_verified_with_its_key(self):
-        got = doctor.check_credential(self.loop, "reviewer")
+        got = identity_checks.check_credential(self.loop, "reviewer")
         self.assertEqual(got.status, doctor.VERIFIED, got.detail)
         self.assertIn(f"{BOT_REV} → GitHub App 2, key {self.rev_key}", got.detail)
         self.assertNotIn("--token", got.fix or "")
-        self.assertEqual(doctor.check_credential(self.loop, "fixer").status, doctor.VERIFIED)
+        self.assertEqual(identity_checks.check_credential(self.loop, "fixer").status, doctor.VERIFIED)
 
     def test_an_app_reader_and_every_credential_line_pass(self):
-        self.assertEqual(doctor.check_read_token(self.loop).status, doctor.VERIFIED)
-        self.assertIn("a GitHub App", doctor.check_read_token(self.loop).detail)
-        checks = doctor.check_tokens(self.loop)
+        self.assertEqual(identity_checks.check_read_token(self.loop).status, doctor.VERIFIED)
+        self.assertIn("a GitHub App", identity_checks.check_read_token(self.loop).detail)
+        checks = identity_checks.check_tokens(self.loop)
         self.assertEqual({c.name for c in checks},
                          {f"token:{tfs.FIX}", f"app:{BOT_REV}", f"app:{BOT_READ}"})
         self.assertFalse([c for c in checks if c.status in BAD], [c.detail for c in checks])
 
     def test_a_loose_or_missing_key_is_named_with_a_key_fix(self):
         self.rev_key.chmod(0o644)
-        got = doctor.check_credential(self.loop, "reviewer")
+        got = identity_checks.check_credential(self.loop, "reviewer")
         self.assertEqual(got.status, doctor.MISMATCH)
         self.assertIn(f"chmod 600 {self.rev_key}", got.fix)
         self.rev_key.unlink()
-        got = doctor.check_credential(self.loop, "reviewer")
+        got = identity_checks.check_credential(self.loop, "reviewer")
         self.assertEqual(got.status, doctor.ABSENT)
         self.assertIn("private key", got.fix)
 
     def test_no_signer_is_named(self):
         with mock.patch.object(github_app, "signer", return_value=("", None)):
-            got = doctor.check_credential(self.loop, "reviewer")
+            got = identity_checks.check_credential(self.loop, "reviewer")
         self.assertEqual(got.status, doctor.ABSENT)
         self.assertIn("cryptography", got.fix)
 
     def test_expiry_and_scopes_say_an_app_has_neither(self):
         with mock.patch.object(gh, "request", side_effect=AssertionError("no /user for an App")):
-            checks = {c.name: c for c in doctor.check_token_expiry_scopes(self.loop, offline=True)}
+            checks = {c.name: c for c in identity_checks.check_token_expiry_scopes(self.loop, offline=True)}
         for login in (BOT_REV, BOT_READ):
             self.assertEqual(checks[f"token-expiry:{login}"].status, doctor.VERIFIED)
             self.assertIn("no PAT expiry", checks[f"token-expiry:{login}"].detail)
@@ -81,15 +82,15 @@ class Doctor(AppLoop):
     def test_an_app_triage_login_and_adjudicator_read_as_verified(self):
         self.loop["triage"] = {**self.loop.get("triage", {}), "route": "widgets-triage",
                                "authors": ["fix-acct"], "labels": ["bug"]}
-        triage = {c.name: c for c in doctor.check_triage(self.loop)}["credential:triage"]
+        triage = {c.name: c for c in seat_checks.check_triage(self.loop)}["credential:triage"]
         self.assertEqual(triage.status, doctor.VERIFIED, triage.detail)
         arbiter = self.key("adj")
         self.loop["apps"]["acme-arbiter[bot]"] = {"app_id": 3, "key_file": str(arbiter)}
         self.loop["seats"]["adjudicator"] = {"login": "acme-arbiter[bot]"}
-        got = doctor.check_adjudicator_identity(self.loop)
+        got = identity_checks.check_adjudicator_identity(self.loop)
         self.assertEqual(got.status, doctor.VERIFIED, got.detail)
         self.loop["apps"]["acme-arbiter[bot]"]["key_file"] = str(self.rev_key)
-        got = doctor.check_adjudicator_identity(self.loop)
+        got = identity_checks.check_adjudicator_identity(self.loop)
         self.assertEqual(got.status, doctor.MISMATCH)
         self.assertIn("same token file as the reviewer", got.detail)
 
@@ -110,7 +111,7 @@ class Live(AppLoop):
         with mock.patch.object(github_app, "_as_app", side_effect=as_app), \
                 mock.patch.object(github_app, "installation_token",
                                   side_effect=AssertionError("doctor must not mint")):
-            return doctor.check_app_live(self.loop, BOT_REV, offline=False)
+            return identity_checks.check_app_live(self.loop, BOT_REV, offline=False)
 
     def test_an_installed_app_is_verified_with_its_installation(self):
         got = self.live({"id": 2, "slug": "acme-reviewer"}, {"id": 173885357})
@@ -137,7 +138,7 @@ class Live(AppLoop):
         self.assertEqual(self.live(None, None).status, doctor.MISMATCH)
 
     def test_offline_says_not_probed_and_check_loop_runs_it_per_app(self):
-        self.assertEqual(doctor.check_app_live(self.loop, BOT_REV, offline=True).status,
+        self.assertEqual(identity_checks.check_app_live(self.loop, BOT_REV, offline=True).status,
                          doctor.UNKNOWN)
         names = {c.name for c in doctor.check_loop(self.loop, offline=True)}
         self.assertTrue({f"app-live:{BOT_REV}", f"app-live:{BOT_READ}"} <= names, names)
