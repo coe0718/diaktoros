@@ -3,6 +3,7 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import sys, pathlib, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from diaktoros import doctor
+from diaktoros.doctor import route_checks
 
 
 class CronFixDeliver(unittest.TestCase):
@@ -24,7 +25,7 @@ class CronFixDeliver(unittest.TestCase):
             {"id": "x"}, [doctor._job_ref({"id": ""}, name)]))
 
     def test_repair_fix_names_runnable_command(self):
-        self.assertNotIn("set/apply/uninstall", doctor.REPAIR_FIX)
+        self.assertNotIn("set/apply/uninstall", route_checks.REPAIR_FIX)
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros import cli, config, doctor, gate_shims, gh, routes  # noqa: E402
+from diaktoros.doctor import route_checks  # noqa: E402
 from diaktoros.cli import route_sync  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
 
@@ -262,7 +263,7 @@ class TriageVerb(unittest.TestCase):
         with mock.patch.object(gh, "api", side_effect=api):
             cli_common._install_hooks(loop, "admin")
         self.assertEqual(posted, [["pull_request"], ["pull_request_review"], ["issues"]])
-        names = [check.name for check in doctor.check_routes(loop)]
+        names = [check.name for check in route_checks.check_routes(loop)]
         self.assertIn(f"route:{ROUTE}", names)
         triage = {check.name: check for check in doctor.check_triage(loop)}
         self.assertEqual(triage["profile:triage"].status, doctor.VERIFIED)

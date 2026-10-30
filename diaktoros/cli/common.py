@@ -25,6 +25,7 @@ from .. import (
     route_intent,
     routes,
 )
+from ..doctor import hook_checks
 from ..config import host_guards
 
 
@@ -111,7 +112,7 @@ def admin_unmapped(loop: dict, admin: str, *, also: set | None = None) -> str:
 # One matcher for every caller (doctor.split_route_hooks): arm and selftest --ping credit a hook
 # only at the registry's route URL; uninstall and init's stale-hook guard (ownership) also count
 # the URL the loop's config gives a route the registry no longer holds.
-_hook_route_name = doctor.hook_route_name
+_hook_route_name = hook_checks.hook_route_name
 
 
 def _routes_of(loop: dict) -> dict:
@@ -589,8 +590,8 @@ def _classify_hooks(loop: dict, login: str | None) -> tuple[list[dict] | None, l
            or not isinstance(hook["config"].get("url"), str) for hook in listing):
         return None, [], "invalid hook listing"
     try:
-        own, foreign = doctor.split_route_hooks(loop, listing, _hook_route_names(loop),
-                                                ownership=True)
+        own, foreign = hook_checks.split_route_hooks(loop, listing, _hook_route_names(loop),
+                                                     ownership=True)
     except config.ConfigError as exc:
         return None, [], f"cannot resolve the loop's webhook host: {exc}"
     return own, foreign, ""
@@ -606,8 +607,8 @@ def _foreign_lines(loop: dict, foreign: list[dict]) -> list[str]:
     lines = []
     for hook in foreign:
         name = _hook_route_name(hook)
-        why = doctor.hook_url_difference(str(hook["config"].get("url") or ""),
-                                         (doctor.install_hook_urls(loop, name) or [""])[0])
+        why = hook_checks.hook_url_difference(str(hook["config"].get("url") or ""),
+                                              (hook_checks.install_hook_urls(loop, name) or [""])[0])
         lines.append(f"hook {hook['id']} posts to route {name!r} at {why} — not this install's "
                      "hook (not the route's URL), left alone")
     return lines

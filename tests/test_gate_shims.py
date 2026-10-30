@@ -30,6 +30,7 @@ from unittest.mock import patch
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import cli, config, doctor, routes  # noqa: E402
+from diaktoros.doctor import hook_checks  # noqa: E402
 from diaktoros.cli import route_sync  # noqa: E402
 from diaktoros.cli import apply_command  # noqa: E402
 from diaktoros.cli import install as cli_install  # noqa: E402
@@ -887,7 +888,7 @@ class DoctorApplyUninstall(Base):
         self.assertNotIn(REVIEW_KEY, out, "never print a secret")
         for name in ("widgets-review", "widgets-fix"):
             self.assertEqual(routes.route(name)["host"], "https://moved.example")
-        hooks = [c for c in doctor.check_hooks(config.load_id("widgets"), offline=False)]
+        hooks = [c for c in hook_checks.check_hooks(config.load_id("widgets"), offline=False)]
         self.assertTrue(hooks and all(c.status == doctor.VERIFIED for c in hooks),
                         [(c.name, c.status, c.detail) for c in hooks])
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
@@ -1047,7 +1048,7 @@ class DoctorApplyUninstall(Base):
 
     def hook_check(self):
         loop = config.load_id("widgets")
-        return {c.name: c for c in doctor.check_hooks(loop, offline=False)}["hook:widgets-review"]
+        return {c.name: c for c in hook_checks.check_hooks(loop, offline=False)}["hook:widgets-review"]
 
     def test_doctor_does_not_verify_a_hook_whose_url_has_a_trailing_slash(self):
         self.install()
@@ -1970,7 +1971,7 @@ class HookAndCronRemedies(Base):
                            "secret": "placeholder-hook-key"}}
 
     def hook_checks(self):
-        return {c.name: c for c in doctor.check_hooks(config.load_id("widgets"), offline=False)}
+        return {c.name: c for c in hook_checks.check_hooks(config.load_id("widgets"), offline=False)}
 
     def run_printed(self, fix):
         self.assertNotIn("re-run init", fix, "init refuses an existing loop")

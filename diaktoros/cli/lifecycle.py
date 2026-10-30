@@ -24,6 +24,7 @@ from .. import (
     route_intent,
     routes,
 )
+from ..doctor import hook_checks
 from . import common as cli_common
 from .common import SHARED_JOB_NAME, SHARED_JOB_NAMES, SHIM
 
@@ -788,7 +789,7 @@ def cmd_uninstall(args) -> int:
         if error:
             return _uninstall_refused(loop, [f"could not read the repo's hooks: {error}"], [], args)
         matching = [hook for hook in listing
-                    if not isinstance(hook, dict) or doctor.hook_route_name(hook)
+                    if not isinstance(hook, dict) or hook_checks.hook_route_name(hook)
                     in cli_common._hook_route_names(loop)]
         if any(not isinstance(hook, dict) or not isinstance(hook.get("id"), int)
                for hook in matching):

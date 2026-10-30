@@ -137,6 +137,7 @@ def cmd_models(args) -> int:
     this only lists. Exit 1 when the profile, its provider or the catalog cannot answer.
     """
     from .. import doctor, seat_model
+    from ..doctor import hook_checks
     if bool(args.profile) == bool(args.seat):
         print("pass exactly one of --profile-name NAME or --seat reviewer|fixer|adjudicator")
         return 2
@@ -155,7 +156,7 @@ def cmd_models(args) -> int:
                     return 2
                 loop = loops[0]
         except config.ConfigError as exc:
-            print(f"cannot read loop: {doctor._safe_report_text(str(exc))}")
+            print(f"cannot read loop: {hook_checks._safe_report_text(str(exc))}")
             return 2
         profile = config.seat_profile(loop, seat)
     problem = seat_model.profile_problem(profile, seat or "requested")

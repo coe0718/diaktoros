@@ -20,6 +20,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros import cli, config, doctor, routes  # noqa: E402
+from diaktoros.doctor import hook_checks  # noqa: E402
 from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
 
@@ -803,14 +804,14 @@ class DoctorDuplicateTest(Base):
                   "config": {"url": url, "content_type": "json"}},
                  {"id": 101, "active": False, "events": ["pull_request"],
                   "config": {"url": url, "content_type": "json"}}]
-        check = doctor.check_hook(loop, hooks, "reviewer", "widgets-review", url)
+        check = hook_checks.check_hook(loop, hooks, "reviewer", "widgets-review", url)
         self.assertEqual(check.status, doctor.MISMATCH)
         self.assertIn("2 repo hooks", check.detail)
         self.assertIn("1 active", check.detail)
         self.assertIn("`gh api -X DELETE repos/acme/widgets/hooks/3`", check.fix)
         self.assertIn("uninstall --loop widgets", check.fix)
         self.assertNotIn("hooks/101", check.fix)  # the newest is the one kept
-        single = doctor.check_hook(loop, hooks[:1], "reviewer", "widgets-review", url)
+        single = hook_checks.check_hook(loop, hooks[:1], "reviewer", "widgets-review", url)
         self.assertEqual(single.status, doctor.VERIFIED)
 
     def test_two_hooks_on_different_gateways_are_not_duplicates(self):
@@ -821,7 +822,7 @@ class DoctorDuplicateTest(Base):
                              "content_type": "json"}},
                  {"id": 101, "active": True, "events": ["pull_request"],
                   "config": {"url": url, "content_type": "json"}}]
-        check = doctor.check_hook(loop, hooks, "reviewer", "widgets-review", url)
+        check = hook_checks.check_hook(loop, hooks, "reviewer", "widgets-review", url)
         self.assertEqual(check.status, doctor.VERIFIED, check.detail)
 
 
@@ -834,7 +835,7 @@ class DoctorDeliveriesTest(Base):
         hook = {"id": 5, "active": True, "events": ["pull_request"],
                 "config": {"url": url, "content_type": "json"}}
         self.world(hooks=[hook], deliveries={"5": deliveries})
-        return doctor.check_hook(loop, [hook], "reviewer", "widgets-review", url)
+        return hook_checks.check_hook(loop, [hook], "reviewer", "widgets-review", url)
 
     @staticmethod
     def delivery(n, code, at):

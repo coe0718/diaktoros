@@ -10,7 +10,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from diaktoros import doctor, gate, gh  # noqa: E402
+from diaktoros import gate, gh  # noqa: E402
+from diaktoros.doctor import hook_checks  # noqa: E402
 
 LOOP = {"id": "one", "repo": "owner/one",
         "seats": {"reviewer": {"route": "one-review"}, "fixer": {"route": "one-fix"}}}
@@ -34,7 +35,7 @@ class GateHooksPaging(unittest.TestCase):
                 return None, "HTTP 500"
             return pages[page - 1], ""
         with mock.patch.object(gh, "fetch", side_effect=fetch), \
-                mock.patch.object(doctor, "seat_hook_url", lambda loop, route: URLS[route]):
+                mock.patch.object(hook_checks, "seat_hook_url", lambda loop, route: URLS[route]):
             return gate.hooks_read(LOOP)
 
     def test_seat_hooks_on_a_later_page_are_armed(self):
