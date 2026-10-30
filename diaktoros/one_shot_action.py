@@ -18,7 +18,6 @@ import io
 import json
 import pathlib
 import secrets
-import sqlite3
 import sys
 import threading
 import time
@@ -27,7 +26,7 @@ from typing import cast
 
 from . import config, gate, gh, run_supervisor, state as state_mod, transition
 from .run_supervisor import views
-from .ledger import LOCK_WAIT_S
+from .ledger import read_only
 from .util import logged, now_iso
 
 _LOCK = threading.RLock()
@@ -53,7 +52,7 @@ def _ledger_rows(loop, number):
     db = run_supervisor.production_ledger()
     if not db.exists():
         return []
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    con = read_only(db)
     try:
         return con.execute("SELECT id,seat,head,state,updated FROM runs WHERE repo=? AND pr=? "
                            "ORDER BY id", (loop["repo"], number)).fetchall()
@@ -456,12 +455,11 @@ def _reconsider_refusal(loop, number, pr, head, reason) -> str:
 
 def _reviewer_runs(repo: str, number: int, head: str, turn_key: str | None = None) -> int:
     """How many reviewer runs the ledger holds for this head (read-only; 0 without a ledger)."""
-    import sqlite3
     from . import run_supervisor
     db = run_supervisor.production_ledger()
     if not db.exists():
         return 0
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    con = read_only(db)
     try:
         if turn_key is not None:
             return con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND head=? AND "

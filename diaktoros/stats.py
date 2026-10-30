@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
-from .ledger import LOCK_WAIT_S
+from .ledger import read_only
 
 SEATS = ("reviewer", "fixer", "issue_fixer", "triage", "adjudicator")
 STATES = ("succeeded", "failed", "waiting", "cancelled", "uncertain")
@@ -58,7 +58,7 @@ def ledger(db: Path, repo: str, since: float, until: float | None = None) -> dic
     db = Path(db)
     if not db.exists():
         return None
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    con = read_only(db)
     try:
         con.row_factory = sqlite3.Row
         columns = {row[1] for row in con.execute("PRAGMA table_info(runs)")}
@@ -103,7 +103,7 @@ def usage(db: Path, repo: str, since: float) -> list[dict] | None:
     db = Path(db)
     if not db.exists():
         return None
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    con = read_only(db)
     try:
         columns = {row[1] for row in con.execute("PRAGMA table_info(runs)")}
         if not {"tokens_in", "tokens_out", "cost"} <= columns:
@@ -138,7 +138,7 @@ def revisions(db: Path, repo: str, since: float) -> dict | None:
     db = Path(db)
     if not db.exists():
         return None
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    con = read_only(db)
     try:
         con.row_factory = sqlite3.Row
         columns = {row[1] for row in con.execute("PRAGMA table_info(runs)")}
@@ -230,7 +230,7 @@ def now(db: Path, repo: str, at: float | None = None) -> dict | None:
         return None
     at = time.time() if at is None else at
     where, args = _now_filter(at)
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    con = read_only(db)
     try:
         con.row_factory = sqlite3.Row
         rows = con.execute(f"SELECT pr, seat, head, state, error, updated FROM runs WHERE {where} "
@@ -349,7 +349,7 @@ def review_window(db: Path, repo: str, since: float, until: float) -> dict | Non
     db = Path(db)
     if not db.exists():
         return None
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    con = read_only(db)
     try:
         con.row_factory = sqlite3.Row
         columns = {row[1] for row in con.execute("PRAGMA table_info(runs)")}
@@ -417,7 +417,7 @@ def escalations(db: Path, repo: str, since: float, until: float,
     db = Path(db)
     if not db.exists():
         return None
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    con = read_only(db)
     try:
         con.row_factory = sqlite3.Row
         rows = con.execute("SELECT id, pr, head, created FROM runs WHERE repo=? "
@@ -488,7 +488,7 @@ def finding_outcomes(db: Path, repo: str, since: float, until: float,
     db = Path(db)
     if not db.exists():
         return None
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    con = read_only(db)
     try:
         con.row_factory = sqlite3.Row
         columns = {row[1] for row in con.execute("PRAGMA table_info(runs)")}
@@ -565,7 +565,7 @@ def regressions(db: Path, repo: str, since: float, until: float) -> dict | None:
     db = Path(db)
     if not db.exists():
         return None
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    con = read_only(db)
     try:
         con.row_factory = sqlite3.Row
         try:
@@ -600,7 +600,7 @@ def overrides(db: Path, repo: str, since: float, until: float) -> dict | None:
     db = Path(db)
     if not db.exists():
         return None
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    con = read_only(db)
     try:
         con.row_factory = sqlite3.Row
         try:
@@ -653,7 +653,7 @@ def fix_outcomes(db: Path, repo: str, since: float, until: float, pr_state) -> d
     db = Path(db)
     if not db.exists():
         return None
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    con = read_only(db)
     try:
         con.row_factory = sqlite3.Row
         try:
@@ -741,7 +741,7 @@ def stuck(db: Path, repo: str, at: float) -> dict | None:
     if not db.exists():
         return None
     where, args = _now_filter(at)
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    con = read_only(db)
     try:
         con.row_factory = sqlite3.Row
         row = con.execute(f"SELECT pr, seat, head, state, error, updated FROM runs WHERE {where} "
@@ -857,7 +857,7 @@ def shadow_outcomes(db: Path, repo: str, since: float, until: float,
     db = Path(db)
     if not db.exists():
         return None
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    con = read_only(db)
     try:
         con.row_factory = sqlite3.Row
         try:
