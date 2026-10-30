@@ -3,9 +3,14 @@
 
 Agents read whole files and carry them in context for the rest of a turn: a 2,500-line file is
 25–30K tokens, held on every step, and past the read cap it is paged or read in part. So code
-files and functions are capped, and the cap only tightens:
+files and functions are capped, and the cap only tightens.
 
-* A file not in the baseline may have at most ``FILE_MAX`` lines; a function, ``FUNCTION_MAX``.
+**Size is what an agent reads, not how it is laid out:** the non-whitespace characters, counted
+in line equivalents (``CHARS_PER_LINE``, the code's average per line, so the caps read as lines).
+Joining two lines, or rewrapping an argument list, changes nothing; only less text does. It was
+physical lines until a fix turn joined lines to pass the check, which made the code no simpler.
+
+* A file not in the baseline may have a size of at most ``FILE_MAX``; a function, ``FUNCTION_MAX``.
 * A baselined file may not grow past ``max(its baseline, FILE_CEILING)``: one already over the
   ceiling may not grow at all, and one under it may grow up to it while the splits happen. A
   baselined function may not grow past its baseline.
@@ -21,6 +26,8 @@ from __future__ import annotations
 
 import ast
 import json
+import math
+import re
 import sys
 from pathlib import Path
 
@@ -30,6 +37,14 @@ SCANNED = ("diaktoros", "scripts")
 FILE_MAX = 800
 FILE_CEILING = 1500
 FUNCTION_MAX = 80
+CHARS_PER_LINE = 39          # the code's average non-whitespace characters per line (2026-10-29)
+_WHITESPACE = re.compile(r"\s+")
+
+
+def size(text: str) -> int:
+    """Line equivalents: the non-whitespace characters of ``text`` over ``CHARS_PER_LINE``,
+    rounded up, so layout (joined or wrapped lines, indentation) never moves it."""
+    return math.ceil(len(_WHITESPACE.sub("", text)) / CHARS_PER_LINE)
 
 
 def code_files(root: Path = ROOT) -> list[Path]:
@@ -38,12 +53,14 @@ def code_files(root: Path = ROOT) -> list[Path]:
 
 
 def measure(root: Path = ROOT) -> tuple[dict[str, int], dict[str, int]]:
-    """``(files, functions)``: lines per code file, and lines per function (``path::qualname``)."""
+    """``(files, functions)``: the size of each code file and of each function
+    (``path::qualname``)."""
     files, functions = {}, {}
     for path in code_files(root):
         rel = path.relative_to(root).as_posix()
         text = path.read_text(encoding="utf-8")
-        files[rel] = len(text.splitlines())
+        files[rel] = size(text)
+        lines = text.splitlines()
         seen: dict[str, int] = {}
 
         def visit(node, prefix=""):
@@ -55,7 +72,7 @@ def measure(root: Path = ROOT) -> tuple[dict[str, int], dict[str, int]]:
                         seen[key] = seen.get(key, 0) + 1
                         if seen[key] > 1:          # a redefinition (a conditional def)
                             key = f"{key}#{seen[key]}"
-                        functions[key] = child.end_lineno - child.lineno + 1
+                        functions[key] = size("\n".join(lines[child.lineno - 1:child.end_lineno]))
                     visit(child, f"{name}.")
                 else:
                     visit(child, prefix)
@@ -76,17 +93,17 @@ def problems(files: dict, functions: dict, baseline: dict) -> list[str]:
         if rel in base_files:
             limit = max(base_files[rel], FILE_CEILING)
             if lines > limit:
-                out.append(f"{rel}: {lines} lines, over its limit {limit} — split it, never grow "
+                out.append(f"{rel}: size {lines}, over its limit {limit} — split it, never grow "
                            "a file already over the ceiling")
         elif lines > FILE_MAX:
-            out.append(f"{rel}: {lines} lines, over {FILE_MAX} for a new file — split it")
+            out.append(f"{rel}: size {lines}, over {FILE_MAX} for a new file — split it")
     for key, lines in sorted(functions.items()):
         if key in base_functions:
             if lines > base_functions[key]:
-                out.append(f"{key}: {lines} lines, grown past its baseline "
+                out.append(f"{key}: size {lines}, grown past its baseline "
                            f"{base_functions[key]} — split it")
         elif lines > FUNCTION_MAX:
-            out.append(f"{key}: {lines} lines, over {FUNCTION_MAX} for a new function — split it")
+            out.append(f"{key}: size {lines}, over {FUNCTION_MAX} for a new function — split it")
     # The ratchet tightens: a shrink lowers the baseline, and a gone or small entry leaves it.
     for rel, base in sorted(base_files.items()):
         now = files.get(rel)
@@ -94,7 +111,7 @@ def problems(files: dict, functions: dict, baseline: dict) -> list[str]:
             out.append(f"{rel}: baselined at {base} but {'gone' if now is None else now} now — "
                        "remove it from the baseline (python3 tests/file_sizes.py --write)")
         elif base > FILE_CEILING and now < base:
-            out.append(f"{rel}: {now} lines, below its baseline {base} — lower the baseline "
+            out.append(f"{rel}: size {now}, below its baseline {base} — lower the baseline "
                        "(python3 tests/file_sizes.py --write)")
     for key, base in sorted(base_functions.items()):
         now = functions.get(key)
@@ -102,7 +119,7 @@ def problems(files: dict, functions: dict, baseline: dict) -> list[str]:
             out.append(f"{key}: baselined at {base} but {'gone' if now is None else now} now — "
                        "remove it from the baseline (python3 tests/file_sizes.py --write)")
         elif now < base:
-            out.append(f"{key}: {now} lines, below its baseline {base} — lower the baseline "
+            out.append(f"{key}: size {now}, below its baseline {base} — lower the baseline "
                        "(python3 tests/file_sizes.py --write)")
     return out
 

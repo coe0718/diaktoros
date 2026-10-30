@@ -26,13 +26,17 @@ Before editing a boundary, read its implementation and the targeted tests in the
 
 Agents read whole files and keep them in context for the rest of a turn, so code files and
 functions are capped, and the cap only tightens. `tests/test_file_sizes.py` runs the check in the
-unit suite, for `diaktoros/` and `scripts/`:
+unit suite, for `diaktoros/` and `scripts/`.
 
-- **A new file** may have at most 800 lines, and **a new function** at most 80. Split anything
-  bigger into cohesive pieces.
+**Size is what an agent reads, not how it's laid out:** a file's or function's non-whitespace
+characters, divided by 39, the code's average per line, so the caps still read as lines. Joining
+or rewrapping lines doesn't change a size; only less text does. Comments and docstrings count,
+because an agent reads them too. That's not a reason to delete them: shrink the code, or split it.
+
+- **A new file** may have a size of at most 800, and **a new function** at most 80. Split
+  anything bigger into cohesive pieces.
 - **A file already in `tests/file_sizes_baseline.json`** may not grow past its baseline, or past
-  1,500 lines if its baseline is under that. **A baselined function** may not grow past its
-  baseline.
+  1,500 if its baseline is under that. **A baselined function** may not grow past its baseline.
 - **When a baselined file or function shrinks**, or drops back under its cap, the check asks for
   the baseline to follow. Run `python3 tests/file_sizes.py --write`: it lowers and removes
   entries, and never raises or adds one.
