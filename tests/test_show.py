@@ -110,6 +110,31 @@ class ShowTests(_Base):
         self.assertEqual(rows["ci_fix_cap"]["source"], "default")
         self.assertEqual(rows["reviewer_login"]["source"], "loop file")
 
+    def test_every_fixer_push_hint_is_the_command_that_runs(self):
+        # Duplication audit (B3): the hint said `hermes dk fixer-push --enable`, which the CLI
+        # refuses (no --loop, no --acknowledge-pr-race).
+        self.install()
+        path = self.loop_file()
+        data = json.loads(path.read_text())
+        data.update({"fix_ci": True, "fixer_scope_lock": True, "unattended_fixer_push": False})
+        path.write_text(json.dumps(data))
+        rows = {r["name"]: r for r in json.loads(
+            self.run_cli(["show", "--loop", "widgets", "--json"])[1])["settings"]}
+        enable = "hermes dk fixer-push --loop widgets --enable --acknowledge-pr-race"
+        self.assertEqual(config.fixer_push_enable_command("widgets"), enable)
+        for name in ("unattended_fixer_push", "fix_ci", "fixer_scope_lock"):
+            with self.subTest(name):
+                self.assertIn(f"({enable})", rows[name]["note"])
+
+    def test_no_hint_spells_the_fixer_push_command_by_hand(self):
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[1]
+        home = root / "diaktoros" / "config" / "__init__.py"
+        for path in [*(root / "diaktoros").rglob("*.py"), *(root / "scripts").rglob("*.py")]:
+            if path != home:
+                with self.subTest(path.relative_to(root).as_posix()):
+                    self.assertNotRegex(path.read_text(), r"fixer-push --(?:loop|enable)")
+
     def test_a_loop_file_value_wins_and_text_groups_on_first(self):
         self.install()
         path = self.loop_file()

@@ -76,7 +76,7 @@
     "diaktoros/retry_action.py::perform": 88,
     "diaktoros/run_supervisor/__init__.py::Supervisor.__init__": 142,
     "diaktoros/run_supervisor/__init__.py::main": 104,
-    "diaktoros/run_supervisor/intake.py::RunIntake.retry": 120,
+    "diaktoros/run_supervisor/intake.py::RunIntake.retry": 118,
     "diaktoros/run_supervisor/intake.py::RunIntake.submit": 118,
     "diaktoros/run_supervisor/notices.py::OperatorNotices.notify": 126,
     "diaktoros/run_supervisor/pr_facts.py::adjudication_state": 81,
