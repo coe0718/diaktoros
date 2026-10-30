@@ -328,7 +328,10 @@ class Deps(GateFixture):
         inner = gh.api
 
         def api(loop, path, *a, **k):
-            return {"login": "fix"} if path == "/user" else inner(loop, path, *a, **k)
+            if path == "/user":                # each identity its own account (C2)
+                who = k.get("login") or ""
+                return {"login": who, "id": sum(map(ord, who))}
+            return inner(loop, path, *a, **k)
         names = {"reviewer": "rev", "fixer": "fix"}
         with mock.patch.object(gh, "api", api), \
                 mock.patch.object(config, "issue_fixes_enabled", lambda loop: True), \

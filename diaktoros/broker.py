@@ -60,6 +60,61 @@ def _denied(message: str, why: str) -> BrokerDenied:
 
 
 
+def _verify_identities(loop: dict, identities: tuple, names: str) -> None:
+    """The four-identity rule for the accounts a write depends on: distinct logins (in any case),
+    each mapped to its own credential file, with a token that is there, resolving to that very
+    account, and no two to one principal. ``names`` says who, for the denial."""
+    if (not all(isinstance(i, str) and i for i in identities)
+            or len({i.casefold() for i in identities}) != len(identities)):
+        raise BrokerDenied(f"{names} must use distinct identities")
+    mapped = [gh.credential_path(loop, identity) for identity in identities]
+    if any(path is None for path in mapped):
+        raise BrokerDenied(f"{names} token mappings required")
+    if len({path.resolve() for path in mapped}) != len(identities):
+        raise BrokerDenied(f"{names} must use distinct token files")
+    principals = []
+    for identity in identities:
+        try:
+            if not gh.token(loop, identity):
+                raise BrokerDenied(f"empty token for {identity}")
+        except gh.GitHubError as exc:
+            raise BrokerDenied(f"missing token for {identity}") from exc
+        account = gh.principal(loop, identity)
+        if (not isinstance(account, dict) or type(account.get("id")) is not int
+                or not isinstance(account.get("login"), str)
+                or account["login"].casefold() != identity.casefold()):
+            raise BrokerDenied("token principal cannot be verified")
+        principals.append(account["id"])
+    if len(set(principals)) != len(identities):
+        raise BrokerDenied(f"{names} tokens resolve to the same principal")
+
+
+def _live_pr(loop: dict, repo: str, number: int, head: str, branch: str) -> dict:
+    """The PR re-read as the reader right before a write: still this open, non-draft PR on the
+    loop's base, at ``head``, on ``branch`` in this repository (no fork). It, or a denial."""
+    current = gh.api(loop, f"/repos/{repo}/pulls/{number}", login=loop.get("read_token"))
+    if not isinstance(current, dict):
+        raise BrokerDenied("cannot verify live PR")
+    pr_head = current.get("head") or {}
+    pr_base = current.get("base") or {}
+    # An omitted or wrong-shaped draft flag is unknown, never an eligible PR.
+    # The same check runs before every REST write and at each push checkpoint.
+    if (type(current.get("number")) is not int or current["number"] != number
+            or current.get("state") != "open" or current.get("draft") is not False):
+        raise BrokerDenied("PR identity, state or draft status changed")
+    if (pr_base.get("repo") or {}).get("full_name") != repo:
+        raise BrokerDenied("PR base repository mismatch")
+    if pr_base.get("ref") != loop.get("base"):
+        raise BrokerDenied("PR base branch mismatch")
+    if pr_head.get("sha") != head:
+        raise BrokerDenied("stale PR head")
+    if pr_head.get("ref") != branch or not branch or branch.startswith("-"):
+        raise BrokerDenied("wrong destination branch")
+    if (pr_head.get("repo") or {}).get("full_name") != repo:
+        raise BrokerDenied("fork head not permitted for credentialed writes")
+    return current
+
+
 def authorize(loop: dict, *, repo: str, number: int, head: str, role: str,
               branch: str, operation: str, require_verdict: bool = True,
               approve: bool = False) -> str:
@@ -84,48 +139,10 @@ def authorize(loop: dict, *, repo: str, number: int, head: str, role: str,
     if not login or not reader or not gh.credential_path(loop, login) or not gh.credential_path(loop, reader):
         raise BrokerDenied("explicit seat and read token mappings required")
     seats = loop.get("seats") or {}
-    reviewer = (seats.get("reviewer") or {}).get("login")
-    fixer = (seats.get("fixer") or {}).get("login")
-    if not reviewer or not fixer or len({reviewer, fixer, reader}) != 3:
-        raise BrokerDenied("read, reviewer and fixer must use distinct identities")
-    mapped = [gh.credential_path(loop, identity) for identity in (reader, reviewer, fixer)]
-    if any(path is None for path in mapped):
-        raise BrokerDenied("read, reviewer and fixer token mappings required")
-    if len({path.resolve() for path in mapped if path is not None}) != 3:
-        raise BrokerDenied("read, reviewer and fixer must use distinct token files")
-    principals = []
-    for identity in (reader, reviewer, fixer):
-        try:
-            if not gh.token(loop, identity):
-                raise BrokerDenied(f"empty token for {identity}")
-        except gh.GitHubError as exc:
-            raise BrokerDenied(f"missing token for {identity}") from exc
-        account = gh.principal(loop, identity)
-        if not isinstance(account, dict) or not isinstance(account.get("id"), int) or type(account.get("id")) is bool or not isinstance(account.get("login"), str) or account["login"].casefold() != identity.casefold():
-            raise BrokerDenied("seat token principal cannot be verified")
-        principals.append(account["id"])
-    if len(set(principals)) != 3:
-        raise BrokerDenied("read, reviewer and fixer tokens resolve to same principal")
-    current = gh.api(loop, f"/repos/{repo}/pulls/{number}", login=reader)
-    if not isinstance(current, dict):
-        raise BrokerDenied("cannot verify live PR")
-    pr_head = current.get("head") or {}
-    pr_base = current.get("base") or {}
-    # An omitted or wrong-shaped draft flag is unknown, never an eligible PR.
-    # The same check runs before every REST write and at each push checkpoint.
-    if (type(current.get("number")) is not int or current["number"] != number
-            or current.get("state") != "open" or current.get("draft") is not False):
-        raise BrokerDenied("PR identity, state or draft status changed")
-    if (pr_base.get("repo") or {}).get("full_name") != repo:
-        raise BrokerDenied("PR base repository mismatch")
-    if pr_base.get("ref") != loop.get("base"):
-        raise BrokerDenied("PR base branch mismatch")
-    if pr_head.get("sha") != head:
-        raise BrokerDenied("stale PR head")
-    if pr_head.get("ref") != branch or not branch or branch.startswith("-"):
-        raise BrokerDenied("wrong destination branch")
-    if (pr_head.get("repo") or {}).get("full_name") != repo:
-        raise BrokerDenied("fork head not permitted for credentialed writes")
+    _verify_identities(loop, (reader, (seats.get("reviewer") or {}).get("login"),
+                              (seats.get("fixer") or {}).get("login")),
+                       "read, reviewer and fixer")
+    current = _live_pr(loop, repo, number, head, branch)
     if approve and (current.get("mergeable") is False or current.get("mergeable_state") == "dirty"):
         # #1243: on the read made right before the write, so a base that moved during the turn
         # is caught. Only a conflict GitHub computed counts; an uncomputed state (null) does not.
@@ -343,47 +360,10 @@ def authorize_ruling_comment(loop: dict, *, repo: str, number: int, head: str,
     if not login:
         raise BrokerDenied("no adjudicator identity configured")
     seats = loop.get("seats") or {}
-    reader = loop.get("read_token")
-    reviewer = (seats.get("reviewer") or {}).get("login")
-    fixer = (seats.get("fixer") or {}).get("login")
-    identities = (reader, reviewer, fixer, login)
-    if (not all(isinstance(i, str) and i for i in identities)
-            or len({i.casefold() for i in identities}) != 4):
-        raise BrokerDenied("read, reviewer, fixer and adjudicator must use distinct identities")
-    mapped = [gh.credential_path(loop, identity) for identity in identities]
-    if any(path is None for path in mapped):
-        raise BrokerDenied("read, reviewer, fixer and adjudicator token mappings required")
-    if len({path.resolve() for path in mapped if path is not None}) != 4:
-        raise BrokerDenied("read, reviewer, fixer and adjudicator must use distinct token files")
-    principals = []
-    for identity in identities:
-        try:
-            if not gh.token(loop, identity):
-                raise BrokerDenied(f"empty token for {identity}")
-        except gh.GitHubError as exc:
-            raise BrokerDenied(f"missing token for {identity}") from exc
-        account = gh.principal(loop, identity)
-        if (not isinstance(account, dict) or type(account.get("id")) is not int
-                or not isinstance(account.get("login"), str)
-                or account["login"].casefold() != identity.casefold()):
-            raise BrokerDenied("token principal cannot be verified")
-        principals.append(account["id"])
-    if len(set(principals)) != 4:
-        raise BrokerDenied("adjudicator token resolves to the same principal as another identity")
-    current = gh.api(loop, f"/repos/{repo}/pulls/{number}", login=reader)
-    if not isinstance(current, dict):
-        raise BrokerDenied("cannot verify live PR")
-    pr_head = current.get("head") or {}
-    pr_base = current.get("base") or {}
-    if (type(current.get("number")) is not int or current["number"] != number
-            or current.get("state") != "open" or current.get("draft") is not False):
-        raise BrokerDenied("PR identity, state or draft status changed")
-    if (pr_base.get("repo") or {}).get("full_name") != repo or pr_base.get("ref") != loop.get("base"):
-        raise BrokerDenied("PR base changed")
-    if pr_head.get("sha") != head:
-        raise BrokerDenied("stale PR head")
-    if pr_head.get("ref") != branch or (pr_head.get("repo") or {}).get("full_name") != repo:
-        raise BrokerDenied("PR head branch or repository changed")
+    _verify_identities(loop, (loop.get("read_token"), (seats.get("reviewer") or {}).get("login"),
+                              (seats.get("fixer") or {}).get("login"), login),
+                       "read, reviewer, fixer and adjudicator")
+    current = _live_pr(loop, repo, number, head, branch)
     user = current.get("user")
     author = user.get("login") if isinstance(user, dict) else None
     if not isinstance(author, str) or author.casefold() not in {
@@ -422,15 +402,7 @@ def authorize_triage(loop: dict, *, repo: str, number: int) -> str:
         raise BrokerDenied("no triage identity distinct from the reader")
     if gh.credential_path(loop, login) is None:
         raise BrokerDenied("triage token mapping required")
-    try:
-        if not gh.token(loop, login):
-            raise BrokerDenied(f"empty token for {login}")
-    except gh.GitHubError as exc:
-        raise BrokerDenied(f"missing token for {login}") from exc
-    account = gh.principal(loop, login)
-    if (not isinstance(account, dict) or not isinstance(account.get("login"), str)
-            or account["login"].casefold() != login.casefold()):
-        raise BrokerDenied("token principal cannot be verified")
+    _verify_identities(loop, (reader, login), "the reader and triage")
     try:
         issue_inputs.triage_issue(loop, number)
     except run_supervisor.RetryableError as exc:
@@ -475,24 +447,9 @@ def authorize_issue_fix(loop: dict, *, repo: str, number: int) -> str:
         raise BrokerDenied("invalid issue number")
     if not config.issue_fixes_enabled(loop):
         raise BrokerDenied("issue fixes are not enabled by the host operator")
-    reader = str(loop.get("read_token") or "")
-    reviewer = config.seat_login(loop, "reviewer")
     fixer = config.seat_login(loop, "fixer")
-    identities = (reader, reviewer, fixer)
-    if not all(identities) or len({i.casefold() for i in identities}) != 3:
-        raise BrokerDenied("read, reviewer and fixer must use distinct identities")
-    mapped = [gh.credential_path(loop, identity) for identity in identities]
-    if any(path is None for path in mapped) or len({p.resolve() for p in mapped if p}) != 3:
-        raise BrokerDenied("read, reviewer and fixer must use distinct token files")
-    try:
-        if not gh.token(loop, fixer):
-            raise BrokerDenied(f"empty token for {fixer}")
-    except gh.GitHubError as exc:
-        raise BrokerDenied(f"missing token for {fixer}") from exc
-    account = gh.principal(loop, fixer)
-    if (not isinstance(account, dict) or not isinstance(account.get("login"), str)
-            or account["login"].casefold() != fixer.casefold()):
-        raise BrokerDenied("token principal cannot be verified")
+    _verify_identities(loop, (str(loop.get("read_token") or ""), config.seat_login(loop, "reviewer"),
+                              fixer), "read, reviewer and fixer")
     try:
         issue_inputs.issue_fix_issue(loop, number)
         issue_inputs.issue_fix_dependencies(loop, number)
