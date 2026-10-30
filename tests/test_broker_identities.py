@@ -109,24 +109,24 @@ class Identities(unittest.TestCase):
                     self.denied(writer)
 
     def test_an_empty_or_missing_token_or_a_foreign_principal_is_denied(self):
+        # Every identity a writer depends on, not only the one it writes as (#1487 review): the
+        # reader's and the reviewer's tokens are checked too.
+        def missing(who):
+            gh.token.side_effect = (lambda loop, login=None: (_ for _ in ()).throw(
+                gh.GitHubError("gone")) if login == who else self.tokens[login])
+        cases = {"empty token": lambda who: self.tokens.update({who: ""}),
+                 "missing token": missing,
+                 "another account": lambda who: self.principals.update(
+                     {who: {"login": "someone", "id": 99}}),
+                 "no id": lambda who: self.principals.update({who: {"login": who}}),
+                 "unreadable": lambda who: self.principals.update({who: None})}
         for writer, (_, identities) in self.WRITERS.items():
-            mine = identities[-1]
-            cases = {"empty token": lambda: self.tokens.update({mine: ""}),
-                     "missing token": lambda: self.tokens.update(
-                         {mine: mock.Mock(side_effect=gh.GitHubError("gone"))}),
-                     "another account": lambda: self.principals.update(
-                         {mine: {"login": "someone", "id": 99}}),
-                     "no id": lambda: self.principals.update({mine: {"login": mine}}),
-                     "unreadable": lambda: self.principals.update({mine: None})}
-            for case, mutate in cases.items():
-                with self.subTest(writer=writer, case=case):
-                    self.setUp()
-                    mutate()
-                    if case == "missing token":
-                        gh.token.side_effect = (lambda loop, login=None:
-                                                (_ for _ in ()).throw(gh.GitHubError("gone"))
-                                                if login == mine else self.tokens[login])
-                    self.denied(writer)
+            for who in identities:
+                for case, mutate in cases.items():
+                    with self.subTest(writer=writer, identity=who, case=case):
+                        self.setUp()
+                        mutate(who)
+                        self.denied(writer)
 
     def test_two_identities_resolving_to_one_principal_are_denied(self):
         # Triage and issue fixes checked only their own principal, so a writer token that is
