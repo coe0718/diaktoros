@@ -46,32 +46,45 @@ class Steps(fg.Base):
 
 
 class PushOff(Steps):
-    def test_a_started_fixer_turn_cannot_publish_and_retry_re_arms_it(self):
+    def test_a_started_fixer_turn_cannot_publish_and_names_what_re_arms_it(self):
         self.set_push(False)
         held = {"fixer": {"head": fg.HEAD, "at": time.time()}}
         queued = mock.patch.object(run_supervisor.views, "turn_state", side_effect=lambda db, repo, pr,
                                    head, seat: "pending" if seat == "fixer" else None)
-        for name, kw, ledger in (("held", {"held": held}, None), ("in flight", {"inflight_fix": True}, None),
-                                 ("in the ledger", {}, queued)):
+        redeliver = "re-deliver the changes-requested review event for head aaaaaaa to the fixer gate"
+        # #1510 review F4: a lock or a mark with no run in the ledger has nothing for retry to
+        # re-arm; a fresh delivery is the recovery there, the retry only for a ledgered run.
+        for name, kw, ledger, recovery in (("held", {"held": held}, None, redeliver),
+                                           ("in flight", {"inflight_fix": True}, None, redeliver),
+                                           ("in the ledger", {}, queued, self.retry())):
             with self.subTest(name), ledger or contextlib.nullcontext():
                 report = self.report(**kw)
                 step = report["next"]
                 self.assertEqual(step["kind"], "operator")
                 self.assertNotIn(PUSHES_A_FIX, step["action"])
                 self.assertIn(config.fixer_push_enable_command(self.loop), step["action"])
-                self.assertIn(self.retry(), step["action"])
+                self.assertIn(recovery, step["action"])
+                self.assertNotIn(self.retry() if recovery == redeliver else redeliver, step["action"])
                 self.assertNotIn("starts the fix run", step["action"])   # the sweep drains a queue
                 self.assertTrue(any("cannot publish" in b for b in report["blockers"]), report)
                 self.assertFalse([b for b in report["blockers"] if "starts no fixer turn" in b])
 
     def test_at_the_spent_cap_a_started_turn_is_no_promised_push(self):
         self.set_push(False)
-        report = self.report(inflight_fix=True, verdicts=3)
+        with mock.patch.object(run_supervisor.views, "turn_state", side_effect=lambda db, repo, pr,
+                               head, seat: "running" if seat == "fixer" else None):
+            report = self.report(inflight_fix=True, verdicts=3)
         self.assertEqual(report["next"]["kind"], "operator")
         self.assertNotIn(PUSHES_A_FIX, report["next"]["action"])
         self.assertIn(self.retry(), report["next"]["action"])
         self.assertIn("with the cap spent, its push then goes for a ruling", report["next"]["action"])
         self.assertTrue(any("cannot publish" in b for b in report["blockers"]), report)
+        # No run behind the mark: nothing to retry, and the cap verdict is no work order (#1494),
+        # so escalate is the step once pushes are on, never a re-delivery (#1510 review F4).
+        bare = self.report(inflight_fix=True, verdicts=3)["next"]["action"]
+        self.assertNotIn(self.retry(), bare)
+        self.assertNotIn("re-deliver", bare)
+        self.assertIn(f"hermes dk escalate --loop {self.loop['id']} --pr 7", bare)
         self.set_push(True)                                   # pushes on: the push is next again
         self.assertEqual(self.report(inflight_fix=True, verdicts=3)["next"]["kind"], "fixer-push")
 
@@ -145,6 +158,24 @@ class AfterEnabling(Steps):
 
     def test_at_the_spent_cap_a_started_turn_needs_the_retry_too(self):
         self.started_turn(3)
+
+    def test_a_lock_or_mark_with_no_run_is_recovered_by_a_fresh_delivery_not_retry(self):
+        # #1510 review F4, after enabling: retry has nothing, the sweep delivers nothing, and the
+        # re-delivered verdict is what the fixer gate admits.
+        from diaktoros import retry_action
+        sup = self.production()                                # a ledger with no run at all
+        for kw in ({"held": {"fixer": {"head": fg.HEAD, "at": time.time()}}}, {"inflight_fix": True}):
+            self.set_push(False)
+            step = self.report(**kw)["next"]
+            self.assertNotIn(self.retry(), step["action"])
+            self.assertIn("re-deliver the changes-requested review event", step["action"])
+        self.set_push(True)
+        with sup._connect() as con:
+            self.assertIn("no isolated run on record", retry_action.plan(con, fg.REPO, 7, "fixer")["message"])
+        fire, _, _ = self.sweep()
+        fire.assert_not_called()
+        enqueue, _ = fg.GateHold.run_gate(self)                 # the re-delivered verdict starts it
+        enqueue.assert_called_once()
 
     def test_the_sweep_starts_no_verdict_without_a_work_order(self):
         self.set_push(True)
