@@ -265,7 +265,7 @@ def _credentials(args, loop: dict) -> tuple:
         for key in [k for k in tokens if str(k).lower() == login.lower()]:
             del tokens[key]             # an App replaces a PAT
         apps[owner or login] = spec
-    # gh looks a login's file up by its exact key: keep the reader spelled as its mapping is.
+    # Preserve the mapping's spelling for consistent display; login lookup is case-insensitive.
     read_after = next((str(k) for k in (*tokens, *apps) if str(k).lower() == read_after.lower()),
                       read_after)
     tokens_changed = (tokens != (loop.get("tokens") or {})
