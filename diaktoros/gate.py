@@ -1554,13 +1554,19 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             kind = "fixer-push"
             action = fix_push + "with the cap spent, the reviewer gate then sends it for a ruling"
         else:
-            # Escalate's own rule: a run on any head, or one of unknown outcome, holds it.
+            # Escalate's own rule: a run on any head, or one of unknown outcome, holds it. A
+            # ledger it cannot read makes that unknown, never a crash (#1481 review).
+            import sqlite3
             from . import one_shot_action
-            busy, unknown = one_shot_action.escalation_blockers(loop, number)
-            kind = "release" if busy or unknown else "operator"
-            action = ((f"{busy} run(s) for this PR are in flight; once they end, " if busy else
-                       "a run's outcome is unknown; once it is reconciled, " if unknown else "")
-                      + f"`hermes dk escalate --loop {loop['id']} --pr {number}` sends head {short} "
+            try:
+                busy, unknown = one_shot_action.escalation_blockers(loop, number)
+                wait = (f"{busy} run(s) for this PR are in flight; once they end, " if busy else
+                        "a run's outcome is unknown; once it is reconciled, " if unknown else "")
+            except (sqlite3.Error, OSError) as exc:
+                wait = (f"the run ledger cannot be read ({exc}), so whether escalate acts now is "
+                        "unknown; once it can be, ")
+            kind = "release" if wait else "operator"
+            action = (wait + f"`hermes dk escalate --loop {loop['id']} --pr {number}` sends head {short} "
                       "for a ruling (the watchdog raises a missing marker itself only at a head it "
                       "saw arrive, never one open since the loop was armed) — no ruling is underway yet")
     elif push_off_held:

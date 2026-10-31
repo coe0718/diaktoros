@@ -9,6 +9,7 @@ what happened and what the operator can do.
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import pathlib
 import sqlite3
 import sys
 import time
@@ -171,6 +172,28 @@ class CapStep(fg.Base):
         with mock.patch.object(gh, "reviews", return_value=[fg.verdict(rid) for rid in (1, 2, 3)]):
             decision = one_shot_action._escalation_decision(self.loop, 7, live=fg.LIVE)
         self.assertIn("1 run(s) for this PR are in flight", decision["reason"])
+
+    def test_a_run_of_unknown_outcome_or_an_unreadable_ledger_holds_it_too(self):
+        # #1481 review: a quarantined run is in flight nowhere, yet escalate refuses until it is
+        # reconciled; a ledger escalate cannot read leaves it unknown, and explain says so.
+        from diaktoros import one_shot_action
+        self.set_push(True)
+        sup = run_supervisor.Supervisor(run_supervisor.production_ledger())
+        with mock.patch.object(sup, "_spawn"):
+            sup.enqueue("lost", fg.REPO, 7, "b" * 40, "fixer")
+        with closing(sqlite3.connect(sup.db)) as con, con:
+            con.execute("UPDATE runs SET state='quarantined' WHERE delivery='lost'")
+        self.assertEqual(one_shot_action.escalation_blockers(self.loop, 7), (0, True))
+        step = self.explain(False)
+        self.assertEqual(step["kind"], "release")
+        self.assertTrue(step["action"].startswith("a run's outcome is unknown; once it is reconciled"))
+        broken = pathlib.Path(sup.db).with_name("no-runs.sqlite")
+        with closing(sqlite3.connect(broken)) as con, con:
+            con.execute("CREATE TABLE other(x)")
+        with mock.patch.object(run_supervisor, "production_ledger", return_value=broken):
+            step = self.explain(False)
+        self.assertEqual(step["kind"], "release")
+        self.assertIn("the run ledger cannot be read", step["action"])
 
     def test_a_fixer_lock_on_an_old_head_is_no_live_fix(self):
         # #1481 review: an old-head run cannot finish this head, so escalate is still the step.
