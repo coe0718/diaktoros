@@ -636,7 +636,11 @@ def _gate_blockers(c) -> None:
 
 def _run_blockers(c) -> None:
     """Guards on the runs: push-off, capacity, stale queues and locks, a missing run."""
-    if c.push_off_held and not c.parked and not c.pending_delivery and not c.cap_spent:
+    if c.push_off and c.fix_live and not c.ruling:
+        c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the fixer turn at head {c.short} cannot "
+                          f"publish — the worker cancels it before launch, or the broker refuses "
+                          f"its push")
+    elif c.push_off_held and not c.parked and not c.pending_delivery and not c.cap_spent:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the changes-requested verdict at head "
                           f"{c.short} starts no fixer turn until the loop opts in — "
                           f"`{config.fixer_push_enable_command(c.loop)}`")
@@ -681,7 +685,7 @@ def _next_step(c) -> tuple[str, str]:
     c.fix_push = f"the fixer pushes a fix and re-requests review of head {c.short} — "
     c.verdict_at = f"the reviewer's verdict at head {c.short} (round {(c.spent or 0) + 1} of {c.cap}) — "
     return (_next_unread(c) or _next_approval(c) or _next_person(c) or _next_ruling(c)
-            or _next_escalation(c) or _next_lock(c) or _next_run(c))
+            or _next_push_off(c) or _next_escalation(c) or _next_lock(c) or _next_run(c))
 
 
 def _next_unread(c) -> tuple[str, str] | None:
@@ -828,8 +832,53 @@ def _next_ruling(c) -> tuple[str, str] | None:
     return kind, action
 
 
+def _next_push_off(c) -> tuple[str, str] | None:
+    """Next event with unattended fixer pushes off (#1506): a dispute, a fixer turn already
+    started, a queued hold, or no work order at all. At a spent cap only a started turn is."""
+    from .run_supervisor import views
+    enable = config.fixer_push_enable_command(c.loop)
+    if not c.push_off:
+        return None
+    if c.disputed and not c.cap_spent:
+        # The sweep checks pushes-off before a dispute, whatever lock is held, and alerts the
+        # operator; once pushes are on it acts on the dispute already there, not a new fix (#1496).
+        action = (f"operator decision: unattended fixer pushes are off for this loop, and the fixer "
+                  f"already disputed the review at head {c.short} — once you run `{enable}`, "
+                  + ("the next armed watchdog sweep sends the dispute for a ruling" if c.adjudicated
+                     else "it is your decision: " + views.dispute_choices(c.loop["id"], c.number)))
+    elif c.fix_live and not (c.cap_spent and not c.adjudicated):
+        # Its push is refused (broker_ipc) or the worker cancels it at launch; the sweep only
+        # drains queued work, so the turn needs an operator retry once pushes are on.
+        action = (f"operator decision: unattended fixer pushes are off for this loop, so the fixer "
+                  f"turn at head {c.short} cannot publish — the worker cancels it before launch, or "
+                  f"the broker refuses its push. Run `{enable}`, then, once that turn has ended "
+                  f"without a push, `hermes dk retry --loop {c.loop['id']} --pr {c.number} --seat "
+                  "fixer` re-arms it (retry refuses a run that may have written, and says how to "
+                  "reconcile it)" + (" — with the cap spent, its push then goes for a ruling"
+                                     if c.cap_spent else "")
+                  + "; or fix it by hand, push, and re-request review")
+    elif c.cap_spent:
+        return None
+    elif c.push_off_held and c.queued_seat:
+        action = (f"operator decision: unattended fixer pushes are off for this loop, so the "
+                  f"changes-requested verdict at head {c.short} starts no fixer turn. To let the "
+                  f"fixer answer it, run `{enable}` — the next watchdog sweep (or `hermes dk drain "
+                  f"--loop {c.loop['id']} --seat fixer`) then starts the fix run for this head; or "
+                  "fix it by hand, push, and re-request review")
+    elif c.push_off_held:
+        action = (f"operator decision: unattended fixer pushes are off for this loop, and the "
+                  f"changes-requested verdict at head {c.short} has no fixer work order (no queued "
+                  f"hold, no run), so nothing starts one by itself. Run `{enable}`, then "
+                  + c.to_fixer + f"(a fixer run the push policy cancelled is re-armed by `hermes dk "
+                  f"retry --loop {c.loop['id']} --pr {c.number} --seat fixer` instead); or fix it "
+                  "by hand, push, and re-request review")
+    else:
+        return None
+    return "operator", action
+
+
 def _next_escalation(c) -> tuple[str, str] | None:
-    """Next event at a spent cap with no marker, with pushes off, or a dispute."""
+    """Next event at a spent cap with no marker, or a dispute."""
     from .run_supervisor import views
     if c.cap_spent and not c.review_only:
         # No marker (#575). A live fix run ends first: its push meets the cap at the reviewer gate
@@ -857,23 +906,6 @@ def _next_escalation(c) -> tuple[str, str] | None:
             action = (wait + f"`hermes dk escalate --loop {c.loop['id']} --pr {c.number}` sends head {c.short} "
                       "for a ruling (the watchdog raises a missing marker itself only at a head it "
                       "saw arrive, never one open since the loop was armed) — no ruling is underway yet")
-    elif c.push_off and c.disputed:
-        # The sweep checks pushes-off before a dispute, whatever lock is held, and alerts the
-        # operator; once pushes are on it acts on the dispute already there, not a new fix (#1496).
-        kind = "operator"
-        action = (f"operator decision: unattended fixer pushes are off for this loop, and the fixer "
-                  f"already disputed the review at head {c.short} — once you run "
-                  f"`{config.fixer_push_enable_command(c.loop)}`, "
-                  + ("the next armed watchdog sweep sends the dispute for a ruling" if c.adjudicated
-                     else "it is your decision: " + views.dispute_choices(c.loop["id"], c.number)))
-    elif c.push_off_held:
-        kind = "operator"
-        action = (f"operator decision: unattended fixer pushes are off for this loop, so the "
-                  f"changes-requested verdict at head {c.short} starts no fixer turn. To let the "
-                  f"fixer answer it, run `{config.fixer_push_enable_command(c.loop)}` — the next "
-                  f"watchdog sweep (or `hermes dk drain --loop {c.loop['id']} --seat fixer`) "
-                  "then starts the fix run for this head; or fix it by hand, push, and re-request "
-                  "review")
     elif c.disputed:
         kind = "adjudication" if c.adjudicated else "operator"
         action = (f"the fixer disputed the review at head {c.short}, every finding as no defect — "

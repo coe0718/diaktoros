@@ -119,7 +119,11 @@ hermes dk drain --loop "<loop-id>" --seat fixer
 versus ref publication, **not GitHub owner consent**. `--seat fixer` selects that queue;
 drain rechecks live eligibility and cannot override quarantine or cap. Existing queue
 holds can start after opt-in; a ledgered policy-cancelled run needs operator retry after
-opt-in, not redelivery. See [push policy](operations.md#first-run).
+opt-in, not redelivery. A fixer turn that started before pushes were turned off cannot
+publish either (explain says so); after opt-in, `hermes dk retry --loop "<loop-id>" --pr N
+--seat fixer` re-arms it once it has ended without a push. A verdict with no queue hold and
+no run is started by nothing: after opt-in, re-deliver its review event to the fixer gate.
+See [push policy](operations.md#first-run).
 
 If enabled, inspect whether the review is from the accepted reviewer, is the effective
 latest changes-requested verdict at this head, and whether the cap is already spent.
