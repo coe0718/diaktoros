@@ -127,12 +127,96 @@ class UncertainTurn(Dispute):
             self.sweep(VERDICT)
         breach.assert_called_once()
 
+    def test_an_uncertain_fixer_turn_was_started_so_no_blocker_says_otherwise(self):
+        # #1505 shadow review: an uncertain turn is no live fix (#1495), but the fixer gate did
+        # start it, so "the fixer gate did not start one" would be false on a head below the cap.
+        with mock.patch.object(run_supervisor.views, "turn_state",
+                               side_effect=lambda db, repo, pr, head, seat:
+                               "uncertain" if seat == "fixer" else None):
+            report = self.explain()
+        self.assertFalse([b for b in report["blockers"] if "did not start one" in b],
+                         report["blockers"])
+
+
+class OneDisputeRule(unittest.TestCase):
+    def test_only_views_reads_a_dispute_time_directly(self):
+        # #1493: every "disputed after the verdict" decision is views.disputed; the reviewer gate
+        # kept its own dispute_at-and-compare copy.
+        import ast
+        root = Path(__file__).resolve().parents[1]
+        for path in sorted([*(root / "diaktoros").rglob("*.py"), *(root / "scripts").rglob("*.py")]):
+            rel = path.relative_to(root).as_posix()
+            calls = [n.lineno for n in ast.walk(ast.parse(path.read_text()))
+                     if isinstance(n, ast.Call) and ast.unparse(n.func).endswith("dispute_at")]
+            if rel != "diaktoros/run_supervisor/views.py":
+                with self.subTest(rel):
+                    self.assertEqual(calls, [])
+
+
+class PushOffDispute(Dispute):
+    """#1496: with unattended fixer pushes off the sweep alerts the operator before it looks at a
+    dispute or a held lock, so explain names that decision: no promised ruling, and no promised
+    push from a fixer that cannot publish. #1505 review: the dispute is kept, because once pushes
+    are on the sweep acts on it (a ruling, or the operator's choice), not on a new fix."""
+
+    def step(self, adjudicated=True, held=True):
+        local = {"held": {"fixer": {"head": fg.HEAD, "at": time.time()}} if held else {},
+                 "queued_seat": "", "queued_reason": "", "inflight_review": False,
+                 "inflight_fix": False, "marker": {}, "parked": False, "delivery_status": "",
+                 "capacity": {"reviewer": (0, 1), "fixer": (0, 1)}, "stale_queues": [],
+                 "seat": "", "queue": "", "inflight": "", "escalation": "", "sweep": ""}
+        self.loop["adjudicator"] = {"route": "one-breach"} if adjudicated else {}
+        with mock.patch.object(explain, "_explain_state", return_value=local):
+            return explain.explain(self.loop, self.st, 7, {
+                "pr": fg.LIVE, "reviews": [fg.verdict()], "armed": True,
+                "read_at": time.time()})["next"]
+
+    def test_pushes_off_comes_first_and_names_what_the_dispute_becomes(self):
+        self.arm_long_ago()
+        self.set_push(False)                     # reloads the loop: routes are set after it
+        self.dispute()
+        enable = f"fixer-push --loop {self.loop['id']} --enable"
+        ruled, unruled = self.step(adjudicated=True), self.step(adjudicated=False)
+        for step in (ruled, unruled):
+            self.assertEqual(step["kind"], "operator")
+            self.assertIn(enable, step["action"])
+            self.assertNotIn("the fixer pushes a fix", step["action"])      # it cannot publish
+            self.assertNotIn("starts the fix run", step["action"])         # the dispute stands
+        self.assertIn("once you run", ruled["action"])
+        self.assertIn("the next armed watchdog sweep sends the dispute for a ruling", ruled["action"])
+        self.assertIn("it is your decision: " + run_supervisor.views.dispute_choices(self.loop["id"], 7),
+                      unruled["action"])
+
+    def test_a_held_fixer_with_no_dispute_or_queued_hold_is_no_missing_work_order(self):
+        # #1505 review: pushes-off precedence over a held lock told the operator the verdict
+        # "starts no fixer turn" and that enabling pushes lets the sweep or a drain "start the fix
+        # run". Neither holds: the fixer started, and the sweep drains only queued work.
+        self.arm_long_ago()
+        self.set_push(False)
+        step = self.step(adjudicated=True, held=True)              # no dispute recorded
+        self.assertNotIn("starts no fixer turn", step["action"])
+        self.assertNotIn("starts the fix run", step["action"])
+
+    def test_once_pushes_are_on_the_sweep_and_explain_act_on_the_dispute(self):
+        self.arm_long_ago()
+        self.set_push(True)
+        self.loop["adjudicator"] = {"route": "one-breach"}
+        self.dispute()
+        self.assertEqual(self.step(adjudicated=True, held=False)["kind"], "adjudication")
+        with mock.patch.object(gate, "breach", return_value="new") as breach:
+            self.sweep(VERDICT)
+        breach.assert_called_once()
+        self.assertEqual(breach.call_args.kwargs["escalated"]["by"], "dispute")
+
 
 class CapStep(fg.Base):
     """A spent cap with no marker (#575): ``hermes dk escalate`` sends the head now, unless a fix
     run is live, when it would only wait for the next verdict (#1481 review): the push is next."""
 
     def explain(self, inflight_fix, held=None):
+        return self.report(inflight_fix, held)["next"]
+
+    def report(self, inflight_fix, held=None):
         local = {"held": held or {}, "queued_seat": "", "queued_reason": "", "inflight_review": False,
                  "inflight_fix": inflight_fix, "marker": {}, "parked": False,
                  "delivery_status": "", "capacity": {"reviewer": (0, 1), "fixer": (0, 1)},
@@ -142,7 +226,26 @@ class CapStep(fg.Base):
         with mock.patch.object(explain, "_explain_state", return_value=local):
             return explain.explain(self.loop, self.st, 7, {
                 "pr": fg.LIVE, "reviews": [fg.verdict(rid) for rid in (1, 2, 3)], "armed": True,
-                "read_at": time.time()})["next"]
+                "read_at": time.time()})
+
+    def test_at_the_cap_no_blocker_says_the_fixer_gate_failed_to_start(self):
+        # #1494: the verdict that reaches the cap is not a work order; the fixer gate starts no
+        # fix on purpose, so "did not start one" pointed the operator at the wrong gate.
+        self.set_push(True)
+        report = self.report(False)
+        self.assertEqual(report["next"]["kind"], "operator")
+        self.assertFalse([b for b in report["blockers"] if "did not start one" in b], report["blockers"])
+
+    def test_an_uncertain_fixer_turn_at_this_head_is_no_live_fix(self):
+        # #1495: nothing will push from an uncertain turn; escalate counts it, so the step waits
+        # on it rather than promising the fixer's push.
+        self.set_push(True)
+        with mock.patch.object(run_supervisor.views, "turn_state",
+                               side_effect=lambda db, repo, pr, head, seat:
+                               "uncertain" if seat == "fixer" else None):
+            step = self.explain(False)
+        self.assertNotEqual(step["kind"], "fixer-push")
+        self.assertNotIn("the fixer pushes a fix", step["action"])
 
     def test_escalate_is_the_step_unless_a_fix_run_is_live(self):
         self.set_push(True)
@@ -235,6 +338,15 @@ class MaintainerRerequest(Dispute):
         block.assert_called_once()
         self.assertTrue(block.call_args.kwargs["turn_key"].startswith(
             run_supervisor.DISPUTE_KEY))
+
+    def test_with_no_effective_verdict_to_compare_a_dispute_still_counts(self):
+        # #1505 shadow review: the gate kept a dispute when no effective verdict could be ordered
+        # (here, a verdict stamped with no zone); routing it through views.disputed must not drop it.
+        self.dispute(created=1.0)
+        zoneless = [{**VERDICT[0], "submitted_at": "2020-01-01T00:00:00"}]
+        self.assertIsNone(gate.latest_effective_review_at_head(zoneless, self.loop, fg.HEAD))
+        block, _ = self.gate(reviews=zoneless)
+        block.assert_called_once()
 
     def test_no_dispute_or_not_a_maintainer_is_still_refused(self):
         block, err = self.gate()                                   # no dispute

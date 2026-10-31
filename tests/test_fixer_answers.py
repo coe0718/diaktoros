@@ -252,6 +252,18 @@ class Publish(Base):
         Supervisor(self.db).dispute_comment(self.run_id, "posted", comment_id=900)
         self.assertEqual(len(self._notices()), 1)
 
+    def test_dispute_notice_offers_the_shared_choices_with_the_loop(self):
+        # #1493: the notice said "`review --pr N`, or fix by hand" (no --loop, no escalate),
+        # unlike the watchdog and explain; it now names views.dispute_choices.
+        from diaktoros.run_supervisor import views
+        from diaktoros.run_supervisor.notices import OperatorNotices
+        self._record()
+        Supervisor(self.db).dispute_comment(self.run_id, "posted", comment_id=900)
+        [message] = self._notices()
+        loop_id = OperatorNotices._loop_id({"repo": REPO})
+        self.assertIn(views.dispute_choices(loop_id, 7), message)
+        self.assertIn(f"hermes dk escalate --loop {loop_id} --pr 7", message)
+
     def test_dispute_notice_after_posted_names_the_comment(self):
         with self.serving() as server:
             self.assertTrue(self.send(server, {"operation": "request_review", "body": ANSWERS,

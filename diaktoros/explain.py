@@ -530,7 +530,9 @@ def _seat_needs(c) -> None:
              for seat in ("reviewer", "fixer")} if c.head else {}
     c.ledgered = {seat for seat, turn in turns.items() if turn in LIVE_TURN}
     # A fix for this head: a lock on an old head cannot finish it (#1481 review).
-    c.fix_live = ("fixer" in c.held and "fixer" not in c.stale_held) or c.inflight_fix or "fixer" in c.ledgered
+    # An uncertain fixer turn is no live fix: nothing will push, and the sweep reads it so (#1495).
+    c.fix_live = (("fixer" in c.held and "fixer" not in c.stale_held) or c.inflight_fix
+                  or ("fixer" in c.ledgered and turns["fixer"] != "uncertain"))
     # The fixer's answer to the verdict (#894), as the sweep reads it: there an uncertain turn is
     # not a live one, so it hides no dispute (#1481 review). A verdict at head means a head.
     c.disputed = (bool(c.at_head) and ("fixer" not in c.ledgered or turns["fixer"] == "uncertain")
@@ -652,8 +654,11 @@ def _run_blockers(c) -> None:
     if c.head_states and not c.reviewed:
         c.blockers.append(f"non-verdict review at head {c.short} ({'/'.join(c.head_states)}) "
                           "does not suppress a fresh reviewer request")
-    if (c.at_head and not c.fix_live and not c.queued_seat and not c.push_off and not c.review_only
-            and not c.ruling and not c.disputed):
+    # At the cap the fixer gate starts no fix by design (gate_fixer: not a work order, #1494). A
+    # fixer turn in the ledger, uncertain included, was started: not "did not start one" (#1505).
+    if (c.at_head and not c.fix_live and "fixer" not in c.ledgered and not c.queued_seat
+            and not c.push_off and not c.review_only and not c.ruling and not c.disputed
+            and not c.cap_spent):
         c.blockers.append(f"the changes-requested verdict at head {c.short} has no fix run out "
                           f"— the fixer gate did not start one for that delivery")
     if (c.request_pending and not c.held and not c.inflight_review and not c.at_head
@@ -852,6 +857,15 @@ def _next_escalation(c) -> tuple[str, str] | None:
             action = (wait + f"`hermes dk escalate --loop {c.loop['id']} --pr {c.number}` sends head {c.short} "
                       "for a ruling (the watchdog raises a missing marker itself only at a head it "
                       "saw arrive, never one open since the loop was armed) — no ruling is underway yet")
+    elif c.push_off and c.disputed:
+        # The sweep checks pushes-off before a dispute, whatever lock is held, and alerts the
+        # operator; once pushes are on it acts on the dispute already there, not a new fix (#1496).
+        kind = "operator"
+        action = (f"operator decision: unattended fixer pushes are off for this loop, and the fixer "
+                  f"already disputed the review at head {c.short} — once you run "
+                  f"`{config.fixer_push_enable_command(c.loop)}`, "
+                  + ("the next armed watchdog sweep sends the dispute for a ruling" if c.adjudicated
+                     else "it is your decision: " + views.dispute_choices(c.loop["id"], c.number)))
     elif c.push_off_held:
         kind = "operator"
         action = (f"operator decision: unattended fixer pushes are off for this loop, so the "

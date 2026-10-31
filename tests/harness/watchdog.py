@@ -881,6 +881,14 @@ def group_explain() -> None:
     reset(prs={"7": {**pr(7, head=HEAD_B), "reviews": spent_reviews}})
     rc, out = explain()
     check("cap spent with no marker: the gate never fired", "no escalation marker" in out, True)
+    # #1494: when the verdict that spends the cap is at the current head, the fixer gate starts no
+    # fix by design (not a work order), so that is no missing fix run.
+    reset(prs={"7": {**pr(7, head="e" * 40), "reviews": spent_reviews}})
+    rc, out = explain()
+    check("cap spent at this head: no blocker blames the fixer gate",
+          "fixer gate did not start one" in out, False)
+    reset(prs={"7": {**pr(7, head=HEAD_B), "reviews": spent_reviews}})
+    rc, out = explain()
     # #575: the sweep raises a missing marker only at a head it saw arrive, so explain gives the
     # step that always works (#1481 review): never a replay, never a sweep promised at a head
     # the sweep leaves alone since arming.
