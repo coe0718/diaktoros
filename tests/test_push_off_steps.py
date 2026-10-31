@@ -196,9 +196,13 @@ class AfterEnabling(Steps):
             with self.subTest(state):
                 sup, _ = self.ledgered(state)
                 self.set_push(False)
-                step = self.report()["next"]
+                report = self.report()
+                step = report["next"]
                 self.assertIn(expect, step["action"])
                 self.assertNotIn("re-deliver", step["action"])
+                # Shadow on 2ef4ac8: the blocker beside it said the verdict "starts no fixer turn".
+                self.assertFalse([b for b in report["blockers"] if "starts no fixer turn" in b])
+                self.assertTrue(any(f"is {state} with no fix pushed" in b for b in report["blockers"]))
                 self.assertNotIn("no run", step["action"])
                 if state != "failed":
                     self.assertNotIn(self.retry(), step["action"])
@@ -228,6 +232,30 @@ class AfterEnabling(Steps):
                         self.assertNotIn(self.retry(), action)
                     with sup._connect() as con:
                         con.execute("DELETE FROM runs")
+
+    def test_a_live_in_flight_mark_holds_the_re_delivery_until_it_expires(self):
+        # #1510 review F6/F7: the fixer gate silences a re-delivery while the head's fix mark
+        # stands, so the step names the wait; with the mark gone the same delivery is enqueued.
+        self.production()                                      # a ledger with no run at all
+        mark = f"fix:7:{fg.HEAD}"
+        self.st.inflight(mark, record=True)
+        self.set_push(False)
+        action = self.report(inflight_fix=True)["next"]["action"]
+        self.assertIn("refuses a re-delivery while the in-flight fix mark", action)
+        self.assertIn(f"ttl {self.st._minutes('inflight_ttl_min'):g}m", action)
+        self.assertIn("once it has expired, re-deliver the changes-requested review event", action)
+        self.assertNotIn(self.retry(), action)
+        self.set_push(True)
+        enqueue, _ = fg.GateHold.run_gate(self)
+        enqueue.assert_not_called()                            # the mark holds the gate
+        self.st.inflight_clear(mark)
+        enqueue, _ = fg.GateHold.run_gate(self)
+        enqueue.assert_called_once()
+        # A bare lock holds nothing: the plain re-delivery, no wait named.
+        self.set_push(False)
+        bare = self.report(held={"fixer": {"head": fg.HEAD, "at": time.time()}})["next"]["action"]
+        self.assertNotIn("in-flight fix mark", bare)
+        self.assertIn("re-deliver the changes-requested review event", bare)
 
     def test_the_sweep_starts_no_verdict_without_a_work_order(self):
         self.set_push(True)
@@ -261,8 +289,18 @@ class AfterEnabling(Steps):
 
     def test_a_declined_fixer_turn_is_left_by_the_drain_so_explain_names_the_retry(self):
         # #1510 review: a declined entry read as a push-off hold, promising the sweep or a drain.
-        _, declined = self.ledgered("failed")
-        step = self.report(queued=declined)["next"]
+        sup, declined = self.ledgered("failed")
+        report = self.report(queued=declined)
+        step = report["next"]
+        self.assertFalse([b for b in report["blockers"] if "starts no fixer turn" in b])
+        # The failed row behind the declined entry is the blocker here; a declined entry with no
+        # row at all gets its own (the ended turn is classified first, in step and blocker alike).
+        self.assertTrue(any("is failed with no fix pushed" in b for b in report["blockers"]), report["blockers"])
+        with sup._connect() as con:
+            con.execute("DELETE FROM runs")
+        bare = self.report(queued=declined)["blockers"]
+        self.assertTrue(any("declined the fixer turn" in b for b in bare), bare)
+        self.assertFalse([b for b in bare if "starts no fixer turn" in b])
         self.assertEqual(step["kind"], "operator")
         self.assertNotIn("starts the fix run", step["action"])
         self.assertIn(self.retry(), step["action"])
