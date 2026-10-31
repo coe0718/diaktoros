@@ -191,25 +191,36 @@ class AfterEnabling(Steps):
     def test_a_ledgered_turn_that_is_not_live_is_never_sent_a_re_delivery(self):
         # Shadow on #1510: an uncertain fixer turn fell to "no run", naming a re-delivery the
         # ledger refuses as a duplicate; retry refuses a run that may have written (reconcile).
-        for state, expect in (("uncertain", "reconcile it first"), ("failed", self.retry()),
-                              ("succeeded", "nothing to retry — fixer succeeded")):
+        # #1514 review: a pre-write failure is re-armed by retry or a redelivery, so neither the
+        # step nor the blocker calls it a duplicate; a policy-cancelled row needs the retry.
+        refused = "a redelivered verdict is a duplicate the ledger refuses"
+        cases = (("uncertain", "", "reconcile it first", True),
+                 ("failed", "", self.retry(), False),
+                 ("cancelled", run_supervisor.FIXER_NOT_ADMITTED, self.retry(), False),
+                 ("succeeded", "", "nothing to retry — fixer succeeded", True))
+        for state, error, expect, dup in cases:
             with self.subTest(state):
-                sup, _ = self.ledgered(state)
+                sup, _ = self.ledgered(state, error)
                 self.set_push(False)
                 report = self.report()
                 step = report["next"]
                 self.assertIn(expect, step["action"])
                 self.assertNotIn("re-deliver", step["action"])
+                self.assertNotIn("no run", step["action"])
+                self.assertEqual(refused in step["action"], dup, step["action"])
+                if expect != self.retry():
+                    self.assertNotIn(self.retry(), step["action"])
                 # Shadow on 2ef4ac8: the blocker beside it said the verdict "starts no fixer turn".
                 self.assertFalse([b for b in report["blockers"] if "starts no fixer turn" in b])
-                self.assertTrue(any(f"is {state} with no fix pushed" in b for b in report["blockers"]))
-                self.assertNotIn("no run", step["action"])
-                if state != "failed":
-                    self.assertNotIn(self.retry(), step["action"])
+                ended = [b for b in report["blockers"] if f"is {state} with no fix pushed" in b]
+                self.assertEqual(len(ended), 1, report["blockers"])
+                self.assertEqual(refused in ended[0], dup, ended[0])
+                self.assertEqual("retry re-arms it" in ended[0], not dup, ended[0])
                 self.set_push(True)
                 with mock.patch.object(sup, "_spawn"):
                     outcome = sup.submit("again", fg.REPO, 7, fg.HEAD, "fixer")
-                self.assertEqual(outcome.startswith(f"duplicate {state}"), state != "failed", outcome)
+                # Only the pre-write failure is re-armed by the redelivery itself.
+                self.assertEqual(outcome == "rearmed", state == "failed", outcome)
                 with sup._connect() as con:
                     con.execute("DELETE FROM runs")
 
@@ -278,13 +289,14 @@ class AfterEnabling(Steps):
         self.assertEqual(started, 1)
         self.assertEqual(fire.call_args.args[1], "pull_request_review")
 
-    def ledgered(self, state):
+    def ledgered(self, state, error=""):
         """A fixer turn at this head in ``state``, and the queue entry the gate declined it with."""
         sup = self.production()
         with mock.patch.object(sup, "_spawn"):
             sup.enqueue("run", fg.REPO, 7, fg.HEAD, "fixer")
         with sup._connect() as con:
-            con.execute("UPDATE runs SET state=?", (state,))
+            # A policy error means the row was never admitted (its redelivery is refused).
+            con.execute("UPDATE runs SET state=?, error=?, push_admitted=?", (state, error, 0 if error else 1))
         return sup, gate.declined_reason("fixer", f"duplicate {state}")
 
     def test_a_declined_fixer_turn_is_left_by_the_drain_so_explain_names_the_retry(self):
@@ -301,6 +313,7 @@ class AfterEnabling(Steps):
         bare = self.report(queued=declined)["blockers"]
         self.assertTrue(any("declined the fixer turn" in b for b in bare), bare)
         self.assertFalse([b for b in bare if "starts no fixer turn" in b])
+        self.assertFalse([b for b in bare if "no capacity" in b], bare)   # shadow on 9896f2a
         self.assertEqual(step["kind"], "operator")
         self.assertNotIn("starts the fix run", step["action"])
         self.assertIn(self.retry(), step["action"])

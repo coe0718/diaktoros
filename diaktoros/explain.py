@@ -532,6 +532,7 @@ def _seat_needs(c) -> None:
     c.fixer_turn = turns.get("fixer")     # any ledger state: a lock or mark with no run has none
     # Uncertain or ended with no push: not live, whatever lock or mark still stands over it.
     c.fixer_ended = bool(c.fixer_turn) and (c.fixer_turn == "uncertain" or c.fixer_turn not in LIVE_TURN)
+    c.fixer_rearm = _fixer_retry(c) if c.fixer_ended else ("", "", False)   # the retry plan (#1514)
     # A fix for this head: a lock on an old head cannot finish it (#1481 review).
     # An uncertain fixer turn is no live fix: nothing will push, and the sweep reads it so (#1495).
     c.fix_live = (("fixer" in c.held and "fixer" not in c.stale_held) or c.inflight_fix
@@ -642,8 +643,9 @@ def _run_blockers(c) -> None:
     declined = c.queued_seat == "fixer" and gate.is_declined_hold({"reason": c.queued_reason})
     if c.push_off and c.fixer_ended and not c.ruling:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the fixer turn at head {c.short} is "
-                          f"{c.fixer_turn} with no fix pushed — a redelivered verdict is a duplicate "
-                          f"the ledger refuses")
+                          f"{c.fixer_turn} with no fix pushed — "
+                          + ("retry re-arms it once the loop opts in" if c.fixer_rearm[0] else
+                             "a redelivered verdict is a duplicate the ledger refuses"))
     elif c.push_off and c.fix_live and not c.ruling:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the fixer turn at head {c.short} cannot "
                           f"publish — the worker cancels it before launch, or the broker refuses "
@@ -655,8 +657,8 @@ def _run_blockers(c) -> None:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the changes-requested verdict at head "
                           f"{c.short} starts no fixer turn until the loop opts in — "
                           f"`{config.fixer_push_enable_command(c.loop)}`")
-    if c.fixer_queue_hold:
-        pass  # the push-off blocker above is this queue entry's whole story
+    if c.fixer_queue_hold or (declined and c.push_off_held):
+        pass  # the push-off blocker above is this queue entry's whole story (shadow: not capacity)
     elif c.queued_seat:
         c.blockers.append(f"no capacity: queued with the {c.queued_seat} seat — {c.queued_reason}")
     elif c.full_seat:
@@ -901,13 +903,15 @@ def _started_turn_step(c, enable: str) -> str:
 
 def _ended_turn_step(c, enable: str) -> str:
     """A ledgered fixer turn that is not live — uncertain, or ended with no push — whether or not
-    a lock or an in-flight mark still stands over it (#1510 review). A redelivered verdict is a
-    duplicate the ledger refuses; retry re-arms what it offers, and a run that may have written
-    is reconciled first, never replayed."""
-    rearm, why, reconcile = _fixer_retry(c)
+    a lock or an in-flight mark still stands over it (#1510 review). Retry re-arms what the plan
+    offers (a pre-write failure, which a redelivered verdict re-arms too); a run that may have
+    written is reconciled first, never replayed; a redelivery of anything else is a duplicate the
+    ledger refuses (#1514 review)."""
+    rearm, why, reconcile = c.fixer_rearm
     return (f"operator decision: unattended fixer pushes are off for this loop, and the fixer "
-            f"turn at head {c.short} is {c.fixer_turn} with no fix pushed — a redelivered "
-            f"verdict is a duplicate the ledger refuses. Run `{enable}`, then "
+            f"turn at head {c.short} is {c.fixer_turn} with no fix pushed"
+            + ("" if rearm else " — a redelivered verdict is a duplicate the ledger refuses")
+            + f". Run `{enable}`, then "
             + (f"{rearm} re-arms it" + (" (with the cap spent, its push then goes for a ruling)"
                                        if c.cap_spent else "") + "; or fix it by hand" if rearm else
                f"reconcile it first, its outcome is unknown ({why}): `hermes dk status --loop "
