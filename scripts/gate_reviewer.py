@@ -184,10 +184,10 @@ def decide(payload: dict, reconsider: str | None = None) -> None:
         if action == "review_requested" and sender in config.maintainers(loop):
             from diaktoros import run_supervisor
             latest = gate.latest_effective_review_at_head(reviews, loop, head)
-            # The shared rule (#1493): a dispute at this head, newer than the verdict.
+            # The shared rule (#1493): a dispute at this head, newer than the verdict. With no
+            # effective verdict to compare, any dispute there counts, as it did before.
             disputed = run_supervisor.views.disputed(
-                run_supervisor.production_ledger(), loop["repo"], number, head,
-                latest) if latest is not None else None
+                run_supervisor.production_ledger(), loop["repo"], number, head, latest)
         if disputed is None:
             silence(f"head {head[:7]} already has a reviewer's verdict")
         from diaktoros.run_supervisor import DISPUTE_KEY

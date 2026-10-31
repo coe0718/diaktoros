@@ -127,6 +127,16 @@ class UncertainTurn(Dispute):
             self.sweep(VERDICT)
         breach.assert_called_once()
 
+    def test_an_uncertain_fixer_turn_was_started_so_no_blocker_says_otherwise(self):
+        # #1505 shadow review: an uncertain turn is no live fix (#1495), but the fixer gate did
+        # start it, so "the fixer gate did not start one" would be false on a head below the cap.
+        with mock.patch.object(run_supervisor.views, "turn_state",
+                               side_effect=lambda db, repo, pr, head, seat:
+                               "uncertain" if seat == "fixer" else None):
+            report = self.explain()
+        self.assertFalse([b for b in report["blockers"] if "did not start one" in b],
+                         report["blockers"])
+
 
 class OneDisputeRule(unittest.TestCase):
     def test_only_views_reads_a_dispute_time_directly(self):
@@ -318,6 +328,15 @@ class MaintainerRerequest(Dispute):
         block.assert_called_once()
         self.assertTrue(block.call_args.kwargs["turn_key"].startswith(
             run_supervisor.DISPUTE_KEY))
+
+    def test_with_no_effective_verdict_to_compare_a_dispute_still_counts(self):
+        # #1505 shadow review: the gate kept a dispute when no effective verdict could be ordered
+        # (here, a verdict stamped with no zone); routing it through views.disputed must not drop it.
+        self.dispute(created=1.0)
+        zoneless = [{**VERDICT[0], "submitted_at": "2020-01-01T00:00:00"}]
+        self.assertIsNone(gate.latest_effective_review_at_head(zoneless, self.loop, fg.HEAD))
+        block, _ = self.gate(reviews=zoneless)
+        block.assert_called_once()
 
     def test_no_dispute_or_not_a_maintainer_is_still_refused(self):
         block, err = self.gate()                                   # no dispute

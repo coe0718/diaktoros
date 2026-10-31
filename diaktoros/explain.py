@@ -657,9 +657,11 @@ def _run_blockers(c) -> None:
     if c.head_states and not c.reviewed:
         c.blockers.append(f"non-verdict review at head {c.short} ({'/'.join(c.head_states)}) "
                           "does not suppress a fresh reviewer request")
-    # At the cap the fixer gate starts no fix by design (gate_fixer: not a work order, #1494).
-    if (c.at_head and not c.fix_live and not c.queued_seat and not c.push_off and not c.review_only
-            and not c.ruling and not c.disputed and not c.cap_spent):
+    # At the cap the fixer gate starts no fix by design (gate_fixer: not a work order, #1494). A
+    # fixer turn in the ledger, uncertain included, was started: not "did not start one" (#1505).
+    if (c.at_head and not c.fix_live and "fixer" not in c.ledgered and not c.queued_seat
+            and not c.push_off and not c.review_only and not c.ruling and not c.disputed
+            and not c.cap_spent):
         c.blockers.append(f"the changes-requested verdict at head {c.short} has no fix run out "
                           f"— the fixer gate did not start one for that delivery")
     if (c.request_pending and not c.held and not c.inflight_review and not c.at_head
