@@ -270,6 +270,35 @@ class AfterEnabling(Steps):
         self.assertNotIn("in-flight fix mark", bare)
         self.assertIn("re-deliver the changes-requested review event", bare)
 
+    def test_a_live_mark_over_an_ended_turn_holds_its_re_delivery_but_not_its_retry(self):
+        # #1514 review F3: an ended turn intake re-arms was promised the redelivery at once, but
+        # the gate drops it while the head's mark stands; a retry is not held by the mark.
+        mark = f"fix:7:{fg.HEAD}"
+        waits = "once it has expired, re-deliver the changes-requested review event"
+        for state, error, retried in (("cancelled", "fixer verdict superseded", False),
+                                      ("failed", "", True)):
+            with self.subTest(state=state):
+                sup, _ = self.ledgered(state, error)
+                self.st.inflight(mark, record=True)
+                self.set_push(False)
+                report = self.report(inflight_fix=True)
+                action = report["next"]["action"]
+                self.assertIn(waits, action)
+                self.assertEqual("re-arms it now — or the fixer gate refuses" in action, retried, action)
+                self.assertEqual(self.retry() in action, retried, action)
+                ended = [b for b in report["blockers"] if f"is {state} with no fix pushed" in b]
+                self.assertIn("the in-flight fix mark expires", ended[0])
+                self.assertEqual(ended[0].endswith("(a redelivered verdict waits until the in-flight "
+                                                   "fix mark expires)"), retried, ended[0])
+                self.set_push(True)
+                enqueue, _ = fg.GateHold.run_gate(self)
+                enqueue.assert_not_called()                    # the mark holds the gate
+                self.st.inflight_clear(mark)
+                enqueue, _ = fg.GateHold.run_gate(self)
+                enqueue.assert_called_once()
+                with sup._connect() as con:
+                    con.execute("DELETE FROM runs")
+
     def test_the_sweep_starts_no_verdict_without_a_work_order(self):
         self.set_push(True)
         fire, _, _ = self.sweep()                               # no queue entry, no run

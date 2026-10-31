@@ -639,15 +639,27 @@ def _gate_blockers(c) -> None:
                           f"shape too)")
 
 
+def _ended_rearm(c) -> str:
+    """What re-arms an ended fixer turn once pushes are on, as its step says: a redelivery waits
+    out a live in-flight mark (#1514 F3), a retry does not."""
+    marked = " the in-flight fix mark expires" if c.inflight_fix else ""
+    if c.redeliver and not marked:
+        return "a redelivered verdict re-arms it once the loop opts in"
+    if c.fixer_rearm[0]:
+        return ("retry re-arms it once the loop opts in"
+                + (f" (a redelivered verdict waits until{marked})" if c.redeliver else ""))
+    if c.redeliver:
+        return f"a redelivered verdict re-arms it once the loop opts in and{marked}"
+    return "a redelivered verdict is a duplicate the ledger refuses"
+
+
 def _run_blockers(c) -> None:
     """Guards on the runs: push-off, capacity, stale queues and locks, a missing run."""
     declined = c.queued_seat == "fixer" and gate.is_declined_hold({"reason": c.queued_reason})
     if c.push_off and c.fixer_ended and not c.ruling:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the fixer turn at head {c.short} is "
                           f"{c.fixer_turn} with no fix pushed — "
-                          + ("a redelivered verdict re-arms it once the loop opts in" if c.redeliver
-                             else "retry re-arms it once the loop opts in" if c.fixer_rearm[0] else
-                             "a redelivered verdict is a duplicate the ledger refuses"))
+                          + _ended_rearm(c))
     elif c.push_off and c.fix_live and not c.ruling:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the fixer turn at head {c.short} cannot "
                           f"publish — the worker cancels it before launch, or the broker refuses "
@@ -930,11 +942,14 @@ def _ended_turn_step(c, enable: str) -> str:
     """A ledgered fixer turn that is not live — uncertain, or ended with no push — whether or not
     a lock or an in-flight mark still stands over it (#1510 review). A redelivered verdict is
     named only when intake would re-arm the turn, retry only when its plan offers it (#1514
-    review: the two rules differ); a run that may have written is reconciled first."""
+    review: the two rules differ), and a redelivery waits out a live in-flight mark, which the
+    gate drops it under, while a retry does not; a run that may have written is reconciled first."""
     rearm, why, reconcile = c.fixer_rearm
-    redeliver = c.to_fixer + "— the ledger re-arms the turn for it" if c.redeliver else ""
+    wait = _mark_wait(c) if c.redeliver else ""   # the gate drops it under a live mark (#1514 F3)
+    redeliver = wait + c.to_fixer + "— the ledger re-arms the turn for it" if c.redeliver else ""
     if redeliver and rearm:
-        then = f"{redeliver} (or {rearm} re-arms it); or fix it by hand"
+        then = (f"{rearm} re-arms it now — or {redeliver}" if wait
+                else f"{redeliver} (or {rearm} re-arms it)") + "; or fix it by hand"
     elif redeliver or rearm:
         then = (redeliver or f"{rearm} re-arms it" + (" (with the cap spent, its push then goes "
                                                          "for a ruling)" if c.cap_spent else "")
