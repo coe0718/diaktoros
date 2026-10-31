@@ -29,8 +29,8 @@ PUSHES_A_FIX = "the fixer pushes a fix"
 
 
 class Steps(fg.Base):
-    def report(self, held=None, inflight_fix=False, queued="", verdicts=1):
-        local = {"held": held or {}, "queued_seat": "fixer" if queued else "",
+    def report(self, held=None, inflight_fix=False, queued="", verdicts=1, seat="fixer"):
+        local = {"held": held or {}, "queued_seat": seat if queued else "",
                  "queued_reason": queued, "inflight_review": False, "inflight_fix": inflight_fix,
                  "marker": {}, "parked": False, "delivery_status": "",
                  "capacity": {"reviewer": (0, 1), "fixer": (0, 1)}, "stale_queues": [],
@@ -167,9 +167,18 @@ class AfterEnabling(Steps):
         self.assertEqual(started, 1)
         self.assertEqual(fire.call_args.args[1], "pull_request_review")
 
+    def declined(self, state):
+        """A fixer turn at this head in ``state``, and the queue entry the gate declined it with."""
+        sup = self.production()
+        with mock.patch.object(sup, "_spawn"):
+            sup.enqueue("run", fg.REPO, 7, fg.HEAD, "fixer")
+        with sup._connect() as con:
+            con.execute("UPDATE runs SET state=?", (state,))
+        return sup, gate.declined_reason("fixer", f"duplicate {state}")
+
     def test_a_declined_fixer_turn_is_left_by_the_drain_so_explain_names_the_retry(self):
         # #1510 review: a declined entry read as a push-off hold, promising the sweep or a drain.
-        declined = gate.declined_reason("fixer", "duplicate failed")
+        _, declined = self.declined("failed")
         step = self.report(queued=declined)["next"]
         self.assertEqual(step["kind"], "operator")
         self.assertNotIn("starts the fix run", step["action"])
@@ -180,6 +189,35 @@ class AfterEnabling(Steps):
         self.assertEqual(started, 0)
         fire.assert_not_called()
         self.assertTrue(gate.is_declined_hold(self.st.queue_items("fixer")[f"{fg.REPO}#7"]))
+
+    def test_a_declined_turn_retry_would_refuse_is_not_offered_the_retry(self):
+        # #1510 review F3: a declined `duplicate succeeded` was told to retry, which says
+        # "nothing to retry"; explain now asks the same plan the retry runs.
+        from diaktoros import retry_action
+        for state, why in (("succeeded", "nothing to retry — fixer succeeded"),
+                           ("uncertain", "may have written")):
+            with self.subTest(state):
+                sup, declined = self.declined(state)
+                step = self.report(queued=declined)["next"]
+                self.assertNotIn(self.retry(), step["action"])
+                self.assertIn(why, step["action"])
+                self.assertIn("fix it by hand, push, and re-request review", step["action"])
+                with sup._connect() as con:
+                    self.assertEqual(retry_action.plan(con, fg.REPO, 7, "fixer")["rearmable"], [])
+                with sup._connect() as con:
+                    con.execute("DELETE FROM runs")
+
+
+    def test_a_reviewer_queue_entry_is_no_fixer_work_order(self):
+        # Shadow review on #1510: the last queue entry read is any seat's, so a declined or
+        # waiting reviewer entry was named a declined fixer turn, or a hold the drain starts.
+        self.set_push(False)
+        for reason in (gate.declined_reason("reviewer", "duplicate completed"), "waiting for a slot"):
+            with self.subTest(reason):
+                step = self.report(queued=reason, seat="reviewer")["next"]
+                self.assertIn("no fixer work order", step["action"])
+                self.assertNotIn("declined the fixer turn", step["action"])
+                self.assertNotIn("starts the fix run", step["action"])
 
 
 if __name__ == "__main__":

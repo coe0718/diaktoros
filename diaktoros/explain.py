@@ -832,6 +832,28 @@ def _next_ruling(c) -> tuple[str, str] | None:
     return kind, action
 
 
+def _fixer_retry(c) -> tuple[str, str]:
+    """``(command, "")`` when ``retry`` would re-arm this head's fixer turn, else ``("", why)``:
+    the ledger's own answer (``retry_action.plan``), so explain never names a retry it refuses."""
+    import sqlite3
+    from . import retry_action
+    from .run_supervisor import views
+    try:
+        con = views.read_only_connect(config.host_path("ledger"))
+        if con is None:
+            return "", "no isolated run on record"
+        con.row_factory = sqlite3.Row                      # plan reads rows by name
+        try:
+            plan = retry_action.plan(con, c.repo, c.number, "fixer")
+        finally:
+            con.close()
+    except (sqlite3.Error, OSError) as exc:
+        return "", f"the run ledger cannot be read: {exc}"
+    if plan["head"] == c.head and plan["rearmable"]:
+        return f"`hermes dk retry --loop {c.loop['id']} --pr {c.number} --seat fixer`", ""
+    return "", plan["message"] or next(iter(plan["blocked"].values()), "") or "nothing at this head"
+
+
 def _next_push_off(c) -> tuple[str, str] | None:
     """Next event with unattended fixer pushes off (#1506): a dispute, a fixer turn already
     started, a queued hold, or no work order at all. At a spent cap only a started turn is."""
@@ -859,14 +881,17 @@ def _next_push_off(c) -> tuple[str, str] | None:
                   + "; or fix it by hand, push, and re-request review")
     elif c.cap_spent:
         return None
-    elif c.push_off_held and gate.is_declined_hold({"reason": c.queued_reason}):
+    elif (c.push_off_held and c.queued_seat == "fixer"     # a reviewer entry is no fixer turn
+          and gate.is_declined_hold({"reason": c.queued_reason})):
         # The gate answered and declined (a terminal turn): drain leaves it, so only a retry
-        # of that turn moves it (#1510 review).
+        # moves it, and only when retry would re-arm that turn (#1510 review).
+        rearm, why = _fixer_retry(c)
         action = (f"operator decision: unattended fixer pushes are off for this loop, and the gate "
                   f"declined the fixer turn for head {c.short} ({c.queued_reason}) — nothing "
-                  f"restarts it. Run `{enable}`, then `hermes dk retry --loop {c.loop['id']} --pr "
-                  f"{c.number} --seat fixer`; or fix it by hand, push, and re-request review")
-    elif c.push_off_held and c.queued_seat:
+                  "restarts it. " + (f"Run `{enable}`, then {rearm} re-arms it; or fix it by hand"
+                                     if rearm else f"`retry` has nothing to re-arm ({why}): fix "
+                                     "it by hand") + ", push, and re-request review")
+    elif c.push_off_held and c.queued_seat == "fixer":
         action = (f"operator decision: unattended fixer pushes are off for this loop, so the "
                   f"changes-requested verdict at head {c.short} starts no fixer turn. To let the "
                   f"fixer answer it, run `{enable}` — the next watchdog sweep (or `hermes dk drain "
