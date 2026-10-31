@@ -859,6 +859,13 @@ def _next_push_off(c) -> tuple[str, str] | None:
                   + "; or fix it by hand, push, and re-request review")
     elif c.cap_spent:
         return None
+    elif c.push_off_held and gate.is_declined_hold({"reason": c.queued_reason}):
+        # The gate answered and declined (a terminal turn): drain leaves it, so only a retry
+        # of that turn moves it (#1510 review).
+        action = (f"operator decision: unattended fixer pushes are off for this loop, and the gate "
+                  f"declined the fixer turn for head {c.short} ({c.queued_reason}) — nothing "
+                  f"restarts it. Run `{enable}`, then `hermes dk retry --loop {c.loop['id']} --pr "
+                  f"{c.number} --seat fixer`; or fix it by hand, push, and re-request review")
     elif c.push_off_held and c.queued_seat:
         action = (f"operator decision: unattended fixer pushes are off for this loop, so the "
                   f"changes-requested verdict at head {c.short} starts no fixer turn. To let the "
