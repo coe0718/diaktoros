@@ -833,8 +833,9 @@ def _next_ruling(c) -> tuple[str, str] | None:
     return kind, action
 
 
-def _fixer_retry(c) -> tuple[str, str]:
-    """``(command, "")`` when ``retry`` would re-arm this head's fixer turn, else ``("", why)``:
+def _fixer_retry(c) -> tuple[str, str, bool]:
+    """``(command, "", False)`` when ``retry`` would re-arm this head's fixer turn, else
+    ``("", why, blocked)``, ``blocked`` when a run is there but may have written (reconcile first):
     the ledger's own answer (``retry_action.plan``), so explain never names a retry it refuses."""
     import sqlite3
     from . import retry_action
@@ -842,17 +843,18 @@ def _fixer_retry(c) -> tuple[str, str]:
     try:
         con = views.read_only_connect(config.host_path("ledger"))
         if con is None:
-            return "", "no isolated run on record"
+            return "", "no isolated run on record", False
         con.row_factory = sqlite3.Row                      # plan reads rows by name
         try:
             plan = retry_action.plan(con, c.repo, c.number, "fixer")
         finally:
             con.close()
     except (sqlite3.Error, OSError) as exc:
-        return "", f"the run ledger cannot be read: {exc}"
+        return "", f"the run ledger cannot be read: {exc}", False
     if plan["head"] == c.head and plan["rearmable"]:
-        return f"`hermes dk retry --loop {c.loop['id']} --pr {c.number} --seat fixer`", ""
-    return "", plan["message"] or next(iter(plan["blocked"].values()), "") or "nothing at this head"
+        return f"`hermes dk retry --loop {c.loop['id']} --pr {c.number} --seat fixer`", "", False
+    blocked = next(iter(plan["blocked"].values()), "")
+    return "", plan["message"] or blocked or "nothing at this head", bool(blocked)
 
 
 def _started_turn_step(c, enable: str) -> str:
@@ -896,12 +898,26 @@ def _next_push_off(c) -> tuple[str, str] | None:
           and gate.is_declined_hold({"reason": c.queued_reason})):
         # The gate answered and declined (a terminal turn): drain leaves it, so only a retry
         # moves it, and only when retry would re-arm that turn (#1510 review).
-        rearm, why = _fixer_retry(c)
+        rearm, why, _ = _fixer_retry(c)
         action = (f"operator decision: unattended fixer pushes are off for this loop, and the gate "
                   f"declined the fixer turn for head {c.short} ({c.queued_reason}) — nothing "
                   "restarts it. " + (f"Run `{enable}`, then {rearm} re-arms it; or fix it by hand"
                                      if rearm else f"`retry` has nothing to re-arm ({why}): fix "
                                      "it by hand") + ", push, and re-request review")
+    elif c.push_off_held and c.fixer_turn:
+        # A ledgered turn that is not live: uncertain, or ended with no push (shadow on #1510).
+        # A redelivered verdict is a duplicate the ledger refuses; retry re-arms what it offers,
+        # and a run that may have written is reconciled first, never replayed.
+        rearm, why, reconcile = _fixer_retry(c)
+        action = (f"operator decision: unattended fixer pushes are off for this loop, and the fixer "
+                  f"turn at head {c.short} is {c.fixer_turn} with no fix pushed — a redelivered "
+                  f"verdict is a duplicate the ledger refuses. Run `{enable}`, then "
+                  + (f"{rearm} re-arms it; or fix it by hand" if rearm else
+                     f"reconcile it first, its outcome is unknown ({why}): `hermes dk status --loop "
+                     f"{c.loop['id']}` names the run and its reconcile command, and only then "
+                     "retry; or fix it by hand" if reconcile else
+                     f"`retry` has nothing to re-arm ({why}): fix it by hand")
+                  + ", push, and re-request review")
     elif c.push_off_held and c.queued_seat == "fixer":
         action = (f"operator decision: unattended fixer pushes are off for this loop, so the "
                   f"changes-requested verdict at head {c.short} starts no fixer turn. To let the "

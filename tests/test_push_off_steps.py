@@ -177,6 +177,27 @@ class AfterEnabling(Steps):
         enqueue, _ = fg.GateHold.run_gate(self)                 # the re-delivered verdict starts it
         enqueue.assert_called_once()
 
+    def test_a_ledgered_turn_that_is_not_live_is_never_sent_a_re_delivery(self):
+        # Shadow on #1510: an uncertain fixer turn fell to "no run", naming a re-delivery the
+        # ledger refuses as a duplicate; retry refuses a run that may have written (reconcile).
+        for state, expect in (("uncertain", "reconcile it first"), ("failed", self.retry()),
+                              ("succeeded", "nothing to retry — fixer succeeded")):
+            with self.subTest(state):
+                sup, _ = self.ledgered(state)
+                self.set_push(False)
+                step = self.report()["next"]
+                self.assertIn(expect, step["action"])
+                self.assertNotIn("re-deliver", step["action"])
+                self.assertNotIn("no run", step["action"])
+                if state != "failed":
+                    self.assertNotIn(self.retry(), step["action"])
+                self.set_push(True)
+                with mock.patch.object(sup, "_spawn"):
+                    outcome = sup.submit("again", fg.REPO, 7, fg.HEAD, "fixer")
+                self.assertEqual(outcome.startswith(f"duplicate {state}"), state != "failed", outcome)
+                with sup._connect() as con:
+                    con.execute("DELETE FROM runs")
+
     def test_the_sweep_starts_no_verdict_without_a_work_order(self):
         self.set_push(True)
         fire, _, _ = self.sweep()                               # no queue entry, no run
@@ -198,7 +219,7 @@ class AfterEnabling(Steps):
         self.assertEqual(started, 1)
         self.assertEqual(fire.call_args.args[1], "pull_request_review")
 
-    def declined(self, state):
+    def ledgered(self, state):
         """A fixer turn at this head in ``state``, and the queue entry the gate declined it with."""
         sup = self.production()
         with mock.patch.object(sup, "_spawn"):
@@ -209,7 +230,7 @@ class AfterEnabling(Steps):
 
     def test_a_declined_fixer_turn_is_left_by_the_drain_so_explain_names_the_retry(self):
         # #1510 review: a declined entry read as a push-off hold, promising the sweep or a drain.
-        _, declined = self.declined("failed")
+        _, declined = self.ledgered("failed")
         step = self.report(queued=declined)["next"]
         self.assertEqual(step["kind"], "operator")
         self.assertNotIn("starts the fix run", step["action"])
@@ -228,7 +249,7 @@ class AfterEnabling(Steps):
         for state, why in (("succeeded", "nothing to retry — fixer succeeded"),
                            ("uncertain", "may have written")):
             with self.subTest(state):
-                sup, declined = self.declined(state)
+                sup, declined = self.ledgered(state)
                 step = self.report(queued=declined)["next"]
                 self.assertNotIn(self.retry(), step["action"])
                 self.assertIn(why, step["action"])
