@@ -300,6 +300,7 @@ class CapStep(fg.Base):
 
     def test_a_fixer_lock_on_an_old_head_is_no_live_fix(self):
         # #1481 review: an old-head run cannot finish this head, so escalate is still the step.
+        self.set_push(True)                      # pushes off, the current-head turn cannot (#1506)
         stale = self.explain(False, held={"fixer": {"head": "b" * 40, "at": time.time()}})
         self.assertEqual(stale["kind"], "operator")
         self.assertIn("hermes dk escalate", stale["action"])

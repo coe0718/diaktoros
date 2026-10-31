@@ -529,6 +529,7 @@ def _seat_needs(c) -> None:
     turns = {seat: views.turn_state(db, c.repo, c.number, c.head, seat)
              for seat in ("reviewer", "fixer")} if c.head else {}
     c.ledgered = {seat for seat, turn in turns.items() if turn in LIVE_TURN}
+    c.fixer_turn = turns.get("fixer")     # any ledger state: a lock or mark with no run has none
     # A fix for this head: a lock on an old head cannot finish it (#1481 review).
     # An uncertain fixer turn is no live fix: nothing will push, and the sweep reads it so (#1495).
     c.fix_live = (("fixer" in c.held and "fixer" not in c.stale_held) or c.inflight_fix
@@ -636,7 +637,11 @@ def _gate_blockers(c) -> None:
 
 def _run_blockers(c) -> None:
     """Guards on the runs: push-off, capacity, stale queues and locks, a missing run."""
-    if c.push_off_held and not c.parked and not c.pending_delivery and not c.cap_spent:
+    if c.push_off and c.fix_live and not c.ruling:
+        c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the fixer turn at head {c.short} cannot "
+                          f"publish — the worker cancels it before launch, or the broker refuses "
+                          f"its push")
+    elif c.push_off_held and not c.parked and not c.pending_delivery and not c.cap_spent:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the changes-requested verdict at head "
                           f"{c.short} starts no fixer turn until the loop opts in — "
                           f"`{config.fixer_push_enable_command(c.loop)}`")
@@ -681,7 +686,7 @@ def _next_step(c) -> tuple[str, str]:
     c.fix_push = f"the fixer pushes a fix and re-requests review of head {c.short} — "
     c.verdict_at = f"the reviewer's verdict at head {c.short} (round {(c.spent or 0) + 1} of {c.cap}) — "
     return (_next_unread(c) or _next_approval(c) or _next_person(c) or _next_ruling(c)
-            or _next_escalation(c) or _next_lock(c) or _next_run(c))
+            or _next_push_off(c) or _next_escalation(c) or _next_lock(c) or _next_run(c))
 
 
 def _next_unread(c) -> tuple[str, str] | None:
@@ -828,8 +833,124 @@ def _next_ruling(c) -> tuple[str, str] | None:
     return kind, action
 
 
+def _fixer_retry(c) -> tuple[str, str, bool]:
+    """``(command, "", False)`` when ``retry`` would re-arm this head's fixer turn, else
+    ``("", why, blocked)``, ``blocked`` when a run is there but may have written (reconcile first):
+    the ledger's own answer (``retry_action.plan``), so explain never names a retry it refuses."""
+    import sqlite3
+    from . import retry_action
+    from .run_supervisor import views
+    try:
+        con = views.read_only_connect(config.host_path("ledger"))
+        if con is None:
+            return "", "no isolated run on record", False
+        con.row_factory = sqlite3.Row                      # plan reads rows by name
+        try:
+            plan = retry_action.plan(con, c.repo, c.number, "fixer")
+        finally:
+            con.close()
+    except (sqlite3.Error, OSError) as exc:
+        return "", f"the run ledger cannot be read: {exc}", False
+    if plan["head"] == c.head and plan["rearmable"]:
+        return f"`hermes dk retry --loop {c.loop['id']} --pr {c.number} --seat fixer`", "", False
+    blocked = next(iter(plan["blocked"].values()), "")
+    return "", plan["message"] or blocked or "nothing at this head", bool(blocked)
+
+
+def _started_turn_step(c, enable: str) -> str:
+    """A fixer turn started while pushes are off: its push is refused (broker_ipc) or the worker
+    cancels it at launch, and the sweep only drains queued work. A run in the ledger is what an
+    operator retry re-arms; a lock or mark with no run behind it gets a fresh delivery instead
+    (#1510 review), since retry has nothing to offer there."""
+    rearm = (f"`hermes dk retry --loop {c.loop['id']} --pr {c.number} --seat fixer` re-arms it "
+             "(retry refuses a run that may have written, and says how to reconcile it)"
+             + (" — with the cap spent, its push then goes for a ruling" if c.cap_spent else "")
+             if c.fixer_turn else
+             "it has no run in the ledger for retry to re-arm, so "
+             + (f"`hermes dk escalate --loop {c.loop['id']} --pr {c.number}` sends head {c.short} for "
+                "a ruling — at the spent cap the fixer gate starts no new fix" if c.cap_spent
+                else c.to_fixer + "(the gate admits it under the policy then)"))
+    return (f"operator decision: unattended fixer pushes are off for this loop, so the fixer turn "
+            f"at head {c.short} cannot publish — the worker cancels it before launch, or the broker "
+            f"refuses its push. Run `{enable}`, then, once that turn has ended without a push, "
+            + rearm + "; or fix it by hand, push, and re-request review")
+
+
+def _ended_turn_step(c, enable: str) -> str:
+    """A ledgered fixer turn that is not live — uncertain, or ended with no push — whether or not
+    a lock or an in-flight mark still stands over it (#1510 review). A redelivered verdict is a
+    duplicate the ledger refuses; retry re-arms what it offers, and a run that may have written
+    is reconciled first, never replayed."""
+    rearm, why, reconcile = _fixer_retry(c)
+    return (f"operator decision: unattended fixer pushes are off for this loop, and the fixer "
+            f"turn at head {c.short} is {c.fixer_turn} with no fix pushed — a redelivered "
+            f"verdict is a duplicate the ledger refuses. Run `{enable}`, then "
+            + (f"{rearm} re-arms it" + (" (with the cap spent, its push then goes for a ruling)"
+                                       if c.cap_spent else "") + "; or fix it by hand" if rearm else
+               f"reconcile it first, its outcome is unknown ({why}): `hermes dk status --loop "
+               f"{c.loop['id']}` names the run and its reconcile command, and only then "
+               "retry; or fix it by hand" if reconcile else
+               f"`retry` has nothing to re-arm ({why}): fix it by hand")
+            + ", push, and re-request review")
+
+
+def _next_push_off(c) -> tuple[str, str] | None:
+    """Next event with unattended fixer pushes off (#1506): a dispute, a fixer turn already
+    started, a queued hold, or no work order at all. At a spent cap only a started turn is."""
+    from .run_supervisor import views
+    enable = config.fixer_push_enable_command(c.loop)
+    ended = c.fixer_turn and (c.fixer_turn == "uncertain" or c.fixer_turn not in LIVE_TURN)
+    if not c.push_off or (c.cap_spent and not c.adjudicated):
+        return None                          # a spent cap with no route: human adjudication
+    if c.disputed and not c.cap_spent:
+        # The sweep checks pushes-off before a dispute, whatever lock is held, and alerts the
+        # operator; once pushes are on it acts on the dispute already there, not a new fix (#1496).
+        action = (f"operator decision: unattended fixer pushes are off for this loop, and the fixer "
+                  f"already disputed the review at head {c.short} — once you run `{enable}`, "
+                  + ("the next armed watchdog sweep sends the dispute for a ruling" if c.adjudicated
+                     else "it is your decision: " + views.dispute_choices(c.loop["id"], c.number)))
+    elif ended:
+        action = _ended_turn_step(c, enable)   # F5: a lock or mark can outlive its run
+    elif c.fix_live:
+        action = _started_turn_step(c, enable)
+    elif c.cap_spent:
+        return None
+    elif (c.push_off_held and c.queued_seat == "fixer"     # a reviewer entry is no fixer turn
+          and gate.is_declined_hold({"reason": c.queued_reason})):
+        # The gate answered and declined (a terminal turn): drain leaves it, so only a retry
+        # moves it, and only when retry would re-arm that turn (#1510 review).
+        rearm, why, _ = _fixer_retry(c)
+        action = (f"operator decision: unattended fixer pushes are off for this loop, and the gate "
+                  f"declined the fixer turn for head {c.short} ({c.queued_reason}) — nothing "
+                  "restarts it. " + (f"Run `{enable}`, then {rearm} re-arms it; or fix it by hand"
+                                     if rearm else f"`retry` has nothing to re-arm ({why}): fix "
+                                     "it by hand") + ", push, and re-request review")
+    elif c.push_off_held and c.queued_seat == "fixer":
+        # Only the push-off hold is started by a sweep or drain alone; a capacity (or other)
+        # entry waits for a fixer slot too, and the gate holds it while pushes are off (shadow).
+        starts = ("the next watchdog sweep (or `hermes dk drain --loop {id} --seat fixer`) then "
+                  "starts the fix run for this head" if c.fixer_queue_hold else
+                  "the queued fixer entry ({reason}) is handed to the gate when a fixer slot frees "
+                  "or on `hermes dk drain --loop {id} --seat fixer`, and the gate starts the run "
+                  "only once pushes are on").format(id=c.loop["id"], reason=c.queued_reason)
+        action = (f"operator decision: unattended fixer pushes are off for this loop, so the "
+                  f"changes-requested verdict at head {c.short} starts no fixer turn. To let the "
+                  f"fixer answer it, run `{enable}` — {starts}; or fix it by hand, push, and "
+                  "re-request review")
+    elif c.push_off_held:
+        action = (f"operator decision: unattended fixer pushes are off for this loop, and the "
+                  f"changes-requested verdict at head {c.short} has no fixer work order (no queued "
+                  f"hold, no run), so nothing starts one by itself. Run `{enable}`, then "
+                  + c.to_fixer + f"(a fixer run the push policy cancelled is re-armed by `hermes dk "
+                  f"retry --loop {c.loop['id']} --pr {c.number} --seat fixer` instead); or fix it "
+                  "by hand, push, and re-request review")
+    else:
+        return None
+    return "operator", action
+
+
 def _next_escalation(c) -> tuple[str, str] | None:
-    """Next event at a spent cap with no marker, with pushes off, or a dispute."""
+    """Next event at a spent cap with no marker, or a dispute."""
     from .run_supervisor import views
     if c.cap_spent and not c.review_only:
         # No marker (#575). A live fix run ends first: its push meets the cap at the reviewer gate
@@ -857,23 +978,6 @@ def _next_escalation(c) -> tuple[str, str] | None:
             action = (wait + f"`hermes dk escalate --loop {c.loop['id']} --pr {c.number}` sends head {c.short} "
                       "for a ruling (the watchdog raises a missing marker itself only at a head it "
                       "saw arrive, never one open since the loop was armed) — no ruling is underway yet")
-    elif c.push_off and c.disputed:
-        # The sweep checks pushes-off before a dispute, whatever lock is held, and alerts the
-        # operator; once pushes are on it acts on the dispute already there, not a new fix (#1496).
-        kind = "operator"
-        action = (f"operator decision: unattended fixer pushes are off for this loop, and the fixer "
-                  f"already disputed the review at head {c.short} — once you run "
-                  f"`{config.fixer_push_enable_command(c.loop)}`, "
-                  + ("the next armed watchdog sweep sends the dispute for a ruling" if c.adjudicated
-                     else "it is your decision: " + views.dispute_choices(c.loop["id"], c.number)))
-    elif c.push_off_held:
-        kind = "operator"
-        action = (f"operator decision: unattended fixer pushes are off for this loop, so the "
-                  f"changes-requested verdict at head {c.short} starts no fixer turn. To let the "
-                  f"fixer answer it, run `{config.fixer_push_enable_command(c.loop)}` — the next "
-                  f"watchdog sweep (or `hermes dk drain --loop {c.loop['id']} --seat fixer`) "
-                  "then starts the fix run for this head; or fix it by hand, push, and re-request "
-                  "review")
     elif c.disputed:
         kind = "adjudication" if c.adjudicated else "operator"
         action = (f"the fixer disputed the review at head {c.short}, every finding as no defect — "
