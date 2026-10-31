@@ -28,6 +28,7 @@ import test_fixer_gating as fg  # noqa: E402
 from diaktoros import (
     cli,
     config,
+    explain,
     gate,
     gh,
     run_supervisor,
@@ -304,8 +305,8 @@ class Gates(fg.Base):
                  "inflight_fix": False, "marker": {}, "parked": False, "delivery_status": "",
                  "capacity": {"reviewer": (0, 1), "fixer": (0, 1)}, "stale_queues": [],
                  "seat": "", "queue": "", "inflight": "", "escalation": "", "sweep": ""}
-        with mock.patch.object(gate, "_explain_state", return_value=local):
-            return gate.explain(self.loop, self.st, 7,
+        with mock.patch.object(explain, "_explain_state", return_value=local):
+            return explain.explain(self.loop, self.st, 7,
                                 {"pr": self.live, "reviews": self.verdicts(self.loop["cap"] if verdicts is None
                                                          else verdicts),
                                  "armed": True, "read_at": time.time()})
@@ -314,7 +315,7 @@ class Gates(fg.Base):
         report = self.explain(self.loop["cap"] - 1)
         self.assertEqual(report["next"]["kind"], "author-push")
         self.assertIn(OWNER, report["next"]["action"])
-        self.assertIn(report["next"]["kind"], gate.EXPLAIN_KINDS)
+        self.assertIn(report["next"]["kind"], explain.EXPLAIN_KINDS)
         self.assertFalse(any("did not start one" in line or "cap may not have fired" in line
                              for line in report["blockers"]), report["blockers"])
 

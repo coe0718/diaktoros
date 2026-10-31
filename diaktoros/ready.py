@@ -25,7 +25,7 @@ reports gates, as everywhere else. GitHub branch protection is not read; ``merge
 """
 from __future__ import annotations
 
-from . import ci, config, gate, gate_failures, gh, stale_approval, transition
+from . import ci, config, explain, gate, gate_failures, gh, stale_approval, transition
 
 # GitHub mergeable_state values that leave a PR mergeable (``unstable`` is only a non-required
 # check failing; the required ones are judged by ``ci.gating`` above).
@@ -174,7 +174,7 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
 
     try:
         for entry in gate_failures.open_for(loop, number):
-            add(FAILURE, "open gate failure: " + gate.gate_failure_line(entry)[:200])
+            add(FAILURE, "open gate failure: " + explain.gate_failure_line(entry)[:200])
     except Exception as exc:
         add(PENDING, f"gate-failure ledger unreadable: {type(exc).__name__}")
     held = st.human_hold(number, head)
@@ -190,7 +190,7 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
         # Waiting for the ruling; once it is in, the decision is the operator's.
         # With no adjudicator route no ruling ever comes: a person decides (shadow, #1225).
         # The reason says which (#1245): a stale "awaiting" after the ruling misled.
-        ruled = gate._ruled(loop, number, head)
+        ruled = explain._ruled(loop, number, head)
         if ruled:
             add(FAILURE, f"escalated: the adjudicator ruled {ruled} at head {head[:7]}; a person "
                          "decides (merge, close, or push a new head)")

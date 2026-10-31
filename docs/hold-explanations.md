@@ -75,7 +75,7 @@ predicates. Retry buttons continue to depend only on the existing `retry_action`
 - `run_supervisor.next_step` / `describe_run`: existing ledger advice, `write_evidence`, budget and
   policy cancellation distinctions. `retry_action.plan` / `page_targets` and transactional
   `Supervisor.retry` remain the sole retry owners.
-- `gate.explain`: ordered live guard predicates and `next` report; `situation.resolve` /
+- `explain.explain`: ordered live guard predicates and `next` report; `situation.resolve` /
   `parent_readiness`: stacked-base identity and associated parent approval checks.
 - `pacing.seats` / `held` / `when`: live provider windows and seat daily counters. Historical ledger
   text must not be promoted into this live view.
@@ -94,7 +94,7 @@ predicates. Retry buttons continue to depend only on the existing `retry_action`
    escalation conditions, evidence provenance and supported checked actions. In this slice those
    cases are **not** reclassified from their recorded prose; a waiting row remains `run_waiting`
    with partial/unknown policy facts. No missing field is treated as an off switch or permission.
-2. Integrate `gate.explain`'s structured answer without changing its guard order or its documented
+2. Integrate `explain.explain`'s structured answer without changing its guard order or its documented
    CLI semantics. Non-ledger holds and pre-admission runtime queue failures are not covered by this
    ledger projection.
 3. Integrate observer notices from those same policy-owned artifacts. Existing observer wording,

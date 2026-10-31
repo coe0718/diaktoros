@@ -19,7 +19,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import gate, gh, state as state_mod  # noqa: E402
+from diaktoros import explain, gate, gh, state as state_mod  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
 OK = gh.Response({"login": "rev-coach"}, "", 200, {})
@@ -155,7 +155,7 @@ class Health(unittest.TestCase):
         self.assertIn("explain --loop widgets --pr 7", gate_lines[0])
         lines, *_ = self.sweep(hooks=(True, ""), probe=OK, at=self.now + 900)
         self.assertFalse(any("gate_reviewer.py" in line for line in lines), lines)
-        local = gate._explain_state(self.loop, self.st, "acme/widgets#7", 7, "", self.now)
+        local = explain._explain_state(self.loop, self.st, "acme/widgets#7", 7, "", self.now)
         self.assertIn("gate_reviewer.py GET /repos/acme/widgets/pulls/7", local["github"])
 
     # -- Arbiter's notes on #99 -----------------------------------------------------------------
@@ -173,7 +173,7 @@ class Health(unittest.TestCase):
             self.assertNotIn("\n", line)
             self.assertLess(len(line), 700, line)
         self.assertIn('HTTP 401 { "message": "Bad credentials"', "".join(lines))
-        local = gate._explain_state(self.loop, self.st, "acme/widgets#7", 7, "", self.now)
+        local = explain._explain_state(self.loop, self.st, "acme/widgets#7", 7, "", self.now)
         self.assertNotIn("\n", local["github"])
 
     def test_a_403_on_the_open_pr_listing_alerts_like_any_failed_read(self):
@@ -210,7 +210,7 @@ class Health(unittest.TestCase):
             "status": status, "login": "dev-fixer"})
         lines, *_ = self.sweep(hooks=(True, ""), probe=OK)
         (line,) = [line for line in lines if "could not POST" in line]
-        local = gate._explain_state(self.loop, self.st, "acme/widgets#7", 7, "", self.now)
+        local = explain._explain_state(self.loop, self.st, "acme/widgets#7", 7, "", self.now)
         return line, local["github"]
 
     def test_a_failed_post_with_no_answer_is_unknown_not_undone(self):

@@ -10,7 +10,7 @@ import time
 import unittest
 from unittest import mock
 
-from diaktoros import gate, situation, transition
+from diaktoros import explain, gate, situation, transition
 from diaktoros.state import LoopState
 from tests.test_stacked_situation import A, B, C, D, pr
 
@@ -151,7 +151,7 @@ class ReconciliationTest(unittest.TestCase):
                  "read_at": time.time(), "chain": resolution}
         before = self.snapshot()
         with mock.patch.object(gate, "seat_capacity", return_value=(0, 1)):
-            report = gate.explain(self.loop, self.st, 184, facts)
+            report = explain.explain(self.loop, self.st, 184, facts)
         self.assertEqual(report["next"]["kind"], "wait")
         self.assertIn("#182", report["chain"]["reason"])
         self.assertIn("visibility queue", report["queue"])

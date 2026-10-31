@@ -15,7 +15,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import ci, gate, gh, stale_approval, state as state_mod  # noqa: E402
+from diaktoros import ci, explain, gate_failures, gh, stale_approval, state as state_mod  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
 H1, H2 = "a" * 40, "b" * 40
@@ -82,15 +82,15 @@ class Stale(unittest.TestCase):
         self.assertIn("is red", got[0][1]["outcome"])
         self.assertTrue(stale_approval.is_stale(self.st.watch(), 7, H1))
         facts = {"pr": self.pr(), "reviews": self.approved(), "armed": True, "read_at": NOW}
-        with mock.patch.object(gate.gate_failures, "open_for", return_value=[]):
-            report = gate.explain(self.loop, self.st, 7, facts)
+        with mock.patch.object(gate_failures, "open_for", return_value=[]):
+            report = explain.explain(self.loop, self.st, 7, facts)
         self.assertIn("approval at aaaaaaa is stale", report["stale_approval"])
         self.assertIn(report["stale_approval"], report["blockers"])
 
     def explain(self):
         facts = {"pr": self.pr(), "reviews": self.approved(), "armed": True, "read_at": NOW}
-        with mock.patch.object(gate.gate_failures, "open_for", return_value=[]):
-            return gate.explain(self.loop, self.st, 7, facts)
+        with mock.patch.object(gate_failures, "open_for", return_value=[]):
+            return explain.explain(self.loop, self.st, 7, facts)
 
     def test_explain_next_does_not_recommend_merging_a_stale_approved_head(self):
         self.sweep(ci.CIState(failed=["tests"]), self.approved())

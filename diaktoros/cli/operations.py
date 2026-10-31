@@ -14,7 +14,7 @@ import time
 from .. import (
     attribution,
     config,
-    gate,
+    explain,
     gh,
     observer,
     pr_hold,
@@ -752,7 +752,7 @@ def cmd_explain(args) -> int:
 
     Read-only all the way down: it reads GitHub and the loop's own state files and writes neither —
     no claim, no queue entry, no drain, no webhook POST, no token printed. The conclusions come
-    from ``gate.explain``, so they are the predicates the live gates run rather than a second
+    from ``explain.explain``, so they are the predicates the live gates run rather than a second
     opinion about them.
 
     Exit 2 only when the question cannot be asked at all: an unknown loop, a loop file the loader
@@ -794,7 +794,7 @@ def cmd_explain(args) -> int:
 
     for loop in loops:
         st = state_mod.state_for(loop)
-        report = gate.explain(loop, st, args.pr, gate.explain_facts(loop, args.pr))
+        report = explain.explain(loop, st, args.pr, explain.explain_facts(loop, args.pr))
         print()
         print(f"[{loop['id']}] {loop['repo']}#{args.pr} — why this PR is not moving")
         print(f"  {'pr:':<12}{report['url']}")

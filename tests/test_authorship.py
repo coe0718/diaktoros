@@ -14,7 +14,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import authorship, config, doctor, gate, gh, issue_facts, pr_hold  # noqa: E402
+from diaktoros import authorship, config, doctor, explain, gate, gh, issue_facts, pr_hold  # noqa: E402
 from diaktoros.cli import operations  # noqa: E402
 
 STRAY = "c" * 40          # authored as the fixer's account; no seat turn pushed it
@@ -97,7 +97,7 @@ class AgentComments(fg.Base):
         hold = pr_hold.decide(loop, 7, events, [])
         self.assertEqual(hold["by"], "docs-bot")
         facts = {"pr": fg.LIVE, "reviews": [], "armed": True, "read_at": 0, "hold": hold}
-        report = gate.explain(loop, state_for(loop), 7, facts)
+        report = explain.explain(loop, state_for(loop), 7, facts)
         self.assertTrue(any("held by docs-bot (operator agent)" in b for b in report["blockers"]))
         self.assertEqual(report["operator_agents"], ["docs-bot"])
 
@@ -146,8 +146,8 @@ class Authorship(fg.Base):
              mock.patch.object(gate, "hooks_read", return_value=(True, "")), \
              mock.patch.object(pr_hold, "read", return_value=(None, "")), \
              mock.patch.object(gh, "pr_commits_read", return_value=(COMMITS, "")):
-            facts = gate.explain_facts(self.loop, 7)
-        return gate.explain(self.loop, self.st, 7, facts)
+            facts = explain.explain_facts(self.loop, 7)
+        return explain.explain(self.loop, self.st, 7, facts)
 
     def test_explain_reports_it_and_does_not_block(self):
         report = self.explain_report()
@@ -160,8 +160,8 @@ class Authorship(fg.Base):
         report = self.explain_report()
         args = mock.Mock(loop="one", pr=7)
         out = io.StringIO()
-        with mock.patch.object(gate, "explain", return_value=report), \
-             mock.patch.object(gate, "explain_facts", return_value={}), \
+        with mock.patch.object(explain, "explain", return_value=report), \
+             mock.patch.object(explain, "explain_facts", return_value={}), \
              mock.patch.object(operations, "_print_ledger_runs", return_value=[]), \
              mock.patch.object(operations, "_print_shadows"), \
              mock.patch.object(operations, "_view_lines", return_value=[]), \

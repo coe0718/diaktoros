@@ -18,7 +18,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_answers as fa  # noqa: E402
-from diaktoros import broker, config, gate, github_app, review_kick, state as state_mod  # noqa: E402
+from diaktoros import broker, config, explain, gate, github_app, review_kick, state as state_mod  # noqa: E402
 
 
 class Predicate(unittest.TestCase):
@@ -100,7 +100,7 @@ class Explain(AppSeat):
         st = state_mod.state_for(self.loop)
         live = {**self.fake.api(self.loop, f"/repos/{fa.REPO}/pulls/7"), **pr_extra}
         facts = {"pr": live, "reviews": [], "armed": True, "read_at": 0, "shadow_hold": ("", "")}
-        return gate.explain(self.loop, st, 7, facts)
+        return explain.explain(self.loop, st, 7, facts)
 
     def test_the_next_step_is_hermes_dk_review_not_a_github_request(self):
         report = self.report()
@@ -123,7 +123,7 @@ class ExplainReviewOnly(AppSeat):
                     "submitted_at": "2026-01-01T00:00:00Z", "user": {"login": "review", "id": 2}}]
         facts = {"pr": live, "reviews": reviews, "armed": True, "read_at": 0,
                  "shadow_hold": ("", "")}
-        report = gate.explain(self.loop, st, 7, facts)
+        report = explain.explain(self.loop, st, 7, facts)
         self.assertEqual(report["next"]["kind"], "author-push", report["next"])
         self.assertIn("hermes dk review --loop widgets --pr 7", report["next"]["action"])
         self.assertNotIn("re-requests review", report["next"]["action"])

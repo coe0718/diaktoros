@@ -9,7 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import config, gate, gh, ledger, pr_hold, run_supervisor  # noqa: E402
+from diaktoros import config, explain, gate, gh, ledger, pr_hold, run_supervisor  # noqa: E402
 from diaktoros.run_supervisor import CONFLICT_KEY, Supervisor  # noqa: E402
 
 BOSS, STRANGER = "boss", "stranger"
@@ -150,7 +150,7 @@ class Explain(fg.Base):
     def test_explain_names_who_and_when_and_points_at_release(self):
         hold = {"by": BOSS, "at": "2026-01-01T00:00:00Z", "how": "comment"}
         facts = {"pr": fg.LIVE, "reviews": [], "armed": True, "read_at": 0, "hold": hold}
-        report = gate.explain(self.loop, self.st, 7, facts)
+        report = explain.explain(self.loop, self.st, 7, facts)
         self.assertTrue(any("held by boss" in b and "2026-01-01" in b for b in report["blockers"]))
         self.assertIn("/loop release", report["next"]["action"])
 
@@ -162,13 +162,13 @@ class Explain(fg.Base):
         self.assertIn(pr_hold.LABEL, pr_hold.line(label_hold).split("until", 1)[1])
         for hold, names_label in ((comment_hold, False), (label_hold, True)):
             facts = {"pr": fg.LIVE, "reviews": [], "armed": True, "read_at": 0, "hold": hold}
-            action = gate.explain(self.loop, self.st, 7, facts)["next"]["action"]
+            action = explain.explain(self.loop, self.st, 7, facts)["next"]["action"]
             self.assertIn("/loop release", action)
             self.assertEqual("removal of the diaktoros:hold label" in action, names_label)
 
     def test_explain_without_a_hold_does_not_mention_one(self):
         facts = {"pr": fg.LIVE, "reviews": [], "armed": True, "read_at": 0}
-        report = gate.explain(self.loop, self.st, 7, facts)
+        report = explain.explain(self.loop, self.st, 7, facts)
         self.assertFalse(any("held by" in b for b in report["blockers"]))
 
 

@@ -14,7 +14,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import cli, gate, gh
+from diaktoros import cli, explain, gate, gh
 from diaktoros.cli import common as cli_common  # noqa: E402
 from scripts import watchdog
 
@@ -88,7 +88,7 @@ class EffectiveVerdictTest(unittest.TestCase):
         with (mock.patch.object(gh, "fetch", side_effect=[(PR, ""), ([APPROVED] * 100, ""),
                                                       (None, "HTTP 503")]) as fetch,
               mock.patch.object(gate, "hooks_read", return_value=(True, ""))):
-            facts = gate.explain_facts(LOOP, 7)
+            facts = explain.explain_facts(LOOP, 7)
         self.assertIsNone(facts["reviews"])
         self.assertIn("page 2", facts["reviews_error"])
         self.assertEqual(fetch.call_args_list[-1], mock.call(LOOP, gh.reviews_path(LOOP, 7) + "&page=2"))
@@ -99,7 +99,7 @@ class EffectiveVerdictTest(unittest.TestCase):
         with (mock.patch.object(gh, "fetch", side_effect=[(PR, ""), (first_page, ""),
                                                       ([REJECTED], "")]),
               mock.patch.object(gate, "hooks_read", return_value=(True, ""))):
-            facts = gate.explain_facts(LOOP, 7)
+            facts = explain.explain_facts(LOOP, 7)
         self.assertEqual(len(facts["reviews"]), 101)
         self.assertEqual(facts["reviews_error"], "")
         self.assert_no_merge(facts)
@@ -113,8 +113,8 @@ class EffectiveVerdictTest(unittest.TestCase):
                  "inflight_fix": False, "marker": {}, "parked": False, "delivery_status": "",
                  "capacity": {"reviewer": (0, 1), "fixer": (0, 1)}, "stale_queues": [],
                  "seat": "", "queue": "", "inflight": "", "escalation": "", "sweep": ""}
-        with mock.patch.object(gate, "_explain_state", return_value=local):
-            result = gate.explain(LOOP, mock.Mock(), 7, facts)
+        with mock.patch.object(explain, "_explain_state", return_value=local):
+            result = explain.explain(LOOP, mock.Mock(), 7, facts)
         self.assertNotIn("human merges", str(result))
         self.assertIn("changes requested", str(result).lower())
 

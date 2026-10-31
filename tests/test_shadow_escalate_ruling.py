@@ -20,7 +20,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import gate, run_supervisor, state as state_mod  # noqa: E402
+from diaktoros import explain, gate, run_supervisor, state as state_mod  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 
 APPROVED = [{"id": 9, "state": "APPROVED", "commit_id": fg.HEAD,
@@ -414,11 +414,11 @@ class Explain(Base):
     def report(self):
         facts = {"pr": fg.LIVE, "reviews": APPROVED, "armed": True, "read_at": 0,
                  "shadow_hold": ("", "")}
-        return gate.explain(self.loop, self.st, 7, facts)
+        return explain.explain(self.loop, self.st, 7, facts)
 
     def test_an_overruled_shadow_escalation_reads_as_approved(self):
         self.mark_escalated()
-        with mock.patch.object(gate, "_ruled", return_value="ACCEPT"):
+        with mock.patch.object(explain, "_ruled", return_value="ACCEPT"):
             report = self.report()
         self.assertFalse(any(b.startswith(("ruled:", "escalated:")) for b in report["blockers"]),
                          report["blockers"])
@@ -426,7 +426,7 @@ class Explain(Base):
 
     def test_a_disputes_accept_still_leaves_the_decision_to_the_operator(self):
         self.mark_escalated(by="dispute")
-        with mock.patch.object(gate, "_ruled", return_value="ACCEPT"):
+        with mock.patch.object(explain, "_ruled", return_value="ACCEPT"):
             report = self.report()
         self.assertTrue(any(b.startswith("ruled:") for b in report["blockers"]), report["blockers"])
 

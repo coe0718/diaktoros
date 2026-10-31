@@ -15,7 +15,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from diaktoros import ci, gate, gh, merge_check, ready, state as state_mod  # noqa: E402
+from diaktoros import ci, explain, gate, gh, merge_check, ready, state as state_mod  # noqa: E402
 
 HEAD = "a" * 40
 CLEAN = {"mergeable": True, "mergeable_state": "clean", "number": 7, "state": "open",
@@ -159,14 +159,14 @@ class Kinds(KindsBase):
         state_mod._atomic_write(self.st.breach, {"acme/widgets#7": {
             "pr": 7, "head": HEAD, "rounds": 3, "cap": 3, "reason": "r", "at": "now",
             "status": "awaiting-adjudication"}})
-        with mock.patch.object(gate, "_ruled", return_value=None):
+        with mock.patch.object(explain, "_ruled", return_value=None):
             # No adjudicator route: no ruling ever comes, so a person decides (shadow, #1225).
             self.assertEqual(self.kind_of("no adjudicator route: a person decides"),
                              ready.FAILURE)
             self.loop["adjudicator"] = {"route": "w-breach"}
             self.assertEqual(self.kind_of("escalated: parked awaiting adjudication"),
                              ready.PENDING)
-        with mock.patch.object(gate, "_ruled", return_value="REJECT"):
+        with mock.patch.object(explain, "_ruled", return_value="REJECT"):
             # #1245: once ruled, the reason names the ruling, never "awaiting" (live trial #18).
             self.assertEqual(self.kind_of("the adjudicator ruled REJECT at head aaaaaaa"),
                              ready.FAILURE)

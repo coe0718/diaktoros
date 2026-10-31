@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from diaktoros import gate, situation, state
+from diaktoros import explain, gate, situation, state
 
 A, B, C, D = (letter * 40 for letter in "abcd")
 REPO = "acme/widgets"
@@ -80,7 +80,7 @@ class SituationAuthorization(unittest.TestCase):
               mock.patch.object(situation.gh, "fetch", side_effect=fetch),
               mock.patch.object(situation.gh, "reviews_read", return_value=(self.reviews, "")),
               mock.patch.object(gate, "hooks_read", return_value=(True, ""))):
-            facts = gate.explain_facts(self.loop, 2)
+            facts = explain.explain_facts(self.loop, 2)
         self.assertEqual(facts["parent_readiness"][0], False)
         self.assertIn("unassociated", facts["parent_readiness"][1])
         self.assertFalse(self.state.review_situations.exists())
