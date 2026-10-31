@@ -1139,9 +1139,8 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                 kind = (f"{PUSH_OFF_KIND} — changes requested {ago(mins)} at head "
                         f"{head[:7]} waits for you: run "
                         f"`{config.fixer_push_enable_command(loop)}` (or fix it by hand)")
-        elif at_head and (disputed := run_supervisor.views.dispute_at(
-                run_supervisor.production_ledger(), loop["repo"], number, head)) is not None \
-                and disputed > epoch(latest.get("submitted_at")) \
+        elif at_head and (disputed := run_supervisor.views.disputed(
+                run_supervisor.production_ledger(), loop["repo"], number, head, latest)) \
                 and not live_turn(loop, number, head, "fixer"):
             # The fixer answered the verdict with a dispute (#401): every finding "not a defect",
             # nothing pushed. That is an answer, not a stall (#895). With an adjudicator it goes
@@ -1166,8 +1165,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                                                            grace["fixer"]):
                 kind = (f"disputed {ago((now - disputed) / 60)} at head {head[:7]} — the fixer "
                         "answered every finding as no defect and pushed nothing; waiting for you: "
-                        "dismiss the review and `hermes dk review --pr "
-                        f"{number}`, `hermes dk escalate --pr {number}`, or merge on its evidence"
+                        + run_supervisor.views.dispute_choices(loop["id"], number)
                         if not handed else
                         f"disputed at head {head[:7]}: hand-off to adjudication {handed}")
         elif at_head:

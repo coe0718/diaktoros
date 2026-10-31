@@ -9,6 +9,7 @@ what happened and what the operator can do.
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import pathlib
 import sqlite3
 import sys
 import time
@@ -21,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_fixer_gating as fg  # noqa: E402
 import test_stall_live_turn as sl  # noqa: E402
-from diaktoros import gate, run_supervisor  # noqa: E402
+from diaktoros import gate, gh, run_supervisor  # noqa: E402
 
 LONG_AGO = "2020-01-01T00:00:00Z"
 VERDICT = [{"id": 1, "state": "CHANGES_REQUESTED", "commit_id": fg.HEAD,
@@ -57,7 +58,7 @@ class Dispute(fg.Base):
         self.assertNotIn("fixer never pushed", text)
         self.assertIn("disputed", text)
         self.assertIn("waiting for you", text)
-        self.assertIn("hermes dk escalate --pr 7", text)
+        self.assertIn(f"hermes dk escalate --loop {self.loop['id']} --pr 7", text)   # B4: names its loop
 
     def test_with_an_adjudicator_it_goes_for_a_ruling_once(self):
         self.arm_long_ago()
@@ -81,6 +82,126 @@ class Dispute(fg.Base):
                 self.arm_long_ago()
                 self.dispute(**kwargs)
                 self.assertIn("fixer never pushed", self.sweep(VERDICT))
+
+
+class Explain(Dispute):
+    """B4: ``explain`` on a disputed head says what the sweep says, not "the fixer gate did not
+    start one; re-deliver" — a re-delivered verdict asks the fixer again what it already answered."""
+
+    explain = fg.Surfaces.explain
+
+    def test_a_disputed_head_is_a_ruling_or_the_operators_call_never_a_replay(self):
+        self.assertEqual(self.explain()["next"]["kind"], "fixer-retry")      # no dispute yet
+        self.dispute()
+        for route, kind, says in ((None, "operator", f"hermes dk escalate --loop {self.loop['id']} "
+                                                     "--pr 7"),
+                                  ("one-breach", "adjudication", "watchdog sweep")):
+            with self.subTest(route=route):
+                self.loop["adjudicator"] = {"route": route} if route else {}
+                report = self.explain()
+                self.assertEqual(report["next"]["kind"], kind)
+                self.assertIn("disputed", report["next"]["action"])
+                self.assertIn(says, report["next"]["action"])
+                self.assertNotIn("re-deliver", report["next"]["action"])
+                self.assertFalse([b for b in report["blockers"] if "did not start one" in b])
+
+
+class UncertainTurn(Dispute):
+    """#1481 review: the sweep counts an uncertain fixer turn as not live, so a dispute behind it
+    goes for a ruling; explain must read it the same way, never as a replay."""
+
+    explain = fg.Surfaces.explain
+
+    def test_an_uncertain_fixer_turn_hides_no_dispute_on_either_path(self):
+        self.arm_long_ago()
+        self.loop["adjudicator"] = {"route": "one-breach"}
+        self.dispute()
+        uncertain = mock.patch.object(run_supervisor.views, "turn_state",
+                                      side_effect=lambda db, repo, pr, head, seat:
+                                      "uncertain" if seat == "fixer" else None)
+        with uncertain:
+            report = self.explain()
+        self.assertEqual(report["next"]["kind"], "adjudication")
+        self.assertNotIn("re-deliver", report["next"]["action"])
+        with uncertain, mock.patch.object(gate, "breach", return_value="new") as breach:
+            self.sweep(VERDICT)
+        breach.assert_called_once()
+
+
+class CapStep(fg.Base):
+    """A spent cap with no marker (#575): ``hermes dk escalate`` sends the head now, unless a fix
+    run is live, when it would only wait for the next verdict (#1481 review): the push is next."""
+
+    def explain(self, inflight_fix, held=None):
+        local = {"held": held or {}, "queued_seat": "", "queued_reason": "", "inflight_review": False,
+                 "inflight_fix": inflight_fix, "marker": {}, "parked": False,
+                 "delivery_status": "", "capacity": {"reviewer": (0, 1), "fixer": (0, 1)},
+                 "stale_queues": [], "seat": "", "queue": "", "inflight": "", "escalation": "",
+                 "sweep": ""}
+        self.loop["adjudicator"] = {"route": "one-breach"}
+        with mock.patch.object(gate, "_explain_state", return_value=local):
+            return gate.explain(self.loop, self.st, 7, {
+                "pr": fg.LIVE, "reviews": [fg.verdict(rid) for rid in (1, 2, 3)], "armed": True,
+                "read_at": time.time()})["next"]
+
+    def test_escalate_is_the_step_unless_a_fix_run_is_live(self):
+        self.set_push(True)
+        idle, fixing = self.explain(False), self.explain(True)
+        self.assertEqual(idle["kind"], "operator")
+        self.assertIn(f"hermes dk escalate --loop {self.loop['id']} --pr 7", idle["action"])
+        self.assertEqual(fixing["kind"], "fixer-push")
+        self.assertNotIn("escalate", fixing["action"])
+        self.assertIn("reviewer gate then sends it for a ruling", fixing["action"])
+        # The operator sees why escalate, not the sweep (#1481 review: it was only a comment).
+        self.assertIn("only at a head it saw arrive", idle["action"])
+
+    def test_a_run_on_an_old_head_holds_escalate_as_it_does_explain(self):
+        # #1481 review: escalate counts every run of the PR, on any head; with one in flight it
+        # only records the request for the next verdict. explain must not promise a ruling then.
+        from diaktoros import one_shot_action
+        self.set_push(True)
+        old = "b" * 40
+        sup = run_supervisor.Supervisor(run_supervisor.production_ledger())
+        with mock.patch.object(sup, "_spawn"):
+            sup.enqueue("old-fix", fg.REPO, 7, old, "fixer")
+        with closing(sqlite3.connect(sup.db)) as con, con:
+            con.execute("UPDATE runs SET state='running' WHERE delivery='old-fix'")
+        step = self.explain(False, held={"fixer": {"head": old, "at": time.time()}})
+        self.assertEqual(step["kind"], "release")
+        self.assertTrue(step["action"].startswith("1 run(s) for this PR are in flight; once they end"))
+        with mock.patch.object(gh, "reviews", return_value=[fg.verdict(rid) for rid in (1, 2, 3)]):
+            decision = one_shot_action._escalation_decision(self.loop, 7, live=fg.LIVE)
+        self.assertIn("1 run(s) for this PR are in flight", decision["reason"])
+
+    def test_a_run_of_unknown_outcome_or_an_unreadable_ledger_holds_it_too(self):
+        # #1481 review: a quarantined run is in flight nowhere, yet escalate refuses until it is
+        # reconciled; a ledger escalate cannot read leaves it unknown, and explain says so.
+        from diaktoros import one_shot_action
+        self.set_push(True)
+        sup = run_supervisor.Supervisor(run_supervisor.production_ledger())
+        with mock.patch.object(sup, "_spawn"):
+            sup.enqueue("lost", fg.REPO, 7, "b" * 40, "fixer")
+        with closing(sqlite3.connect(sup.db)) as con, con:
+            con.execute("UPDATE runs SET state='quarantined' WHERE delivery='lost'")
+        self.assertEqual(one_shot_action.escalation_blockers(self.loop, 7), (0, True))
+        step = self.explain(False)
+        self.assertEqual(step["kind"], "release")
+        self.assertTrue(step["action"].startswith("a run's outcome is unknown; once it is reconciled"))
+        broken = pathlib.Path(sup.db).with_name("no-runs.sqlite")
+        with closing(sqlite3.connect(broken)) as con, con:
+            con.execute("CREATE TABLE other(x)")
+        with mock.patch.object(run_supervisor, "production_ledger", return_value=broken):
+            step = self.explain(False)
+        self.assertEqual(step["kind"], "release")
+        self.assertIn("the run ledger cannot be read", step["action"])
+
+    def test_a_fixer_lock_on_an_old_head_is_no_live_fix(self):
+        # #1481 review: an old-head run cannot finish this head, so escalate is still the step.
+        stale = self.explain(False, held={"fixer": {"head": "b" * 40, "at": time.time()}})
+        self.assertEqual(stale["kind"], "operator")
+        self.assertIn("hermes dk escalate", stale["action"])
+        current = self.explain(False, held={"fixer": {"head": fg.HEAD, "at": time.time()}})
+        self.assertEqual(current["kind"], "fixer-push")
 
 
 class MaintainerRerequest(Dispute):

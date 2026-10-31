@@ -880,7 +880,25 @@ def group_explain() -> None:
     reset(prs={"7": {**pr(7, head=HEAD_B), "reviews": spent_reviews}})
     rc, out = explain()
     check("cap spent with no marker: the gate never fired", "no escalation marker" in out, True)
-    check("  missing marker retries cap event", "create and deliver the missing breach marker" in out, True)
+    # #575: the sweep raises a missing marker only at a head it saw arrive, so explain gives the
+    # step that always works (#1481 review): never a replay, never a sweep promised at a head
+    # the sweep leaves alone since arming.
+    check("  missing marker: escalate sends it", "hermes dk escalate --loop widgets --pr 7" in out, True)
+    check("  missing marker: no sweep promised", "next armed watchdog sweep raises" in out, False)
+    check("  missing marker: no replay asked", "re-deliver" in out, False)
+    # #1481 review: the same head the real sweep baselined when the loop was armed. The sweep
+    # raises no marker there, so explain on that head must not wait for one.
+    reset(prs={"7": pr(7)})
+    run("watchdog.py", None, "--loop", "widgets", extra_env={"DIAKTOROS_TEST": ""})   # arms
+    set_prs({"7": {**pr(7), "reviews": spent_reviews}})
+    run("watchdog.py", None, "--loop", "widgets", extra_env={"DIAKTOROS_TEST": ""})
+    check("baselined head, cap spent: the sweep raises no marker",
+          load_state("breach.json").get(f"{REPO}#7"), None)
+    rc, out = explain()
+    check("  explain on that head: escalate sends it",
+          "hermes dk escalate --loop widgets --pr 7" in out, True)
+    check("  and no sweep is promised there", "next armed watchdog sweep raises" in out, False)
+    check("  and it says why the sweep will not", "only at a head it saw arrive" in out, True)
 
     without_adjudicator(loop_id="widgets-solo")
     rc, out = explain(loop="widgets-solo")

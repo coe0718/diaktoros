@@ -16,6 +16,7 @@ import time
 
 from .. import config, ledger, run_supervisor
 from . import claims
+from ..util import epoch
 
 
 def pending_view(db: str | Path, repo: str) -> list[dict] | None:
@@ -52,6 +53,19 @@ def dispute_at(db: str | Path, repo: str, pr: int, head: str) -> float | None:
     except sqlite3.Error:
         return None
     return float(row[0]) if row and row[0] is not None else None
+
+
+def disputed(db: str | Path, repo: str, pr: int, head: str, verdict: dict | None) -> float | None:
+    """When the fixer answered ``verdict`` with a dispute (#401): its dispute at this head, newer
+    than the verdict; None otherwise. The sweep (#894) and ``explain`` both decide from this."""
+    at = dispute_at(db, repo, pr, head)
+    return at if at is not None and at > epoch((verdict or {}).get("submitted_at")) else None
+
+
+def dispute_choices(loop_id: str, pr: int) -> str:
+    """The operator's moves on a dispute no adjudicator rules on."""
+    return (f"dismiss the review and `hermes dk review --loop {loop_id} --pr {pr}`, `hermes dk "
+            f"escalate --loop {loop_id} --pr {pr}`, or merge on its evidence")
 
 
 def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]:

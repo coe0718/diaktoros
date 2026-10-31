@@ -60,6 +60,15 @@ def _ledger_rows(loop, number):
         con.close()
 
 
+def escalation_blockers(loop, number, rows=None) -> tuple[int, bool]:
+    """What keeps ``escalate`` from sending this PR for a ruling now: its non-shadow runs in
+    flight on any head, and whether one's outcome is unknown. ``explain`` asks the same before it
+    names the command (#1481 review)."""
+    rows = _ledger_rows(loop, number) if rows is None else rows
+    return (sum(row[1] != "shadow" and row[3] in run_supervisor.ACTIVE for row in rows),
+            any(row[3] in ("uncertain", "quarantined") for row in rows))
+
+
 def plan(loop, action, pr=None, seat=None):
     """Read-only offer; an opaque, process-local confirmation binds the observed facts.
 
@@ -638,7 +647,7 @@ def _escalation_decision(loop, number, *, live=None):
     if marker.get("head") == head and marker.get("status") in gate.STANDING:
         return refuse(f"{say}: already awaiting a ruling ({marker.get('status')})")
     rows = _ledger_rows(loop, number)
-    busy = sum(row[1] != "shadow" and row[3] in run_supervisor.ACTIVE for row in rows)
+    busy, unknown = escalation_blockers(loop, number, rows)
     if busy:
         # #1246: the host CLI records it for the next changes-requested verdict instead; Desktop
         # binds a confirmation to the marker it writes now, so it still refuses.
@@ -649,7 +658,7 @@ def _escalation_decision(loop, number, *, live=None):
                       "they finish (a queued review or fix is retired by the escalation)",
                       public_reason="a run is in flight; the host CLI can queue the escalation "
                                     "for the next changes-requested verdict")
-    if any(row[3] in ("uncertain", "quarantined") for row in rows):
+    if unknown:
         return refuse(f"{say}: run outcome unknown; reconcile before escalation")
     details.update(code=0, public_reason="", state=st, verdicts=verdicts,
                    confirmation=_identity(loop, "escalate", number, None, [pr, reviews, marker, rows]))
