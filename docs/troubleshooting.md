@@ -120,9 +120,13 @@ versus ref publication, **not GitHub owner consent**. `--seat fixer` selects tha
 drain rechecks live eligibility and cannot override quarantine or cap. Existing queue
 holds can start after opt-in; a ledgered policy-cancelled run needs operator retry after
 opt-in, not redelivery. A fixer turn that started before pushes were turned off cannot
-publish either (explain says so); after opt-in, `hermes dk retry --loop "<loop-id>" --pr N
---seat fixer` re-arms it once it has ended without a push. A verdict with no queue hold and
-no run is started by nothing: after opt-in, re-deliver its review event to the fixer gate.
+publish either; `explain` names its recovery by the run ledger: a run `retry` offers (failed,
+policy-cancelled) is re-armed by `hermes dk retry --loop "<loop-id>" --pr N --seat fixer`
+once it has ended without a push; a run that may have written (uncertain) is reconciled
+first, never replayed; a lock or in-flight mark with no run behind it has nothing to retry,
+so below the cap the verdict is re-delivered to the fixer gate, and at the spent cap, where
+the gate admits no new fix, `hermes dk escalate` sends the head for a ruling. A verdict with
+no queue hold and no run is likewise re-delivered below the cap, never at it.
 See [push policy](operations.md#first-run).
 
 If enabled, inspect whether the review is from the accepted reviewer, is the effective

@@ -95,6 +95,17 @@ class PushOff(Steps):
         self.assertIn("the next watchdog sweep (or `hermes dk drain", step["action"])
         self.assertNotIn(self.retry(), step["action"])
 
+    def test_a_capacity_queued_fixer_entry_is_no_push_off_hold(self):
+        # Shadow on #1510: every fixer queue entry got the hold's "the next sweep or drain starts
+        # it"; only a FIXER_PUSH_HOLD entry does. A capacity entry waits for a slot as well.
+        self.set_push(False)
+        step = self.report(queued="waiting for a slot")["next"]
+        self.assertEqual(step["kind"], "operator")
+        self.assertNotIn("then starts the fix run", step["action"])
+        self.assertIn("when a fixer slot frees", step["action"])
+        self.assertIn("waiting for a slot", step["action"])
+        self.assertIn(config.fixer_push_enable_command(self.loop), step["action"])
+
     def test_no_work_order_is_re_delivered_after_enabling(self):
         self.set_push(False)
         report = self.report()
@@ -197,6 +208,26 @@ class AfterEnabling(Steps):
                 self.assertEqual(outcome.startswith(f"duplicate {state}"), state != "failed", outcome)
                 with sup._connect() as con:
                     con.execute("DELETE FROM runs")
+
+    def test_a_lock_or_mark_over_an_ended_run_follows_the_ledger_not_the_mark(self):
+        # #1510 review F5: a mark or lock can outlive its run (state.py keeps them until cleared
+        # or expired); the started-turn step promised retry for a row retry has nothing for.
+        held = {"fixer": {"head": fg.HEAD, "at": time.time()}}
+        for state, kw, expect in (("succeeded", {"inflight_fix": True}, "nothing to retry — fixer succeeded"),
+                                  ("uncertain", {"held": held}, "reconcile it first"),
+                                  ("failed", {"inflight_fix": True}, self.retry())):
+            for verdicts in (1, 3):
+                with self.subTest(state=state, verdicts=verdicts):
+                    sup, _ = self.ledgered(state)
+                    self.set_push(False)
+                    action = self.report(verdicts=verdicts, **kw)["next"]["action"]
+                    self.assertIn(expect, action)
+                    self.assertNotIn(PUSHES_A_FIX, action)
+                    self.assertNotIn("re-deliver", action)
+                    if state != "failed":
+                        self.assertNotIn(self.retry(), action)
+                    with sup._connect() as con:
+                        con.execute("DELETE FROM runs")
 
     def test_the_sweep_starts_no_verdict_without_a_work_order(self):
         self.set_push(True)
