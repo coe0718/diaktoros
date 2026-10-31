@@ -13,6 +13,7 @@ from __future__ import annotations
 import time
 
 from .. import run_supervisor
+from . import views
 
 
 class OperatorNotices:
@@ -34,8 +35,9 @@ class OperatorNotices:
                 f"https://github.com/{row['repo']}/pull/{row['pr']} head={row['head']} "
                 f"run={row['run_id']}. Fixer's PR comment: {status}. The fixer found no defect "
                 "and pushed nothing; the reviewer "
-                "was not re-requested. Decide: dismiss the review and `review --pr N`, or fix by "
-                "hand. Fixer's evidence (model output, not verified by the loop):\n" + body)
+                f"was not re-requested. Decide: {views.dispute_choices(self._loop_id(row), row['pr'])}"
+                "; or fix it by hand. Fixer's evidence (model output, not verified by the loop):\n"
+                + body)
 
     def _ruling_message(self, row) -> str:
         body = row['body'].strip()
@@ -57,13 +59,18 @@ class OperatorNotices:
                 f"{body}")
 
     @staticmethod
-    def _notice_message(row, current, wrote: str | None) -> str:
-        loop_id = 'LOOP'
+    def _loop_id(row) -> str:
+        """The loop a run's repository belongs to, for the commands a notice names; ``LOOP``
+        when the config cannot be read (a notice must go out even then)."""
         try:
             from .. import config
-            loop_id = (config.by_repo(row['repo']) or {}).get('id') or loop_id
+            return (config.by_repo(row['repo']) or {}).get('id') or 'LOOP'
         except Exception:
-            pass                      # a notice must go out even if the config is unreadable
+            return 'LOOP'
+
+    @staticmethod
+    def _notice_message(row, current, wrote: str | None) -> str:
+        loop_id = OperatorNotices._loop_id(row)
         kind = "issues" if row['seat'] in ('triage', 'issue_fixer') else "pull"
         head = (f"⚠️ Diaktoros worker {current['state']}: "
                 f"https://github.com/{row['repo']}/{kind}/{row['pr']} "

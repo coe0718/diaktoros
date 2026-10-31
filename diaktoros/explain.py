@@ -530,7 +530,9 @@ def _seat_needs(c) -> None:
              for seat in ("reviewer", "fixer")} if c.head else {}
     c.ledgered = {seat for seat, turn in turns.items() if turn in LIVE_TURN}
     # A fix for this head: a lock on an old head cannot finish it (#1481 review).
-    c.fix_live = ("fixer" in c.held and "fixer" not in c.stale_held) or c.inflight_fix or "fixer" in c.ledgered
+    # An uncertain fixer turn is no live fix: nothing will push, and the sweep reads it so (#1495).
+    c.fix_live = (("fixer" in c.held and "fixer" not in c.stale_held) or c.inflight_fix
+                  or ("fixer" in c.ledgered and turns["fixer"] != "uncertain"))
     # The fixer's answer to the verdict (#894), as the sweep reads it: there an uncertain turn is
     # not a live one, so it hides no dispute (#1481 review). A verdict at head means a head.
     c.disputed = (bool(c.at_head) and ("fixer" not in c.ledgered or turns["fixer"] == "uncertain")
@@ -552,7 +554,10 @@ def _seat_needs(c) -> None:
     # The fixer gate holds a changes-requested verdict while the loop has not opted in to
     # unattended pushes: no fixer turn can start, so the next event is the operator's.
     c.push_off = bool(c.at_head) and not c.review_only and not config.unattended_fixer_push_enabled(c.loop)
-    c.push_off_held = c.push_off and "fixer" not in c.held and not c.inflight_fix
+    # The sweep decides pushes-off first, before a dispute or a held lock, and only alerts the
+    # operator: no fixer turn can publish until the loop opts in (#1496).
+    c.push_off_held = c.push_off
+    c.disputed = c.disputed and not c.push_off
     c.fixer_queue_hold = c.queued_seat == "fixer" and c.queued_reason.startswith(config.FIXER_PUSH_HOLD)
 
 
@@ -652,8 +657,9 @@ def _run_blockers(c) -> None:
     if c.head_states and not c.reviewed:
         c.blockers.append(f"non-verdict review at head {c.short} ({'/'.join(c.head_states)}) "
                           "does not suppress a fresh reviewer request")
+    # At the cap the fixer gate starts no fix by design (gate_fixer: not a work order, #1494).
     if (c.at_head and not c.fix_live and not c.queued_seat and not c.push_off and not c.review_only
-            and not c.ruling and not c.disputed):
+            and not c.ruling and not c.disputed and not c.cap_spent):
         c.blockers.append(f"the changes-requested verdict at head {c.short} has no fix run out "
                           f"— the fixer gate did not start one for that delivery")
     if (c.request_pending and not c.held and not c.inflight_review and not c.at_head

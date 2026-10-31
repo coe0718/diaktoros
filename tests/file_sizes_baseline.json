@@ -101,7 +101,7 @@
     "diaktoros/trusted_turn.py::_export_committed_source": 108,
     "diaktoros/trusted_turn.py::run_turn": 288,
     "scripts/gate_fixer.py::main": 323,
-    "scripts/gate_reviewer.py::decide": 237,
+    "scripts/gate_reviewer.py::decide": 236,
     "scripts/watchdog.py::_sweep_loop_locked": 571,
     "scripts/watchdog.py::act_on_conflicts": 108,
     "scripts/watchdog.py::read_health": 91,
