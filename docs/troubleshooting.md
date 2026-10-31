@@ -124,7 +124,8 @@ publish either; `explain` names its recovery by the run ledger: a run `retry` of
 policy-cancelled) is re-armed by `hermes dk retry --loop "<loop-id>" --pr N --seat fixer`
 once it has ended without a push; a run that may have written (uncertain) is reconciled
 first, never replayed; a lock or in-flight mark with no run behind it has nothing to retry,
-so below the cap the verdict is re-delivered to the fixer gate, and at the spent cap, where
+so below the cap the verdict is re-delivered to the fixer gate (a live in-flight mark makes
+the gate refuse that until the mark expires, `inflight_ttl_min`), and at the spent cap, where
 the gate admits no new fix, `hermes dk escalate` sends the head for a ruling. A verdict with
 no queue hold and no run is likewise re-delivered below the cap, never at it.
 See [push policy](operations.md#first-run).

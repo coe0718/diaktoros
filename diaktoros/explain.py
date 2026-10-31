@@ -530,6 +530,8 @@ def _seat_needs(c) -> None:
              for seat in ("reviewer", "fixer")} if c.head else {}
     c.ledgered = {seat for seat, turn in turns.items() if turn in LIVE_TURN}
     c.fixer_turn = turns.get("fixer")     # any ledger state: a lock or mark with no run has none
+    # Uncertain or ended with no push: not live, whatever lock or mark still stands over it.
+    c.fixer_ended = bool(c.fixer_turn) and (c.fixer_turn == "uncertain" or c.fixer_turn not in LIVE_TURN)
     # A fix for this head: a lock on an old head cannot finish it (#1481 review).
     # An uncertain fixer turn is no live fix: nothing will push, and the sweep reads it so (#1495).
     c.fix_live = (("fixer" in c.held and "fixer" not in c.stale_held) or c.inflight_fix
@@ -637,10 +639,18 @@ def _gate_blockers(c) -> None:
 
 def _run_blockers(c) -> None:
     """Guards on the runs: push-off, capacity, stale queues and locks, a missing run."""
-    if c.push_off and c.fix_live and not c.ruling:
+    declined = c.queued_seat == "fixer" and gate.is_declined_hold({"reason": c.queued_reason})
+    if c.push_off and c.fixer_ended and not c.ruling:
+        c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the fixer turn at head {c.short} is "
+                          f"{c.fixer_turn} with no fix pushed — a redelivered verdict is a duplicate "
+                          f"the ledger refuses")
+    elif c.push_off and c.fix_live and not c.ruling:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the fixer turn at head {c.short} cannot "
                           f"publish — the worker cancels it before launch, or the broker refuses "
                           f"its push")
+    elif c.push_off_held and declined and not c.ruling:
+        c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the gate declined the fixer turn for head "
+                          f"{c.short} ({c.queued_reason}) — nothing restarts it by itself")
     elif c.push_off_held and not c.parked and not c.pending_delivery and not c.cap_spent:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the changes-requested verdict at head "
                           f"{c.short} starts no fixer turn until the loop opts in — "
@@ -857,6 +867,19 @@ def _fixer_retry(c) -> tuple[str, str, bool]:
     return "", plan["message"] or blocked or "nothing at this head", bool(blocked)
 
 
+def _mark_wait(c) -> str:
+    """The fixer gate refuses a re-delivery while this head's in-flight fix mark stands
+    (gate_fixer: "a fix run ... is already out"), so with a mark and no run the operator waits for
+    it to expire first (#1510 review); a bare lock does not hold the gate, so nothing to wait for."""
+    if not c.inflight_fix:
+        return ""
+    ttl = c.st._minutes("inflight_ttl_min")
+    armed = _minutes_since(c.st.inflight_at(f"fix:{c.number}:{c.head}"), c.now)
+    return (f"the fixer gate refuses a re-delivery while the in-flight fix mark for this head stands "
+            f"(armed {armed}m ago, ttl {ttl:g}m — `hermes dk set --loop {c.loop['id']} "
+            f"--inflight-ttl-min N` is the knob); once it has expired, ")
+
+
 def _started_turn_step(c, enable: str) -> str:
     """A fixer turn started while pushes are off: its push is refused (broker_ipc) or the worker
     cancels it at launch, and the sweep only drains queued work. A run in the ledger is what an
@@ -869,7 +892,7 @@ def _started_turn_step(c, enable: str) -> str:
              "it has no run in the ledger for retry to re-arm, so "
              + (f"`hermes dk escalate --loop {c.loop['id']} --pr {c.number}` sends head {c.short} for "
                 "a ruling — at the spent cap the fixer gate starts no new fix" if c.cap_spent
-                else c.to_fixer + "(the gate admits it under the policy then)"))
+                else _mark_wait(c) + c.to_fixer + "(the gate admits it under the policy then)"))
     return (f"operator decision: unattended fixer pushes are off for this loop, so the fixer turn "
             f"at head {c.short} cannot publish — the worker cancels it before launch, or the broker "
             f"refuses its push. Run `{enable}`, then, once that turn has ended without a push, "
@@ -899,7 +922,6 @@ def _next_push_off(c) -> tuple[str, str] | None:
     started, a queued hold, or no work order at all. At a spent cap only a started turn is."""
     from .run_supervisor import views
     enable = config.fixer_push_enable_command(c.loop)
-    ended = c.fixer_turn and (c.fixer_turn == "uncertain" or c.fixer_turn not in LIVE_TURN)
     if not c.push_off or (c.cap_spent and not c.adjudicated):
         return None                          # a spent cap with no route: human adjudication
     if c.disputed and not c.cap_spent:
@@ -909,7 +931,7 @@ def _next_push_off(c) -> tuple[str, str] | None:
                   f"already disputed the review at head {c.short} — once you run `{enable}`, "
                   + ("the next armed watchdog sweep sends the dispute for a ruling" if c.adjudicated
                      else "it is your decision: " + views.dispute_choices(c.loop["id"], c.number)))
-    elif ended:
+    elif c.fixer_ended:
         action = _ended_turn_step(c, enable)   # F5: a lock or mark can outlive its run
     elif c.fix_live:
         action = _started_turn_step(c, enable)
