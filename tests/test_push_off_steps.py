@@ -188,39 +188,39 @@ class AfterEnabling(Steps):
         enqueue, _ = fg.GateHold.run_gate(self)                 # the re-delivered verdict starts it
         enqueue.assert_called_once()
 
-    def test_a_ledgered_turn_that_is_not_live_is_never_sent_a_re_delivery(self):
-        # Shadow on #1510: an uncertain fixer turn fell to "no run", naming a re-delivery the
-        # ledger refuses as a duplicate; retry refuses a run that may have written (reconcile).
-        # #1514 review: a pre-write failure is re-armed by retry or a redelivery, so neither the
-        # step nor the blocker calls it a duplicate; a policy-cancelled row needs the retry.
+    def test_an_ended_turn_names_a_re_delivery_only_when_intake_re_arms_it(self):
+        # Shadow on #1510: an uncertain turn was sent a re-delivery the ledger refuses. #1514
+        # review: a pre-write failure, and a superseded cancellation, are re-armed by a redelivery
+        # though retry offers the second nothing; the rules differ, so each is read on its own and
+        # checked here against the real ``submit``.
         refused = "a redelivered verdict is a duplicate the ledger refuses"
-        cases = (("uncertain", "", "reconcile it first", True),
-                 ("failed", "", self.retry(), False),
-                 ("cancelled", run_supervisor.FIXER_NOT_ADMITTED, self.retry(), False),
-                 ("succeeded", "", "nothing to retry — fixer succeeded", True))
-        for state, error, expect, dup in cases:
-            with self.subTest(state):
+        redeliver = "re-deliver the changes-requested review event for head aaaaaaa"
+        cases = (("uncertain", "", False, False),
+                 ("failed", "", True, True),
+                 ("cancelled", run_supervisor.FIXER_NOT_ADMITTED, False, True),
+                 ("cancelled", "fixer verdict superseded", True, False),
+                 ("succeeded", "", False, False))
+        for state, error, rearmed, retried in cases:
+            with self.subTest(state=state, error=error):
                 sup, _ = self.ledgered(state, error)
                 self.set_push(False)
                 report = self.report()
-                step = report["next"]
-                self.assertIn(expect, step["action"])
-                self.assertNotIn("re-deliver", step["action"])
-                self.assertNotIn("no run", step["action"])
-                self.assertEqual(refused in step["action"], dup, step["action"])
-                if expect != self.retry():
-                    self.assertNotIn(self.retry(), step["action"])
+                action = report["next"]["action"]
+                self.assertEqual(redeliver in action, rearmed, action)
+                self.assertEqual(refused in action, not rearmed, action)
+                self.assertEqual(self.retry() in action, retried, action)
+                self.assertNotIn("no run", action)
+                if state == "uncertain":
+                    self.assertIn("reconcile it first", action)
                 # Shadow on 2ef4ac8: the blocker beside it said the verdict "starts no fixer turn".
                 self.assertFalse([b for b in report["blockers"] if "starts no fixer turn" in b])
                 ended = [b for b in report["blockers"] if f"is {state} with no fix pushed" in b]
                 self.assertEqual(len(ended), 1, report["blockers"])
-                self.assertEqual(refused in ended[0], dup, ended[0])
-                self.assertEqual("retry re-arms it" in ended[0], not dup, ended[0])
+                self.assertEqual(refused in ended[0], not rearmed and not retried, ended[0])
                 self.set_push(True)
                 with mock.patch.object(sup, "_spawn"):
                     outcome = sup.submit("again", fg.REPO, 7, fg.HEAD, "fixer")
-                # Only the pre-write failure is re-armed by the redelivery itself.
-                self.assertEqual(outcome == "rearmed", state == "failed", outcome)
+                self.assertEqual(outcome == "rearmed", rearmed, outcome)   # the rule explain read
                 with sup._connect() as con:
                     con.execute("DELETE FROM runs")
 
@@ -238,7 +238,9 @@ class AfterEnabling(Steps):
                     action = self.report(verdicts=verdicts, **kw)["next"]["action"]
                     self.assertIn(expect, action)
                     self.assertNotIn(PUSHES_A_FIX, action)
-                    self.assertNotIn("re-deliver", action)
+                    # Only a pre-write failure below the cap is re-armed by a redelivery (#1514);
+                    # at the cap the fixer gate starts no fix (#1494).
+                    self.assertEqual("re-deliver" in action, state == "failed" and verdicts == 1, action)
                     if state != "failed":
                         self.assertNotIn(self.retry(), action)
                     with sup._connect() as con:

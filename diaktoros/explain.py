@@ -533,6 +533,7 @@ def _seat_needs(c) -> None:
     # Uncertain or ended with no push: not live, whatever lock or mark still stands over it.
     c.fixer_ended = bool(c.fixer_turn) and (c.fixer_turn == "uncertain" or c.fixer_turn not in LIVE_TURN)
     c.fixer_rearm = _fixer_retry(c) if c.fixer_ended else ("", "", False)   # the retry plan (#1514)
+    c.redeliver = c.fixer_ended and not c.cap_spent and _redelivery_rearms(c)  # intake's own rule
     # A fix for this head: a lock on an old head cannot finish it (#1481 review).
     # An uncertain fixer turn is no live fix: nothing will push, and the sweep reads it so (#1495).
     c.fix_live = (("fixer" in c.held and "fixer" not in c.stale_held) or c.inflight_fix
@@ -644,7 +645,8 @@ def _run_blockers(c) -> None:
     if c.push_off and c.fixer_ended and not c.ruling:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the fixer turn at head {c.short} is "
                           f"{c.fixer_turn} with no fix pushed — "
-                          + ("retry re-arms it once the loop opts in" if c.fixer_rearm[0] else
+                          + ("a redelivered verdict re-arms it once the loop opts in" if c.redeliver
+                             else "retry re-arms it once the loop opts in" if c.fixer_rearm[0] else
                              "a redelivered verdict is a duplicate the ledger refuses"))
     elif c.push_off and c.fix_live and not c.ruling:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the fixer turn at head {c.short} cannot "
@@ -845,6 +847,29 @@ def _next_ruling(c) -> tuple[str, str] | None:
     return kind, action
 
 
+def _redelivery_rearms(c) -> bool:
+    """Whether a redelivered verdict re-arms this head's ended fixer turn once pushes are on: the
+    rule ``submit`` itself applies (``intake.redelivery_refusal``), not retry's, which offers
+    different rows (#1514 review). An unreadable ledger answers no; the gate's verdict turn
+    carries no turn key."""
+    import sqlite3
+    from .run_supervisor import REARMABLE, intake, views
+    try:
+        con = views.read_only_connect(config.host_path("ledger"))
+        if con is None:
+            return False
+        con.row_factory = sqlite3.Row
+        try:
+            prior = con.execute("SELECT * FROM runs WHERE repo=? AND pr=? AND head=? AND seat='fixer' "
+                                "AND turn_key=''", (c.repo, c.number, c.head)).fetchone()
+            return (prior is not None and prior["state"] in REARMABLE and intake.redelivery_refusal(
+                con, prior, admitted=True, production=True, seat="fixer") is None)
+        finally:
+            con.close()
+    except (sqlite3.Error, OSError):
+        return False
+
+
 def _fixer_retry(c) -> tuple[str, str, bool]:
     """``(command, "", False)`` when ``retry`` would re-arm this head's fixer turn, else
     ``("", why, blocked)``, ``blocked`` when a run is there but may have written (reconcile first):
@@ -903,22 +928,27 @@ def _started_turn_step(c, enable: str) -> str:
 
 def _ended_turn_step(c, enable: str) -> str:
     """A ledgered fixer turn that is not live — uncertain, or ended with no push — whether or not
-    a lock or an in-flight mark still stands over it (#1510 review). Retry re-arms what the plan
-    offers (a pre-write failure, which a redelivered verdict re-arms too); a run that may have
-    written is reconciled first, never replayed; a redelivery of anything else is a duplicate the
-    ledger refuses (#1514 review)."""
+    a lock or an in-flight mark still stands over it (#1510 review). A redelivered verdict is
+    named only when intake would re-arm the turn, retry only when its plan offers it (#1514
+    review: the two rules differ); a run that may have written is reconciled first."""
     rearm, why, reconcile = c.fixer_rearm
+    redeliver = c.to_fixer + "— the ledger re-arms the turn for it" if c.redeliver else ""
+    if redeliver and rearm:
+        then = f"{redeliver} (or {rearm} re-arms it); or fix it by hand"
+    elif redeliver or rearm:
+        then = (redeliver or f"{rearm} re-arms it" + (" (with the cap spent, its push then goes "
+                                                         "for a ruling)" if c.cap_spent else "")
+                ) + "; or fix it by hand"
+    elif reconcile:
+        then = (f"reconcile it first, its outcome is unknown ({why}): `hermes dk status --loop "
+                f"{c.loop['id']}` names the run and its reconcile command, and only then retry; "
+                "or fix it by hand")
+    else:
+        then = f"`retry` has nothing to re-arm ({why}): fix it by hand"
     return (f"operator decision: unattended fixer pushes are off for this loop, and the fixer "
             f"turn at head {c.short} is {c.fixer_turn} with no fix pushed"
-            + ("" if rearm else " — a redelivered verdict is a duplicate the ledger refuses")
-            + f". Run `{enable}`, then "
-            + (f"{rearm} re-arms it" + (" (with the cap spent, its push then goes for a ruling)"
-                                       if c.cap_spent else "") + "; or fix it by hand" if rearm else
-               f"reconcile it first, its outcome is unknown ({why}): `hermes dk status --loop "
-               f"{c.loop['id']}` names the run and its reconcile command, and only then "
-               "retry; or fix it by hand" if reconcile else
-               f"`retry` has nothing to re-arm ({why}): fix it by hand")
-            + ", push, and re-request review")
+            + ("" if c.redeliver else " — a redelivered verdict is a duplicate the ledger refuses")
+            + f". Run `{enable}`, then {then}, push, and re-request review")
 
 
 def _next_push_off(c) -> tuple[str, str] | None:
