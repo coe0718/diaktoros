@@ -146,26 +146,47 @@ class OneDisputeRule(unittest.TestCase):
 class PushOffDispute(Dispute):
     """#1496: with unattended fixer pushes off the sweep alerts the operator before it looks at a
     dispute or a held lock, so explain names that decision: no promised ruling, and no promised
-    push from a fixer that cannot publish."""
+    push from a fixer that cannot publish. #1505 review: the dispute is kept, because once pushes
+    are on the sweep acts on it (a ruling, or the operator's choice), not on a new fix."""
 
-    def test_a_dispute_with_pushes_off_promises_no_sweep_ruling(self):
-        self.arm_long_ago()
-        self.set_push(False)                     # reloads the loop: the route is set after it
-        self.loop["adjudicator"] = {"route": "one-breach"}
-        self.dispute()
-        local = {"held": {"fixer": {"head": fg.HEAD, "at": time.time()}}, "queued_seat": "",
-                 "queued_reason": "", "inflight_review": False, "inflight_fix": False,
-                 "marker": {}, "parked": False, "delivery_status": "",
+    def step(self, adjudicated=True, held=True):
+        local = {"held": {"fixer": {"head": fg.HEAD, "at": time.time()}} if held else {},
+                 "queued_seat": "", "queued_reason": "", "inflight_review": False,
+                 "inflight_fix": False, "marker": {}, "parked": False, "delivery_status": "",
                  "capacity": {"reviewer": (0, 1), "fixer": (0, 1)}, "stale_queues": [],
                  "seat": "", "queue": "", "inflight": "", "escalation": "", "sweep": ""}
+        self.loop["adjudicator"] = {"route": "one-breach"} if adjudicated else {}
         with mock.patch.object(explain, "_explain_state", return_value=local):
-            step = explain.explain(self.loop, self.st, 7, {
+            return explain.explain(self.loop, self.st, 7, {
                 "pr": fg.LIVE, "reviews": [fg.verdict()], "armed": True,
                 "read_at": time.time()})["next"]
-        self.assertNotIn("sends it for a ruling", step["action"])
-        self.assertNotIn("the fixer pushes a fix", step["action"])      # it cannot publish
-        self.assertEqual(step["kind"], "operator")
-        self.assertIn(f"fixer-push --loop {self.loop['id']} --enable", step["action"])
+
+    def test_pushes_off_comes_first_and_names_what_the_dispute_becomes(self):
+        self.arm_long_ago()
+        self.set_push(False)                     # reloads the loop: routes are set after it
+        self.dispute()
+        enable = f"fixer-push --loop {self.loop['id']} --enable"
+        ruled, unruled = self.step(adjudicated=True), self.step(adjudicated=False)
+        for step in (ruled, unruled):
+            self.assertEqual(step["kind"], "operator")
+            self.assertIn(enable, step["action"])
+            self.assertNotIn("the fixer pushes a fix", step["action"])      # it cannot publish
+            self.assertNotIn("starts the fix run", step["action"])         # the dispute stands
+        self.assertIn("once you run", ruled["action"])
+        self.assertIn("the next armed watchdog sweep sends the dispute for a ruling", ruled["action"])
+        self.assertIn("it is your decision: " + run_supervisor.views.dispute_choices(self.loop["id"], 7),
+                      unruled["action"])
+
+    def test_once_pushes_are_on_the_sweep_and_explain_act_on_the_dispute(self):
+        self.arm_long_ago()
+        self.set_push(True)
+        self.loop["adjudicator"] = {"route": "one-breach"}
+        self.dispute()
+        self.assertEqual(self.step(adjudicated=True, held=False)["kind"], "adjudication")
+        with mock.patch.object(gate, "breach", return_value="new") as breach:
+            self.sweep(VERDICT)
+        breach.assert_called_once()
+        self.assertEqual(breach.call_args.kwargs["escalated"]["by"], "dispute")
 
 
 class CapStep(fg.Base):

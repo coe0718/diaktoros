@@ -555,9 +555,9 @@ def _seat_needs(c) -> None:
     # unattended pushes: no fixer turn can start, so the next event is the operator's.
     c.push_off = bool(c.at_head) and not c.review_only and not config.unattended_fixer_push_enabled(c.loop)
     # The sweep decides pushes-off first, before a dispute or a held lock, and only alerts the
-    # operator: no fixer turn can publish until the loop opts in (#1496).
+    # operator: no fixer turn can publish until the loop opts in (#1496). A dispute is kept: it is
+    # what the sweep acts on once pushes are on.
     c.push_off_held = c.push_off
-    c.disputed = c.disputed and not c.push_off
     c.fixer_queue_hold = c.queued_seat == "fixer" and c.queued_reason.startswith(config.FIXER_PUSH_HOLD)
 
 
@@ -858,6 +858,14 @@ def _next_escalation(c) -> tuple[str, str] | None:
             action = (wait + f"`hermes dk escalate --loop {c.loop['id']} --pr {c.number}` sends head {c.short} "
                       "for a ruling (the watchdog raises a missing marker itself only at a head it "
                       "saw arrive, never one open since the loop was armed) — no ruling is underway yet")
+    elif c.push_off_held and c.disputed:
+        # Once pushes are on, the sweep acts on the dispute already there, not a new fix (#1505).
+        kind = "operator"
+        action = (f"operator decision: unattended fixer pushes are off for this loop, and the fixer "
+                  f"already disputed the review at head {c.short} — once you run "
+                  f"`{config.fixer_push_enable_command(c.loop)}`, "
+                  + ("the next armed watchdog sweep sends the dispute for a ruling" if c.adjudicated
+                     else "it is your decision: " + views.dispute_choices(c.loop["id"], c.number)))
     elif c.push_off_held:
         kind = "operator"
         action = (f"operator decision: unattended fixer pushes are off for this loop, so the "
