@@ -28,7 +28,6 @@ import shutil
 import subprocess
 import threading
 import time
-from datetime import datetime
 from pathlib import Path
 
 from . import gh, util
@@ -204,10 +203,7 @@ def _as_app(loop: dict, login: str, path: str, method: str = "GET", body=None) -
 
 
 def _expires(stamp) -> float | None:
-    try:
-        return datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None
+    return util.iso_epoch(stamp)
 
 
 def installation_token(loop: dict, login: str) -> str:

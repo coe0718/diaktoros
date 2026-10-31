@@ -62,11 +62,8 @@ def _instant(text: str, now: float) -> float | None:
         if value > 1e12:            # epoch milliseconds
             value /= 1000
         return value if value > now - 60 else None
-    try:
-        from datetime import datetime
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        pass
+    if (at := util.iso_epoch(text)) is not None:
+        return at
     try:
         parsed = email.utils.parsedate_to_datetime(text)
         return parsed.timestamp() if parsed else None
