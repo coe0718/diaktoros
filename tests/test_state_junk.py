@@ -311,7 +311,7 @@ class ExplainKinds(unittest.TestCase):
         # #546: a branch must not invent a conclusion nobody checks for.
         import ast
         import inspect
-        tree = ast.parse(inspect.getsource(explain.explain))
+        tree = ast.parse(inspect.getsource(explain))      # the whole module: explain's _next_* pieces
         used = {node.value.value for node in ast.walk(tree)
                 if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
                 and isinstance(node.value.value, str)
