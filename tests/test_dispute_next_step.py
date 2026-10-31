@@ -187,6 +187,16 @@ class PushOffDispute(Dispute):
         self.assertIn("it is your decision: " + run_supervisor.views.dispute_choices(self.loop["id"], 7),
                       unruled["action"])
 
+    def test_a_held_fixer_with_no_dispute_or_queued_hold_is_no_missing_work_order(self):
+        # #1505 review: pushes-off precedence over a held lock told the operator the verdict
+        # "starts no fixer turn" and that enabling pushes lets the sweep or a drain "start the fix
+        # run". Neither holds: the fixer started, and the sweep drains only queued work.
+        self.arm_long_ago()
+        self.set_push(False)
+        step = self.step(adjudicated=True, held=True)              # no dispute recorded
+        self.assertNotIn("starts no fixer turn", step["action"])
+        self.assertNotIn("starts the fix run", step["action"])
+
     def test_once_pushes_are_on_the_sweep_and_explain_act_on_the_dispute(self):
         self.arm_long_ago()
         self.set_push(True)
