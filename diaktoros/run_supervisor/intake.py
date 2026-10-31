@@ -16,6 +16,38 @@ from contextlib import nullcontext
 from .. import run_supervisor
 
 
+def redelivery_refusal(con, prior, *, admitted: bool, production: bool, seat: str) -> str | None:
+    """Why a new event for a ``REARMABLE`` run's head re-arms nothing, or None when it re-arms
+    it (#53). The one rule ``submit`` applies and explain's next step reads (#1514 review): a
+    redelivery is not ``retry``, which offers different rows (``retry_action.offered``).
+
+    ``admitted`` is that event's own push-policy read, ``production`` whether a production
+    configuration is in force; the row's state is the caller's to have checked."""
+    wrote = run_supervisor.write_evidence(con, prior['id'])
+    if wrote is not None:
+        return f'{wrote} — reconcile, never replayed'
+    if prior['state'] == 'cancelled' and run_supervisor.operator_cancelled(prior['error']):
+        # An operator stopped it (#1148): an event never undoes that.
+        return ("cancelled by an operator — only `hermes dk retry` re-arms it; "
+                "a new head queues a fresh run")
+    if prior['error'] == run_supervisor.FIXER_NOT_ADMITTED and prior['push_admitted'] != 1:
+        # Never upgraded by an event: re-arming would only be cancelled again.
+        return ("fixer push not admitted — a redelivered event never upgrades "
+                "admission; after opting in, `hermes dk retry` "
+                "re-admits it")
+    if (prior['error'] == run_supervisor.FIXER_PUSH_REVOKED and production
+            and seat == 'fixer' and not admitted):
+        # Pushes are still off (``admitted`` is this event's fresh policy read, taken
+        # under the push-policy lock): the claim would cancel it again. Once they are
+        # back on, an event re-arms it.
+        return ("fixer push revoked — unattended fixer pushes are still off, so "
+                "a re-armed run would only be cancelled again; turn them on, then "
+                "a redelivered event or `hermes dk retry` re-arms it")
+    if (prior['retries'] or 0) >= run_supervisor.MAX_REARMS:
+        return (f"{prior['retries']} failed attempts — only "
+                "`hermes dk retry` re-arms it")
+    return None
+
 class RunIntake:
     """The intake, retry and cancel methods of :class:`~diaktoros.run_supervisor.Supervisor`."""
 
@@ -89,29 +121,10 @@ class RunIntake:
             if prior and prior['state'] in run_supervisor.REARMABLE and (self.fixture_mode or self.production_config):
                 # A new event for a head whose run never wrote is a reason to try again
                 # (#53): re-arm it, one attempt per event, up to MAX_REARMS failures.
-                wrote = run_supervisor.write_evidence(con, prior['id'])
-                if wrote is not None:
-                    outcome += f': {wrote} — reconcile, never replayed'
-                elif prior['state'] == 'cancelled' and run_supervisor.operator_cancelled(prior['error']):
-                    # An operator stopped it (#1148): an event never undoes that.
-                    outcome += (": cancelled by an operator — only `hermes dk retry` re-arms it; "
-                                "a new head queues a fresh run")
-                elif prior['error'] == run_supervisor.FIXER_NOT_ADMITTED and prior['push_admitted'] != 1:
-                    # Never upgraded by an event: re-arming would only be cancelled again.
-                    outcome += (": fixer push not admitted — a redelivered event never upgrades "
-                                "admission; after opting in, `hermes dk retry` "
-                                "re-admits it")
-                elif (prior['error'] == run_supervisor.FIXER_PUSH_REVOKED and self.production_config
-                      and seat == 'fixer' and not admitted):
-                    # Pushes are still off (``admitted`` is this event's fresh policy read, taken
-                    # under the push-policy lock): the claim would cancel it again. Once they are
-                    # back on, an event re-arms it.
-                    outcome += (": fixer push revoked — unattended fixer pushes are still off, so "
-                                "a re-armed run would only be cancelled again; turn them on, then "
-                                "a redelivered event or `hermes dk retry` re-arms it")
-                elif (prior['retries'] or 0) >= run_supervisor.MAX_REARMS:
-                    outcome += (f": {prior['retries']} failed attempts — only "
-                                "`hermes dk retry` re-arms it")
+                refused = redelivery_refusal(con, prior, admitted=bool(admitted),
+                                             production=bool(self.production_config), seat=seat)
+                if refused is not None:
+                    outcome += f": {refused}"
                 else:
                     self._rearm(con, prior['id'], reset=False, budget=requested)
                     outcome = 'rearmed'
