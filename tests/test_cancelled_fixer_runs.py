@@ -25,7 +25,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from diaktoros import cli, config, gate, gh, ledger, run_supervisor, seat_model  # noqa: E402
+from diaktoros import cli, config, explain, gate, gh, ledger, run_supervisor, seat_model  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.run_supervisor import FIXER_NOT_ADMITTED, FIXER_PUSH_REVOKED, Supervisor, views  # noqa: E402
 
@@ -166,8 +166,8 @@ class CancelledFixer(unittest.TestCase):
                   "budget": "b", "seat": "x", "queue": "q", "inflight": "i", "escalation": "e",
                   "hooks": "h", "sweep": "w", "github": "g", "blockers": [],
                   "next": {"action": "n"}, "head": HEAD}
-        with mock.patch.object(gate, "explain_facts", return_value={}), \
-             mock.patch.object(gate, "explain", return_value=report):
+        with mock.patch.object(explain, "explain_facts", return_value={}), \
+             mock.patch.object(explain, "explain", return_value=report):
             code, out = self.cli(cli.cmd_explain, loop="widgets", pr=7)
         self.assertEqual(code, 0)
         self.assertIn("blocked:    isolated fixer turn cancelled at this head — fixer push revoked",

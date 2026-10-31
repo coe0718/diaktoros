@@ -420,7 +420,7 @@ def group_fixer_gate() -> None:
 
 def group_decisions() -> None:
     section("gate decisions (#209) — a declining gate says why, on disk")
-    from diaktoros import config, gate, gate_decisions
+    from diaktoros import config, explain, gate, gate_decisions
 
     def lines():
         path = state_file("gate-decisions.jsonl")
@@ -440,11 +440,11 @@ def group_decisions() -> None:
                                                    "number", "reason", "sender", "time"])
 
     loop = config.load_id("widgets")
-    report = gate.explain(loop, gate.state_mod.state_for(loop), 7,
+    report = explain.explain(loop, gate.state_mod.state_for(loop), 7,
                           {"pr": pr(7), "reviews": [], "armed": True})
     check("explain lists the PR's decision",
           any("declined" in t and "passer-by" in t for t in report["gate_decisions"]), True)
-    other = gate.explain(loop, gate.state_mod.state_for(loop), 8,
+    other = explain.explain(loop, gate.state_mod.state_for(loop), 8,
                          {"pr": pr(8), "reviews": [], "armed": True})
     check("  and only that PR's", other["gate_decisions"], [])
 

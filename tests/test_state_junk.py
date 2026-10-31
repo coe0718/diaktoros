@@ -21,7 +21,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from diaktoros import gate, state, transition  # noqa: E402
+from diaktoros import explain, gate, state, transition  # noqa: E402
 
 HEAD = "a" * 40
 KEY = "acme/widgets#7"
@@ -172,7 +172,7 @@ class Junk(unittest.TestCase):
                     st.loop["inflight_ttl_min"] = bad
                 else:
                     st.loop.pop("inflight_ttl_min", None)
-                local = gate._explain_state(st.loop, st, KEY, 7, HEAD, time.time())
+                local = explain._explain_state(st.loop, st, KEY, 7, HEAD, time.time())
                 want = "30" if bad == "30" else "10"
                 self.assertIn(f"(ttl {want}m)", local["inflight"])
 
@@ -311,13 +311,13 @@ class ExplainKinds(unittest.TestCase):
         # #546: a branch must not invent a conclusion nobody checks for.
         import ast
         import inspect
-        tree = ast.parse(inspect.getsource(gate.explain))
+        tree = ast.parse(inspect.getsource(explain.explain))
         used = {node.value.value for node in ast.walk(tree)
                 if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
                 and isinstance(node.value.value, str)
                 and any(isinstance(t, ast.Name) and t.id == "kind" for t in node.targets)}
         self.assertTrue(used, "no kind assignments found: the scan is broken")
-        self.assertEqual(sorted(used - set(gate.EXPLAIN_KINDS)), [])
+        self.assertEqual(sorted(used - set(explain.EXPLAIN_KINDS)), [])
 
 
 class WatchdogLog(unittest.TestCase):

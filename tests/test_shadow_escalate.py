@@ -22,7 +22,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import test_ready as tr  # noqa: E402
 import test_token_file_settings as tf  # noqa: E402
-from diaktoros import config, gate  # noqa: E402
+from diaktoros import config, explain, gate  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
@@ -200,7 +200,7 @@ class ReadyAndExplain(unittest.TestCase):
 
     def test_explain_names_the_hold_as_a_blocker_and_the_note_in_the_report(self):
         facts = {"pr": None, "pr_error": "", "reviews": [], "armed": True, "read_at": 0}
-        report = gate.explain(self.loop, self.st, 7, {**facts,
+        report = explain.explain(self.loop, self.st, 7, {**facts,
                               "shadow_hold": ("", "no shadow review was queued for aaaaaaa")})
         self.assertEqual(report["shadow"]["note"], "no shadow review was queued for aaaaaaa")
         self.assertFalse(any("shadow review:" in b for b in report["blockers"]))
@@ -219,20 +219,20 @@ class ExplainBlocker(fg.Base):
     def test_explain_never_recommends_merging_a_held_approved_head(self):
         # Shadow review of #1097 (F2): the blocker was listed, but `next` still said "approved; a
         # human merges it".
-        held = gate.explain(self.loop, self.st, 7, self.approved_facts(
+        held = explain.explain(self.loop, self.st, 7, self.approved_facts(
             "the shadow review requested changes at aaaaaaa"))
         self.assertEqual(held["next"]["kind"], "operator")
         self.assertIn("do not merge", held["next"]["action"])
-        waiting = gate.explain(self.loop, self.st, 7, self.approved_facts(
+        waiting = explain.explain(self.loop, self.st, 7, self.approved_facts(
             "waiting on the shadow review at aaaaaaa (running)"))
         self.assertEqual(waiting["next"]["kind"], "wait")
-        free = gate.explain(self.loop, self.st, 7, self.approved_facts(""))
+        free = explain.explain(self.loop, self.st, 7, self.approved_facts(""))
         self.assertIn("a human merges it", free["next"]["action"])
 
     def test_a_held_head_is_an_explain_blocker(self):
         facts = {"pr": fg.LIVE, "reviews": [], "armed": True, "read_at": 0,
                  "shadow_hold": ("the shadow review requested changes at aaaaaaa", "")}
-        report = gate.explain(self.loop, self.st, 7, facts)
+        report = explain.explain(self.loop, self.st, 7, facts)
         self.assertIn("shadow review: the shadow review requested changes at aaaaaaa",
                       report["blockers"])
         self.assertEqual(report["shadow"]["hold"], facts["shadow_hold"][0])
@@ -248,13 +248,13 @@ class Wiring(unittest.TestCase):
         with mock.patch.object(gate.gh, "fetch", side_effect=[(mt.PR, ""), ([], "")]), \
                 mock.patch.object(gate, "hooks_read", return_value=(True, "")), \
                 mock.patch.object(gate, "shadow_hold", return_value=("held here", "")) as hold:
-            facts = gate.explain_facts(mt.LOOP, 7)
+            facts = explain.explain_facts(mt.LOOP, 7)
         self.assertEqual(hold.call_args.args, (mt.LOOP, 7, mt.HEAD))
         self.assertIn("marker", hold.call_args.kwargs)        # part 2: rulings need the marker
         self.assertEqual(facts["shadow_hold"], ("held here", ""))
 
     def test_the_explain_command_prints_the_note(self):
-        # The whole command, real `gate.explain`, on fg's loop: only the GitHub read is stubbed.
+        # The whole command, real `explain.explain`, on fg's loop: only the GitHub read is stubbed.
         import contextlib
         import io
         import types
@@ -265,7 +265,7 @@ class Wiring(unittest.TestCase):
         facts = {"pr": fg.LIVE, "reviews": [], "armed": True, "read_at": 0,
                  "shadow_hold": ("", "no shadow review was queued for aaaaaaa")}
         out = io.StringIO()
-        with mock.patch.object(gate, "explain_facts", return_value=facts), \
+        with mock.patch.object(explain, "explain_facts", return_value=facts), \
                 contextlib.redirect_stdout(out):
             rc = operations.cmd_explain(types.SimpleNamespace(loop="one", pr=7))
         self.assertEqual(rc, 0, out.getvalue())

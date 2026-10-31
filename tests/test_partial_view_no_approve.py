@@ -576,7 +576,7 @@ class ExplainShowsIt(unittest.TestCase):
         import argparse
         import contextlib
         import io
-        from diaktoros import cli, gate
+        from diaktoros import cli, explain
         report = {"url": "u", "read_at": "t", "state_line": "s", "chain": {"status": "direct"},
                   "budget": "b", "seat": "x", "queue": "q", "inflight": "i", "escalation": "e",
                   "hooks": "h", "sweep": "w", "github": "g", "blockers": [], "next": {"action": "n"},
@@ -585,8 +585,8 @@ class ExplainShowsIt(unittest.TestCase):
         import gc
         gc.collect()  # close setUp's ledger connections, so their WAL files are not "before"
         before = sorted(p.name for p in self.db.parent.iterdir())
-        with mock.patch.object(gate, "explain_facts", return_value={}), \
-             mock.patch.object(gate, "explain", return_value=report), \
+        with mock.patch.object(explain, "explain_facts", return_value={}), \
+             mock.patch.object(explain, "explain", return_value=report), \
              contextlib.redirect_stdout(out):
             self.assertEqual(cli.cmd_explain(argparse.Namespace(loop="widgets", pr=7)), 0)
         self.assertEqual(sorted(p.name for p in self.db.parent.iterdir()), before)

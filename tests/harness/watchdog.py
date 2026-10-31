@@ -587,6 +587,7 @@ def group_explain() -> None:
     import argparse
 
     from diaktoros import cli, config, gate, gh, state as state_mod
+    from diaktoros import explain as explain_pr   # the verb `explain` below is the CLI's
 
     def explain(loop: str | None = "widgets", pr_number: int = 7,
                 extra_env: dict | None = None) -> tuple[int, str]:
@@ -730,7 +731,7 @@ def group_explain() -> None:
     check("pending request without run: names who may ask (#375)",
           "hermes dk review --loop" in out and "triage.maintainers" in out, True)
     check("pending request without run: no imaginary verdict", "next:       the reviewer's verdict" in out, False)
-    check("pending request without run: pure kind", gate.explain(config.load_id("widgets"),
+    check("pending request without run: pure kind", explain_pr.explain(config.load_id("widgets"),
           state_mod.state_for(config.load_id("widgets")), 7,
           {"pr": pr(7, requested=SEAT), "reviews": [], "armed": True})["next"]["kind"], "retry")
 
@@ -859,7 +860,7 @@ def group_explain() -> None:
         state_file("breach.json").write_text(json.dumps(
             {f"{REPO}#7": {"pr": 7, "head": HEAD_B, "rounds": 3, "cap": 3,
                             "at": PAST, "status": status, "reason": "review cap reached"}}))
-        report = gate.explain(config.load_id("widgets"),
+        report = explain_pr.explain(config.load_id("widgets"),
                               state_mod.state_for(config.load_id("widgets")), 7,
                               {"pr": pr(7, head=HEAD_B, requested=SEAT),
                                "reviews": DATA["world"]["prs"]["7"]["reviews"],
@@ -942,9 +943,9 @@ def group_explain() -> None:
     # GitHub deliberately reports inaccessible repositories/PRs as HTTP 404.
     with mock.patch.object(gh, "fetch", side_effect=[(None, 'HTTP 404 {"message":"Not Found"}'),
                                                        (None, "HTTP 404"), ([], "")]):
-        facts_404 = gate.explain_facts(config.load_id("widgets"), 404)
+        facts_404 = explain_pr.explain_facts(config.load_id("widgets"), 404)
     check("HTTP 404 is missing or inaccessible, not transient", facts_404["pr_error"], "")
-    check("  404 diagnosis does not recommend retry", gate.explain(config.load_id("widgets"),
+    check("  404 diagnosis does not recommend retry", explain_pr.explain(config.load_id("widgets"),
           state_mod.state_for(config.load_id("widgets")), 404, facts_404)["next"]["kind"], "none")
 
     reset(prs={"7": {**pr(7), "head": {}}})
@@ -1007,7 +1008,7 @@ def group_explain() -> None:
         facts = {"pr": pr(7), "pr_error": "", "reviews": [], "reviews_error": "",
                  "armed": True, "armed_error": "", "read_at": 1_700_000_000.0}
         facts.update(over)
-        return gate.explain(loop, st, 7, facts)
+        return explain_pr.explain(loop, st, 7, facts)
 
     check("a failed read → retry", decide(pr=None, pr_error="HTTP 500")["next"]["kind"], "retry")
     check("no such PR → nothing", decide(pr=None)["next"]["kind"], "none")
@@ -1026,14 +1027,14 @@ def group_explain() -> None:
     stacked_kind = decide(pr=pr(7, base="release"), chain=verified_stack,
                           parent_readiness=(False, "approval unassociated"))["next"]["kind"]
     check("verified stacked branch waits", stacked_kind, "wait")
-    check("stacked wait is a declared explain kind", stacked_kind in gate.EXPLAIN_KINDS, True)
+    check("stacked wait is a declared explain kind", stacked_kind in explain_pr.EXPLAIN_KINDS, True)
     check("someone else's PR → nothing", decide(pr=pr(7, author="outsider"))["next"]["kind"], "none")
     check("approved at the head → nothing",
           decide(reviews=[review(REVIEWER, state="approved")])["next"]["kind"], "none")
     check("a request pending with no run out → retry",
           decide(pr=pr(7, requested=SEAT))["next"]["kind"], "retry")
     check("nothing pending at all → ask for review", decide()["next"]["kind"], "review-request")
-    check("every conclusion is a declared kind", decide()["next"]["kind"] in gate.EXPLAIN_KINDS, True)
+    check("every conclusion is a declared kind", decide()["next"]["kind"] in explain_pr.EXPLAIN_KINDS, True)
     check("the same facts decide the same way", decide() == decide(), True)
 
     # -- asking without --loop ----------------------------------------------------------

@@ -22,7 +22,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import cli, config, escalate_pending, gate, gh, ledger, one_shot_action, run_supervisor, state as state_mod  # noqa: E402
+from diaktoros import cli, config, escalate_pending, explain, gate, gh, ledger, one_shot_action, run_supervisor, state as state_mod  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 from scripts import gate_fixer, gate_reviewer  # noqa: E402
@@ -320,9 +320,9 @@ class Parked(Base):
                  "delivery_status": "adjudicating",
                  "capacity": {"reviewer": (0, 1), "fixer": (0, 1)}, "stale_queues": [],
                  "seat": "", "queue": "", "inflight": "", "escalation": "", "sweep": ""}
-        with mock.patch.object(gate, "_explain_state", return_value=local), \
-                mock.patch.object(gate, "_ruled", return_value=ruled):
-            return gate.explain(self.loop, self.st, 7, {"pr": fg.LIVE, "reviews": self.reviews,
+        with mock.patch.object(explain, "_explain_state", return_value=local), \
+                mock.patch.object(explain, "_ruled", return_value=ruled):
+            return explain.explain(self.loop, self.st, 7, {"pr": fg.LIVE, "reviews": self.reviews,
                                                         "armed": True, "read_at": time.time()})
 
     def test_explain_after_the_ruling_says_the_decision_is_yours(self):
@@ -340,8 +340,8 @@ class Parked(Base):
                  "delivery_status": "awaiting-adjudication",
                  "capacity": {"reviewer": (0, 1), "fixer": (0, 1)}, "stale_queues": [],
                  "seat": "", "queue": "", "inflight": "", "escalation": "", "sweep": ""}
-        with mock.patch.object(gate, "_explain_state", return_value=local):
-            report = gate.explain(self.loop, self.st, 7, {"pr": fg.LIVE, "reviews": self.reviews,
+        with mock.patch.object(explain, "_explain_state", return_value=local):
+            report = explain.explain(self.loop, self.st, 7, {"pr": fg.LIVE, "reviews": self.reviews,
                                                           "armed": True, "read_at": time.time()})
         self.assertEqual(report["next"]["kind"], "adjudication")
 
@@ -477,7 +477,7 @@ class Pending(Base):
         state_mod._atomic_write(self.st.breach, {gate.seat_key(self.loop, 7): {
             "pr": 7, "head": OTHER, "rounds": 3, "cap": 3, "reason": "old cap",
             "at": "2026-10-24T00:00:00Z", "status": "adjudicating"}})
-        line = gate._explain_state(self.loop, self.st, gate.seat_key(self.loop, 7), 7, HEAD,
+        line = explain._explain_state(self.loop, self.st, gate.seat_key(self.loop, 7), 7, HEAD,
                                    time.time())["escalation"]
         self.assertTrue(line.startswith("pending since"), line)
         self.assertIn("(earlier: adjudicating at head cccccc", line)
@@ -530,7 +530,7 @@ class Pending(Base):
         self.assertIsNone(escalate_pending.get(self.st, 7))
 
     def test_a_normal_escalation_supersedes_it_and_explain_shows_it(self):
-        state = gate._explain_state(self.loop, self.st, gate.seat_key(self.loop, 7), 7, HEAD,
+        state = explain._explain_state(self.loop, self.st, gate.seat_key(self.loop, 7), 7, HEAD,
                                     time.time())
         self.assertIn("pending since", state["escalation"])
         self.assertIn("stuck on scope", state["escalation"])

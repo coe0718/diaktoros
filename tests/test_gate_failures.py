@@ -21,7 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
-from diaktoros import config, gate, gate_failures, state as state_mod  # noqa: E402
+from diaktoros import config, explain, gate, gate_failures, state as state_mod  # noqa: E402
 
 SCRIPTS = t.ROOT / "scripts"
 
@@ -93,7 +93,7 @@ class GateFailureTest(unittest.TestCase):
         loop = config.load_id("widgets")
         failures = gate_failures.open_for(loop, 7)
         self.assertEqual([f["id"] for f in failures], [key])
-        self.assertIn(f"gate failure {key}", gate.gate_failure_line(failures[0]))
+        self.assertIn(f"gate failure {key}", explain.gate_failure_line(failures[0]))
 
         # GitHub recovers; the watchdog alerts and re-drives the stored event.
         t.set_prs({"7": t.pr(7, requested=t.SEAT)})
@@ -314,7 +314,7 @@ class GateFailureTest(unittest.TestCase):
         loop = config.load_id("widgets")
         before = gate_failures.open_for(loop, 7)             # explain, before any sweep ran
         self.assertEqual(len(before), 1)
-        self.assertIn("unreadable", gate.gate_failure_line(before[0]))
+        self.assertIn("unreadable", explain.gate_failure_line(before[0]))
         first, second = watchdog(), watchdog()
         (copy,) = self.corrupt_copies()
         alerts = [line for line in first.splitlines() if str(copy) in line]
@@ -323,7 +323,7 @@ class GateFailureTest(unittest.TestCase):
         # (TEST mode's cooldown is 0, so the second sweep may say it again; the cooldown test
         # above pins the cadence.)
         self.assertEqual(copy.read_text(), self.GARBAGE)
-        shown = [gate.gate_failure_line(e) for e in gate_failures.open_for(loop, 7)]
+        shown = [explain.gate_failure_line(e) for e in gate_failures.open_for(loop, 7)]
         self.assertEqual(len(shown), 1)
         self.assertIn(str(copy), shown[0])
         # A real gate failure still records, beside the kept copy.
@@ -411,7 +411,7 @@ class GateFailureTest(unittest.TestCase):
         (ledger.payload_dir / "k1.json").unlink()
         scripts, launches = self.slow_gate_dir(0)
         (line,) = gate_failures.sweep(ledger, "[w]", scripts, cooldown_s=0)
-        shown = gate.gate_failure_line(ledger.open_for(7)[0])
+        shown = explain.gate_failure_line(ledger.open_for(7)[0])
         for said in (line, shown):
             self.assertNotIn("GitHub is not answering", said)
             self.assertNotIn("retries it", said)
@@ -434,7 +434,7 @@ class GateFailureTest(unittest.TestCase):
         (key, entry), = loop_entries().items()
         self.assertFalse(entry["payload_kept"])
         route = config.load_id("widgets")["seats"]["reviewer"]["route"]
-        line = gate.gate_failure_line(gate_failures.open_for(config.load_id("widgets"), 7)[0])
+        line = explain.gate_failure_line(gate_failures.open_for(config.load_id("widgets"), 7)[0])
         out = [x for x in watchdog().splitlines() if f"gate failure {key}" in x]
         self.assertEqual(len(out), 1)
         for said in (line, out[0]):
@@ -952,10 +952,10 @@ class GateFailureTest(unittest.TestCase):
     def test_explain_only_promises_a_retry_it_can_make(self):
         ledger = self.redrivable_entry()
         loop = config.load_id("widgets")
-        self.assertIn("the next sweep retries it", gate.gate_failure_line(ledger.open_for(7)[0]))
+        self.assertIn("the next sweep retries it", explain.gate_failure_line(ledger.open_for(7)[0]))
         from unittest import mock
         with mock.patch.object(gate_failures, "SCRIPTS_DIR", t.TMP / "no-scripts-here"):
-            line = gate.gate_failure_line(gate_failures.open_for(loop, 7)[0])
+            line = explain.gate_failure_line(gate_failures.open_for(loop, 7)[0])
         self.assertNotIn("retries it", line)
         self.assertIn("gate_reviewer.py not found", line)
 
@@ -963,7 +963,7 @@ class GateFailureTest(unittest.TestCase):
         ledger = gate_failures.Ledger(t.STATE_DIR)
         ledger.record("np", {"gate": "gate_reviewer", "kind": "crash", "pr": None,
                              "redrivable": True, "error_type": "X", "error": "y"}, "{}")
-        shown = [gate.gate_failure_line(e) for e in
+        shown = [explain.gate_failure_line(e) for e in
                  gate_failures.open_for(config.load_id("widgets"), 7)]
         self.assertEqual(len(shown), 1, shown)
         self.assertIn("gate failure np", shown[0])
@@ -1095,11 +1095,11 @@ class GateFailureTest(unittest.TestCase):
         loop = config.load_id("widgets")
         shown = gate_failures.open_for(loop, 7)
         self.assertEqual([e["id"] for e in shown], [key])
-        self.assertIn(str(gate_failures.fallback_ledger().path), gate.gate_failure_line(shown[0]))
+        self.assertIn(str(gate_failures.fallback_ledger().path), explain.gate_failure_line(shown[0]))
         failure = state_mod.LoopState(loop).github_failure()
         self.assertEqual(failure.get("owned_by"), f"gate-failures:{key}")
         self.assertEqual(failure.get("owned_in"), str(gate_failures.fallback_ledger().path))
-        local = gate._explain_state(loop, state_mod.LoopState(loop), f"{t.REPO}#7", 7, "", time.time())
+        local = explain._explain_state(loop, state_mod.LoopState(loop), f"{t.REPO}#7", 7, "", time.time())
         self.assertIn(str(gate_failures.fallback_ledger().path), local["github"])
 
     def test_a_claim_cut_off_by_the_record_alarm_is_made_again(self):
@@ -1154,7 +1154,7 @@ class GateFailureTest(unittest.TestCase):
         failure = st.github_failure()
         self.assertNotIn("owned_by", failure)
         self.assertIn(key, failure.get("resolved_by", ""))
-        local = gate._explain_state(loop, st, f"{t.REPO}#7", 7, "", time.time())
+        local = explain._explain_state(loop, st, f"{t.REPO}#7", 7, "", time.time())
         self.assertNotIn("tracked as", local["github"])
         self.assertIn("resolved", local["github"])
         ok = wd.gh.Response({"login": t.REVIEWER}, "", 200, {})
@@ -1211,7 +1211,7 @@ class GateFailureTest(unittest.TestCase):
         ledger.snapshot()                                          # a writer moves it aside
         self.assertNotIn(key, ledger.entries())
         # Read-only explain, before anything settles it: no promise of a line that cannot come.
-        local = gate._explain_state(loop, st, f"{t.REPO}#7", 7, "", time.time())
+        local = explain._explain_state(loop, st, f"{t.REPO}#7", 7, "", time.time())
         self.assertNotIn("its gate-failure line says what happens next", local["github"])
         self.assertIn("no longer in any gate-failure ledger", local["github"])
         # The health check does not keep suppressing it on a marker nothing backs.
@@ -1273,7 +1273,7 @@ class GateFailureTest(unittest.TestCase):
         for stage in ("duplicate resolved", "duplicate pruned"):
             with self.subTest(stage=stage):
                 self.assertEqual(gate_failures.owner_state(loop, st.github_failure()), "open")
-                local = gate._explain_state(loop, st, f"{t.REPO}#7", 7, "", time.time())
+                local = explain._explain_state(loop, st, f"{t.REPO}#7", 7, "", time.time())
                 self.assertIn("its gate-failure line says what happens next", local["github"])
                 self.assertEqual([x for x in self.health_lines(loop) if "could not GET" in x], [])
             data = json.loads(fallback.path.read_text())
@@ -1308,7 +1308,7 @@ class GateFailureTest(unittest.TestCase):
                     ledger.path.write_text(json.dumps(data))
                 state = gate_failures.owner_state(loop, st.github_failure())
                 self.assertNotEqual(state, "resolved")
-                local = gate._explain_state(loop, st, f"{t.REPO}#7", 7, "", time.time())
+                local = explain._explain_state(loop, st, f"{t.REPO}#7", 7, "", time.time())
                 self.assertNotIn("which has resolved", local["github"])
                 out, _ = self.normal_watchdog(self.switch_stub("world"))
                 self.assertIn("could not GET /repos/acme/widgets/pulls/7", out.stdout, out.stdout)
@@ -1328,7 +1328,7 @@ class GateFailureTest(unittest.TestCase):
         self.ledger_as_directory()
         st = state_mod.LoopState(loop)
         self.assertEqual(gate_failures.owner_state(loop, st.github_failure()), "unreadable")
-        local = gate._explain_state(loop, st, f"{t.REPO}#7", 7, "", time.time())
+        local = explain._explain_state(loop, st, f"{t.REPO}#7", 7, "", time.time())
         self.assertNotIn("its gate-failure line says what happens next", local["github"])
         self.assertIn("cannot be read", local["github"])
         # A real watchdog in normal mode names the read itself, not only the ledger.
@@ -1350,12 +1350,12 @@ class GateFailureTest(unittest.TestCase):
         ledger = gate_failures.Ledger(t.STATE_DIR)
         ledger.dir.mkdir(parents=True, exist_ok=True)
         ledger.path.write_text("{torn")
-        (line,) = [gate.gate_failure_line(e) for e in gate_failures.open_for(loop, 7)
+        (line,) = [explain.gate_failure_line(e) for e in gate_failures.open_for(loop, 7)
                    if e.get("kind") == "ledger"]
         self.assertIn("moves it aside", line)
         ledger.path.unlink()
         self.ledger_as_directory()
-        (line,) = [gate.gate_failure_line(e) for e in gate_failures.open_for(loop, 7)
+        (line,) = [explain.gate_failure_line(e) for e in gate_failures.open_for(loop, 7)
                    if e.get("kind") == "ledger"]
         self.assertNotIn("moves it aside", line)
         self.assertIn("cannot be moved aside automatically", line)

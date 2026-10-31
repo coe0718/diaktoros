@@ -21,7 +21,7 @@ import unittest
 import uuid
 from unittest import mock
 
-from diaktoros import gate, ledger, state as state_mod, transition
+from diaktoros import explain, gate, ledger, transition, state as state_mod
 from diaktoros.run_supervisor import Supervisor
 from tests.test_stacked_reconciliation import fixer, reviewer, watchdog
 from tests.test_stacked_situation import A, B, C, D, pr
@@ -213,7 +213,7 @@ class FreshReviewTest(unittest.TestCase):
         self.assertTrue(any("fresh review: retry" in line for line in lines), lines)
         fresh = transition.hold(self.st, 184, C)["fresh_review"]
         self.assertEqual(fresh["state"], "retry")
-        report = gate.explain(self.loop, self.st, 184, {"pr": self.child, "reviews": self.reviews,
+        report = explain.explain(self.loop, self.st, 184, {"pr": self.child, "reviews": self.reviews,
                                                         "receipts": {}, "armed": True})
         self.assertEqual(report["next"]["kind"], "retry")
         self.assertIn("reviewer enqueue failed", report["next"]["action"])
@@ -241,7 +241,7 @@ class FreshReviewTest(unittest.TestCase):
                                     for line in lines), lines)
                 self.assertEqual(
                     transition.start_fresh_review(self.loop, self.st, 184)[0], "retry")
-                report = gate.explain(self.loop, self.st, 184, {
+                report = explain.explain(self.loop, self.st, 184, {
                     "pr": self.child, "reviews": self.reviews, "receipts": {}, "armed": True})
                 self.assertEqual(report["next"]["kind"], "retry")
                 self.assertNotIn("reviewer queued", report["next"]["action"])
@@ -285,7 +285,7 @@ class FreshReviewTest(unittest.TestCase):
         self.receipt(30, "APPROVED")
         _, calls = self.run_gate(fixer, self.verdict_event(fresh))
         self.assertEqual(len(self.merge_cues(calls)), 1, calls)
-        report = gate.explain(self.loop, self.st, 184, {
+        report = explain.explain(self.loop, self.st, 184, {
             "pr": self.child, "reviews": self.reviews, "armed": True,
             "receipts": transition.read_receipts(self.loop, 184, C)})
         self.assertTrue(report["approved"])
@@ -297,12 +297,12 @@ class FreshReviewTest(unittest.TestCase):
         def facts():
             return {"pr": self.child, "reviews": self.reviews, "armed": True,
                     "receipts": transition.read_receipts(self.loop, 184, C)}
-        owed = gate.explain(self.loop, self.st, 184, facts())
+        owed = explain.explain(self.loop, self.st, 184, facts())
         self.assertFalse(owed["approved"])
         self.assertTrue([b for b in owed["blockers"] if "same-head base retarget" in b], owed)
         self.reviews.append(review(30, "APPROVED", minute=5))
         self.receipt(30, "APPROVED")
-        report = gate.explain(self.loop, self.st, 184, facts())
+        report = explain.explain(self.loop, self.st, 184, facts())
         self.assertTrue(report["approved"])
         self.assertIn("a human merges it", report["next"]["action"])
         self.assertEqual([b for b in report["blockers"] if "retarget" in b], [], report["blockers"])
@@ -353,7 +353,7 @@ class FreshReviewTest(unittest.TestCase):
         output, calls = self.run_gate(reviewer, self.request_event())
         self.assertIn("unreadable when the retarget was recorded", output)
         self.assertEqual(calls["block"], [])
-        report = gate.explain(self.loop, self.st, 184, {
+        report = explain.explain(self.loop, self.st, 184, {
             "pr": self.child, "reviews": self.reviews, "armed": True,
             "receipts": transition.read_receipts(self.loop, 184, C)})
         self.assertEqual(report["next"]["kind"], "wait")
@@ -409,7 +409,7 @@ class FreshReviewTest(unittest.TestCase):
 
     def test_explain_reports_queued_fresh_review(self):
         self.merge_parent_and_retarget()
-        report = gate.explain(self.loop, self.st, 184, {
+        report = explain.explain(self.loop, self.st, 184, {
             "pr": self.child, "reviews": self.reviews, "armed": True,
             "receipts": transition.read_receipts(self.loop, 184, C)})
         self.assertEqual(report["next"]["kind"], "review-verdict")
@@ -419,7 +419,7 @@ class FreshReviewTest(unittest.TestCase):
         self.assertEqual(report["spent"], 0)
         self.assertTrue(any("fresh review situation" in b for b in report["blockers"]))
         # A failed receipt read is unknown, never "no trusted review".
-        report = gate.explain(self.loop, self.st, 184, {
+        report = explain.explain(self.loop, self.st, 184, {
             "pr": self.child, "reviews": self.reviews, "armed": True, "receipts": None,
             "receipts_error": "database is locked"})
         self.assertEqual(report["next"]["kind"], "retry")

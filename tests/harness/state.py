@@ -121,7 +121,7 @@ def group_malformed_marks() -> None:
     """
     section("state — a malformed lock mark degrades, it never raises")
 
-    from diaktoros import config, gate, state as state_mod
+    from diaktoros import config, explain, state as state_mod
 
     reset(prs={})
     loop = config.load_id("widgets")
@@ -175,7 +175,7 @@ def group_malformed_marks() -> None:
     check("  and the state lock is released on the way out", state_lock_free(), True)
     malformed()
     facts = {"pr": pr(7), "reviews": [], "armed": True}
-    report = outcome(lambda: gate.explain(loop, st, 7, facts))
+    report = outcome(lambda: explain.explain(loop, st, 7, facts))
     check("  explain answers instead of raising",
           isinstance(report, dict) and bool((report.get("next") or {}).get("kind")), True)
     check("  and reports nobody holding the PR",
@@ -264,7 +264,7 @@ def group_malformed_queue() -> None:
     """
     section("state — a non-dict queue seat value degrades, it never raises")
 
-    from diaktoros import config, gate, observer, state as state_mod
+    from diaktoros import config, explain, observer, state as state_mod
 
     reset(prs={})
     loop = config.load_id("widgets")
@@ -283,7 +283,7 @@ def group_malformed_queue() -> None:
         state_file("pending.json").write_text(json.dumps({"reviewer": seat_value}))
 
     def explain_report():
-        return outcome(lambda: gate.explain(loop, st, 7, facts))
+        return outcome(lambda: explain.explain(loop, st, 7, facts))
 
     # -- the audited failure: a seat value that is a list, not a mapping ---------------------
     for label, seat_value in (("a list", [key]), ("a string", "junk"), ("a number", 7),

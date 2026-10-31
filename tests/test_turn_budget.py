@@ -24,7 +24,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
-from diaktoros import (broker_ipc, cli, config, doctor, gate, gh,  # noqa: E402
+from diaktoros import (broker_ipc, cli, config, doctor, explain, gate, gh,  # noqa: E402
                          run_supervisor, seat_model, selftest, trusted_turn)
 from diaktoros.run_supervisor import claims  # noqa: E402
 from diaktoros.run_supervisor import views  # noqa: E402
@@ -603,7 +603,7 @@ class ClockSignatures(unittest.TestCase):
             self.assertEqual(set(st.active("reviewer")), {"acme/widgets#1", "acme/widgets#2"})
             lines = _watchdog().died_locks(loop, st._load(st.locks, {}), now + 3 * 3600)
             self.assertEqual(len(lines), 2)          # judged on the seat's own clock, not lost
-            local = gate._explain_state(loop, st, "acme/widgets#1", 1, HEAD, now)
+            local = explain._explain_state(loop, st, "acme/widgets#1", 1, HEAD, now)
             self.assertIn("reviewer holds it", local["seat"])
 
     def test_a_non_numeric_recorded_budget_is_refused(self):

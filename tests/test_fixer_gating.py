@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT))
 
 from diaktoros import ledger  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
-from diaktoros import cli, config, doctor, gate, gh, run_supervisor, state as state_mod  # noqa: E402
+from diaktoros import cli, config, doctor, explain, gate, gh, run_supervisor, state as state_mod  # noqa: E402
 from diaktoros.run_supervisor import FixerPushDisabled, Supervisor  # noqa: E402
 from scripts import gate_fixer, watchdog  # noqa: E402
 
@@ -219,8 +219,8 @@ class Surfaces(Base):
                  "inflight_fix": False, "marker": {}, "parked": False, "delivery_status": "",
                  "capacity": {"reviewer": (0, 1), "fixer": (0, 1)}, "stale_queues": [],
                  "seat": "", "queue": "", "inflight": "", "escalation": "", "sweep": ""}
-        with mock.patch.object(gate, "_explain_state", return_value=local):
-            return gate.explain(self.loop, self.st, 7, {"pr": LIVE, "reviews": [verdict()],
+        with mock.patch.object(explain, "_explain_state", return_value=local):
+            return explain.explain(self.loop, self.st, 7, {"pr": LIVE, "reviews": [verdict()],
                                                         "armed": True, "read_at": time.time()})
 
     def test_explain_names_the_operator_decision(self):

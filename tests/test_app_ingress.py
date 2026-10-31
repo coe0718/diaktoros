@@ -108,13 +108,13 @@ class Flow(app_cli.Base):
         self.assertNotEqual(rc, 0, out)
         self.assertIn("would deliver nothing to dk-app-acme-reader", out)
         self.assertTrue(app_ingress.paused(st))           # still paused: nothing was switched
-        from diaktoros import gate
+        from diaktoros import explain
         self.assertIn("PAUSED — events arrive through acme-reader[bot]'s webhook",
-                      gate._explain_app_ingress(self.loop(), False))
+                      explain._explain_app_ingress(self.loop(), False))
         self.webhook["url"] = routes.target("dk-app-acme-reader", "https://gateway.example")[0]
         rc, out = self.run_cli(["arm", "--loop", "widgets"])
         self.assertEqual(rc, 0, out)
-        self.assertEqual(gate._explain_app_ingress(self.loop(), True),
+        self.assertEqual(explain._explain_app_ingress(self.loop(), True),
                          "armed — events arrive through acme-reader[bot]'s webhook "
                          "(`hermes dk doctor` reads that webhook)")
 

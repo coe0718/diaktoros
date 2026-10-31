@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_fixer_gating as fg  # noqa: E402
 import test_stall_live_turn as sl  # noqa: E402
-from diaktoros import gate, gh, run_supervisor  # noqa: E402
+from diaktoros import explain, gate, gh, run_supervisor  # noqa: E402
 
 LONG_AGO = "2020-01-01T00:00:00Z"
 VERDICT = [{"id": 1, "state": "CHANGES_REQUESTED", "commit_id": fg.HEAD,
@@ -139,8 +139,8 @@ class CapStep(fg.Base):
                  "stale_queues": [], "seat": "", "queue": "", "inflight": "", "escalation": "",
                  "sweep": ""}
         self.loop["adjudicator"] = {"route": "one-breach"}
-        with mock.patch.object(gate, "_explain_state", return_value=local):
-            return gate.explain(self.loop, self.st, 7, {
+        with mock.patch.object(explain, "_explain_state", return_value=local):
+            return explain.explain(self.loop, self.st, 7, {
                 "pr": fg.LIVE, "reviews": [fg.verdict(rid) for rid in (1, 2, 3)], "armed": True,
                 "read_at": time.time()})["next"]
 

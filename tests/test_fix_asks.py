@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_issue_fix as base  # noqa: E402
 BASE, REPO, issue = base.BASE, base.REPO, base.issue
 
-from diaktoros import broker_ipc, fix_hold, gate, gh  # noqa: E402
+from diaktoros import broker_ipc, explain, fix_hold, gh  # noqa: E402
 from diaktoros import state as state_mod  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 
@@ -165,8 +165,8 @@ class Resuming(base.Gate):
         def run(number):
             out = io.StringIO()
             with mock.patch.object(config, "load_id", return_value=self.loop), \
-                 mock.patch.object(gate, "explain_facts", return_value={}), \
-                 mock.patch.object(gate, "explain", return_value=report), \
+                 mock.patch.object(explain, "explain_facts", return_value={}), \
+                 mock.patch.object(explain, "explain", return_value=report), \
                  contextlib.redirect_stdout(out):
                 cli.cmd_explain(argparse.Namespace(loop=self.loop["id"], pr=number))
             return out.getvalue()
