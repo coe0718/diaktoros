@@ -509,9 +509,11 @@ def _local_state(c) -> None:
     c.parked = c.local["parked"] and (c.cap_spent or gate.escalated(c.marker, c.head))
     # A ruling at this head ends adjudication: the marker stays, and the decision is a person's.
     c.ruled = _ruled(c.loop, c.number, c.head) if c.parked else None
-    if c.parked and c.ruled == "ACCEPT" and ((c.marker or {}).get("escalated") or {}).get(
-            "by") == gate.SHADOW_ESCALATION:
+    if c.parked and c.ruled == "ACCEPT" and (((c.marker or {}).get("escalated") or {}).get(
+            "by") == gate.SHADOW_ESCALATION or gate.is_ruled_approval(getattr(c, "latest", None),
+                                                                     c.loop)):
         # #1004: the adjudicator overruled the shadow review; the reviewer's approval stands.
+        # #905: the adjudicator approved on its ACCEPT, so no person is waited for either.
         c.parked, c.ruled = False, None
 
 
