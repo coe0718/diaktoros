@@ -130,7 +130,7 @@ hermes dk init \
 | `--read-token` | Explicit reader login; never inferred from the first token mapping |
 | Repeated `--token` | Each `LOGIN=PATH` maps that login to its own file. Quoting the entire argument preserves it as one shell word |
 | `--cap 3` | Changes-requested verdict budget: up to three such verdicts, with at most two intervening fix turns; minimum 2 |
-| `--reviewer-concurrency 2` | At most two concurrent reviewer PRs; requires a local clone |
+| `--reviewer-concurrency 2` | At most two concurrent reviewer PRs; requires a local clone unless the isolated worker's runtime file exists |
 | `--fixer-concurrency 1` | At most one fixer PR at once; no fixer runs while pushes remain off |
 | `--clone` | Existing local repository used by trusted snapshot/fetch operations; turns get their own exact-head exports |
 | `--root` | Repeatable **dedicated** cleanup root. PR-named children may be deleted on close/merge; never use your home, filesystem root or general project folder |

@@ -617,8 +617,8 @@ What it is for:
 
 `set` never changes the reviewer/fixer profile or login. That comes from the settings form
 through [`apply`](#apply), so one place decides seat identity. Concurrency above 1 needs a
-`--clone`, because each parallel run gets its own copy. Without one it is refused, exactly as at
-`init`.
+`--clone`, because each parallel run gets its own copy, unless the isolated worker's runtime file
+exists. Without either it is refused, exactly as at `init`.
 
 **Write and validation limits.** There is no `set --dry-run`. A cap-only/numeric update does
 not rerun every profile/credential preflight; the handler normalizes the result and selectively
@@ -1378,7 +1378,8 @@ already at this head, and the verdict cap. It makes no GitHub write; the review 
 write, as usual. It prints `review queued` (exit 0), or `no review started —` and the gate's own
 reason (exit 1). Exit 2 when the loop or the PR cannot be read, several loops are configured and
 no `--loop` names one, or the gate did not finish: its GitHub budget ran out (20 seconds by
-default, less when the webhook's script timeout is short), or it crashed. Only the gate's GitHub
+default, less when the webhook's script timeout is short), or it crashed (it prints `the gate did
+not finish — it crashed (Type)`, naming the exception type only). Only the gate's GitHub
 calls are deadline-limited. There is no hard deadline in-process, so a hang outside a GitHub call
 has no bound: the command can stay stuck and never reach exit 2. If it has run well past the
 budget, stop it. On any non-finish, check `explain` before asking again.
@@ -1604,7 +1605,7 @@ hermes dk cancel --loop "<loop-id>" --pr 12 --seat reviewer
 hermes dk cancel --loop "<loop-id>" --run "<run-id>"
 ```
 
-- **Not started yet** (pending, waiting, claimed): cancelled at once.
+- **Not started yet** (pending, blocked, waiting, claimed): cancelled at once.
 - **Launching or running:** the worker that owns the turn stops it, within a few seconds. It
   kills the sandbox the same way the turn budget does, and frees the seat. An adjudicator's
   breach marker is handed back. The command waits up to 30 seconds and prints how the run ended.

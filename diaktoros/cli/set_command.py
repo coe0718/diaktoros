@@ -679,8 +679,8 @@ def cmd_set(args) -> int:
 
     Seat prompts are rendered from the payload at fire time; observer destination changes also
     reconcile the delivery-only route before updating config. The rails still apply — ``concurrency``
-    above 1 without a ``clone`` is refused here exactly as it is at init, because a parallel run
-    that cannot be isolated would share a checkout.
+    above 1 without a ``clone`` (and without the isolated worker's runtime file) is refused here
+    exactly as it is at init, because a parallel run that cannot be isolated would share a checkout.
     """
     try:
         return _set(args)

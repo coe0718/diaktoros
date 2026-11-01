@@ -42,6 +42,15 @@ class CommandsDoc(unittest.TestCase):
         self.assertEqual(blank, [], "give these flags help= text, then run "
                                     "`python3 tests/commands_doc.py --write`")
 
+    def test_review_exit_2_names_the_crashed_gate(self):
+        """`review` returns 2 for a crashed gate too ("the gate did not finish — it crashed
+        (Type)", one_shot_action._review; tests/test_review_entry_point.py), not only a timeout."""
+        text = commands_doc.DOC.read_text()
+        section = text.split("### review\n", 1)[1].split("<!-- flags:review -->", 1)[0]
+        exit2 = " ".join(section.split("Exit 2 when", 1)[1].split("\n\n", 1)[0].split())
+        self.assertIn("the gate did not finish", exit2)
+        self.assertIn("the gate did not finish — it crashed (Type)", exit2)
+
     def test_every_command_is_in_the_quick_index(self):
         text = commands_doc.DOC.read_text()
         index = text.split("\n---\n", 1)[0]

@@ -82,6 +82,18 @@ class IsolatedConcurrency(unittest.TestCase):
         for row in rows:
             self.assertIn("runtime file", row)
 
+    def test_prose_and_getting_started_name_the_runtime_file_exception(self):
+        """The `set` prose and the getting-started concurrency row agree with normalize (#1409)."""
+        docs = Path(__file__).resolve().parents[1] / "docs"
+        commands = " ".join((docs / "commands.md").read_text().split())
+        start = commands.index("Concurrency above 1 needs a `--clone`")
+        self.assertIn("runtime file", commands[start:start + 250])
+        rows = [l for l in (docs / "getting-started.md").read_text().splitlines()
+                if l.startswith("| `--reviewer-concurrency")]
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertIn("runtime file", row)
+
     def test_shared_checkout_path_still_queues_an_unisolatable_parallel_run(self):
         """take_seat (the legacy shared-clone path) never starts an unisolated run above 1."""
         self.write_runtime()
