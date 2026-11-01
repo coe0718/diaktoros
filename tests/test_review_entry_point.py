@@ -378,33 +378,50 @@ class RecordedFailureEpisodes(Harness):
                                              gate_failures.SCRIPTS_DIR, cooldown_s=3600), [])
         self.assertIn("duplicate", self.fallback.entries()[key]["resolution"])
 
+    def test_a_failure_after_a_recovery_that_could_not_settle_home_is_its_own_episode(self):
+        self.fail()
+        (key,) = self.ledger.entries()
+        first = gate_failures.sweep(self.ledger, "[widgets]", gate_failures.SCRIPTS_DIR,
+                                    cooldown_s=3600)
+        self.assertEqual(len(first), 1)
+        with mock.patch.object(gate_failures, "RECORD_S", 0.2), self.holding_home_lock():
+            actions.review(self.loop(), 7)       # the gate finishes; the busy home stays open
+        self.assertFalse(self.ledger.entries()[key]["resolved"])
+        real = gate_failures.Ledger.record
+
+        def home_busy(ledger, *a, **kw):
+            if ledger.path == self.ledger.path:
+                raise OSError("busy")
+            return real(ledger, *a, **kw)
+        time.sleep(0.05)
+        with mock.patch.object(gate_failures.Ledger, "record", home_busy):
+            self.fail()                          # a new crash lands in the fallback
+        said = gate_failures.sweep(self.fallback, "[widgets]", gate_failures.SCRIPTS_DIR,
+                                   cooldown_s=3600)
+        self.assertEqual(len(said), 1)           # its own alert, not a silent duplicate
+        self.assertFalse(self.fallback.entries()[key]["resolved"])
+
+    @contextlib.contextmanager
+    def holding_home_lock(self):
+        """A real flock on the home ledger, held through another file description."""
+        with self.ledger._locked():
+            yield
+
     def test_a_busy_first_ledger_does_not_hang_the_recovery_or_hide_the_fallback(self):
         self.fail()
         (key,) = self.ledger.entries()
         self.fallback.record(key, {**self.ledger.entries()[key]}, "")
-        with mock.patch.object(gate_failures, "RECORD_S", 0.4), \
-                mock.patch.object(gate_failures.Ledger, "_locked", self._lock_busy_for_home()):
-            began = time.monotonic()
-            gate_failures.resolve_in_process("gate_reviewer", self.payload())
-            took = time.monotonic() - began
-        self.assertLess(took, 3)
-        self.assertFalse(self.ledger.entries()[key]["resolved"])      # busy: left open
-        self.assertTrue(self.fallback.entries()[key]["resolved"])     # but the fallback was tried
+        done = threading.Event()
 
-    def _lock_busy_for_home(self):
-        real = gate_failures.Ledger._locked
-        home = self.ledger.path
-        @contextlib.contextmanager
-        def locked(ledger, deadline=None):
-            if ledger.path == home:
-                if deadline is None:
-                    raise AssertionError("an unbounded wait on a busy ledger")
-                while time.monotonic() < deadline:
-                    time.sleep(0.02)
-                raise gate_failures.LedgerBusy("busy")
-            with real(ledger, deadline) as held:
-                yield held
-        return locked
+        def recover():
+            gate_failures.resolve_in_process("gate_reviewer", self.payload())
+            done.set()
+        with mock.patch.object(gate_failures, "RECORD_S", 0.4), self.holding_home_lock():
+            worker = threading.Thread(target=recover, daemon=True)
+            worker.start()
+            self.assertTrue(done.wait(5), "resolve_in_process hung on a locked ledger")
+            self.assertFalse(self.ledger.entries()[key]["resolved"])   # busy: left open
+        self.assertTrue(self.fallback.entries()[key]["resolved"])      # the fallback was tried
 
     def payload(self):
         return {"action": "ready_for_review", "number": 7,

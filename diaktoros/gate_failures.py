@@ -1054,7 +1054,8 @@ def record_in_process(gate: str, payload, exc: BaseException, started: float) ->
                  "error_type": type(exc).__name__, "route": _route_of(gate, payload),
                  "error": _bounded(message, 500), "traceback": _bounded(trace, 4000),
                  "elapsed_s": round(time.monotonic() - started, 2), "budget_s": None,
-                 "redrivable": False, "released_claims": [], "via": IN_PROCESS}
+                 "redrivable": False, "released_claims": [], "via": IN_PROCESS,
+                 "run_started_at": time.time() - (time.monotonic() - started)}
         ledgers = _ledgers_for(payload)
         for i, ledger in enumerate(ledgers):
             try:
@@ -1320,10 +1321,18 @@ def _corrupt_line(header: str, entry: dict) -> str:
 
 
 def _same_episode(home_entry, seen: dict) -> bool:
-    """Whether ``seen`` (an entry of another ledger) is the failure ``home_entry`` holds. A home
-    entry resolved *before* ``seen`` last failed settled an earlier episode of the same key (an
-    in-process key is stable across retries): ``seen`` is a new failure, not a duplicate."""
+    """Whether ``seen`` (an entry of another ledger) is the failure ``home_entry`` holds. An
+    in-process key is stable across retries, so one key can span several episodes:
+
+    * a home entry resolved *before* ``seen`` last failed settled an earlier episode;
+    * an in-process ``seen`` records when its failing run began (``run_started_at``). A home
+      entry last written before that cannot be this run's failure, even if it is still open (a
+      recovery that could not take the home lock leaves it open): ``seen`` is a new failure and
+      gets its own alert. A home write of the same run lands after the run began."""
     if not isinstance(home_entry, dict):
+        return False
+    began = seen.get("run_started_at")
+    if isinstance(began, (int, float)) and _number(home_entry.get("last_at")) < began:
         return False
     if not home_entry.get("resolved"):
         return True

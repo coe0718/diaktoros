@@ -1391,7 +1391,10 @@ gate-failure sweep report them. The entry is never re-driven by the watchdog (it
 your command, `--reconsider` included): the sweep alerts it, and the way forward is to run
 `review` again, which resolves the entry once the gate finishes. A hang outside a GitHub call
 (see above) never reaches the recorder, so it leaves no entry. If the ledger itself cannot be
-written, the output says `could NOT be recorded`.
+written, the output says `could NOT be recorded`. Settling an entry waits only a bounded time
+for a busy ledger. If it gives up, the earlier entry stays open (it can alert again later); a
+failure recorded afterwards in the no-loop ledger is still reported as its own, because it
+carries when its run began and the older open entry predates that.
 
 `--reconsider REASON` sends a head that **already has a verdict** back for one fresh review: for
 example, an approved fixer PR that a maintainer says must still meet a requirement. Your reason
