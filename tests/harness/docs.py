@@ -68,6 +68,17 @@ LINK_SOURCES = ("diaktoros/**/*.py", "scripts/*.py", "__init__.py", "skill/SKILL
 _DOC_LINK = re.compile(r"\bdocs/([\w-]+\.md)(?:#([\w-]+))?")
 
 
+_MODULE_REF = re.compile(r"python\s+(?:-P\s+)?-m\s+diaktoros\.(\w+)")
+
+
+def _modules(text: str) -> list[str]:
+    """The ``diaktoros.<module>`` a doc runs with ``python -m``, with or without ``-P`` (#1386).
+
+    The skill tells the seat ``python -P -m diaktoros.broker_client``; a pattern that skips the
+    flag silently stops checking every one of those lines."""
+    return sorted(set(_MODULE_REF.findall(text)))
+
+
 def _slug(heading: str) -> str:
     """GitHub's anchor for a heading: lowercase, punctuation dropped, each space a hyphen."""
     return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
@@ -187,6 +198,13 @@ def group_docs() -> None:
     check("  and a bad one quoted that way is still rejected",
           _rejects(parser, inline[1]) is not None, True)
 
+    check("the module extractor sees a plain `python -m diaktoros.x` invocation",
+          _modules("run python -m diaktoros.run_supervisor now"), ["run_supervisor"])
+    check("  and one with -P, so a nonexistent module there is still checked",
+          _modules("python -P -m diaktoros.no_such_module push"), ["no_such_module"])
+    check("  and does not pick up another package's module",
+          _modules("python -P -m other.thing; python -m diaktoros"), [])
+
     found: list[tuple[pathlib.Path, int, list[str]]] = []
     for path in _doc_files():
         for line, command in _invocations(path):
@@ -203,7 +221,7 @@ def group_docs() -> None:
 
     for path in _doc_files():
         text = path.read_text()
-        for module in sorted(set(re.findall(r"python\s+(?:-P\s+)?-m\s+diaktoros\.(\w+)", text))):
+        for module in _modules(text):
             check(f"{path.relative_to(ROOT)}: diaktoros/{module}.py exists",
                   (ROOT / "diaktoros" / f"{module}.py").is_file()
                   or (ROOT / "diaktoros" / module / "__main__.py").is_file(), True)  # a package
