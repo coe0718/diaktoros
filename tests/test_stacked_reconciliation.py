@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 from diaktoros import explain, gate, situation, transition
+from diaktoros import watch_mode  # noqa: E402
 from diaktoros.state import LoopState
 from tests.test_stacked_situation import A, B, C, D, pr
 
@@ -57,7 +58,7 @@ class ReconciliationTest(unittest.TestCase):
 
     def sweep(self, listing, baseline=([], "")):
         by_number = {p["number"]: p for p in listing} if isinstance(listing, list) else {}
-        with mock.patch.object(watchdog, "TEST", True), mock.patch.object(watchdog.gh, "open_prs", return_value=listing), \
+        with mock.patch.object(watch_mode, "TEST", True), mock.patch.object(watchdog.gh, "open_prs", return_value=listing), \
              mock.patch.object(watchdog.gh, "pr", side_effect=lambda _loop, n: by_number.get(n)), \
              mock.patch.object(watchdog.gh, "reviews", return_value=[]), \
              mock.patch.object(watchdog.gh, "reviews_read", return_value=baseline), \

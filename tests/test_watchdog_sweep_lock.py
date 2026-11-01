@@ -15,6 +15,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import gh, state as state_mod  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
 DEAD = gh.Response(None, 'HTTP 401 {"message":"Bad credentials"}', 401, {})
@@ -32,7 +33,7 @@ class SweepLock(unittest.TestCase):
         self.st = state_mod.state_for(self.loop)
 
     def patches(self, probe):
-        return (mock.patch.object(watchdog, "TEST", False),
+        return (mock.patch.object(watch_mode, "TEST", False),
                 mock.patch.object(watchdog.gate, "hooks_read",
                                   return_value=(None, "HTTP 401 Bad credentials")),
                 mock.patch.object(watchdog.gh, "auth_probe", side_effect=probe),

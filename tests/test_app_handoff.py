@@ -19,6 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_answers as fa  # noqa: E402
 from diaktoros import broker, config, explain, gate, github_app, review_kick, state as state_mod  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
 
 
 class Predicate(unittest.TestCase):
@@ -137,7 +138,7 @@ class WatchdogBackstop(__import__("test_fixer_gating").Base):
         import test_fixer_gating as fg
         from diaktoros import gh, pr_hold
         from scripts import watchdog
-        with mock.patch.object(watchdog, "TEST", True), \
+        with mock.patch.object(watch_mode, "TEST", True), \
              mock.patch.object(gate, "hooks_armed", return_value=True), \
              mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
              mock.patch.object(gh, "open_prs", return_value=[fg.LIVE]), \

@@ -33,6 +33,7 @@ from diaktoros import (
     gh,
     run_supervisor,
 )
+from diaktoros import watch_mode  # noqa: E402
 from diaktoros.cli import operations as cli_operations  # noqa: E402
 from diaktoros.cli import install as cli_install  # noqa: E402
 from scripts import gate_fixer, gate_reviewer, watchdog  # noqa: E402
@@ -326,7 +327,7 @@ class Gates(fg.Base):
         self.assertIn(f"capped at {config.review_only_cap(self.loop)}", action)
 
     def sweep(self, reviews):
-        with mock.patch.object(watchdog, "TEST", True), \
+        with mock.patch.object(watch_mode, "TEST", True), \
              mock.patch.object(gate, "hooks_armed", return_value=True), \
              mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
              mock.patch.object(gh, "open_prs", return_value=[self.live]), \
@@ -398,7 +399,7 @@ class Gates(fg.Base):
         self.live = {**self.live, "mergeable_state": "dirty", "base": {"ref": "main", "sha": "b" * 40}}
         with mock.patch.object(gate, "enqueue_isolated") as enqueue, \
              mock.patch.object(watchdog.observer, "notify") as notify, \
-             mock.patch.object(watchdog, "TEST", True), \
+             mock.patch.object(watch_mode, "TEST", True), \
              mock.patch.object(gate, "hooks_armed", return_value=True), \
              mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
              mock.patch.object(gh, "open_prs", return_value=[self.live]), \

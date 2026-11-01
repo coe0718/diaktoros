@@ -22,6 +22,7 @@ import uuid
 from unittest import mock
 
 from diaktoros import explain, gate, ledger, transition, state as state_mod
+from diaktoros import watch_mode  # noqa: E402
 from diaktoros.run_supervisor import Supervisor
 from tests.test_stacked_reconciliation import fixer, reviewer, watchdog
 from tests.test_stacked_situation import A, B, C, D, pr
@@ -103,7 +104,7 @@ class FreshReviewTest(unittest.TestCase):
         return {182: self.parent, 184: self.child}.get(number)
 
     def sweep(self, listing):
-        with mock.patch.object(watchdog, "TEST", True), \
+        with mock.patch.object(watch_mode, "TEST", True), \
              mock.patch.object(watchdog.gh, "open_prs", return_value=listing), \
              mock.patch.object(watchdog.gh, "pr", side_effect=lambda _loop, n: self.live(n)), \
              mock.patch.object(watchdog.gh, "reviews", side_effect=lambda *_, **__: list(self.reviews)), \

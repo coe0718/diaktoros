@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .fixture import *  # noqa: F403 - the shared harness namespace
+from diaktoros import watch_mode  # noqa: E402
 
 
 def group_watchdog() -> None:
@@ -564,13 +565,13 @@ def group_watchdog() -> None:
     # cooldown passes". Pin the edge itself: silence just before it, an alert exactly on it.
     from scripts import watchdog as _wd
     watch: dict = {}
-    _wd.alert_due(watch, "edge", 100.0, 60.0)                     # first alert stamps the clock
+    watch_mode.alert_due(watch, "edge", 100.0, 60.0)                     # first alert stamps the clock
     check("alert_due is silent just before the cooldown edge",
-          _wd.alert_due(watch, "edge", 159.9, 60.0), False)
+          watch_mode.alert_due(watch, "edge", 159.9, 60.0), False)
     check("alert_due fires exactly at the cooldown edge (inclusive)",
-          _wd.alert_due(watch, "edge", 160.0, 60.0), True)
+          watch_mode.alert_due(watch, "edge", 160.0, 60.0), True)
     check("  and the edge stamp makes the next instant quiet again",
-          _wd.alert_due(watch, "edge", 160.1, 60.0), False)
+          watch_mode.alert_due(watch, "edge", 160.1, 60.0), False)
 
 
 def group_explain() -> None:

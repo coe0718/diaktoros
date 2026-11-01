@@ -26,6 +26,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 from diaktoros import (broker_ipc, cli, config, doctor, explain, gate, gh,  # noqa: E402
                          run_supervisor, seat_model, selftest, trusted_turn)
+from diaktoros import watch_health  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
 from diaktoros.run_supervisor import claims  # noqa: E402
 from diaktoros.run_supervisor import views  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
@@ -346,7 +348,9 @@ class MarkerGraceFollowsTheRuling(unittest.TestCase):
         self.addCleanup(patch.stop)
         self.state_mod = state_mod
         self.watchdog = _watchdog()
-        self.watchdog.TEST = False                   # the real grace clocks
+        patch = mock.patch.object(watch_mode, "TEST", False)   # the real grace clocks
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def sweep(self, budget, status, age_s, run_state=None, ruled=None, dismissed=0):
         # Each sweep gets its own loop state and run ledger (a marker keeps its first "at").
@@ -396,7 +400,7 @@ class MarkerGraceFollowsTheRuling(unittest.TestCase):
         with mock.patch.object(wd.gate, "hooks_read", return_value=(True, "")), \
              mock.patch.object(wd.gh, "open_prs", return_value=[pr]), \
              mock.patch.object(wd.gh, "reviews", return_value=verdicts), \
-             mock.patch.object(wd, "github_health", return_value=[]), \
+             mock.patch.object(watch_health, "github_health", return_value=[]), \
              mock.patch.object(wd.route_intent, "heal", return_value=[]), \
              mock.patch.object(wd.gate, "resume_isolated", return_value=False), \
              mock.patch.object(wd, "reconcile_stacked"), \
@@ -526,7 +530,9 @@ class PerSeatClocks(unittest.TestCase):
         old (the fixer's stall) or a head first observed ``age_s`` ago (the reviewer's)."""
         from diaktoros import state as state_mod
         wd, now = _watchdog(), time.time()
-        wd.TEST = False
+        patch = mock.patch.object(watch_mode, "TEST", False)
+        patch.start()
+        self.addCleanup(patch.stop)
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.dict(os.environ, {"HERMES_HOME": tmp,
                                              "DIAKTOROS_CONFIG_DIR": tmp + "/none"}):
@@ -545,7 +551,7 @@ class PerSeatClocks(unittest.TestCase):
             with mock.patch.object(wd.gate, "hooks_read", return_value=(True, "")), \
                  mock.patch.object(wd.gh, "open_prs", return_value=[pr]), \
                  mock.patch.object(wd.gh, "reviews", return_value=reviews), \
-                 mock.patch.object(wd, "github_health", return_value=[]), \
+                 mock.patch.object(watch_health, "github_health", return_value=[]), \
                  mock.patch.object(wd.route_intent, "heal", return_value=[]), \
                  mock.patch.object(wd.gate, "resume_isolated", return_value=False), \
                  mock.patch.object(wd, "reconcile_stacked"), \

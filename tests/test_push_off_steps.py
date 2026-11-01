@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import config, explain, gate, run_supervisor  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
 
 PUSHES_A_FIX = "the fixer pushes a fix"
 
@@ -124,7 +125,7 @@ class AfterEnabling(Steps):
     production = fg.SupervisorAdmission.production
 
     def sweep(self, verdicts=1):
-        with mock.patch.object(fg.watchdog, "TEST", True), \
+        with mock.patch.object(watch_mode, "TEST", True), \
              mock.patch.object(gate, "hooks_armed", return_value=True), \
              mock.patch.object(fg.watchdog.route_intent, "heal", return_value=[]), \
              mock.patch.object(fg.gh, "open_prs", return_value=[fg.LIVE]), \

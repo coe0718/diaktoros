@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from diaktoros import ledger  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
 from diaktoros import cli, config, doctor, explain, gate, gh, run_supervisor, state as state_mod  # noqa: E402
 from diaktoros.run_supervisor import FixerPushDisabled, Supervisor  # noqa: E402
@@ -244,7 +245,7 @@ class Surfaces(Base):
         self.assertEqual(doctor.check_fixer_push(self.loop).status, doctor.VERIFIED)
 
     def sweep(self):
-        with mock.patch.object(watchdog, "TEST", True), \
+        with mock.patch.object(watch_mode, "TEST", True), \
              mock.patch.object(gate, "hooks_armed", return_value=True), \
              mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
              mock.patch.object(gh, "open_prs", return_value=[LIVE]), \
@@ -290,7 +291,7 @@ class Surfaces(Base):
         watch["heads"]["7"]["observed_at"] = time.time() - 3600
         self.st.watch_save(watch)
         # This sweep decides a stall alert, then the observer's flush explodes mid-sweep.
-        with mock.patch.object(watchdog, "TEST", True), \
+        with mock.patch.object(watch_mode, "TEST", True), \
                 mock.patch.object(gate, "hooks_armed", return_value=True), \
                 mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
                 mock.patch.object(gh, "open_prs", return_value=[LIVE]), \

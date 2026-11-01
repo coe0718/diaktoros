@@ -20,6 +20,8 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import explain, gate, gh, state as state_mod  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
+from diaktoros import watch_health  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
 OK = gh.Response({"login": "rev-coach"}, "", 200, {})
@@ -55,7 +57,7 @@ class Health(unittest.TestCase):
         def open_prs(loop, errors=None):      # None either way: nothing past the listing runs
             if listing_error and errors is not None:
                 errors.append(listing_error)
-        with mock.patch.object(watchdog, "TEST", False), \
+        with mock.patch.object(watch_mode, "TEST", False), \
              mock.patch.object(watchdog.gate, "hooks_read", return_value=hooks), \
              mock.patch.object(watchdog.gh, "auth_probe", return_value=probe), \
              mock.patch.object(watchdog.route_intent, "heal", return_value=[]) as heal, \
@@ -115,8 +117,8 @@ class Health(unittest.TestCase):
         hooks = (None, "HTTP 502 bad gateway")
         seen = [any("cannot read GitHub" in line
                     for line in self.sweep(hooks=hooks, probe=DOWN, at=self.now + i * 900)[0])
-                for i in range(watchdog.READ_FAILURE_SWEEPS)]
-        self.assertEqual(seen, [False] * (watchdog.READ_FAILURE_SWEEPS - 1) + [True])
+                for i in range(watch_health.READ_FAILURE_SWEEPS)]
+        self.assertEqual(seen, [False] * (watch_health.READ_FAILURE_SWEEPS - 1) + [True])
 
     def test_recovery_is_said_once(self):
         self.sweep()
@@ -197,7 +199,7 @@ class Health(unittest.TestCase):
 
     def test_the_listing_line_dedupe_does_not_depend_on_the_alert_wording(self):
         denied = "open PR page 1: HTTP 403 " + PRETTY_403
-        with mock.patch.object(watchdog, "READ_ALERT", "GitHub refuses reads by {who}"):
+        with mock.patch.object(watch_health, "READ_ALERT", "GitHub refuses reads by {who}"):
             lines, *_ = self.sweep(hooks=(True, ""), probe=OK, listing_error=denied)
         self.assertEqual(len([x for x in lines if "GitHub refuses reads by rev-coach" in x]), 1,
                          lines)
@@ -283,9 +285,9 @@ class Reads(unittest.TestCase):
                         response.error)
 
     def test_expiry_header_parses_both_spellings(self):
-        self.assertEqual(watchdog.parse_expiry("2026-10-01 00:00:00 UTC"),
-                         watchdog.parse_expiry("2026-09-30 17:00:00 -0700"))
-        self.assertIsNone(watchdog.parse_expiry("soon"))
+        self.assertEqual(watch_health.parse_expiry("2026-10-01 00:00:00 UTC"),
+                         watch_health.parse_expiry("2026-09-30 17:00:00 -0700"))
+        self.assertIsNone(watch_health.parse_expiry("soon"))
 
 
 if __name__ == "__main__":

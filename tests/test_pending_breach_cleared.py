@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import config, gate, gh, state as state_mod  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
 LONG_AGO = "2020-01-01T00:00:00Z"
@@ -56,7 +57,7 @@ class PendingBreachNoLongerHolds(fg.Base):
         return breach
 
     def sweep(self, retry=True):
-        with mock.patch.object(watchdog, "TEST", True), \
+        with mock.patch.object(watch_mode, "TEST", True), \
                 mock.patch.object(gate, "hooks_armed", return_value=True), \
                 mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
                 mock.patch.object(gh, "open_prs", return_value=[fg.LIVE]), \

@@ -15,6 +15,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import cli, explain, gate, gh
+from diaktoros import watch_mode  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
 from scripts import watchdog
 
@@ -127,7 +128,7 @@ class EffectiveVerdictTest(unittest.TestCase):
         st.breach_all.return_value = {}
         st._load.return_value = {}
         st.queue_all.return_value = {}
-        with (mock.patch.object(watchdog, "TEST", True),
+        with (mock.patch.object(watch_mode, "TEST", True),
               mock.patch.object(gh, "open_prs", return_value=[PR]),
               mock.patch.object(gh, "reviews", return_value=[APPROVED, REJECTED]),
               mock.patch.object(watchdog, "retry_pending_breaches"),
@@ -185,7 +186,7 @@ class EffectiveVerdictTest(unittest.TestCase):
         st.dir = self.state_dir()
         st.watch.return_value = {}
         st.breach_all.return_value = {}
-        with (mock.patch.object(watchdog, "TEST", True),
+        with (mock.patch.object(watch_mode, "TEST", True),
               mock.patch.object(gh, "open_prs", return_value=[PR]),
               mock.patch.object(watchdog, "retry_pending_breaches"),
               mock.patch.object(watchdog, "drain_queued"),

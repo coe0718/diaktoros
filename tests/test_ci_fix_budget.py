@@ -22,6 +22,7 @@ import test_fixer_gating as fg  # noqa: E402
 import test_review_after_ci as rac  # noqa: E402
 import test_seat_models as sm  # noqa: E402
 from diaktoros import ci, ci_fix, cli, config, gate, gh, observer  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
 from diaktoros.cli import install as cli_install  # noqa: E402
 from diaktoros.run_supervisor import CI_HOLD  # noqa: E402
 from scripts import watchdog  # noqa: E402
@@ -219,7 +220,7 @@ class Stall(fg.Base):
         self.loop = {**self.loop, "fix_ci": True}
 
     def sweep(self, rows):
-        with mock.patch.object(watchdog, "TEST", True), \
+        with mock.patch.object(watch_mode, "TEST", True), \
                 mock.patch.object(gate, "hooks_armed", return_value=True), \
                 mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
                 mock.patch.object(gh, "open_prs", return_value=[fg.LIVE]), \
