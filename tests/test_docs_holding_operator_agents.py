@@ -52,6 +52,16 @@ class HoldingSectionNamesOperatorAgents(unittest.TestCase):
                           if name == "configuration.md"
                           else "issue-fix PR proposed in the report's window", text, name)
 
+    def test_other_docs_qualify_when_the_hold_is_recorded(self):
+        # #1597: accounts.md and configuration.md say what operations.md says about the row.
+        for name in ("accounts.md", "configuration.md"):
+            text = " ".join((ROOT / "docs" / name).read_text().split())
+            for phrase in ("observed it begin and the ledger write succeeded, both after the proposal",
+                           "when the row was written with the proposal, not when the hold began",
+                           "released before a sweep sees it", "leaves no row"):
+                self.assertIn(phrase, text, name)
+            self.assertNotIn("hold began after the proposal", text, name)
+
 
 if __name__ == "__main__":
     unittest.main()
