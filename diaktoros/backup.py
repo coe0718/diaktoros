@@ -36,6 +36,9 @@ WARNING = ("this archive holds route secrets (webhook HMAC keys): keep it privat
            "it was written mode 0600 and its contents are never printed")
 
 
+_DEFAULT_TRIES = 20     # re-picks of a default name that a concurrent run took first
+
+
 class BackupError(RuntimeError):
     pass
 
@@ -92,8 +95,8 @@ def token_paths(loop: dict) -> dict[str, str]:
 
 def create(out: pathlib.Path | None = None) -> pathlib.Path:
     """Write the archive and return its path. Refuses to overwrite a file."""
-    out = pathlib.Path(out).expanduser() if out else default_out()
-    out = out.absolute()
+    chosen = bool(out)
+    out = (pathlib.Path(out).expanduser() if chosen else default_out()).absolute()
     loops = config.all_loops()
     files: list[tuple[pathlib.Path, pathlib.Path | None, str]] = []   # (target, source, kind)
     cfg = config.config_dir()
@@ -118,10 +121,18 @@ def create(out: pathlib.Path | None = None) -> pathlib.Path:
                 "cron": watchdog_job(),
                 "tokens": {l["id"]: token_paths(l) for l in loops}}
     out.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        raise BackupError(f"{out} already exists — pick another --out") from None
+    for attempt in range(_DEFAULT_TRIES):
+        try:
+            fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            break
+        except FileExistsError:
+            if chosen:
+                raise BackupError(f"{out} already exists — pick another --out") from None
+            # A default name another run took after default_out() looked: pick the next free one.
+            if attempt == _DEFAULT_TRIES - 1:
+                raise BackupError(f"{out} already exists and no free default name was found; "
+                                  "retry, or pass --out") from None
+            out = default_out().absolute()
     try:
         with os.fdopen(fd, "wb") as stream, tarfile.open(fileobj=stream, mode="w:gz") as tar, \
                 tempfile.TemporaryDirectory() as scratch:

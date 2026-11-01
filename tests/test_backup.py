@@ -367,6 +367,36 @@ class Create(Base):
         self.assertNotEqual(first, second)
         self.assertTrue(first.is_file() and second.is_file())
 
+    def test_default_out_taken_after_the_check_is_repicked_not_reported_as_out(self):
+        taken = self.root / "taken.tar.gz"
+        taken.write_text("other run")
+        free = self.root / "free.tar.gz"
+        # default_out() saw `taken` free (a concurrent run created it afterwards), then re-picks.
+        with mock.patch.object(backup, "default_out", side_effect=[taken, free]):
+            made = backup.create()
+        self.assertEqual(made, free)
+        self.assertTrue(free.is_file())
+        self.assertEqual(taken.read_text(), "other run")
+
+    def test_default_out_that_stays_taken_gives_up_after_the_bound_without_blaming_out(self):
+        taken = self.root / "taken.tar.gz"
+        taken.write_text("other run")
+        # Every pick is already taken: create() must stop at the bound, not loop or overwrite.
+        with mock.patch.object(backup, "default_out", return_value=taken) as picked:
+            with self.assertRaises(backup.BackupError) as caught:
+                backup.create()
+        self.assertEqual(picked.call_count, backup._DEFAULT_TRIES)
+        self.assertIn("no free default name", str(caught.exception))
+        self.assertNotIn("pick another --out", str(caught.exception))
+        self.assertEqual(taken.read_text(), "other run")
+        self.assertEqual(sorted(p.name for p in self.root.glob("*.tar.gz")), ["taken.tar.gz"])
+
+    def test_explicit_out_that_exists_still_names_out(self):
+        taken = self.root / "taken.tar.gz"
+        taken.write_text("keep")
+        with self.assertRaisesRegex(backup.BackupError, "pick another --out"):
+            backup.create(taken)
+
     def test_ledger_snapshot_is_consistent_while_a_writer_is_open(self):
         writer = sqlite3.connect(self.db, isolation_level=None)
         writer.execute("BEGIN IMMEDIATE")
