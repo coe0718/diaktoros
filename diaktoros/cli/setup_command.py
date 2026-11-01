@@ -174,28 +174,23 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     if adjudicator:
         argv += [f"--adjudicator-route={loop_id}-breach", f"--adjudicator-profile={adjudicator}"]
     argv.append(f"--fixer-check={check}")
+    argv += _setup_setting_argv(args, d, interactive)
+    if admin:
+        argv += ["--hooks", f"--admin-token={admin}"]   # created paused; step 5 arms them
+    return argv, admin
+
+
+def _setup_setting_argv(args, d: dict, interactive: bool) -> list[str]:
+    """The settings part of step 2's ``init`` command line: each from its flag, else asked
+    (or the form's value), in ``init``'s own flag spelling."""
+    argv: list[str] = []
     if getattr(args, "merge_check", None):
         argv.append(f"--merge-check={args.merge_check}")
     if getattr(args, "ingress", None):
         argv.append(f"--ingress={args.ingress}")
     if getattr(args, "ingress_app", None):
         argv.append(f"--ingress-app={args.ingress_app}")
-    required = (args.required_check if args.required_check is not None else
-                lists.split_check_names(_ask(
-                    "the CI checks that must pass before an approval, comma-separated, exactly as "
-                    "GitHub names them (blank: every check)", d["required_checks"], interactive)))
-    argv += [f"--required-check={name}" for name in required]
-    humans = (args.human_path if getattr(args, "human_path", None) is not None else
-              lists.split_human_paths(_ask(
-                  "glob patterns for paths only a human may approve, comma-separated "
-                  "(blank: none)", d["human_paths"], interactive)))
-    argv += [f"--human-path={name}" for name in humans]
-    generated = (args.generated if getattr(args, "generated", None) is not None else
-                 lists.split_generated(d["generated"]))
-    argv += [f"--generated={entry}" for entry in generated]
-    covers = (args.ci_covers if getattr(args, "ci_covers", None) is not None else
-              lists.split_ci_coverage(d["ci_coverage"]))
-    argv += [f"--ci-covers={entry}" for entry in covers]
+    argv += _setup_check_argv(args, d, interactive)
     shadow = (args.shadow_profile if getattr(args, "shadow_profile", None) is not None else
               _ask("a Hermes profile for shadow reviews: a second reviewer model whose verdicts "
                    "are recorded, never posted (blank: none)", d["shadow_profile"], interactive))
@@ -217,10 +212,29 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
                           "fixer_daily_tokens", "shadow_daily_tokens", "fix_daily_turns",
                           "shadow_concurrency", "triage_concurrency",
                           "review_only_cap", "review_only_daily", "ci_fix_cap"))
-    if admin:
-        argv += ["--hooks", f"--admin-token={admin}"]   # created paused; step 5 arms them
-    return argv, admin
+    return argv
 
+def _setup_check_argv(args, d: dict, interactive: bool) -> list[str]:
+    """Step 2's checks and paths for ``init``: required checks, reserved and generated paths,
+    and what each check covers."""
+    argv: list[str] = []
+    required = (args.required_check if args.required_check is not None else
+                lists.split_check_names(_ask(
+                    "the CI checks that must pass before an approval, comma-separated, exactly as "
+                    "GitHub names them (blank: every check)", d["required_checks"], interactive)))
+    argv += [f"--required-check={name}" for name in required]
+    humans = (args.human_path if getattr(args, "human_path", None) is not None else
+              lists.split_human_paths(_ask(
+                  "glob patterns for paths only a human may approve, comma-separated "
+                  "(blank: none)", d["human_paths"], interactive)))
+    argv += [f"--human-path={name}" for name in humans]
+    generated = (args.generated if getattr(args, "generated", None) is not None else
+                 lists.split_generated(d["generated"]))
+    argv += [f"--generated={entry}" for entry in generated]
+    covers = (args.ci_covers if getattr(args, "ci_covers", None) is not None else
+              lists.split_ci_coverage(d["ci_coverage"]))
+    argv += [f"--ci-covers={entry}" for entry in covers]
+    return argv
 
 def cmd_setup(args) -> int:
     """A first install in one command, safe to re-run (#215).
@@ -360,6 +374,17 @@ def add_setup(sub) -> None:  # noqa: ANN001
                                          "(safe to re-run)")
     first.add_argument("--repo", help="owner/name (asked when not given)")
     first.add_argument("--id", help="loop id (default: the repository name)")
+    _setup_run_flags(first)
+    _setup_identity_flags(first)
+    _setup_review_only_flags(first)
+    _setup_review_flags(first)
+    _setup_switch_flags(first)
+    _setup_turn_flags(first)
+    first.set_defaults(func=cmd_setup)
+
+
+def _setup_run_flags(first) -> None:  # noqa: ANN001
+    """``setup``: how it runs: unattended, dry, protecting the base, arming, and its first answers."""
     first.add_argument("--yes", action="store_true",
                        help="no questions: the flags and the plugin settings are the answers, "
                             "and every confirmation is yes (arming still needs --arm)")
@@ -381,6 +406,10 @@ def add_setup(sub) -> None:  # noqa: ANN001
                        ("schedule", "watchdog interval (default 15m)"),
                        ("watchdog-deliver", "where watchdog alerts go (default local)")):
         first.add_argument(f"--{flag}", default="", help=what)
+
+
+def _setup_identity_flags(first) -> None:  # noqa: ANN001
+    """``setup``: App credentials, the hook admin, and the optional routes' profiles."""
     first.add_argument("--app", action="append", default=None, metavar="LOGIN=APP_ID:KEY",
                        help="a GitHub App identity instead of a PAT, for a seat, the reader, "
                             "the adjudicator or the hook admin: "
@@ -393,6 +422,10 @@ def add_setup(sub) -> None:  # noqa: ANN001
     first.add_argument("--adjudicator-profile", default=None,
                        help="Hermes profile that rules when a PR's verdict cap is spent; "
                             "turns adjudication on (blank: off) (default: the plugin setting)")
+
+
+def _setup_review_only_flags(first) -> None:  # noqa: ANN001
+    """``setup``: review-only authors, their limits, and operator agents."""
     first.add_argument("--review-only-cap", default=None, metavar="N",
                        help="verdicts the reviewer gives one review-only PR before it waits "
                             "for `review --another-round`, 1-1000 (default: the plugin "
@@ -407,6 +440,10 @@ def add_setup(sub) -> None:  # noqa: ANN001
                        help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting)")
     first.add_argument("--operator-agent", action="append", default=None,
                        help="a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated) (default: the plugin setting)")
+
+
+def _setup_review_flags(first) -> None:  # noqa: ANN001
+    """``setup``: what gates and informs a review: required checks, the shadow, reserved paths."""
     first.add_argument("--required-check", action="append", default=None,
                        help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
     first.add_argument("--shadow-profile", default=None,
@@ -423,6 +460,10 @@ def add_setup(sub) -> None:  # noqa: ANN001
                        help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting)")
     first.add_argument("--ci-covers", action="append", default=None, metavar="CHECK=COVERS",
                        help="what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting)")
+
+
+def _setup_switch_flags(first) -> None:  # noqa: ANN001
+    """``setup``: where events arrive, the merge check, the always-run check, and the on/off switches."""
     first.add_argument("--ingress", choices=("repo-hooks", "app-webhook"), default=None,
                        help="where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks)")
     first.add_argument("--ingress-app", default=None, help="with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app)")
@@ -449,6 +490,10 @@ def add_setup(sub) -> None:  # noqa: ANN001
             ("--attribution", "sign what the loop posts with 'Automated by Diaktoros'", "on")):
         first.add_argument(flag, choices=("on", "off"), default=None,
                            help=f"{text} (default: the plugin setting, {default})")
+
+
+def _setup_turn_flags(first) -> None:  # noqa: ANN001
+    """``setup``: each seat's steps, daily tokens and turns, and the shadow and triage capacity."""
     first.add_argument("--reviewer-max-steps", type=int, default=None,
                        help="agent steps one reviewer turn may take, 8-200 (0 = default 60) "
                             "(default: the plugin setting)")
@@ -476,4 +521,3 @@ def add_setup(sub) -> None:  # noqa: ANN001
     for key in ("source", "venv", "runtime", "rust"):
         first.add_argument(f"--{key}", default="",
                            help=f"runtime file's {key} path (default: detected)")
-    first.set_defaults(func=cmd_setup)

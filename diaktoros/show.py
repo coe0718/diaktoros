@@ -97,6 +97,22 @@ def _rows(loop: dict) -> list[_Row]:
     def plain(name, path, value, meaning, **kw):
         rows.append(_Row(name, path, value, meaning, **kw))
 
+    _rows_seats(schema, seats, adj, loop)
+    tokens = loop.get("tokens") or {}
+    _rows_credentials(tokens, schema, loop)
+    _rows_review_only(schema, triage, loop)
+    enable = config.fixer_push_enable_command(loop)
+    _rows_settings(schema, rows, enable, loop)
+
+    _rows_identity(plain, tokens, enable, loop)
+    _rows_seat_detail(plain, schema, seats, adj, loop)
+    _rows_shadow_triage(plain, schema, triage, loop)
+    _rows_observer(obs, schema, rows, loop)
+    return rows
+
+
+def _rows_seats(schema, seats, adj, loop) -> None:  # noqa: ANN001
+    """``_rows``: seat capacity, the cap and clocks, and each role's profile and login."""
     cap_loop_c = loop.get("concurrency")
     for seat in config.SEAT_KEYS:
         own = (seats.get(seat) or {}).get("concurrency") not in (None, "")
@@ -128,7 +144,10 @@ def _rows(loop: dict) -> list[_Row]:
                derived=derived)
     schema("adjudicator_login", ("seats", "adjudicator", "login"),
            config.adjudicator_login(loop) or _UNSET)
-    tokens = loop.get("tokens") or {}
+
+
+def _rows_credentials(tokens, schema, loop) -> None:  # noqa: ANN001
+    """``_rows``: each identity's credential, and the role-level settings."""
     for role, key in config.TOKEN_FILE_SETTINGS.items():
         login = config.seat_login(loop, role) if role != "adjudicator" \
             else config.adjudicator_login(loop)
@@ -151,6 +170,10 @@ def _rows(loop: dict) -> list[_Row]:
     for role in config.SEAT_KEYS:
         schema(f"{role}_daily_tokens", ("seats", role, "daily_tokens"),
                config.seat_daily_tokens(loop, role) or "no budget")
+
+
+def _rows_review_only(schema, triage, loop) -> None:  # noqa: ANN001
+    """``_rows``: issue fixes, review-only authors and their limits, and operator agents."""
     schema("auto_fix_labels", ("triage", "auto_fix_labels"),
            sorted(config.auto_fix_labels(loop) or [str(x) for x in triage.get("auto_fix_labels") or []]),
            off="no auto-offer: issues reach the fixer only when a maintainer applies the fix label",
@@ -176,7 +199,10 @@ def _rows(loop: dict) -> list[_Row]:
                  f"which now covers other PRs only"
                  if config.review_only_daily(loop) else
                  "unset: review-only turns count against seats.reviewer.daily_turns"))
-    enable = config.fixer_push_enable_command(loop)
+
+
+def _rows_settings(schema, rows, enable, loop) -> None:  # noqa: ANN001
+    """``_rows``: the switches, event ingress, the merge check, and the review's checks and paths."""
     _switches(loop, schema, rows, enable)
     app_in = config.app_ingress(loop)
     schema("ingress", ("ingress",), loop.get("ingress") or "repo-hooks",
@@ -202,6 +228,9 @@ def _rows(loop: dict) -> list[_Row]:
     schema("fixer_check", ("fixer_check",), loop.get("fixer_check") or _UNSET,
            on=bool(loop.get("fixer_check")), off="the fixer runs no always-run check")
 
+
+def _rows_identity(plain, tokens, enable, loop) -> None:  # noqa: ANN001
+    """``_rows``: the loop's identity, logins, credentials map and its push switch."""
     # Loop-file-only keys (DEFAULTS and identity), then nested blocks.
     plain("id", ("id",), loop["id"], "the loop's id (its file name)")
     plain("repo", ("repo",), loop["repo"], "the repository the loop watches")
@@ -233,6 +262,10 @@ def _rows(loop: dict) -> list[_Row]:
           "per-repository consent to unattended fixer pushes; never inherited from the form",
           on=bool(loop["unattended_fixer_push"]),
           off=f"a changes-requested verdict waits for you ({enable})")
+
+
+def _rows_seat_detail(plain, schema, seats, adj, loop) -> None:  # noqa: ANN001
+    """``_rows``: each seat's own route, budget and limits, and the adjudicator route."""
     for seat in ("reviewer", "fixer", "adjudicator", "triage", "shadow"):
         for key in SEAT_FILE_KEYS:
             if seat == "shadow" and key in ("route", "profile", "login", "agent"):
@@ -277,6 +310,10 @@ def _rows(loop: dict) -> list[_Row]:
     plain("adjudicator.route", ("adjudicator", "route"), adj.get("route") or _UNSET,
           "route that wakes the adjudicator when the verdict budget is spent",
           on=bool(adj.get("route")), off="the review cap only writes a marker")
+
+
+def _rows_shadow_triage(plain, schema, triage, loop) -> None:  # noqa: ANN001
+    """``_rows``: the shadow review and issue triage."""
     shadow = loop.get("shadow") or {}
     plain("shadow.enabled", ("shadow", "profile"), bool(shadow.get("profile")),
           "shadow reviews (#218): a second reviewer model, recorded and never posted",
@@ -296,6 +333,10 @@ def _rows(loop: dict) -> list[_Row]:
         value = triage.get(key)
         plain(f"triage.{key}", ("triage", key), value if value not in (None, "", []) else _UNSET,
               f"triage: {key}")
+
+
+def _rows_observer(obs, schema, rows, loop) -> None:  # noqa: ANN001
+    """``_rows``: the observer feed."""
     events = obs.get("events")
     hidden = sorted(set(observer.EVENTS) - set(events)) if events else []
     # The weekly report is also a settings-form field (#658): one row, under the form's name.
@@ -318,7 +359,6 @@ def _rows(loop: dict) -> list[_Row]:
         if key == "route":
             row.on, row.off = bool(obs.get("route")), "no observer feed: transitions are silent"
         rows.append(row)
-    return rows
 
 
 def collect(loop: dict, raw: dict, form: dict | None = None) -> list[dict]:
