@@ -50,6 +50,14 @@ class Decide(unittest.TestCase):
         self.assertEqual(log.call_count, 2)
         self.assertIn("stranger", log.call_args[0][0])
 
+    def test_an_operator_agents_hold_counts_and_the_ignore_log_names_both_lists(self):
+        loop = {**self.loop, "operator_agents": ["Agent"]}
+        hold = pr_hold.decide(loop, 7, [label("agent")], [])
+        self.assertEqual((hold["by"], hold["how"]), ("agent", "label"))
+        with mock.patch.object(pr_hold, "log") as log:
+            self.assertIsNone(pr_hold.decide(loop, 7, [label(STRANGER)], []))
+        self.assertIn("operator_agents", log.call_args[0][0])
+
     def test_a_strangers_release_does_not_lift_a_hold(self):
         self.assertIsNotNone(self.decide(comments=[comment(BOSS, "/loop hold"),
                                                    comment(STRANGER, "/loop release",
