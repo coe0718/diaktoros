@@ -86,6 +86,15 @@ class ReviewerRule(unittest.TestCase):
         self.assertIn(f"cuts a compare's file list at {findings.COMPARE_FILES_CAP} files", text)
         self.assertIn("any file in the whole PR counts as changed that round", text)
 
+    def test_reviewer_prompt_states_the_listing_limit_exception(self):
+        # #1555: past gh.PR_FILES_LISTING_LIMIT files the fallback lists only a prefix, so the
+        # prompt must let the reviewer mark a finding beyond it `missed earlier`.
+        from diaktoros import gh
+        text = flat(prompts.ISOLATED_REVIEWER)
+        self.assertEqual(gh.PR_FILES_LISTING_LIMIT, 3000)
+        self.assertIn("a PR past GitHub's 3,000-file listing limit", text)
+        self.assertIn("a new finding on a file beyond them is refused unless it says `missed earlier`", text)
+
     def test_reviewer_prompt_demands_the_line(self):
         text = flat(prompts.ISOLATED_REVIEWER)
         self.assertIn("`Not verified:` line", text)
