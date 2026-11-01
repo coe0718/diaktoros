@@ -378,6 +378,19 @@ class Create(Base):
         self.assertTrue(free.is_file())
         self.assertEqual(taken.read_text(), "other run")
 
+    def test_default_out_that_stays_taken_gives_up_after_the_bound_without_blaming_out(self):
+        taken = self.root / "taken.tar.gz"
+        taken.write_text("other run")
+        # Every pick is already taken: create() must stop at the bound, not loop or overwrite.
+        with mock.patch.object(backup, "default_out", return_value=taken) as picked:
+            with self.assertRaises(backup.BackupError) as caught:
+                backup.create()
+        self.assertEqual(picked.call_count, backup._DEFAULT_TRIES)
+        self.assertIn("no free default name", str(caught.exception))
+        self.assertNotIn("pick another --out", str(caught.exception))
+        self.assertEqual(taken.read_text(), "other run")
+        self.assertEqual(sorted(p.name for p in self.root.glob("*.tar.gz")), ["taken.tar.gz"])
+
     def test_explicit_out_that_exists_still_names_out(self):
         taken = self.root / "taken.tar.gz"
         taken.write_text("keep")
