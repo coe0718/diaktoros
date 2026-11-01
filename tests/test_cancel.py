@@ -153,6 +153,21 @@ class NotStarted(Base):
         sup._run_one()
         self.assertEqual(self.launched(), [])
 
+    def test_a_blocked_run_is_cancelled(self):
+        sup = self.sup()
+        sup.submit('d', REPO, 1, HEAD, 'reviewer')
+        self.set_state('d', 'blocked')
+        self.assertEqual(sup.cancel(sup.get('d')['id']), {'was': 'blocked', 'state': 'cancelled'})
+        sup._run_one()
+        self.assertEqual(self.launched(), [])
+
+    def test_the_docs_and_docstring_list_every_state_cancelled_at_once(self):
+        root = Path(__file__).resolve().parent.parent
+        listing = ', '.join(run_supervisor.CANCEL_AT_ONCE)
+        self.assertIn(f'**Not started yet** ({listing})', (root / 'docs' / 'commands.md').read_text())
+        doc = ' '.join(cancel_action.__doc__.split())
+        self.assertIn(f'has not started ({listing}) is cancelled at once', doc)
+
     def test_a_claimed_run_is_cancelled_and_its_worker_never_launches_it(self):
         sup = self.sup()
         sup.submit('d', REPO, 1, HEAD, 'reviewer')
