@@ -48,6 +48,16 @@ class CommandsDoc(unittest.TestCase):
         for verb in commands_doc.verbs(commands_doc.parser()):
             self.assertIn(f"(#{verb})", index, f"{verb} is missing from the 'I want to…' table")
 
+    def test_review_exit_2_names_no_deadline_the_gate_lacks(self):
+        """`review` runs the gate in-process with no SIGALRM backstop (#1046), so no fixed
+        "120 seconds" deadline exists on that path; the doc names the GitHub budget instead and
+        sends the operator to `explain` on any non-finish (#1385)."""
+        text = commands_doc.DOC.read_text()
+        section = text.split("### review\n", 1)[1].split("<!-- flags:review -->", 1)[0]
+        self.assertNotIn("120 seconds", section)
+        self.assertIn("did not finish", section)
+        self.assertIn("check `explain` before asking again", section)
+
 
 if __name__ == "__main__":
     unittest.main()
