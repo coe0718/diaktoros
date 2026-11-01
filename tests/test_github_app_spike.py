@@ -223,6 +223,47 @@ class PostPushWait(unittest.TestCase):
         self.assertEqual(sleep.call_args_list, [mock.call(6)] * 5)
 
 
+class CheckSpike(FakeSpike):
+    """``required_check`` end to end: GitHub's merge-state answers are scripted, in order."""
+
+    def __init__(self, answers):
+        super().__init__(check_branch="gated")
+        self.answers, self.asked = list(answers), 0
+
+    def graphql(self, query, variables):
+        self.asked += 1
+        got = self.answers.pop(0) if self.answers else "CLEAN"
+        if got is None:  # GitHub returned no data at all
+            return None
+        return {"repository": {"pullRequest": {"mergeStateStatus": got}}}
+
+    def gh(self, role, method, path, body=None):
+        if method == "POST" and path.endswith("/check-runs"):
+            return 201, {"id": 77}
+        return super().gh(role, method, path, body)
+
+
+class RequiredCheckSettling(unittest.TestCase):
+    def run_check(self, answers):
+        fake, out = CheckSpike(answers), io.StringIO()
+        with mock.patch.object(spike.time, "sleep") as sleep, contextlib.redirect_stdout(out):
+            spike.required_check(fake, "t")
+        return fake, sleep, json.loads(out.getvalue())
+
+    def test_a_missing_answer_is_asked_again_until_a_state_settles(self):
+        fake, sleep, line = self.run_check([None, "UNKNOWN", "BLOCKED"])
+        self.assertEqual(line["no_check"], "BLOCKED")  # not None from the first, empty read
+        # three asks for the first state, one for each of the five others
+        self.assertEqual(fake.asked, 3 + 5)
+        self.assertEqual(line["success"], "CLEAN")
+
+    def test_answers_that_never_arrive_are_printed_as_none_after_ten_asks_each(self):
+        fake, sleep, line = self.run_check([None] * 100)
+        self.assertEqual(fake.asked, 6 * 10)
+        self.assertIsNone(line["no_check"])
+        self.assertEqual(sleep.call_args_list.count(mock.call(6)), 60)
+
+
 class SecondBranch(unittest.TestCase):
     def test_check_branch_runs_step_q9_only_when_given(self):
         for branch, calls in (("gated", 1), ("", 0)):
