@@ -3,8 +3,8 @@
 ``diaktoros:hold`` applied by a maintainer, or a maintainer's ``/loop hold`` comment, holds the
 PR; ``/loop release`` lifts either kind, removing the label only a label hold. The latest valid event wins. Only
 ``triage.maintainers`` count: anyone else's label or comment is ignored and logged. A loop with
-no ``triage.maintainers`` (they need ``triage.fix_label``) has nobody who can hold, so the hold
-can never fire there.
+no ``triage.maintainers`` (they stand on their own, with or without ``triage.fix_label``) has
+nobody who can hold, so the hold can never fire there.
 
 While held, no turn is claimed (``Supervisor._claim``): queued turns stay pending and start
 after release (the watchdog sweep re-arms the worker). A turn already running is not
