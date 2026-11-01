@@ -397,7 +397,8 @@ def principal(loop: dict, login: str, fetch=None) -> dict | None:
     caller's own transport (a bounded read, a read that raises), so each caller keeps its exact
     failure behaviour and its own checks on what comes back. A PAT identity reads ``/user``
     through ``fetch``; an App identity reads ``/app`` with the App's JWT (never through
-    ``fetch``) and then its ``/users/<slug>[bot]`` through ``fetch``, never ``/user``."""
+    ``fetch``) and then its ``/users/<slug>[bot]`` through ``fetch``, never ``/user``; a cached
+    App principal never lets a caller's ``fetch`` be skipped."""
     from . import github_app
     if token_path(loop, login) is None and github_app.is_app(loop, login):
         # An installation token cannot call /user: the App's bot user is the principal.

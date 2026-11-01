@@ -239,20 +239,26 @@ def principal(loop: dict, login: str, fetch=None) -> dict | None:
     that App's bot, so the caller's own login check refuses it. ``/app`` is always read with the
     App's JWT; ``fetch(path)``, when given, is the caller's transport for the ``/users/<slug>[bot]``
     read (so its size bound and its refusal apply), and it may raise. A principal already
-    resolved for this App is cached and answered without calling ``fetch``."""
+    resolved for this App is cached; with no ``fetch`` it is answered from the cache, but a caller
+    that supplies ``fetch`` always has its transport run for the bot-user read (the cached slug
+    saves the ``/app`` call), so a warm cache never bypasses its size bound or its refusal."""
     found = entry(loop, login)
     if not found:
         return None
     cache = (login.casefold(), found.get("app_id"))
-    if cache in _principals:
-        return dict(_principals[cache])
-    try:
-        app = _as_app(loop, login, "/app").data
-    except AppError:
-        return None
-    if not isinstance(app, dict) or not isinstance(app.get("slug"), str) \
-            or app.get("id") != found.get("app_id"):
-        return None
+    cached = _principals.get(cache)
+    if cached and fetch is None:
+        return dict(cached)
+    if cached:
+        app = {"id": cached["app_id"], "slug": cached["slug"]}
+    else:
+        try:
+            app = _as_app(loop, login, "/app").data
+        except AppError:
+            return None
+        if not isinstance(app, dict) or not isinstance(app.get("slug"), str) \
+                or app.get("id") != found.get("app_id"):
+            return None
     path = f"/users/{app['slug']}[bot]"
     user = fetch(path) if fetch else gh.api(loop, path, login=login)
     if not isinstance(user, dict) or type(user.get("id")) is not int or user.get("type") != "Bot":

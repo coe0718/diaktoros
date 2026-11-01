@@ -304,6 +304,20 @@ class Principal(Base):
         with self.assertRaisesRegex(Refused, "exceeds bounds"):
             gh.principal(self.loop, BOT, fetch=fetch)
 
+    def test_a_warm_cache_does_not_bypass_the_callers_raising_fetch(self):
+        class Refused(Exception):
+            pass
+
+        def fetch(path):
+            raise Refused("GitHub response exceeds bounds")
+        with self.users({"login": BOT, "id": 346013884, "type": "Bot"}):
+            self.assertEqual(gh.principal(self.loop, BOT)["login"], BOT)    # warms the cache
+        with self.assertRaisesRegex(Refused, "exceeds bounds"):
+            gh.principal(self.loop, BOT, fetch=fetch)
+        # Without a caller transport the cached answer is still used, with no new GitHub call.
+        with mock.patch.object(gh, "api", side_effect=AssertionError("cached")):
+            self.assertEqual(gh.principal(self.loop, BOT)["login"], BOT)
+
     def test_a_key_for_another_app_or_a_user_answer_is_not_this_principal(self):
         def other(loop, login, path, method="GET", body=None):
             return gh.Response({"id": 999, "slug": "other-app"}, "", 200, {})
@@ -434,6 +448,20 @@ class EveryCredentialCheck(Broker):
         self.assertIn(f"/users/{BOT}", seen)
 
     def test_trusted_fetch_refuses_an_app_seat_whose_bounded_read_fails(self):
+        def bounded(loop, path, login, limit=None):
+            if path == f"/users/{BOT}":
+                raise trusted_fetch.FetchDenied("GitHub response exceeds bounds")
+            return {"login": login}
+        with mock.patch.object(trusted_fetch, "_json", side_effect=bounded), \
+                self.assertRaisesRegex(trusted_fetch.FetchDenied, "exceeds bounds"):
+            trusted_fetch._identity(self.loop, REPO, 7, HEAD, "fix-7", "reviewer")
+
+    def test_trusted_fetch_refuses_an_app_seat_even_with_a_warm_principal_cache(self):
+        with mock.patch.object(gh, "api", side_effect=lambda loop, path, **kw: (
+                {"login": BOT, "id": 346013884, "type": "Bot"} if path == f"/users/{BOT}"
+                else gh.Response({}, "", 404, {}))):
+            self.assertEqual(gh.principal(self.loop, BOT)["login"], BOT)    # warms the cache
+
         def bounded(loop, path, login, limit=None):
             if path == f"/users/{BOT}":
                 raise trusted_fetch.FetchDenied("GitHub response exceeds bounds")
