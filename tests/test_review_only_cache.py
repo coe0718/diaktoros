@@ -181,6 +181,13 @@ class Cache(fg.Base):
         self.assertNotIn("does not fetch again", text)
         self.assertIn("fetches the branch and the base again", text)
 
+    def test_the_docs_qualify_which_retries_reach_the_fetch(self):
+        docs = Path(__file__).resolve().parents[1] / "docs" / "configuration.md"
+        text = docs.read_text()
+        self.assertIn("A retry that is an authorized update attempt", text)
+        self.assertIn("A retry that stops before that point fetches nothing", text)
+        self.assertIn("fetches the branch and the base again", text)
+
     def test_turning_the_setting_on_assesses_again(self):
         self.sweep(CLEAN)
         with mock.patch.object(safe_push, "dry_merge", return_value=dry()) as merge:
