@@ -1377,7 +1377,8 @@ rules are the webhook's: open, not a draft, a fixer's PR on the loop's base, no 
 already at this head, and the verdict cap. It makes no GitHub write; the review itself is the only
 write, as usual. It prints `review queued` (exit 0), or `no review started —` and the gate's own
 reason (exit 1). Exit 2 when the loop or the PR cannot be read, several loops are configured and
-no `--loop` names one, or the gate did not finish within 120 seconds.
+no `--loop` names one, the gate did not finish within 120 seconds, or the gate crashed (it
+prints `the gate did not finish — it crashed (Type)`, naming the exception type only).
 
 `--reconsider REASON` sends a head that **already has a verdict** back for one fresh review: for
 example, an approved fixer PR that a maintainer says must still meet a requirement. Your reason
