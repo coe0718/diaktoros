@@ -17,7 +17,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from test_init_concurrency import LOOP_FILE, LOOP_ID, Base  # noqa: E402
 from diaktoros import config  # noqa: E402
-from diaktoros.cli import install as cli_install  # noqa: E402
+from diaktoros.cli import setup_command as cli_setup  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 
 SEATS = ("shadow", "triage")
@@ -120,11 +120,11 @@ class ShadowTriageConcurrency(Base):
     def test_setup_hands_init_the_flags(self):
         args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--shadow-concurrency", "3",
                                             "--triage-concurrency", "2"])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn("--shadow-concurrency=3", argv)
         self.assertIn("--triage-concurrency=2", argv)
         bare = t.parser_for({}).parse_args(["setup", "--repo", t.REPO])
-        argv, _ = cli_install._setup_init_argv(bare, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(bare, t.REPO, LOOP_ID, interactive=False)
         self.assertFalse([a for a in argv if "-concurrency" in a])
 
     def test_show_lists_them_under_the_forms_names(self):

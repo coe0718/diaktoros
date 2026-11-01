@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from diaktoros.cli import install as cli_install  # noqa: E402
+from diaktoros.cli import setup_command as cli_setup  # noqa: E402
 import run_tests as t  # noqa: E402
 import test_human_paths as thp  # noqa: E402
 
@@ -60,11 +60,11 @@ class Cli(unittest.TestCase):
 
     def test_setup_hands_init_each_agent(self):
         args = t.parser_for({"operator_agents": "a, b"}).parse_args(["setup", "--repo", t.REPO])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, thp.LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, thp.LOOP_ID, interactive=False)
         self.assertEqual([a for a in argv if a.startswith("--operator-agent")],
                          ["--operator-agent=a", "--operator-agent=b"])
         args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--operator-agent", "c"])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, thp.LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, thp.LOOP_ID, interactive=False)
         self.assertEqual([a for a in argv if a.startswith("--operator-agent")],
                          ["--operator-agent=c"])
 

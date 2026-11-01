@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from diaktoros.cli import install as cli_install  # noqa: E402
+from diaktoros.cli import setup_command as cli_setup  # noqa: E402
 import run_tests as t  # noqa: E402
 import test_human_paths as thp  # noqa: E402
 
@@ -67,11 +67,11 @@ class Cli(unittest.TestCase):
     def test_setup_hands_init_each_entry(self):
         args = t.parser_for({"generated": ENTRY + " ;; b.txt=make b"}
                             ).parse_args(["setup", "--repo", t.REPO])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, thp.LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, thp.LOOP_ID, interactive=False)
         self.assertEqual([a for a in argv if a.startswith("--generated")],
                          [f"--generated={ENTRY}", "--generated=b.txt=make b"])
         args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--generated", "c=d"])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, thp.LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, thp.LOOP_ID, interactive=False)
         self.assertEqual([a for a in argv if a.startswith("--generated")], ["--generated=c=d"])
 
 

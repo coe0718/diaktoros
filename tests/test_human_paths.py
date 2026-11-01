@@ -14,7 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from diaktoros import config, gh, observer, routes  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
-from diaktoros.cli import install as cli_install  # noqa: E402
+from diaktoros.cli import setup_command as cli_setup  # noqa: E402
 import run_tests as t  # noqa: E402
 import test_partial_view_no_approve as pv  # noqa: E402
 from diaktoros import cli  # noqa: E402
@@ -213,11 +213,11 @@ class Cli(unittest.TestCase):
     def test_setup_hands_init_each_pattern(self):
         args = t.parser_for({"human_paths": ".github/**, release/*"}
                             ).parse_args(["setup", "--repo", t.REPO])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertEqual([a for a in argv if a.startswith("--human-path")],
                          ["--human-path=.github/**", "--human-path=release/*"])
         args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--human-path", "ci/**"])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertEqual([a for a in argv if a.startswith("--human-path")], ["--human-path=ci/**"])
 
 

@@ -604,11 +604,11 @@ class Cli(unittest.TestCase):
         self.assertIn("every 1", out)
 
     def test_setup_hands_init_shadow_escalate(self):
-        from diaktoros.cli import install as cli_install
+        from diaktoros.cli import setup_command as cli_setup
         t = self.t
         args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--shadow-profile", "x",
                                             "--shadow-every", "1", "--shadow-escalate", "on"])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn("--shadow-escalate=on", argv)
 
     def test_set_turns_it_on_rates_it_off_and_refuses_and_apply_moves_it(self):
@@ -664,11 +664,11 @@ class Cli(unittest.TestCase):
         rc, out = self.cli("show", "--loop", LOOP_ID)
         self.assertIn("750000", next(line for line in out.splitlines()
                                      if line.strip().startswith("shadow_daily_tokens")))
-        from diaktoros.cli import install as cli_install
+        from diaktoros.cli import setup_command as cli_setup
         t = self.t
         args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO,
                                             "--shadow-daily-tokens", "9"])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn("--shadow-daily-tokens=9", argv)
 
     def test_dropping_the_shadow_budget_shows_the_loop_default_set_alongside(self):
@@ -693,14 +693,14 @@ class Cli(unittest.TestCase):
         self.assertIn("shadow_every", settings_form.SETTINGS_SCHEMA)
 
     def test_setup_hands_init_the_profile(self):
-        from diaktoros.cli import install as cli_install
+        from diaktoros.cli import setup_command as cli_setup
         t = self.t
         args = t.parser_for({"shadow_profile": "grok"}).parse_args(["setup", "--repo", t.REPO])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertEqual([a for a in argv if a.startswith("--shadow")], ["--shadow-profile=grok"])
         args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--shadow-profile", "x",
                                             "--shadow-every", "2"])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertEqual([a for a in argv if a.startswith("--shadow")],
                          ["--shadow-profile=x", "--shadow-every=2"])
 

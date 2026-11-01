@@ -33,7 +33,7 @@ from diaktoros import cli, config, doctor, routes  # noqa: E402
 from diaktoros.doctor import cron_checks, hook_checks  # noqa: E402
 from diaktoros.cli import route_sync  # noqa: E402
 from diaktoros.cli import apply_command  # noqa: E402
-from diaktoros.cli import install as cli_install  # noqa: E402
+from diaktoros.cli import setup_command as cli_setup  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
 # By file, not as ``tests.hermes_prereqs``: in CI's installed-mode lane Hermes's own ``tests``
 # package is on PYTHONPATH and would shadow ours.
@@ -489,11 +489,11 @@ class SetAdjudication(Base):
             host="https://gateway.example", admin_token="", admin_token_file="",
             observer_profile="", review_after_ci="off", fix_ci="off", attribution="on", fixer_check="",
             required_check=[], adjudicator_profile="arbiter")
-        argv, _admin = cli_install._setup_init_argv(args, "acme/widgets", "widgets", False)
+        argv, _admin = cli_setup._setup_init_argv(args, "acme/widgets", "widgets", False)
         self.assertIn("--adjudicator-route=widgets-breach", argv)
         self.assertIn("--adjudicator-profile=arbiter", argv)
         args.adjudicator_profile = ""
-        argv, _admin = cli_install._setup_init_argv(args, "acme/widgets", "widgets", False)
+        argv, _admin = cli_setup._setup_init_argv(args, "acme/widgets", "widgets", False)
         self.assertFalse([a for a in argv if "adjudicator" in a])
 
 

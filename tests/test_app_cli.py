@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_token_file_settings as tfs  # noqa: E402
 from diaktoros import cli, show  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
-from diaktoros.cli import install  # noqa: E402
+from diaktoros.cli import setup_command  # noqa: E402
 
 BOT_REV, BOT_READ = "acme-reviewer[bot]", "acme-reader[bot]"
 
@@ -273,11 +273,12 @@ class Setup(Base):
                          "--host", "https://gateway.example",
                          "--app", f"{BOT_REV}=5416187:{key}")
         asked = []
-        orig = install._ask
-        install._ask = lambda question, default="", interactive=False: \
+        orig = setup_command._ask
+        setup_command._ask = lambda question, default="", interactive=False: \
             asked.append(question) or default
-        self.addCleanup(setattr, install, "_ask", orig)
-        argv, _admin = install._setup_init_argv(args, "acme/widgets", "widgets", interactive=False)
+        self.addCleanup(setattr, setup_command, "_ask", orig)
+        argv, _admin = setup_command._setup_init_argv(args, "acme/widgets", "widgets",
+                                                      interactive=False)
         self.assertIn(f"--app={BOT_REV}=5416187:{key}", argv)
         self.assertFalse(any(a.startswith(f"--token={BOT_REV}=") for a in argv), argv)
         self.assertFalse(any(f"token file for {BOT_REV}" in q for q in asked), asked)

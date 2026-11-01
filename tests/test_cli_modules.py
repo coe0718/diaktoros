@@ -22,8 +22,8 @@ from diaktoros import cli  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "diaktoros" / "cli"
-MODULES = ("reports", "operations", "lifecycle", "install", "checks", "settings", "set_command",
-           "apply_command", "triage_command", "identity_command")
+MODULES = ("reports", "operations", "lifecycle", "install", "setup_command", "checks", "settings",
+           "set_command", "apply_command", "triage_command", "identity_command")
 SHARED = ("common", "route_sync", "set_adjudication")  # helper modules: no commands, never import cli
 
 
@@ -79,6 +79,24 @@ class Split(unittest.TestCase):
         for path in sorted((ROOT / "tests").rglob("*.py")):
             with self.subTest(file=path.name):
                 self.assertIsNone(pattern.search(path.read_text()), "patch it in its module")
+
+    def test_setup_helpers_have_one_home(self):
+        # setup moved out of install.py (#1349): a leftover copy there, or a test that assigns
+        # _ask on install, would reach no caller (setup reads its own module's helpers).
+        from diaktoros.cli import install as cli_install
+        moved = _defined(PACKAGE / "setup_command.py")
+        from diaktoros.cli import setup_command
+        for name in sorted(moved):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(cli_install, name), f"install binds {name}")
+        # ... and setup calls install's helpers as cli_install.<name>, so a patch there reaches it.
+        for name in sorted(_defined(PACKAGE / "install.py")):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(setup_command, name), f"setup_command binds {name}")
+        reach = re.compile(r"\b(?:cli_install|install)\.(%s)\b" % "|".join(sorted(moved)))
+        for path in sorted([*(ROOT / "tests").rglob("*.py"), *(ROOT / "diaktoros").rglob("*.py")]):
+            with self.subTest(file=path.name):
+                self.assertIsNone(reach.search(path.read_text()), "use setup_command.<name>")
 
     def test_no_command_module_imports_the_package(self):
         # A submodule may import its siblings (`from . import common`), never the package's own
