@@ -203,7 +203,7 @@ def hooks_fix(loop: dict, what: str) -> str:
     its routes; ``init --hooks`` refuses an existing loop."""
     from ..cli import common as cli_common   # the one wording of what a hook write needs (#106)
     return (f"`hermes dk apply --loop {loop['id']} --hooks --admin-token <login>` {what} "
-            f"({cli_common.hook_write_need(loop, '<login>')})")
+            f"({cli_common.hook_write_need_any(loop)})")
 
 
 def _env_keys(path: pathlib.Path) -> set[str]:

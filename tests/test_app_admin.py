@@ -59,6 +59,26 @@ class HookWriteNeed(unittest.TestCase):
         self.assertNotIn("token file", line)
 
 
+class DoctorHookFix(unittest.TestCase):
+    """#1569: doctor's generic hook repair advice (the admin login is not known yet) offers the App
+    permission/key alongside the PAT scopes, instead of implying every admin has a token file."""
+    LOOP = dict(LOOP, repo="acme/widgets", read_token="reader")
+
+    def test_the_generic_remedy_names_both_credential_kinds(self):
+        need = cli_common.hook_write_need_any(self.LOOP)
+        for part in ("the token for '<login>'", "admin:repo_hook", "if that login is a GitHub App",
+                     "Webhooks: Read and write", "--app <login>=APP_ID:/abs/path/to/key.pem"):
+            self.assertIn(part, need)
+
+    def test_doctor_hook_check_advice_offers_the_app_alternative(self):
+        from diaktoros.doctor import hook_checks
+        check = hook_checks.check_hook(self.LOOP, [], "reviewer", "rev",
+                                       "http://gw.example/webhooks/rev")
+        self.assertIn("--hooks --admin-token <login>", check.fix)
+        self.assertIn("Webhooks: Read and write", check.fix)
+        self.assertIn("if that login is a GitHub App", check.fix)
+
+
 class Commands(unittest.TestCase):
     def test_trace_refuses_an_unmapped_admin_and_accepts_an_app(self):
         import argparse

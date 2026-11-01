@@ -506,6 +506,18 @@ def _hook_listing(loop: dict, token_login: str | None = None, *,
     return hooks
 
 
+def _app_hook_need(login: str, repo) -> str:
+    return f"the App key for {login!r} needs hook write access on {repo} (Webhooks: Read and write)"
+
+
+def hook_write_need_any(loop: dict) -> str:
+    """The hook-write remedy where the admin login is not known yet (doctor's ``--admin-token
+    <login>``): the PAT wording and the App alternative, since either kind can be the admin (#1569)."""
+    return (f"{hook_write_need(loop, '<login>')}; if that login is a GitHub App, its key needs hook "
+            f"write access on {loop.get('repo')} instead (Webhooks: Read and write), the App installed "
+            "on the repo and mapped with `--app <login>=APP_ID:/abs/path/to/key.pem`")
+
+
 def hook_write_need(loop: dict, token_login: str | None) -> str:
     """Which login's file creates, arms and pauses this loop's hooks, and what it must carry.
 
@@ -518,8 +530,7 @@ def hook_write_need(loop: dict, token_login: str | None) -> str:
     if github_app.is_app(loop, login):
         # An App has a key and a permission, not a token file and PAT scopes (#1276); the
         # wording agrees with admin_unmapped.
-        need = (f"the App key for {login!r} needs hook write access on {loop.get('repo')} "
-                "(Webhooks: Read and write)")
+        need = _app_hook_need(login, loop.get("repo"))
         return need + (" — that is the reader's App" if login.lower() == reader.lower() else
                        " — check that App's permission and that it is installed on the repo")
     need = (f"the token for {login!r} needs hook write access on {loop.get('repo')} (classic `repo` or "
