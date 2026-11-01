@@ -441,8 +441,8 @@ and start after release (the next watchdog sweep re-arms the worker). A turn alr
 running is not interrupted. `explain` and `status` show who held it and when, and the
 watchdog reports no stall for it. A hold that cannot be read is treated as held.
 
-It cannot fire on a loop without `triage.maintainers` (they need `triage.fix_label`):
-nobody there is allowed to hold. The hold is read at claim time and by the watchdog sweep,
+It cannot fire on a loop without `triage.maintainers` (set with or without
+`triage.fix_label`): nobody there is allowed to hold. The hold is read at claim time and by the watchdog sweep,
 so it needs the read token to see issue events and comments.
 
 ## When a gate crashes or runs out of time
