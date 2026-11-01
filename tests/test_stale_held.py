@@ -13,6 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import config, gate, gh, ledger, run_supervisor, stats  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
 HELD = "held: reviewer usage window (openai-codex), resumes later"
@@ -36,7 +37,7 @@ class StaleHeld(fg.Base):
                         (HELD, time.time(), f"d{self.n}"))
 
     def sweep(self, prs):
-        with mock.patch.object(watchdog, "TEST", True), \
+        with mock.patch.object(watch_mode, "TEST", True), \
              mock.patch.object(gate, "hooks_armed", return_value=True), \
              mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
              mock.patch.object(gh, "open_prs", return_value=prs), \

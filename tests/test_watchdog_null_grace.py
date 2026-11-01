@@ -21,6 +21,8 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import gh, state as state_mod  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
+from diaktoros import watch_health  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
 DEAD = gh.Response(None, "HTTP 401 Bad credentials", 401, {})
@@ -45,7 +47,7 @@ class NullGraceTest(unittest.TestCase):
     def sweep(self, hooks=(None, "HTTP 401 Bad credentials"), probe=DEAD):
         def open_prs(loop, errors=None):
             return None
-        with mock.patch.object(watchdog, "TEST", False), \
+        with mock.patch.object(watch_mode, "TEST", False), \
              mock.patch.object(watchdog.gate, "hooks_read", return_value=hooks), \
              mock.patch.object(watchdog.gh, "auth_probe", return_value=probe), \
              mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
@@ -63,30 +65,30 @@ class NullGraceTest(unittest.TestCase):
         self.assertIn("as rev-coach: HTTP 401", alert[0])
 
     def test_read_failed_counts_and_alerts_on_the_default_cooldown(self):
-        with mock.patch.object(watchdog, "TEST", False):
+        with mock.patch.object(watch_mode, "TEST", False):
             watch: dict = {}
-            for _ in range(watchdog.READ_FAILURE_SWEEPS - 1):
-                lines, alerted = watchdog._read_failed(
+            for _ in range(watch_health.READ_FAILURE_SWEEPS - 1):
+                lines, alerted = watch_health._read_failed(
                     self.loop, watch, self.now, "rev-coach", "HTTP 502 bad gateway", 502, "")
                 self.assertEqual(lines, [])  # below the consecutive threshold, quiet
-            lines, alerted = watchdog._read_failed(
+            lines, alerted = watch_health._read_failed(
                 self.loop, watch, self.now, "rev-coach", "HTTP 502 bad gateway", 502, "")
             self.assertEqual(alerted, True)
             self.assertTrue(any("cannot read GitHub" in line for line in lines), lines)
 
     def test_read_failed_alerts_a_401_at_once_on_the_default_cooldown(self):
-        with mock.patch.object(watchdog, "TEST", False):
-            lines, alerted = watchdog._read_failed(
+        with mock.patch.object(watch_mode, "TEST", False):
+            lines, alerted = watch_health._read_failed(
                 self.loop, {}, self.now, "rev-coach", "HTTP 401 Bad credentials", 401, "")
             self.assertEqual(alerted, True)
             self.assertTrue(any("cannot read GitHub" in line for line in lines), lines)
 
     def test_sweep_budget_spent_alerts_after_the_streak_on_the_default_cooldown(self):
-        with mock.patch.object(watchdog, "TEST", False):
-            for _ in range(watchdog.READ_FAILURE_SWEEPS - 1):
-                lines = watchdog.sweep_budget_spent(self.loop, self.st, 5.0, TimeoutError("slow"))
+        with mock.patch.object(watch_mode, "TEST", False):
+            for _ in range(watch_health.READ_FAILURE_SWEEPS - 1):
+                lines = watch_health.sweep_budget_spent(self.loop, self.st, 5.0, TimeoutError("slow"))
                 self.assertEqual(lines, [])
-            lines = watchdog.sweep_budget_spent(self.loop, self.st, 5.0, TimeoutError("slow"))
+            lines = watch_health.sweep_budget_spent(self.loop, self.st, 5.0, TimeoutError("slow"))
             self.assertTrue(any("sweep(s) in a row" in line for line in lines), lines)
 
 

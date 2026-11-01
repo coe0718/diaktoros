@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import gate, gh  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
 from diaktoros.run_supervisor import views  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
@@ -33,7 +34,7 @@ class LiveTurnIsNotAStall(fg.Base):
         """One sweep; ``live`` is (seat, state) for the ledger's turn at the head."""
         def turn_state(_db, _repo, _pr, head, seat):
             return live[1] if live and seat == live[0] and head == fg.HEAD else None
-        with mock.patch.object(watchdog, "TEST", grace_s is None), \
+        with mock.patch.object(watch_mode, "TEST", grace_s is None), \
                 mock.patch.object(watchdog.config, "stall_grace_s",
                                   return_value=grace_s or 0), \
                 mock.patch.object(gate, "hooks_armed", return_value=True), \

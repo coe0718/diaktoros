@@ -21,6 +21,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import explain, gate, run_supervisor, state as state_mod  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 
 APPROVED = [{"id": 9, "state": "APPROVED", "commit_id": fg.HEAD,
@@ -499,7 +500,7 @@ class CallSites(Base):
     def sweep(self):
         from diaktoros import gh, pr_hold
         from scripts import watchdog
-        with mock.patch.object(watchdog, "TEST", True), \
+        with mock.patch.object(watch_mode, "TEST", True), \
              mock.patch.object(gate, "hooks_armed", return_value=True), \
              mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
              mock.patch.object(gh, "open_prs", return_value=[fg.LIVE]), \

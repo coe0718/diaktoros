@@ -17,13 +17,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 import test_shadow_escalate_ruling as ser  # noqa: E402
 from diaktoros import gate  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
 
 
 class Stall(ser.Base):
     def sweep(self):
         from diaktoros import gh, pr_hold
         from scripts import watchdog
-        with mock.patch.object(watchdog, "TEST", True), \
+        with mock.patch.object(watch_mode, "TEST", True), \
              mock.patch.object(gate, "shadow_escalation", return_value="already"), \
              mock.patch.object(gate, "hooks_armed", return_value=True), \
              mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \

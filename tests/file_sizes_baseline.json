@@ -22,7 +22,7 @@
     "diaktoros/state.py": 1257,
     "diaktoros/stats.py": 1241,
     "diaktoros/trusted_turn.py": 939,
-    "scripts/watchdog.py": 1618
+    "scripts/watchdog.py": 1350
   },
   "functions": {
     "diaktoros/arm_action.py::set_hooks": 157,
@@ -100,12 +100,12 @@
     "diaktoros/stats.py::report_text": 147,
     "diaktoros/trusted_turn.py::_export_committed_source": 108,
     "diaktoros/trusted_turn.py::run_turn": 288,
+    "diaktoros/watch_health.py::read_health": 93,
     "scripts/gate_fixer.py::main": 323,
     "scripts/gate_reviewer.py::decide": 237,
-    "scripts/watchdog.py::_sweep_loop_locked": 571,
+    "scripts/watchdog.py::_sweep_loop_locked": 578,
     "scripts/watchdog.py::act_on_conflicts": 108,
-    "scripts/watchdog.py::read_health": 91,
     "scripts/watchdog.py::reconcile_stacked": 106,
-    "scripts/watchdog.py::run": 81
+    "scripts/watchdog.py::run": 82
   }
 }

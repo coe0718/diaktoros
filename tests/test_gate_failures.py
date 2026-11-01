@@ -22,6 +22,8 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros import config, explain, gate, gate_failures, state as state_mod  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
+from diaktoros import watch_health  # noqa: E402
 
 SCRIPTS = t.ROOT / "scripts"
 
@@ -164,11 +166,11 @@ class GateFailureTest(unittest.TestCase):
         from unittest import mock
         from scripts import watchdog as wd
         ok = wd.gh.Response({"login": t.REVIEWER}, "", 200, {})
-        with mock.patch.object(wd, "TEST", False), \
+        with mock.patch.object(watch_mode, "TEST", False), \
              mock.patch.object(wd.gh, "auth_probe", return_value=ok):
-            quiet = wd.github_health(config.load_id("widgets"), st, {}, time.time(), True, "")
+            quiet = watch_health.github_health(config.load_id("widgets"), st, {}, time.time(), True, "")
             st.github_failure_record({k: v for k, v in failure.items() if k != "owned_by"})
-            loud = wd.github_health(config.load_id("widgets"), st, {}, time.time(), True, "")
+            loud = watch_health.github_health(config.load_id("widgets"), st, {}, time.time(), True, "")
         self.assertEqual([line for line in quiet if "could not" in line], [])
         self.assertEqual(len([line for line in loud if "could not" in line]), 1)
 
@@ -864,7 +866,7 @@ class GateFailureTest(unittest.TestCase):
         # any failure short of a 401/403 it is said after READ_FAILURE_SWEEPS in a row.
         from scripts import watchdog as wd
         self.assertNotIn("watchdog stopped", proc.stdout)
-        for _ in range(wd.READ_FAILURE_SWEEPS - 1):
+        for _ in range(watch_health.READ_FAILURE_SWEEPS - 1):
             proc = subprocess.run([sys.executable, str(SCRIPTS / "watchdog.py")],
                                   capture_output=True, text=True, cwd=str(SCRIPTS), timeout=60,
                                   env={**t.env(), "DIAKTOROS_GH_STUB": str(hang),
@@ -973,7 +975,7 @@ class GateFailureTest(unittest.TestCase):
         from unittest import mock
         from scripts import watchdog as wd
         ledger = self.redrivable_entry()
-        with mock.patch.object(wd, "TEST", False), \
+        with mock.patch.object(watch_mode, "TEST", False), \
              mock.patch.object(wd.gate, "hooks_read", return_value=(False, "paused")), \
              mock.patch.object(wd, "SCRIPTS", self.slow_gate_dir(0)[0]):
             lines = wd.sweep_loop(config.load_id("widgets"), state_mod.state_for(
@@ -1158,9 +1160,9 @@ class GateFailureTest(unittest.TestCase):
         self.assertNotIn("tracked as", local["github"])
         self.assertIn("resolved", local["github"])
         ok = wd.gh.Response({"login": t.REVIEWER}, "", 200, {})
-        with mock.patch.object(wd, "TEST", False), \
+        with mock.patch.object(watch_mode, "TEST", False), \
              mock.patch.object(wd.gh, "auth_probe", return_value=ok):
-            lines = wd.github_health(loop, st, {}, time.time(), True, "")
+            lines = watch_health.github_health(loop, st, {}, time.time(), True, "")
         self.assertEqual([x for x in lines if "could not" in x], [])   # settled, not re-announced
 
     def test_resolve_survives_a_junk_resolved_at_and_keeps_it(self):
@@ -1216,9 +1218,9 @@ class GateFailureTest(unittest.TestCase):
         self.assertIn("no longer in any gate-failure ledger", local["github"])
         # The health check does not keep suppressing it on a marker nothing backs.
         ok = wd.gh.Response({"login": t.REVIEWER}, "", 200, {})
-        with mock.patch.object(wd, "TEST", False), \
+        with mock.patch.object(watch_mode, "TEST", False), \
              mock.patch.object(wd.gh, "auth_probe", return_value=ok):
-            lines = wd.github_health(loop, st, {}, time.time(), True, "")
+            lines = watch_health.github_health(loop, st, {}, time.time(), True, "")
         self.assertEqual(len([x for x in lines if "could not GET" in x]), 1, lines)
         # And a clean completion of the same event settles it, although no ledger held it.
         gateway_run("gate_reviewer.py", t.pr_payload(7))
@@ -1254,9 +1256,9 @@ class GateFailureTest(unittest.TestCase):
         from unittest import mock
         from scripts import watchdog as wd
         ok = wd.gh.Response({"login": t.REVIEWER}, "", 200, {})
-        with mock.patch.object(wd, "TEST", False), \
+        with mock.patch.object(watch_mode, "TEST", False), \
              mock.patch.object(wd.gh, "auth_probe", return_value=ok):
-            return wd.github_health(loop, state_mod.LoopState(loop), {}, time.time(), True, "")
+            return watch_health.github_health(loop, state_mod.LoopState(loop), {}, time.time(), True, "")
 
     def test_an_owner_open_in_any_ledger_is_open(self):
         # Arbiter: the same key in both ledgers, owned_in naming the no-loop one; its copy resolved

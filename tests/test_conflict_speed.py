@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import conflict_scan, gate, gh, pr_hold  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
 
 TIP = "c" * 40
 UNKNOWN = {**fg.LIVE, "mergeable": None, "mergeable_state": "unknown"}
@@ -38,7 +39,7 @@ class Detection(fg.Base):
         from scripts import watchdog
         enqueue = mock.patch.object(gate, "enqueue_isolated", return_value="queued")
         return watchdog, enqueue, [
-            mock.patch.object(watchdog, "TEST", armed is True),
+            mock.patch.object(watch_mode, "TEST", armed is True),
             mock.patch.object(gate, "hooks_read", return_value=(armed, "")),
             mock.patch.object(gate, "hooks_armed", return_value=True),
             mock.patch.object(watchdog.route_intent, "heal", return_value=[]),
@@ -118,7 +119,7 @@ class ScanFilters(Detection):
         queued.assert_not_called()
         with mock.patch.object(gh, "open_prs", return_value=None):
             from scripts import watchdog
-            with mock.patch.object(watchdog, "TEST", True), \
+            with mock.patch.object(watch_mode, "TEST", True), \
                     mock.patch.object(gh, "pr", side_effect=AssertionError("no PR read")):
                 self.assertEqual(watchdog.scan_conflicts(self.loop, self.st), 0)
 

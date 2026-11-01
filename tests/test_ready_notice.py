@@ -18,6 +18,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import observer, ready, state as state_mod  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
 NOW = time.time()
@@ -45,7 +46,7 @@ class ReadyNotice(unittest.TestCase):
 
     def sweep(self, numbers, loop=None):
         loop = loop or self.loop
-        with mock.patch.object(watchdog, "TEST", True), \
+        with mock.patch.object(watch_mode, "TEST", True), \
              mock.patch.object(watchdog.gate, "hooks_read", return_value=(True, "")), \
              mock.patch.object(watchdog.gh, "open_prs", return_value=[]), \
              mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \

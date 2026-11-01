@@ -16,6 +16,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import ci, explain, gate_failures, gh, stale_approval, state as state_mod  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
 H1, H2 = "a" * 40, "b" * 40
@@ -53,7 +54,7 @@ class Stale(unittest.TestCase):
                 "created_at": iso(NOW - 9999)}
 
     def sweep(self, ci_state, reviews, head=H1):
-        with mock.patch.object(watchdog, "TEST", True), \
+        with mock.patch.object(watch_mode, "TEST", True), \
              mock.patch.object(watchdog.gate, "hooks_read", return_value=(True, "")), \
              mock.patch.object(watchdog.gh, "open_prs", return_value=[self.pr(head)]), \
              mock.patch.object(watchdog.gh, "pr", return_value=self.pr(head)), \

@@ -35,7 +35,6 @@ import argparse
 import hashlib
 import fcntl
 import json
-import math
 import os
 import pathlib
 import re
@@ -72,20 +71,16 @@ from diaktoros import (  # noqa: E402
     state as state_mod,
     transition,
     triage_sweep,
+    watch_health,
+    watch_mode,
 )
 from diaktoros.util import age_min, epoch, log, now_iso  # noqa: E402
 
-TEST = bool(envnames.get("TEST"))
 # #532: how long a head may sit with a pending, unannounced review request before the sweep
 # delivers it to the gate itself (one sweep interval).
 KICK_AFTER_MIN = 15
 PUSH_OFF_KIND = "fixer held — unattended fixer pushes are off"
 HEAD_RETENTION_SEC = 30 * 86400  # retain absent PRs long enough for transient listing/state changes
-# A 401/403 is a verdict about the token and alerts at once; a 5xx or no answer at all can be a
-# blip, so it alerts once reads have failed this many sweeps in a row.
-READ_FAILURE_SWEEPS = 3
-EXPIRY_WARN_DAYS = 7
-EXPIRY_WARN_EVERY_SEC = 86400
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 # A hanging GitHub must not stall the sweep (#75): every read is capped, and the whole run has
 # a budget; when it is spent the sweep stops, says so, and the next cron run starts fresh.
@@ -99,43 +94,6 @@ def watchdog_budget() -> float:
     except ValueError:
         value = WATCHDOG_BUDGET_S
     return value if 0 < value <= 86400 else WATCHDOG_BUDGET_S
-
-
-def budget_spent_line(where: str, budget: float, exc: BaseException) -> str:
-    return (f"⚠️ Diaktoros {where} watchdog stopped: the sweep ran out of its {budget:g}s "
-            f"budget — GitHub reads were slow or did not answer ({exc}); the rest of this run "
-            f"was skipped, and the next sweep starts fresh")
-
-
-def sweep_budget_spent(loop: dict, st: state_mod.LoopState, budget: float,
-                       exc: BaseException) -> list[str]:
-    """A sweep that ran out of its budget is a failed-read sweep in #54's sense — but not proof
-    that GitHub gave no answer: thirty slow, answered reads spend it just as surely. So it is
-    counted in the health check's ``github_read`` record, described as what it is ("ran out of
-    time"), and said like any failure short of a 401/403: after ``READ_FAILURE_SWEEPS`` sweeps
-    in a row, then once per cooldown (alert key ``read:slow``). Its end is said once by the
-    health check ("GitHub reads work again")."""
-    now = time.time()
-    watch = st.watch()
-    record = watch.get("github_read") if isinstance(watch.get("github_read"), dict) else {}
-    sweeps = record["sweeps"] + 1 if type(record.get("sweeps")) is int else 1
-    since = valid_clock(record.get("since"), now) or now
-    login = str(loop.get("read_token") or "the read token")
-    record = {**record, "sweeps": sweeps, "since": since, "status": None, "login": login,
-              "error": gh.one_line(f"the sweep ran out of its {budget:g}s budget "
-                                   f"(reads slow or unanswered): {exc}", 200)}
-    cooldown = 0.0 if TEST else float(loop.get("cooldown_h") or 6) * 3600
-    lines = []
-    if sweeps >= READ_FAILURE_SWEEPS and alert_due(watch, "read:slow", now, cooldown):
-        record["alerted"] = True
-        lines.append(budget_spent_line(f"[{loop.get('id', '?')}] {loop.get('repo', '')}".rstrip(),
-                                       budget, exc)
-                     + f" — reading as {login} ({sweeps} sweep(s) in a row since "
-                       f"{time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(since))})")
-    watch["github_read"] = record
-    st.watch_save(watch)
-    st.note(f"run: stopped — the sweep ran out of its {budget:g}s budget ({sweeps} sweep(s))")
-    return lines
 
 
 # How a gate-failure alert is said. ``main`` prints and flushes each one as it is made, so the
@@ -153,212 +111,6 @@ def sweep_gate_failures(ledger: gate_failures.Ledger, header: str, cooldown_s: f
                                    may_redrive=may_redrive, held=held, emit=EMIT)
     except Exception as exc:                      # never let this hide the stall scan
         return [f"⚠️ Diaktoros {header} gate-failure sweep failed: {type(exc).__name__}: {exc}"]
-
-
-def valid_clock(value: object, now: float) -> float | None:
-    """Treat corrupt or future persisted clocks as unknown, never as a grace deadline."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    clock = float(value)
-    return clock if math.isfinite(clock) and 0 < clock <= now else None
-
-
-def alert_due(watch: dict, key: str, now: float, cooldown: float) -> bool:
-    """True at most once per ``cooldown`` for ``key``, and again once each cooldown has elapsed.
-
-    The edge is inclusive: the first call at exactly ``cooldown`` after the last stamp fires (``now
-    - last < cooldown`` is False there), and the call just before it is silent. Stamped only when it
-    fires: a condition that persists re-alerts every cooldown instead of refreshing its own clock on
-    every sweep and never speaking again (#77, as the stall map does).
-    """
-    marks = watch.get("github_alerts")
-    if not isinstance(marks, dict):
-        marks = watch["github_alerts"] = {}
-    last = valid_clock(marks.get(key), now)
-    if last is not None and now - last < cooldown:
-        return False
-    marks[key] = now
-    return True
-
-
-def parse_expiry(value: str) -> float | None:
-    """GitHub's expiry header (``2026-10-01 12:00:00 UTC``, or a numeric offset) as epoch."""
-    return gh.parse_token_expiry(value)
-
-
-READ_ALERT = "cannot read GitHub as {who}"   # the health alert's opening words
-
-
-class Health:
-    """What this sweep's health check found, as data rather than wording.
-
-    ``alerted`` — the read alert fired this sweep (so a per-read line would repeat it);
-    ``failing`` — one of the reads it covers failed this sweep. Recovery is not announced
-    here: :func:`settle_health` does that once the sweep's other reads are in.
-    """
-
-    def __init__(self, lines: list[str], who: str, alerted: bool, failing: bool):
-        self.lines, self.who, self.alerted, self.failing = lines, who, alerted, failing
-
-
-def _read_failed(loop: dict, watch: dict, now: float, who: str, error: str,
-                 status: int | None, skipped: str) -> tuple[list[str], bool]:
-    """Count one failed sweep and alert on #54's cadence (401/403 at once, anything else after
-    ``READ_FAILURE_SWEEPS`` sweeps in a row, re-raised every cooldown). ``(lines, alerted)``."""
-    header = f"[{loop['id']}] {loop['repo']}"
-    cooldown = 0.0 if TEST else float(loop.get("cooldown_h") or 6) * 3600
-    record = watch.get("github_read") if isinstance(watch.get("github_read"), dict) else {}
-    sweeps = record["sweeps"] + 1 if type(record.get("sweeps")) is int else 1
-    since = valid_clock(record.get("since"), now) or now
-    record = {**record, "sweeps": sweeps, "since": since, "error": error[:200],
-              "status": status, "login": who}
-    lines: list[str] = []
-    if status in (401, 403) or sweeps >= READ_FAILURE_SWEEPS:
-        if alert_due(watch, f"read:{status or 'none'}", now, cooldown):
-            record["alerted"] = True
-            hint = gh.failure_hint(status)
-            lines.append(
-                f"⚠️ Diaktoros {header}: {READ_ALERT.format(who=who)}: {error}"
-                f"{f' — {hint}' if hint else ''} ({sweeps} sweep(s) since "
-                f"{time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(since))}). "
-                + skipped + "route self-heal and notices continue.")
-    watch["github_read"] = record
-    return lines, bool(lines)
-
-
-def _outage_like(error: str) -> bool:
-    """A failed read that says GitHub (or the token) is the problem, not this one resource:
-    401/403, a 5xx, or no HTTP answer at all."""
-    status = gh.status_of(error)
-    if status is None:
-        return "invalid" not in error and "exceeds" not in error
-    return status in (401, 403) or status >= 500
-
-
-def _pr_list(failures: list[tuple[int, str]]) -> str:
-    """Every failed PR, by number: the first three with their reason, the rest as numbers."""
-    listed = "; ".join(f"#{n}: {gh.one_line(e, 120)}" for n, e in failures[:3])
-    rest = [f"#{n}" for n, _ in failures[3:]]
-    return listed + (f"; also {', '.join(rest)}" if rest else "")
-
-
-def settle_health(loop: dict, watch: dict, now: float, health: Health,
-                  pr_failures: list[tuple[int, str]]) -> tuple[list[str], set[int]]:
-    """After the sweep's per-PR reads: outage-like per-PR failures count as a failed read
-    (same cadence, same alert, naming every one of those PRs); "reads work again" is said only
-    when *every* read this sweep made succeeded. ``(lines, covered)`` — the PRs the alert
-    named, which therefore need no line of their own."""
-    if health.failing:
-        return [], set()
-    outage = [(n, e) for n, e in pr_failures if _outage_like(e)]
-    if outage:
-        said, alerted = _read_failed(
-            loop, watch, now, health.who,
-            gh.one_line(f"PR review read: {_pr_list(outage)}", 1000),
-            gh.status_of(outage[0][1]),
-            "Those PRs' stall checks are skipped (nothing guessed); ")
-        return said, ({n for n, _ in outage} if alerted else set())
-    if pr_failures:
-        return [], set()                 # not healthy yet, and not an outage: no recovery
-    record = watch.get("github_read") if isinstance(watch.get("github_read"), dict) else {}
-    lines = []
-    if record.get("alerted"):
-        lines.append(f"✅ Diaktoros [{loop['id']}] {loop['repo']}: GitHub reads work again as "
-                     f"{health.who} (after {record.get('sweeps', '?')} failed sweep(s))")
-    watch.pop("github_read", None)
-    marks = watch.get("github_alerts")
-    if isinstance(marks, dict):
-        for key in [k for k in marks if k.startswith("read:")]:
-            marks.pop(key)
-    return lines, set()
-
-
-def github_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
-                  armed: bool | None, armed_error: str, listing_error: str = "") -> list[str]:
-    """The health check with nothing else read this sweep (see :func:`read_health`)."""
-    health = read_health(loop, st, watch, now, armed, armed_error, listing_error)
-    return health.lines + settle_health(loop, watch, now, health, [])[0]
-
-
-def read_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
-                armed: bool | None, armed_error: str, listing_error: str = "") -> Health:
-    """Can this sweep read GitHub at all, as whom, and for how much longer?
-
-    Runs every armed-or-unknown sweep, before anything that needs GitHub. Blindness is said out
-    loud (with the login and HTTP status), re-raised every cooldown until reads work, and its
-    end is said once (by :func:`settle_health`, after the sweep's per-PR reads). Also surfaces
-    a gate's last failed read, which otherwise reached only the gateway's stderr while the
-    event it could not verify was dropped as "unavailable".
-    """
-    lines: list[str] = []
-    header = f"[{loop['id']}] {loop['repo']}"
-    cooldown = 0.0 if TEST else float(loop.get("cooldown_h") or 6) * 3600
-    configured = str(loop.get("read_token") or "the read token")
-    probe = gh.auth_probe(loop)
-    who = (probe.data.get("login") if isinstance(probe.data, dict) else None) or configured
-
-    error, status = "", None
-    if probe.error:
-        error, status = probe.error, probe.status if probe.status is not None else gh.status_of(probe.error)
-    elif listing_error:
-        # The open-PR listing is a read like the others: a 403 there (a token that can see the
-        # hooks but not the pulls) is the same blindness, on the same cadence.
-        error, status = f"open PR list: {listing_error}", gh.status_of(listing_error)
-    error = gh.one_line(error, 300)
-
-    alerted = False
-    if error:
-        said, alerted = _read_failed(
-            loop, watch, now, who, error, status,
-            "Open PRs unknown: stall scan and queue drain are skipped; "
-            if listing_error and not probe.error else "")
-        lines.extend(said)
-
-    expiry = (probe.headers or {}).get(gh.TOKEN_EXPIRY_HEADER) if not probe.error else None
-    expires = parse_expiry(expiry) if expiry else None
-    if expires is not None and expires - now < EXPIRY_WARN_DAYS * 86400:
-        if alert_due(watch, f"expiry:{int(expires)}", now,
-                     0.0 if TEST else EXPIRY_WARN_EVERY_SEC):
-            days = (expires - now) / 86400
-            when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(expires))
-            named = who if who == configured else f"{who} ({configured})"
-            lines.append(f"⚠️ Diaktoros {header}: the read token for {named} "
-                         + (f"expires {when} — in {days:.1f} day(s); rotate it before then or "
-                            "this loop goes blind" if days > 0 else
-                            f"expired {when}; rotate it now"))
-
-    failure = st.github_failure()
-    at = valid_clock(failure.get("at"), now)
-    seen = valid_clock(watch.get("gate_failure_seen"), now) or 0.0
-    # A gate's failed read that its gate-failure entry owns is alerted (and re-driven) by that
-    # ledger's sweep; saying it here too would report one read twice.
-    # Owned only while a ledger still backs the owner: a marker whose entry is gone (its ledger
-    # was moved aside) must not keep this read silent.
-    owner = gate_failures.owner_state(loop, failure) if failure.get("owned_by") else ""
-    done = bool(failure.get("resolved_by")) or owner == "resolved"
-    settled = done or owner == "open"        # "gone" or "unreadable": nothing else will say it
-    if at is not None and at > seen and done:
-        watch["gate_failure_seen"] = at      # its gate-failure entry said it, and it resolved
-    if at is not None and at > seen and not settled:
-        watch["gate_failure_seen"] = at
-        status = failure.get("status") if type(failure.get("status")) is int else None
-        if alert_due(watch, f"gate:{failure.get('where')}:{status or 'none'}", now, cooldown):
-            hint = gh.failure_hint(status)
-            number = re.search(r"/pulls/(\d+)", str(failure.get("path") or ""))
-            lines.append(
-                f"⚠️ Diaktoros {header}: {failure.get('where') or 'a gate'} could not "
-                f"{failure.get('method') or 'GET'} {failure.get('path') or '?'} as "
-                f"{failure.get('login') or configured} at "
-                f"{time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(at))}: "
-                f"{gh.one_line(failure.get('error') or 'unknown error', 300)}"
-                f"{f' — {hint}' if hint else ''}; "
-                + ("it treated the PR as unavailable and started nothing"
-                   if (failure.get("method") or "GET") == "GET" else
-                   gh.write_outcome(str(failure.get("method")), str(failure.get("path") or ""),
-                                    status))
-                + (f" — `hermes dk explain --loop {loop['id']} --pr {number.group(1)}`"
-                   " shows it" if number else ""))
-    return Health(lines, who, alerted, bool(error))
 
 
 # -- draining ------------------------------------------------------------------
@@ -511,7 +263,6 @@ def retry_fresh_reviews(loop: dict, st: state_mod.LoopState, prs: list, lines: l
             lines.append(f"#{number} fresh review after retarget enqueued ({detail})")
 
 
-
 # GitHub computes a PR's mergeability lazily: the first read after its base moves usually
 # answers null/"unknown" and starts the computation. One short wait, then one re-read.
 MERGEABILITY_WAIT_S = 5.0
@@ -538,7 +289,7 @@ def recheck_unknown(loop: dict, unknown: list[tuple[int, str, str]],
     otherwise a conflict a merge just caused waits for the next sweep."""
     if not unknown:
         return []
-    if not TEST:
+    if not watch_mode.TEST:
         time.sleep(MERGEABILITY_WAIT_S)
     found = []
     for number, head, author in unknown:
@@ -647,7 +398,7 @@ def scan_conflicts(loop: dict, st: state_mod.LoopState) -> int:
     same detection and the same action. Nothing else: stalls and alerts stay the sweep's,
     whose output is the one delivered. Returns how many conflicts it acted on.
     """
-    armed = True if TEST else gate.hooks_read(loop)[0]
+    armed = True if watch_mode.TEST else gate.hooks_read(loop)[0]
     if armed is not True:
         log("conflict scan skipped: hooks paused or unreadable")
         return 0
@@ -674,7 +425,7 @@ def scan_conflicts(loop: dict, st: state_mod.LoopState) -> int:
             unknown.append((number, head, author))
     conflicts += recheck_unknown(loop, unknown, conflict_live)
     act_on_conflicts(loop, st, conflicts, conflict_live)
-    observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))
+    observer.flush(loop, st, wait_s=0 if watch_mode.TEST else observer.digest_wait(loop))
     log(f"conflict scan: {len(conflicts)} conflicted PR(s) acted on")
     return len(conflicts)
 
@@ -769,23 +520,6 @@ def retry_pending_breaches(loop: dict, st: state_mod.LoopState, prs: list,
                     escalated=marker.get("escalated") if gate.escalated(marker, head) else None)
 
 
-def finish_reads(loop: dict, watch: dict, now: float, health: Health | None,
-                 pr_failures: list[tuple[int, str]], lines: list[str]) -> None:
-    """Say which PRs' review reads failed this sweep, and settle the health check now that
-    every read is in. Every failed PR appears in some line: the ones the read alert named are
-    not repeated, every other one is in a single bounded line."""
-    covered: set[int] = set()
-    if health is not None:
-        said, covered = settle_health(loop, watch, now, health, pr_failures)
-        lines.extend(said)
-    rest = [(n, e) for n, e in pr_failures if n not in covered]
-    if rest:
-        lines.append(gh.one_line(
-            f"⚠️ Diaktoros [{loop['id']}] {loop['repo']}: could not read reviews for "
-            f"{len(rest)} PR(s) — {_pr_list(rest)} — their stall check skipped this sweep "
-            f"(no verdict guessed)", 1000))
-
-
 def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = None) -> list[str]:
     """One sweep per loop at a time: a non-blocking flock held from before the first read of
     ``st.watch()`` until the last save. A sweep that finds it held skips the loop (no retry)."""
@@ -813,21 +547,23 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     watch = st.watch()
     now = time.time()
 
-    armed, armed_error = (True, "") if TEST else gate.hooks_read(loop)
+    armed, armed_error = (True, "") if watch_mode.TEST else gate.hooks_read(loop)
     if armed is False:
         # Parked on purpose: no stall is reported and nothing is re-driven. A gate failure
         # already recorded is still said — it is a fact about a delivery, not a stall.
         if loop.get("state_dir"):
             lines.extend(sweep_gate_failures(
                 gate_failures.loop_ledger(loop), f"[{loop['id']}] {loop['repo']}",
-                0.0 if TEST else float(loop.get("cooldown_h") or 6) * 3600, may_redrive=False,
+                0.0 if watch_mode.TEST else float(loop.get("cooldown_h") or 6) * 3600,
+                may_redrive=False,
                 held="not re-driven while the loop's hooks are paused; `hermes dk arm "
                      f"--loop {loop['id']}` resumes it, or re-deliver it from GitHub"))
         return lines
     # Armed, or unknown because the hook list could not be read. Unknown is not paused: sweep
     # normally and warn once per cooldown — never silence.
-    if armed is None and alert_due(watch, "hooks:unknown", now,
-                                   0.0 if TEST else float(loop.get("cooldown_h") or 6) * 3600):
+    if armed is None and watch_mode.alert_due(
+            watch, "hooks:unknown", now,
+            0.0 if watch_mode.TEST else float(loop.get("cooldown_h") or 6) * 3600):
         lines.append(f"⚠️ Diaktoros [{loop['id']}] {loop['repo']}: hook state unreadable: "
                      f"{gh.one_line(armed_error or 'no reason given', 200)} — sweeping anyway")
     # With the hooks confirmed, the open-PR listing is read here, before the health check, so
@@ -836,8 +572,8 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     listing_errors: list[str] = []
     prs = gh.open_prs(loop, errors=listing_errors) if armed is not False else None
     health = None
-    if not TEST:
-        health = read_health(loop, st, watch, now, armed, armed_error,
+    if not watch_mode.TEST:
+        health = watch_health.read_health(loop, st, watch, now, armed, armed_error,
                              listing_errors[0] if listing_errors else "")
         lines.extend(health.lines)
     listing_said = bool(listing_errors) and health is not None and health.alerted
@@ -859,7 +595,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     if loop.get("state_dir"):
         lines.extend(sweep_gate_failures(
             gate_failures.loop_ledger(loop), f"[{loop['id']}] {loop['repo']}",
-            0.0 if TEST else float(loop.get("cooldown_h") or 6) * 3600,
+            0.0 if watch_mode.TEST else float(loop.get("cooldown_h") or 6) * 3600,
             may_redrive=isinstance(prs, list)))
 
     # Issue #53: a pre-write failure waits out its backoff in the run ledger, and a claim
@@ -885,7 +621,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         if not listing_said:                  # the health alert above already said it, with why
             lines.append(f"⚠️ {loop['id']}: could not list open PRs{why} — stall scan and queue "
                          f"drain skipped this run")
-        finish_reads(loop, watch, now, health, pr_failures, lines)
+        watch_health.finish_reads(loop, watch, now, health, pr_failures, lines)
         st.watch_save(watch)
         return lines
 
@@ -908,7 +644,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     # A malformed persisted arming clock has no trustworthy ordering against PR
     # creation or prior observations. Re-arm only after this successful listing and
     # baseline its heads; never coerce strings/bools or reuse old grace clocks.
-    first_sweep = valid_clock(watch.get("armed_since"), now) is None
+    first_sweep = watch_mode.valid_clock(watch.get("armed_since"), now) is None
     if first_sweep:
         watch["armed_since"] = now
     heads = {} if first_sweep else watch.get("heads")
@@ -917,7 +653,8 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     history = watch.get("head_history")
     watch["head_history"] = ({k: v for k, v in history.items()
                               if isinstance(v, dict) and
-                              (clock := valid_clock(v.get("last_seen_at"), now)) is not None and
+                              (clock := watch_mode.valid_clock(v.get("last_seen_at"), now))
+                              is not None and
                               now - clock < HEAD_RETENTION_SEC}
                              if isinstance(history, dict) else {})
     current_heads: dict[str, dict] = {}
@@ -926,13 +663,15 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             continue
         # Older state has no last_seen_at. Give it one bounded retention window
         # instead of erasing a live observation during the schema transition.
-        last_seen = valid_clock(previous.get("last_seen_at"), now) or now
+        last_seen = watch_mode.valid_clock(previous.get("last_seen_at"), now) or now
         if now - last_seen < HEAD_RETENTION_SEC:
             current_heads[key] = {"sha": previous["sha"],
                                   "base": previous.get("base"),
                                   "base_sha": previous.get("base_sha"),
-                                  "observed_at": valid_clock(previous.get("observed_at"), now),
-                                  "first_seen_at": valid_clock(previous.get("first_seen_at"), now),
+                                  "observed_at": watch_mode.valid_clock(
+                                      previous.get("observed_at"), now),
+                                  "first_seen_at": watch_mode.valid_clock(
+                                      previous.get("first_seen_at"), now),
                                   "last_seen_at": last_seen}
     for pr in prs:
         if not isinstance(pr, dict):
@@ -974,18 +713,18 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         drain_queued(loop, st, lines)
         if observer.retry(loop, st):
             log("observer: retried an undelivered notice")
-        observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))
+        observer.flush(loop, st, wait_s=0 if watch_mode.TEST else observer.digest_wait(loop))
         record_overrides(loop, st)
         send_weekly_report(loop, st)
-        finish_reads(loop, watch, now, health, pr_failures, lines)
+        watch_health.finish_reads(loop, watch, now, health, pr_failures, lines)
         st.watch_save(watch)
         return lines
 
     # Per seat (#98): each seat's stall waits for its own whole turn, never another seat's.
-    grace = {seat: 0.0 if TEST else config.stall_grace_s(loop, seat) / 60
+    grace = {seat: 0.0 if watch_mode.TEST else config.stall_grace_s(loop, seat) / 60
              for seat in ("reviewer", "fixer")}
-    marker_grace = 0.0 if TEST else float(loop.get("marker_grace_min") or 60)
-    cooldown = 0.0 if TEST else float(loop.get("cooldown_h") or 6) * 3600
+    marker_grace = 0.0 if watch_mode.TEST else float(loop.get("marker_grace_min") or 60)
+    cooldown = 0.0 if watch_mode.TEST else float(loop.get("cooldown_h") or 6) * 3600
     breach = st.breach_all()
     alerts: list[tuple[int, str, str]] = []
     # The cooldown map (#77): ``marks`` is when each still-standing stall last alerted. A key is
@@ -999,7 +738,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
 
     def due(key: str) -> bool:
         present.add(key)
-        last = valid_clock(marks.get(key), now)
+        last = watch_mode.valid_clock(marks.get(key), now)
         if last is not None and now - last < cooldown:
             return False
         raised[key] = now
@@ -1095,7 +834,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         if holds and gate.breach_delivery_status(marker, head) == "delivery-pending":
             continue
         observed_at = current_heads[str(number)]["observed_at"]
-        head_postdates_arming = TEST or observed_at is not None
+        head_postdates_arming = watch_mode.TEST or observed_at is not None
         kind = ""
 
         # A marker at this head is the escalation: whether it is a stall is its own question
@@ -1190,7 +929,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             if ((review_kick.already_requested(loop, pr) or config.reviewer_is_app(loop))
                     and kicks.get(str(number)) != head
                     and not boundary
-                    and head_postdates_arming and (TEST or mins >= KICK_AFTER_MIN)):
+                    and head_postdates_arming and (watch_mode.TEST or mins >= KICK_AFTER_MIN)):
                 try:
                     sent = review_kick.kick(loop, pr, head, author, f"sweep-review-{number}")
                 except Exception as exc:
@@ -1201,7 +940,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                     kicks[str(number)] = head
                     log(f"#{number} @ {head[:7]}: a pending review request had started no "
                         "review — delivered it to the reviewer gate")
-            if ((TEST or mins > grace["reviewer"]) and head_postdates_arming
+            if ((watch_mode.TEST or mins > grace["reviewer"]) and head_postdates_arming
                     and not live_turn(loop, number, head, "reviewer")):
                 kind = (f"reviewer never posted a verdict — head {head[:7]} observed "
                         f"{mins / 60:.1f}h ago, 0 verdicts at this head (`hermes dk "
@@ -1251,7 +990,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     # what survives a raise in between.
     watch["alerts"] = {**{k: v for k, v in marks.items()
                           if (k in present or k.startswith(tuple(unjudged)))
-                          and valid_clock(v, now) is not None},
+                          and watch_mode.valid_clock(v, now) is not None},
                        **raised}
     watch["review_kicks"] = kicks
     watch["last_run"] = now_iso()
@@ -1313,13 +1052,13 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         log(f"shadow issue filing failed: {type(exc).__name__}: {exc}")
     if observer.retry(loop, st):
         log("observer: retried an undelivered notice")
-    observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))
+    observer.flush(loop, st, wait_s=0 if watch_mode.TEST else observer.digest_wait(loop))
     record_overrides(loop, st)
     send_weekly_report(loop, st)
 
     # ``watch["alerts"]`` and ``last_run`` were saved above, before the best-effort work; here only
     # the health settlement (which rewrites ``watch``) is committed, on the same read-modify-write.
-    finish_reads(loop, watch, now, health, pr_failures, lines)
+    watch_health.finish_reads(loop, watch, now, health, pr_failures, lines)
     st.watch_save(watch)
     st.note(f"run: {len(alerts)} alert(s), {len(reported)} stuck, {len(prs)} open PRs")
     return lines
@@ -1373,7 +1112,7 @@ def parked_kind(loop: dict, marker: dict, number: int, head: str,
         return ""
     since = marker.get("adjudicating_at") or marker.get("at")
     mins = age_min(since)
-    if past(mins, 0.0 if TEST else config.adjudicating_stall_s(loop) / 60):
+    if past(mins, 0.0 if watch_mode.TEST else config.adjudicating_stall_s(loop) / 60):
         return (f"adjudicating {lasting(mins)} (since {since or 'unknown'}) but no "
                 f"adjudicator run is live ({run or 'no run on record'}) — the ruling is not "
                 "coming by itself")
@@ -1477,7 +1216,7 @@ def main() -> None:
     try:
         run(args, budget)
     except gh.GateBudgetExceeded as exc:          # e.g. the drain path's hook read
-        print(budget_spent_line(f"[{args.loop or 'all loops'}]", budget, exc))
+        print(watch_health.budget_spent_line(f"[{args.loop or 'all loops'}]", budget, exc))
     finally:
         gh.end_gate()
 
@@ -1522,7 +1261,7 @@ def run(args: argparse.Namespace, budget: float) -> None:
             print(f"⚠️ Diaktoros [{loop_id}] not drained: ConfigError: {reason}", file=sys.stderr)
         for loop in loops:
             st = state_mod.state_for(loop)
-            armed, armed_error = (True, "") if TEST else gate.hooks_read(loop)
+            armed, armed_error = (True, "") if watch_mode.TEST else gate.hooks_read(loop)
             if not armed:
                 if args.loop:
                     print(f"{loop['id']}: hooks are paused — nothing drained" if armed is False
@@ -1531,7 +1270,7 @@ def run(args: argparse.Namespace, budget: float) -> None:
             try:
                 fired = drain(loop, st, args.seat)
             except gh.GateBudgetExceeded as exc:
-                print(budget_spent_line(f"[{loop['id']}]", budget, exc))
+                print(watch_health.budget_spent_line(f"[{loop['id']}]", budget, exc))
                 return
             if not fired and not st.queue_items(args.seat) and args.loop:
                 print(f"{loop['id']}: {args.seat} queue empty")
@@ -1547,7 +1286,7 @@ def run(args: argparse.Namespace, budget: float) -> None:
     # every run, scoped or not: an install whose cron jobs are all ``--loop``-scoped would
     # otherwise never say them. The ledger's claims keep overlapping sweeps to one alert.
     out.extend(sweep_gate_failures(gate_failures.fallback_ledger(), "(no loop)",
-                                   0.0 if TEST else 6 * 3600, may_redrive=True))
+                                   0.0 if watch_mode.TEST else 6 * 3600, may_redrive=True))
     for loop_id, reason in refused:
         out.append(f"⚠️ Diaktoros [{loop_id}] watchdog failed: ConfigError: {reason}")
     for loop in loops:
@@ -1557,9 +1296,10 @@ def run(args: argparse.Namespace, budget: float) -> None:
         except gh.GateBudgetExceeded as exc:      # GitHub is hanging: every loop would too
             out.extend(lines)
             try:
-                out.extend(sweep_budget_spent(loop, state_mod.state_for(loop), budget, exc))
+                out.extend(watch_health.sweep_budget_spent(loop, state_mod.state_for(loop),
+                                                           budget, exc))
             except Exception as err:              # never hide the stop itself
-                out.append(budget_spent_line(f"[{loop.get('id', '?')}]", budget, exc)
+                out.append(watch_health.budget_spent_line(f"[{loop.get('id', '?')}]", budget, exc)
                            + f" (could not record it: {type(err).__name__})")
             break
         except Exception as exc:                  # one bad loop must not hide the others

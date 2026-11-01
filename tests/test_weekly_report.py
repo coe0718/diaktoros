@@ -17,6 +17,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import config, gate, gh, observer, pr_hold, run_supervisor, state as state_mod, stats  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
 from diaktoros.config import blocks  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 
@@ -210,7 +211,7 @@ class Sweep(Feed):
 
     def sweep(self, times=1):
         from scripts import watchdog
-        with mock.patch.object(watchdog, "TEST", True), \
+        with mock.patch.object(watch_mode, "TEST", True), \
              mock.patch.object(gate, "hooks_armed", return_value=True), \
              mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
              mock.patch.object(gh, "open_prs", return_value=[]), \

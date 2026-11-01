@@ -21,6 +21,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import cli, doctor, prompts, route_intent, routes  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
 from diaktoros.doctor import route_checks  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
@@ -199,7 +200,7 @@ class WatchdogAndDoctorTest(Fixture):
         with mock.patch.object(watchdog.gate, "hooks_read", return_value=(True, "")), \
                 mock.patch.object(watchdog.gh, "auth_probe",
                                   return_value=watchdog.gh.Response({"login": "rev"}, "", 200, {})), \
-                mock.patch.object(watchdog, "TEST", False), \
+                mock.patch.object(watch_mode, "TEST", False), \
                 mock.patch.object(watchdog.gh, "open_prs", return_value=None):
             lines = watchdog.sweep_loop(self.loop, st)
         self.assertEqual(self.live()["widgets-review"], before["widgets-review"])
@@ -212,7 +213,7 @@ class WatchdogAndDoctorTest(Fixture):
         self.native(lambda d: d.pop("widgets-review"))
         with mock.patch.object(watchdog.gate, "hooks_read", return_value=(False, "reviewer, fixer")), \
                 mock.patch.object(watchdog.gh, "auth_probe") as probe, \
-                mock.patch.object(watchdog, "TEST", False):
+                mock.patch.object(watch_mode, "TEST", False):
             st = mock.Mock()
             st.dir = pathlib.Path(self.tmp.name) / "state"
             self.assertEqual(watchdog.sweep_loop(self.loop, st), [])

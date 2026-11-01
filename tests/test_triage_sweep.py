@@ -17,6 +17,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import config, gate, gh, run_supervisor  # noqa: E402
+from diaktoros import watch_mode  # noqa: E402
 from diaktoros import triage_sweep  # noqa: E402
 from diaktoros.cli import operations  # noqa: E402
 from scripts import watchdog  # noqa: E402
@@ -58,7 +59,7 @@ class Sweep(fg.Base):
     def sweep(self, issues, read=None, ledger_error=None):
         # ``read`` replaces the listing stub: pass ``gh.open_issues_read`` to run the real one.
         # ``ledger_error``: an exception ``gate.isolated_supervisor`` raises (no private runtime).
-        with mock.patch.object(watchdog, "TEST", True), \
+        with mock.patch.object(watch_mode, "TEST", True), \
              mock.patch.object(gate, "hooks_armed", return_value=True), \
              mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
              mock.patch.object(gh, "open_prs", return_value=[]), \
