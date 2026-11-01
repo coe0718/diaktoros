@@ -45,6 +45,12 @@ class Setting(unittest.TestCase):
         with self.assertRaises(config.ConfigError):
             lists.parse_ci_coverage(["a=b", "a=c"], "t")
 
+    def test_the_settings_reference_states_the_check_name_cap(self):
+        doc = pathlib.Path(__file__).resolve().parents[1] / "docs" / "settings.md"
+        row = next(line for line in doc.read_text().splitlines()
+                   if line.startswith("| `ci_coverage` |"))
+        self.assertIn(f"up to {lists.REQUIRED_CHECK_NAME_MAX} characters", row.split("|")[3])
+
     def test_the_form_moves_it_only_when_it_names_it(self):
         self.assertNotIn("ci_coverage", settings_form.apply_settings(trc.raw(), {}))
         got = settings_form.apply_settings(
