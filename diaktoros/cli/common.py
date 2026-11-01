@@ -19,6 +19,7 @@ from .. import (
     envnames,
     gate_shims,
     gh,
+    github_app,
     prompts,
     route_intent,
     routes,
@@ -514,6 +515,13 @@ def hook_write_need(loop: dict, token_login: str | None) -> str:
     """
     reader = str(loop.get("read_token") or "")
     login = token_login or reader
+    if github_app.is_app(loop, login):
+        # An App has a key and a permission, not a token file and PAT scopes (#1276); the
+        # wording agrees with admin_unmapped.
+        need = (f"the App key for {login!r} needs hook write access on {loop.get('repo')} "
+                "(Webhooks: Read and write)")
+        return need + (" — that is the reader's App" if login.lower() == reader.lower() else
+                       " — check that App's permission and that it is installed on the repo")
     need = (f"the token for {login!r} needs hook write access on {loop.get('repo')} (classic `repo` or "
             "`admin:repo_hook`, or fine-grained `repository_hooks: write`)")
     if login and login.lower() == reader.lower():
