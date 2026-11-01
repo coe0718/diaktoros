@@ -149,6 +149,12 @@ def perform(loop: dict, pr: int | None = None, seat: str | None = None, run_id: 
             out["refused"].append(dict(entry, reason=bounded(exc)))
             continue
         entry["state"] = done["state"]
+        if reveal_errors and done["state"] != "stopping":
+            # An immediate end rewrote the error (``after it may have written (...)``): show that
+            # one, not the one the run carried before the cancel.
+            with sup._connect() as con:
+                ended = _row(con, row["id"])
+            entry["error"] = (ended or {}).get("error") or ""
         out["cancelled"].append(entry)
         if done["state"] == "stopping":
             stopping.append(row["id"])

@@ -368,6 +368,19 @@ class Cli(Base):
         self.assertIn(f'[loop] reviewer #7 @ {HEAD[:7]} cancelled (was pending)', out)
         self.assertIn('hermes dk retry --loop loop --pr 7 --seat reviewer', out)
 
+    def test_the_command_prints_the_write_evidence_for_a_not_started_run_it_quarantines(self):
+        sup = self.sup()
+        sup.submit('r', REPO, 7, HEAD, 'reviewer')
+        run_id = sup.get('r')['id']
+        self.set_state('r', 'blocked', error='blocked: waiting on something else')
+        with ledger.connect(self.db) as con:
+            con.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,created) "
+                        "VALUES(?,?,?,?,?)", (run_id, 'confirmed', 'g', 1, 0))
+        code, out = self.run_cli('run', run_id)
+        self.assertIn('stopped (was blocked) but it may have written: ', out)
+        self.assertIn('after it may have written (review receipt confirmed)', out)
+        self.assertNotIn('waiting on something else', out)
+
     def test_the_command_refuses_a_finished_run_by_state(self):
         sup = self.sup()
         sup.submit('r', REPO, 7, HEAD, 'reviewer')
