@@ -1017,6 +1017,69 @@ def _record_overrun(_signum, _frame):
     raise _RecordTimeout(f"post-failure bookkeeping exceeded {RECORD_S:g}s")
 
 
+def _route_of(gate: str, payload) -> str:
+    """The loop's route for ``gate`` (for the re-deliver hint); empty when it cannot be told."""
+    try:
+        from .route_intent import routes_of
+        loop = _loop_for(payload)
+        return routes_of(loop).get(gate.removeprefix("gate_"), "") if loop else ""
+    except Exception:  # noqa: BLE001 - the hint then names the route generically
+        return ""
+
+
+IN_PROCESS = "in-process"   # ``via`` of an entry recorded by an operator's `hermes dk review`
+
+
+def _in_process_key(gate: str, payload) -> tuple[str, str]:
+    """The event's identity: repo, PR, head and action only. The in-process payload is built
+    from the live PR, so its bytes differ between runs; the same request must be one entry."""
+    raw = json.dumps({"in_process": describe(payload)}, sort_keys=True)
+    return fingerprint(gate, raw), raw
+
+
+def record_in_process(gate: str, payload, exc: BaseException, started: float) -> str:
+    """Record a gate that crashed or ran out of budget when called in-process (``hermes dk
+    review``, the Desktop's review), which does not go through :func:`run`. Same ledgers, key
+    scheme and entry shape, so ``explain``, ``doctor`` and the watchdog sweep see it. It is
+    never re-driven: the watchdog cannot rebuild the operator's call (``--reconsider``), so the
+    entry only alerts. ``started`` is a ``time.monotonic()`` reading. Returns the ledger path,
+    or ``""`` when none could be written. Never raises: it runs on the failure path."""
+    try:
+        key, _raw = _in_process_key(gate, payload)
+        timed_out = isinstance(exc, (gh.GateBudgetExceeded, TimeoutError))
+        message = f"exit code {exc.code}" if isinstance(exc, SystemExit) else str(exc)
+        trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        entry = {"gate": gate, "kind": "timeout" if timed_out else "crash", **describe(payload),
+                 "error_type": type(exc).__name__, "route": _route_of(gate, payload),
+                 "error": _bounded(message, 500), "traceback": _bounded(trace, 4000),
+                 "elapsed_s": round(time.monotonic() - started, 2), "budget_s": None,
+                 "redrivable": False, "released_claims": [], "via": IN_PROCESS}
+        ledgers = _ledgers_for(payload)
+        for i, ledger in enumerate(ledgers):
+            try:
+                ledger.record(key, entry, "",
+                              deadline=time.monotonic() + RECORD_S / (len(ledgers) - i))
+                return str(ledger.path)
+            except Exception as err:  # noqa: BLE001 - try the fallback ledger
+                log(f"gate-failure ledger write failed ({ledger.path}): {type(err).__name__}: {err}")
+    except Exception as err:  # noqa: BLE001
+        log(f"in-process gate failure not recorded: {type(err).__name__}: {err}")
+    return ""
+
+
+def resolve_in_process(gate: str, payload) -> None:
+    """The in-process gate finished this payload: settle an earlier in-process failure of it,
+    as a later webhook delivery does in :func:`run`. Never raises."""
+    try:
+        key, _raw = _in_process_key(gate, payload)
+        how = f"the same review request completed on a later in-process run at {iso_at(time.time())}"
+        for ledger in _ledgers_for(payload):
+            if isinstance(ledger.entries().get(key), dict):   # nothing recorded: write nothing
+                ledger.resolve(key, how)
+    except Exception as err:  # noqa: BLE001
+        log(f"in-process gate-failure resolve failed: {type(err).__name__}: {err}")
+
+
 def run(gate: str, main: Callable[[], None]) -> None:
     """Run one gate's ``main`` with a budget, and never let a failure pass as ``[SILENT]``."""
     raw = sys.stdin.read()
@@ -1102,13 +1165,7 @@ def run(gate: str, main: Callable[[], None]) -> None:
         error_type = type(exc).__name__
         message = str(exc) if not isinstance(exc, SystemExit) else f"exit code {code}"
         trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-    route = ""
-    try:
-        from .route_intent import routes_of
-        loop = _loop_for(payload)
-        route = routes_of(loop).get(gate.removeprefix("gate_"), "") if loop else ""
-    except Exception:  # noqa: BLE001 - the hint then names the route generically
-        pass
+    route = _route_of(gate, payload)
     entry = {"gate": gate, "kind": kind, **facts, "error_type": error_type, "route": route,
              "error": _bounded(message, 500), "traceback": _bounded(trace, 4000),
              "elapsed_s": round(elapsed, 2), "budget_s": budget,
@@ -1206,6 +1263,10 @@ def explain_status(entry: dict) -> str:
 
 def not_driven(entry: dict, scripts_dir: pathlib.Path | None = None, held: str = "") -> str:
     """Why an unresolved entry is not re-driven, as the operator should read it."""
+    if entry.get("via") == IN_PROCESS:
+        return ("not re-driven (an operator's `hermes dk review` or Desktop review, not a webhook "
+                "delivery) — ask again with `hermes dk review --loop <loop> --pr "
+                f"{entry.get('pr') or '<n>'}`")
     if not entry.get("redrivable"):
         return "not re-driven (its output is a dispatch) — " + redeliver_hint(entry)
     if not entry.get("payload_kept"):

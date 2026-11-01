@@ -1384,6 +1384,15 @@ calls are deadline-limited. There is no hard deadline in-process, so a hang outs
 has no bound: the command can stay stuck and never reach exit 2. If it has run well past the
 budget, stop it. On any non-finish, check `explain` before asking again.
 
+A crash, a budget overrun and a non-zero exit of the gate are recorded in the same gate-failure
+ledger as a webhook delivery's (`gate-failures.json` in the loop's state directory, or the
+no-loop ledger when that is busy or unwritable), so `explain`, `doctor` and the watchdog's
+gate-failure sweep report them. The entry is never re-driven by the watchdog (it cannot rebuild
+your command, `--reconsider` included): the sweep alerts it, and the way forward is to run
+`review` again, which resolves the entry once the gate finishes. A hang outside a GitHub call
+(see above) never reaches the recorder, so it leaves no entry. If the ledger itself cannot be
+written, the output says `could NOT be recorded`.
+
 `--reconsider REASON` sends a head that **already has a verdict** back for one fresh review: for
 example, an approved fixer PR that a maintainer says must still meet a requirement. Your reason
 goes into the reviewer's prompt as a requirement, next to the maintainers' PR comments. If that

@@ -19,7 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 
-from diaktoros import config, gh, one_shot_action as actions, util  # noqa: E402
+from diaktoros import config, explain, gate_failures, gh, one_shot_action as actions, util  # noqa: E402
 from diaktoros.run_supervisor import RECONSIDER_KEY  # noqa: E402
 
 
@@ -260,6 +260,74 @@ class ReconsiderTurn(unittest.TestCase):
         self.assertIn("request changes if it does not meet", text)
         self.assertEqual(other, "")
         st.reconsider_get.assert_called_once_with(7, "a" * 40)
+
+
+class RecordedFailure(Harness):
+    """#1455: a crashed or timed-out in-process gate is in the gate-failure ledger, as the
+    webhook path's ``gate_failures.run`` leaves it, so explain, doctor and the sweep see it."""
+
+    def setUp(self):
+        t.reset(prs={"7": t.pr(7)})
+        self.ledger = gate_failures.Ledger(t.STATE_DIR)
+        for path in (self.ledger.path, *self.ledger.payload_dir.glob("*")):
+            path.unlink(missing_ok=True)
+
+    def failures(self):
+        return [e for e in self.ledger.entries().values() if not e.get("resolved")]
+
+    def test_a_crashed_gate_is_recorded(self):
+        with mock.patch.object(actions, "_run_reviewer", side_effect=RuntimeError("/private boom")):
+            result = actions.review(self.loop(), 7)
+        self.assertEqual(result["code"], 2)
+        self.assertIn("recorded in the gate-failure ledger", result["lines"][-1])
+        (entry,) = self.failures()
+        self.assertEqual((entry["gate"], entry["kind"], entry["pr"], entry["head"]),
+                         ("gate_reviewer", "crash", 7, t.HEAD_A))
+        self.assertEqual(entry["error_type"], "RuntimeError")
+        self.assertFalse(entry["redrivable"])
+
+    def test_a_timed_out_gate_is_recorded(self):
+        with mock.patch.object(actions, "_run_reviewer", side_effect=gh.GateBudgetExceeded("t")):
+            result = actions.review(self.loop(), 7)
+        self.assertEqual(result["code"], 2)
+        (entry,) = self.failures()
+        self.assertEqual(entry["kind"], "timeout")
+
+    def test_a_gate_that_exits_nonzero_is_recorded(self):
+        with mock.patch.object(actions, "_run_reviewer", side_effect=SystemExit(2)):
+            actions.review(self.loop(), 7)
+        (entry,) = self.failures()
+        self.assertEqual((entry["kind"], entry["error"]), ("crash", "exit code 2"))
+
+    def test_the_same_request_failing_again_is_one_entry_and_a_finish_resolves_it(self):
+        with mock.patch.object(actions, "_run_reviewer", side_effect=RuntimeError("x")):
+            actions.review(self.loop(), 7)
+            actions.review(self.loop(), 7)
+        (entry,) = self.failures()
+        self.assertEqual(entry["attempts"], 2)
+        actions.review(self.loop(), 7)          # the real gate finishes this time
+        self.assertEqual(self.failures(), [])
+
+    def test_explain_and_the_sweep_report_it_without_a_redrive(self):
+        with mock.patch.object(actions, "_run_reviewer", side_effect=RuntimeError("x")):
+            actions.review(self.loop(), 7)
+        (entry,) = self.failures()
+        line = explain.gate_failure_line(entry)
+        self.assertIn("gate_reviewer crash", line)
+        self.assertIn("not re-driven", line)
+        self.assertNotIn("Redeliver", line)
+        said = gate_failures.sweep(self.ledger, "[widgets]", gate_failures.SCRIPTS_DIR,
+                                   cooldown_s=3600)
+        self.assertEqual(len(said), 1)
+        self.assertIn("gate_reviewer crash on #7", said[0])
+        self.assertEqual(self.ledger.entries()[entry["id"]]["redrives"], 0)
+
+    def test_an_unwritable_ledger_is_said_not_hidden(self):
+        with mock.patch.object(actions, "_run_reviewer", side_effect=RuntimeError("x")), \
+                mock.patch.object(gate_failures.Ledger, "record", side_effect=OSError("ro")):
+            result = actions.review(self.loop(), 7)
+        self.assertEqual(result["code"], 2)
+        self.assertIn("could NOT be recorded", result["lines"][-1])
 
 
 class Desktop(Harness):
