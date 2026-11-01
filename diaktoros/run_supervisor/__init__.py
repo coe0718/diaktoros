@@ -320,7 +320,8 @@ POLICY_CANCELLATIONS = (FIXER_NOT_ADMITTED, FIXER_PUSH_REVOKED, _FIXER_NOT_ADMIT
 # sweep; only `hermes dk retry` re-arms it, on purpose. A new head queues a fresh run as usual.
 OPERATOR_CANCEL = "cancelled by an operator (hermes dk cancel)"
 OPERATOR_STOPPED = OPERATOR_CANCEL + ": the turn was stopped"
-# Not started yet: cancelled at once. Launching or running: the owning worker stops the turn.
+# Not started yet: cancelled at once (``uncertain`` if it holds a write-ahead record). Launching or
+# running: the owning worker stops the turn.
 CANCEL_AT_ONCE = ("pending", "blocked", "waiting", "claimed")
 CANCEL_BY_WORKER = ("launching", "running")
 

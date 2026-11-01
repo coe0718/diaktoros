@@ -6,7 +6,9 @@ unchanged), one read-back.
 
 * A run that has not started (pending, blocked, waiting, claimed) is cancelled at once. No
   redelivered event or sweep re-arms it; ``hermes dk retry`` does, on purpose, and a new head
-  queues a fresh run as usual.
+  queues a fresh run as usual. The exception: one that already holds a write-ahead record
+  (review receipt, push intent, ruling) is quarantined as ``uncertain`` instead, whatever its
+  state, blocked included. It is never replayed; the operator reconciles it rather than retries.
 * A launching or running turn is the owning worker's to stop: the request is recorded, and the
   worker's heartbeat kills the sandbox the way the turn budget does, then ends the run as
   ``cancelled`` (or ``uncertain``, never replayed, when it may already have written).
@@ -147,6 +149,12 @@ def perform(loop: dict, pr: int | None = None, seat: str | None = None, run_id: 
             out["refused"].append(dict(entry, reason=bounded(exc)))
             continue
         entry["state"] = done["state"]
+        if reveal_errors and done["state"] != "stopping":
+            # An immediate end rewrote the error (``after it may have written (...)``): show that
+            # one, not the one the run carried before the cancel.
+            with sup._connect() as con:
+                ended = _row(con, row["id"])
+            entry["error"] = (ended or {}).get("error") or ""
         out["cancelled"].append(entry)
         if done["state"] == "stopping":
             stopping.append(row["id"])
