@@ -33,7 +33,7 @@
     "diaktoros/cli/common.py::_install_routes": 81,
     "diaktoros/cli/identity_command.py::cmd_identity": 141,
     "diaktoros/cli/install.py::add_init": 319,
-    "diaktoros/cli/install.py::cmd_init": 513,
+    "diaktoros/cli/install.py::cmd_init": 508,
     "diaktoros/cli/lifecycle.py::_rename_loop": 128,
     "diaktoros/cli/lifecycle.py::cmd_uninstall": 237,
     "diaktoros/cli/operations.py::cmd_explain": 119,

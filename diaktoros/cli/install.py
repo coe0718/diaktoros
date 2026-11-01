@@ -228,6 +228,20 @@ def _init_seat_concurrency(args, d: dict) -> dict:
     return out
 
 
+def _init_hooks_preview(loop: dict, args) -> list[str]:
+    """``init --hooks --dry-run``'s hook lines (#1391): one hook per role ``_install_hooks``
+    creates (``config.hook_roles``), not a fixed count, and none when events arrive through the
+    GitHub App's webhook."""
+    hooked = config.hook_roles(loop)
+    if not hooked:
+        return ["would create no repo hooks: events arrive through the GitHub App's webhook"]
+    armed = getattr(args, "arm", False)
+    kinds = ", ".join(f"{role}: {config.HOOK_EVENT[role]}" for role in hooked)
+    state = "armed (--arm)" if armed else "paused until `arm`"
+    return [f"would create {len(hooked)} repo hooks, one per role ({kinds}), {state}",
+            _hook_editor_line(loop, args.admin_token, armed, True)]
+
+
 def cmd_init(args) -> int:
     """Install a loop: write its config, its routes, and (on request) its hooks and cron job.
 
@@ -552,9 +566,8 @@ def cmd_init(args) -> int:
         for name in cli_common._routes_of(loop).values():
             print(f"  would write route: {name}")
         if args.hooks:
-            print("  would create the two repo hooks (pull_request, pull_request_review), "
-                  + ("armed (--arm)" if getattr(args, "arm", False) else "paused until `arm`"))
-            print(f"  {_hook_editor_line(loop, args.admin_token, getattr(args, 'arm', False), True)}")
+            for line in _init_hooks_preview(loop, args):
+                print(f"  {line}")
         if args.schedule:
             print(f"  would install the watchdog cron job ({args.schedule})")
         if loop.get("observer", {}).get("route"):
