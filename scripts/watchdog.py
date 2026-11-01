@@ -226,41 +226,99 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     # Filled in place, so the lines a failing sweep already produced (a gate-failure alert
     # among them) still reach the operator next to the error.
     lines = [] if lines is None else lines
-    watch = st.watch()
-    now = time.time()
+    c = _Sweep(loop, st, lines)
+    if not _hooks_armed(c):
+        return lines
+    _read_listing(c)
+    _heal_and_redrive(c)
+    if not isinstance(c.prs, list):
+        _no_listing(c)
+        return lines
+    _recover(c)
+    _observe_heads(c)
+    retry_pending_breaches(loop, st, c.prs, c.pr_failures)
+    if c.first_sweep:
+        _first_sweep_done(c)
+        return lines
+    _scan_stalls(c)
+    _stuck_states(c)
+    _report_stalls(c)
+    _save_alerts(c)
+    drain_queued(loop, st, lines)
+    _notify_stalls(c)
+    _best_effort_sweeps(c)
+    c.conflicts += watch_conflicts.recheck_unknown(loop, c.unknown, c.conflict_live)
+    watch_conflicts.act_on_conflicts(loop, st, c.conflicts, c.conflict_live)
+    _finish(c)
+    return lines
 
-    armed, armed_error = (True, "") if watch_mode.TEST else gate.hooks_read(loop)
-    if armed is False:
+
+class _Sweep:
+    """One sweep's state, read and written by its steps in order (#1349): the loop, its watch
+    state and the clock taken first, the open-PR listing and the health check, and what the
+    stall scan collects for the report, the cooldown map and the observer."""
+
+    def __init__(self, loop: dict, st: state_mod.LoopState, lines: list[str]):
+        self.loop, self.st, self.lines = loop, st, lines
+        self.watch = st.watch()
+        self.now = time.time()
+        self.cooldown = 0.0 if watch_mode.TEST else float(loop.get("cooldown_h") or 6) * 3600
+        self.health: watch_health.Health | None = None
+        self.listing_errors: list[str] = []
+        self.pr_failures: list[tuple[int, str]] = []  # per-PR review reads that failed
+        self.prs = None
+
+    def due(self, key: str) -> bool:
+        """The cooldown map (#77): ``marks`` is when each still-standing stall last alerted. A
+        key is stamped only when it alerts, never merely for being seen, so a stall that persists
+        re-alerts every cooldown; ``present`` is what this sweep still sees, and a key it no
+        longer sees has cleared and is dropped, so the same stall returning alerts at once."""
+        self.present.add(key)
+        last = watch_mode.valid_clock(self.marks.get(key), self.now)
+        if last is not None and self.now - last < self.cooldown:
+            return False
+        self.raised[key] = self.now
+        return True
+
+    def finish_reads(self) -> None:
+        watch_health.finish_reads(self.loop, self.watch, self.now, self.health, self.pr_failures,
+                                  self.lines)
+
+
+def _hooks_armed(c: _Sweep) -> bool:
+    loop = c.loop
+    c.armed, c.armed_error = (True, "") if watch_mode.TEST else gate.hooks_read(loop)
+    if c.armed is False:
         # Parked on purpose: no stall is reported and nothing is re-driven. A gate failure
         # already recorded is still said — it is a fact about a delivery, not a stall.
         if loop.get("state_dir"):
-            lines.extend(sweep_gate_failures(
-                gate_failures.loop_ledger(loop), f"[{loop['id']}] {loop['repo']}",
-                0.0 if watch_mode.TEST else float(loop.get("cooldown_h") or 6) * 3600,
+            c.lines.extend(sweep_gate_failures(
+                gate_failures.loop_ledger(loop), f"[{loop['id']}] {loop['repo']}", c.cooldown,
                 may_redrive=False,
                 held="not re-driven while the loop's hooks are paused; `hermes dk arm "
                      f"--loop {loop['id']}` resumes it, or re-deliver it from GitHub"))
-        return lines
+        return False
     # Armed, or unknown because the hook list could not be read. Unknown is not paused: sweep
     # normally and warn once per cooldown — never silence.
-    if armed is None and watch_mode.alert_due(
-            watch, "hooks:unknown", now,
-            0.0 if watch_mode.TEST else float(loop.get("cooldown_h") or 6) * 3600):
-        lines.append(f"⚠️ Diaktoros [{loop['id']}] {loop['repo']}: hook state unreadable: "
-                     f"{gh.one_line(armed_error or 'no reason given', 200)} — sweeping anyway")
+    if c.armed is None and watch_mode.alert_due(c.watch, "hooks:unknown", c.now, c.cooldown):
+        c.lines.append(f"⚠️ Diaktoros [{loop['id']}] {loop['repo']}: hook state unreadable: "
+                       f"{gh.one_line(c.armed_error or 'no reason given', 200)} — sweeping anyway")
+    return True
+
+
+def _read_listing(c: _Sweep) -> None:
     # With the hooks confirmed, the open-PR listing is read here, before the health check, so
     # that a listing GitHub refuses counts as a failed read in the same sweep (a /user probe
     # that works must not announce "reads work again" while the listing is still refused).
-    listing_errors: list[str] = []
-    prs = gh.open_prs(loop, errors=listing_errors) if armed is not False else None
-    health = None
+    c.prs = gh.open_prs(c.loop, errors=c.listing_errors)
     if not watch_mode.TEST:
-        health = watch_health.read_health(loop, st, watch, now, armed, armed_error,
-                             listing_errors[0] if listing_errors else "")
-        lines.extend(health.lines)
-    listing_said = bool(listing_errors) and health is not None and health.alerted
-    pr_failures: list[tuple[int, str]] = []       # per-PR review reads this sweep could not make
+        c.health = watch_health.read_health(c.loop, c.st, c.watch, c.now, c.armed, c.armed_error,
+                                            c.listing_errors[0] if c.listing_errors else "")
+        c.lines.extend(c.health.lines)
 
+
+def _heal_and_redrive(c: _Sweep) -> None:
+    loop = c.loop
     # Self-heal first, and independent of GitHub listing: a route another registry writer erased
     # or rewrote (issue #1) is a loop that cannot wake a seat, whatever the PRs look like.
     try:
@@ -269,16 +327,15 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         healed = [f"⚠️ Diaktoros [{loop['id']}] route self-heal failed: "
                   f"{type(exc).__name__}: {exc}"]
     if healed:
-        lines.extend(healed)
-        st.note("route self-heal: " + " | ".join(line.strip() for line in healed))
+        c.lines.extend(healed)
+        c.st.note("route self-heal: " + " | ".join(line.strip() for line in healed))
 
     # Re-drive only while GitHub answers: a re-run during an outage would only fail again.
     # (The listing was read above, before the health check.)
     if loop.get("state_dir"):
-        lines.extend(sweep_gate_failures(
-            gate_failures.loop_ledger(loop), f"[{loop['id']}] {loop['repo']}",
-            0.0 if watch_mode.TEST else float(loop.get("cooldown_h") or 6) * 3600,
-            may_redrive=isinstance(prs, list)))
+        c.lines.extend(sweep_gate_failures(
+            gate_failures.loop_ledger(loop), f"[{loop['id']}] {loop['repo']}", c.cooldown,
+            may_redrive=isinstance(c.prs, list)))
 
     # Issue #53: a pre-write failure waits out its backoff in the run ledger, and a claim
     # whose GitHub read failed stays pending. Nothing but an event would relaunch either, so
@@ -286,27 +343,29 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     try:
         gate.resume_isolated(loop)
     except Exception as exc:
-        lines.append(f"⚠️ Diaktoros [{loop['id']}] isolated retry scheduling failed: "
-                     f"{type(exc).__name__}: {exc}")
+        c.lines.append(f"⚠️ Diaktoros [{loop['id']}] isolated retry scheduling failed: "
+                       f"{type(exc).__name__}: {exc}")
 
-    if isinstance(prs, list):
-        # The last COMPLETE open-PR listing, saved with the sweep's watch state, so status,
-        # explain and retry can tell a failed run on a closed PR from one on an open PR (#723).
-        watch["open_prs"] = {"at": now, "numbers": sorted(
-            p["number"] for p in prs if isinstance(p, dict) and isinstance(p.get("number"), int))}
-        retire_stale_runs(loop, prs, lines)
 
-    if not isinstance(prs, list):
-        # Without a complete listing, even individually readable PRs cannot establish
-        # that the sweep's scheduling view is current. Explicit --drain still rechecks.
-        why = f" ({gh.one_line(listing_errors[0], 200)})" if listing_errors else ""
-        if not listing_said:                  # the health alert above already said it, with why
-            lines.append(f"⚠️ {loop['id']}: could not list open PRs{why} — stall scan and queue "
-                         f"drain skipped this run")
-        watch_health.finish_reads(loop, watch, now, health, pr_failures, lines)
-        st.watch_save(watch)
-        return lines
+def _no_listing(c: _Sweep) -> None:
+    # Without a complete listing, even individually readable PRs cannot establish
+    # that the sweep's scheduling view is current. Explicit --drain still rechecks.
+    why = f" ({gh.one_line(c.listing_errors[0], 200)})" if c.listing_errors else ""
+    listing_said = bool(c.listing_errors) and c.health is not None and c.health.alerted
+    if not listing_said:                  # the health alert above already said it, with why
+        c.lines.append(f"⚠️ {c.loop['id']}: could not list open PRs{why} — stall scan and queue "
+                       f"drain skipped this run")
+    c.finish_reads()
+    c.st.watch_save(c.watch)
 
+
+def _recover(c: _Sweep) -> None:
+    loop, st, prs, lines = c.loop, c.st, c.prs, c.lines
+    # The last COMPLETE open-PR listing, saved with the sweep's watch state, so status,
+    # explain and retry can tell a failed run on a closed PR from one on an open PR (#723).
+    c.watch["open_prs"] = {"at": c.now, "numbers": sorted(
+        p["number"] for p in prs if isinstance(p, dict) and isinstance(p.get("number"), int))}
+    retire_stale_runs(loop, prs, lines)
     try:
         lines.extend(fix_hold.sweep(loop, st))
     except Exception as exc:
@@ -317,21 +376,21 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     except Exception as exc:                  # never let the recovery hide the stall scan
         lines.append(f"⚠️ Diaktoros [{loop['id']}] triage recovery sweep: "
                      f"{type(exc).__name__}: {exc}")
-    watch_stacked.reconcile_stacked(loop, st, watch, prs, lines)
-    watch_stacked.retry_fresh_reviews(loop, st, prs, lines, since=now)
+    watch_stacked.reconcile_stacked(loop, st, c.watch, prs, lines)
+    watch_stacked.retry_fresh_reviews(loop, st, prs, lines, since=c.now)
 
+
+def _observe_heads(c: _Sweep) -> None:
+    watch, now = c.watch, c.now
     # A commit's authored/committed date says nothing about when its SHA reached a PR.
     # Snapshot the heads on the first *successful* armed sweep, before any stall evaluation.
     # Those heads are history; later SHA changes get their own durable observation clock.
     # A malformed persisted arming clock has no trustworthy ordering against PR
     # creation or prior observations. Re-arm only after this successful listing and
     # baseline its heads; never coerce strings/bools or reuse old grace clocks.
-    first_sweep = watch_mode.valid_clock(watch.get("armed_since"), now) is None
+    c.first_sweep = first_sweep = watch_mode.valid_clock(watch.get("armed_since"), now) is None
     if first_sweep:
         watch["armed_since"] = now
-    heads = {} if first_sweep else watch.get("heads")
-    if not isinstance(heads, dict):
-        heads = {}
     history = watch.get("head_history")
     watch["head_history"] = ({k: v for k, v in history.items()
                               if isinstance(v, dict) and
@@ -339,6 +398,49 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                               is not None and
                               now - clock < HEAD_RETENTION_SEC}
                              if isinstance(history, dict) else {})
+    c.current_heads = current_heads = _kept_heads(c)
+    for pr in c.prs:
+        if not isinstance(pr, dict):
+            continue
+        author = ((pr.get("user") or {}).get("login") or "").lower()
+        if author not in config.reviewed_authors(c.loop) or pr.get("draft"):
+            continue
+        number = pr.get("number")
+        head = (pr.get("head") or {}).get("sha") or ""
+        if not number or not head:
+            continue
+        key = str(number)
+        previous = current_heads.get(key, {})
+        base = (pr.get("base") or {}).get("ref")
+        base_sha = (pr.get("base") or {}).get("sha")
+        # For a direct-trunk PR, trunk moving on is not a new situation: only its own head or
+        # base ref restarts the stall clock. A stacked base's generation does.
+        if (previous.get("sha") == head and previous.get("base") in (None, base)
+                and (base == c.loop["base"] or previous.get("base_sha") in (None, base_sha))):
+            current_heads[key] = {**previous, "base": base, "base_sha": base_sha,
+                                  "last_seen_at": now}
+        else:
+            if previous:
+                history = watch.setdefault("head_history", {})
+                history[f"{key}:{previous.get('sha')}:{previous.get('base', '')}:{previous.get('base_sha', '')}"] = previous
+            # A first-seen old PR could be preexisting; created_at only establishes
+            # eligibility for genuinely new PRs, never the time of a later push.
+            new_pr = epoch(pr.get("created_at")) >= int(watch["armed_since"])
+            current_heads[key] = {"sha": head, "base": base, "base_sha": base_sha, "observed_at":
+                                  now if previous or (not first_sweep and new_pr) else None,
+                                  # When the loop first saw this head, whatever the PR's age: the
+                                  # merge check's missing-check grace starts here (#1236).
+                                  "first_seen_at": now, "last_seen_at": now}
+    watch["heads"] = current_heads
+    c.st.watch_save(watch)               # persist observations even if review reads fail
+
+
+def _kept_heads(c: _Sweep) -> dict[str, dict]:
+    """The heads the last sweep saw, still within retention (none on a first sweep)."""
+    now = c.now
+    heads = {} if c.first_sweep else c.watch.get("heads")
+    if not isinstance(heads, dict):
+        heads = {}
     current_heads: dict[str, dict] = {}
     for key, previous in heads.items():
         if not isinstance(previous, dict) or not previous.get("sha"):
@@ -355,286 +457,292 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                                   "first_seen_at": watch_mode.valid_clock(
                                       previous.get("first_seen_at"), now),
                                   "last_seen_at": last_seen}
-    for pr in prs:
-        if not isinstance(pr, dict):
-            continue
-        author = ((pr.get("user") or {}).get("login") or "").lower()
-        if author not in config.reviewed_authors(loop) or pr.get("draft"):
-            continue
-        number = pr.get("number")
-        head = (pr.get("head") or {}).get("sha") or ""
-        if not number or not head:
-            continue
-        key = str(number)
-        previous = current_heads.get(key, {})
-        base = (pr.get("base") or {}).get("ref")
-        base_sha = (pr.get("base") or {}).get("sha")
-        # For a direct-trunk PR, trunk moving on is not a new situation: only its own head or
-        # base ref restarts the stall clock. A stacked base's generation does.
-        if (previous.get("sha") == head and previous.get("base") in (None, base)
-                and (base == loop["base"] or previous.get("base_sha") in (None, base_sha))):
-            current_heads[key] = {**previous, "base": base, "base_sha": base_sha,
-                                  "last_seen_at": now}
-        else:
-            if previous:
-                history = watch.setdefault("head_history", {})
-                history[f"{key}:{previous.get('sha')}:{previous.get('base', '')}:{previous.get('base_sha', '')}"] = previous
-            # A first-seen old PR could be preexisting; created_at only establishes
-            # eligibility for genuinely new PRs, never the time of a later push.
-            new_pr = epoch(pr.get("created_at")) >= int(watch["armed_since"])
-            current_heads[key] = {"sha": head, "base": base, "base_sha": base_sha, "observed_at":
-                                  now if previous or (not first_sweep and new_pr) else None,
-                                  # When the loop first saw this head, whatever the PR's age: the
-                                  # merge check's missing-check grace starts here (#1236).
-                                  "first_seen_at": now, "last_seen_at": now}
-    watch["heads"] = current_heads
-    st.watch_save(watch)                 # persist observations even if review reads fail
-    retry_pending_breaches(loop, st, prs, pr_failures)
-    if first_sweep:
-        st.note("loop observed armed — head snapshot set; existing heads excluded")
-        drain_queued(loop, st, lines)
-        if observer.retry(loop, st):
-            log("observer: retried an undelivered notice")
-        observer.flush(loop, st, wait_s=0 if watch_mode.TEST else observer.digest_wait(loop))
-        record_overrides(loop, st)
-        send_weekly_report(loop, st)
-        watch_health.finish_reads(loop, watch, now, health, pr_failures, lines)
-        st.watch_save(watch)
-        return lines
+    return current_heads
 
+
+def _first_sweep_done(c: _Sweep) -> None:
+    loop, st = c.loop, c.st
+    st.note("loop observed armed — head snapshot set; existing heads excluded")
+    drain_queued(loop, st, c.lines)
+    if observer.retry(loop, st):
+        log("observer: retried an undelivered notice")
+    observer.flush(loop, st, wait_s=0 if watch_mode.TEST else observer.digest_wait(loop))
+    record_overrides(loop, st)
+    send_weekly_report(loop, st)
+    c.finish_reads()
+    st.watch_save(c.watch)
+
+
+def _scan_stalls(c: _Sweep) -> None:
+    loop, st, watch = c.loop, c.st, c.watch
     # Per seat (#98): each seat's stall waits for its own whole turn, never another seat's.
-    grace = {seat: 0.0 if watch_mode.TEST else config.stall_grace_s(loop, seat) / 60
-             for seat in ("reviewer", "fixer")}
-    marker_grace = 0.0 if watch_mode.TEST else float(loop.get("marker_grace_min") or 60)
-    cooldown = 0.0 if watch_mode.TEST else float(loop.get("cooldown_h") or 6) * 3600
-    breach = st.breach_all()
-    alerts: list[tuple[int, str, str]] = []
-    # The cooldown map (#77): ``marks`` is when each still-standing stall last alerted. A key is
-    # stamped only when it alerts, never merely for being seen, so a stall that persists
-    # re-alerts every cooldown; ``present`` is what this sweep still sees, and a key it no
-    # longer sees has cleared and is dropped, so the same stall returning alerts at once.
-    marks = watch.get("alerts") if isinstance(watch.get("alerts"), dict) else {}
-    present: set[str] = set()
-    unjudged: set[str] = set()            # PRs whose reviews were unreadable: not "cleared"
-    raised: dict[str, float] = {}
-
-    def due(key: str) -> bool:
-        present.add(key)
-        last = watch_mode.valid_clock(marks.get(key), now)
-        if last is not None and now - last < cooldown:
-            return False
-        raised[key] = now
-        return True
-
-    conflicts: list[tuple[int, str, str, str]] = []
-    conflict_live: dict[int, dict] = {}
-    unknown: list[tuple[int, str, str]] = []       # mergeability not computed yet at this read
+    c.grace = {seat: 0.0 if watch_mode.TEST else config.stall_grace_s(loop, seat) / 60
+               for seat in ("reviewer", "fixer")}
+    c.marker_grace = 0.0 if watch_mode.TEST else float(loop.get("marker_grace_min") or 60)
+    c.breach = st.breach_all()
+    c.alerts: list[tuple[int, str, str]] = []
+    c.marks = watch.get("alerts") if isinstance(watch.get("alerts"), dict) else {}
+    c.present: set[str] = set()
+    c.unjudged: set[str] = set()          # PRs whose reviews were unreadable: not "cleared"
+    c.raised: dict[str, float] = {}
+    c.conflicts: list[tuple[int, str, str, str]] = []
+    c.conflict_live: dict[int, dict] = {}
+    c.unknown: list[tuple[int, str, str]] = []     # mergeability not computed yet at this read
     # #532: heads whose pending review request the sweep already delivered to the gate itself.
     kicks = watch.get("review_kicks") if isinstance(watch.get("review_kicks"), dict) else {}
-    open_numbers = {str(p.get("number")) for p in prs if isinstance(p, dict)}
-    kicks = {k: v for k, v in kicks.items() if k in open_numbers}
-    for pr in prs:
+    open_numbers = {str(p.get("number")) for p in c.prs if isinstance(p, dict)}
+    c.kicks = {k: v for k, v in kicks.items() if k in open_numbers}
+    for pr in c.prs:
         if (listed := config.loop_pr(loop, pr)) is None:
             continue
-        number, head, author = listed
-        # #477: a PR a maintainer holds is left alone: no stall, no conflict turn. The hold is
-        # recorded for `status` and the drain; a failed read keeps the last record (never
-        # "released" by a read that failed) and is said with the other failed reads.
-        hold, hold_error = pr_hold.read(loop, number)
-        if hold_error:
-            pr_failures.append((number, hold_error))
-        elif hold:
-            if st.pr_hold_set(number, hold):              # a hold began: the report's (#678)
-                from diaktoros.run_supervisor import record_operator_action
-                record_operator_action(loop["repo"], number,
-                                       "agent hold" if config.maintainer_kind(
-                                           loop, hold.get("by")) == "operator agent" else "hold")
-        else:
-            st.pr_hold_drop(number)
-        if hold or (hold_error and number in st.pr_holds()):
-            unjudged.add(f"{number}:")
-            continue
-        # #303 stage 1: a loop PR that no longer merges into its base is said once per head.
-        # The listing carries no mergeability, so this is one read of the PR; GitHub computes it
-        # lazily, and an unknown answer (null) is simply not a conflict yet.
-        live = gh.pr(loop, number)
-        verdict = watch_conflicts.mergeability(loop, live, head, author)
-        if verdict == "conflict":
-            conflicts.append((number, head, str((live.get("base") or {}).get("sha") or ""), author))
-            conflict_live[number] = live
-        elif verdict == "unknown":
-            unknown.append((number, head, author))
+        _judge_pr(c, pr, *listed)
 
-        # A held head is judged only by host-receipted post-boundary reviews: an old verdict
-        # is not a current stall, and a missing fresh verdict is the reviewer's to post.
-        boundary = transition.hold(st, number, head)
-        if boundary and transition.baseline_missing(boundary):
-            continue  # permanently held; explain reports why, no seat can move it
-        errors: list[str] = []
-        reviews = transition.effective_reviews(loop, st, number, head,
-                                               gh.reviews(loop, number, errors=errors))
-        if not isinstance(reviews, list):
-            # Unknown beats wrong: no verdict is guessed — but the skipped check is said.
-            pr_failures.extend((number, e) for e in errors[:1])
-            unjudged.add(f"{number}:")        # nor is its stall cleared: its cooldown stands
-            continue
-        latest = gate.latest_effective_review_at_head(reviews, loop, head)
-        if latest is not None and gh.review_state(latest) == "APPROVED":
-            # #1004: unless the shadow review disagrees, then it goes for a ruling (once per
-            # head; the shadow's own finish tries first, this is the backstop).
-            try:
-                if gate.shadow_escalation(loop, st, number, head, reviews) == "new":
-                    log(f"#{number} @ {head[:7]} shadow review disagrees with the approval: "
-                        "sent for a ruling")
-            except Exception as exc:
-                log(f"#{number} shadow escalation check failed: {type(exc).__name__}: {exc}")
-            try:
-                # #1004 part 3: an upheld ruling's fix, if the ruling's own delivery did not
-                # queue it (same turn key, so never twice).
-                if gate.queue_shadow_fix(loop, number, head) in gate.SCHEDULED_OUTCOMES:
-                    log(f"#{number} @ {head[:7]} upheld shadow review handed to the fixer")
-            except Exception as exc:
-                log(f"#{number} upheld shadow fix check failed: {type(exc).__name__}: {exc}")
-            # #1114: the ruling it went for is owed like any other: a dead adjudicator turn is
-            # a stall here too. A pending delivery is the escalation check's to retry (above).
-            marker = st.breach_get(number)
-            if ((marker.get("escalated") or {}).get("by") == gate.SHADOW_ESCALATION
-                    and gate.breach_delivery_status(marker, head) != "delivery-pending"):
-                kind = parked_kind(loop, marker, number, head, marker_grace) or ""
-                if kind and due(stall_key(number, head, kind)):
-                    alerts.append((number, kind, (pr.get("title") or "")[:60]))
-            continue                              # approved at this head: the loop is done here
 
-        at_head = (gate.changes_at_head(reviews, loop, head)
-                   if latest is not None and gh.review_state(latest) == "CHANGES_REQUESTED"
-                   else [])
-        changes = gate.verdicts(reviews, loop)
-        marker = breach.get(f"{loop['repo']}#{number}") or {}
-        # A marker that no longer holds (#780) parks nothing, ruled or not. One that holds with
-        # its delivery failed is not a silent stall either: the retry owns it.
-        holds = gate.breach_holds(marker, head, len(changes), loop["cap"])
-        if holds and gate.breach_delivery_status(marker, head) == "delivery-pending":
-            continue
-        observed_at = current_heads[str(number)]["observed_at"]
-        head_postdates_arming = watch_mode.TEST or observed_at is not None
-        kind = ""
+def _judge_pr(c: _Sweep, pr: dict, number: int, head: str, author: str) -> None:
+    """One loop PR in the stall scan: its hold, its mergeability, then its stall if any."""
+    loop, st = c.loop, c.st
+    if _held(c, number):
+        return
+    # #303 stage 1: a loop PR that no longer merges into its base is said once per head.
+    # The listing carries no mergeability, so this is one read of the PR; GitHub computes it
+    # lazily, and an unknown answer (null) is simply not a conflict yet.
+    live = gh.pr(loop, number)
+    verdict = watch_conflicts.mergeability(loop, live, head, author)
+    if verdict == "conflict":
+        c.conflicts.append((number, head, str((live.get("base") or {}).get("sha") or ""), author))
+        c.conflict_live[number] = live
+    elif verdict == "unknown":
+        c.unknown.append((number, head, author))
 
-        # A marker at this head is the escalation: whether it is a stall is its own question
-        # (parked_kind), and it is never "no escalation marker" while it is young (#98).
-        parked = parked_kind(loop, marker, number, head, marker_grace) if holds else None
-        # A review-only PR has no fixer and no adjudication: changes requested is back with its author (#191).
-        review_only = author in config.review_only(loop)
-        if parked is not None:
-            kind = parked
-        elif not at_head and isinstance(st.human_hold(number, head), dict):
-            pass                                  # human_paths: a person's approval (#478)
-        elif review_only and at_head:
-            pass                                  # the author's move, not a stall
-        elif (review_only and len(changes) >= config.review_only_cap(loop)
-              and not st.review_cap_granted(number, head, len(changes))):
-            pass                                  # review cap reached: a maintainer's move
-        elif len(changes) >= loop["cap"] and head_postdates_arming and not review_only:
-            # #575: a spent cap with no marker at this head (the head moved after the cap fired,
-            # or no gate event ever reached it) is handed to adjudication here, exactly as the
-            # reviewer gate would: no model, no GitHub write. Only a failed hand-off is a stall.
-            # Without an adjudicator there is no one to hand it to: the alert is the operator's.
-            handed = ""
-            if (loop.get("adjudicator") or {}).get("route"):
-                try:
-                    handed = gate.breach(loop, st, number, head, len(changes),
-                                         f"review cap reached — {loop['cap']} verdicts, no "
-                                         "approval (raised by the watchdog at this head)")
-                except Exception as exc:
-                    log(f"#{number} @ {head[:7]}: cap spent, hand-off failed: "
-                        f"{type(exc).__name__}: {exc}")
-            if handed == "new":
-                log(f"#{number} @ {head[:7]}: cap spent with no marker here — handed to "
-                    "adjudication")
-            elif handed != "stale":
-                kind = (f"{len(changes)} verdicts, no approval and NO escalation marker — "
-                        f"the cap may not have fired")
-        elif at_head and not config.unattended_fixer_push_enabled(loop):
-            mins = age_min(latest.get("submitted_at"))
-            if past(mins, grace["fixer"]):
-                # Not a stall the fixer can end: no fixer turn starts until the loop opts in.
-                kind = (f"{PUSH_OFF_KIND} — changes requested {ago(mins)} at head "
-                        f"{head[:7]} waits for you: run "
-                        f"`{config.fixer_push_enable_command(loop)}` (or fix it by hand)")
-        elif at_head and (disputed := run_supervisor.views.disputed(
-                run_supervisor.production_ledger(), loop["repo"], number, head, latest)) \
-                and not live_turn(loop, number, head, "fixer"):
-            # The fixer answered the verdict with a dispute (#401): every finding "not a defect",
-            # nothing pushed. That is an answer, not a stall (#895). With an adjudicator it goes
-            # for a ruling, as `hermes dk escalate` would send it (#894): the head is parked, so a
-            # later sweep sees it awaiting a ruling. Without one, it is the operator's to decide.
-            handed = ""
-            if (loop.get("adjudicator") or {}).get("route"):
-                try:
-                    handed = gate.breach(
-                        loop, st, number, head, len(changes),
-                        "escalated: the fixer disputed the review (every finding answered as "
-                        "not a defect, nothing pushed)",
-                        escalated={"by": "dispute", "at": now_iso(),
-                                   "reason": "the fixer disputed the review at this head"})
-                except Exception as exc:
-                    log(f"#{number} @ {head[:7]}: dispute hand-off failed: "
-                        f"{type(exc).__name__}: {exc}")
-            if handed == "new":
-                log(f"#{number} @ {head[:7]}: the fixer disputed the review — handed to "
-                    "adjudication")
-            elif handed not in ("retry", "stale") and past(age_min(latest.get("submitted_at")),
-                                                           grace["fixer"]):
-                kind = (f"disputed {ago((now - disputed) / 60)} at head {head[:7]} — the fixer "
-                        "answered every finding as no defect and pushed nothing; waiting for you: "
-                        + run_supervisor.views.dispute_choices(loop["id"], number)
-                        if not handed else
-                        f"disputed at head {head[:7]}: hand-off to adjudication {handed}")
-        elif at_head:
-            mins = age_min(latest.get("submitted_at"))
-            # A fix turn queued or running at this head is not a stall: the grace covers a turn's
-            # run, not its wait in the queue (behind another PR, paced, held).
-            if past(mins, grace["fixer"]) and not live_turn(loop, number, head, "fixer"):
-                kind = (f"fixer never pushed — changes requested {ago(mins)} at head "
-                        f"{head[:7]} by {gate.reviewer_login(latest)}")
-        elif config.fix_ci(loop) and ci_fix.pending_at(loop["repo"], number, head):
-            pass                                  # #539: the fixer takes this red head first
-        else:
-            mins = (now - observed_at) / 60 if observed_at is not None else 0.0
-            # #532: a request GitHub never announced (the reviewer was already requested when the
-            # fixer pushed) leaves the head with a pending request, no verdict and no run. After
-            # one sweep interval, deliver that request to the gate once per head; the gate's own
-            # rules and the ledger's dedup decide, so a held or queued review is not doubled.
-            # A same-head transition hold (a retarget) starts its own one fresh review under its
-            # turn key; a pending request is not delivered across it.
-            # An App reviewer (#1163) never shows as requested: its handoff is always the
-            # host's, so a head with no verdict and no run is delivered the same way.
-            if ((review_kick.already_requested(loop, pr) or config.reviewer_is_app(loop))
-                    and kicks.get(str(number)) != head
-                    and not boundary
-                    and head_postdates_arming and (watch_mode.TEST or mins >= KICK_AFTER_MIN)):
-                try:
-                    sent = review_kick.kick(loop, pr, head, author, f"sweep-review-{number}")
-                except Exception as exc:
-                    sent = False
-                    log(f"#{number} @ {head[:7]}: review request not delivered: "
-                        f"{type(exc).__name__}: {exc}")
-                if sent:
-                    kicks[str(number)] = head
-                    log(f"#{number} @ {head[:7]}: a pending review request had started no "
-                        "review — delivered it to the reviewer gate")
-            if ((watch_mode.TEST or mins > grace["reviewer"]) and head_postdates_arming
-                    and not live_turn(loop, number, head, "reviewer")):
-                kind = (f"reviewer never posted a verdict — head {head[:7]} observed "
-                        f"{mins / 60:.1f}h ago, 0 verdicts at this head (`hermes dk "
-                        f"review --loop {loop['id']} --pr {number}` asks for one)")
+    # A held head is judged only by host-receipted post-boundary reviews: an old verdict
+    # is not a current stall, and a missing fresh verdict is the reviewer's to post.
+    boundary = transition.hold(st, number, head)
+    if boundary and transition.baseline_missing(boundary):
+        return  # permanently held; explain reports why, no seat can move it
+    errors: list[str] = []
+    reviews = transition.effective_reviews(loop, st, number, head,
+                                           gh.reviews(loop, number, errors=errors))
+    if not isinstance(reviews, list):
+        # Unknown beats wrong: no verdict is guessed — but the skipped check is said.
+        c.pr_failures.extend((number, e) for e in errors[:1])
+        c.unjudged.add(f"{number}:")      # nor is its stall cleared: its cooldown stands
+        return
+    latest = gate.latest_effective_review_at_head(reviews, loop, head)
+    if latest is not None and gh.review_state(latest) == "APPROVED":
+        _approved(c, pr, number, head, reviews)
+        return                                    # approved at this head: the loop is done here
+    kind = _stall_kind(c, pr, number, head, author, reviews, latest, boundary)
+    if kind and c.due(stall_key(number, head, kind)):
+        c.alerts.append((number, kind, (pr.get("title") or "")[:60]))
 
-        if kind and due(stall_key(number, head, kind)):
-            alerts.append((number, kind, (pr.get("title") or "")[:60]))
 
+def _held(c: _Sweep, number: int) -> bool:
+    """#477: a PR a maintainer holds is left alone: no stall, no conflict turn. The hold is
+    recorded for `status` and the drain; a failed read keeps the last record (never
+    "released" by a read that failed) and is said with the other failed reads."""
+    loop, st = c.loop, c.st
+    hold, hold_error = pr_hold.read(loop, number)
+    if hold_error:
+        c.pr_failures.append((number, hold_error))
+    elif hold:
+        if st.pr_hold_set(number, hold):              # a hold began: the report's (#678)
+            from diaktoros.run_supervisor import record_operator_action
+            record_operator_action(loop["repo"], number,
+                                   "agent hold" if config.maintainer_kind(
+                                       loop, hold.get("by")) == "operator agent" else "hold")
+    else:
+        st.pr_hold_drop(number)
+    if hold or (hold_error and number in st.pr_holds()):
+        c.unjudged.add(f"{number}:")
+        return True
+    return False
+
+
+def _approved(c: _Sweep, pr: dict, number: int, head: str, reviews: list) -> None:
+    loop, st = c.loop, c.st
+    # #1004: unless the shadow review disagrees, then it goes for a ruling (once per
+    # head; the shadow's own finish tries first, this is the backstop).
+    try:
+        if gate.shadow_escalation(loop, st, number, head, reviews) == "new":
+            log(f"#{number} @ {head[:7]} shadow review disagrees with the approval: "
+                "sent for a ruling")
+    except Exception as exc:
+        log(f"#{number} shadow escalation check failed: {type(exc).__name__}: {exc}")
+    try:
+        # #1004 part 3: an upheld ruling's fix, if the ruling's own delivery did not
+        # queue it (same turn key, so never twice).
+        if gate.queue_shadow_fix(loop, number, head) in gate.SCHEDULED_OUTCOMES:
+            log(f"#{number} @ {head[:7]} upheld shadow review handed to the fixer")
+    except Exception as exc:
+        log(f"#{number} upheld shadow fix check failed: {type(exc).__name__}: {exc}")
+    # #1114: the ruling it went for is owed like any other: a dead adjudicator turn is
+    # a stall here too. A pending delivery is the escalation check's to retry (above).
+    marker = st.breach_get(number)
+    if ((marker.get("escalated") or {}).get("by") == gate.SHADOW_ESCALATION
+            and gate.breach_delivery_status(marker, head) != "delivery-pending"):
+        kind = parked_kind(loop, marker, number, head, c.marker_grace) or ""
+        if kind and c.due(stall_key(number, head, kind)):
+            c.alerts.append((number, kind, (pr.get("title") or "")[:60]))
+
+
+def _stall_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, reviews: list,
+                latest: dict | None, boundary) -> str:
+    """The stall a reviewed, unapproved loop PR is in at this head, or ``""`` for none."""
+    loop, st = c.loop, c.st
+    at_head = (gate.changes_at_head(reviews, loop, head)
+               if latest is not None and gh.review_state(latest) == "CHANGES_REQUESTED"
+               else [])
+    changes = gate.verdicts(reviews, loop)
+    marker = c.breach.get(f"{loop['repo']}#{number}") or {}
+    # A marker that no longer holds (#780) parks nothing, ruled or not. One that holds with
+    # its delivery failed is not a silent stall either: the retry owns it.
+    holds = gate.breach_holds(marker, head, len(changes), loop["cap"])
+    if holds and gate.breach_delivery_status(marker, head) == "delivery-pending":
+        return ""
+    observed_at = c.current_heads[str(number)]["observed_at"]
+    head_postdates_arming = watch_mode.TEST or observed_at is not None
+    kind = ""
+
+    # A marker at this head is the escalation: whether it is a stall is its own question
+    # (parked_kind), and it is never "no escalation marker" while it is young (#98).
+    parked = parked_kind(loop, marker, number, head, c.marker_grace) if holds else None
+    # A review-only PR has no fixer and no adjudication: changes requested is back with its author (#191).
+    review_only = author in config.review_only(loop)
+    if parked is not None:
+        kind = parked
+    elif not at_head and isinstance(st.human_hold(number, head), dict):
+        pass                                  # human_paths: a person's approval (#478)
+    elif review_only and at_head:
+        pass                                  # the author's move, not a stall
+    elif (review_only and len(changes) >= config.review_only_cap(loop)
+          and not st.review_cap_granted(number, head, len(changes))):
+        pass                                  # review cap reached: a maintainer's move
+    elif len(changes) >= loop["cap"] and head_postdates_arming and not review_only:
+        kind = _cap_spent_kind(c, number, head, len(changes))
+    elif at_head and not config.unattended_fixer_push_enabled(loop):
+        mins = age_min(latest.get("submitted_at"))
+        if past(mins, c.grace["fixer"]):
+            # Not a stall the fixer can end: no fixer turn starts until the loop opts in.
+            kind = (f"{PUSH_OFF_KIND} — changes requested {ago(mins)} at head "
+                    f"{head[:7]} waits for you: run "
+                    f"`{config.fixer_push_enable_command(loop)}` (or fix it by hand)")
+    elif at_head and (disputed := run_supervisor.views.disputed(
+            run_supervisor.production_ledger(), loop["repo"], number, head, latest)) \
+            and not live_turn(loop, number, head, "fixer"):
+        kind = _disputed_kind(c, number, head, len(changes), latest, disputed)
+    elif at_head:
+        mins = age_min(latest.get("submitted_at"))
+        # A fix turn queued or running at this head is not a stall: the grace covers a turn's
+        # run, not its wait in the queue (behind another PR, paced, held).
+        if past(mins, c.grace["fixer"]) and not live_turn(loop, number, head, "fixer"):
+            kind = (f"fixer never pushed — changes requested {ago(mins)} at head "
+                    f"{head[:7]} by {gate.reviewer_login(latest)}")
+    elif config.fix_ci(loop) and ci_fix.pending_at(loop["repo"], number, head):
+        pass                                  # #539: the fixer takes this red head first
+    else:
+        kind = _reviewer_kind(c, pr, number, head, author, boundary, observed_at,
+                              head_postdates_arming)
+    return kind
+
+
+def _cap_spent_kind(c: _Sweep, number: int, head: str, spent: int) -> str:
+    """#575: a spent cap with no marker at this head (the head moved after the cap fired, or no
+    gate event ever reached it) is handed to adjudication here, exactly as the reviewer gate
+    would: no model, no GitHub write. Only a failed hand-off is a stall. Without an adjudicator
+    there is no one to hand it to: the alert is the operator's."""
+    loop = c.loop
+    handed = ""
+    if (loop.get("adjudicator") or {}).get("route"):
+        try:
+            handed = gate.breach(loop, c.st, number, head, spent,
+                                 f"review cap reached — {loop['cap']} verdicts, no "
+                                 "approval (raised by the watchdog at this head)")
+        except Exception as exc:
+            log(f"#{number} @ {head[:7]}: cap spent, hand-off failed: "
+                f"{type(exc).__name__}: {exc}")
+    if handed == "new":
+        log(f"#{number} @ {head[:7]}: cap spent with no marker here — handed to "
+            "adjudication")
+    elif handed != "stale":
+        return (f"{spent} verdicts, no approval and NO escalation marker — "
+                f"the cap may not have fired")
+    return ""
+
+
+def _disputed_kind(c: _Sweep, number: int, head: str, spent: int, latest: dict,
+                   disputed: float) -> str:
+    """The fixer answered the verdict with a dispute (#401): every finding "not a defect",
+    nothing pushed. That is an answer, not a stall (#895). With an adjudicator it goes for a
+    ruling, as `hermes dk escalate` would send it (#894): the head is parked, so a later sweep
+    sees it awaiting a ruling. Without one, it is the operator's to decide."""
+    loop = c.loop
+    handed = ""
+    if (loop.get("adjudicator") or {}).get("route"):
+        try:
+            handed = gate.breach(
+                loop, c.st, number, head, spent,
+                "escalated: the fixer disputed the review (every finding answered as "
+                "not a defect, nothing pushed)",
+                escalated={"by": "dispute", "at": now_iso(),
+                           "reason": "the fixer disputed the review at this head"})
+        except Exception as exc:
+            log(f"#{number} @ {head[:7]}: dispute hand-off failed: "
+                f"{type(exc).__name__}: {exc}")
+    if handed == "new":
+        log(f"#{number} @ {head[:7]}: the fixer disputed the review — handed to "
+            "adjudication")
+    elif handed not in ("retry", "stale") and past(age_min(latest.get("submitted_at")),
+                                                   c.grace["fixer"]):
+        return (f"disputed {ago((c.now - disputed) / 60)} at head {head[:7]} — the fixer "
+                "answered every finding as no defect and pushed nothing; waiting for you: "
+                + run_supervisor.views.dispute_choices(loop["id"], number)
+                if not handed else
+                f"disputed at head {head[:7]}: hand-off to adjudication {handed}")
+    return ""
+
+
+def _reviewer_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, boundary,
+                   observed_at: float | None, head_postdates_arming: bool) -> str:
+    """No verdict at this head: deliver a pending request the gate never saw (#532), and say
+    the reviewer's stall once its grace is past."""
+    loop = c.loop
+    mins = (c.now - observed_at) / 60 if observed_at is not None else 0.0
+    # #532: a request GitHub never announced (the reviewer was already requested when the
+    # fixer pushed) leaves the head with a pending request, no verdict and no run. After
+    # one sweep interval, deliver that request to the gate once per head; the gate's own
+    # rules and the ledger's dedup decide, so a held or queued review is not doubled.
+    # A same-head transition hold (a retarget) starts its own one fresh review under its
+    # turn key; a pending request is not delivered across it.
+    # An App reviewer (#1163) never shows as requested: its handoff is always the
+    # host's, so a head with no verdict and no run is delivered the same way.
+    if ((review_kick.already_requested(loop, pr) or config.reviewer_is_app(loop))
+            and c.kicks.get(str(number)) != head
+            and not boundary
+            and head_postdates_arming and (watch_mode.TEST or mins >= KICK_AFTER_MIN)):
+        try:
+            sent = review_kick.kick(loop, pr, head, author, f"sweep-review-{number}")
+        except Exception as exc:
+            sent = False
+            log(f"#{number} @ {head[:7]}: review request not delivered: "
+                f"{type(exc).__name__}: {exc}")
+        if sent:
+            c.kicks[str(number)] = head
+            log(f"#{number} @ {head[:7]}: a pending review request had started no "
+                "review — delivered it to the reviewer gate")
+    if ((watch_mode.TEST or mins > c.grace["reviewer"]) and head_postdates_arming
+            and not live_turn(loop, number, head, "reviewer")):
+        return (f"reviewer never posted a verdict — head {head[:7]} observed "
+                f"{mins / 60:.1f}h ago, 0 verdicts at this head (`hermes dk "
+                f"review --loop {loop['id']} --pr {number}` asks for one)")
+    return ""
+
+
+def _stuck_states(c: _Sweep) -> None:
+    loop, now = c.loop, c.now
     # A fresh clock (review on #937): ``now`` was taken before this sweep's GitHub reads and
     # hand-offs, so a claim made since would look dated in the future and be reported dead.
-    stuck: list[tuple[str, str]] = died_locks(loop, st._load(st.locks, {}) or {}, time.time())
-    queue = st.queue_all()
+    stuck: list[tuple[str, str]] = died_locks(loop, c.st._load(c.st.locks, {}) or {}, time.time())
+    queue = c.st.queue_all()
     for seat, items in (queue if isinstance(queue, dict) else {}).items():
         for key, entry in (items if isinstance(items, dict) else {}).items():
             if config.is_fixer_push_hold(entry):
@@ -649,10 +757,13 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
 
     # The same cooldown the stall alerts use, on a stable key per stuck mark: an unrepaired
     # mark is worth one warning per window, not the identical two lines every 15 minutes.
-    reported = [line for key, line in stuck if due(key)]
+    c.reported = [line for key, line in stuck if c.due(key)]
 
+
+def _report_stalls(c: _Sweep) -> None:
+    alerts, reported, lines = c.alerts, c.reported, c.lines
     if alerts or reported:
-        header = f"[{loop['id']}] {loop['repo']}"
+        header = f"[{c.loop['id']}] {c.loop['repo']}"
         if alerts:
             lines.append(f"⚠️ Diaktoros {header} — {len(alerts)} silent stall(s):")
             for number, kind, title in alerts:
@@ -664,35 +775,42 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         lines.append("Pending adjudicator delivery retries on the next sweep; other stalls "
                      "need investigation. Check the gateway log before re-driving a route.")
 
+
+def _save_alerts(c: _Sweep) -> None:
     # Persist the cooldown stamps the moment they are decided, before ``drain_queued`` and the
     # observer's notify/retry/flush can raise (#158(3)). Those are best-effort work; a failure in
     # any of them must cost this sweep's line, never the ``raised`` record the next sweep reads —
     # otherwise one bad flush silently re-alerts the same stall on every following sweep. The
     # health settlement below rewrites ``watch`` again and saves once more; this earlier save is
     # what survives a raise in between.
-    watch["alerts"] = {**{k: v for k, v in marks.items()
-                          if (k in present or k.startswith(tuple(unjudged)))
-                          and watch_mode.valid_clock(v, now) is not None},
-                       **raised}
-    watch["review_kicks"] = kicks
+    watch = c.watch
+    watch["alerts"] = {**{k: v for k, v in c.marks.items()
+                          if (k in c.present or k.startswith(tuple(c.unjudged)))
+                          and watch_mode.valid_clock(v, c.now) is not None},
+                       **c.raised}
+    watch["review_kicks"] = c.kicks
     watch["last_run"] = now_iso()
-    st.watch_save(watch)
+    c.st.watch_save(watch)
 
-    drain_queued(loop, st, lines)
 
+def _notify_stalls(c: _Sweep) -> None:
     # The observer feed, last and best effort. Only the alerts this sweep actually decided to
     # raise become notices (each stamped with the sweep's own clock, so re-raising a stall after
     # the cooldown is a new notice while a second sweep in the same breath is not), and a
     # destination that cannot be reached costs a retry, never this sweep's job.
-    for number, kind, _title in alerts:
-        head = next(((pr.get("head") or {}).get("sha", "") for pr in prs
+    for number, kind, _title in c.alerts:
+        head = next(((pr.get("head") or {}).get("sha", "") for pr in c.prs
                      if isinstance(pr, dict) and pr.get("number") == number), "")
         # A push-off hold is one fact per head: its notice is keyed without the sweep clock,
         # so a cooldown re-raise in the sweep output never pings the observer twice.
         identity = ("fixer-push-off" if kind.startswith(PUSH_OFF_KIND)
-                    else f"{kind[:40]}#{int(now)}")
-        observer.notify(loop, st, "stall", number, head, identity=identity,
+                    else f"{kind[:40]}#{int(c.now)}")
+        observer.notify(c.loop, c.st, "stall", number, head, identity=identity,
                         outcome=kind, next_turn="you")
+
+
+def _best_effort_sweeps(c: _Sweep) -> None:
+    loop, st, prs, watch = c.loop, c.st, c.prs, c.watch
     try:
         ci_fix.sweep(loop, st, prs, log)      # #306: a red required check, said once per head
     except Exception as exc:
@@ -723,8 +841,10 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             log(f"#{number}: pending escalation dropped (the PR is closed, or it lapsed)")
     except Exception as exc:
         log(f"pending escalation prune failed: {type(exc).__name__}: {exc}")
-    conflicts += watch_conflicts.recheck_unknown(loop, unknown, conflict_live)
-    watch_conflicts.act_on_conflicts(loop, st, conflicts, conflict_live)
+
+
+def _finish(c: _Sweep) -> None:
+    loop, st = c.loop, c.st
     try:
         # #914: the issues a shadow review asked for, once the real review is in and did not
         # file them (off unless shadow.file_issues; bounded per day).
@@ -740,10 +860,9 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
 
     # ``watch["alerts"]`` and ``last_run`` were saved above, before the best-effort work; here only
     # the health settlement (which rewrites ``watch``) is committed, on the same read-modify-write.
-    watch_health.finish_reads(loop, watch, now, health, pr_failures, lines)
-    st.watch_save(watch)
-    st.note(f"run: {len(alerts)} alert(s), {len(reported)} stuck, {len(prs)} open PRs")
-    return lines
+    c.finish_reads()
+    st.watch_save(c.watch)
+    st.note(f"run: {len(c.alerts)} alert(s), {len(c.reported)} stuck, {len(c.prs)} open PRs")
 
 
 LIVE_TURN = ("pending", "claimed", "launching", "running", "waiting")
