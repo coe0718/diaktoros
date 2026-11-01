@@ -48,7 +48,7 @@ class CommandsDoc(unittest.TestCase):
         text = commands_doc.DOC.read_text()
         section = text.split("### review\n", 1)[1].split("<!-- flags:review -->", 1)[0]
         exit2 = " ".join(section.split("Exit 2 when", 1)[1].split("\n\n", 1)[0].split())
-        self.assertIn("did not finish within 120 seconds", exit2)
+        self.assertIn("the gate did not finish", exit2)
         self.assertIn("the gate did not finish — it crashed (Type)", exit2)
 
     def test_every_command_is_in_the_quick_index(self):
@@ -56,6 +56,21 @@ class CommandsDoc(unittest.TestCase):
         index = text.split("\n---\n", 1)[0]
         for verb in commands_doc.verbs(commands_doc.parser()):
             self.assertIn(f"(#{verb})", index, f"{verb} is missing from the 'I want to…' table")
+
+    def test_review_exit_2_names_no_deadline_the_gate_lacks(self):
+        """`review` runs the gate in-process with no SIGALRM backstop (#1046), so no fixed
+        "120 seconds" deadline exists on that path; the doc names the GitHub budget instead and
+        sends the operator to `explain` on any non-finish (#1385)."""
+        text = commands_doc.DOC.read_text()
+        section = text.split("### review\n", 1)[1].split("<!-- flags:review -->", 1)[0]
+        self.assertNotIn("120 seconds", section)
+        self.assertIn("did not finish", section)
+        self.assertIn("check `explain` before asking again", section)
+        # A hang outside a GitHub call is not interrupted by any read deadline (#1529 F1).
+        flat = " ".join(section.split())
+        self.assertNotIn("bounded only by that read", flat)
+        self.assertIn("Only the gate's GitHub calls are deadline-limited", flat)
+        self.assertIn("a hang outside a GitHub call has no bound", flat)
 
 
 if __name__ == "__main__":
