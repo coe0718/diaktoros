@@ -486,6 +486,13 @@ class ApplyHooksHelp(unittest.TestCase):
         self.assertNotIn("two repo hooks", doc)
         self.assertIn("triage", doc)
 
+    def test_check_hooks_docstring_does_not_claim_two_hooks(self):
+        from diaktoros.doctor import hook_checks
+        doc = " ".join(hook_checks.check_hooks.__doc__.split())
+        self.assertNotIn("two repo hooks", doc)
+        self.assertNotIn("both hooks", doc)
+        self.assertIn("triage", doc)
+
 
 if __name__ == "__main__":
     unittest.main()
