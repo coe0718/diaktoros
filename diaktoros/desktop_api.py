@@ -5,7 +5,7 @@ Every read is here and none of them writes: ``stats`` is the run ledger's half o
 ``hermes dk stats`` (totals and timings only), ``now`` lists live runs with host-written
 reasons and, per row, whether a retry would re-arm it, ``overview`` is that same live state for
 every configured loop at once (for the status chip and the cross-loop block), ``pr`` adds the
-host's own "what moves it" line (``run_supervisor.next_step``) plus what the ledger recorded,
+host's own "what moves it" line (``run_supervisor.views.next_step``) plus what the ledger recorded,
 ``health`` is ``doctor``'s checks with the network reads left unprobed, and ``settings`` is the
 plugin-level form and each loop's effective answers. ``records`` reads bounded local unresolved
 failure records, broker history, observer delivery memory and watchdog sweep/head/stall/main-CI
