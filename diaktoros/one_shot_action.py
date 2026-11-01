@@ -336,25 +336,11 @@ def drain_confirmed(loop, seat, expected):
     ties a run in the ledger to one POST, so whether a run started is the run ledger's to say
     (``status``), as for ``hermes dk drain``, until the gate acknowledges the claim (#1417).
     """
-    from . import migrate, util
+    from . import util
     out = {"ok": False, "status": "refused", "sent": 0, "outcomes": []}
-    if not _snapshot_shape(expected):
-        # None is the unconfirmed sweep's (#1407 review, F2): never a confirmation.
-        out["outcomes"].append({"key": "", "number": None, "outcome": "refused",
-                                "why": "no confirmed queue snapshot"})
-        return out
-    if seat not in ("reviewer", "fixer"):
-        out["outcomes"].append({"key": "", "number": None, "outcome": "refused",
-                                "why": "unknown drain seat"})
-        return out
-    if migrate.migrating() is not None:
-        out["outcomes"].append({"key": "", "number": None, "outcome": "refused",
-                                "why": "a migration holds the install"})
-        return out
-    armed, _error = gate.hooks_read(loop)
-    if not armed:
-        out["outcomes"].append({"key": "", "number": None, "outcome": "refused",
-                                "why": "hooks are paused or unreadable — nothing drained"})
+    why = _drain_refusal(loop, seat, expected)
+    if why:
+        out["outcomes"].append({"key": "", "number": None, "outcome": "refused", "why": why})
         return out
     with _LOCK:        # loading the script briefly extends sys.path; never two at once
         watchdog = _script("watchdog")
@@ -394,6 +380,21 @@ def drain_confirmed(loop, seat, expected):
                sent=sent,
                outcomes=report)
     return out
+
+
+def _drain_refusal(loop, seat, expected) -> str:
+    """Why a confirmed drain starts nothing, or "": checked in this order, each only once the one
+    before it passed, so a refused request never reads the hooks."""
+    from . import migrate
+    if not _snapshot_shape(expected):
+        # None is the unconfirmed sweep's (#1407 review, F2): never a confirmation.
+        return "no confirmed queue snapshot"
+    if seat not in ("reviewer", "fixer"):
+        return "unknown drain seat"
+    if migrate.migrating() is not None:
+        return "a migration holds the install"
+    armed, _error = gate.hooks_read(loop)
+    return "" if armed else "hooks are paused or unreadable — nothing drained"
 
 
 def _snapshot_shape(expected) -> bool:

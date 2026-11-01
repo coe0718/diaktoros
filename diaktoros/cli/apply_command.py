@@ -103,45 +103,10 @@ def _apply(args) -> int:
         print(f"settings refused: {exc}")
         return 2
 
-    # #1296: a seat moved to a GitHub App (`identity`) is not moved back by a form that still names
-    # the old login: that would silently drop the App, and with a reviewer App the merge check.
-    reverts = _app_reverts(loop, updated)
-    if reverts and not getattr(args, "identity_from_form", False):
-        for role, old, new in reverts:
-            print(f"settings refused: {loop['id']}: the plugin settings name {new!r} for the {role}, "
-                  f"but this loop's {role} is the GitHub App {old!r} (moved with `hermes dk "
-                  "identity`); apply would move it back")
-        print("fix: put the App's login in the settings form (or blank that login field), or pass "
-              "--identity-from-form to move the identity back to what the form names")
+    if _identity_refusal(args, loop, updated):
         return 2
 
-    # The four-identity rule holds for the config apply would leave behind, whether or not this
-    # push moves an identity: "nothing changed" must not endorse a reader that is also a seat.
-    problem = credentials.reader_problem(updated)
-    if problem:
-        print(f"settings refused: {updated['id']}: {problem} — {config.FOUR_IDENTITY_RULE}")
-        print(f"fix: {credentials.reader_fix(updated)}")
-        return 2
-    reader = str(updated.get("read_token") or "")
-    if util.login_entry(config.credentials_map(updated), reader) is None:
-        # doctor fails this loop; apply must not report success over it either. A PAT or a
-        # GitHub App identity (#1163) both count.
-        print(f"settings refused: {updated['id']}: read_token {reader!r} has no entry in "
-              "'tokens' or 'apps' — the gates read GitHub as that login and have no credential "
-              "to read it with")
-        print(f"fix: hermes dk set --loop {updated['id']} --read-token {reader} "
-              f"--token {reader}=/path/to/pat")
-        return 2
-
-    # A form token file for a login the loop gives a GitHub App identity is not applied (the
-    # identity keeps its App, #1163): say so, rather than "matches" over it.
-    form = settings_form.settings_defaults(cli_common._SETTINGS)
-    for role, key in config.TOKEN_FILE_SETTINGS.items():
-        login = (config.adjudicator_login(updated) if role == "adjudicator"
-                 else config.seat_login(updated, role))
-        if str(form.get(key) or "").strip() and cli_common._app_ref(updated, login):
-            print(f"[{updated['id']}] note: the plugin settings' {key} is not applied — {login} "
-                  "is a GitHub App identity on this loop (stale PAT setting; App selected)")
+    _stale_pat_notes(updated)
 
     identity, touched = route_sync._seat_diffs(loop, updated)
     # The installed registry can drift independently of the loop and the form. Repair those
@@ -153,21 +118,7 @@ def _apply(args) -> int:
     drifted = route_sync._drifted_routes(updated)
     rebinding = touched | set(binds) | set(repairs) | set(drifted)
     try:
-        # Validate what this apply would *write*: a loop that predates the seat checks keeps
-        # loading, but a seat this push moves must be one that can actually run.
-        credentials.verify_seats(updated, rebinding)
-        adj = config.adjudicator_login(updated)
-        if adj and (adj != config.adjudicator_login(loop)
-                    or cli_common._credential_label(loop, adj) != cli_common._credential_label(updated, adj)):
-            credentials.verify_adjudicator_token(updated)
-            credentials.verify_credentials(updated)
-        if rebinding:
-            cli_common._verify_routes(updated, rebinding)
-        # Refuses a foreign file (#105) — only over what this apply writes: the config's pairs. A
-        # route the registry holds elsewhere is what apply is about to rebind away, so it never
-        # blocks; disagreements left afterwards are reported by ``_diverged``.
-        shim_pairs = gate_shims.wanted(updated)
-        shim_lines = gate_shims.install(updated, dry_run=True, report=False, pairs=shim_pairs)
+        shim_pairs, shim_lines = _verify_write(loop, updated, rebinding)
     except config.ConfigError as exc:
         print(f"settings refused: {exc}")
         return 2
@@ -186,6 +137,210 @@ def _apply(args) -> int:
         if rc:
             return rc
 
+    changes = _form_changes(loop, updated)
+
+    missing_routes = sorted(name for role, name in cli_common._routes_of(updated).items()
+                            if role in touched and not routes.route(name))
+
+    if not changes and not identity and not binds and not repairs and not drifted:
+        return _already_matches(args, loop, updated, leftover_hooks)
+    if _host_refusal(args, loop, updated):
+        return 2
+    _print_plan(changes, identity, binds, drifted, repairs, missing_routes)
+    if missed := [role for role, name in cli_common._routes_of(updated).items()
+                  if role in touched and name in missing_routes]:
+        print(f"refused: {', '.join(missed)} would move to a route that does not exist yet")
+        return 2
+
+    if args.dry_run:
+        return _dry_run_report(args, loop, updated, binds, repairs, drifted, missing,
+                               leftover_hooks)
+
+    if _busy_refusal(args, loop, rebinding):
+        return 2
+
+    # Preflight remote hooks before any local mutation. Snapshot each owned route and roll back
+    # both surfaces on any failure; config is published only after route/hook readback agrees.
+    try:
+        hook_moves, redundant_hooks = route_sync._hook_moves(route_sync._hook_origin(loop, drifted), updated, binds,
+                                                  getattr(args, "admin_token", "") or None)
+    except config.ConfigError as exc:
+        print(f"refused: {exc}")
+        return 2
+    previous = {name: routes.route(name)
+                for name in ({bind[0] for bind in binds.values()} | {n for n, _ in repairs.values()}
+                             | {n for n, _ in drifted.values()})}
+    config_path = config.config_dir() / f"{loop['id']}.json"
+    previous_config = config_path.read_bytes()
+    attempted_hooks = []
+    try:
+        rewrite = tuple(set(binds) | set(repairs) | set(drifted))
+        rebound = list(cli_common._install_routes(updated, roles=rewrite).items()) if rewrite else []
+        _check_readback(updated, rebound)
+        for hook_id, old, new, ssl in hook_moves:
+            attempted_hooks.append((hook_id, old, ssl))
+            cli_common._patch_hook_url(loop, hook_id, new, getattr(args, "admin_token", "") or None,
+                            insecure_ssl=ssl)
+        path = cli_common._write_config(updated) if changes or identity else config_path
+        if rebound:
+            route_intent.record_live(updated, [name for _, name in rebound])
+    except Exception as exc:
+        return _rollback(args, loop, exc, attempted_hooks, previous, config_path,
+                         previous_config)
+    print(f"loop config updated: {path}")
+    for role, name in rebound:
+        print(f"  route {name} rebound → profile {config.seat_profile(updated, role)}"
+              + (f", script {GATE_SCRIPT[role]}" if role in repairs else "")
+              + (f", {', '.join(drifted[role][1])} restored" if role in drifted else ""))
+    for hook_id, _, new, _ssl in hook_moves:
+        print(f"  hook {hook_id} → {new}")
+    for hook, keep in redundant_hooks:
+        print(f"  {route_sync._redundant_hook_line(loop, hook, keep)}")
+    return 1 if route_sync._diverged(updated) or redundant_hooks or leftover_hooks else 0
+
+
+
+
+
+def _verify_write(loop: dict, updated: dict, rebinding: set) -> tuple:
+    """Raise ``ConfigError`` unless what this apply would write can run; the gate shims' pairs
+    and the lines a dry install of them prints."""
+    # Validate what this apply would *write*: a loop that predates the seat checks keeps
+    # loading, but a seat this push moves must be one that can actually run.
+    credentials.verify_seats(updated, rebinding)
+    adj = config.adjudicator_login(updated)
+    if adj and (adj != config.adjudicator_login(loop)
+                or cli_common._credential_label(loop, adj) != cli_common._credential_label(updated, adj)):
+        credentials.verify_adjudicator_token(updated)
+        credentials.verify_credentials(updated)
+    if rebinding:
+        cli_common._verify_routes(updated, rebinding)
+    # Refuses a foreign file (#105) — only over what this apply writes: the config's pairs. A
+    # route the registry holds elsewhere is what apply is about to rebind away, so it never
+    # blocks; disagreements left afterwards are reported by ``_diverged``.
+    shim_pairs = gate_shims.wanted(updated)
+    shim_lines = gate_shims.install(updated, dry_run=True, report=False, pairs=shim_pairs)
+    return shim_pairs, shim_lines
+
+
+def _busy_refusal(args, loop: dict, rebinding: set) -> bool:
+    """Print the seats in flight on a route this apply rebinds, and refuse (True) unless
+    ``--while-busy`` says to go ahead anyway."""
+    busy = cli_common._busy_seats(loop, rebinding) if rebinding else []
+    if busy and not getattr(args, "while_busy", False):
+        for line in busy:
+            print(f"  {line}")
+        print("refused: a seat is in flight, and its live run holds the old profile and login "
+              "until it ends. Let it finish, then apply again — or pass --while-busy to rebind "
+              "now, knowing that run still finishes under the identity it started with.")
+        return True
+    for line in busy:
+        print(f"  {line}  (--while-busy: that run keeps the identity it started with)")
+    return False
+
+def _stale_pat_notes(updated: dict) -> None:
+    """A note for each form token file this apply leaves unapplied: its login is an App identity."""
+    # A form token file for a login the loop gives a GitHub App identity is not applied (the
+    # identity keeps its App, #1163): say so, rather than "matches" over it.
+    form = settings_form.settings_defaults(cli_common._SETTINGS)
+    for role, key in config.TOKEN_FILE_SETTINGS.items():
+        login = (config.adjudicator_login(updated) if role == "adjudicator"
+                 else config.seat_login(updated, role))
+        if str(form.get(key) or "").strip() and cli_common._app_ref(updated, login):
+            print(f"[{updated['id']}] note: the plugin settings' {key} is not applied — {login} "
+                  "is a GitHub App identity on this loop (stale PAT setting; App selected)")
+
+
+def _host_refusal(args, loop: dict, updated: dict) -> bool:
+    """Print why the host may not change yet, and say so (True): unsettled observer notices."""
+    if not args.dry_run and updated.get("host") != loop.get("host") and loop.get("observer"):
+        try:
+            outstanding = observer.unsettled(state_mod.state_for(loop))
+        except (OSError, ValueError) as exc:
+            print(f"observer ledger cannot be checked — host unchanged: {exc}")
+            return True
+        if outstanding:
+            print(f"refused: {outstanding} observer notice(s) are unsettled; retry/resolve "
+                  "them before changing the host")
+            return True
+    return False
+
+
+def _print_plan(changes: list, identity: list, binds: dict, drifted: dict, repairs: dict,
+                missing_routes: list) -> None:
+    """What this apply moves: each setting and identity, then each route it rewrites or cannot."""
+    for name, was, now in list(changes) + list(identity):
+        print(f"  {name}: {was} → {now}")
+    for role, (name, current, target) in sorted(binds.items()):
+        print(f"  route {name}: profile {current or '(blank)'} → {target}   (the URL carries "
+              "the profile)")
+    for role, (name, fields) in sorted(drifted.items()):
+        if fields == ["enabled"]:
+            print(f"  route {name}: disabled (enabled: false) → enabled   (the gateway answers 403 "
+                  "to every event while it is off)")
+        else:
+            print(f"  route {name}: {', '.join(fields)} "
+                  f"{'differs' if len(fields) == 1 else 'differ'} from what the plugin writes → "
+                  "rewritten from the loop config   (secret kept)")
+    for role, (name, script) in sorted(repairs.items()):
+        print(f"  route {name}: script {script} → {GATE_SCRIPT[role]}   (installed by an older "
+              "release)")
+    for name in missing_routes:
+        print(f"  route {name}: not installed — `hermes dk init` creates routes; "
+              "apply will not invent one behind your back")
+
+
+def _check_readback(updated: dict, rebound: list) -> None:
+    """Raise ``ConfigError`` unless every rebound route reads back as the config asks."""
+    for role, name in rebound:
+        entry = routes.route(name)
+        if not entry or routes.route_profile(entry) != config.seat_profile(updated, role):
+            raise config.ConfigError(f"route {name} readback does not match requested profile")
+        if entry.get("script") != GATE_SCRIPT[role]:
+            raise config.ConfigError(f"route {name} readback does not run {GATE_SCRIPT[role]}")
+        if gate_shims.contract_drift(updated, role, entry):
+            raise config.ConfigError(f"route {name} readback still differs from what the "
+                                     "plugin writes: "
+                                     + ", ".join(gate_shims.contract_drift(updated, role, entry)))
+
+def _identity_refusal(args, loop: dict, updated: dict) -> bool:
+    """Print why ``updated`` may not be applied for its identities, and say so (True): a seat the
+    form would move off its GitHub App (#1296), or a reader the four-identity rule or the
+    credentials refuse."""
+    # #1296: a seat moved to a GitHub App (`identity`) is not moved back by a form that still names
+    # the old login: that would silently drop the App, and with a reviewer App the merge check.
+    reverts = _app_reverts(loop, updated)
+    if reverts and not getattr(args, "identity_from_form", False):
+        for role, old, new in reverts:
+            print(f"settings refused: {loop['id']}: the plugin settings name {new!r} for the {role}, "
+                  f"but this loop's {role} is the GitHub App {old!r} (moved with `hermes dk "
+                  "identity`); apply would move it back")
+        print("fix: put the App's login in the settings form (or blank that login field), or pass "
+              "--identity-from-form to move the identity back to what the form names")
+        return True
+
+    # The four-identity rule holds for the config apply would leave behind, whether or not this
+    # push moves an identity: "nothing changed" must not endorse a reader that is also a seat.
+    problem = credentials.reader_problem(updated)
+    if problem:
+        print(f"settings refused: {updated['id']}: {problem} — {config.FOUR_IDENTITY_RULE}")
+        print(f"fix: {credentials.reader_fix(updated)}")
+        return True
+    reader = str(updated.get("read_token") or "")
+    if util.login_entry(config.credentials_map(updated), reader) is None:
+        # doctor fails this loop; apply must not report success over it either. A PAT or a
+        # GitHub App identity (#1163) both count.
+        print(f"settings refused: {updated['id']}: read_token {reader!r} has no entry in "
+              "'tokens' or 'apps' — the gates read GitHub as that login and have no credential "
+              "to read it with")
+        print(f"fix: hermes dk set --loop {updated['id']} --read-token {reader} "
+              f"--token {reader}=/path/to/pat")
+        return True
+    return False
+
+
+def _form_changes(loop: dict, updated: dict) -> list:
+    """``(name, was, now)`` for each setting the form moves, identities aside."""
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci", "merge_check",
@@ -220,186 +375,105 @@ def _apply(args) -> int:
     now = config.seat_daily_turns(updated, "issue_fixer")
     if was != now:
         changes.append(("fix daily turns", was, now))
+    return changes
 
-    missing_routes = sorted(name for role, name in cli_common._routes_of(updated).items()
-                            if role in touched and not routes.route(name))
 
-    if not changes and not identity and not binds and not repairs and not drifted:
-        # Never "matches" over a route the registry holds differently (#112 review): the loop
-        # config can agree with the settings while the gateway serves something else.
-        left = route_sync._diverged(updated, header=f"[{loop['id']}] the loop config matches the plugin "
-                                         "settings, but the route registry does not:")
-        if not left:
-            print(f"[{loop['id']}] already matches the plugin settings")
-        duplicates, slashed = [], []
-        # With --hooks, the hooks are reconciled after this by _ensure_hooks — the same listing,
-        # the same keep-one rule, and a repoint for a hook this read-only check can only refuse.
-        if not args.dry_run and not getattr(args, "hooks", False):
-            token = getattr(args, "admin_token", "") or None
-            try:        # nothing else moves: this reads, to name two hooks on one route URL and
-                        # find one whose URL differs only by a trailing slash (a gateway 404)
-                slashed, duplicates = route_sync._hook_moves(loop, updated, {}, token, check_only=True)
-            except cli_common.HookAccessError as exc:
-                print(f"  (repo hooks not checked: {exc})")
-            except config.ConfigError as exc:
-                print(f"  {exc}")       # a hook on a loop route this push cannot explain (#55)
-                return 1
-        for hook_id, old, new, ssl in slashed:
-            try:
-                cli_common._patch_hook_url(loop, hook_id, new, getattr(args, "admin_token", "") or None,
-                                insecure_ssl=ssl)
-            except config.ConfigError as exc:
-                print(f"  hook {hook_id} NOT repointed from {old} to {new}: {exc}")
-                print(f"  fix: {cli_common._hook_fix(loop, exc, getattr(args, 'admin_token', '') or None)}")
-                return 2
-            print(f"  hook {hook_id} → {new}   (was {old}: the gateway does not route a trailing "
-                  "slash)")
-        for hook, keep in duplicates:
-            print(f"  {route_sync._redundant_hook_line(loop, hook, keep)}")
-        return 1 if left or leftover_hooks or duplicates else 0
-    if not args.dry_run and updated.get("host") != loop.get("host") and loop.get("observer"):
-        try:
-            outstanding = observer.unsettled(state_mod.state_for(loop))
-        except (OSError, ValueError) as exc:
-            print(f"observer ledger cannot be checked — host unchanged: {exc}")
-            return 2
-        if outstanding:
-            print(f"refused: {outstanding} observer notice(s) are unsettled; retry/resolve "
-                  "them before changing the host")
-            return 2
-    for name, was, now in list(changes) + list(identity):
-        print(f"  {name}: {was} → {now}")
-    for role, (name, current, target) in sorted(binds.items()):
-        print(f"  route {name}: profile {current or '(blank)'} → {target}   (the URL carries "
-              "the profile)")
-    for role, (name, fields) in sorted(drifted.items()):
-        if fields == ["enabled"]:
-            print(f"  route {name}: disabled (enabled: false) → enabled   (the gateway answers 403 "
-                  "to every event while it is off)")
-        else:
-            print(f"  route {name}: {', '.join(fields)} "
-                  f"{'differs' if len(fields) == 1 else 'differ'} from what the plugin writes → "
-                  "rewritten from the loop config   (secret kept)")
-    for role, (name, script) in sorted(repairs.items()):
-        print(f"  route {name}: script {script} → {GATE_SCRIPT[role]}   (installed by an older "
-              "release)")
-    for name in missing_routes:
-        print(f"  route {name}: not installed — `hermes dk init` creates routes; "
-              "apply will not invent one behind your back")
-    if missed := [role for role, name in cli_common._routes_of(updated).items()
-                  if role in touched and name in missing_routes]:
-        print(f"refused: {', '.join(missed)} would move to a route that does not exist yet")
-        return 2
-
-    if args.dry_run:
-        rewritten = ({bind[0] for bind in binds.values()} | {n for n, _ in repairs.values()}
-                     | {n for n, _ in drifted.values()})
-        if getattr(args, "recreate_routes", False):
-            rewritten |= set(missing.values())
-        left = route_sync._diverged(updated, rewritten=rewritten)
-        try:
-            hook_before = route_sync._hook_origin(loop, drifted)
-            if hook_before is not loop:
-                # The routes' origin moves, so their hooks move too: preview it (reads only).
-                moves, redundant = route_sync._hook_moves(hook_before, updated, binds,
-                                               getattr(args, "admin_token", "") or None)
-                for hook_id, _old, new, _ssl in moves:
-                    print(f"  hook {hook_id} would move → {new}")
-                for hook, keep in redundant:
-                    print(f"  {route_sync._redundant_hook_line(loop, hook, keep)}")
+def _already_matches(args, loop: dict, updated: dict, leftover_hooks: int) -> int:
+    """Nothing in the loop config moves: say whether the routes and repo hooks agree with it, and
+    repoint a hook whose URL differs only by a trailing slash."""
+    # Never "matches" over a route the registry holds differently (#112 review): the loop
+    # config can agree with the settings while the gateway serves something else.
+    left = route_sync._diverged(updated, header=f"[{loop['id']}] the loop config matches the plugin "
+                                     "settings, but the route registry does not:")
+    if not left:
+        print(f"[{loop['id']}] already matches the plugin settings")
+    duplicates, slashed = [], []
+    # With --hooks, the hooks are reconciled after this by _ensure_hooks — the same listing,
+    # the same keep-one rule, and a repoint for a hook this read-only check can only refuse.
+    if not args.dry_run and not getattr(args, "hooks", False):
+        token = getattr(args, "admin_token", "") or None
+        try:        # nothing else moves: this reads, to name two hooks on one route URL and
+                    # find one whose URL differs only by a trailing slash (a gateway 404)
+            slashed, duplicates = route_sync._hook_moves(loop, updated, {}, token, check_only=True)
+        except cli_common.HookAccessError as exc:
+            print(f"  (repo hooks not checked: {exc})")
         except config.ConfigError as exc:
-            print(f"refused: {exc}")
+            print(f"  {exc}")       # a hook on a loop route this push cannot explain (#55)
+            return 1
+    for hook_id, old, new, ssl in slashed:
+        try:
+            cli_common._patch_hook_url(loop, hook_id, new, getattr(args, "admin_token", "") or None,
+                            insecure_ssl=ssl)
+        except config.ConfigError as exc:
+            print(f"  hook {hook_id} NOT repointed from {old} to {new}: {exc}")
+            print(f"  fix: {cli_common._hook_fix(loop, exc, getattr(args, 'admin_token', '') or None)}")
             return 2
-        print("(dry run — nothing written: no loop config, no routes touched)")
-        if left:
-            print("  apply would exit 1: the route(s) above still disagree with the config after it")
-        return 1 if left or leftover_hooks else 0
+        print(f"  hook {hook_id} → {new}   (was {old}: the gateway does not route a trailing "
+              "slash)")
+    for hook, keep in duplicates:
+        print(f"  {route_sync._redundant_hook_line(loop, hook, keep)}")
+    return 1 if left or leftover_hooks or duplicates else 0
 
-    busy = cli_common._busy_seats(loop, rebinding) if rebinding else []
-    if busy and not getattr(args, "while_busy", False):
-        for line in busy:
-            print(f"  {line}")
-        print("refused: a seat is in flight, and its live run holds the old profile and login "
-              "until it ends. Let it finish, then apply again — or pass --while-busy to rebind "
-              "now, knowing that run still finishes under the identity it started with.")
-        return 2
-    for line in busy:
-        print(f"  {line}  (--while-busy: that run keeps the identity it started with)")
 
-    # Preflight remote hooks before any local mutation. Snapshot each owned route and roll back
-    # both surfaces on any failure; config is published only after route/hook readback agrees.
+def _dry_run_report(args, loop: dict, updated: dict, binds: dict, repairs: dict, drifted: dict,
+                    missing: dict, leftover_hooks: int) -> int:
+    """``--dry-run``'s end: what would still disagree afterwards, and the hook moves (reads only)."""
+    rewritten = ({bind[0] for bind in binds.values()} | {n for n, _ in repairs.values()}
+                 | {n for n, _ in drifted.values()})
+    if getattr(args, "recreate_routes", False):
+        rewritten |= set(missing.values())
+    left = route_sync._diverged(updated, rewritten=rewritten)
     try:
-        hook_moves, redundant_hooks = route_sync._hook_moves(route_sync._hook_origin(loop, drifted), updated, binds,
-                                                  getattr(args, "admin_token", "") or None)
+        hook_before = route_sync._hook_origin(loop, drifted)
+        if hook_before is not loop:
+            # The routes' origin moves, so their hooks move too: preview it (reads only).
+            moves, redundant = route_sync._hook_moves(hook_before, updated, binds,
+                                           getattr(args, "admin_token", "") or None)
+            for hook_id, _old, new, _ssl in moves:
+                print(f"  hook {hook_id} would move → {new}")
+            for hook, keep in redundant:
+                print(f"  {route_sync._redundant_hook_line(loop, hook, keep)}")
     except config.ConfigError as exc:
         print(f"refused: {exc}")
         return 2
-    previous = {name: routes.route(name)
-                for name in ({bind[0] for bind in binds.values()} | {n for n, _ in repairs.values()}
-                             | {n for n, _ in drifted.values()})}
-    config_path = config.config_dir() / f"{loop['id']}.json"
-    previous_config = config_path.read_bytes()
-    attempted_hooks = []
-    try:
-        rewrite = tuple(set(binds) | set(repairs) | set(drifted))
-        rebound = list(cli_common._install_routes(updated, roles=rewrite).items()) if rewrite else []
-        for role, name in rebound:
-            entry = routes.route(name)
-            if not entry or routes.route_profile(entry) != config.seat_profile(updated, role):
-                raise config.ConfigError(f"route {name} readback does not match requested profile")
-            if entry.get("script") != GATE_SCRIPT[role]:
-                raise config.ConfigError(f"route {name} readback does not run {GATE_SCRIPT[role]}")
-            if gate_shims.contract_drift(updated, role, entry):
-                raise config.ConfigError(f"route {name} readback still differs from what the "
-                                         "plugin writes: "
-                                         + ", ".join(gate_shims.contract_drift(updated, role, entry)))
-        for hook_id, old, new, ssl in hook_moves:
-            attempted_hooks.append((hook_id, old, ssl))
-            cli_common._patch_hook_url(loop, hook_id, new, getattr(args, "admin_token", "") or None,
-                            insecure_ssl=ssl)
-        path = cli_common._write_config(updated) if changes or identity else config_path
-        if rebound:
-            route_intent.record_live(updated, [name for _, name in rebound])
-    except Exception as exc:
-        failed = []
-        for hook_id, old, ssl in reversed(attempted_hooks):
-            try:
-                cli_common._patch_hook_url(loop, hook_id, old, getattr(args, "admin_token", "") or None,
-                                insecure_ssl=ssl)
-            except Exception as rollback_exc:
-                failed.append(f"hook {hook_id}: {rollback_exc}")
-        if previous:
-            try:
-                routes.restore_entries(previous)
-            except Exception as rollback_exc:
-                failed.append(f"routes: {rollback_exc}")
-        try:
-            if config_path.read_bytes() != previous_config:
-                cli_common._restore_config(config_path, previous_config)
-        except Exception as rollback_exc:
-            failed.append(f"config: {rollback_exc}")
-        try:
-            config_unchanged = config_path.read_bytes() == previous_config
-        except OSError:
-            config_unchanged = False
-        print(f"reconciliation FAILED: {exc}; " +
-              ("config unchanged" if config_unchanged else "config may have changed"))
-        if failed:
-            print("ROLLBACK FAILED — inspect before retrying: " + "; ".join(failed))
-        else:
-            print("  prior routes and hook URLs restored")
-        return 2
-    print(f"loop config updated: {path}")
-    for role, name in rebound:
-        print(f"  route {name} rebound → profile {config.seat_profile(updated, role)}"
-              + (f", script {GATE_SCRIPT[role]}" if role in repairs else "")
-              + (f", {', '.join(drifted[role][1])} restored" if role in drifted else ""))
-    for hook_id, _, new, _ssl in hook_moves:
-        print(f"  hook {hook_id} → {new}")
-    for hook, keep in redundant_hooks:
-        print(f"  {route_sync._redundant_hook_line(loop, hook, keep)}")
-    return 1 if route_sync._diverged(updated) or redundant_hooks or leftover_hooks else 0
+    print("(dry run — nothing written: no loop config, no routes touched)")
+    if left:
+        print("  apply would exit 1: the route(s) above still disagree with the config after it")
+    return 1 if left or leftover_hooks else 0
 
+
+def _rollback(args, loop: dict, exc: Exception, attempted_hooks: list, previous: dict,
+              config_path: pathlib.Path, previous_config: bytes) -> int:
+    """A reconciliation failed part-way: put back the hook URLs, routes and config it touched, and
+    say which of them could not be restored."""
+    failed = []
+    for hook_id, old, ssl in reversed(attempted_hooks):
+        try:
+            cli_common._patch_hook_url(loop, hook_id, old, getattr(args, "admin_token", "") or None,
+                            insecure_ssl=ssl)
+        except Exception as rollback_exc:
+            failed.append(f"hook {hook_id}: {rollback_exc}")
+    if previous:
+        try:
+            routes.restore_entries(previous)
+        except Exception as rollback_exc:
+            failed.append(f"routes: {rollback_exc}")
+    try:
+        if config_path.read_bytes() != previous_config:
+            cli_common._restore_config(config_path, previous_config)
+    except Exception as rollback_exc:
+        failed.append(f"config: {rollback_exc}")
+    try:
+        config_unchanged = config_path.read_bytes() == previous_config
+    except OSError:
+        config_unchanged = False
+    print(f"reconciliation FAILED: {exc}; " +
+          ("config unchanged" if config_unchanged else "config may have changed"))
+    if failed:
+        print("ROLLBACK FAILED — inspect before retrying: " + "; ".join(failed))
+    else:
+        print("  prior routes and hook URLs restored")
+    return 2
 
 def add_apply(sub) -> None:  # noqa: ANN001
     """The ``apply`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
