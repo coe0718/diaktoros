@@ -433,18 +433,20 @@ inspection, not replay. [Issues](issues.md) covers setup and truthful limitation
 
 ## Holding one PR
 
-A maintainer (`triage.maintainers`) holds a PR by applying the `diaktoros:hold` label or
+A maintainer (`triage.maintainers`, or an agent in `operator_agents`, which counts as a
+maintainer) holds a PR by applying the `diaktoros:hold` label or
 commenting `/loop hold`. `/loop release` lifts either; removing the label lifts only a label
 hold, never a `/loop hold` comment. The latest
-event from a maintainer wins; anyone else's label or comment is ignored and logged.
+event from a maintainer or operator agent wins; anyone else's label or comment is ignored and logged.
 
 While held, no review, adjudication, fix, CI-fix or conflict turn is claimed: queued turns stay pending
 and start after release (the next watchdog sweep re-arms the worker). A turn already
 running is not interrupted. `explain` and `status` show who held it and when, and the
 watchdog reports no stall for it. A hold that cannot be read is treated as held.
 
-It cannot fire on a loop without `triage.maintainers` (set with or without
-`triage.fix_label`): nobody there is allowed to hold. The hold is read at claim time and by the watchdog sweep,
+It cannot fire on a loop with neither `triage.maintainers` (set with or without
+`triage.fix_label`) nor `operator_agents`: nobody there is allowed to hold. A loop with only
+`operator_agents` can hold; those holds show as `agent hold` in the weekly report. The hold is read at claim time and by the watchdog sweep,
 so it needs the read token to see issue events and comments.
 
 ## When a gate crashes or runs out of time
