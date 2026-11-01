@@ -621,11 +621,16 @@ class Ledger:
                 self._save(data)
 
     def resolve(self, key: str, how: str, settle: bool = True, duplicate_of: str = "",
-                deadline: float | None = None) -> bool:
+                deadline: float | None = None, not_after: float | None = None) -> bool:
+        """Settle ``key``. With ``not_after`` (a wall-clock time: when the resolving run began),
+        an entry last recorded after it is left open: that failure is newer than the run, so
+        the run's success says nothing about it. Checked under the lock, on the entry as it is."""
         with self._locked(deadline):
             data = self._load_for_write()
             entry = data.get(key)
             if not isinstance(entry, dict) or entry.get("resolved"):
+                return False
+            if not_after is not None and _number(entry.get("last_at")) > not_after:
                 return False
             data[key] = {**entry, "resolved": True, "resolution": how, "resolved_at": time.time(),
                          **({"duplicate_of": duplicate_of} if duplicate_of else {})}
@@ -1038,6 +1043,11 @@ def _in_process_key(gate: str, payload) -> tuple[str, str]:
     return fingerprint(gate, raw), raw
 
 
+def _wall_start(started: float) -> float:
+    """The wall-clock time of a ``time.monotonic()`` reading taken earlier in this process."""
+    return time.time() - (time.monotonic() - started)
+
+
 def record_in_process(gate: str, payload, exc: BaseException, started: float) -> str:
     """Record a gate that crashed or ran out of budget when called in-process (``hermes dk
     review``, the Desktop's review), which does not go through :func:`run`. Same ledgers, key
@@ -1055,7 +1065,7 @@ def record_in_process(gate: str, payload, exc: BaseException, started: float) ->
                  "error": _bounded(message, 500), "traceback": _bounded(trace, 4000),
                  "elapsed_s": round(time.monotonic() - started, 2), "budget_s": None,
                  "redrivable": False, "released_claims": [], "via": IN_PROCESS,
-                 "run_started_at": time.time() - (time.monotonic() - started)}
+                 "run_started_at": _wall_start(started)}
         ledgers = _ledgers_for(payload)
         for i, ledger in enumerate(ledgers):
             try:
@@ -1069,10 +1079,13 @@ def record_in_process(gate: str, payload, exc: BaseException, started: float) ->
     return ""
 
 
-def resolve_in_process(gate: str, payload) -> None:
+def resolve_in_process(gate: str, payload, started: float | None = None) -> None:
     """The in-process gate finished this payload: settle an earlier in-process failure of it,
-    as a later webhook delivery does in :func:`run`. Never raises."""
+    as a later webhook delivery does in :func:`run`. ``started`` is the run's
+    ``time.monotonic()`` start (as passed to :func:`record_in_process`): a failure recorded
+    after it belongs to an overlapping, newer run and stays open. Never raises."""
     try:
+        not_after = None if started is None else _wall_start(started)
         key, _raw = _in_process_key(gate, payload)
         how = f"the same review request completed on a later in-process run at {iso_at(time.time())}"
         ledgers = _ledgers_for(payload)
@@ -1081,7 +1094,7 @@ def resolve_in_process(gate: str, payload) -> None:
                 if isinstance(ledger.entries().get(key), dict):   # nothing recorded: write nothing
                     # Bounded like the record: a busy ledger must neither hang the command
                     # nor keep the next ledger from being tried.
-                    ledger.resolve(key, how,
+                    ledger.resolve(key, how, not_after=not_after,
                                    deadline=time.monotonic() + RECORD_S / (len(ledgers) - i))
             except Exception as err:  # noqa: BLE001 - try the next ledger
                 log(f"in-process gate-failure resolve failed ({ledger.path}): "
@@ -1149,7 +1162,9 @@ def run(gate: str, main: Callable[[], None]) -> None:
                else f"event completed on a later delivery at {iso_at(time.time())}")
         for ledger in _ledgers_for(payload):
             try:
-                ledger.resolve(key, how)
+                # Only a failure recorded before this delivery began: an overlapping newer
+                # delivery's failure is not settled by this one's success (#1593).
+                ledger.resolve(key, how, not_after=started_wall)
             except Exception as err:  # noqa: BLE001
                 log(f"gate-failure ledger resolve failed: {type(err).__name__}: {err}")
         # The event completed: a read it owned is settled even if no ledger still held the
