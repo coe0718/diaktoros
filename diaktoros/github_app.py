@@ -260,7 +260,7 @@ def principal(loop: dict, login: str, fetch=None) -> dict | None:
                 or app.get("id") != found.get("app_id"):
             return None
     path = f"/users/{app['slug']}[bot]"
-    user = fetch(path) if fetch else gh.api(loop, path, login=login)
+    user = fetch(path) if fetch is not None else gh.api(loop, path, login=login)
     if not isinstance(user, dict) or type(user.get("id")) is not int or user.get("type") != "Bot":
         return None
     account = {"login": user.get("login"), "id": user["id"], "type": "Bot", "app_id": app["id"],

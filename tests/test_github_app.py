@@ -318,6 +318,25 @@ class Principal(Base):
         with mock.patch.object(gh, "api", side_effect=AssertionError("cached")):
             self.assertEqual(gh.principal(self.loop, BOT)["login"], BOT)
 
+    def test_a_false_valued_fetch_is_still_the_callers_transport(self):
+        class Refused(Exception):
+            pass
+
+        class Falsy:
+            def __bool__(self):
+                return False
+
+            def __call__(self, path):
+                raise Refused("bounded refusal")
+        with mock.patch.object(gh, "api", side_effect=AssertionError("gh.api not used")):
+            with self.assertRaisesRegex(Refused, "bounded refusal"):        # cold cache
+                gh.principal(self.loop, BOT, fetch=Falsy())
+        with self.users({"login": BOT, "id": 346013884, "type": "Bot"}):
+            self.assertEqual(gh.principal(self.loop, BOT)["login"], BOT)    # warms the cache
+        with mock.patch.object(gh, "api", side_effect=AssertionError("gh.api not used")):
+            with self.assertRaisesRegex(Refused, "bounded refusal"):        # warm cache
+                gh.principal(self.loop, BOT, fetch=Falsy())
+
     def test_a_key_for_another_app_or_a_user_answer_is_not_this_principal(self):
         def other(loop, login, path, method="GET", body=None):
             return gh.Response({"id": 999, "slug": "other-app"}, "", 200, {})
