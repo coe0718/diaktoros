@@ -617,8 +617,8 @@ What it is for:
 
 `set` never changes the reviewer/fixer profile or login. That comes from the settings form
 through [`apply`](#apply), so one place decides seat identity. Concurrency above 1 needs a
-`--clone`, because each parallel run gets its own copy. Without one it is refused, exactly as at
-`init`.
+`--clone`, because each parallel run gets its own copy, unless the isolated worker's runtime file
+exists. Without either it is refused, exactly as at `init`.
 
 **Write and validation limits.** There is no `set --dry-run`. A cap-only/numeric update does
 not rerun every profile/credential preflight; the handler normalizes the result and selectively
