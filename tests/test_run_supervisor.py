@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 from diaktoros import (broker, broker_ipc, config, gate, ledger, run_supervisor, seat_model,
                          trusted_turn)
-from diaktoros.run_supervisor import views
+from diaktoros.run_supervisor import ledger_schema, views
 from diaktoros.config import host_guards  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
 from diaktoros.hostdirs import HostStateGone
@@ -264,7 +264,7 @@ class Lifecycle(unittest.TestCase):
         for name, build in (("foreign-sqlite", "CREATE TABLE someone_elses(x); "
                                                 "INSERT INTO someone_elses VALUES (1);"),
                             # Only the plugin's runs table, with a claimable pending row.
-                            ("lookalike", run_supervisor.SCHEMA.split(";")[0] + "; INSERT INTO runs"
+                            ("lookalike", ledger_schema.SCHEMA.split(";")[0] + "; INSERT INTO runs"
                              "(id,delivery,repo,pr,head,seat,state,created,updated) VALUES "
                              "('dead','d','o/r',1,'h','reviewer','pending',0,0);")):
             path = self.root / f"build-{name}.sqlite"
@@ -651,7 +651,7 @@ class Lifecycle(unittest.TestCase):
     def test_a_ledger_one_migration_behind_is_migrated_then_accepted_by_a_worker(self):
         db = self.root / "legacy" / "runs.sqlite"
         Supervisor(db)
-        last = run_supervisor._MIGRATIONS[-1][0]
+        last = ledger_schema.MIGRATIONS[-1][0]
         with contextlib.closing(sqlite3.connect(db)) as con:
             con.execute(f"ALTER TABLE runs DROP COLUMN {last}")
             con.commit()
@@ -659,7 +659,7 @@ class Lifecycle(unittest.TestCase):
             Supervisor(db, create=False)  # a worker never migrates
         Supervisor(db)  # the host does, from the same list the worker checks against
         Supervisor(db, create=False)
-        self.assertEqual({c for c, _, _ in run_supervisor._MIGRATIONS} - run_supervisor
+        self.assertEqual({c for c, _, _ in ledger_schema.MIGRATIONS} - ledger_schema
                          ._expected_schema()["runs"], set())
 
     def test_the_suite_guard_refuses_the_real_ledger(self):

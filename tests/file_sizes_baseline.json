@@ -71,7 +71,7 @@
     "diaktoros/one_shot_action.py::drain_confirmed": 82,
     "diaktoros/ready.py::assess_kinds": 118,
     "diaktoros/retry_action.py::perform": 88,
-    "diaktoros/run_supervisor/__init__.py::Supervisor.__init__": 137,
+    "diaktoros/run_supervisor/__init__.py::Supervisor.__init__": 122,
     "diaktoros/run_supervisor/__init__.py::main": 104,
     "diaktoros/run_supervisor/intake.py::RunIntake.retry": 118,
     "diaktoros/run_supervisor/intake.py::RunIntake.submit": 92,

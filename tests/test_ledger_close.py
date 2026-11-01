@@ -231,7 +231,7 @@ class ConnectHelper(unittest.TestCase):
             return opened[-1]
 
         with mock.patch('sqlite3.connect', tracking), \
-                mock.patch('diaktoros.run_supervisor._ledger_problem', side_effect=RuntimeError('boom')):
+                mock.patch('diaktoros.run_supervisor.ledger_schema.ledger_problem', side_effect=RuntimeError('boom')):
             with self.assertRaises(RuntimeError):
                 sup._worker_connect()
         self.assertEqual(len(opened), 1)
