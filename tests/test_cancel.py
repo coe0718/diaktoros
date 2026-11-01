@@ -146,6 +146,26 @@ class NotStarted(Base):
         self.assertEqual(sup.cancel(run_id), {'was': 'waiting', 'state': 'uncertain'})
         self.assertIn('after it may have written (review receipt confirmed)', sup.get('d')['error'])
 
+    def test_a_blocked_run_with_a_write_ahead_record_is_quarantined_not_cancelled(self):
+        sup = self.sup()
+        sup.submit('d', REPO, 1, HEAD, 'reviewer')
+        run_id = sup.get('d')['id']
+        self.set_state('d', 'blocked')
+        with ledger.connect(self.db) as con:
+            con.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,created) "
+                        "VALUES(?,?,?,?,?)", (run_id, 'confirmed', 'g', 1, 0))
+        self.assertEqual(sup.cancel(run_id), {'was': 'blocked', 'state': 'uncertain'})
+        self.assertIn('after it may have written', sup.get('d')['error'])
+
+    def test_the_docs_name_the_uncertain_exception_for_a_not_started_run(self):
+        root = Path(__file__).resolve().parents[1]
+        section = (root / 'docs' / 'commands.md').read_text().split('### cancel', 1)[1]
+        bullet = section.split('- **Launching or running:**', 1)[0]
+        self.assertIn('write-ahead record', bullet)
+        self.assertIn('uncertain', bullet)
+        self.assertIn('write-ahead record', cancel_action.__doc__)
+        self.assertIn('uncertain', cancel_action.__doc__.split('A launching', 1)[0])
+
     def test_a_pending_run_is_cancelled(self):
         sup = self.sup()
         sup.submit('d', REPO, 1, HEAD, 'reviewer')
