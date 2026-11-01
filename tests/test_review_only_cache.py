@@ -174,6 +174,13 @@ class Cache(fg.Base):
         self.assertIn("**What is not cached:** a fork branch", text)
         self.assertIn("unreadable", text.split("**What is not cached:**")[1][:600])
 
+    def test_the_docs_say_a_retry_fetches_again_in_the_update(self):
+        docs = Path(__file__).resolve().parents[1] / "docs" / "configuration.md"
+        text = docs.read_text()
+        self.assertNotIn("only the fetch is held back", text)
+        self.assertNotIn("does not fetch again", text)
+        self.assertIn("fetches the branch and the base again", text)
+
     def test_turning_the_setting_on_assesses_again(self):
         self.sweep(CLEAN)
         with mock.patch.object(safe_push, "dry_merge", return_value=dry()) as merge:
