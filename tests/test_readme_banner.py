@@ -65,5 +65,28 @@ class BannerMatchesFirstRun(unittest.TestCase):
                       self.banner.replace("\n", " "))
 
 
+class CapabilityTableNamesShadowReviews(unittest.TestCase):
+    """#1068: the "What it does" table listed every capability but shadow reviews."""
+
+    def setUp(self):
+        self.readme = (ROOT / "README.md").read_text()
+        table = self.readme[self.readme.index("## What it does"):self.readme.index("## Before you start")]
+        self.rows = [r for r in table.splitlines() if r.startswith("| **")]
+
+    def test_the_table_has_a_shadow_row(self):
+        rows = [r for r in self.rows if "Shadow" in r.split("|")[1]]
+        self.assertEqual(len(rows), 1)
+        self.assertRegex(rows[0], r"no-write")
+        self.assertRegex(rows[0], r"(?i)off until a shadow profile")
+
+    def test_the_shadow_row_names_commands_that_exist(self):
+        row = next(r for r in self.rows if "Shadow" in r.split("|")[1])
+        commands = (ROOT / "docs" / "commands.md").read_text()
+        self.assertIn("`hermes dk set --shadow-profile`", row)
+        self.assertIn("`hermes dk report`", row)
+        self.assertIn("### report", commands)
+        self.assertIn("| `--shadow-profile` |", commands)
+
+
 if __name__ == "__main__":
     unittest.main()

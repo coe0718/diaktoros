@@ -19,6 +19,7 @@ Every capability below is on `main` and driven by the command named beside it. R
 | **Affected tests** | The fixer runs only the tests its change touches | `hermes dk set` |
 | **Rounds and the cap** | Verdicts are counted; at the cap the PR escalates | built in |
 | **Adjudication** | A dispute goes to an adjudicator for a ruling | `hermes dk escalate` |
+| **Shadow review** | Off until a shadow profile is set: a second model reviews the same head in no-write mode and posts nothing; where it disagrees with the real review is recorded | `hermes dk set --shadow-profile`, then `hermes dk report` |
 | **Stalls** | A watchdog reports sleeps, drains queued work, repairs owned routes | scheduled job |
 | **Merge readiness** | Open PRs that are safe to merge, in a safe order | `hermes dk ready` |
 | **History** | Seat turns, timings, verdicts and cost over a window | `hermes dk stats` |
