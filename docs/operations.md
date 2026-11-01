@@ -293,6 +293,8 @@ A ruling is not a merge and does not grant permission to blindly resume the old 
 ## Token files: one PAT per account
 
 Each GitHub login maps to its own nonempty private token file readable by the gateway user.
+A login that is a GitHub App has a private key file instead (see [GitHub Apps](github-apps.md));
+a loop made only of Apps needs no PAT files.
 Reviewer/fixer writes use their own identities; read/control identity is separate. A
 profile name does not establish GitHub identity: the broker checks the token principal.
 See [accounts](accounts.md) for separation, least privilege and rotation.
@@ -441,8 +443,8 @@ and start after release (the next watchdog sweep re-arms the worker). A turn alr
 running is not interrupted. `explain` and `status` show who held it and when, and the
 watchdog reports no stall for it. A hold that cannot be read is treated as held.
 
-It cannot fire on a loop without `triage.maintainers` (they need `triage.fix_label`):
-nobody there is allowed to hold. The hold is read at claim time and by the watchdog sweep,
+It cannot fire on a loop without `triage.maintainers` (set with or without
+`triage.fix_label`): nobody there is allowed to hold. The hold is read at claim time and by the watchdog sweep,
 so it needs the read token to see issue events and comments.
 
 ## When a gate crashes or runs out of time

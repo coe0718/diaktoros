@@ -233,24 +233,34 @@ def installation_token(loop: dict, login: str) -> str:
         return token
 
 
-def principal(loop: dict, login: str) -> dict | None:
+def principal(loop: dict, login: str, fetch=None) -> dict | None:
     """The App's bot user (login, numeric id, ``type: Bot``) when the key in ``apps`` belongs to
     the App ``login`` names; ``None`` when it cannot be read. A key for another App answers with
-    that App's bot, so the caller's own login check refuses it."""
+    that App's bot, so the caller's own login check refuses it. ``/app`` is always read with the
+    App's JWT; ``fetch(path)``, when given, is the caller's transport for the ``/users/<slug>[bot]``
+    read (so its size bound and its refusal apply), and it may raise. A principal already
+    resolved for this App is cached; with no ``fetch`` it is answered from the cache, but a caller
+    that supplies ``fetch`` always has its transport run for the bot-user read (the cached slug
+    saves the ``/app`` call), so a warm cache never bypasses its size bound or its refusal."""
     found = entry(loop, login)
     if not found:
         return None
     cache = (login.casefold(), found.get("app_id"))
-    if cache in _principals:
-        return dict(_principals[cache])
-    try:
-        app = _as_app(loop, login, "/app").data
-    except AppError:
-        return None
-    if not isinstance(app, dict) or not isinstance(app.get("slug"), str) \
-            or app.get("id") != found.get("app_id"):
-        return None
-    user = gh.api(loop, f"/users/{app['slug']}[bot]", login=login)
+    cached = _principals.get(cache)
+    if cached and fetch is None:
+        return dict(cached)
+    if cached:
+        app = {"id": cached["app_id"], "slug": cached["slug"]}
+    else:
+        try:
+            app = _as_app(loop, login, "/app").data
+        except AppError:
+            return None
+        if not isinstance(app, dict) or not isinstance(app.get("slug"), str) \
+                or app.get("id") != found.get("app_id"):
+            return None
+    path = f"/users/{app['slug']}[bot]"
+    user = fetch(path) if fetch is not None else gh.api(loop, path, login=login)
     if not isinstance(user, dict) or type(user.get("id")) is not int or user.get("type") != "Bot":
         return None
     account = {"login": user.get("login"), "id": user["id"], "type": "Bot", "app_id": app["id"],

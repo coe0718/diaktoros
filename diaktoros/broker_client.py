@@ -317,7 +317,8 @@ def _push(parser: argparse.ArgumentParser, args: argparse.Namespace):
     return lambda: call('push', manifest=manifest)
 
 
-def main() -> None:
+def _parser() -> argparse.ArgumentParser:
+    """The sandbox command line: one operation and its options; ``main`` checks which combine."""
     parser = argparse.ArgumentParser()
     parser.add_argument('operation', choices=('review', 'request_review', 'push', 'ruling',
                                               'triage', 'open_pr', 'issue_comment',
@@ -355,6 +356,70 @@ def main() -> None:
     parser.add_argument('--comment-file',
                         help=f'triage: one short comment ({TRIAGE_COMMENT_MAX} characters at '
                              'most), only when the loop allows one')
+    return parser
+
+
+def _open_pr(parser, args):
+    """``open_pr``'s checks, the manifest built and the description read before anything is sent;
+    returns the call to make (``--dry-run``: the summary instead)."""
+    if args.manifest_file or args.verdict or args.label or args.comment_file:
+        parser.error('open_pr takes --files, --message/--message-file, --title and --body-file')
+    if not args.title or not args.body_file:
+        parser.error('open_pr requires --title and --body-file (the PR description)')
+    if not args.files or (args.message is None) == (not args.message_file):
+        parser.error('open_pr requires --files <path>... and exactly one of --message or '
+                     '--message-file')
+    try:
+        message = (Path(args.message_file).read_text().rstrip('\n') if args.message_file
+                   else args.message)
+        manifest = build_manifest(args.files, message)
+        description = Path(args.body_file).read_text()
+    except (ManifestError, OSError, UnicodeError) as exc:
+        parser.error(f'open_pr refused before sending (your write is unspent): {exc}')
+    if args.dry_run:
+        summary = {'ok': True, 'dry_run': True, 'base_head': manifest['base_head'],
+                   'title': args.title, 'repro': args.repro,
+                   'as': 'diff' if 'patch_b64' in manifest else 'whole files',
+                   'files': manifest_paths(manifest)}
+        return lambda: summary
+    return lambda: call('open_pr', manifest=manifest, verdict=args.title, body=description,
+                        repro=args.repro)
+
+
+def _file_issue(parser, args):
+    """``file_issue``'s checks: one-line title and a bounded body, refused before sending."""
+    if (args.files or args.message is not None or args.message_file or args.dry_run
+            or args.verdict or args.manifest_file or args.comment_file
+            or not args.title or not args.body_file):
+        parser.error('file_issue takes --title, --body-file and optional --label (repeatable)')
+    title = args.title.strip()
+    body = Path(args.body_file).read_text()
+    if not title or len(title) > ISSUE_TITLE_MAX or any(ord(ch) < 32 for ch in title):
+        parser.error(f'file_issue refused before sending: the title must be one line of 1-'
+                     f'{ISSUE_TITLE_MAX} characters')
+    if not body.strip() or len(body.encode()) > FILED_ISSUE_BODY_MAX:
+        parser.error(f'file_issue refused before sending: the body must be non-empty and at '
+                     f'most {FILED_ISSUE_BODY_MAX} bytes')
+    return lambda: call('file_issue', verdict=title, body=body, labels=args.label)
+
+
+def _request_review(parser, args):
+    """``request_review``'s checks: the answers read (and bounded) before anything is sent."""
+    if (args.files or args.message is not None or args.message_file or args.dry_run
+            or args.verdict or args.body_file or args.manifest_file):
+        parser.error('request_review takes only --answers-file')
+    body = ''
+    if args.answers_file:
+        try:
+            body = read_answers(args.answers_file)
+        except (ManifestError, OSError, UnicodeError) as exc:
+            parser.error(f'request_review refused before sending (your request is unspent): {exc}')
+    extra = {'verdict': 'DISPUTE'} if args.dispute else {}
+    return lambda: call('request_review', body=body, **extra)
+
+
+def main() -> None:
+    parser = _parser()
     args = parser.parse_args()
     if args.answers_file and args.operation != 'request_review':
         parser.error('--answers-file is a request_review option')
@@ -369,44 +434,9 @@ def main() -> None:
     if args.repro and args.operation != 'open_pr':
         parser.error('--repro is an open_pr option')
     if args.operation == 'open_pr':
-        if args.manifest_file or args.verdict or args.label or args.comment_file:
-            parser.error('open_pr takes --files, --message/--message-file, --title and --body-file')
-        if not args.title or not args.body_file:
-            parser.error('open_pr requires --title and --body-file (the PR description)')
-        if not args.files or (args.message is None) == (not args.message_file):
-            parser.error('open_pr requires --files <path>... and exactly one of --message or '
-                         '--message-file')
-        try:
-            message = (Path(args.message_file).read_text().rstrip('\n') if args.message_file
-                       else args.message)
-            manifest = build_manifest(args.files, message)
-            description = Path(args.body_file).read_text()
-        except (ManifestError, OSError, UnicodeError) as exc:
-            parser.error(f'open_pr refused before sending (your write is unspent): {exc}')
-        if args.dry_run:
-            summary = {'ok': True, 'dry_run': True, 'base_head': manifest['base_head'],
-                       'title': args.title, 'repro': args.repro,
-                       'as': 'diff' if 'patch_b64' in manifest else 'whole files',
-                       'files': manifest_paths(manifest)}
-            operation = lambda: summary  # noqa: E731
-        else:
-            operation = lambda: call('open_pr', manifest=manifest, verdict=args.title,  # noqa: E731
-                                     body=description, repro=args.repro)
+        operation = _open_pr(parser, args)
     elif args.operation == 'file_issue':
-        if (args.files or args.message is not None or args.message_file or args.dry_run
-                or args.verdict or args.manifest_file or args.comment_file
-                or not args.title or not args.body_file):
-            parser.error('file_issue takes --title, --body-file and optional --label (repeatable)')
-        title = args.title.strip()
-        body = Path(args.body_file).read_text()
-        if not title or len(title) > ISSUE_TITLE_MAX or any(ord(ch) < 32 for ch in title):
-            parser.error(f'file_issue refused before sending: the title must be one line of 1-'
-                         f'{ISSUE_TITLE_MAX} characters')
-        if not body.strip() or len(body.encode()) > FILED_ISSUE_BODY_MAX:
-            parser.error(f'file_issue refused before sending: the body must be non-empty and at '
-                         f'most {FILED_ISSUE_BODY_MAX} bytes')
-        operation = lambda: call('file_issue', verdict=title, body=body,  # noqa: E731
-                                 labels=args.label)
+        operation = _file_issue(parser, args)
     elif args.operation == 'issue_comment':
         if (args.files or args.message is not None or args.message_file or args.dry_run
                 or args.verdict or args.manifest_file or not args.body_file):
@@ -427,17 +457,7 @@ def main() -> None:
     elif args.operation == 'push':
         operation = _push(parser, args)
     elif args.operation == 'request_review':
-        if (args.files or args.message is not None or args.message_file or args.dry_run
-                or args.verdict or args.body_file or args.manifest_file):
-            parser.error('request_review takes only --answers-file')
-        body = ''
-        if args.answers_file:
-            try:
-                body = read_answers(args.answers_file)
-            except (ManifestError, OSError, UnicodeError) as exc:
-                parser.error(f'request_review refused before sending (your request is unspent): {exc}')
-        extra = {'verdict': 'DISPUTE'} if args.dispute else {}
-        operation = lambda: call('request_review', body=body, **extra)
+        operation = _request_review(parser, args)
     else:
         if args.files or args.message is not None or args.message_file or args.dry_run:
             parser.error('--files, --message, --message-file and --dry-run are push options')

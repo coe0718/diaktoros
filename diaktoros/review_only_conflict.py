@@ -92,8 +92,9 @@ def message(loop: dict, author: str, facts: dict, tried: str = "") -> str:
 class Retry(str):
     """Why an update stopped, when that is not a fact about the (head, base tip) pair: pushes
     are off, or the broker refused or the push failed. The watchdog keeps the dry merge for the
-    pair but tries the update again on its next sweep; a fork, a workflow change, a real
-    conflict or a merge that is not clean stays settled for the pair (#504, shadow on #1151)."""
+    pair but tries the update again on its next sweep; a workflow change, a real conflict or a
+    merge that is not clean stays settled for the pair. A fork or a missing branch has no dry
+    merge, so nothing is cached for it (#504, shadow on #1151)."""
 
 
 def update(loop: dict, number: int, head: str, facts: dict, remote: str | None = None) -> tuple:

@@ -16,6 +16,8 @@ GitHub by hand. Now the reviewer files them through one bounded broker operation
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -28,7 +30,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import broker, broker_ipc, config, gh, ledger, prompts, run_supervisor  # noqa: E402
+from diaktoros import (broker, broker_client, broker_ipc, config, gh, ledger, prompts,  # noqa: E402
+                       run_supervisor)
 from diaktoros.config import blocks  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
@@ -309,6 +312,47 @@ class Prompt(unittest.TestCase):
         self.assertIn("broker_client file_issue --title", tools)
         self.assertIn("at most 3 per review", tools)
         self.assertNotIn("file_issue", trusted_turn.tool_instructions("fixer"))
+
+
+class ClientBounds(unittest.TestCase):
+    """The sandbox client refuses a bad title or body before it sends anything, so the turn's one
+    write is not spent on a request the broker would refuse (the broker checks again)."""
+
+    def client(self, title, body):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "body"
+            path.write_text(body)
+            argv = ["broker_client", "file_issue", "--title", title, "--body-file", str(path),
+                    "--label", "bug"]
+            with mock.patch.object(broker_client, "call", return_value={"ok": True}) as call, \
+                    mock.patch.object(sys, "argv", argv), \
+                    contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                try:
+                    broker_client.main()
+                    code = 0
+                except SystemExit as exc:
+                    code = exc.code
+        return code, call, err.getvalue()
+
+    def test_a_bad_title_or_body_is_refused_before_sending(self):
+        for name, title, body in (
+                ("blank title", "  ", "b"),
+                ("two lines", "a\nb", "b"),
+                ("long title", "x" * (broker_client.ISSUE_TITLE_MAX + 1), "b"),
+                ("empty body", "t", " \n"),
+                ("huge body", "t", "x" * (broker_client.FILED_ISSUE_BODY_MAX + 1))):
+            with self.subTest(name):
+                code, call, err = self.client(title, body)
+                self.assertEqual(code, 2, err)
+                self.assertIn("file_issue refused before sending", err)
+                call.assert_not_called()
+
+    def test_a_good_request_is_sent_with_its_title_trimmed(self):
+        code, call, _err = self.client(" A title ", "the body")
+        self.assertEqual(code, 0)
+        call.assert_called_once_with("file_issue", verdict="A title", body="the body",
+                                     labels=["bug"])
 
 
 if __name__ == "__main__":

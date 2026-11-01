@@ -2,9 +2,10 @@
 
 ``diaktoros:hold`` applied by a maintainer, or a maintainer's ``/loop hold`` comment, holds the
 PR; ``/loop release`` lifts either kind, removing the label only a label hold. The latest valid event wins. Only
-``triage.maintainers`` count: anyone else's label or comment is ignored and logged. A loop with
-no ``triage.maintainers`` (they need ``triage.fix_label``) has nobody who can hold, so the hold
-can never fire there.
+``config.maintainers`` count (``triage.maintainers`` plus ``operator_agents``, #757; the
+maintainers stand on their own, with or without ``triage.fix_label``): anyone else's label or
+comment is ignored and logged. A loop with neither has nobody who can hold, so the hold can
+never fire there.
 
 While held, no turn is claimed (``Supervisor._claim``): queued turns stay pending and start
 after release (the watchdog sweep re-arms the worker). A turn already running is not
@@ -48,7 +49,8 @@ def decide(loop: dict, number: int, events: list, comments: list) -> dict | None
     for at, kind, who in sorted(timeline, key=lambda item: epoch(item[0])):
         if who not in allowed:
             if kind != "unlabel":      # anyone may remove their own mistake; it lifts nothing
-                log(f"#{number}: ignored {kind} by {who or '?'} — not in triage.maintainers")
+                log(f"#{number}: ignored {kind} by {who or '?'} "
+                    "— not in triage.maintainers or operator_agents")
             continue
         if kind == "release":
             held = None

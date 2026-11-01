@@ -33,6 +33,32 @@ class AdminUnmapped(unittest.TestCase):
 
 
 
+class HookWriteNeed(unittest.TestCase):
+    """#1276: the hook-write remedy for an App admin names the App key and its permission, as
+    admin_unmapped does, not a PAT's scopes and token file."""
+    LOOP = dict(LOOP, repo="acme/widgets", read_token="reader")
+
+    def test_an_app_admin_gets_the_app_remedy(self):
+        need = cli_common.hook_write_need(self.LOOP, "admin[bot]")
+        self.assertIn("the App key for 'admin[bot]' needs hook write access on acme/widgets", need)
+        self.assertIn("Webhooks: Read and write", need)
+        for pat_only in ("token file", "admin:repo_hook", "repository_hooks", "classic"):
+            self.assertNotIn(pat_only, need)
+
+    def test_a_pat_admin_keeps_the_pat_remedy(self):
+        need = cli_common.hook_write_need(dict(self.LOOP, tokens={"reader": "/t/r", "pat": "/t/p"}),
+                                          "pat")
+        self.assertIn("the token for 'pat' needs hook write access", need)
+        self.assertIn("repository_hooks: write", need)
+        self.assertIn("check that login's token file", need)
+
+    def test_init_hooks_line_for_an_app_admin(self):
+        from diaktoros.cli import install
+        line = install._hook_editor_line(self.LOOP, "admin[bot]", False, True)
+        self.assertIn("Webhooks: Read and write", line)
+        self.assertNotIn("token file", line)
+
+
 class Commands(unittest.TestCase):
     def test_trace_refuses_an_unmapped_admin_and_accepts_an_app(self):
         import argparse

@@ -283,6 +283,60 @@ class Principal(Base):
                          (BOT, 346013884, "Bot", APP_ID))
         self.assertNotIn(("GET", "/user", None), self.app_calls)
 
+    def test_an_apps_bot_user_is_read_through_the_callers_fetch(self):
+        seen = []
+
+        def fetch(path):
+            seen.append(path)
+            return {"login": BOT, "id": 346013884, "type": "Bot"}
+        with mock.patch.object(gh, "api", side_effect=AssertionError("gh.api not used")):
+            got = gh.principal(self.loop, BOT, fetch=fetch)
+        self.assertEqual(seen, [f"/users/{BOT}"])      # the bot user, never /user
+        self.assertEqual((got["login"], got["id"]), (BOT, 346013884))
+        self.assertIn(("GET", "/app", None), [c[:3] for c in self.app_calls])   # JWT read
+
+    def test_a_raising_fetch_refuses_an_app_principal_too(self):
+        class Refused(Exception):
+            pass
+
+        def fetch(path):
+            raise Refused("GitHub response exceeds bounds")
+        with self.assertRaisesRegex(Refused, "exceeds bounds"):
+            gh.principal(self.loop, BOT, fetch=fetch)
+
+    def test_a_warm_cache_does_not_bypass_the_callers_raising_fetch(self):
+        class Refused(Exception):
+            pass
+
+        def fetch(path):
+            raise Refused("GitHub response exceeds bounds")
+        with self.users({"login": BOT, "id": 346013884, "type": "Bot"}):
+            self.assertEqual(gh.principal(self.loop, BOT)["login"], BOT)    # warms the cache
+        with self.assertRaisesRegex(Refused, "exceeds bounds"):
+            gh.principal(self.loop, BOT, fetch=fetch)
+        # Without a caller transport the cached answer is still used, with no new GitHub call.
+        with mock.patch.object(gh, "api", side_effect=AssertionError("cached")):
+            self.assertEqual(gh.principal(self.loop, BOT)["login"], BOT)
+
+    def test_a_false_valued_fetch_is_still_the_callers_transport(self):
+        class Refused(Exception):
+            pass
+
+        class Falsy:
+            def __bool__(self):
+                return False
+
+            def __call__(self, path):
+                raise Refused("bounded refusal")
+        with mock.patch.object(gh, "api", side_effect=AssertionError("gh.api not used")):
+            with self.assertRaisesRegex(Refused, "bounded refusal"):        # cold cache
+                gh.principal(self.loop, BOT, fetch=Falsy())
+        with self.users({"login": BOT, "id": 346013884, "type": "Bot"}):
+            self.assertEqual(gh.principal(self.loop, BOT)["login"], BOT)    # warms the cache
+        with mock.patch.object(gh, "api", side_effect=AssertionError("gh.api not used")):
+            with self.assertRaisesRegex(Refused, "bounded refusal"):        # warm cache
+                gh.principal(self.loop, BOT, fetch=Falsy())
+
     def test_a_key_for_another_app_or_a_user_answer_is_not_this_principal(self):
         def other(loop, login, path, method="GET", body=None):
             return gh.Response({"id": 999, "slug": "other-app"}, "", 200, {})
@@ -398,13 +452,42 @@ class EveryCredentialCheck(Broker):
                 lambda: broker.authorize_issue_fix(self.loop, repo=REPO, number=7)), "fix")
 
     def test_trusted_fetch_resolves_an_app_seat(self):
+        seen = []
+
         def bounded(loop, path, login, limit=None):
+            seen.append(path)
             if path == "/user":
                 return {"login": login}
+            if path == f"/users/{BOT}":       # the App seat reads its bot user through this transport
+                return {"login": BOT, "id": 346013884, "type": "Bot"}
             raise AssertionError(path)
         with mock.patch.object(trusted_fetch, "_json", side_effect=bounded):
             self.assertEqual(self.assertPastMapping(lambda: trusted_fetch._identity(
                 self.loop, REPO, 7, HEAD, "fix-7", "reviewer")), "read")
+        self.assertIn(f"/users/{BOT}", seen)
+
+    def test_trusted_fetch_refuses_an_app_seat_whose_bounded_read_fails(self):
+        def bounded(loop, path, login, limit=None):
+            if path == f"/users/{BOT}":
+                raise trusted_fetch.FetchDenied("GitHub response exceeds bounds")
+            return {"login": login}
+        with mock.patch.object(trusted_fetch, "_json", side_effect=bounded), \
+                self.assertRaisesRegex(trusted_fetch.FetchDenied, "exceeds bounds"):
+            trusted_fetch._identity(self.loop, REPO, 7, HEAD, "fix-7", "reviewer")
+
+    def test_trusted_fetch_refuses_an_app_seat_even_with_a_warm_principal_cache(self):
+        with mock.patch.object(gh, "api", side_effect=lambda loop, path, **kw: (
+                {"login": BOT, "id": 346013884, "type": "Bot"} if path == f"/users/{BOT}"
+                else gh.Response({}, "", 404, {}))):
+            self.assertEqual(gh.principal(self.loop, BOT)["login"], BOT)    # warms the cache
+
+        def bounded(loop, path, login, limit=None):
+            if path == f"/users/{BOT}":
+                raise trusted_fetch.FetchDenied("GitHub response exceeds bounds")
+            return {"login": login}
+        with mock.patch.object(trusted_fetch, "_json", side_effect=bounded), \
+                self.assertRaisesRegex(trusted_fetch.FetchDenied, "exceeds bounds"):
+            trusted_fetch._identity(self.loop, REPO, 7, HEAD, "fix-7", "reviewer")
 
     def test_update_branch_takes_an_app_fixer(self):
         self.loop["apps"]["acme-fixer[bot]"] = {"app_id": 77, "key_file": str(self.key) + ".f"}

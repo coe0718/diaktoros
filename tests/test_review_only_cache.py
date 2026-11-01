@@ -151,6 +151,36 @@ class Cache(fg.Base):
             self.sweep(DIRTY)
         self.assertEqual(merge.call_count, 2)
 
+    def test_a_fork_is_assessed_every_sweep_and_never_cached(self):
+        """#1548: the docs say a fork stop is not cached; it never runs a dry merge or pushes."""
+        self.set_push(True, update=True)
+        self.sweep(CLEAN)
+        fork = {**DIRTY, "head": {**DIRTY["head"], "repo": {"full_name": "someone/fork"}}}
+        with mock.patch.object(safe_push, "dry_merge", return_value=dry()) as merge, \
+                mock.patch.object(review_only_conflict, "assess",
+                                  wraps=review_only_conflict.assess) as assess, \
+                mock.patch.object(review_only_conflict, "update",
+                                  wraps=review_only_conflict.update) as upd:
+            self.sweep(fork)
+            self.sweep(fork)
+        self.assertEqual(assess.call_count, 2)
+        self.assertEqual(upd.call_count, 2)
+        merge.assert_not_called()
+        self.assertFalse(self.st.review_only_conflicts.exists())
+
+    def test_the_docs_qualify_what_the_conflict_cache_does_not_hold(self):
+        docs = Path(__file__).resolve().parents[1] / "docs" / "configuration.md"
+        text = docs.read_text()
+        self.assertIn("**What is not cached:** a fork branch", text)
+        self.assertIn("unreadable", text.split("**What is not cached:**")[1][:600])
+
+    def test_the_docs_say_a_retry_fetches_again_in_the_update(self):
+        docs = Path(__file__).resolve().parents[1] / "docs" / "configuration.md"
+        text = docs.read_text()
+        self.assertNotIn("only the fetch is held back", text)
+        self.assertNotIn("does not fetch again", text)
+        self.assertIn("fetches the branch and the base again", text)
+
     def test_turning_the_setting_on_assesses_again(self):
         self.sweep(CLEAN)
         with mock.patch.object(safe_push, "dry_merge", return_value=dry()) as merge:

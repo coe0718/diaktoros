@@ -213,7 +213,9 @@ grade findings P0–P3, end the body with `Not verified:`. What differs is what 
   upholds them. An issue you ask to file is recorded too; the host files it later (labelled
   `shadow-found`) only when `shadow.file_issues` is on and the real review did not file it.
 * **You are not part of the round.** You do not count against the cap, claim the PR or mark the
-  head in flight, and a failed shadow turn is not retried. You cannot push, rule, merge or close.
+  head in flight, and a failed shadow turn is not retried automatically. An operator can re-arm
+  one by name with `hermes dk retry --loop LOOP --pr N --seat shadow`; that is refused when the
+  findings snapshot the shadow was queued with is gone. You cannot push, rule, merge or close.
 
 ## The budget is a wall
 
