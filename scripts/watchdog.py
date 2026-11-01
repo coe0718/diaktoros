@@ -62,6 +62,7 @@ from diaktoros import (  # noqa: E402
     pr_hold,
     route_intent,
     routes,
+    ruled_approval,
     run_supervisor,
     stale_approval,
     state as state_mod,
@@ -819,6 +820,10 @@ def _best_effort_sweeps(c: _Sweep) -> None:
         stale_approval.sweep(loop, st, prs, watch, log)   # #473: approved, then CI went bad
     except Exception as exc:
         log(f"stale approval sweep failed: {type(exc).__name__}: {exc}")
+    try:
+        ruled_approval.sweep(loop, st, prs, log)  # #905: an ACCEPT approves, its block dismissed
+    except Exception as exc:
+        log(f"ruled approval sweep failed: {type(exc).__name__}: {exc}")
     try:
         main_check.sweep(loop, st, log)       # a required check red on main after merges
     except Exception as exc:

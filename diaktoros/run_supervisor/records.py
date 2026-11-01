@@ -512,6 +512,38 @@ class LedgerRecords:
             row = con.execute('SELECT * FROM triage_results WHERE run_id=?', (run_id,)).fetchone()
         return dict(row) if row else None
 
+    def ruled_approval(self, repo: str, pr: int, head: str) -> dict | None:
+        """How the adjudicator acted on its ACCEPT at this head (#905), or None if it has not."""
+        with self._connect() as con:
+            row = con.execute('SELECT * FROM ruled_approvals WHERE repo=? AND pr=? AND head=?',
+                              (repo, pr, head)).fetchone()
+        return dict(row) if row else None
+
+    def ruled_approval_step(self, repo: str, pr: int, head: str, step: str, state: str, *,
+                            review_id: int | None = None, error: str | None = None) -> bool:
+        """Move one step (``approve`` or ``dismiss``) of acting on an ACCEPT at this head (#905),
+        forward only: a write that may have been sent is never replayed. False when
+        the move is refused, as when another sweep made it first."""
+        allowed = {'pending': {'posting', 'denied', 'none'}, 'posting': {'posted', 'uncertain'}}
+        if step not in ('approve', 'dismiss') or (step == 'approve' and state == 'none'):
+            raise ValueError('invalid ruled approval step')
+        column = 'review_id' if step == 'approve' else 'dismissed'
+        now = time.time()
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            con.execute('INSERT OR IGNORE INTO ruled_approvals(repo,pr,head,created,updated) '
+                        'VALUES(?,?,?,?,?)', (repo, pr, head, now, now))
+            row = con.execute(f'SELECT {step} FROM ruled_approvals WHERE repo=? AND pr=? AND '
+                              'head=?', (repo, pr, head)).fetchone()
+            if state not in allowed.get(row[0], set()):
+                con.execute('ROLLBACK')
+                return False
+            con.execute(f'UPDATE ruled_approvals SET {step}=?, {column}=COALESCE(?,{column}), '
+                        'error=COALESCE(?,error), updated=? WHERE repo=? AND pr=? AND head=?',
+                        (state, review_id, error, now, repo, pr, head))
+            con.execute('COMMIT')
+        return True
+
     def rulings(self, limit: int = 50) -> list[dict]:
         """Read-only operator view of the latest rulings, including their full reason."""
         with self._connect() as con:

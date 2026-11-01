@@ -146,6 +146,18 @@ CREATE TABLE IF NOT EXISTS shadow_reviews (
  head TEXT NOT NULL, model TEXT, verdict TEXT NOT NULL, body TEXT NOT NULL,
  authorized INTEGER NOT NULL, denial TEXT, held TEXT, created REAL NOT NULL
 );
+-- The adjudicator acting on its ACCEPT ruling at a PR head (#905): its approval (approve, the
+-- review's id in review_id), then the dismissal of the change request it overruled (dismiss,
+-- dismissed: that review's id). Each step: pending -> posting -> posted or uncertain, or
+-- pending -> denied (error says why) or none (dismiss only: nothing to dismiss). posting is
+-- committed before the write, so a lost response is uncertain and never replayed.
+CREATE TABLE IF NOT EXISTS ruled_approvals (
+ repo TEXT NOT NULL, pr INTEGER NOT NULL, head TEXT NOT NULL,
+ approve TEXT NOT NULL DEFAULT 'pending', review_id INTEGER,
+ dismiss TEXT NOT NULL DEFAULT 'pending', dismissed INTEGER,
+ error TEXT, created REAL NOT NULL, updated REAL NOT NULL,
+ PRIMARY KEY (repo, pr, head)
+);
 """
 # The host's migrations of ``runs``, in order: (column, ALTER, follow-up statements). The one
 # source for both the host (which applies what a ledger lacks) and the worker's schema check.
