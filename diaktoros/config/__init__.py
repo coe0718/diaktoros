@@ -772,8 +772,18 @@ def shadow_file_issues(loop: dict) -> bool:
 
 
 # At most this many shadow-found issues a day per loop (#914): a second model's issue-tier output
-# is useful, and unbounded it is noise.
-SHADOW_ISSUES_DAILY = 5
+# is useful, and unbounded it is noise. The default of ``shadow.issues_daily`` (#1515), and what a
+# loop file without the key gets.
+SHADOW_ISSUES_DAILY = 25
+SHADOW_ISSUES_DAILY_RANGE = (0, 1000)     # 0 = no cap
+
+
+def shadow_issues_daily(loop: dict) -> int:
+    """Shadow-found issues filed per rolling 24 hours (#1515); 0 = no cap."""
+    value = (loop.get("shadow") or {}).get("issues_daily")
+    return (value if isinstance(value, int) and not isinstance(value, bool)
+            and SHADOW_ISSUES_DAILY_RANGE[0] <= value <= SHADOW_ISSUES_DAILY_RANGE[1]
+            else SHADOW_ISSUES_DAILY)
 
 
 APP_LOGIN = re.compile(r"[a-z0-9][a-z0-9-]{0,33}\[bot\]\Z")

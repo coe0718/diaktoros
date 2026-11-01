@@ -4,7 +4,7 @@ The shadow's broker is no-write: its ``file_issue`` is recorded (``shadow_issues
 the reviewer's would be, and the seat gets the same "accepted". The watchdog sweep files each one
 once the real review exists at that head, unless the reviewer filed the same finding there, as the
 reader, labelled ``shadow-found``, naming the model. Off unless ``shadow.file_issues``; at most
-``config.SHADOW_ISSUES_DAILY`` a day.
+``shadow.issues_daily`` (``config.shadow_issues_daily``) a day.
 """
 from __future__ import annotations
 
@@ -46,6 +46,42 @@ class Setting(unittest.TestCase):
         self.assertNotIn("file_issues", off)
         with self.assertRaisesRegex(config.ConfigError, "needs a shadow profile"):
             settings_form.shadow_block({}, None, None, "set", file_issues="on")
+
+
+class IssuesDailySetting(unittest.TestCase):
+    """``shadow.issues_daily`` (#1515): bounds like review_only_daily, 0 = no cap, default 25."""
+
+    def test_read_with_the_default_and_normalized_from_the_loop_file(self):
+        self.assertEqual(config.shadow_issues_daily({}), 25)
+        self.assertEqual(config.shadow_issues_daily({"shadow": {"profile": "p"}}), 25)
+        for value in (0, 1, 40, 1000):
+            with self.subTest(value=value):
+                shadow = blocks.normalize_shadow({"profile": "p", "issues_daily": value}, "x")
+                self.assertEqual(shadow, {"profile": "p", "issues_daily": value})
+                self.assertEqual(config.shadow_issues_daily({"shadow": shadow}), value)
+
+    def test_out_of_range_and_non_whole_numbers_are_refused(self):
+        for value in (-1, 1001, 2.5, "7", True):
+            with self.subTest(value=value), \
+                    self.assertRaisesRegex(config.ConfigError, "issues_daily must be a whole number"):
+                blocks.normalize_shadow({"profile": "p", "issues_daily": value}, "x")
+
+    def test_the_cli_and_form_set_it_and_need_a_profile(self):
+        block = settings_form.shadow_block({"profile": "p"}, None, None, "set", issues_daily="0")
+        self.assertEqual(block["issues_daily"], 0)
+        block = settings_form.shadow_block(block, None, None, "set", issues_daily=" 40 ")
+        self.assertEqual(block["issues_daily"], 40)
+        for bad in ("1001", "-1", "many"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(config.ConfigError, "issues_daily"):
+                settings_form.shadow_block({"profile": "p"}, None, None, "set", issues_daily=bad)
+        with self.assertRaisesRegex(config.ConfigError, "needs a shadow profile"):
+            settings_form.shadow_block({}, None, None, "set", issues_daily="5")
+
+    def test_the_form_overlay_carries_it(self):
+        raw = {"shadow": {"profile": "p"}}
+        out = settings_form.apply_settings(dict(raw), {"shadow_issues_daily": "12"})
+        self.assertEqual(out["shadow"], {"profile": "p", "issues_daily": 12})
+        self.assertIn("shadow_issues_daily", settings_form.SETTINGS_SCHEMA)
 
 
 class Record(unittest.TestCase):
@@ -247,15 +283,52 @@ class FilePending(unittest.TestCase):
         with mock.patch.object(Supervisor, "shadow_issues_waiting", return_value=stale):
             self.assertEqual(self.file()[1], [])
 
-    def test_at_most_the_daily_cap(self):
-        topics = ["Docs miss the flag", "Retry loops forever", "Lock is never freed",
-                  "Wrong exit code on refusal", "Cache key ignores head", "Timeout not budgeted",
-                  "Label list unsorted"]
-        for topic in topics[:config.SHADOW_ISSUES_DAILY + 2]:
+    TOPICS = ["Docs miss the flag", "Retry loops forever", "Lock is never freed",
+              "Wrong exit code on refusal", "Cache key ignores head", "Timeout not budgeted",
+              "Label list unsorted", "Stale branch is kept", "Hook payload is unchecked",
+              "Ledger row lacks index"]
+
+    def states(self):
+        with ledger.connect(self.db) as con:
+            return [r[0] for r in con.execute("SELECT state FROM shadow_issues ORDER BY run_id")]
+
+    def test_a_loop_without_the_key_gets_the_default_cap(self):
+        self.assertEqual(config.SHADOW_ISSUES_DAILY, 25)
+        self.assertEqual(config.shadow_issues_daily(self.loop), config.SHADOW_ISSUES_DAILY)
+        for topic in self.TOPICS:
             self.recorded(topic)                               # distinct findings
         filed, _posts = self.file()
-        self.assertEqual(len(filed), config.SHADOW_ISSUES_DAILY)
+        self.assertEqual(len(filed), len(self.TOPICS))         # under the default: all of them
+
+    def test_the_loops_cap_stops_the_sweep_and_leaves_the_rest_recorded(self):
+        # The loop's value, not the constant (25): fails if file_pending reads the constant.
+        self.loop["shadow"] = {**self.loop["shadow"], "issues_daily": 3}
+        for topic in self.TOPICS:
+            self.recorded(topic)
+        filed, _posts = self.file()
+        self.assertEqual(len(filed), 3)
+        self.assertEqual(sorted(self.states()), ["posted"] * 3 + ["recorded"] * 7)
         self.assertEqual(self.file()[0], [])                   # the cap holds for the day
+        self.assertEqual(len(self.file(now=time.time() + 86400 + 60)[0]), 3)   # window rolled
+
+    def test_a_cap_of_zero_files_every_waiting_issue(self):
+        self.loop["shadow"] = {**self.loop["shadow"], "issues_daily": 0}
+        words = ["zebra", "quartz", "lantern", "midnight", "cobalt", "harbor", "velvet", "thistle",
+                 "orchid", "granite", "falcon", "juniper", "saffron", "tundra", "walnut", "ember",
+                 "pelican", "marble", "cypress", "dragonfly", "obsidian", "nutmeg", "badger",
+                 "sapphire", "koala", "trellis", "vermilion", "windmill"]
+        for word in words:                                     # more than the default cap
+            self.recorded(f"{word} " * 3)
+        self.assertGreater(len(words), config.SHADOW_ISSUES_DAILY)
+        filed, _posts = self.file()
+        self.assertEqual(len(filed), len(words))
+        self.assertEqual(set(self.states()), {"posted"})
+
+    def test_a_cap_above_the_old_constant_is_honoured(self):
+        self.loop["shadow"] = {**self.loop["shadow"], "issues_daily": 8}
+        for topic in self.TOPICS:
+            self.recorded(topic)
+        self.assertEqual(len(self.file()[0]), 8)
 
     def test_a_failed_post_is_uncertain_and_never_replayed(self):
         run = self.recorded("A finding")

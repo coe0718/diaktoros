@@ -5,9 +5,9 @@ The shadow seat's broker is no-write: a ``file_issue`` it asks for is recorded i
 files each recorded one once the real review exists at that head, unless the reviewer already filed
 the same finding there (the same normalized title, or one close to it). It is filed by the reader,
 not the reviewer, labelled ``shadow-found``, and says which model found it. Off unless
-``shadow.file_issues`` is on; at most ``config.SHADOW_ISSUES_DAILY`` a day. An unreadable review or
-ledger files nothing that sweep. A shadow issue whose head never gets a real review is dropped after
-``WAIT_S``.
+``shadow.file_issues`` is on; at most ``config.shadow_issues_daily(loop)`` a day (0 = no cap). An
+unreadable review or ledger files nothing that sweep. A shadow issue whose head never gets a real
+review is dropped after ``WAIT_S``.
 """
 from __future__ import annotations
 
@@ -38,7 +38,9 @@ def file_pending(loop: dict, db=None, now: float | None = None) -> list[int]:
     waiting = sup.shadow_issues_waiting(loop["repo"])
     if not waiting:
         return []
-    room = config.SHADOW_ISSUES_DAILY - sup.shadow_issues_posted_since(loop["repo"], now - 86400)
+    room = (config.shadow_issues_daily(loop)
+            - sup.shadow_issues_posted_since(loop["repo"], now - 86400))
+    uncapped = config.shadow_issues_daily(loop) == 0
     reviews_of: dict[int, object] = {}
     filed = []
     for row in waiting:
@@ -56,7 +58,7 @@ def file_pending(loop: dict, db=None, now: float | None = None) -> list[int]:
         if _same(row["title"], sup.filed_titles(loop["repo"], number)):
             sup.shadow_issue_status(row["run_id"], row["seq"], "duplicate", expect="recorded")
             continue
-        if room <= 0:
+        if room <= 0 and not uncapped:
             break
         # Lineage as the reviewer's filing has it (#487): one deeper than the issue this PR
         # fixed, read from its branch. An unreadable PR files nothing this sweep.

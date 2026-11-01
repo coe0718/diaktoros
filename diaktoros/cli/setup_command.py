@@ -200,6 +200,8 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
         argv.append(f"--shadow-escalate={args.shadow_escalate}")
     if getattr(args, "shadow_file_issues", None) is not None:
         argv.append(f"--shadow-file-issues={args.shadow_file_issues}")
+    if getattr(args, "shadow_issues_daily", None) is not None:
+        argv.append(f"--shadow-issues-daily={args.shadow_issues_daily}")
     reviewed = (args.review_only if getattr(args, "review_only", None) is not None else
                 [name for name in _ask("GitHub logins whose PRs the reviewer reviews but the fixer "
                                        "never touches, comma-separated (blank: none)",
@@ -419,7 +421,9 @@ def add_setup(sub) -> None:  # noqa: ANN001
     first.add_argument("--shadow-escalate", choices=("on", "off"), default=None,
                        help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off)")
     first.add_argument("--shadow-file-issues", choices=("on", "off"), default=None,
-                       help="on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914) (default: the plugin setting, else off)")
+                       help="on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to --shadow-issues-daily a day (#914) (default: the plugin setting, else off)")
+    first.add_argument("--shadow-issues-daily", default=None, metavar="N",
+                       help="most shadow-found issues filed per rolling 24 hours, 0-1000; 0 = no cap (#1515) (default: the plugin setting, else 25)")
     first.add_argument("--human-path", action="append", default=None,
                        help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     first.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",

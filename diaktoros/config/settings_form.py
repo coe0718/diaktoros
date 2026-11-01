@@ -251,9 +251,16 @@ SETTINGS_SCHEMA: dict = {
     "shadow_file_issues": {"label": "File the shadow's issues", "type": "str", "default": "",
                            "description": "on: the issues a shadow review asks to file are filed "
                                           "by the reader once the real review exists and did not "
-                                          "file them, labelled shadow-found, at most 5 a day "
-                                          "(#914). Blank = not set here: the loop keeps its own "
-                                          "value (default: off)"},
+                                          "file them, labelled shadow-found, up to the daily "
+                                          "cap below (#914). Blank = not set here: the loop "
+                                          "keeps its own value (default: off)"},
+    "shadow_issues_daily": {"label": "Shadow issues a day", "type": "str", "default": "",
+                            "description": "Most shadow-found issues filed per repo in a rolling "
+                                           "24 hours (#1515), a whole number 0-1000; 0 = no cap. "
+                                           "Issues over the cap stay recorded for a later sweep. "
+                                           "Needs a shadow profile, and only takes effect with "
+                                           "shadow_file_issues on. Blank = not set here: the loop "
+                                           "keeps its own value (default 25)"},
     "human_paths": {"label": "Human-only paths (comma-separated globs)", "type": "str",
                     "default": "",
                     "description": "Glob patterns, e.g. '.github/**, scripts/release*'. If a "
@@ -387,15 +394,17 @@ def _on_off_value(value, where: str, name: str):
 
 
 def shadow_block(current, profile, every, where: str, escalate=None,
-                 file_issues=None) -> dict | None:
+                 file_issues=None, issues_daily=None) -> dict | None:
     """The ``shadow`` block (#218) after a form, ``init``/``setup`` or ``set`` names a profile,
-    ``every``, ``escalate`` (#1004) and/or ``file_issues`` (#914); None when none was named.
+    ``every``, ``escalate`` (#1004), ``file_issues`` (#914) and/or ``issues_daily`` (#1515; needs
+    a profile like ``every``, bounds checked by ``normalize_shadow``); None when none was named.
     ``off`` as the profile turns shadow reviews off. ``every`` and ``escalate on`` or
     ``file_issues on`` need a profile, already set or named with it; ``off`` without one
     changes nothing."""
     escalate = _on_off_value(escalate, where, "shadow escalate")
     file_issues = _on_off_value(file_issues, where, "shadow file issues")
-    if profile is None and every is None and escalate is None and file_issues is None:
+    if (profile is None and every is None and escalate is None and file_issues is None
+            and issues_daily is None):
         return None
     shadow = dict(current or {})
     if profile is not None:
@@ -422,6 +431,11 @@ def shadow_block(current, profile, every, where: str, escalate=None,
             shadow["file_issues"] = True
         else:
             shadow.pop("file_issues", None)
+    if issues_daily is not None:
+        if not shadow.get("profile"):
+            raise config.ConfigError(f"{where}: shadow issues a day needs a shadow profile "
+                                     "(name one with it)")
+        shadow["issues_daily"] = config._form_int(issues_daily)
     return blocks.normalize_shadow(shadow, where)
 
 
@@ -522,7 +536,8 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     shadow = shadow_block(overlaid.get("shadow"), _form_value(settings, "shadow_profile"),
                           _form_value(settings, "shadow_every"), "settings",
                           escalate=_form_value(settings, "shadow_escalate"),
-                          file_issues=_form_value(settings, "shadow_file_issues"))
+                          file_issues=_form_value(settings, "shadow_file_issues"),
+                          issues_daily=_form_value(settings, "shadow_issues_daily"))
     if shadow is not None:
         overlaid["shadow"] = shadow
     # Turn knobs (#309): validated like the CLI/loop file, and only when the form names them.

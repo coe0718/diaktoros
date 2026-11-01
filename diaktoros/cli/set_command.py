@@ -128,15 +128,18 @@ def _list_changes(args, loop: dict, changes: dict) -> None:
     if getattr(args, "no_shadow", False) or getattr(args, "shadow_profile", None) is not None \
             or getattr(args, "shadow_every", None) is not None \
             or getattr(args, "shadow_escalate", None) is not None \
-            or getattr(args, "shadow_file_issues", None) is not None:
+            or getattr(args, "shadow_file_issues", None) is not None \
+            or getattr(args, "shadow_issues_daily", None) is not None:
         from ..config import settings_form
         try:
             shadow = settings_form.shadow_block(
                 loop.get("shadow"), "off" if args.no_shadow else args.shadow_profile,
                 args.shadow_every,
-                "--shadow-profile/--shadow-every/--shadow-escalate/--shadow-file-issues",
+                "--shadow-profile/--shadow-every/--shadow-escalate/--shadow-file-issues/"
+                "--shadow-issues-daily",
                 escalate=getattr(args, "shadow_escalate", None),   # "on" with --no-shadow: refused
-                file_issues=getattr(args, "shadow_file_issues", None))
+                file_issues=getattr(args, "shadow_file_issues", None),
+                issues_daily=getattr(args, "shadow_issues_daily", None))
         except config.ConfigError as exc:
             print(f"refused: {exc}")
             raise _Refused
