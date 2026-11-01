@@ -40,6 +40,25 @@ def _top_level_names(path: pathlib.Path) -> set[str]:
     return names
 
 
+def _shadowed_submodules(source: str) -> list[tuple[int, str]]:
+    """(line, name) for each function-local binding named like a run_supervisor submodule that
+    the source imports from diaktoros.run_supervisor."""
+    tree = ast.parse(source)
+    imported = {a.asname or a.name for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom) and node.module == "diaktoros.run_supervisor"
+                for a in node.names if (a.asname or a.name) in SUBMODULES}
+    found = set()
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(func):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in imported:
+                found.add((node.lineno, node.id))
+            elif isinstance(node, ast.arg) and node.arg in imported:
+                found.add((node.lineno, node.arg))
+    return sorted(found)
+
+
 class Split(unittest.TestCase):
     def test_a_moved_name_has_one_home(self):
         core = _top_level_names(PACKAGE / "__init__.py")
@@ -142,20 +161,26 @@ class Split(unittest.TestCase):
         # local named like a submodule its file imports turns a later `views.<name>` into an
         # UnboundLocalError.
         for path in (ROOT / "tests").rglob("*.py"):
-            tree = ast.parse(path.read_text())
-            imported = {a.asname or a.name for node in ast.walk(tree)
-                        if isinstance(node, ast.ImportFrom) and node.module == "diaktoros.run_supervisor"
-                        for a in node.names if (a.asname or a.name) in SUBMODULES}
-            if not imported:
-                continue
-            for func in ast.walk(tree):
-                if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    continue
-                for node in ast.walk(func):
-                    if (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
-                            and node.id in imported):
-                        self.fail(f"{path.relative_to(ROOT)}:{node.lineno} binds a local "
-                                  f"`{node.id}` that shadows the imported submodule")
+            for lineno, name in _shadowed_submodules(path.read_text()):
+                self.fail(f"{path.relative_to(ROOT)}:{lineno} binds a local `{name}` that "
+                          f"shadows the imported submodule")
+
+    def test_the_shadow_check_flags_a_local_that_reuses_an_imported_submodule(self):
+        # Drives the check on source text, so it does not depend on what the tests/ files hold:
+        # the old test_partial_view_no_approve.py:597 shape must be reported.
+        shadowing = (
+            "from diaktoros.run_supervisor import views\n"
+            "def test_x():\n"
+            "    views = [line for line in ()]\n"
+            "    return views\n")
+        self.assertEqual(_shadowed_submodules(shadowing), [(3, "views")])
+        as_argument = ("from diaktoros.run_supervisor import views\n"
+                       "def helper(views):\n    return views\n")
+        self.assertEqual(_shadowed_submodules(as_argument), [(2, "views")])
+        clean = ("from diaktoros.run_supervisor import views\n"
+                 "def test_x():\n    view_lines = []\n    return views.next_step, view_lines\n")
+        self.assertEqual(_shadowed_submodules(clean), [])
+        self.assertEqual(_shadowed_submodules("def test_x():\n    views = []\n"), [])
 
 
 if __name__ == "__main__":
