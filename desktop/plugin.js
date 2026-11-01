@@ -3,7 +3,8 @@
 // this plugin's own backend (dashboard/plugin_api.py) through ctx.rest. Reads never mutate state.
 // Writes require confirmation: Retry re-arms an eligible run; Pause/Resume changes webhook
 // delivery only; one-shot escalation requires an independent host preview and opaque confirmation.
-// Re-review and drain are preview-only refusals until core operations can bind safe snapshots.
+// Re-review and drain are refused here: the core binds the confirmed head and queue, but the page's
+// controls for them are not wired yet.
 // Plain ESM, loaded uncompiled: jsx() calls, not JSX syntax, and only the three specifiers the
 // loader allows. Theme variables only, never a hardcoded color.
 import {
@@ -1438,7 +1439,7 @@ function ActionsControl({ loop, discoveryCurrent }) {
         'PR number · required for escalation', jsx(Input, { 'aria-label': 'Action PR number', inputMode: 'numeric', value: prText,
           disabled: busy.current || action === 'drain', placeholder: action === 'drain' ? 'Drain selects a seat, not a PR' : 'e.g. 937', onChange: e => { reset(); setPrText(e.target.value) } })] }) }),
 
-      jsx(Muted, { text: 'Escalation parks this head against further review and fix, and spends an adjudicator turn to request a ruling. Confirmation names the exact head. Re-review and drain need a core entry point that can bind a confirmed snapshot, so no Desktop control offers them yet; hermes dk review and hermes dk drain still run them.' }),
+      jsx(Muted, { text: 'Escalation parks this head against further review and fix, and spends an adjudicator turn to request a ruling. Confirmation names the exact head. The core already binds a confirmed head (re-review) and queue (drain), but the page\'s controls for them are not wired yet; hermes dk review and hermes dk drain still run them.' }),
       button(reading ? 'Reading preview…' : 'Preview escalation', read, reading || busy.current || !discoveryCurrent || !pr),
       preview ? jsxs('div', { role: 'status', className: 'flex min-w-0 flex-col gap-2 break-words text-xs', children: [
         jsx(Badge, { size: 'xs', variant: state === 'verified' && preview.data.eligible ? 'muted' : 'warn', children: state !== 'verified' ? 'Preview expired · read again' : preview.data.eligible ? 'Host eligible' : 'Host refused' }),
@@ -1779,7 +1780,7 @@ function Page() {
       jsx(ActionsControl, { loop, discoveryCurrent: loopsState === 'verified' && !loops.isFetching && list.some(item => item.id === loop) }),
       jsx(HooksControl, { loop, discoveryCurrent: loopsState === 'verified' && !loops.isFetching && list.some(item => item.id === loop) }),
       jsx(Health, { loop }),
-      jsx(Muted, { text: 'Writes require confirmation: Retry re-arms a run that never wrote; Pause/Resume changes webhook delivery only; escalation uses an exact host preview. Re-review and drain are preview-only. Data is this machine\'s run ledger; for PRs and reviews from GitHub, run: hermes dk stats --github' })
+      jsx(Muted, { text: 'Writes require confirmation: Retry re-arms a run that never wrote; Pause/Resume changes webhook delivery only; escalation uses an exact host preview. Re-review and drain are not wired to this page yet (host CLI only). Data is this machine\'s run ledger; for PRs and reviews from GitHub, run: hermes dk stats --github' })
     ]
   })
 

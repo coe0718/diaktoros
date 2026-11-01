@@ -323,10 +323,10 @@ def drain_confirmed(loop, seat, expected):
     ``expected`` is the ``drain_snapshot`` that was shown. If the seat's live queue is not that
     queue, nothing is started, dropped or pruned (``stale``). Otherwise the watchdog's own
     per-entry checks run, up to the seat's free slots, and each queued entry is reported:
-    ``started``, ``left`` (still queued), ``dropped`` (no longer a valid request) or
-    ``uncertain`` (a POST that may have been sent). Nothing process-wide changes: the GitHub
-    budget, log lines and decision recorder are this call's (``gh.gate_scope``,
-    ``util.gate_call``), as for the review entry point (#1046).
+    ``sent`` (the route accepted the POST; never "started"), ``left`` (still queued),
+    ``dropped`` (no longer a valid request) or ``uncertain`` (a POST that may have been sent).
+    Nothing process-wide changes: the GitHub budget, log lines and decision recorder are this
+    call's (``gh.gate_scope``, ``util.gate_call``), as for the review entry point (#1046).
 
     Returns ``{"ok", "status", "sent", "outcomes"}``. ``status`` is ``stale``, ``refused``,
     ``nothing queued``, ``nothing to start`` (every entry was dropped as no longer valid),

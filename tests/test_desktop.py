@@ -561,7 +561,7 @@ class Health(unittest.TestCase):
 
 DASHBOARD_ROUTES = {"/loops", "/stats", "/now", "/overview", "/pr", "/health", "/settings", "/hooks", "/actions", "/records"}
 # Confirmed writes only: retry, hook pause/resume, and host-owned one-shot escalation.
-# Review/drain previews are refusals until the core can bind a safe identity.
+# Review/drain are refused until the page's confirmed controls are wired (the core binds both).
 DASHBOARD_WRITE_ROUTES = {"/retry", "/hooks", "/actions"}
 DASHBOARD_SOCKET_ROUTES = {"/events"}
 
@@ -689,6 +689,25 @@ class Package(unittest.TestCase):
         self.assertEqual(manifest["api"], "plugin_api.py")
         self.assertTrue((ROOT / "dashboard" / manifest["api"]).is_file())
         self.assertTrue((ROOT / "dashboard" / manifest["entry"]).is_file())
+
+    def test_refusal_copy_names_the_unwired_controls_not_a_missing_core_entry_point(self):
+        # #1449: the core binds the confirmed head (#1046) and queue (#1047); the gap is the page.
+        stale = ("cannot bind", "can bind a confirmed", "bind safe snapshots", "preview-only",
+                 "refuse unsafe execution")
+        for path in (PLUGIN_JS, ROOT / "diaktoros" / "desktop_api.py", ROOT / "dashboard" / "manifest.json"):
+            text = path.read_text()
+            for phrase in stale:
+                with self.subTest(file=path.name, phrase=phrase):
+                    self.assertNotIn(phrase, text)
+        for path in (PLUGIN_JS, ROOT / "dashboard" / "manifest.json"):
+            self.assertRegex(path.read_text(), r"controls? .{0,40}(not wired yet|are wired)", path.name)
+
+    def test_drain_confirmed_docstring_names_sent_not_started(self):
+        from diaktoros import one_shot_action
+        doc = one_shot_action.drain_confirmed.__doc__
+        outcomes = doc.split("each queued entry is reported:")[1].split("Nothing process-wide")[0]
+        self.assertIn("``sent``", outcomes)
+        self.assertNotIn("``started``", outcomes)
 
     def test_plugin_js_names_the_package_and_ships_off(self):
         source = PLUGIN_JS.read_text()
