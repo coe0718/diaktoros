@@ -42,6 +42,13 @@ class CommandsDoc(unittest.TestCase):
         self.assertEqual(blank, [], "give these flags help= text, then run "
                                     "`python3 tests/commands_doc.py --write`")
 
+    def test_init_distinctness_text_does_not_assume_a_token_file(self):
+        """`init --app` gives a login a GitHub App key file, not a token file (#1282): the
+        sentence on what `init` checks must say "credential", as the adjudicator setting does."""
+        text = commands_doc.DOC.read_text()
+        self.assertNotIn("each has its own token file", text.replace("\n", " "))
+        self.assertIn("each has its own credential", text.replace("\n", " "))
+
     def test_review_exit_2_names_the_crashed_gate(self):
         """`review` returns 2 for a crashed gate too ("the gate did not finish — it crashed
         (Type)", one_shot_action._review; tests/test_review_entry_point.py), not only a timeout."""
