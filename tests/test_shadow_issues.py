@@ -89,6 +89,33 @@ class Record(unittest.TestCase):
         self.assertEqual((row["title"], json.loads(row["labels"]), row["state"]),
                          ("Doc says X", ["bug"], "recorded"))
 
+    def test_a_shadow_filing_without_a_type_label_is_refused_and_not_recorded(self):
+        """The rule docs/configuration.md and `--label --help` now state (#1402)."""
+        self.loop = {**self.loop, "id": "one", "triage": TRIAGE}
+        sup, scope = self.shadow_run()
+        with mock.patch.object(config, "by_repo", return_value=self.loop):
+            server = self.start(scope, no_write=True)
+            refused = self.ask(server, title="Priority only", labels=("P3",))
+        self.assertFalse(refused["ok"])
+        self.assertIn("type label", refused["error"])
+        self.assertEqual(sup.shadow_issues_waiting(REPO), [])
+
+
+class TypeLabelRuleIsDocumented(unittest.TestCase):
+    """The two places a reader meets the rule say it (#1402)."""
+
+    def test_the_shadow_issues_paragraph_names_the_type_label_rule(self):
+        text = (Path(__file__).resolve().parent.parent / "docs" / "configuration.md").read_text()
+        start = text.index("**Filing its issues (`shadow.file_issues`")
+        self.assertIn("type label", text[start:text.index("**Who files it:**", start)])
+
+    def test_the_label_flag_help_names_the_type_label_rule(self):
+        import subprocess
+        root = Path(__file__).resolve().parent.parent
+        out = subprocess.run([sys.executable, "-m", "diaktoros.broker_client", "--help"],
+                             cwd=root, capture_output=True, text=True, check=True).stdout
+        self.assertIn("type label", " ".join(out.split()))
+
 
 class FilePending(unittest.TestCase):
     def setUp(self):
