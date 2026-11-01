@@ -67,7 +67,7 @@
     "diaktoros/one_shot_action.py::_escalate": 94,
     "diaktoros/one_shot_action.py::_escalation_decision": 84,
     "diaktoros/one_shot_action.py::_review": 113,
-    "diaktoros/ready.py::assess_kinds": 118,
+    "diaktoros/ready.py::assess_kinds": 106,
     "diaktoros/retry_action.py::perform": 88,
     "diaktoros/run_supervisor/__init__.py::Supervisor.__init__": 122,
     "diaktoros/run_supervisor/__init__.py::main": 104,

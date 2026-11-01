@@ -705,9 +705,11 @@ def verdicts(reviews: list, loop: dict, exclude_id=None) -> list:
 
 
 def reviewed_at_head(reviews: list, loop: dict, head: str) -> bool:
-    """A submitted verdict at this head, not a comment, draft, or dismissed review."""
+    """A submitted verdict at this head, not a comment, draft, or dismissed review. The
+    adjudicator's approval on its ACCEPT is one (#905): dismissing the change request it
+    overruled must not make the head look unreviewed, or a fresh review would start."""
     return any(gh.review_state(r) in {"APPROVED", "CHANGES_REQUESTED"}
-               for r in reviews_at_head(reviews, loop, head))
+               for r in reviews_at_head(reviews, loop, head) + ruled_approvals(reviews, loop, head))
 
 
 def reviews_at_head(reviews: list, loop: dict, head: str) -> list:
@@ -720,14 +722,52 @@ def reviews_at_head(reviews: list, loop: dict, head: str) -> list:
 NOT_VERDICTS = frozenset({"DISMISSED", "COMMENTED", "PENDING"})
 
 
+def ruled_approvals(reviews: list, loop: dict, head: str) -> list:
+    """The adjudicator's approvals at this head that its ACCEPT ruling there backs (#905): they
+    count as a verdict, like the reviewer's. A bare approval by that login is none, nor is one at
+    a head whose newest ruling is not ACCEPT, nor any when the ledger can't be read."""
+    login = config.adjudicator_login(loop).lower()
+    if not login or login in set(loop["reviewers"]):
+        return []
+    mine = [r for r in reviews if isinstance(r, dict) and reviewer_login(r) == login
+            and r.get("commit_id") == head and gh.review_state(r) == "APPROVED"]
+    if not mine:
+        return []
+    from .run_supervisor import views
+    return mine if views.ruling_at_head(config.host_path("ledger"), loop["repo"],
+                                        head) == "ACCEPT" else []
+
+
+def is_ruled_approval(review, loop: dict) -> bool:
+    """Whether ``review`` (an effective verdict) is the adjudicator's, not the reviewer's (#905)."""
+    return isinstance(review, dict) and not is_reviewer(review, loop)
+
+
+def blocking_reviews(reviews: list, loop: dict) -> list:
+    """The reviewer reviews GitHub still counts against the merge (#905): each reviewer's newest
+    approval, change request or dismissal, where that is a change request. Only a dismissal
+    or the same reviewer's approval lifts one; the adjudicator's approval does not."""
+    newest: dict[str, tuple] = {}
+    for review in reviews:
+        if (not isinstance(review, dict) or not is_reviewer(review, loop) or gh.review_state(review)
+                not in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}):
+            continue
+        key = (str(review.get("submitted_at") or ""), review.get("id") or 0)
+        login = reviewer_login(review)
+        if login not in newest or key > newest[login][0]:
+            newest[login] = (key, review)
+    return [r for _, r in newest.values() if gh.review_state(r) == "CHANGES_REQUESTED"]
+
+
 def latest_effective_review_at_head(reviews: list, loop: dict, head: str) -> dict | None:
     """Latest live verdict, or unknown when the same-head chronology cannot be proved.
 
     REST order is not a verdict. Dismissed reviews and comments do not supersede a verdict;
-    an unfamiliar state or undatable verdict cannot authorize a merge instruction.
+    an unfamiliar state or undatable verdict cannot authorize a merge instruction. The
+    adjudicator's approval on its ACCEPT ruling (``ruled_approvals``, #905) counts too.
     """
     candidates = []
-    for review in reviews_at_head(reviews, loop, head):
+    for review in reviews_at_head(reviews, loop, head) + ruled_approvals(reviews, loop, head):
         state = gh.review_state(review)
         if state in NOT_VERDICTS:
             continue

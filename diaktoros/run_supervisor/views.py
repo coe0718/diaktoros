@@ -226,6 +226,22 @@ def ruling_at(db: str | Path, repo: str, pr: int, head: str,
         return None
 
 
+def ruling_at_head(db: str | Path, repo: str, head: str) -> str | None:
+    """The newest ruling's verdict at this head in this repo, on any PR, read-only, or None. For
+    a review object, which names its head but not its PR (``gate.ruled_approvals``, #905)."""
+    try:
+        con = read_only_connect(db)
+        if con is None:
+            return None
+        try:
+            row = con.execute("SELECT verdict FROM rulings WHERE repo=? AND head=? "
+                              "ORDER BY created DESC LIMIT 1", (repo, head)).fetchone()
+            return str(row[0]) if row else None
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+
 def dependency_view(db: str | Path, repo: str, pr: int | None = None,
                     limit: int = 5) -> list[dict] | None:
     """The newest runs that recorded a dependency prefetch, for ``status``/``explain`` (#51).
