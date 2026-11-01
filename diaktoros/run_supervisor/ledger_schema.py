@@ -123,8 +123,9 @@ CREATE TABLE IF NOT EXISTS regressions (
 );
 -- A human overrode the loop (#220). kind merged_over_changes: the PR merged at a head where the
 -- reviewer's latest live verdict was changes-requested. seat/model: the reviewer run that posted
--- that verdict (model NULL when the ledger has none); findings: the F-numbers still open then (a
--- JSON list). One row per (PR, head, kind). Only recorded and reported; nothing decides from it.
+-- that verdict (model NULL when the ledger has none); findings: the findings still open then (a
+-- JSON list of {"id": "F1", "category": ...} objects, category "other" when none was recorded).
+-- One row per (PR, head, kind). Only recorded and reported; nothing decides from it.
 CREATE TABLE IF NOT EXISTS overrides (
  repo TEXT NOT NULL, pr INTEGER NOT NULL, head TEXT NOT NULL, kind TEXT NOT NULL,
  seat TEXT NOT NULL, model TEXT, review_id INTEGER NOT NULL, findings TEXT NOT NULL,
