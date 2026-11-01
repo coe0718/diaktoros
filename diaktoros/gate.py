@@ -777,15 +777,16 @@ def is_ruled_approval(review, loop: dict) -> bool:
     return isinstance(review, dict) and not is_reviewer(review, loop)
 
 
-def blocking_reviews(reviews: list, loop: dict) -> list:
-    """The reviews GitHub still counts against the merge (#905): each reviewer's, and the
-    adjudicator's, newest approval, change request or dismissal, where that is a change request.
-    Only a dismissal or the same login's approval lifts one; the adjudicator's does not. When a
-    login's order can't be told (an undatable review), every change request of it blocks."""
-    counted = (set(loop["reviewers"]) | {config.adjudicator_login(loop).lower()}) - {""}
+def blocking_reviews(reviews: list) -> list:
+    """The reviews GitHub may still count against the merge (#905): each login's newest
+    approval, change request or dismissal, where that is a change request. Every login counts,
+    not only the loop's seats: a maintainer's change request blocks as the reviewer's does, and
+    the loop can't tell who has write access, so it never assumes a login has none. Only a
+    dismissal or the same login's approval lifts one; the adjudicator's does not. When a login's
+    order can't be told (an undatable review), every change request of it blocks."""
     history: dict[str, list] = {}
     for review in reviews:
-        if (isinstance(review, dict) and reviewer_login(review) in counted
+        if (isinstance(review, dict) and reviewer_login(review)
                 and gh.review_state(review) in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}):
             history.setdefault(reviewer_login(review), []).append((_review_when(review), review))
     blocking = []

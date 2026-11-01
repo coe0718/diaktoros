@@ -118,11 +118,18 @@ class Counting(Base):
                                  [])
                 self.assertIsNone(self.latest([DISMISSED, TUCK, bad]))
 
+    def test_a_maintainers_change_request_blocks_like_the_reviewers(self):
+        # Review of #1591, F4: GitHub counts any write-access login's request, not only seats'.
+        human = review(12, "CHANGES_REQUESTED", login="coe0718", at="2026-01-03T00:00:00Z")
+        self.assertEqual(gate.blocking_reviews([DISMISSED, TUCK, human]), [human])
+        lifted = review(13, "APPROVED", login="coe0718", at="2026-01-04T00:00:00Z")
+        self.assertEqual(gate.blocking_reviews([DISMISSED, TUCK, human, lifted]), [])
+
     def test_an_undatable_change_request_still_blocks(self):
         undated = review(10, "CHANGES_REQUESTED", login="adj", at=None)
-        self.assertEqual(gate.blocking_reviews([DISMISSED, TUCK, undated], self.loop), [undated])
+        self.assertEqual(gate.blocking_reviews([DISMISSED, TUCK, undated]), [undated])
         old = review(4, "CHANGES_REQUESTED", at=None)
-        self.assertEqual(gate.blocking_reviews([old, review(6, "APPROVED")], self.loop), [old])
+        self.assertEqual(gate.blocking_reviews([old, review(6, "APPROVED")]), [old])
 
     def test_an_unreadable_ledger_counts_nothing(self):
         self.ruled("ACCEPT")
@@ -149,7 +156,7 @@ class Counting(Base):
         self.ruled("ACCEPT")
         later = review(10, "CHANGES_REQUESTED", login="adj", at="2026-01-03T00:00:00Z")
         self.assertIsNone(self.latest([DISMISSED, TUCK, later]))
-        self.assertEqual(gate.blocking_reviews([DISMISSED, TUCK, later], self.loop), [later])
+        self.assertEqual(gate.blocking_reviews([DISMISSED, TUCK, later]), [later])
         self.assertFalse(gate.reviewed_at_head([DISMISSED, TUCK, later], self.loop, fg.HEAD))
         comment = review(11, "COMMENTED", login="adj", at="2026-01-04T00:00:00Z")
         self.assertIs(self.latest([DISMISSED, TUCK, comment]), TUCK)
@@ -157,12 +164,12 @@ class Counting(Base):
 
 class Blocking(Base):
     def test_githubs_count_is_each_reviewers_newest_review(self):
-        self.assertEqual(gate.blocking_reviews([CHANGES, TUCK], self.loop), [CHANGES])
-        self.assertEqual(gate.blocking_reviews([DISMISSED, TUCK], self.loop), [])
+        self.assertEqual(gate.blocking_reviews([CHANGES, TUCK]), [CHANGES])
+        self.assertEqual(gate.blocking_reviews([DISMISSED, TUCK]), [])
         later = review(12, "APPROVED", at="2026-01-04T00:00:00Z", head="d" * 40)
-        self.assertEqual(gate.blocking_reviews([CHANGES, later], self.loop), [])
+        self.assertEqual(gate.blocking_reviews([CHANGES, later]), [])
         comment = review(13, "COMMENTED", at="2026-01-05T00:00:00Z")
-        self.assertEqual(gate.blocking_reviews([CHANGES, comment], self.loop), [CHANGES])
+        self.assertEqual(gate.blocking_reviews([CHANGES, comment]), [CHANGES])
 
 
 class Ready(Base):
@@ -211,6 +218,15 @@ class Ready(Base):
             with self.subTest(undated=undated):
                 self.assertNotEqual(merge_check.decide(self.kinds([DISMISSED, TUCK, undated]))[0],
                                     merge_check.SUCCESS)
+
+    def test_no_green_while_a_maintainer_still_requests_changes(self):
+        # Review of #1591, F4, end to end.
+        self.mark_escalated(by="dispute")
+        self.ruled("ACCEPT")
+        human = review(12, "CHANGES_REQUESTED", login="coe0718", at="2026-01-03T00:00:00Z")
+        kinds = self.kinds([DISMISSED, TUCK, human])
+        self.assertEqual(merge_check.decide(kinds)[0], merge_check.FAILURE)
+        self.assertIn("coe0718's changes-requested review 12", kinds[0][1])
 
     def test_an_accept_not_acted_on_still_waits_for_a_person(self):
         self.mark_escalated(by="dispute")
