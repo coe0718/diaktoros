@@ -37,9 +37,11 @@ because an agent reads them too. That's not a reason to delete them: shrink the 
   anything bigger into cohesive pieces.
 - **A file already in `tests/file_sizes_baseline.json`** may not grow past its baseline, or past
   1,500 if its baseline is under that. **A baselined function** may not grow past its baseline.
-- **When a baselined file or function shrinks**, or drops back under its cap, the check asks for
-  the baseline to follow. Run `python3 tests/file_sizes.py --write`: it lowers and removes
-  entries, and never raises or adds one.
+- **When a baselined file over the 1,500 ceiling, or a baselined function, shrinks**, or either
+  drops back under its cap, the check asks for the baseline to follow. Run
+  `python3 tests/file_sizes.py --write`: it lowers and removes entries, and never raises or adds
+  one. A file baselined under 1,500 is limited by the ceiling, so its shrinking asks for nothing
+  (it is only removed once it is back to 800 or less).
 - **A rename or a move** makes a function new under its new name. Move its baseline entry to the
   new name in the same PR. That's a hand edit of the JSON, so a reviewer sees it.
 
