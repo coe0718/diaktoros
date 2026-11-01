@@ -138,7 +138,7 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
             if stale_approval.is_stale(st.watch(), number, head):
                 add(FAILURE, stale_approval.line(stale_approval.record(st.watch(), number)))
             on_ruling = gate.is_ruled_approval(latest, loop)   # #905: the adjudicator's, on ACCEPT
-            why.extend((FAILURE, line) for line in unlifted(raw) if on_ruling)
+    why.extend(_acting(loop, number, head, raw if on_ruling else None))
 
     gating = ci.gating(ci_state, config.required_checks(loop))
     if gating is None:
@@ -213,6 +213,29 @@ def _escalation(loop: dict, number: int, head: str, marker) -> list[tuple[str, s
     if not (loop.get("adjudicator") or {}).get("route"):
         return [(FAILURE, "escalated, and this loop has no adjudicator route: a person decides")]
     return [(PENDING, "escalated: parked awaiting adjudication")]
+
+
+def _acting(loop: dict, number: int, head: str, reviews: list | None) -> list[tuple[str, str]]:
+    """What still holds a head approved on the adjudicator's ACCEPT (#905; ``reviews`` is its
+    review list, or None when the head is not), and how the sweep's acting on any ACCEPT stands:
+    a change request GitHub still counts, or an uncertain or denied step with its reason, keeps
+    the check red."""
+    from .run_supervisor import production_ledger, views
+    found = [(FAILURE, line) for line in unlifted(reviews or [])]
+    row, error = views.ruled_approval(production_ledger(), loop["repo"], number, head)
+    if error:
+        return found + ([(FAILURE, f"the record of acting on the ACCEPT can't be read "
+                                   f"({error[:120]})")] if reviews is not None else [])
+    for step, what in (("approve", "approval"), ("dismiss", "dismissal")):
+        state = (row or {}).get(step)
+        if state == "uncertain":
+            found.append((FAILURE, f"the {what} on the adjudicator's ACCEPT is unconfirmed "
+                                   f"({row.get('error') or 'no reason recorded'}); the next "
+                                   "sweep reads GitHub to settle it"))
+        elif state == "denied":
+            found.append((FAILURE, f"the {what} on the adjudicator's ACCEPT was not made: "
+                                   f"{row.get('error') or 'no reason recorded'}; a person decides"))
+    return found
 
 
 def unlifted(reviews: list) -> list[str]:

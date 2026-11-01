@@ -520,14 +520,16 @@ class LedgerRecords:
         return dict(row) if row else None
 
     def ruled_approval_step(self, repo: str, pr: int, head: str, step: str, state: str, *,
-                            review_id: int | None = None, error: str | None = None) -> bool:
+                            review_id: int | None = None, overruled: int | None = None,
+                            error: str | None = None) -> bool:
         """Move one step (``approve`` or ``dismiss``) of acting on an ACCEPT at this head (#905),
-        forward only: a write that may have been sent is never replayed. False when
-        the move is refused, as when another sweep made it first."""
-        allowed = {'pending': {'posting', 'denied', 'none'}, 'posting': {'posted', 'uncertain'}}
-        if step not in ('approve', 'dismiss') or (step == 'approve' and state == 'none'):
+        forward only: a write that may have been sent is never replayed, and ``uncertain`` moves
+        only once GitHub has been read. False when the move is refused, as when another sweep
+        made it first."""
+        allowed = {'pending': {'posting', 'denied', 'none'}, 'posting': {'posted', 'uncertain'},
+                   'uncertain': {'posted', 'denied'}}
+        if step not in ('approve', 'dismiss'):
             raise ValueError('invalid ruled approval step')
-        column = 'review_id' if step == 'approve' else 'dismissed'
         now = time.time()
         with self._connect() as con:
             con.execute('BEGIN IMMEDIATE')
@@ -538,9 +540,10 @@ class LedgerRecords:
             if state not in allowed.get(row[0], set()):
                 con.execute('ROLLBACK')
                 return False
-            con.execute(f'UPDATE ruled_approvals SET {step}=?, {column}=COALESCE(?,{column}), '
-                        'error=COALESCE(?,error), updated=? WHERE repo=? AND pr=? AND head=?',
-                        (state, review_id, error, now, repo, pr, head))
+            con.execute(f'UPDATE ruled_approvals SET {step}=?, review_id=COALESCE(?,review_id), '
+                        'overruled=COALESCE(?,overruled), error=COALESCE(?,error), updated=? '
+                        'WHERE repo=? AND pr=? AND head=?',
+                        (state, review_id, overruled, error, now, repo, pr, head))
             con.execute('COMMIT')
         return True
 

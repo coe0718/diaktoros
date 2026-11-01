@@ -3,23 +3,28 @@
 An ACCEPT says the reviewer's remaining change request does not block. Left alone it changes
 nothing on GitHub: the change request still blocks a base that requires a review, and ``ready``
 waits for a person. With ``adjudicator_approves`` on, the watchdog sweep acts on it, as the
-adjudicator's own login (``seats.adjudicator.login``), once all of these hold, re-read live:
+adjudicator's own login (``seats.adjudicator.login``), once all of these hold, re-read live
+before **each** write:
 
-* the newest ruling at the PR's current head is ACCEPT, and the reviewer's verdict there is a
-  change request (a shadow escalation's ACCEPT leaves an approval standing: nothing to do);
+* the newest ruling on the PR at its current head is ACCEPT, and it overruled one review: the
+  reviewer seat's latest verdict at that head, a change request submitted before the ruling (a
+  shadow escalation's ACCEPT leaves an approval standing, so there is nothing to do);
 * the required checks are green at that head;
 * the diff touches no ``human_paths`` path (those approvals are a person's, #478);
 * no maintainer hold (#477), and the PR is open, not a draft, by an authorized fixer.
 
-Then it **approves** the head, and **dismisses** the reviewer's change request there, the one the
-ruling overruled. The loop's readers count that approval only while an ACCEPT backs it
-(``gate.ruled_approvals``), so the dismissal never makes the head look unreviewed. Each write is
-recorded before it is sent (``ruled_approvals``): a lost response is ``uncertain`` and never
-replayed, and a refusal is ``denied`` with its reason. Only the reviewer seat's change request at
-the ruled head is dismissed: one by anyone else (a maintainer, the adjudicator itself) or at
-another head, which GitHub also still counts, is left alone, and the merge check names it for a
-person. A wait (red
-or running CI, a hold, an unreadable read) is checked again on the next sweep.
+Then it **approves** the head and **dismisses** that one overruled review, both citing the ruling
+(a link to its PR comment, or where to read it when it has none). The loop's readers count the
+approval only while an ACCEPT backs it and it is the head's newest verdict
+(``gate.ruled_approvals``), so the dismissal never makes the head look unreviewed. A newer
+verdict from the reviewer after the approval stops the dismissal for a person. Any other blocking
+review (a maintainer's, one at another head) is never dismissed: the merge check names it.
+
+Each write is recorded before it is sent (``ruled_approvals``) and never sent again. A lost
+response is ``uncertain`` until a later sweep reads GitHub: the approval or dismissal is there
+(``posted``) or it is not (``denied``). A refusal is ``denied`` with its reason. ``ready`` and the
+merge check show an uncertain or denied step with its reason. A wait (red or running CI, a hold,
+an unreadable read) writes nothing and is checked again on the next sweep.
 """
 from __future__ import annotations
 
@@ -38,10 +43,11 @@ def sweep(loop: dict, st, prs: list, log=lambda _msg: None) -> list[int]:
         if (listed := config.loop_pr(loop, pr)) is None:
             continue
         number, head, _author = listed
-        if views.ruling_at(db, loop["repo"], number, head) != "ACCEPT":
+        ruling = views.ruling_row(db, loop["repo"], number, head)
+        if not ruling or ruling["verdict"] != "ACCEPT":
             continue
         try:
-            if _act(loop, st, Supervisor(db, create=False), pr, number, head, log):
+            if _act(loop, st, Supervisor(db, create=False), pr, ruling, log):
                 moved.append(number)
         except Exception as exc:  # noqa: BLE001 - one PR's failure never stops the sweep
             log(f"#{number}: acting on the ACCEPT failed: {type(exc).__name__}: {exc}")
@@ -52,28 +58,76 @@ def sweep(loop: dict, st, prs: list, log=lambda _msg: None) -> list[int]:
     return moved
 
 
-def _act(loop: dict, st, sup, pr: dict, number: int, head: str, log) -> bool:
-    """Approve, then dismiss, for one PR whose newest ruling at ``head`` is ACCEPT."""
-    row = sup.ruled_approval(loop["repo"], number, head) or {}
-    if row.get("dismiss", "pending") != "pending" or row.get("approve") in ("denied", "uncertain"):
-        return False                                   # done, or left for a person
+def overruled(reviews: list, loop: dict, head: str, ruled_at: float) -> dict | None:
+    """The one review an ACCEPT at ``head`` overruled: the reviewer seat's latest effective
+    verdict there, a change request submitted before the ruling. None when there is none, or
+    when it can't be told (an unproved order): then nothing is dismissed."""
+    mine = [r for r in reviews if isinstance(r, dict) and gate.is_reviewer(r, loop)]
+    latest = gate.latest_effective_review_at_head(mine, loop, head)
+    if latest is None or gh.review_state(latest) != "CHANGES_REQUESTED":
+        return None
+    when = gate._review_when(latest)
+    return latest if when is not None and when[0].timestamp() <= float(ruled_at) else None
+
+
+def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
+    """Approve, then dismiss, for one PR whose newest ruling at its head is ACCEPT."""
+    repo, number, head = loop["repo"], int(pr["number"]), ruling["head"]
     reviews = gh.reviews(loop, number)
     if not isinstance(reviews, list):
         return False
+    row = sup.ruled_approval(repo, number, head) or {}
+    if _reconcile(loop, sup, row, reviews, number, head, log):
+        return True                                    # an uncertain step, settled from GitHub
+    if row.get("dismiss", "pending") != "pending" or row.get("approve") in ("denied", "uncertain"):
+        return False                                   # done, or left for a person
+    wait, deny = _wait_or_deny(loop, st, number, head)
+    if wait:
+        return False
+    step = "approve" if row.get("approve", "pending") == "pending" else "dismiss"
+    if deny:
+        return sup.ruled_approval_step(repo, number, head, step, "denied", error=deny[:200])
     branch = str((pr.get("head") or {}).get("ref") or "")
     latest = gate.latest_effective_review_at_head(reviews, loop, head)
-    if row.get("approve") == "posted" or gate.is_ruled_approval(latest, loop):
-        return _dismiss(loop, sup, reviews, number, head, branch, log)
-    if latest is None or gh.review_state(latest) != "CHANGES_REQUESTED":
-        return False                                   # no change request to overrule
-    outcome = _approve(loop, st, sup, number, head, branch, log)
-    if outcome == "posted" and isinstance(reviews := gh.reviews(loop, number), list):
-        _dismiss(loop, sup, reviews, number, head, branch, log)
-    return bool(outcome)                               # else dismissed on the next sweep
+    if step == "approve":
+        found = overruled(reviews, loop, head, ruling["created"])
+        if found is None:
+            return False                               # no change request it overruled
+        if gate.is_ruled_approval(latest, loop):       # approved already, by hand
+            return sup.ruled_approval_step(repo, number, head, "approve", "none",
+                                           overruled=found["id"])
+        return _approve(loop, sup, ruling, number, branch, found["id"], log)
+    if not gate.is_ruled_approval(latest, loop):
+        if latest is None:
+            return False                               # the approval not readable yet: wait
+        return sup.ruled_approval_step(
+            repo, number, head, "dismiss", "denied",
+            error=f"a newer verdict at the head ({_named(latest)}) supersedes the approval")
+    return _dismiss(loop, sup, ruling, reviews, number, branch, row.get("overruled"), log)
+
+
+def _reconcile(loop: dict, sup, row: dict, reviews: list, number: int, head: str, log) -> bool:
+    """Settle an ``uncertain`` step from what GitHub now shows, never by writing again: the
+    adjudicator's approval at the head is there, or the overruled review is dismissed."""
+    repo = loop["repo"]
+    if row.get("approve") == "uncertain":
+        found = gate.ruled_approvals(reviews, loop, head)
+        state = "posted" if found else "denied"
+        sup.ruled_approval_step(repo, number, head, "approve", state,
+                                review_id=found[0]["id"] if found else None)
+    elif row.get("dismiss") == "uncertain":
+        target = next((r for r in reviews if isinstance(r, dict)
+                       and r.get("id") == row.get("overruled")), None)
+        state = "posted" if target and gh.review_state(target) == "DISMISSED" else "denied"
+        sup.ruled_approval_step(repo, number, head, "dismiss", state)
+    else:
+        return False
+    log(f"#{number} @ {head[:7]}: an uncertain write on the ACCEPT read back as {state}")
+    return True
 
 
 def _wait_or_deny(loop: dict, st, number: int, head: str) -> tuple[str, str]:
-    """``(wait, deny)``: why the approval waits for a later sweep, or why it is a person's."""
+    """``(wait, deny)``: why the next write waits for a later sweep, or why it is a person's."""
     gating = ci.gating(ci.read(loop, head), config.required_checks(loop))
     if gating is None or not gating.green:
         return "the required checks are not green yet", ""
@@ -91,27 +145,31 @@ def _wait_or_deny(loop: dict, st, number: int, head: str) -> tuple[str, str]:
     return "", ""
 
 
-def _approve(loop: dict, st, sup, number: int, head: str, branch: str, log) -> str:
-    """The approval step: ``posted``, ``stopped`` (denied or uncertain, for a person), or ``""``
-    when it waits for a later sweep."""
-    repo = loop["repo"]
-    wait, deny = _wait_or_deny(loop, st, number, head)
-    if wait:
-        return ""
+def cite(loop: dict, number: int, ruling: dict) -> str:
+    """Where the ruling can be read: its PR comment's link, or, with none, the ledger."""
+    if type(ruling.get("comment_id")) is int and ruling.get("comment") == "posted":
+        return (f"https://github.com/{loop['repo']}/pull/{number}"
+                f"#issuecomment-{ruling['comment_id']}")
+    return (f"not posted as a comment (comment {ruling.get('comment') or 'unknown'}); read it with "
+            f"`hermes dk explain --loop {loop.get('id') or '<loop>'} --pr {number}`")
+
+
+def _approve(loop: dict, sup, ruling: dict, number: int, branch: str, target: int, log) -> bool:
+    """The approval step, with the review it overrules recorded first."""
+    repo, head = loop["repo"], ruling["head"]
     try:
-        if deny:
-            raise broker.BrokerDenied(deny)
         login = broker.authorize_adjudicator(loop, repo=repo, number=number, head=head,
                                              branch=branch)
     except broker.BrokerDenied as exc:
         sup.ruled_approval_step(repo, number, head, "approve", "denied", error=str(exc)[:200])
         log(f"#{number} @ {head[:7]}: not approved on the ACCEPT: {exc}")
-        return "stopped"
-    if not sup.ruled_approval_step(repo, number, head, "approve", "posting"):
-        return ""
-    text = (f"Approved on the adjudicator's ACCEPT ruling at `{head[:7]}`: the ruling found the "
-            "remaining change request does not block. The reviewer did not re-review this head; "
-            "this is the adjudicator's decision.")
+        return True
+    if not sup.ruled_approval_step(repo, number, head, "approve", "posting", overruled=target):
+        return False
+    text = (f"Approved on the adjudicator's ACCEPT ruling at `{head[:7]}` "
+            f"({cite(loop, number, ruling)}): the ruling found the remaining change request "
+            "does not block. The reviewer did not re-review this head; this is the "
+            "adjudicator's decision.")
     try:
         review_id = broker.approve_on_ruling(loop, repo=repo, number=number, head=head,
                                              branch=branch, login=login, text=text)
@@ -119,51 +177,46 @@ def _approve(loop: dict, st, sup, number: int, head: str, branch: str, log) -> s
         sup.ruled_approval_step(repo, number, head, "approve", "uncertain",
                                 error=f"POST outcome unknown: {type(exc).__name__}: {exc}"[:200])
         log(f"#{number} @ {head[:7]}: the approval on the ACCEPT is uncertain: {exc}")
-        return "stopped"
+        return True
     sup.ruled_approval_step(repo, number, head, "approve", "posted", review_id=review_id)
     log(f"#{number} @ {head[:7]}: approved on the adjudicator's ACCEPT (review {review_id})")
-    return "posted"
+    return True
 
 
-def _dismiss(loop: dict, sup, reviews: list, number: int, head: str, branch: str, log) -> bool:
-    """The dismissal step: the reviewer seat's change request at the ruled head, never another
-    (a person's, the adjudicator's own, or one at another head is left for a person)."""
-    repo = loop["repo"]
-    blocking = gate.blocking_reviews(reviews)
-    targets = [r for r in blocking if gate.is_reviewer(r, loop) and r.get("commit_id") == head
-               and type(r.get("id")) is int]
-    others = [r for r in blocking if r not in targets]
-    if not targets:
-        state, error = ("denied", f"{_named(others[0])} still blocks, for a person") if others \
-            else ("none", None)
-        return sup.ruled_approval_step(repo, number, head, "dismiss", state, error=error)
+def _dismiss(loop: dict, sup, ruling: dict, reviews: list, number: int, branch: str,
+             target, log) -> bool:
+    """The dismissal step: the one review the ruling overruled, never another."""
+    repo, head = loop["repo"], ruling["head"]
+    review = next((r for r in reviews if isinstance(r, dict) and r.get("id") == target), None)
+    if review is None or gh.review_state(review) != "CHANGES_REQUESTED":
+        return sup.ruled_approval_step(repo, number, head, "dismiss", "none")
     try:
         login = broker.authorize_adjudicator(loop, repo=repo, number=number, head=head,
                                              branch=branch)
     except broker.BrokerDenied as exc:
-        log(f"#{number} @ {head[:7]}: dismissal waits: {exc}")
-        return False
+        return sup.ruled_approval_step(repo, number, head, "dismiss", "denied",
+                                       error=str(exc)[:200])
     if not sup.ruled_approval_step(repo, number, head, "dismiss", "posting"):
         return False
     message = (f"Dismissed on the adjudicator's ACCEPT ruling at {head[:7]}, which overruled "
-               "this change request.")
+               f"this change request: {cite(loop, number, ruling)}")
     try:
-        for review in targets:
-            broker.dismiss_on_ruling(loop, repo=repo, number=number, head=head, branch=branch,
-                                     login=login, review_id=review["id"], message=message)
+        broker.dismiss_on_ruling(loop, repo=repo, number=number, head=head, branch=branch,
+                                 login=login, review_id=target, message=message)
     except Exception as exc:  # noqa: BLE001 - the PUT may have landed: never replayed
         sup.ruled_approval_step(repo, number, head, "dismiss", "uncertain",
                                 error=f"dismissal outcome unknown: {type(exc).__name__}: {exc}"[:200])
         log(f"#{number} @ {head[:7]}: the dismissal on the ACCEPT is uncertain: {exc}")
         return True
-    sup.ruled_approval_step(repo, number, head, "dismiss", "posted", review_id=targets[-1]["id"])
-    log(f"#{number} @ {head[:7]}: dismissed review {targets[-1]['id']} on the ACCEPT; "
+    sup.ruled_approval_step(repo, number, head, "dismiss", "posted")
+    others = [r for r in gate.blocking_reviews(reviews) if r.get("id") != target]
+    log(f"#{number} @ {head[:7]}: dismissed review {target} on the ACCEPT; "
         + (f"{_named(others[0])} still blocks, for a person" if others else
-           "nothing blocks the merge now"))
+           "nothing else blocks the merge"))
     return True
 
 
 def _named(review: dict) -> str:
-    """A blocking review as the log and the ledger name it."""
-    return (f"{gate.reviewer_login(review) or '?'}'s change request {review.get('id')} at "
-            f"{str(review.get('commit_id') or '?')[:7]}")
+    """A review as the log and the ledger name it."""
+    return (f"{gate.reviewer_login(review) or '?'}'s {gh.review_state(review).lower()} "
+            f"{review.get('id')} at {str(review.get('commit_id') or '?')[:7]}")

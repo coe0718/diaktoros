@@ -64,37 +64,53 @@ class Base(tra.Base):
 
 
 class Acts(Base):
-    def test_an_accept_with_green_checks_approves_then_dismisses(self):
+    def test_an_accept_with_green_checks_approves_then_dismisses_the_overruled_review(self):
         self.ruled("ACCEPT")
-        self.assertEqual(self.sweep(), [7])
+        self.assertEqual(self.sweep(), [7])                # this sweep approves...
         self.approve.assert_called_once()
         self.assertEqual(self.approve.call_args.kwargs["head"], fg.HEAD)
         self.assertIn("did not re-review", self.approve.call_args.kwargs["text"])
+        self.dismiss.assert_not_called()
+        self.assertEqual(self.sweep(), [7])                # ...the next, all rechecked, dismisses
         self.dismiss.assert_called_once()
         self.assertEqual(self.dismiss.call_args.kwargs["review_id"], CHANGES["id"])
         row = self.row()
-        self.assertEqual((row["approve"], row["review_id"], row["dismiss"], row["dismissed"]),
-                         ("posted", TUCK["id"], "posted", CHANGES["id"]))
-        merge_check.refresh_quietly.assert_called_once_with(self.loop, 7)
-        # Done: a second sweep writes nothing again.
-        self.assertEqual(self.sweep(), [])
+        self.assertEqual((row["overruled"], row["approve"], row["review_id"], row["dismiss"]),
+                         (CHANGES["id"], "posted", TUCK["id"], "posted"))
+        self.assertEqual(merge_check.refresh_quietly.call_count, 2)
+        self.assertEqual(self.sweep(), [])                 # done: nothing is written again
         self.approve.assert_called_once()
         self.dismiss.assert_called_once()
 
     def test_an_approval_already_counted_is_only_dismissed_for(self):
         self.ruled("ACCEPT")
-        self.reviews = [CHANGES, TUCK]                     # approved by hand, or an earlier sweep
+        self.reviews = [CHANGES, TUCK]                     # approved by hand
+        self.sweep()
+        self.assertEqual((self.row()["approve"], self.row()["overruled"]), ("none", 5))
         self.sweep()
         self.approve.assert_not_called()
         self.dismiss.assert_called_once()
         self.assertEqual(self.row()["dismiss"], "posted")
 
-    def test_nothing_left_to_dismiss_is_recorded_as_none(self):
+    def test_nothing_to_overrule_writes_nothing(self):
         self.ruled("ACCEPT")
         self.reviews = [DISMISSED, TUCK]
         self.sweep()
         self.dismiss.assert_not_called()
-        self.assertEqual(self.row()["dismiss"], "none")
+        self.assertIsNone(self.row())
+
+    def test_both_messages_link_the_ruling_or_say_where_it_is(self):
+        # Review of #1605, F4.
+        self.ruled("ACCEPT")
+        self.sweep()
+        self.sweep()
+        for text in (self.approve.call_args.kwargs["text"],
+                     self.dismiss.call_args.kwargs["message"]):
+            self.assertIn("not posted as a comment (comment pending)", text)
+            self.assertIn("hermes dk explain --loop one --pr 7", text)
+        ruling = {"comment": "posted", "comment_id": 6563270384}
+        self.assertEqual(ruled_approval.cite(self.loop, 7, ruling),
+                         f"https://github.com/{fg.REPO}/pull/7#issuecomment-6563270384")
 
 
 class DoesNothing(Base):
@@ -194,22 +210,51 @@ class LeftToAPerson(Base):
         self.approve.assert_not_called()
         self.assertEqual((self.row()["approve"], self.row()["error"]), ("denied", "stale PR head"))
 
-    def test_a_lost_approval_is_uncertain_and_never_replayed(self):
+    def test_a_lost_approval_is_never_replayed(self):
         self.ruled("ACCEPT")
         self.approve.side_effect = TimeoutError("read timed out")
         self.sweep()
         self.assertEqual(self.row()["approve"], "uncertain")
+        self.sweep()                                       # GitHub: no approval landed
         self.sweep()
         self.approve.assert_called_once()
         self.dismiss.assert_not_called()
+        self.assertEqual(self.row()["approve"], "denied")
 
-    def test_a_lost_dismissal_is_uncertain_and_never_replayed(self):
+    def test_a_lost_dismissal_is_never_replayed_and_settles_from_github(self):
         self.ruled("ACCEPT")
         self.dismiss.side_effect = TimeoutError("read timed out")
         self.sweep()
+        self.sweep()
         self.assertEqual((self.row()["approve"], self.row()["dismiss"]), ("posted", "uncertain"))
+        self.sweep()                                       # GitHub: not dismissed after all
+        self.dismiss.assert_called_once()
+        self.assertEqual(self.row()["dismiss"], "denied")
+
+    def test_a_lost_dismissal_that_landed_settles_as_posted(self):
+        self.ruled("ACCEPT")
+        def landed(*_a, review_id, **_kw):
+            self._dismissed(review_id=review_id)
+            raise TimeoutError("read timed out")
+        self.dismiss.side_effect = landed
+        self.sweep()
+        self.sweep()
+        self.assertEqual(self.row()["dismiss"], "uncertain")
         self.sweep()
         self.dismiss.assert_called_once()
+        self.assertEqual(self.row()["dismiss"], "posted")
+
+    def test_a_lost_approval_that_landed_settles_as_posted(self):
+        self.ruled("ACCEPT")
+        def landed(*a, **kw):
+            self._approved()
+            raise TimeoutError("read timed out")
+        self.approve.side_effect = landed
+        self.sweep()
+        self.assertEqual(self.row()["approve"], "uncertain")
+        self.sweep()
+        self.assertEqual((self.row()["approve"], self.row()["review_id"]), ("posted", TUCK["id"]))
+        self.approve.assert_called_once()
 
     def test_a_change_request_at_another_head_is_never_dismissed(self):
         self.ruled("ACCEPT")
@@ -217,8 +262,9 @@ class LeftToAPerson(Base):
         self.loop = {**self.loop, "reviewers": ["reviewer", "critic"]}
         self.reviews = [older, CHANGES]
         self.sweep()
+        self.sweep()
         self.assertEqual([c.kwargs["review_id"] for c in self.dismiss.call_args_list], [5])
-        self.assertIn("critic's change request 3 at eeeeeee still blocks", self.logged[-1])
+        self.assertIn("critic's changes_requested 3 at eeeeeee still blocks", self.logged[-1])
 
     def test_a_maintainers_change_request_is_never_dismissed(self):
         # Review of #1591, F4: a person's request at the same head is theirs to lift.
@@ -226,8 +272,107 @@ class LeftToAPerson(Base):
         human = tra.review(12, "CHANGES_REQUESTED", login="coe0718", at="2026-01-03T00:00:00Z")
         self.reviews = [CHANGES, human]
         self.sweep()
+        self.sweep()
         self.assertEqual([c.kwargs["review_id"] for c in self.dismiss.call_args_list], [5])
-        self.assertIn("coe0718's change request 12", self.logged[-1])
+        self.assertIn("coe0718's changes_requested 12", self.logged[-1])
+
+    def test_only_the_review_the_ruling_overruled_is_dismissed(self):
+        # Review of #1605, F2: two reviewer accounts' requests at the head; the ruling overruled
+        # the latest effective verdict only, so only that one is dismissed.
+        self.ruled("ACCEPT")
+        self.loop = {**self.loop, "reviewers": ["reviewer", "critic"]}
+        other = tra.review(15, "CHANGES_REQUESTED", login="critic", at="2026-01-01T06:00:00Z")
+        self.reviews = [CHANGES, other]
+        self.sweep()
+        self.sweep()
+        self.assertEqual([c.kwargs["review_id"] for c in self.dismiss.call_args_list], [15])
+        self.assertEqual(self.row()["overruled"], 15)
+
+    def test_a_newer_verdict_after_the_approval_is_never_dismissed(self):
+        # Review of #1605, F2: the reviewer asks again after the approval; it wins, and stays.
+        self.ruled("ACCEPT")
+        self.sweep()
+        newer = tra.review(17, "CHANGES_REQUESTED", at="2026-01-03T00:00:00Z")
+        self.reviews = [*self.reviews, newer]
+        self.sweep()
+        self.dismiss.assert_not_called()
+        self.assertEqual(self.row()["dismiss"], "denied")
+        self.assertIn("changes_requested 17", self.row()["error"])
+
+    def test_a_change_request_from_after_the_ruling_was_not_overruled(self):
+        self.ruled("ACCEPT")
+        self.reviews = [tra.review(5, "CHANGES_REQUESTED", at="2099-01-01T00:00:00Z")]
+        self.assertEqual(self.sweep(), [])
+        self.approve.assert_not_called()
+
+    def test_the_dismissal_rechecks_every_condition(self):
+        # Review of #1605, F1: an approval posted on an earlier sweep never dismisses past a
+        # red check, a hold or a reserved path.
+        for name, setup, state in (
+                ("red", lambda: setattr(self, "ci", ci.CIState(failed=["tests"])), "pending"),
+                ("unread", lambda: setattr(self, "ci", None), "pending"),
+                ("hold", lambda: setattr(self, "hold", ({"by": "coe0718"}, "")), "pending"),
+                ("paths", lambda: setattr(self, "paths", ("", "it touches .github/x")), "denied"),
+                ("human", lambda: self.st.human_hold_set(7, fg.HEAD, "touches"), "denied")):
+            with self.subTest(name):
+                self.setUp()
+                self.ruled("ACCEPT")
+                self.sweep()
+                self.assertEqual(self.row()["approve"], "posted")
+                setup()
+                self.sweep()
+                self.dismiss.assert_not_called()
+                self.assertEqual(self.row()["dismiss"], state)
+
+
+class CheckShowsIt(Base):
+    """Review of #1605, F3: ready and the merge check never go green past an unconfirmed or
+    refused step, and say why."""
+
+    def kinds(self):
+        from diaktoros import ready
+        pr = {**fg.LIVE, "user": {"login": "fixer"}}
+        with mock.patch.object(ready.gate, "shadow_state", return_value=("", "", "")), \
+                mock.patch.object(ready.gate_failures, "open_for", return_value=[]):
+            return ready.assess_kinds({**self.loop, "required_checks": []}, self.st, pr,
+                                      list(self.reviews), ci.CIState(passed=[]), tra.CLEAN)
+
+    def test_a_landed_but_unconfirmed_dismissal_keeps_the_check_red(self):
+        self.mark_escalated(by="dispute")
+        self.ruled("ACCEPT")
+        def landed(*_a, review_id, **_kw):
+            self._dismissed(review_id=review_id)
+            raise TimeoutError("read timed out")
+        self.dismiss.side_effect = landed
+        self.sweep()
+        self.sweep()
+        kinds = self.kinds()                     # GitHub shows it dismissed; the ledger can't say
+        self.assertEqual(merge_check.decide(kinds)[0], merge_check.FAILURE)
+        self.assertIn("unconfirmed", kinds[-1][1])
+        self.assertIn("read timed out", kinds[-1][1])
+        self.sweep()                             # read back: posted, and now green
+        self.assertEqual(merge_check.decide(self.kinds())[0], merge_check.SUCCESS)
+
+    def test_a_refused_dismissal_names_its_reason(self):
+        self.mark_escalated(by="dispute")
+        self.ruled("ACCEPT")
+        self.sweep()
+        with mock.patch.object(broker, "authorize_adjudicator",
+                               side_effect=broker.BrokerDenied("HTTP 403 forbidden")):
+            self.sweep()
+        kinds = self.kinds()
+        self.assertEqual(merge_check.decide(kinds)[0], merge_check.FAILURE)
+        self.assertTrue(any("was not made: HTTP 403 forbidden" in text for _, text in kinds), kinds)
+
+    def test_an_unreadable_record_is_never_green(self):
+        self.mark_escalated(by="dispute")
+        self.ruled("ACCEPT")
+        self.reviews = [DISMISSED, TUCK]
+        with mock.patch.object(run_supervisor.views, "ruled_approval",
+                               return_value=(None, "OperationalError: disk I/O error")):
+            kinds = self.kinds()
+        self.assertEqual(merge_check.decide(kinds)[0], merge_check.FAILURE)
+        self.assertIn("can't be read", kinds[-1][1])
 
 
 class Steps(Base):
@@ -239,10 +384,11 @@ class Steps(Base):
         self.assertFalse(step("approve", "posting"))          # a second sweep claims nothing
         self.assertTrue(step("approve", "posted", review_id=9))
         self.assertFalse(step("approve", "uncertain"))
-        self.assertTrue(step("dismiss", "none"))
-        self.assertFalse(step("dismiss", "posting"))
-        with self.assertRaises(ValueError):
-            step("approve", "none")
+        self.assertTrue(step("dismiss", "posting"))
+        self.assertTrue(step("dismiss", "uncertain"))
+        self.assertFalse(step("dismiss", "posting"))          # never sent again
+        self.assertTrue(step("dismiss", "posted"))            # only once GitHub was read
+        self.assertFalse(step("dismiss", "denied"))
         with self.assertRaises(ValueError):
             step("merge", "posting")
         self.assertEqual(sup.ruled_approval(fg.REPO, 7, fg.HEAD)["review_id"], 9)
