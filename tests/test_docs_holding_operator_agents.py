@@ -36,6 +36,15 @@ class HoldingSectionNamesOperatorAgents(unittest.TestCase):
         self.assertIn("is not in the report", text)
         self.assertIn("observer.weekly_report", text)
 
+    def test_agent_hold_record_is_qualified(self):
+        # #1590: a row exists only for a hold a sweep observed and the ledger accepted.
+        text = section()
+        self.assertIn("when the watchdog sweep observes it begin", text)
+        self.assertIn("ledger write succeeds", text)
+        self.assertIn("released before a sweep sees it", text)
+        self.assertIn("leaves no row", text)
+        self.assertNotIn("A hold on any other PR is recorded", text)
+
     def test_other_docs_qualify_the_agent_hold_too(self):
         for name in ("accounts.md", "configuration.md"):
             text = " ".join((ROOT / "docs" / name).read_text().split())
