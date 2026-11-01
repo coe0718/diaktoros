@@ -218,6 +218,30 @@ class Citations(unittest.TestCase):
         self.assertIn("could not read", reason)
 
 
+class CitationsPastTheListingLimit(unittest.TestCase):
+    """#1580: a file past GitHub's 3,000-file listing is cited by the host naming it."""
+    LOOP = {"repo": "a/b", "read_token": "r"}
+
+    def check(self, body, listed=3000, named=(("added", "f3000.py"),)):
+        from diaktoros import gh
+        from diaktoros.run_supervisor import pr_facts
+        files = [{"filename": f"f{i}.py", "patch": "@@ -1 +1 @@\n+x"} for i in range(listed)]
+        with mock.patch.object(gh, "pr_files_read", return_value=(files, "")), \
+                mock.patch.object(gh, "api", return_value={"base": {"sha": "b" * 40}}), \
+                mock.patch.object(pr_facts, "unlisted_changes", return_value=list(named)):
+            return findings.check_citations(self.LOOP, 7, "REQUEST_CHANGES", body, head="h" * 40)
+
+    def test_a_named_file_beyond_the_prefix_is_cited(self):
+        self.assertEqual(self.check("F1: f3000.py:12: bug\n"), "")
+        self.assertEqual(self.check("F1: f2999.py:1: bug\n"), "")
+
+    def test_an_unnamed_file_is_still_refused(self):
+        self.assertIn("F1 does not cite", self.check("F1: f3001.py:12: bug\n"))
+
+    def test_under_the_limit_the_trees_are_not_read(self):
+        self.assertIn("F1 does not cite", self.check("F1: f3000.py:12: bug\n", listed=10))
+
+
 class CitationTokens(unittest.TestCase):
     """#476 on #534's path-token rule: a cited line belongs to the whole path, not a suffix."""
 

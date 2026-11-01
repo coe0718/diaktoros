@@ -610,7 +610,7 @@ class RunBroker(broker_issues.IssueWrites):
                 if gating is not None:
                     reason = findings.check_citations(
                         self._loop, self.scope.number, verdict, body,
-                        failing=[*gating.failed, *gating.missing])
+                        failing=[*gating.failed, *gating.missing], head=self.scope.head)
             if reason:
                 raise ProtocolError(reason)
             # #687: a block whose only ground is a test this sandbox could not run, when a

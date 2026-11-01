@@ -188,11 +188,39 @@ def _cited(rest: str, ranges: dict, failing=()) -> bool:
     return False
 
 
-def check_citations(loop: dict, number: int, verdict: str, body: str, failing=()) -> str:
+def unlisted_ranges(loop: dict, number: int, files: list, head: str) -> dict:
+    """``{path: None}`` for the changed files a PR past GitHub's listing limit does not list.
+
+    Named from the merge-base and head trees, as the seat's view of the change is built
+    (``pr_facts.unlisted_changes``). They carry no patch, so a line cited in one cannot be
+    checked and any line counts, like a listed file with no patch text. Empty when the listing
+    is under the limit or the trees cannot be read: the citation is then refused as before."""
+    from . import gh
+    if len(files) < gh.PR_FILES_LISTING_LIMIT:
+        return {}
+    from .run_supervisor import pr_facts
+    pr = gh.api(loop, gh.pr_path(loop, number), login=loop.get("read_token"))
+    base = pr.get("base") if isinstance(pr, dict) else None
+    if not isinstance(base, dict) or not isinstance(base.get("sha"), str) or not head:
+        return {}
+    named = {n for f in files if isinstance(f, dict)
+             for n in (f.get("filename"), f.get("previous_filename")) if isinstance(n, str)}
+    try:
+        return {path: None for _, path in
+                pr_facts.unlisted_changes(loop, loop["repo"], base["sha"], head, named)}
+    except (ValueError, KeyError):
+        return {}
+
+
+def check_citations(loop: dict, number: int, verdict: str, body: str, failing=(),
+                    head: str = "") -> str:
     """The reason a REQUEST_CHANGES must be refused for an uncited blocking finding, or ''.
 
     ``failing``: the failed or missing required checks at the head; a finding that names one is
-    cited by CI itself, whatever file the failure lives in."""
+    cited by CI itself, whatever file the failure lives in. ``head``: the reviewed commit. A PR
+    past GitHub's 3,000-file listing limit lists only a prefix, so a finding on a file beyond it
+    is cited by the host's own naming of those files (``unlisted_ranges``). Whether such a
+    finding may be *new* in a later round is ``check``'s question (`missed earlier`)."""
     if verdict != "REQUEST_CHANGES":
         return ""
     parsed = parse(body)
@@ -208,8 +236,13 @@ def check_citations(loop: dict, number: int, verdict: str, body: str, failing=()
         return ("the host could not read the PR's diff, so a blocking finding cannot be checked "
                 "against it; nothing was written, resubmit")
     ranges = diff_ranges(files)
+    beyond = None
     for fid, rest in new:
         if not _cited(rest, ranges, failing):
+            if beyond is None:
+                beyond = unlisted_ranges(loop, number, files, head)
+            if _cited(rest, beyond, failing):
+                continue
             return (f"blocking finding {fid} does not cite this PR's diff: {CITATION_HINT}; "
                     "nothing was written, resubmit")
     return ""

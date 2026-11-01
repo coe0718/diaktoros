@@ -188,6 +188,44 @@ class BrokerIPCTests(unittest.TestCase):
                          ("fixed", "open"))
         self.assertEqual(got["last_head"], HEAD)
 
+    def test_a_block_beyond_the_3000_file_listing_is_published_with_or_without_the_marker(self):
+        # #1555 / #1580 F1: past GitHub's listing limit the PR's file list is a prefix; the files
+        # the host names from the trees are cited by that naming, in the second gate too
+        # (check_citations), not only in findings.check. Round 2 needs `missed earlier` there.
+        from diaktoros import ci, findings, state as state_mod
+        from diaktoros.run_supervisor import pr_facts
+        self.pr = {**self.pr, "base": {**self.pr["base"], "sha": "b" * 40}}
+        listed = [{"filename": f"f{i}.py", "patch": "@@ -1 +1 @@\n+x"} for i in range(gh.PR_FILES_LISTING_LIMIT)]
+        tail = [("added", "f3000.py")]
+        tail_patch = mock.patch.object(pr_facts, "unlisted_changes", return_value=tail)
+        block = lambda text: {"operation": "review", "verdict": "REQUEST_CHANGES",
+                              "body": text + "\nNot verified: nothing"}
+        with mock.patch.object(gh, "pr_files_read", return_value=(listed, "")), \
+                mock.patch.object(ci, "read", return_value=ci.CIState()), tail_patch as named:
+            server = self.start()
+            # Round 1: no marker is needed, and the file beyond the prefix is a citation.
+            refused = self.send(server, block("F1: f9999.py:12: not a changed file"))
+            self.assertIn("does not cite this PR's diff", refused["error"])
+            named.side_effect = ValueError("tree unreadable")      # unnamed: refused as before
+            self.assertIn("does not cite", self.send(server, block("F1: f3000.py:12: bug"))["error"])
+            named.side_effect = None
+            self.assertNotIn("POST", [c[1] for c in self.calls])
+            self.assertTrue(self.send(server, block("F1: f3000.py:12: bug"))["ok"])
+            named.assert_called_with(self.loop, REPO, "b" * 40, HEAD, {f["filename"] for f in listed})
+        # Round 2 (a prior head): a new finding beyond the prefix needs the marker.
+        self.calls.clear()
+        findings.record(self.loop, 7, "c" * 40, "F1: f1.py: leak\n")
+        with mock.patch.object(gh, "pr_files_read", return_value=(listed, "")), \
+                mock.patch.object(findings, "changed_files", return_value={"f1.py"}), \
+                mock.patch.object(ci, "read", return_value=ci.CIState()), tail_patch:
+            server = self.start()
+            body = "F1: fixed\nF2: f3000.py:12: bug"
+            refused = self.send(server, block(body))
+            self.assertIn("cites no file changed this round", refused["error"])
+            self.assertNotIn("POST", [c[1] for c in self.calls])
+            self.assertTrue(self.send(server, block(body + " (missed earlier)"))["ok"])
+        self.assertTrue(state_mod.state_for(self.loop).findings_get(7)["findings"]["F2"]["missed"])
+
     def test_arbitrary_github_response_is_not_relayed(self):
         server = self.start()
         with mock.patch.object(gh, "api", side_effect=_ci_green.green(lambda loop, path, method="GET", **kw:
