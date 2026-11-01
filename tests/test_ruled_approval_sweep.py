@@ -218,7 +218,16 @@ class LeftToAPerson(Base):
         self.reviews = [older, CHANGES]
         self.sweep()
         self.assertEqual([c.kwargs["review_id"] for c in self.dismiss.call_args_list], [5])
-        self.assertIn("review 3 at another head still blocks", self.logged[-1])
+        self.assertIn("critic's change request 3 at eeeeeee still blocks", self.logged[-1])
+
+    def test_a_maintainers_change_request_is_never_dismissed(self):
+        # Review of #1591, F4: a person's request at the same head is theirs to lift.
+        self.ruled("ACCEPT")
+        human = tra.review(12, "CHANGES_REQUESTED", login="coe0718", at="2026-01-03T00:00:00Z")
+        self.reviews = [CHANGES, human]
+        self.sweep()
+        self.assertEqual([c.kwargs["review_id"] for c in self.dismiss.call_args_list], [5])
+        self.assertIn("coe0718's change request 12", self.logged[-1])
 
 
 class Steps(Base):

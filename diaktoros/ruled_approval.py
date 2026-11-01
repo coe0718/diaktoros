@@ -15,8 +15,10 @@ Then it **approves** the head, and **dismisses** the reviewer's change request t
 ruling overruled. The loop's readers count that approval only while an ACCEPT backs it
 (``gate.ruled_approvals``), so the dismissal never makes the head look unreviewed. Each write is
 recorded before it is sent (``ruled_approvals``): a lost response is ``uncertain`` and never
-replayed, and a refusal is ``denied`` with its reason. A change request at another head, which
-GitHub also still counts, is never dismissed: the merge check names it for a person. A wait (red
+replayed, and a refusal is ``denied`` with its reason. Only the reviewer seat's change request at
+the ruled head is dismissed: one by anyone else (a maintainer, the adjudicator itself) or at
+another head, which GitHub also still counts, is left alone, and the merge check names it for a
+person. A wait (red
 or running CI, a hold, an unreadable read) is checked again on the next sweep.
 """
 from __future__ import annotations
@@ -124,14 +126,16 @@ def _approve(loop: dict, st, sup, number: int, head: str, branch: str, log) -> s
 
 
 def _dismiss(loop: dict, sup, reviews: list, number: int, head: str, branch: str, log) -> bool:
-    """The dismissal step: the reviewer's change request at the ruled head, never another."""
+    """The dismissal step: the reviewer seat's change request at the ruled head, never another
+    (a person's, the adjudicator's own, or one at another head is left for a person)."""
     repo = loop["repo"]
-    blocking = gate.blocking_reviews(reviews, loop)
-    targets = [r for r in blocking if r.get("commit_id") == head and type(r.get("id")) is int]
+    blocking = gate.blocking_reviews(reviews)
+    targets = [r for r in blocking if gate.is_reviewer(r, loop) and r.get("commit_id") == head
+               and type(r.get("id")) is int]
     others = [r for r in blocking if r not in targets]
     if not targets:
-        state, error = ("denied", "a change request at another head still blocks: "
-                        f"review {others[0].get('id')}, for a person") if others else ("none", None)
+        state, error = ("denied", f"{_named(others[0])} still blocks, for a person") if others \
+            else ("none", None)
         return sup.ruled_approval_step(repo, number, head, "dismiss", state, error=error)
     try:
         login = broker.authorize_adjudicator(loop, repo=repo, number=number, head=head,
@@ -154,6 +158,12 @@ def _dismiss(loop: dict, sup, reviews: list, number: int, head: str, branch: str
         return True
     sup.ruled_approval_step(repo, number, head, "dismiss", "posted", review_id=targets[-1]["id"])
     log(f"#{number} @ {head[:7]}: dismissed review {targets[-1]['id']} on the ACCEPT; "
-        + (f"review {others[0].get('id')} at another head still blocks" if others else
-           "nothing the reviewer posted blocks the merge now"))
+        + (f"{_named(others[0])} still blocks, for a person" if others else
+           "nothing blocks the merge now"))
     return True
+
+
+def _named(review: dict) -> str:
+    """A blocking review as the log and the ledger name it."""
+    return (f"{gate.reviewer_login(review) or '?'}'s change request {review.get('id')} at "
+            f"{str(review.get('commit_id') or '?')[:7]}")
