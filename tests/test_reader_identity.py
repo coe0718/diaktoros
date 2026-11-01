@@ -556,6 +556,25 @@ class HookWriteTests(_Loop):
         self.assertEqual(rc, 0, out)
         self.assertIn(f"hooks would be created armed (--arm) as {READER}", out)
 
+    def test_dry_run_counts_the_hooks_from_hook_roles(self):
+        # The line is driven by config.hook_roles (what _install_hooks creates), not a fixed "two".
+        rc, out = self.run_cli(self.init_argv("--hooks", "--dry-run"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("would create 2 repo hooks, one per role (reviewer: pull_request, "
+                      "fixer: pull_request_review), paused until `arm`", out)
+        self.assertNotIn("the two repo hooks", out)
+        roles = ("reviewer", "fixer", "triage")
+        with patch.object(config, "hook_roles", return_value=roles):
+            rc, out = self.run_cli(self.init_argv("--hooks", "--arm", "--dry-run"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("would create 3 repo hooks, one per role (reviewer: pull_request, "
+                      "fixer: pull_request_review, triage: issues), armed (--arm)", out)
+        with patch.object(config, "hook_roles", return_value=()):
+            rc, out = self.run_cli(self.init_argv("--hooks", "--dry-run"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("would create no repo hooks", out)
+        self.assertNotIn("would create 2", out)
+
     def test_a_successful_init_hooks_states_who_edits_them(self):
         # README: "`init --hooks` prints the login and this need" — on the real path, not only
         # in --dry-run or on failure.

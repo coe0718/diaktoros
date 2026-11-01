@@ -552,9 +552,16 @@ def cmd_init(args) -> int:
         for name in cli_common._routes_of(loop).values():
             print(f"  would write route: {name}")
         if args.hooks:
-            print("  would create the two repo hooks (pull_request, pull_request_review), "
-                  + ("armed (--arm)" if getattr(args, "arm", False) else "paused until `arm`"))
-            print(f"  {_hook_editor_line(loop, args.admin_token, getattr(args, 'arm', False), True)}")
+            # The same roles _install_hooks loops over, not a fixed count.
+            hooked = config.hook_roles(loop)
+            state = "armed (--arm)" if getattr(args, "arm", False) else "paused until `arm`"
+            if hooked:
+                kinds = ", ".join(f"{role}: {config.HOOK_EVENT[role]}" for role in hooked)
+                print(f"  would create {len(hooked)} repo hooks, one per role ({kinds}), {state}")
+            else:
+                print("  would create no repo hooks: events arrive through the GitHub App's webhook")
+            if hooked:
+                print(f"  {_hook_editor_line(loop, args.admin_token, getattr(args, 'arm', False), True)}")
         if args.schedule:
             print(f"  would install the watchdog cron job ({args.schedule})")
         if loop.get("observer", {}).get("route"):
