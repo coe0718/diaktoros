@@ -275,5 +275,17 @@ class Categories(unittest.TestCase):
         self.assertEqual(gate.NOT_VERDICTS, frozenset({"DISMISSED", "COMMENTED", "PENDING"}))
 
 
+class SchemaComment(unittest.TestCase):
+    def test_the_ledger_schema_comment_describes_findings_as_objects(self):
+        # #1357: the comment said "the F-numbers ... (a JSON list)" after entries became objects.
+        from diaktoros.run_supervisor import ledger_schema
+        schema = ledger_schema.SCHEMA
+        comment = schema[:schema.index("CREATE TABLE IF NOT EXISTS overrides")]
+        comment = comment[comment.rindex("A human overrode the loop"):]
+        self.assertNotIn("F-numbers", comment)
+        self.assertIn('"id"', comment)
+        self.assertIn('"category"', comment)
+
+
 if __name__ == "__main__":
     unittest.main()
