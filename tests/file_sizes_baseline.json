@@ -60,7 +60,7 @@
     "diaktoros/drain.py::drain": 86,
     "diaktoros/gate.py::shadow_state": 104,
     "diaktoros/gate_failures.py::gateway_webhook_setting": 117,
-    "diaktoros/gate_failures.py::run": 147,
+    "diaktoros/gate_failures.py::run": 136,
     "diaktoros/gate_shims.py::divergence": 83,
     "diaktoros/inference_proxy.py::InferenceCapability.__enter__": 82,
     "diaktoros/observer.py::retry": 82,

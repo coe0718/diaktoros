@@ -1103,6 +1103,22 @@ def resolve_in_process(gate: str, payload, started: float | None = None) -> None
         log(f"in-process gate-failure resolve failed: {type(err).__name__}: {err}")
 
 
+def _resolve_completed(payload, key: str, redrive: bool, started_wall: float) -> None:
+    """:func:`run`'s event completed: settle its earlier failure in every ledger, and the
+    GitHub read it owned."""
+    how = (f"re-driven by the watchdog; completed at {iso_at(time.time())}" if redrive
+           else f"event completed on a later delivery at {iso_at(time.time())}")
+    for ledger in _ledgers_for(payload):
+        try:
+            # Only a failure recorded before this delivery began: an overlapping newer
+            # delivery's failure is not settled by this one's success (#1593).
+            ledger.resolve(key, how, not_after=started_wall)
+        except Exception as err:  # noqa: BLE001
+            log(f"gate-failure ledger resolve failed: {type(err).__name__}: {err}")
+    # The event completed: a read it owned is settled even if no ledger still held the
+    # entry (a moved-aside ledger discards what it could not read).
+    _settle_github_read(describe(payload)["repo"], key, f"resolved — {how}")
+
 def run(gate: str, main: Callable[[], None]) -> None:
     """Run one gate's ``main`` with a budget, and never let a failure pass as ``[SILENT]``."""
     raw = sys.stdin.read()
@@ -1158,18 +1174,7 @@ def run(gate: str, main: Callable[[], None]) -> None:
     key = fingerprint(gate, raw)
     redrive = os.environ.get(REDRIVE_ENV, "")
     if not kind:
-        how = (f"re-driven by the watchdog; completed at {iso_at(time.time())}" if redrive
-               else f"event completed on a later delivery at {iso_at(time.time())}")
-        for ledger in _ledgers_for(payload):
-            try:
-                # Only a failure recorded before this delivery began: an overlapping newer
-                # delivery's failure is not settled by this one's success (#1593).
-                ledger.resolve(key, how, not_after=started_wall)
-            except Exception as err:  # noqa: BLE001
-                log(f"gate-failure ledger resolve failed: {type(err).__name__}: {err}")
-        # The event completed: a read it owned is settled even if no ledger still held the
-        # entry (a moved-aside ledger discards what it could not read).
-        _settle_github_read(describe(payload)["repo"], key, f"resolved — {how}")
+        _resolve_completed(payload, key, redrive, started_wall)
         raise SystemExit(code)
 
     if alarm:
