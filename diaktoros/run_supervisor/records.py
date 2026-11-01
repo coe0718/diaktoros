@@ -466,10 +466,11 @@ class LedgerRecords:
         return cur.rowcount == 1
 
     def record_override(self, repo: str, pr: int, head: str, kind: str, review_id: int,
-                        model: str | None, findings: list[str], merged_at: float,
+                        model: str | None, findings: list[dict[str, str]], merged_at: float,
                         seat: str = 'reviewer') -> bool:
         """Record that a human overrode the loop (#220): True for a new record, False when the
-        same (PR, head, kind) is already there, so a rescan never doubles it."""
+        same (PR, head, kind) is already there, so a rescan never doubles it. ``findings`` is the
+        open findings as ``{"id": ..., "category": ...}`` dicts, stored as JSON."""
         with self._connect() as con:
             cur = con.execute('INSERT OR IGNORE INTO overrides(repo,pr,head,kind,seat,model,'
                               'review_id,findings,merged_at,created) VALUES(?,?,?,?,?,?,?,?,?,?)',

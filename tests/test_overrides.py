@@ -11,6 +11,7 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import json
 import sys
 import time
+import typing
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -101,6 +102,11 @@ class Recording(Override):
                                                     {"id": "F3", "category": "other"}]))])
         self.assertEqual(self.scan(), [])                    # a rescan: still one
         self.assertEqual(len(self.rows()), 1)
+
+    def test_record_override_declares_findings_as_id_category_dicts(self):
+        # #1356: the caller passes {"id", "category"} dicts, not strings.
+        hints = typing.get_type_hints(Supervisor.record_override)
+        self.assertEqual(hints["findings"], list[dict[str, str]])
 
     def test_a_merge_after_an_approval_writes_none(self):
         self.reviews = {7: [review(5, "CHANGES_REQUESTED", at="2026-01-01T00:00:00Z"),
