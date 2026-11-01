@@ -32,6 +32,8 @@ class FakeSpike(spike.Spike):
         super().__init__("o/r", {"reader": 1, "reviewer": 2, "fixer": 3}, "/nowhere", check_branch,
                          person_token)
         self.requests: list = []
+        self.events: list = []  # requests, sleeps and pushes, in the order they happened
+        self.unknown_left = 0
         self.prs = 0
         self.tokens = {r: {"token": "x", "exp": 1e12, "facts": {"length": 1}} for r in spike.ROLES}
 
@@ -41,11 +43,19 @@ class FakeSpike(spike.Spike):
         return 200, []
 
     def graphql(self, query, variables):
+        self.events.append(("graphql", variables["n"]))
+        state = "BLOCKED"
+        if self.unknown_left:  # GitHub is still recomputing after a push
+            self.unknown_left -= 1
+            state = "UNKNOWN"
         return {"repository": {"pullRequest": {"reviewDecision": "REVIEW_REQUIRED",
-                                               "mergeStateStatus": "BLOCKED"}}}
+                                               "mergeStateStatus": state}}}
 
     def gh(self, role, method, path, body=None):
         self.requests.append((role, method, path, body))
+        self.events.append((role, method, path))
+        if role == "person" and method == "PUT":
+            self.unknown_left = 2
         if path.startswith("/users/"):
             return 200, {"login": path[7:], "id": {"reviewer-app[bot]": 22}.get(path[7:], 9),
                          "type": "Bot"}
@@ -79,9 +89,12 @@ def run_quietly(fake):
         if "clone" in argv:
             Path(argv[-1]).mkdir()
             (Path(argv[-1]) / "app.py").write_text("x = 1\n")
+        if "push" in argv:
+            fake.events.append(("git push",))
+            fake.unknown_left = 2
         return done
 
-    with mock.patch.object(spike.time, "sleep"), \
+    with mock.patch.object(spike.time, "sleep", side_effect=lambda n: fake.events.append(("sleep", n))), \
             mock.patch.object(spike.subprocess, "run", side_effect=fake_git), \
             contextlib.redirect_stdout(out):
         spike.run(fake)
@@ -148,6 +161,66 @@ class StaleApproval(unittest.TestCase):
             spike.main(["--repo", "o/r", "--keys", "/k", "--app", "reader=1", "--app", "reviewer=2",
                         "--app", "fixer=3", "--person-token-env", "MY_PAT"])
         self.assertEqual(seen["token"], "secret")
+
+
+class RealAuth(spike.Spike):
+    """The real ``gh`` dispatch; only the HTTP ``call`` and the App token mint are replaced."""
+
+    def __init__(self, person_token):
+        super().__init__("o/r", {"reader": 1, "reviewer": 2, "fixer": 3}, "/nowhere", "", person_token)
+        self.auths: list = []
+
+    def call(self, method, path, auth, body=None):
+        self.auths.append(auth)
+        return 200, {}
+
+    def token(self, role):
+        return "app-" + role
+
+
+class PersonAuth(unittest.TestCase):
+    def test_person_requests_use_the_persons_token_and_apps_use_theirs(self):
+        s = RealAuth("pat")
+        s.gh("person", "GET", "/x")
+        s.gh("reviewer", "GET", "/x")
+        self.assertEqual(s.auths, ["token pat", "token app-reviewer"])
+
+    def test_main_defaults_to_spike_person_token(self):
+        for env, want in (({"SPIKE_PERSON_TOKEN": "dflt"}, "dflt"), ({}, "")):
+            with self.subTest(env=env):
+                seen = {}
+                with mock.patch.object(spike, "run", side_effect=lambda s: seen.update(t=s.person_token)), \
+                        mock.patch.dict(spike.os.environ, env, clear=True):
+                    spike.main(["--repo", "o/r", "--keys", "/k", "--app", "reader=1", "--app",
+                                "reviewer=2", "--app", "fixer=3"])
+                self.assertEqual(seen["t"], want)
+
+
+class PostPushWait(unittest.TestCase):
+    def test_git_push_waits_six_seconds_then_asks_until_settled(self):
+        fake = FakeSpike()
+        lines = run_quietly(fake)
+        # GitHub answers UNKNOWN twice after the push: wait 6 s before each of three asks.
+        tail = fake.events[fake.events.index(("git push",)) + 1:]
+        self.assertEqual(tail[:6], [("sleep", 6), ("graphql", 11)] * 3)
+        self.assertEqual(step(lines, "git_push")["protection_after_push"]["mergeStateStatus"], "BLOCKED")
+
+    def test_stale_approval_waits_after_the_persons_push(self):
+        fake = FakeSpike(person_token="pat")
+        lines = run_quietly(fake)
+        puts = [i for i, e in enumerate(fake.events) if e[:2] == ("person", "PUT")]
+        tail = fake.events[puts[-1] + 1:]
+        self.assertEqual(tail[:6], [("sleep", 6), ("graphql", 12)] * 3)
+        self.assertEqual(step(lines, "stale_approval")["protection_after_push"]["mergeStateStatus"],
+                         "BLOCKED")
+
+    def test_a_late_github_is_printed_as_unsettled_after_the_bounded_asks(self):
+        fake = FakeSpike()
+        fake.unknown_left = 99
+        with mock.patch.object(spike.time, "sleep") as sleep:
+            got = fake.settled_protection(11)
+        self.assertEqual(got["mergeStateStatus"], "UNKNOWN")
+        self.assertEqual(sleep.call_args_list, [mock.call(6)] * 5)
 
 
 class SecondBranch(unittest.TestCase):

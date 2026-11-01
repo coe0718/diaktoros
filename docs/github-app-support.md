@@ -19,18 +19,28 @@ To set a loop up with Apps, see [Getting started with GitHub Apps](github-apps.m
   reviewer — contents read, pull requests and issues read and write (and checks write, for 9);
   fixer — contents, pull requests and issues read and write. Both writers need issues: the
   reviewer files issues and labels for triage; the fixer comments on issues it fixes.
-- [`tools/github_app_spike.py`](../tools/github_app_spike.py) repeats the steps below on fresh
-  branches and prints one JSON line per step. Each run agreed with the one before. It sets up
-  none of the repository, the branch protection or the Apps (an App has no Administration
-  permission). Notes on what it needs and covers:
+- [`tools/github_app_spike.py`](../tools/github_app_spike.py) repeats most of the observations
+  below on fresh branches and prints one JSON line per step. The results below are from the
+  hand-run measurement of 2026-10-21 (and the later runs noted in each section); the harness
+  as it now stands, with the person-token, label, reopen and re-check steps, has not been run
+  against GitHub. It sets up none of the repository, the branch protection or the Apps (an App
+  has no Administration permission). What it does and does not repeat:
   - Row 6 needs a person's token (a personal access token with write access to the repository)
     in the variable named by `--person-token-env` (default `SPIKE_PERSON_TOKEN`): the harness
     opens a PR as that person, has the reviewer App approve it, pushes as the person, and prints
     `reviewDecision`, `mergeStateStatus` and the App's reviews again. Without the token the
     `stale_approval` step prints `skipped` and row 6 is not reproduced. The same re-check is
-    printed after the fixer's own `git push` (`git_push`).
-  - Rows 9a–9i, and the second protected branch (no required approvals), run only with
-    `--check-branch BRANCH`, naming that branch; every other step opens its PRs against `main`.
+    printed after the fixer's own `git push` (`git_push`). After a push it waits 6 seconds and
+    asks again while GitHub still answers `UNKNOWN` (at most 5 asks); if it is still unsettled
+    the printed value says so.
+  - Row 3 is repeated only for the App bot (both login forms, `request_reviewer`). The human
+    reviewer request, and the remove and re-request of it, are **not** repeated: by hand only.
+  - Rows 9a, 9b, 9c, 9e, 9f and 9g run only with `--check-branch BRANCH`, naming a branch
+    that is protected by hand to require `diaktoros/review` with no approvals (step
+    `required_check`); every other step opens its PRs against `main`. Rows 9d (a person's
+    competing commit status), 9h and 9i (an administrator's merge with *include administrators*
+    on and off) are **not** repeated: they need a person's status and an administrator's merge,
+    and the harness does not change the protection. Measure them by hand.
   - The permission probes in "The reviewer App's permissions are wider than its seat" (contents
     push, merge, title edit, adding a label, close and then reopen) are the `reviewer_permissions`
     step.
