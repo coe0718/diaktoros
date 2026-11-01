@@ -481,6 +481,19 @@ def _reviewer_runs(repo: str, number: int, head: str, turn_key: str | None = Non
         con.close()
 
 
+def _gate_unfinished(emit, args, payload, exc, started, what):
+    """The gate crashed, refused its input or ran out of budget in-process: record it in the
+    gate-failure ledger, as the webhook path's ``gate_failures.run`` does (#1455), and say so
+    (#1046 review F1: named by its type, never its text). Returns the exit code."""
+    from . import gate_failures
+    where = gate_failures.record_in_process("gate_reviewer", payload, exc, started)
+    saved = ("recorded in the gate-failure ledger" if where
+             else "could NOT be recorded in the gate-failure ledger")
+    emit(f"#{args.pr} @ {args.head[:7]}: the gate did not finish — {what}; {saved}, "
+         "check `explain` before asking again")
+    return 2
+
+
 def _review(loop, args, emit=print):
     from . import migrate
     if migrate.migrating() is not None:
@@ -545,24 +558,21 @@ def _review(loop, args, emit=print):
     if reconsider is not None:
         # The reason goes with the turn into the reviewer's prompt (#1334); written first.
         st.reconsider_record(args.pr, head, reconsider)
+    started = time.monotonic()
     try:
         gate_lines = _run_reviewer(payload, reconsider=reconsider) if reconsider is not None \
             else _run_reviewer(payload)
     except SystemExit as exc:
         if exc.code not in (None, 0):
-            emit(f"#{args.pr} @ {head[:7]}: the gate did not finish — "
-                  "no answer; check `explain` before asking again")
-            return 2
-    except (gh.GateBudgetExceeded, TimeoutError):
-        emit(f"#{args.pr} @ {head[:7]}: the gate did not finish — "
-              "no answer; check `explain` before asking again")
-        return 2
+            return _gate_unfinished(emit, args, payload, exc, started, "no answer")
+        gate_lines = []                 # a clean exit: the gate finished, with no lines to show
+    except (gh.GateBudgetExceeded, TimeoutError) as exc:
+        return _gate_unfinished(emit, args, payload, exc, started, "no answer")
     except Exception as exc:  # noqa: BLE001 - a crashed gate is an answer too, never a traceback
-        # The webhook path's gate_failures.run turns a crash into exit 2; in-process the same
-        # outcome is reported here (#1046 review F1), named by its type, never its text.
-        emit(f"#{args.pr} @ {head[:7]}: the gate did not finish — it crashed "
-             f"({type(exc).__name__}); check `explain` before asking again")
-        return 2
+        return _gate_unfinished(emit, args, payload, exc, started,
+                                f"it crashed ({type(exc).__name__})")
+    from . import gate_failures
+    gate_failures.resolve_in_process("gate_reviewer", payload)
     reasons = logged(gate_lines if isinstance(gate_lines, list) else [])
     committed = _reviewer_runs(loop["repo"], args.pr, head) > before[0]
     if committed and reasons and "turn held:" in reasons[-1]:
