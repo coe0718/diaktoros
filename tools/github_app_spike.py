@@ -8,7 +8,14 @@ are written up in docs/github-app-support.md.
 
     python3 tools/github_app_spike.py --repo OWNER/REPO \\
         --app reader=ID --app reviewer=ID --app fixer=ID --keys ~/.hermes/dk-spike \\
-        [--check-branch BRANCH]
+        [--check-branch BRANCH] [--person-token-env NAME]
+
+Row 6 (a person's PR) needs a person's token, which no App can stand in for: put a personal access
+token with write access to the repository in the environment variable named by
+``--person-token-env`` (default ``SPIKE_PERSON_TOKEN``). Without it the step prints ``skipped``.
+The repository, its branch protection and the Apps are set up by hand; the harness creates none
+of them (an App has no Administration permission). The second protected branch (no required
+approvals) is the one named by ``--check-branch``.
 
 Standard library plus the ``openssl`` CLI (App JWTs are RS256). No key or token is ever printed:
 a token is described by its length, prefix and expiry only. The repository's ``main`` should be
@@ -32,6 +39,9 @@ from datetime import datetime
 
 API = "https://api.github.com"
 ROLES = ("reader", "reviewer", "fixer")
+PERSON_TOKEN_ENV = "SPIKE_PERSON_TOKEN"
+# GitHub needs a few seconds after a push before its commit and merge state settle.
+POST_PUSH_WAIT = 6
 
 
 def epoch(stamp: str) -> float:
@@ -43,9 +53,11 @@ def b64url(data: bytes) -> str:
 
 
 class Spike:
-    def __init__(self, repo: str, apps: dict, keys: str, check_branch: str = ""):
+    def __init__(self, repo: str, apps: dict, keys: str, check_branch: str = "",
+                 person_token: str = ""):
         self.repo, self.apps, self.keys = repo, apps, os.path.expanduser(keys)
         self.check_branch = check_branch
+        self.person_token = person_token
         self.tokens: dict = {}
         self.slugs: dict = {}
 
@@ -108,7 +120,9 @@ class Spike:
         return got["token"]
 
     def gh(self, role, method, path, body=None):
-        return self.call(method, path, "token " + self.token(role), body)
+        # "person" is not an App: its token comes from the environment, never from a JWT.
+        token = self.person_token if role == "person" else self.token(role)
+        return self.call(method, path, "token " + token, body)
 
     def graphql(self, query, variables):
         status, body = self.call("POST", API + "/graphql", "token " + self.token("reader"),
@@ -149,6 +163,25 @@ class Spike:
         _, ref = self.gh(role, "GET", f"/repos/{self.repo}/git/ref/heads/main")
         return self.gh(role, "POST", f"/repos/{self.repo}/git/refs",
                        {"ref": f"refs/heads/{name}", "sha": ref["object"]["sha"]})[0]
+
+    def reviews_by(self, role, number):
+        """The ``[state, commit]`` of each review the ``role`` App left on the PR, oldest first."""
+        _, bot = self.gh(role, "GET", f"/users/{self.slugs[role]}[bot]")
+        _, items = self.gh(role, "GET", f"/repos/{self.repo}/pulls/{number}/reviews?per_page=100")
+        return [[r["state"], (r.get("commit_id") or "")[:7]] for r in items or []
+                if (r.get("user") or {}).get("id") == bot.get("id")]
+
+    def settled_protection(self, number, tries=5, pause=POST_PUSH_WAIT):
+        """``protection`` after waiting ``pause`` seconds, and again (at most ``tries`` times in
+        all) while GitHub still answers ``mergeStateStatus`` UNKNOWN or nothing, so a late answer
+        is not printed as the observation. The last answer is returned even if unsettled."""
+        got = None
+        for _ in range(tries):
+            time.sleep(pause)
+            got = self.protection(number)
+            if (got or {}).get("mergeStateStatus") not in (None, "UNKNOWN"):
+                break
+        return got
 
     def protection(self, number):
         data = self.graphql("query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r)"
@@ -240,25 +273,17 @@ def run(s: Spike) -> None:
         git("commit", "-qam", "Add div (git push)")
         pushed = git("push", "-q", "origin", branch)
         sha = git("rev-parse", "HEAD").stdout.strip()
-    time.sleep(3)
+    settled = s.settled_protection(number)
     _, cm = s.gh("reader", "GET", f"/repos/{s.repo}/commits/{sha}")
     emit("git_push", returncode=pushed.returncode, author_login=(cm.get("author") or {}).get("login"),
          verified=cm["commit"]["verification"]["verified"],
-         reason=cm["commit"]["verification"]["reason"])
+         reason=cm["commit"]["verification"]["reason"], new_head=sha[:7],
+         reviews_after_push=s.reviews_by("reviewer", number),
+         protection_after_push=settled)
 
     # Tuck's point: what the reviewer's pull_requests:write allows beyond reviews
-    _, f = s.gh("reviewer", "GET", f"/repos/{s.repo}/contents/app.py?ref={branch}")
-    probes = {
-        "push_contents": s.gh("reviewer", "PUT", f"/repos/{s.repo}/contents/app.py",
-                              {"message": "x", "branch": branch, "sha": f["sha"],
-                               "content": base64.b64encode(b"x\n").decode()})[0],
-        "merge": s.gh("reviewer", "PUT", f"/repos/{s.repo}/pulls/{number}/merge", {})[0],
-        "edit_title": s.gh("reviewer", "PATCH", f"/repos/{s.repo}/pulls/{number}",
-                           {"title": f"Spike {tag}: edited by the reviewer App"})[0],
-        "close_pr": s.gh("reviewer", "PATCH", f"/repos/{s.repo}/pulls/{number}",
-                         {"state": "closed"})[0],
-    }
-    emit("reviewer_permissions", **probes)
+    emit("reviewer_permissions", **reviewer_probes(s, branch, number, tag))
+    stale_approval(s, tag)
 
     # Q1/Q2/Q3/Q5: which events each App's webhook recorded
     time.sleep(15)
@@ -270,23 +295,60 @@ def run(s: Spike) -> None:
         required_check(s, tag)
 
 
+def reviewer_probes(s: Spike, branch: str, number: int, tag: str) -> dict:
+    """The status of each thing the reviewer App's ``pull_requests: write`` might allow beyond
+    reviews. Closing comes last and is followed by a reopen, so the PR is left open."""
+    _, f = s.gh("reviewer", "GET", f"/repos/{s.repo}/contents/app.py?ref={branch}")
+    pr = f"/repos/{s.repo}/pulls/{number}"
+    probes = {}
+    probes["push_contents"] = s.gh("reviewer", "PUT", f"/repos/{s.repo}/contents/app.py",
+                                   {"message": "x", "branch": branch, "sha": f["sha"],
+                                    "content": base64.b64encode(b"x\n").decode()})[0]
+    probes["merge"] = s.gh("reviewer", "PUT", pr + "/merge", {})[0]
+    probes["edit_title"] = s.gh("reviewer", "PATCH", pr,
+                                {"title": f"Spike {tag}: edited by the reviewer App"})[0]
+    probes["add_labels"] = s.gh("reviewer", "POST", f"/repos/{s.repo}/issues/{number}/labels",
+                                {"labels": ["spike"]})[0]
+    probes["close_pr"] = s.gh("reviewer", "PATCH", pr, {"state": "closed"})[0]
+    probes["reopen_pr"] = s.gh("reviewer", "PATCH", pr, {"state": "open"})[0]
+    return probes
+
+
+def stale_approval(s: Spike, tag: str) -> None:
+    """Q6: the reviewer App approves a person's PR, then the person pushes. Does GitHub dismiss
+    the approval (``main`` dismisses stale approvals)? Needs the person's token in
+    ``s.person_token``; without it the step is reported as skipped."""
+    if not s.person_token:
+        emit("stale_approval", skipped="no person token (see --person-token-env)")
+        return
+    branch = f"spike-person-{tag}"
+    s.branch("person", branch)
+    _, c1 = s.put_file("person", branch, "def add(a, b):\n    return a + b\n\n\n"
+                       "def neg(a):\n    return -a\n", "Add neg")
+    _, pr = s.gh("person", "POST", f"/repos/{s.repo}/pulls",
+                 {"title": f"Spike {tag}: person PR", "head": branch, "base": "main"})
+    number, head = pr["number"], c1["commit"]["sha"]
+    status, ap = s.gh("reviewer", "POST", f"/repos/{s.repo}/pulls/{number}/reviews",
+                      {"commit_id": head, "event": "APPROVE", "body": "Fine."})
+    time.sleep(6)
+    before = s.protection(number)
+    _, c2 = s.put_file("person", branch, "def add(a, b):\n    return a + b\n\n\n"
+                       "def neg(a):\n    return -a\n\n\ndef inv(a):\n    return 1 / a\n",
+                       "Add inv")
+    after_push = s.settled_protection(number)
+    emit("stale_approval", pr=number, pr_user_type=pr["user"]["type"], approve_status=status,
+         approve_state=ap.get("state"), approved_commit=head[:7], new_head=c2["commit"]["sha"][:7],
+         protection_after_approve=before, reviews_after_push=s.reviews_by("reviewer", number),
+         protection_after_push=after_push)
+
+
 def required_check(s: Spike, tag: str) -> None:
     """Q9: a check run posted by the reviewer App as the merge gate. ``s.check_branch`` must
     require the check ``diaktoros/review`` pinned to the reviewer App's id and no approvals, and
     the reviewer App needs ``Checks: write``."""
     def merge_state(number):
         # GitHub answers UNKNOWN while it recomputes after a change: wait for a settled state.
-        got = None
-        for _ in range(10):
-            time.sleep(6)
-            data = s.graphql("query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r)"
-                             "{pullRequest(number:$n){mergeStateStatus}}}",
-                             {"o": s.repo.split("/")[0], "r": s.repo.split("/")[1], "n": number})
-            got = (((data or {}).get("repository") or {}).get("pullRequest") or {}).get(
-                "mergeStateStatus")
-            if got != "UNKNOWN":
-                break
-        return got
+        return (s.settled_protection(number, tries=10) or {}).get("mergeStateStatus")
 
     branch = f"spike-check-{tag}"
     _, ref = s.gh("fixer", "GET", f"/repos/{s.repo}/git/ref/heads/{s.check_branch}")
@@ -329,11 +391,14 @@ def main(argv=None) -> int:
     ap.add_argument("--check-branch", default="",
                     help="a base branch requiring the check diaktoros/review pinned to the "
                          "reviewer App, with no required approvals: runs step Q9")
+    ap.add_argument("--person-token-env", default=PERSON_TOKEN_ENV, metavar="NAME",
+                    help="the environment variable holding a person's token, for step Q6")
     args = ap.parse_args(argv)
     apps = dict(item.split("=", 1) for item in args.app)
     if set(apps) != set(ROLES):
         ap.error("give --app for exactly reader, reviewer and fixer")
-    run(Spike(args.repo, {k: int(v) for k, v in apps.items()}, args.keys, args.check_branch))
+    run(Spike(args.repo, {k: int(v) for k, v in apps.items()}, args.keys, args.check_branch,
+              os.environ.get(args.person_token_env, "")))
     return 0
 
 
