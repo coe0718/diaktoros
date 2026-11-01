@@ -1600,7 +1600,7 @@ hermes dk cancel --loop "<loop-id>" --pr 12 --seat reviewer
 hermes dk cancel --loop "<loop-id>" --run "<run-id>"
 ```
 
-- **Not started yet** (pending, waiting, claimed): cancelled at once.
+- **Not started yet** (pending, blocked, waiting, claimed): cancelled at once.
 - **Launching or running:** the worker that owns the turn stops it, within a few seconds. It
   kills the sandbox the same way the turn budget does, and frees the seat. An adjudicator's
   breach marker is handed back. The command waits up to 30 seconds and prints how the run ended.
