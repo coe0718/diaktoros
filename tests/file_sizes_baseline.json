@@ -30,7 +30,7 @@
     "diaktoros/broker_ipc.py::RunBroker._dispatch": 387,
     "diaktoros/broker_issues.py::IssueWrites._issue_fix_write": 134,
     "diaktoros/cli/__init__.py::register_cli": 89,
-    "diaktoros/cli/apply_command.py::_apply": 351,
+    "diaktoros/cli/apply_command.py::_apply": 352,
     "diaktoros/cli/common.py::_install_routes": 81,
     "diaktoros/cli/identity_command.py::cmd_identity": 141,
     "diaktoros/cli/install.py::_setup_init_argv": 161,
