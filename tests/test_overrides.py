@@ -151,6 +151,35 @@ class Recording(Override):
         self.assertEqual(self.scan(), [7])
         self.assertEqual(self.st.override_checked(), {"7": HEAD})
 
+    def test_an_unfamiliar_review_state_is_read_again_not_marked_checked(self):
+        self.reviews = {7: [review(5, "WEIRD")]}                 # a verdict, but its order is unproved
+        self.assertEqual(self.scan(), [])
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(self.st.override_checked(), {})        # not marked as read
+        self.reviews = {7: [review(5, "CHANGES_REQUESTED")]}     # now provable
+        self.assertEqual(self.scan(), [7])
+        self.assertEqual(self.st.override_checked(), {"7": HEAD})
+
+    def test_verdicts_tied_in_time_are_read_again_not_marked_checked(self):
+        # Same time and same id: nothing orders the two. (Ids 5 and 6 at one time are ordered by
+        # id, the later wins, so that pair is not a tie and is not unorderable.)
+        self.reviews = {7: [review(5, "APPROVED"), review(5, "CHANGES_REQUESTED")]}
+        self.assertEqual(self.scan(), [])
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(self.st.override_checked(), {})        # not marked as read
+        self.reviews = {7: [review(5, "APPROVED"), review(6, "CHANGES_REQUESTED")]}  # now ordered
+        self.assertEqual(self.scan(), [7])
+        self.assertEqual(self.st.override_checked(), {"7": HEAD})
+
+    def test_distinct_ids_at_one_time_are_ordered_by_id_not_unorderable(self):
+        # The issue's "ids 5 and 6 at the same time" pair: gate.latest_effective_review_at_head
+        # breaks a time tie by id, so id 6 (the later review) wins and the merge is provable. It is
+        # recorded and marked checked on the first scan, not re-read. This pins that behaviour.
+        self.reviews = {7: [review(5, "APPROVED"), review(6, "CHANGES_REQUESTED")]}
+        self.assertEqual(self.scan(), [7])
+        self.assertEqual([row[5] for row in self.rows()], [6])
+        self.assertEqual(self.st.override_checked(), {"7": HEAD})
+
     def test_a_merge_with_no_verdict_at_the_head_is_marked_checked(self):
         self.reviews = {7: [review(5, "COMMENTED"), review(6, "CHANGES_REQUESTED", head=EARLIER)]}
         self.assertEqual(self.scan(), [])
