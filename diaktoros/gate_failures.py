@@ -652,7 +652,7 @@ class Ledger:
         with contextlib.suppress(OSError):
             (self.payload_dir / f"{key}.json").unlink()
         if settle:                                   # outside our lock
-            _settle_github_read(entry.get("repo"), key, f"resolved — {how}")
+            _settle_github_read(entry.get("repo"), key, f"resolved — {how}", not_after)
         return True
 
     # -- one sweep owns an entry's alert and re-drive (the pattern of ``breach_deliver``) ------
@@ -915,10 +915,12 @@ def _is_duplicate(entry: dict) -> bool:
         "duplicate of the same event in ")
 
 
-def _settle_github_read(repo, key: str, how: str) -> None:
+def _settle_github_read(repo, key: str, how: str, not_after: float | None = None) -> None:
     """The failed read an entry owned (``owned_by``) is settled when the entry leaves: marked
     ``resolved_by`` instead, so ``explain`` stops promising a gate-failure line and the health
-    sweep knows why it need not announce it. Only the read this very entry owned is touched."""
+    sweep knows why it need not announce it. Only the read this very entry owned is touched.
+    With ``not_after`` (when the resolving run began), a read made after it belongs to a newer,
+    overlapping run of the same event: that failure is still open, so its ownership stays."""
     if not repo:
         return
     try:
@@ -929,6 +931,8 @@ def _settle_github_read(repo, key: str, how: str) -> None:
         st = state_mod.state_for(loop)
         failure = st.github_failure()
         if failure.get("owned_by") != f"gate-failures:{key}":
+            return
+        if not_after is not None and _number(failure.get("at")) > not_after:
             return
         settled = {k: v for k, v in failure.items() if k not in ("owned_by", "owned_in")}
         st.github_failure_record({**settled, "resolved_by": f"gate-failures:{key} {how}"})
@@ -1117,7 +1121,10 @@ def _resolve_completed(payload, key: str, redrive: bool, started_wall: float) ->
             log(f"gate-failure ledger resolve failed: {type(err).__name__}: {err}")
     # The event completed: a read it owned is settled even if no ledger still held the
     # entry (a moved-aside ledger discards what it could not read).
-    _settle_github_read(describe(payload)["repo"], key, f"resolved — {how}")
+    # Only a read made before this delivery began: a newer overlapping delivery's owned read
+    # stays owned, whether or not any ledger still holds its entry.
+    _settle_github_read(describe(payload)["repo"], key, f"resolved — {how}", started_wall)
+
 
 def run(gate: str, main: Callable[[], None]) -> None:
     """Run one gate's ``main`` with a budget, and never let a failure pass as ``[SILENT]``."""
