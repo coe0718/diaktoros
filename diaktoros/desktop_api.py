@@ -14,7 +14,8 @@ text. ``hooks`` reads GitHub hook state with an opaque confirmation; ``hooks_act
 the shared ``arm_action`` owner used by CLI ``arm`` to pause/resume, then reads actual state.
 ``action_view`` previews per-target one-shot eligibility; ``action_perform_view`` invokes
 the shared ``one_shot_action`` owner and reports exact escalation read-back. Re-review and
-drain remain explicit refusals while their core entry points cannot bind a safe confirmation.
+drain remain explicit refusals here: their core entry points bind a confirmed head and queue,
+but the page's controls are not wired yet.
 
 **Ledger-only action (#371):** ``retry`` re-arms a run the CLI's ``retry`` would
 re-arm. It is not a second implementation of anything: ``retry_action`` owns which run that is
