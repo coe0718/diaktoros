@@ -40,12 +40,36 @@ class Rules(unittest.TestCase):
         self.assertIn("mid.py: size 1501", self.check({"big.py": 2000, "mid.py": 1501},
                                                         {"big.py::f": 120})[0])
 
-    def test_never_grow_is_said_only_of_a_file_baselined_over_the_ceiling(self):
-        over = self.check({"big.py": 2001, "mid.py": 900}, {"big.py::f": 120})
-        self.assertIn("never grow a file already over the ceiling", over[0])
-        under = self.check({"big.py": 2000, "mid.py": 1501}, {"big.py::f": 120})
-        self.assertIn("mid.py: size 1501, over its limit 1500", under[0])
-        self.assertNotIn("already over the ceiling", under[0])
+    def test_never_grow_is_said_of_a_file_baselined_over_the_ceiling(self):
+        self.assertEqual(
+            self.check({"big.py": 2001, "mid.py": 900}, {"big.py::f": 120}),
+            ["big.py: size 2001, over its limit 2000 — split it, "
+             "never grow a file already over the ceiling"])
+
+    def test_never_grow_is_not_said_of_a_file_baselined_under_the_ceiling(self):
+        # The exact line, so any trailing clause fails it: 900 growing to 1501 was never over.
+        self.assertEqual(
+            self.check({"big.py": 2000, "mid.py": 1501}, {"big.py::f": 120}),
+            ["mid.py: size 1501, over its limit 1500 — split it"])
+        # A baseline of exactly the ceiling is not over it either.
+        at_ceiling = {"files": {"big.py": 2000, "mid.py": 1500}, "functions": {"big.py::f": 120}}
+        self.assertEqual(
+            self.check({"big.py": 2000, "mid.py": 1501}, {"big.py::f": 120}, at_ceiling),
+            ["mid.py: size 1501, over its limit 1500 — split it"])
+
+    def test_the_gate_prints_the_qualified_message(self):
+        # Through main(), the entry point CI runs, not only problems().
+        import contextlib
+        import io
+        from unittest import mock
+        measured = ({"big.py": 2000, "mid.py": 1501}, {"big.py::f": 120})
+        with mock.patch.object(fs, "measure", return_value=measured), \
+                mock.patch.object(fs, "load_baseline", return_value=self.BASE), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            code = fs.main([])
+        self.assertEqual(code, 1)
+        self.assertEqual(out.getvalue().strip(),
+                         "mid.py: size 1501, over its limit 1500 — split it")
 
     def test_a_baselined_function_may_not_grow(self):
         self.assertIn("big.py::f: size 121, grown past its baseline 120",
