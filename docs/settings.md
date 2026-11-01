@@ -174,7 +174,8 @@ not exactly “must equal 0600.” It does not open the file during this metadat
 
 Subsequent credential-reference validation **does read files** to establish nonempty readable
 content; never assume init/apply are credential-free simply because the first check uses stat.
-Tokens are not printed. Live `/user` checks belong to selftest and the write broker: distinct
+Tokens are not printed. Live principal checks belong to selftest and the write broker (a PAT through `GET /user`; an App
+through `GET /app` and `GET /users/<slug>[bot]`, since an installation token cannot call `/user`): distinct
 file paths and claimed login strings do not prove distinct actual GitHub principals.
 See [Accounts](accounts.md) and [Security](security.md).
 

@@ -58,5 +58,40 @@ class GeneralDocsNameAppKeys(unittest.TestCase):
         self.assertIn("github-apps.md", section)
 
 
+class GeneralDocsQualifyUserChecks(unittest.TestCase):
+    """Issue #1557: ``/user`` is the PAT path only; Apps resolve through ``github_app.principal``."""
+
+    def flat(self, doc: str) -> str:
+        return " ".join((ROOT / "docs" / doc).read_text().split())
+
+    def assert_names_app_path(self, text: str):
+        self.assertIn("`GET /app`", text)
+        self.assertIn("`GET /users/<slug>[bot]`", text)
+        self.assertIn("cannot call `/user`", text)
+
+    def test_configuration_broker_check_names_app_path(self):
+        text = self.flat("configuration.md")
+        self.assertNotIn("live `/user` principals", text)
+        part = text.split("Runtime broker checks additionally verify", 1)[1]
+        self.assert_names_app_path(part.split("GitHub login matching", 1)[0])
+
+    def test_accounts_selftest_row_names_app_path(self):
+        self.assert_names_app_path(row("accounts.md", "| `selftest --no-model` GitHub identities"))
+
+    def test_accounts_auth_failure_row_is_pat_only(self):
+        text = row("accounts.md", "| `/user` authentication fails")
+        self.assertIn("(PAT)", text)
+        self.assertIn("App identity never calls `/user`", text)
+
+    def test_commands_login_row_names_app_path(self):
+        self.assert_names_app_path(row("commands.md", "| Login / allowlist options"))
+
+    def test_settings_live_check_names_app_path(self):
+        text = self.flat("settings.md")
+        self.assertNotIn("Live `/user` checks belong", text)
+        part = text.split("Live principal checks belong to", 1)[1]
+        self.assert_names_app_path(part.split("See [Accounts]", 1)[0])
+
+
 if __name__ == "__main__":
     unittest.main()

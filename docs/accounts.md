@@ -225,7 +225,7 @@ hermes dk selftest --loop ID --no-model
 | Check | Evidence | Does not establish |
 | --- | --- | --- |
 | `doctor` credential/token checks | Mapped file exists, private/non-empty; reader/seat/configuration wiring | Actual identity of every PAT or successful future broker write |
-| `selftest --no-model` GitHub identities | `/user` resolves each mapped role to the expected distinct principal; reader can read repository | A model completion; future token validity; every organization/branch policy |
+| `selftest --no-model` GitHub identities | Each mapped role resolves to the expected distinct principal (a PAT through `GET /user`; an App through `GET /app` and `GET /users/<slug>[bot]`, since an installation token cannot call `/user`); reader can read repository | A model completion; future token validity; every organization/branch policy |
 | Hook lines | Matching live hooks and armed/paused state where listing is permitted | Unknown is not paused; seat access does not imply hook administration |
 | Production broker | Revalidates principals and live situation before bounded writes | Atomic coupling of PR metadata and Git ref publication |
 
@@ -239,7 +239,7 @@ hermes dk selftest --loop ID --no-model
 | Files shared, including aliases | Give each required identity its own file; verify actual principals too |
 | Token belongs to a different login | Replace contents with the expected account's PAT, or stage the intended identity change |
 | File missing/empty/public/relative | Fix path/content/ownership; use absolute path and mode 600 |
-| `/user` authentication fails | Check expiry/revocation, then replace PAT for that account |
+| `/user` authentication fails (PAT) | Check expiry/revocation, then replace PAT for that account. An App identity never calls `/user`: check its `GET /app` and `GET /users/<slug>[bot]` answers, its `app_id` and its key file instead |
 | Repository inaccessible | Accept invitation, choose correct resource owner/repo, check approval/SSO and permissions |
 | Hooks unknown or edit refused | Verify hook-admin account/permission and reader hook-read access; pass explicitly mapped admin |
 | Write still refused | Inspect exact-head eligibility, policy and scope; do not weaken identity checks to make a test green |
