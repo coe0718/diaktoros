@@ -830,8 +830,6 @@ def open_for(loop: dict, number: int) -> list[dict]:
     try:
         home_entries = home.entries() if home else {}
         spare = fallback_ledger()
-        if home and home.path == spare.path:
-            return found                      # one ledger: nothing in the fallback is a second copy
         repo = str(loop.get("repo") or "").lower()
         for e in spare.open_for(number):
             if e.get("kind") == CORRUPT or e.get("repo") != repo:

@@ -24,6 +24,7 @@ import run_tests as t  # noqa: E402
 from diaktoros import config, explain, gate, gate_failures, state as state_mod  # noqa: E402
 from diaktoros import watch_mode  # noqa: E402
 from diaktoros import watch_health  # noqa: E402
+from diaktoros.util import iso_at  # noqa: E402
 
 SCRIPTS = t.ROOT / "scripts"
 
@@ -1105,39 +1106,46 @@ class GateFailureTest(unittest.TestCase):
         self.assertIn(str(gate_failures.fallback_ledger().path), local["github"])
 
     def test_a_newer_fallback_failure_of_an_in_process_key_is_shown_over_the_older_home_one(self):
-        # #1592: failure 1 lands in the loop's ledger; a later success could not take that
-        # ledger's lock, so the entry stayed open; failure 2 (same key) finds it busy again and
-        # goes to the fallback ledger. explain must show failure 2, not the stale failure 1.
+        # #1592, all three steps: (1) failure 1 is recorded in the loop's ledger and alerted;
+        # (2) a later run that succeeds cannot take that ledger's lock in time, so the entry
+        # stays open; (3) failure 2 (same key) finds the ledger busy again and goes to the
+        # fallback ledger. open_for and explain must show failure 2 (error and time).
         import fcntl
         payload = t.pr_payload(7)
-        started = time.monotonic()
         try:
             raise RuntimeError("first failure")
         except RuntimeError as err:
             first = err
-        home_path = gate_failures.record_in_process("gate_reviewer", payload, first, started)
+        home_path = gate_failures.record_in_process("gate_reviewer", payload, first, time.monotonic())
         self.assertEqual(home_path, str(gate_failures.Ledger(t.STATE_DIR).path))
-        time.sleep(0.05)
+        (key,) = loop_entries()
+        said = gate_failures.sweep(gate_failures.Ledger(t.STATE_DIR), "[w]", SCRIPTS, cooldown_s=3600)
+        self.assertEqual(len([line for line in said if "first failure" in line]), 1, said)
+        self.assertIn("alerted_at", loop_entries()[key])                # step 1: alerted
+        older = loop_entries()[key]
+        time.sleep(1.1)                         # the displayed time has one-second resolution
         t.STATE_DIR.mkdir(parents=True, exist_ok=True)
         with open(t.STATE_DIR / "gate-failures.lock", "a+") as held, \
                 mock.patch.object(gate_failures, "RECORD_S", 0.2):
-            fcntl.flock(held, fcntl.LOCK_EX)                 # the loop ledger is busy
+            fcntl.flock(held, fcntl.LOCK_EX)                            # the loop ledger is busy
+            gate_failures.resolve_in_process("gate_reviewer", payload)  # step 2: blocked success
             try:
                 raise RuntimeError("second failure")
             except RuntimeError as err:
                 second = err
-            spare_path = gate_failures.record_in_process(
+            spare_path = gate_failures.record_in_process(               # step 3
                 "gate_reviewer", payload, second, time.monotonic())
         self.assertEqual(spare_path, str(gate_failures.fallback_ledger().path))
-        (key,) = loop_entries()
-        self.assertFalse(loop_entries()[key]["resolved"])    # the older entry is still open
+        self.assertFalse(loop_entries()[key]["resolved"])               # the older entry is open
         loop = config.load_id("widgets")
         shown = gate_failures.open_for(loop, 7)
         newer = [e for e in shown if e.get("held_in")]
         self.assertEqual([e["error"] for e in newer], ["second failure"], shown)
-        self.assertGreater(newer[0]["last_at"], loop_entries()[key]["last_at"])
-        lines = "\n".join(explain.gate_failure_line(e) for e in shown)
-        self.assertIn("second failure", lines)
+        self.assertGreater(newer[0]["last_at"], older["last_at"])
+        line = explain.gate_failure_line(newer[0])
+        self.assertIn("second failure", line)
+        self.assertIn(f"last {iso_at(newer[0]['last_at'])}", line)
+        self.assertNotEqual(iso_at(newer[0]["last_at"]), iso_at(older["last_at"]))
         # A true duplicate (the same run, written to both) is still shown once.
         fallback = gate_failures.fallback_ledger()
         fallback.record(key, {**fallback.entries()[key], "run_started_at": time.time() - 3600}, "")
