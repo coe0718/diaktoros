@@ -104,6 +104,26 @@ class Counting(Base):
         self.assertTrue(gate.reviewed_at_head([DISMISSED, TUCK], self.loop, fg.HEAD))
         self.assertFalse(gate.reviewed_at_head([DISMISSED], self.loop, fg.HEAD))
 
+    def test_an_undatable_or_unfamiliar_adjudicator_verdict_counts_nothing(self):
+        # Review of #1591, F3: unknown order is never "earlier"; nothing of that login counts.
+        self.ruled("ACCEPT")
+        for bad in (review(10, "CHANGES_REQUESTED", login="adj", at=None),
+                    review(10, "CHANGES_REQUESTED", login="adj", at="2026-01-03T00:00:00"),
+                    review(10, "APPROVED", login="adj", at="soon"),
+                    review(0, "CHANGES_REQUESTED", login="adj"),
+                    review(10, "WEIRD", login="adj", at="2026-01-01T12:00:00Z"),  # older
+                    {**TUCK, "id": 9}):                               # a tie with TUCK
+            with self.subTest(bad=bad):
+                self.assertEqual(gate.ruled_approvals([DISMISSED, TUCK, bad], self.loop, fg.HEAD),
+                                 [])
+                self.assertIsNone(self.latest([DISMISSED, TUCK, bad]))
+
+    def test_an_undatable_change_request_still_blocks(self):
+        undated = review(10, "CHANGES_REQUESTED", login="adj", at=None)
+        self.assertEqual(gate.blocking_reviews([DISMISSED, TUCK, undated], self.loop), [undated])
+        old = review(4, "CHANGES_REQUESTED", at=None)
+        self.assertEqual(gate.blocking_reviews([old, review(6, "APPROVED")], self.loop), [old])
+
     def test_an_unreadable_ledger_counts_nothing(self):
         self.ruled("ACCEPT")
         with mock.patch.object(views, "read_only_connect", return_value=None):
@@ -181,6 +201,16 @@ class Ready(Base):
         later = review(10, "CHANGES_REQUESTED", login="adj", at="2026-01-03T00:00:00Z")
         self.assertEqual(merge_check.decide(self.kinds([DISMISSED, TUCK, later]))[0],
                          merge_check.FAILURE)
+
+    def test_no_green_for_an_undatable_change_request(self):
+        # Review of #1591, F3, end to end: the merge check is never green on an unproved order.
+        self.mark_escalated(by="dispute")
+        self.ruled("ACCEPT")
+        for undated in (review(10, "CHANGES_REQUESTED", login="adj", at=None),
+                        review(10, "CHANGES_REQUESTED", at=None)):
+            with self.subTest(undated=undated):
+                self.assertNotEqual(merge_check.decide(self.kinds([DISMISSED, TUCK, undated]))[0],
+                                    merge_check.SUCCESS)
 
     def test_an_accept_not_acted_on_still_waits_for_a_person(self):
         self.mark_escalated(by="dispute")

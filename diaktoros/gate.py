@@ -732,11 +732,15 @@ def ruled_approvals(reviews: list, loop: dict, head: str) -> list:
     login = config.adjudicator_login(loop).lower()
     if not login or login in set(loop["reviewers"]):
         return []
-    mine = [r for r in reviews if isinstance(r, dict) and reviewer_login(r) == login
-            and r.get("commit_id") == head and gh.review_state(r) not in NOT_VERDICTS]
-    if not mine:
+    mine = [(_review_when(r), r) for r in reviews if isinstance(r, dict)
+            and reviewer_login(r) == login and r.get("commit_id") == head
+            and gh.review_state(r) not in NOT_VERDICTS]
+    if (not mine or any(when is None for when, _ in mine)
+            or any(gh.review_state(r) not in {"APPROVED", "CHANGES_REQUESTED"} for _, r in mine)):
+        return []                  # none, or an undatable or unfamiliar verdict: order unproved
+    when, newest = max(mine, key=lambda item: item[0])
+    if sum(other == when for other, _ in mine) != 1:
         return []
-    newest = max(mine, key=_review_order)
     number = _review_pr(newest, loop["repo"])
     if gh.review_state(newest) != "APPROVED" or number is None:
         return []
@@ -745,10 +749,17 @@ def ruled_approvals(reviews: list, loop: dict, head: str) -> list:
     return [newest] if ruled == "ACCEPT" else []
 
 
-def _review_order(review: dict) -> tuple:
-    """A review's place in one login's history: submitted time, then id (GitHub's order)."""
-    return (str(review.get("submitted_at") or ""),
-            review["id"] if type(review.get("id")) is int else 0)
+def _review_when(review: dict) -> tuple | None:
+    """``(submitted, id)``, a review's place in GitHub's order, or None when it can't be told:
+    no or a naive timestamp, or no positive id. Unknown order never counts as earlier."""
+    try:
+        submitted = datetime.fromisoformat(review["submitted_at"].replace("Z", "+00:00"))
+        review_id = int(review["id"])
+        if submitted.tzinfo is None or review_id <= 0:
+            return None
+        return submitted.astimezone(timezone.utc), review_id
+    except (KeyError, AttributeError, TypeError, ValueError, OverflowError):
+        return None
 
 
 def _review_pr(review: dict, repo: str) -> int | None:
@@ -769,17 +780,24 @@ def is_ruled_approval(review, loop: dict) -> bool:
 def blocking_reviews(reviews: list, loop: dict) -> list:
     """The reviews GitHub still counts against the merge (#905): each reviewer's, and the
     adjudicator's, newest approval, change request or dismissal, where that is a change request.
-    Only a dismissal or the same login's approval lifts one; the adjudicator's does not."""
-    newest: dict[str, tuple] = {}
+    Only a dismissal or the same login's approval lifts one; the adjudicator's does not. When a
+    login's order can't be told (an undatable review), every change request of it blocks."""
     counted = (set(loop["reviewers"]) | {config.adjudicator_login(loop).lower()}) - {""}
+    history: dict[str, list] = {}
     for review in reviews:
-        if (not isinstance(review, dict) or reviewer_login(review) not in counted
-                or gh.review_state(review) not in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}):
+        if (isinstance(review, dict) and reviewer_login(review) in counted
+                and gh.review_state(review) in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}):
+            history.setdefault(reviewer_login(review), []).append((_review_when(review), review))
+    blocking = []
+    for dated in history.values():
+        if any(when is None for when, _ in dated):
+            # Order unproved: any of this login's change requests may be its newest, so each blocks.
+            blocking += [r for _, r in dated if gh.review_state(r) == "CHANGES_REQUESTED"]
             continue
-        key, login = _review_order(review), reviewer_login(review)
-        if login not in newest or key > newest[login][0]:
-            newest[login] = (key, review)
-    return [r for _, r in newest.values() if gh.review_state(r) == "CHANGES_REQUESTED"]
+        newest = max(dated, key=lambda item: item[0])[1]
+        if gh.review_state(newest) == "CHANGES_REQUESTED":
+            blocking.append(newest)
+    return blocking
 
 
 def latest_effective_review_at_head(reviews: list, loop: dict, head: str) -> dict | None:
@@ -796,14 +814,10 @@ def latest_effective_review_at_head(reviews: list, loop: dict, head: str) -> dic
             continue
         if state not in {"APPROVED", "CHANGES_REQUESTED"}:
             return None
-        try:
-            submitted = datetime.fromisoformat(review["submitted_at"].replace("Z", "+00:00"))
-            review_id = int(review["id"])
-            if submitted.tzinfo is None or review_id <= 0:
-                return None
-            candidates.append((submitted.astimezone(timezone.utc), review_id, review))
-        except (KeyError, AttributeError, TypeError, ValueError, OverflowError):
+        when = _review_when(review)
+        if when is None:
             return None
+        candidates.append((*when, review))
     if not candidates:
         return None
     latest = max(candidates, key=lambda item: (item[0], item[1]))
