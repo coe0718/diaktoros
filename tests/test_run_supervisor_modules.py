@@ -14,6 +14,7 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import ast
 import importlib
 import pathlib
+import re
 import symtable
 import sys
 import unittest
@@ -122,6 +123,39 @@ class Split(unittest.TestCase):
                                                  f"a local `{sub}` shadows the submodule")
                     walk(child)
             walk(top)
+
+    def test_prose_names_a_moved_function_by_its_submodule(self):
+        # Docs and docstrings that write `run_supervisor.<name>` for a moved name point at a path
+        # that no longer resolves (#1458): they must say `run_supervisor.<submodule>.<name>`.
+        moved = {n for sub in SUBMODULES for n in _top_level_names(PACKAGE / f"{sub}.py")}
+        pattern = re.compile(r"run_supervisor\.(\w+)")
+        files = [*(ROOT / "docs").glob("*.md"), *(ROOT / "diaktoros").rglob("*.py")]
+        for path in files:
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                for name in pattern.findall(line):
+                    if name not in SUBMODULES and name in moved:
+                        self.fail(f"{path.relative_to(ROOT)}:{number} names run_supervisor.{name}, "
+                                  f"which moved to a submodule")
+
+    def test_a_test_does_not_shadow_a_submodule_it_imports(self):
+        # The package's own shadow rule, applied to the tests (#1458): a function that binds a
+        # local named like a submodule its file imports turns a later `views.<name>` into an
+        # UnboundLocalError.
+        for path in (ROOT / "tests").rglob("*.py"):
+            tree = ast.parse(path.read_text())
+            imported = {a.asname or a.name for node in ast.walk(tree)
+                        if isinstance(node, ast.ImportFrom) and node.module == "diaktoros.run_supervisor"
+                        for a in node.names if (a.asname or a.name) in SUBMODULES}
+            if not imported:
+                continue
+            for func in ast.walk(tree):
+                if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                for node in ast.walk(func):
+                    if (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+                            and node.id in imported):
+                        self.fail(f"{path.relative_to(ROOT)}:{node.lineno} binds a local "
+                                  f"`{node.id}` that shadows the imported submodule")
 
 
 if __name__ == "__main__":
