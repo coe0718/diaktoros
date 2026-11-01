@@ -470,7 +470,8 @@ TOOLS = {
                  '/tmp/issue1.md --label bug --label P3` (one line title of at most 120 characters, a body of at '
                  f'most {broker_client.FILED_ISSUE_BODY_MAX // 1024} KiB with the evidence and '
                  '`file:line`, labels only from the list in your instructions, none if no list is '
-                 'given, otherwise one type label and one priority label; '
+                 'given, otherwise one priority label and, when the list has a type label '
+                 '(one that is not P0, P1, …), one type label; '
                  f'at most {broker.FILED_ISSUES_MAX} per review). It files as your account '
                  'and answers with the issue number; a title already filed from this PR is '
                  'refused. A blocking finding is never an issue: it is REQUEST_CHANGES. '),
