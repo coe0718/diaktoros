@@ -479,11 +479,15 @@ each one once the real review exists at that head:
   PR and the head.
 - **What's skipped:** an issue the reviewer already filed from that PR, with the same title or one
   close to it, is marked `duplicate` and never filed.
-- **Limits:** at most 5 a day per loop. An unreadable review files nothing that sweep, and a head the
+- **Limits:** at most `shadow.issues_daily` a day per loop, counted over a rolling 24 hours (#1515;
+  whole number 0-1000, default 25, `0` = no cap). Issues over the cap stay `recorded` and wait for a
+  later sweep. The setting needs a shadow profile and does nothing while `file_issues` is off; a loop
+  file without the key gets 25. An unreadable review files nothing that sweep, and a head the
   real review never reaches is dropped after 7 days.
 
 Set it with `set`/`init`/`setup --shadow-file-issues on|off`, the settings form's *File the shadow's
-issues*, or the loop file.
+issues*, or the loop file. The cap is `set`/`init`/`setup --shadow-issues-daily N`, the form's
+*Shadow issues a day*, or `shadow.issues_daily` in the loop file.
 
 A ruling answers the shadow review its prompt showed, not whichever review is newest when the ruling lands: the host records that review's run id with the ruling (`rulings.shadow_run`), and the hold, `ready`, `explain` and the sweep's re-escalation all count an ACCEPT against that review only. A second shadow review that lands during the adjudicator's turn therefore stays held and is sent for its own ruling. A ruling recorded before this column existed has no run id and is matched by time, as before.
 

@@ -281,6 +281,8 @@ def _rows(loop: dict) -> list[_Row]:
            derived="" if "escalate" in shadow else "the default, off")
     schema("shadow_file_issues", ("shadow", "file_issues"), config.shadow_file_issues(loop),
            derived="" if "file_issues" in shadow else "the default, off")
+    schema("shadow_issues_daily", ("shadow", "issues_daily"), config.shadow_issues_daily(loop) or "no cap",
+           derived="" if "issues_daily" in shadow else f"the default, {config.SHADOW_ISSUES_DAILY}")
     plain("triage.enabled", ("triage", "route"), config.triage_enabled(loop),
           "issue triage (hermes dk triage)", on=config.triage_enabled(loop),
           off="new issues are not labelled")

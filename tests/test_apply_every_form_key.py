@@ -72,6 +72,7 @@ PUSHES = {
     "shadow_every": "7",
     "shadow_escalate": "on",
     "shadow_file_issues": "on",
+    "shadow_issues_daily": "40",
     "human_paths": ".github/**, scripts/release*",
     "generated": "docs/commands.md=python3 tests/commands_doc.py --write",
     "ci_coverage": "tests (3.14)=full unit suite and harness",

@@ -365,7 +365,10 @@ def cmd_init(args) -> int:
                       else settings_form._form_value(d, "shadow_escalate")),
             file_issues=(args.shadow_file_issues
                          if getattr(args, "shadow_file_issues", None) is not None
-                         else settings_form._form_value(d, "shadow_file_issues"))) or {}
+                         else settings_form._form_value(d, "shadow_file_issues")),
+            issues_daily=(args.shadow_issues_daily
+                          if getattr(args, "shadow_issues_daily", None) is not None
+                          else settings_form._form_value(d, "shadow_issues_daily"))) or {}
     except config.ConfigError as exc:
         print(f"refused: {exc}")
         return 2
@@ -863,7 +866,9 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
     init.add_argument("--shadow-escalate", choices=("on", "off"), default=None,
                       help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off)")
     init.add_argument("--shadow-file-issues", choices=("on", "off"), default=None,
-                      help="on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914) (default: the plugin setting, else off)")
+                      help="on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to --shadow-issues-daily a day (#914) (default: the plugin setting, else off)")
+    init.add_argument("--shadow-issues-daily", default=None, metavar="N",
+                      help="most shadow-found issues filed per rolling 24 hours, 0-1000; 0 = no cap (#1515) (default: the plugin setting, else 25)")
     init.add_argument("--human-path", action="append", default=None,
                       help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     init.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
