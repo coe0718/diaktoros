@@ -165,17 +165,18 @@ def _credential_label(loop: dict, login: str) -> str:
     return f"App {app.get('app_id')}, key {app.get('key_file')}" if app else ""
 
 
-def _split_token_pair(pair: str) -> tuple[str, str] | None:
-    """Parse one ``--token login=/path/to/pat`` for `init`, `set` and `triage`: ``(login, path)``
-    with the login stripped, or ``None`` after printing the refusal (no ``=``, or an empty login
-    that would write a ``tokens[""]`` entry nothing can use)."""
+def _split_token_pair(pair: str, flag: str = "--token") -> tuple[str, str] | None:
+    """Parse one ``login=/path/to/pat`` pair: ``(login, path)`` with the login stripped, or ``None``
+    after printing the refusal (no ``=``, or an empty login that would write a ``tokens[""]``
+    entry nothing can use). ``flag`` names the option in the refusal: `init`, `set` and `triage`
+    take ``--token``; `identity` passes ``--pat``."""
     if "=" not in pair:
-        print(f"--token expects login=/path/to/pat, got {pair!r}")
+        print(f"{flag} expects login=/path/to/pat, got {pair!r}")
         return None
     login, path = pair.split("=", 1)
     login = login.strip()
     if not login:
-        print(f"refused: --token expects login=/path/to/pat, got {pair!r} with an empty login")
+        print(f"refused: {flag} expects login=/path/to/pat, got {pair!r} with an empty login")
         return None
     return login, path
 

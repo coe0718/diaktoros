@@ -231,6 +231,16 @@ class TokenFileSettingsTests(unittest.TestCase):
                 self.assert_refused([*self.init_argv(), "--token", pair], r"empty login")
         self.assertFalse(self.loop_file().exists())
 
+    def test_identity_pat_refusals_name_the_pat_flag(self):
+        """#1401: `identity --pat` refuses a bad pair naming `--pat`, not `--token`."""
+        self.install()
+        for pair, reason in (("nopath", r"--pat expects login=/path/to/pat"),
+                             ("=/x", r"refused: --pat expects .*empty login")):
+            with self.subTest(pair=pair):
+                out = self.assert_refused(["identity", "--loop", "widgets", "--seat", "read",
+                                           "--pat", pair], reason)
+                self.assertNotIn("--token", out)
+
     # -- plugin settings → apply / init -----------------------------------------------------
 
     def test_apply_maps_settings_to_tokens(self):

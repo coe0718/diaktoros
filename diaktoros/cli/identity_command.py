@@ -135,7 +135,7 @@ def cmd_identity(args) -> int:
             return 2
         login, spec = split
     else:
-        split = cli_common._split_token_pair(args.pat)
+        split = cli_common._split_token_pair(args.pat, "--pat")
         if split is None:
             return 2
         login, spec = split
