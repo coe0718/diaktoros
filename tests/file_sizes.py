@@ -93,8 +93,10 @@ def problems(files: dict, functions: dict, baseline: dict) -> list[str]:
         if rel in base_files:
             limit = max(base_files[rel], FILE_CEILING)
             if lines > limit:
-                out.append(f"{rel}: size {lines}, over its limit {limit} — split it, never grow "
-                           "a file already over the ceiling")
+                # "Never grow" is only true of a file whose baseline is already over the ceiling.
+                note = (", never grow a file already over the ceiling"
+                        if base_files[rel] > FILE_CEILING else "")
+                out.append(f"{rel}: size {lines}, over its limit {limit} — split it{note}")
         elif lines > FILE_MAX:
             out.append(f"{rel}: size {lines}, over {FILE_MAX} for a new file — split it")
     for key, lines in sorted(functions.items()):

@@ -40,6 +40,13 @@ class Rules(unittest.TestCase):
         self.assertIn("mid.py: size 1501", self.check({"big.py": 2000, "mid.py": 1501},
                                                         {"big.py::f": 120})[0])
 
+    def test_never_grow_is_said_only_of_a_file_baselined_over_the_ceiling(self):
+        over = self.check({"big.py": 2001, "mid.py": 900}, {"big.py::f": 120})
+        self.assertIn("never grow a file already over the ceiling", over[0])
+        under = self.check({"big.py": 2000, "mid.py": 1501}, {"big.py::f": 120})
+        self.assertIn("mid.py: size 1501, over its limit 1500", under[0])
+        self.assertNotIn("already over the ceiling", under[0])
+
     def test_a_baselined_function_may_not_grow(self):
         self.assertIn("big.py::f: size 121, grown past its baseline 120",
                       self.check({"big.py": 2000, "mid.py": 900}, {"big.py::f": 121})[0])
