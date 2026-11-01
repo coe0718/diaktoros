@@ -124,9 +124,10 @@ def check_leftover_hooks(loop: dict, offline: bool) -> doctor.Check:
 
 
 def check_hooks(loop: dict, offline: bool) -> list[doctor.Check]:
-    """The two repo hooks GitHub posts to, matched by the URL each route resolves to.
+    """The repo hooks GitHub posts to, one per role in ``config.hook_roles`` (reviewer, fixer, and
+    triage when it is on), matched by the URL each route resolves to.
 
-    A read the token is not allowed to make is ``unknown``: the repo may have both hooks and
+    A read the token is not allowed to make is ``unknown``: the repo may have all its hooks and
     none at all, and this call cannot tell those apart. Saying "absent" here would be the exact
     wrong-hook hunt the preflight exists to prevent.
     """

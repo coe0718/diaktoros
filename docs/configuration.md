@@ -465,7 +465,10 @@ If a later shadow review at the same head requests changes again after the rulin
 
 **Filing its issues (`shadow.file_issues`, #914).** Off by default. A shadow review runs in no-write
 mode, so an issue it asks to file is recorded in the run ledger (`shadow_issues`), checked exactly as
-the reviewer's would be: a title, a body, labels from the loop's triage list and never the fix label.
+the reviewer's would be: a title, a body, labels from the loop's triage list and never the fix label,
+and, when that list holds a label that is not a priority (`bug`, … rather than `P0`, `P1`, …), at
+least one such type label. A shadow filing with no type label is refused as the reviewer's is, and
+nothing is recorded; a list of priorities only cannot ask for a type, so none is required there.
 The shadow gets the same "accepted" a filing gets. With `file_issues` on, the watchdog sweep files
 each one once the real review exists at that head:
 - **Who files it:** the **reader**, not the reviewer, since the reviewer didn't find it. So the reader

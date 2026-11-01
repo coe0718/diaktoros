@@ -14,6 +14,7 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import ast
 import importlib
 import pathlib
+import re
 import symtable
 import sys
 import unittest
@@ -37,6 +38,25 @@ def _top_level_names(path: pathlib.Path) -> set[str]:
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             names.add(node.target.id)
     return names
+
+
+def _shadowed_submodules(source: str) -> list[tuple[int, str]]:
+    """(line, name) for each function-local binding named like a run_supervisor submodule that
+    the source imports from diaktoros.run_supervisor."""
+    tree = ast.parse(source)
+    imported = {a.asname or a.name for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom) and node.module == "diaktoros.run_supervisor"
+                for a in node.names if (a.asname or a.name) in SUBMODULES}
+    found = set()
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(func):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in imported:
+                found.add((node.lineno, node.id))
+            elif isinstance(node, ast.arg) and node.arg in imported:
+                found.add((node.lineno, node.arg))
+    return sorted(found)
 
 
 class Split(unittest.TestCase):
@@ -122,6 +142,45 @@ class Split(unittest.TestCase):
                                                  f"a local `{sub}` shadows the submodule")
                     walk(child)
             walk(top)
+
+    def test_prose_names_a_moved_function_by_its_submodule(self):
+        # Docs and docstrings that write `run_supervisor.<name>` for a moved name point at a path
+        # that no longer resolves (#1458): they must say `run_supervisor.<submodule>.<name>`.
+        moved = {n for sub in SUBMODULES for n in _top_level_names(PACKAGE / f"{sub}.py")}
+        pattern = re.compile(r"run_supervisor\.(\w+)")
+        files = [*(ROOT / "docs").glob("*.md"), *(ROOT / "diaktoros").rglob("*.py")]
+        for path in files:
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                for name in pattern.findall(line):
+                    if name not in SUBMODULES and name in moved:
+                        self.fail(f"{path.relative_to(ROOT)}:{number} names run_supervisor.{name}, "
+                                  f"which moved to a submodule")
+
+    def test_a_test_does_not_shadow_a_submodule_it_imports(self):
+        # The package's own shadow rule, applied to the tests (#1458): a function that binds a
+        # local named like a submodule its file imports turns a later `views.<name>` into an
+        # UnboundLocalError.
+        for path in (ROOT / "tests").rglob("*.py"):
+            for lineno, name in _shadowed_submodules(path.read_text()):
+                self.fail(f"{path.relative_to(ROOT)}:{lineno} binds a local `{name}` that "
+                          f"shadows the imported submodule")
+
+    def test_the_shadow_check_flags_a_local_that_reuses_an_imported_submodule(self):
+        # Drives the check on source text, so it does not depend on what the tests/ files hold:
+        # the old test_partial_view_no_approve.py:597 shape must be reported.
+        shadowing = (
+            "from diaktoros.run_supervisor import views\n"
+            "def test_x():\n"
+            "    views = [line for line in ()]\n"
+            "    return views\n")
+        self.assertEqual(_shadowed_submodules(shadowing), [(3, "views")])
+        as_argument = ("from diaktoros.run_supervisor import views\n"
+                       "def helper(views):\n    return views\n")
+        self.assertEqual(_shadowed_submodules(as_argument), [(2, "views")])
+        clean = ("from diaktoros.run_supervisor import views\n"
+                 "def test_x():\n    view_lines = []\n    return views.next_step, view_lines\n")
+        self.assertEqual(_shadowed_submodules(clean), [])
+        self.assertEqual(_shadowed_submodules("def test_x():\n    views = []\n"), [])
 
 
 if __name__ == "__main__":

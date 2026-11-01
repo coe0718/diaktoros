@@ -594,12 +594,12 @@ class ExplainShowsIt(unittest.TestCase):
 
     def test_explain_names_the_partial_view_at_this_head_only(self):
         text = self.explain()
-        views = [line for line in text.splitlines() if line.strip().startswith("view:")]
-        self.assertEqual(len(views), 1, text)
+        view_lines = [line for line in text.splitlines() if line.strip().startswith("view:")]
+        self.assertEqual(len(view_lines), 1, text)
         self.assertIn(f"reviewer #7 @ {HEAD[:7]} succeeded — could not see the whole change: "
-                      f"{REASON} at new", views[0])
-        self.assertIn("the broker refuses its approval", views[0])
-        self.assertIn("review it by hand", views[0])
+                      f"{REASON} at new", view_lines[0])
+        self.assertIn("the broker refuses its approval", view_lines[0])
+        self.assertIn("review it by hand", view_lines[0])
 
 
 if __name__ == "__main__":

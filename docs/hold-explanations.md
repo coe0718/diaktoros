@@ -5,7 +5,7 @@ It introduces an additive, consumed contract for ledgered stalled runs. It does 
 
 ## Owner and consumers
 
-`diaktoros.run_supervisor.hold_explanation(row)` accepts the artifacts returned by the existing
+`diaktoros.run_supervisor.views.hold_explanation(row)` accepts the artifacts returned by the existing
 read-only `runs_view` / `read_only_view`. It performs no IO, probe, admission decision or write.
 `describe_run` appends its exact public text, so CLI status, explain and the supervisor's status
 formatter share the explanation. Desktop's existing `/pr` read attaches the same object to
@@ -72,7 +72,7 @@ predicates. Retry buttons continue to depend only on the existing `retry_action`
 
 ## Inventory taken before this slice
 
-- `run_supervisor.next_step` / `describe_run`: existing ledger advice, `write_evidence`, budget and
+- `run_supervisor.views.next_step` / `describe_run`: existing ledger advice, `write_evidence`, budget and
   policy cancellation distinctions. `retry_action.plan` / `page_targets` and transactional
   `Supervisor.retry` remain the sole retry owners.
 - `explain.explain`: ordered live guard predicates and `next` report; `situation.resolve` /

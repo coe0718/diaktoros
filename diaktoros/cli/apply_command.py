@@ -82,7 +82,8 @@ def _apply(args) -> int:
 
     Push, not subscription: a running loop whose numbers changed under it is exactly the kind of
     thing nobody can debug at 2am. The same validation as ``init``/``set`` still applies, so a
-    settings form asking for two reviews at once without a clone path is refused here too.
+    settings form asking for two reviews at once without a clone path (and without the isolated
+    worker's runtime file) is refused here too.
 
     An identity change is *staged* rather than half-applied: the loop config and the routes whose
     URL carries the old profile move together, and a change that would land while a seat has a run

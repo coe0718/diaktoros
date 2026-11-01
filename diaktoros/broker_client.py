@@ -346,7 +346,8 @@ def main() -> None:
                              '(they must fail) and on your fix (they must pass)')
     parser.add_argument('--label', action='append', default=[],
                         help='triage/file_issue: one label from the list in your instructions '
-                             '(repeatable)')
+                             '(repeatable); file_issue needs a type label (not P0, P1, …) '
+                             'among them when the list holds one')
     parser.add_argument('--ask', choices=('question', 'plan'),
                         help='issue_comment: post the body as your one question or your plan and '
                              'hand the issue back; a maintainer\'s reply (or /loop approve for a '

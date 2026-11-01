@@ -4,9 +4,9 @@
 cannot drift apart: one selection rule (``plan``), one state change (``Supervisor.cancel``, called
 unchanged), one read-back.
 
-* A run that has not started (pending, waiting, claimed) is cancelled at once. No redelivered
-  event or sweep re-arms it; ``hermes dk retry`` does, on purpose, and a new head queues a fresh
-  run as usual.
+* A run that has not started (pending, blocked, waiting, claimed) is cancelled at once. No
+  redelivered event or sweep re-arms it; ``hermes dk retry`` does, on purpose, and a new head
+  queues a fresh run as usual.
 * A launching or running turn is the owning worker's to stop: the request is recorded, and the
   worker's heartbeat kills the sandbox the way the turn budget does, then ends the run as
   ``cancelled`` (or ``uncertain``, never replayed, when it may already have written).
