@@ -203,7 +203,7 @@ def group_docs() -> None:
 
     for path in _doc_files():
         text = path.read_text()
-        for module in sorted(set(re.findall(r"python\s+-m\s+diaktoros\.(\w+)", text))):
+        for module in sorted(set(re.findall(r"python\s+(?:-P\s+)?-m\s+diaktoros\.(\w+)", text))):
             check(f"{path.relative_to(ROOT)}: diaktoros/{module}.py exists",
                   (ROOT / "diaktoros" / f"{module}.py").is_file()
                   or (ROOT / "diaktoros" / module / "__main__.py").is_file(), True)  # a package

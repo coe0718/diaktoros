@@ -440,6 +440,20 @@ class ProductionLaunch(Base):
         for module in (trusted_turn, broker_ipc):
             self.assertNotIn("python -m diaktoros", Path(module.__file__).read_text())
 
+    def test_the_skill_and_the_prompts_tell_the_seat_to_run_the_client_with_dash_p(self):
+        # The skill is what the seat copies its commands from (cwd /work, the tree under
+        # review), so a `python -m diaktoros...` there reopens the #1373 shadow with CI green.
+        from diaktoros import prompts
+        for path in (ROOT / "skill" / "SKILL.md", Path(prompts.__file__)):
+            text = path.read_text()
+            with self.subTest(file=path.name):
+                self.assertIn("python -P -m diaktoros.broker_client", text)
+                self.assertNotRegex(text, r"python3?\s+-m\s+diaktoros")
+        for number, line in enumerate((ROOT / "skill" / "SKILL.md").read_text().splitlines(), 1):
+            if "diaktoros.broker_client" in line:
+                with self.subTest(line=number):
+                    self.assertIn("python -P -m diaktoros.broker_client", line)
+
     def test_hermes_gets_exactly_the_terminal_and_file_tools(self):
         for role in ("reviewer", "fixer", "adjudicator"):
             with self.subTest(role=role):
