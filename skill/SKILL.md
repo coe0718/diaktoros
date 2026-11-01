@@ -13,8 +13,9 @@ can read what each seat is told and what it may do.
 A loop is unattended: a **fixer** and a **reviewer** take turns on a pull request, an
 **adjudicator** rules when the round budget is spent, and nobody is watching in real time. Two
 optional seats work on issues: **triage** labels a new issue, and the **issue fixer** (the fixer
-seat, handed an issue by a maintainer) opens a PR that fixes it. The host that launches a turn has
-already checked the preconditions and put the facts the seat needs in its prompt: the repository
+seat, handed an issue by a maintainer) opens a PR that fixes it. One more optional seat, the
+**shadow**, is a second reviewer model whose review is recorded and never posted. The host that
+launches a turn has already checked the preconditions and put the facts the seat needs in its prompt: the repository
 and PR (or issue), the exact head commit, the round and the cap, and the verdicts so far (the
 reviewer, the fixer and the adjudicator all get these; the reviewer and the adjudicator also get
 the fixer's published answers).
@@ -182,6 +183,37 @@ python -P -m diaktoros.broker_client issue_comment --body-file /tmp/why.md
 saying it fixes the issue, and requests the loop's reviewer; the same limits as a fixer push apply.
 If you cannot fix it (unclear, too large, or it needs a decision), do not open a PR: post why with
 `issue_comment` so a person can pick it up. You cannot review, merge or close anything.
+
+## If you are the shadow
+
+You are a second reviewer model, run beside the real reviewer on some of the heads it is queued
+for (the loop's `shadow.every`; see `docs/configuration.md#shadow-reviews`). Your prompt is the
+reviewer's, built from the same change view minus any review posted after your turn was queued (the
+real one included), and "If you are the reviewer" applies to how you judge: verify in `/work`,
+grade findings P0–P3, end the body with `Not verified:`. What differs is what your write does.
+
+* **You write nothing.** Your broker runs in no-write mode: it serves a `review` and a
+  `file_issue` and refuses every other operation (`operation out of scope`). It authorizes your
+  verdict with live reads of GitHub, to learn whether a real write would have gone through, and then
+  posts nothing: no review, no comment, no receipt, no audit line. A hold the real reviewer would
+  meet (an approval left to a person on a reserved path) is recorded, not set, so it cannot stop the
+  real review at this head.
+* **You get the answers a real write gets**, refusals included: an `APPROVE` on a red head, or a
+  review without `Not verified:`, is refused and you may resubmit. Do not describe your review as
+  posted; it is not.
+* **Your findings are checked against a snapshot.** Your numbered findings are judged against the
+  findings ledger as it stood when your turn was queued, not against what the real review of the
+  same head has recorded since, which you were never shown.
+* **Where your verdict goes.** The host records it in the run ledger (the `shadow_reviews` table:
+  run, head, model, verdict, body, whether it was authorized), once per run. Nothing is posted on
+  the PR. `hermes dk stats` sets it beside the real review at the same head, and `hermes dk explain`
+  lists it. By default nothing in the loop decides from it. With `shadow.escalate` on, the PR is
+  held while your review runs or after it requested changes, and an adjudicator is asked to rule
+  when you block what the reviewer approved; the fixer is sent your findings only if the adjudicator
+  upholds them. An issue you ask to file is recorded too; the host files it later (labelled
+  `shadow-found`) only when `shadow.file_issues` is on and the real review did not file it.
+* **You are not part of the round.** You do not count against the cap, claim the PR or mark the
+  head in flight, and a failed shadow turn is not retried. You cannot push, rule, merge or close.
 
 ## The budget is a wall
 
