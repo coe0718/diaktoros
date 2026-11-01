@@ -825,14 +825,23 @@ def loop_ledger(loop: dict) -> Ledger:
 def open_for(loop: dict, number: int) -> list[dict]:
     """Unresolved failures for one PR: the loop's ledger, plus what the fallback ledger holds
     for this loop's repo (a failure it took when the loop's ledger was busy or unwritable)."""
-    found = loop_ledger(loop).open_for(number) if loop.get("state_dir") else []
-    have = {e.get("id") for e in found}
+    home = loop_ledger(loop) if loop.get("state_dir") else None
+    found = home.open_for(number) if home else []
     try:
+        home_entries = home.entries() if home else {}
         spare = fallback_ledger()
+        if home and home.path == spare.path:
+            return found                      # one ledger: nothing in the fallback is a second copy
         repo = str(loop.get("repo") or "").lower()
         for e in spare.open_for(number):
-            if e.get("kind") != CORRUPT and e.get("repo") == repo and e.get("id") not in have:
-                found.append({**e, "held_in": str(spare.path)})
+            if e.get("kind") == CORRUPT or e.get("repo") != repo:
+                continue
+            # The sweep's rule (:func:`_same_episode`): the home copy hides this one only when
+            # it is the same failure. A newer failure of the same in-process key (the home
+            # copy was left open by a recovery that could not take its lock) is shown too.
+            if _same_episode(home_entries.get(e.get("id")), e):
+                continue
+            found.append({**e, "held_in": str(spare.path)})
     except Exception as err:  # noqa: BLE001 - explain reports what it can read
         log(f"fallback gate-failure ledger unreadable: {type(err).__name__}: {err}")
     return found

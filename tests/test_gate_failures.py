@@ -1104,6 +1104,45 @@ class GateFailureTest(unittest.TestCase):
         local = explain._explain_state(loop, state_mod.LoopState(loop), f"{t.REPO}#7", 7, "", time.time())
         self.assertIn(str(gate_failures.fallback_ledger().path), local["github"])
 
+    def test_a_newer_fallback_failure_of_an_in_process_key_is_shown_over_the_older_home_one(self):
+        # #1592: failure 1 lands in the loop's ledger; a later success could not take that
+        # ledger's lock, so the entry stayed open; failure 2 (same key) finds it busy again and
+        # goes to the fallback ledger. explain must show failure 2, not the stale failure 1.
+        import fcntl
+        payload = t.pr_payload(7)
+        started = time.monotonic()
+        try:
+            raise RuntimeError("first failure")
+        except RuntimeError as err:
+            first = err
+        home_path = gate_failures.record_in_process("gate_reviewer", payload, first, started)
+        self.assertEqual(home_path, str(gate_failures.Ledger(t.STATE_DIR).path))
+        time.sleep(0.05)
+        t.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(t.STATE_DIR / "gate-failures.lock", "a+") as held, \
+                mock.patch.object(gate_failures, "RECORD_S", 0.2):
+            fcntl.flock(held, fcntl.LOCK_EX)                 # the loop ledger is busy
+            try:
+                raise RuntimeError("second failure")
+            except RuntimeError as err:
+                second = err
+            spare_path = gate_failures.record_in_process(
+                "gate_reviewer", payload, second, time.monotonic())
+        self.assertEqual(spare_path, str(gate_failures.fallback_ledger().path))
+        (key,) = loop_entries()
+        self.assertFalse(loop_entries()[key]["resolved"])    # the older entry is still open
+        loop = config.load_id("widgets")
+        shown = gate_failures.open_for(loop, 7)
+        newer = [e for e in shown if e.get("held_in")]
+        self.assertEqual([e["error"] for e in newer], ["second failure"], shown)
+        self.assertGreater(newer[0]["last_at"], loop_entries()[key]["last_at"])
+        lines = "\n".join(explain.gate_failure_line(e) for e in shown)
+        self.assertIn("second failure", lines)
+        # A true duplicate (the same run, written to both) is still shown once.
+        fallback = gate_failures.fallback_ledger()
+        fallback.record(key, {**fallback.entries()[key], "run_started_at": time.time() - 3600}, "")
+        self.assertEqual([e["id"] for e in gate_failures.open_for(loop, 7)], [key])
+
     def test_a_claim_cut_off_by_the_record_alarm_is_made_again(self):
         # The claim is the last step of the record phase; on a slow disk the one-shot record
         # alarm fires inside its write, which swallows it. The read must still end up owned.
