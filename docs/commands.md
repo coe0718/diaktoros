@@ -1216,8 +1216,9 @@ hermes dk arm --loop "<loop-id>" --pause --admin-token "<hook-admin-login>"
 
 Run it after `doctor` and `selftest` pass. It reads back each hook and exits `1` unless GitHub
 confirms every one is in the state you asked for. It edits the hooks as `--admin-token`'s login
-(default: the reader), which needs hook write access (`repository_hooks: write`, or classic
-`repo`).
+(default: the reader), which needs hook write access: for a PAT, `repository_hooks: write` (or
+classic `repo`); for a GitHub App login, the App's Webhooks: Read and write permission, with the App
+installed on the repo.
 
 **Safety.** Omission of `--loop` affects every configured loop; prefer an exact id.
 Pause stops new hook deliveries, not already running turns. Arming is not fixer-push consent.
@@ -1234,7 +1235,7 @@ not necessarily failure; exit 0 is not proof every gateway delivery was observed
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` |  | loop id (default: every configured loop) |
 | `--pause` |  |  | pause instead of arming |
-| `--admin-token` | `ADMIN_TOKEN` |  | login whose token can edit the repo's hooks (default: the reader) |
+| `--admin-token` | `ADMIN_TOKEN` |  | login whose credential can edit the repo's hooks: a token, or a GitHub App with Webhooks: Read and write (default: the reader) |
 <!-- /flags -->
 
 ### app-webhook
