@@ -1170,6 +1170,61 @@ class GateFailureTest(unittest.TestCase):
         failure = state_mod.LoopState(config.load_id("widgets")).github_failure()
         self.assertEqual(failure.get("owned_by"), f"gate-failures:{key}", proc.stderr)
 
+    # -- an older overlapping delivery settles neither a newer failure nor its read (#1594) -----
+
+    OVERLAP = ("loop = config.load_id('widgets')\n"
+               "    key = gate_failures.fingerprint('gate_reviewer', sys.stdin.getvalue())\n"
+               "    gate_failures.loop_ledger(loop).record(key, {'gate': 'gate_reviewer', 'kind': 'crash',\n"
+               "        'pr': 7, 'repo': 'acme/widgets', 'error_type': 'X', 'error': 'y'}, '{}')\n"
+               "    gh.record_failures()\n"
+               "    gh.record_failure(loop, 'GET', '/pulls/7', 'HTTP 502')\n"
+               "    st = state.state_for(loop)\n"
+               "    st.github_failure_record({**st.github_failure(), 'owned_by': 'gate-failures:' + key})\n")
+
+    def owned_read_of(self, key: str, at: float) -> state_mod.LoopState:
+        st = state_mod.LoopState(config.load_id("widgets"))
+        st.github_failure_record({"at": at, "where": "gate_reviewer.py", "method": "GET",
+                                  "path": "/pulls/7", "error": "HTTP 502", "status": 502,
+                                  "owned_by": f"gate-failures:{key}"})
+        return st
+
+    def test_an_older_overlapping_delivery_leaves_a_newer_failure_and_its_read_alone(self):
+        key = gate_failures.fingerprint("gate_reviewer", json.dumps(t.pr_payload(7)))
+        # This delivery starts, and while it runs a newer one records its failure and read.
+        proc = self.fault_gate("", body=self.OVERLAP)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        entry = gate_failures.Ledger(t.STATE_DIR).entries()[key]
+        self.assertFalse(entry["resolved"])
+        failure = state_mod.LoopState(config.load_id("widgets")).github_failure()
+        self.assertEqual(failure.get("owned_by"), f"gate-failures:{key}")
+        self.assertNotIn("resolved_by", failure)
+
+    def test_a_newer_read_stays_owned_when_no_ledger_holds_its_entry(self):
+        key = gate_failures.fingerprint("gate_reviewer", json.dumps(t.pr_payload(7)))
+        for ledger in (gate_failures.Ledger(t.STATE_DIR), gate_failures.fallback_ledger()):
+            ledger.path.unlink(missing_ok=True)
+        body = ("st = state.state_for(config.load_id('widgets'))\n"
+                f"    st.github_failure_record({{'at': __import__('time').time(), 'owned_by': "
+                f"'gate-failures:{key}', 'error': 'HTTP 502'}})")
+        proc = self.fault_gate("", body=body)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        failure = state_mod.LoopState(config.load_id("widgets")).github_failure()
+        self.assertEqual(failure.get("owned_by"), f"gate-failures:{key}")
+
+    def test_a_failure_and_read_from_before_the_delivery_started_are_still_settled(self):
+        key = gate_failures.fingerprint("gate_reviewer", json.dumps(t.pr_payload(7)))
+        gate_failures.Ledger(t.STATE_DIR).record(
+            key, {"gate": "gate_reviewer", "kind": "crash", "pr": 7, "repo": t.REPO,
+                  "error_type": "X", "error": "y"}, "{}")
+        self.owned_read_of(key, time.time())
+        time.sleep(0.05)
+        proc = self.fault_gate("", body="pass")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(gate_failures.Ledger(t.STATE_DIR).entries()[key]["resolved"])
+        failure = state_mod.LoopState(config.load_id("widgets")).github_failure()
+        self.assertNotIn("owned_by", failure)
+        self.assertIn(key, failure.get("resolved_by", ""))
+
     def test_the_alert_marks_the_attempt_it_said_not_a_later_one(self):
         ledger = self.redrivable_entry()
         ledger.update("k1", {"redrivable": False})
