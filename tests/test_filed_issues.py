@@ -313,6 +313,14 @@ class Prompt(unittest.TestCase):
         self.assertIn("at most 3 per review", tools)
         self.assertNotIn("file_issue", trusted_turn.tool_instructions("fixer"))
 
+    def test_the_tool_text_asks_for_a_type_label_only_when_the_list_has_one(self):
+        """#1462: the broker requires no type label from a priorities-only list, so the tool
+        text must not ask for one unconditionally."""
+        from diaktoros import trusted_turn
+        tools = " ".join(trusted_turn.tool_instructions("reviewer").split())
+        self.assertNotIn("otherwise one type label and one priority label", tools)
+        self.assertIn("when the list has a type label", tools)
+
 
 class ClientBounds(unittest.TestCase):
     """The sandbox client refuses a bad title or body before it sends anything, so the turn's one
