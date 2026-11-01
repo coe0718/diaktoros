@@ -981,8 +981,8 @@ def report_text(data: dict) -> str:
     out = [f"{data['repo']} (loop {data['loop']}) · {_day(data['since'])} → "
            f"{_day(data['until'])} ({days:.1f} days)"]
     if data.get("operator_agents"):
-        out.append("operator agents (post as the operator's account; steps counted apart as "
-                   "\"agent hold\"): " + ", ".join(data["operator_agents"]))
+        out.append("operator agents (post as the operator's account; issue-fix steps counted "
+                   "apart as \"agent hold\"): " + ", ".join(data["operator_agents"]))
     reviews = data["reviews"]
     if reviews is None:
         return "\n".join(out + ["no run ledger yet"])
