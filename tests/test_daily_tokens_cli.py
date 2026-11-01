@@ -10,7 +10,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros import cli, config  # noqa: E402
-from diaktoros.cli import install as cli_install  # noqa: E402
+from diaktoros.cli import setup_command as cli_setup  # noqa: E402
 from test_init_concurrency import Base, LOOP_FILE, LOOP_ID  # noqa: E402
 
 
@@ -78,7 +78,7 @@ class DailyTokensCli(Base):
         args = t.parser_for({}).parse_args(
             ["setup", "--repo", t.REPO, "--yes", "--reviewer-daily-tokens", "11",
              "--fixer-daily-tokens", "22"])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn("--reviewer-daily-tokens=11", argv)
         self.assertIn("--fixer-daily-tokens=22", argv)
 

@@ -21,7 +21,7 @@ import test_ci_gate as cg  # noqa: E402
 import test_seat_models as sm  # noqa: E402
 from diaktoros import ci, cli, config, observer  # noqa: E402
 from diaktoros.config import lists  # noqa: E402
-from diaktoros.cli import install as cli_install  # noqa: E402
+from diaktoros.cli import setup_command as cli_setup  # noqa: E402
 from diaktoros.run_supervisor import CI_HOLD  # noqa: E402
 
 REQUIRED = ["tests (3.11)", "test (ubuntu-24.04, 3.11)"]
@@ -220,11 +220,11 @@ class Cli(unittest.TestCase):
     def test_setup_hands_init_each_name(self):
         args = t.parser_for({"required_checks": "tests (3.11), test (ubuntu-24.04, 3.11)"}
                             ).parse_args(["setup", "--repo", t.REPO])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn("--required-check=tests (3.11)", argv)
         self.assertIn("--required-check=test (ubuntu-24.04, 3.11)", argv)
         args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--required-check", "lint"])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertEqual([a for a in argv if a.startswith("--required-check")],
                          ["--required-check=lint"])
 

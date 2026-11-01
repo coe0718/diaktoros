@@ -11,7 +11,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros import config  # noqa: E402
 from diaktoros.config import lists  # noqa: E402
-from diaktoros.cli import install as cli_install  # noqa: E402
+from diaktoros.cli import setup_command as cli_setup  # noqa: E402
 from test_init_concurrency import Base, LOOP_FILE, LOOP_ID  # noqa: E402
 
 
@@ -62,7 +62,7 @@ class MergeCheckCli(Base):
     def test_setup_hands_init_the_mode(self):
         args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--yes",
                                             "--merge-check", "off"])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn("--merge-check=off", argv)
 
     def test_show_says_what_auto_means_here(self):

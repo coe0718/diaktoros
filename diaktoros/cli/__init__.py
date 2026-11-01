@@ -46,6 +46,7 @@ from . import apply_command
 from . import identity_command
 from . import set_parser
 from . import settings as cli_settings
+from . import setup_command as cli_setup
 from . import triage_command
 from . import update as cli_update
 from ..util import logged
@@ -73,7 +74,8 @@ from .checks import (
     cmd_doctor,
     cmd_selftest,
 )  # noqa: F401
-from .install import cmd_init, cmd_setup  # noqa: F401
+from .install import cmd_init  # noqa: F401
+from .setup_command import cmd_setup  # noqa: F401
 from .update import cmd_update  # noqa: F401
 from .lifecycle import (
     cmd_backup,
@@ -161,7 +163,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         parser.set_defaults(func=_usage)
         cli_operations.add_list(sub)
         cli_install.add_init(sub, d, both)
-        cli_install.add_setup(sub)
+        cli_setup.add_setup(sub)
         cli_operations.add_status(sub)
         cli_reports.add_stats(sub)
         cli_reports.add_report(sub)

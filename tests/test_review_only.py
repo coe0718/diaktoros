@@ -35,7 +35,7 @@ from diaktoros import (
 )
 from diaktoros import watch_mode  # noqa: E402
 from diaktoros.cli import operations as cli_operations  # noqa: E402
-from diaktoros.cli import install as cli_install  # noqa: E402
+from diaktoros.cli import setup_command as cli_setup  # noqa: E402
 from scripts import gate_fixer, gate_reviewer, watchdog  # noqa: E402
 
 HEAD = fg.HEAD
@@ -570,17 +570,17 @@ class Cli(unittest.TestCase):
     def test_setup_hands_init_the_limits(self):
         args = t.parser_for({"review_only_cap": "4"}).parse_args(
             ["setup", "--repo", t.REPO, "--review-only-daily", "6"])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn("--review-only-daily=6", argv)
 
     def test_setup_hands_init_each_name(self):
         args = t.parser_for({"review_only": "owner-human, other"}
                             ).parse_args(["setup", "--repo", t.REPO])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn(f"--review-only={OWNER}", argv)
         self.assertIn("--review-only=other", argv)
         args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--review-only", "solo"])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertEqual([a for a in argv if a.startswith("--review-only")],
                          ["--review-only=solo"])
 

@@ -276,9 +276,9 @@ class Setup(unittest.TestCase):
 
     def test_the_merge_check_step_runs_after_the_checks_and_before_arming(self):
         # #1163 M2c: step 5 offers the loop's ruleset; it never stops setup.
-        from diaktoros.cli import install as cli_install
+        from diaktoros.cli import setup_command as cli_setup
         seen = []
-        with patch.object(cli_install, "_setup_merge_check",
+        with patch.object(cli_setup, "_setup_merge_check",
                           side_effect=lambda args, loop, admin, interactive: (
                               self.ran.append("merge-check"),
                               seen.append((args.protect, loop["id"], interactive)))):

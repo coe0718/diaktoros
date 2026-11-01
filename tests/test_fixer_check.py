@@ -22,7 +22,7 @@ from diaktoros.config import settings_form  # noqa: E402
 from diaktoros import cli, config, prompts  # noqa: E402
 from diaktoros.run_supervisor import issue_inputs  # noqa: E402
 from diaktoros.config import lists  # noqa: E402
-from diaktoros.cli import install as cli_install  # noqa: E402
+from diaktoros.cli import setup_command as cli_setup  # noqa: E402
 
 CHECK = 'python3 -m unittest discover -s tests -p "test_home_guard.py" && echo "${HOME}"'
 
@@ -178,11 +178,11 @@ class Cli(unittest.TestCase):
     def test_setup_hands_init_the_check(self):
         args = t.parser_for({"fixer_check": "make lint"}).parse_args(
             ["setup", "--repo", t.REPO, "--yes"])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn("--fixer-check=make lint", argv)
         args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--yes",
                                             "--fixer-check", CHECK])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn(f"--fixer-check={CHECK}", argv)
 
 

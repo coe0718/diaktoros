@@ -15,7 +15,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from diaktoros import ci, config, doctor, gh, protection  # noqa: E402
 from diaktoros.doctor import identity_checks  # noqa: E402
-from diaktoros.cli import checks as cli_checks, install as cli_install  # noqa: E402
+from diaktoros.cli import checks as cli_checks, setup_command as cli_setup  # noqa: E402
 
 APP = 5416187
 
@@ -301,7 +301,7 @@ class Setup(Fake):
     def step(self, loop, protect=False, interactive=False, answer="n"):
         out = io.StringIO()
         with contextlib.redirect_stdout(out), mock.patch("builtins.input", return_value=answer):
-            cli_install._setup_merge_check(argparse.Namespace(protect=protect), loop, "admin",
+            cli_setup._setup_merge_check(argparse.Namespace(protect=protect), loop, "admin",
                                            interactive)
         return out.getvalue()
 

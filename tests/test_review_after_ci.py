@@ -22,7 +22,7 @@ import run_tests as t  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 import test_seat_models as sm  # noqa: E402
 from diaktoros import ci, cli, config, ledger, observer, run_supervisor  # noqa: E402
-from diaktoros.cli import install as cli_install  # noqa: E402
+from diaktoros.cli import setup_command as cli_setup  # noqa: E402
 from diaktoros.run_supervisor import CI_HOLD, Supervisor  # noqa: E402
 
 RUNNING = ci.CIState(pending=["tests (3.11)"], passed=["lint"])
@@ -293,14 +293,14 @@ class Cli(unittest.TestCase):
 
     def test_setup_hands_init_the_answer(self):
         args = t.parser_for({"review_after_ci": True}).parse_args(["setup", "--repo", t.REPO])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn("--review-after-ci=on", argv)
         args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO,
                                             "--review-after-ci", "on"])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn("--review-after-ci=on", argv)
         args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO])
-        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn("--review-after-ci=off", argv)
 
 
@@ -342,7 +342,7 @@ class FixCi(Cli):
         for settings, flags, want in (({"fix_ci": True}, [], "on"), ({}, ["--fix-ci", "on"], "on"),
                                       ({}, [], "off")):
             args = t.parser_for(settings).parse_args(["setup", "--repo", t.REPO, *flags])
-            argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+            argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
             self.assertIn(f"--fix-ci={want}", argv)
 
     def test_doctor_names_state_and_push_mismatch(self):
