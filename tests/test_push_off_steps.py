@@ -2,8 +2,11 @@
 
 1. A queued push-off hold: enabling pushes, then the sweep or a drain, starts the run.
 2. A fixer turn that already started (a lock, an in-flight mark, a ledger turn): it cannot
-   publish. The worker cancels it before launch, or the broker refuses its push; once pushes are
-   on, ``hermes dk retry`` re-arms it. At a spent cap too: it is no "the fixer pushes a fix".
+   publish. The worker cancels it before launch, or the broker refuses its push. Once pushes are
+   on, a turn with a run in the ledger that ``retry`` offers is re-armed by ``hermes dk retry``;
+   a lock or in-flight mark with no run behind it has nothing to retry, so the changes-requested
+   review is re-delivered to the fixer gate (or ``hermes dk escalate`` at a spent cap). At a spent
+   cap too: it is no "the fixer pushes a fix".
 3. No work order at all: nothing starts one by itself, so after enabling the verdict is
    re-delivered to the fixer gate.
 
