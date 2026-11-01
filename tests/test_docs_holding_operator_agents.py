@@ -28,6 +28,21 @@ class HoldingSectionNamesOperatorAgents(unittest.TestCase):
         self.assertIn("neither `triage.maintainers`", text)
         self.assertIn("nor `operator_agents`", text)
 
+    def test_agent_hold_in_the_report_is_qualified(self):
+        # #1587: the report counts operator steps only for issue-fix PRs proposed in its window.
+        text = section()
+        self.assertIn("issue-fix PRs", text)
+        self.assertIn("in the report's window", text)
+        self.assertIn("is not in the report", text)
+        self.assertIn("observer.weekly_report", text)
+
+    def test_other_docs_qualify_the_agent_hold_too(self):
+        for name in ("accounts.md", "configuration.md"):
+            text = " ".join((ROOT / "docs" / name).read_text().split())
+            self.assertIn("issue-fix PRs proposed in the report's window"
+                          if name == "configuration.md"
+                          else "issue-fix PR proposed in the report's window", text, name)
+
 
 if __name__ == "__main__":
     unittest.main()

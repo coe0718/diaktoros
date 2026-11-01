@@ -446,8 +446,14 @@ watchdog reports no stall for it. A hold that cannot be read is treated as held.
 
 It cannot fire on a loop with neither `triage.maintainers` (set with or without
 `triage.fix_label`) nor `operator_agents`: nobody there is allowed to hold. A loop with only
-`operator_agents` can hold; those holds show as `agent hold` in the weekly report. The hold is read at claim time and by the watchdog sweep,
+`operator_agents` can hold. The hold is read at claim time and by the watchdog sweep,
 so it needs the read token to see issue events and comments.
+
+An operator agent's hold is recorded as `agent hold` (a person's is `hold`), but the weekly report
+shows it only in its "operator steps" count for issue-fix PRs: the steps on PRs the issue fixer
+proposed in the report's window, taken after the proposal. A hold on any other PR is recorded and
+is not in the report. The report also has to exist: `hermes dk report` prints it on demand, and the
+watchdog sends it to the observer feed only with `observer.weekly_report` set (and a feed).
 
 ## When a gate crashes or runs out of time
 
