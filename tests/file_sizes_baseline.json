@@ -100,12 +100,12 @@
     "diaktoros/stats.py::report_text": 147,
     "diaktoros/trusted_turn.py::_export_committed_source": 108,
     "diaktoros/trusted_turn.py::run_turn": 288,
+    "diaktoros/watch_conflicts.py::act_on_conflicts": 108,
     "diaktoros/watch_health.py::read_health": 93,
+    "diaktoros/watch_stacked.py::reconcile_stacked": 106,
     "scripts/gate_fixer.py::main": 323,
     "scripts/gate_reviewer.py::decide": 237,
-    "scripts/watchdog.py::_sweep_loop_locked": 578,
-    "scripts/watchdog.py::act_on_conflicts": 108,
-    "scripts/watchdog.py::reconcile_stacked": 106,
-    "scripts/watchdog.py::run": 82
+    "scripts/watchdog.py::_sweep_loop_locked": 580,
+    "scripts/watchdog.py::run": 83
   }
 }

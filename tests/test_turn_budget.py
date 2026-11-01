@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 from diaktoros import (broker_ipc, cli, config, doctor, explain, gate, gh,  # noqa: E402
                          run_supervisor, seat_model, selftest, trusted_turn)
+from diaktoros import watch_stacked  # noqa: E402
 from diaktoros import watch_health  # noqa: E402
 from diaktoros import watch_mode  # noqa: E402
 from diaktoros.run_supervisor import claims  # noqa: E402
@@ -403,8 +404,8 @@ class MarkerGraceFollowsTheRuling(unittest.TestCase):
              mock.patch.object(watch_health, "github_health", return_value=[]), \
              mock.patch.object(wd.route_intent, "heal", return_value=[]), \
              mock.patch.object(wd.gate, "resume_isolated", return_value=False), \
-             mock.patch.object(wd, "reconcile_stacked"), \
-             mock.patch.object(wd, "retry_fresh_reviews"), \
+             mock.patch.object(watch_stacked, "reconcile_stacked"), \
+             mock.patch.object(watch_stacked, "retry_fresh_reviews"), \
              mock.patch.object(wd, "retry_pending_breaches"), \
              mock.patch.object(wd, "drain_queued"), \
              mock.patch.object(wd.observer, "notify"), \
@@ -554,8 +555,8 @@ class PerSeatClocks(unittest.TestCase):
                  mock.patch.object(watch_health, "github_health", return_value=[]), \
                  mock.patch.object(wd.route_intent, "heal", return_value=[]), \
                  mock.patch.object(wd.gate, "resume_isolated", return_value=False), \
-                 mock.patch.object(wd, "reconcile_stacked"), \
-                 mock.patch.object(wd, "retry_fresh_reviews"), \
+                 mock.patch.object(watch_stacked, "reconcile_stacked"), \
+                 mock.patch.object(watch_stacked, "retry_fresh_reviews"), \
                  mock.patch.object(wd, "retry_pending_breaches"), \
                  mock.patch.object(wd, "drain_queued"), \
                  mock.patch.object(wd.observer, "notify"), \

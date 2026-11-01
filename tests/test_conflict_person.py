@@ -12,6 +12,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import conflict_person, gate  # noqa: E402
+from diaktoros import watch_conflicts  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
 HEAD = fg.HEAD
@@ -20,12 +21,12 @@ TIP = "d" * 40
 
 class Requeue(fg.Base):
     def act(self):
-        with mock.patch.object(watchdog, "base_tip", return_value=TIP), \
+        with mock.patch.object(watch_conflicts, "base_tip", return_value=TIP), \
                 mock.patch.object(watchdog.config, "unattended_fixer_push_enabled",
                                   return_value=True), \
                 mock.patch.object(gate, "enqueue_isolated", return_value="enqueued") as enqueue, \
                 mock.patch.object(watchdog.observer, "notify"):
-            watchdog.act_on_conflicts(self.loop, self.st, [(7, HEAD, "b" * 40, "fixer")], {})
+            watch_conflicts.act_on_conflicts(self.loop, self.st, [(7, HEAD, "b" * 40, "fixer")], {})
         return enqueue
 
     def test_a_recorded_head_is_not_requeued_when_the_base_moves(self):
