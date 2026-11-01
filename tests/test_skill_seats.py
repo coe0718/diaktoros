@@ -35,6 +35,13 @@ class SeatSections(unittest.TestCase):
             with self.subTest(needle=needle):
                 self.assertIn(needle, text)
 
+    def test_shadow_section_separates_automatic_retry_from_the_operators_manual_one(self):
+        # A failed shadow is never retried automatically, but `retry --seat shadow` re-arms it.
+        text = " ".join(section("shadow").split())
+        self.assertIn("not retried automatically", text)
+        self.assertIn("hermes dk retry --loop LOOP --pr N --seat shadow", text)
+        self.assertNotIn("is not retried.", text)
+
 
 if __name__ == "__main__":
     unittest.main()

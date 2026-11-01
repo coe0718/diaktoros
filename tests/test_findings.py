@@ -238,5 +238,33 @@ class CitationTokens(unittest.TestCase):
         self.assertFalse(findings._cited("check tests (3.11) fails", {}, ["verticals"]))
 
 
+class CappedCompareFallback(unittest.TestCase):
+    """The capped-compare fallback is the PR's file listing, which GitHub itself cuts (#1399)."""
+    LOOP = {"repo": "acme/w", "id": "l", "base": "main"}
+
+    def changed(self, compare, listing):
+        from diaktoros import gh
+        with mock.patch.object(gh, "api", return_value={"files": compare}), \
+                mock.patch.object(gh, "pr_files_read", return_value=(listing, "")):
+            return findings.changed_files(self.LOOP, 7, H1, H2)
+
+    def test_a_capped_compare_falls_back_to_the_pr_listing(self):
+        compare = [{"filename": f"c{i}.py"} for i in range(findings.COMPARE_FILES_CAP)]
+        got = self.changed(compare, [{"filename": "only_in_listing.py"}])
+        self.assertEqual(got, {"only_in_listing.py"})
+
+    def test_a_listing_at_githubs_limit_is_a_prefix_and_the_docs_say_so(self):
+        from diaktoros import gh
+        listing = [{"filename": f"f{i}.py"} for i in range(gh.PR_FILES_LISTING_LIMIT)]
+        compare = [{"filename": f"c{i}.py"} for i in range(findings.COMPARE_FILES_CAP)]
+        got = self.changed(compare, listing)
+        self.assertEqual(len(got), gh.PR_FILES_LISTING_LIMIT)
+        self.assertNotIn("f3000.py", got)
+        # The fallback is only complete up to that limit; the docstring and the docs must say so.
+        self.assertIn("3,000-file limit", " ".join(findings.changed_files.__doc__.split()))
+        text = " ".join((ROOT / "docs" / "concepts.md").read_text().split())
+        self.assertIn("GitHub's own limit of 3,000 files in a PR's file listing", text)
+
+
 if __name__ == "__main__":
     unittest.main()

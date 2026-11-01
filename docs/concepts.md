@@ -14,15 +14,15 @@ The plugin reviews eligible GitHub PRs with an isolated reviewer. If you opt int
 | --- | --- | --- |
 | Loop | One repository's configuration and state, named by an id | Commands select it with `--loop ID`; default id is the repository name |
 | Seat | An agent role with a bounded capability | A seat is not the reader or a notification destination |
-| GitHub login | Account a seat's writes appear under | Distinct reviewer/fixer logins and mapped token files are required |
+| GitHub login | Account a seat's writes appear under | Distinct reviewer/fixer logins are required, each with its own credential: a mapped PAT file, or a GitHub App's private key ([GitHub Apps](github-apps.md)) |
 | Hermes profile | Host-side model/provider configuration and authentication | Reviewer/fixer profiles and actual homes must differ; a profile name does not create a GitHub account or a separate subscription |
 | Agent display name | `seats.<seat>.agent`, a prompt/attribution label | It grants no permissions and is not the account identity |
-| Reader | Explicit `read_token` login for trusted GitHub reads | Must be a third account/file, not inferred from the first mapping |
-| Hook admin | Login whose mapped token manages repo hooks | Defaults to reader for hook-editing commands; not an additional mandatory seat |
+| Reader | Explicit `read_token` login for trusted GitHub reads | Must be a third account with its own credential file (PAT or App key), not inferred from the first mapping |
+| Hook admin | Login whose mapped credential (a PAT, or an App's key) manages repo hooks | Defaults to reader for hook-editing commands; not an additional mandatory seat |
 | Allowlists | `fixers` and `reviewers` GitHub logins | Limit eligible authors/events and reviews that count; seat logins must belong to the corresponding list |
-| Token file | One account's private PAT file; config stores its path | Contents remain on the trusted host, not in the agent's environment |
+| Token file | One account's private PAT file; config stores its path | Contents remain on the trusted host, not in the agent's environment. An App identity has a private key file instead, never a token file; a loop made only of Apps needs no PAT files |
 
-The **four-identity rule** requires reader, reviewer, fixer and optional adjudicator comment login to resolve to distinct GitHub accounts with distinct files. Without an adjudicator comment login, three suffice. Offline checks compare names/files; `selftest` and broker authorization resolve actual principals. Different filenames containing tokens for one account do not satisfy the rule.
+The **four-identity rule** requires reader, reviewer, fixer and optional adjudicator comment login to resolve to distinct GitHub accounts with distinct credential files (a PAT file or an App's private key). Without an adjudicator comment login, three suffice. Offline checks compare names/files; `selftest` and broker authorization resolve actual principals. Different filenames containing tokens for one account do not satisfy the rule.
 
 Distinct models are a useful review strategy, but source validation requires distinct profiles/homes and GitHub identities, not distinct model ids. [Accounts](accounts.md) covers repository access and permissions.
 
@@ -101,9 +101,11 @@ The broker enforces these rules before it spends the review write (#475):
 - At a later head, a new finding must cite a file changed in that round (the host compares the
   previous head with this one), or say `missed earlier`; the report counts those against the
   reviewer. GitHub cuts a compare's file list at 300 files without saying so, so a list that
-  reaches 300 is not trusted: the PR's files against base count as changed that round. A
-  file the round reverted to base is not among them, so a new finding citing it is still
-  refused (it can say `missed earlier`).
+  reaches 300 is not trusted: the PR's files against base count as changed that round, up to
+  GitHub's own limit of 3,000 files in a PR's file listing (a PR past it lists only its first
+  3,000, so a new finding citing a file beyond them is refused too). A file the round
+  reverted to base is not among them, so a new finding citing it is still refused (it can
+  say `missed earlier`).
 - An `APPROVE` is refused while any finding is open (not `fixed`/`withdrawn`) and while the
   review raises a new one. Mark them fixed or withdrawn, or request changes.
 - A state for an id that was never recorded is refused, as is restating a known id as a new
@@ -194,7 +196,7 @@ Paths below assume `HERMES_HOME=~/.hermes`; configuration describes supported ov
 | Runtime | `~/.hermes/diaktoros-runtime.json`; private host directories, not the basic model selection |
 | Per-loop state | `~/.hermes/state/diaktoros/<id>/`; queues, locks, markers, audits, route intent, artifacts |
 | Run ledger | `~/.hermes/state/diaktoros-runs.sqlite`; shared isolated-run state |
-| Credentials | Private absolute PAT files, conventionally `~/.hermes/keys/<login>-pat`; host only |
+| Credentials | Private absolute PAT files, conventionally `~/.hermes/keys/<login>-pat`, or GitHub App private keys (mode 600); host only |
 | Serving-profile scripts | Gate shims in the corresponding profile's `scripts/` directory |
 | Watchdog shim | `~/.hermes/scripts/diaktoros-watchdog.py`; shared cron entry calls it |
 
