@@ -19,6 +19,7 @@ import test_conflict_speed as cs  # noqa: E402
 import test_doctor_environment  # noqa: E402
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import config, doctor, gate, gh, review_only_conflict, safe_push  # noqa: E402
+from diaktoros import watch_conflicts  # noqa: E402
 
 OWNER_PR = {**fg.LIVE, "user": {"login": "owner"},
             "head": {"sha": fg.HEAD, "ref": "feat", "repo": {"full_name": fg.REPO}}}
@@ -55,7 +56,8 @@ class Cache(fg.Base):
         patches = cs.Detection.patches(self, [], prs=[live])[2]
         patches = [p for p in patches if getattr(p, "attribute", "") not in ("pr", "base_tip")]
         patches += [mock.patch.object(gh, "pr", side_effect=lambda *a, **k: live),
-                    mock.patch.object(watchdog, "base_tip", side_effect=lambda loop: self.tip),
+                    mock.patch.object(watch_conflicts, "base_tip",
+                                      side_effect=lambda loop: self.tip),
                     mock.patch.object(watchdog.observer, "notify", self.notify),
                     mock.patch.object(gate, "enqueue_isolated", return_value="queued")]
         for patch in patches:

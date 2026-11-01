@@ -1,10 +1,11 @@
 """The watchdog split (#1349): each moved group lives in one module, with one binding.
 
 ``scripts/watchdog.py`` is the sweep; the groups that move out become ``diaktoros`` modules
-(``watch_mode`` — the test mode and clocks every piece reads — and ``watch_health`` first). A
-moved name must not stay reachable through the watchdog (a test patching ``watchdog.TEST``
-would then miss every moved reader), and nothing imports a moved name by itself: ``TEST`` copied
-into another module is exactly the binding a patch never reaches.
+(``watch_mode`` — the test mode and clocks every piece reads — then ``watch_health``,
+``watch_conflicts`` and ``watch_stacked``). A moved name must not stay reachable through the
+watchdog (a test patching ``watchdog.TEST`` would then miss every moved reader), and nothing
+imports a moved name by itself: ``TEST`` copied into another module is exactly the binding a
+patch never reaches.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import watch_mode  # noqa: E402
 
-MODULES = ("watch_mode", "watch_health")
+MODULES = ("watch_mode", "watch_health", "watch_conflicts", "watch_stacked")
 WATCHDOG = ROOT / "scripts" / "watchdog.py"
 
 

@@ -32,9 +32,7 @@ sweep also warns before the read token's expiry date.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import fcntl
-import json
 import os
 import pathlib
 import re
@@ -43,7 +41,6 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from diaktoros import review_only_conflict  # noqa: E402
 from diaktoros import conflict_person  # noqa: E402
 from diaktoros import escalate_pending  # noqa: E402
 from diaktoros import merge_check  # noqa: E402
@@ -66,13 +63,14 @@ from diaktoros import (  # noqa: E402
     route_intent,
     routes,
     run_supervisor,
-    situation,
     stale_approval,
     state as state_mod,
     transition,
     triage_sweep,
+    watch_conflicts,
     watch_health,
     watch_mode,
+    watch_stacked,
 )
 from diaktoros.util import age_min, epoch, log, now_iso  # noqa: E402
 
@@ -129,322 +127,6 @@ def drain_queued(loop: dict, st: state_mod.LoopState, lines: list[str]) -> None:
     for seat in ("reviewer", "fixer"):
         if drain(loop, st, seat, quiet=True):
             lines.append(f"started the queued {seat} run whose wait was over")
-
-
-def reconcile_stacked(loop: dict, st: state_mod.LoopState, watch: dict,
-                      prs: list[dict], lines: list[str]) -> None:
-    """Separate visibility queue; never a seat authorization or drain input."""
-    previous = watch.get("stacked_wait")
-    pending = dict(previous) if isinstance(previous, dict) else {}
-    listed = set()
-    for pr in prs:
-        if not isinstance(pr, dict) or pr.get("state") != "open":
-            continue
-        number = pr.get("number")
-        if type(number) is not int or number <= 0:
-            continue
-        key = str(number)
-        base = (pr.get("base") or {}).get("ref")
-        prior_head = (watch.get("heads") or {}).get(key)
-        # A draft-only sweep can have removed the visibility entry while retaining
-        # its stacked head observation. Restore that boundary before reconciling.
-        if (base == loop["base"] and key not in pending and isinstance(prior_head, dict)
-                and prior_head.get("base") not in (None, loop["base"])):
-            pending[key] = {"head": prior_head.get("sha"), "base": prior_head["base"]}
-        # Drafts are not scheduling candidates, but an observed stacked child
-        # can be retargeted while draft. Quarantine before skipping draft work.
-        if pr.get("draft") and not (key in pending and base == loop["base"]):
-            continue
-        listed.add(key)
-        if (not base or base == loop["base"] or
-                ((pr.get("user") or {}).get("login") or "").lower() not in loop["fixers"]):
-            if key in pending:
-                if base == loop["base"]:
-                    live = gh.pr(loop, number)
-                    if (not isinstance(live, dict) or live.get("number") != number
-                            or live.get("state") != "open" or
-                            (live.get("head") or {}).get("sha") != (pr.get("head") or {}).get("sha") or
-                            (live.get("base") or {}).get("ref") != base or
-                            (live.get("base") or {}).get("sha") != (pr.get("base") or {}).get("sha")):
-                        continue
-                    entry = transition.record(loop, st, number, (pr.get("head") or {}).get("sha"),
-                                              base, watch=watch)
-                    if entry:
-                        # Owner policy (#23): the parent merged and the child is on trunk
-                        # now, so start a fresh review situation — one isolated reviewer
-                        # turn. Nothing from before the boundary carries over.
-                        status, detail = transition.start_fresh_review(loop, st, number, live=live)
-                        next_turn = {"enqueued": "reviewer queued (fresh review)",
-                                     "retry": "fresh reviewer enqueue retries next sweep"}.get(
-                                         status, "you")
-                        lines.append(f"#{number} retargeted to {base} at the same head — old "
-                                     "reviews, rounds and queued work quarantined; fresh review: "
-                                     f"{status} ({detail})")
-                        observer.notify(loop, st, "stall", number, entry["head"],
-                                        identity=f"retarget:{entry['head']}",
-                                        outcome="old same-head reviews quarantined; fresh review "
-                                        f"{status}", next_turn=next_turn)
-                # A retarget is not permission to reinterpret a previous seat request
-                # for the same child SHA as a trunk request.
-                for seat in ("reviewer", "fixer"):
-                    st.queue_pop_head(seat, f"{loop['repo']}#{number}", pending[key].get("head"))
-                pending.pop(key)
-            continue
-        resolution = situation.resolve(loop, number, listing=prs)
-        head = (pr.get("head") or {}).get("sha")
-        base_sha = (pr.get("base") or {}).get("sha")
-        if (resolution.status == "eligible" or
-                resolution.identity and (resolution.identity.head_sha != head or
-                                         resolution.identity.base_ref != base or
-                                         resolution.identity.base_sha != base_sha)):
-            # Individual read disagrees with the listing; retry next sweep.
-            continue
-        branch_heads = []
-        ref, visited = base, set()
-        for _ in range(situation.MAX_PARENT_DEPTH):
-            if ref in visited or ref == loop["base"]:
-                break
-            visited.add(ref)
-            matches = [p for p in prs if isinstance(p, dict) and
-                       isinstance(p.get("head"), dict) and p["head"].get("ref") == ref]
-            branch_heads.append(sorted(
-                [(p.get("number"), p["head"].get("sha"),
-                  (p.get("base") or {}).get("ref"), (p.get("base") or {}).get("sha"),
-                  p.get("state")) for p in matches], key=lambda item: str(item)))
-            if len(matches) != 1:
-                break
-            ref = (matches[0].get("base") or {}).get("ref")
-        generation = hashlib.sha256(json.dumps(
-            [head, base, base_sha, branch_heads, resolution.status, resolution.reason,
-             resolution.identity.key if resolution.identity else ""],
-            separators=(",", ":")).encode()).hexdigest()
-        if (pending.get(key) or {}).get("generation") == generation:
-            continue
-        pending[key] = {"head": head, "base": base, "base_sha": base_sha,
-                        "generation": generation, "status": resolution.status,
-                        "reason": resolution.reason, "parents": list(resolution.parents),
-                        "identity": resolution.identity.key if resolution.identity else "",
-                        "at": time.time()}
-        lines.append(f"#{number} stacked {resolution.status}: {resolution.reason} "
-                     "— visibility queue only; no reviewer run authorized")
-        observer.notify(loop, st, "stall", number, head or "", identity=f"stacked:{generation}",
-                        outcome=f"stacked {resolution.status}: {resolution.reason}", next_turn="you")
-    watch["stacked_wait"] = {k: v for k, v in pending.items() if k in listed}
-
-def retry_fresh_reviews(loop: dict, st: state_mod.LoopState, prs: list, lines: list[str],
-                        since: float = 0.0) -> None:
-    """Re-drive a transition's fresh reviewer turn that is not durably enqueued yet.
-
-    Covers a failed enqueue (missing runtime, ledger or spawn failure) and a child that was
-    still a draft when retargeted. Each attempt re-reads the live PR; the turn key keeps a
-    success idempotent, and a failure stays visible here until one succeeds.
-    """
-    for pr in prs:
-        if not isinstance(pr, dict) or pr.get("state") != "open" or pr.get("draft"):
-            continue
-        if (pr.get("base") or {}).get("ref") != loop["base"]:
-            continue
-        number = pr.get("number")
-        head = (pr.get("head") or {}).get("sha")
-        if type(number) is not int or not head:
-            continue
-        entry = transition.hold(st, number, head)
-        if entry is None or transition.baseline_missing(entry):
-            continue
-        fresh = entry.get("fresh_review")
-        if isinstance(fresh, dict) and (fresh.get("state") == "enqueued" or (
-                isinstance(fresh.get("at"), (int, float)) and fresh["at"] >= since)):
-            continue  # done, or already attempted (and reported) earlier in this sweep
-        status, detail = transition.start_fresh_review(loop, st, number)
-        if status == "retry":
-            lines.append(f"⚠️ #{number} fresh review after retarget not enqueued: {detail} "
-                         "— retrying next sweep")
-        elif status == "enqueued":
-            lines.append(f"#{number} fresh review after retarget enqueued ({detail})")
-
-
-# GitHub computes a PR's mergeability lazily: the first read after its base moves usually
-# answers null/"unknown" and starts the computation. One short wait, then one re-read.
-MERGEABILITY_WAIT_S = 5.0
-
-
-def mergeability(loop: dict, live, head: str, author: str) -> str:
-    """``conflict``, ``unknown`` (GitHub has not computed it yet) or ``""`` for a loop PR read
-    live at ``head``. A review-only PR that merely fell behind counts as a conflict too, when
-    the host may update it."""
-    if not isinstance(live, dict) or (live.get("head") or {}).get("sha") != head:
-        return ""
-    stale = ("dirty", "behind") if (author in config.review_only(loop)
-                                    and config.review_only_update(loop)) else ("dirty",)
-    if live.get("mergeable_state") in stale:
-        return "conflict"
-    if live.get("mergeable") is None or live.get("mergeable_state") in (None, "unknown"):
-        return "unknown"
-    return ""
-
-
-def recheck_unknown(loop: dict, unknown: list[tuple[int, str, str]],
-                    conflict_live: dict[int, dict]) -> list[tuple[int, str, str, str]]:
-    """Re-read, once and after one shared wait, the PRs whose mergeability was not computed yet:
-    otherwise a conflict a merge just caused waits for the next sweep."""
-    if not unknown:
-        return []
-    if not watch_mode.TEST:
-        time.sleep(MERGEABILITY_WAIT_S)
-    found = []
-    for number, head, author in unknown:
-        live = gh.pr(loop, number)
-        if mergeability(loop, live, head, author) == "conflict":
-            found.append((number, head, str((live.get("base") or {}).get("sha") or ""), author))
-            conflict_live[number] = live
-    return found
-
-
-def act_on_conflicts(loop: dict, st: state_mod.LoopState,
-                     conflicts: list[tuple[int, str, str, str]],
-                     conflict_live: dict[int, dict]) -> None:
-    """Queue a conflict turn and say each conflicted head once (#303). The sweep and the
-    merge-triggered conflict scan share it, so both act the same way; the turn key and the
-    observer's per-head dedup keep a later pass from doing it twice."""
-    resolving = config.unattended_fixer_push_enabled(loop)
-    tip = base_tip(loop) if resolving and conflicts else None
-    for number, head, _pr_base_sha, author in conflicts:
-        # A review-only author's PR (#191) is never the fixer's, a conflict included.
-        review_only = author in config.review_only(loop)
-        # The turn is pinned to the base branch's tip, not the PR's ``base.sha``: GitHub leaves
-        # that at the base commit of the PR's last update, so a conflict a later merge caused
-        # would be merged against a base that never conflicted ("nothing to resolve").
-        base_sha = tip or ""
-        if resolving and not review_only and not base_sha:
-            log(f"#{number} @ {head[:7]} conflict turn not queued: {loop['base']}'s tip "
-                "unreadable (GitHub read failed); the next sweep retries")
-        person = conflict_person.get(st, number, head) if resolving and not review_only else ""
-        if person:
-            # #1154: this head's conflict was already handed to a person; a new base tip does
-            # not change that (a new push does), so no turn and no repeated failure notice.
-            log(f"#{number} @ {head[:7]} conflict needs a person ({person}): not requeued")
-        elif resolving and not review_only and re.fullmatch(r"[0-9a-f]{40}", base_sha):
-            # #303 stage 3: one resolving fixer turn per (head, base); the ledger's turn key
-            # dedups every later sweep. The worker merges and may still hand it to a person
-            # (a whole-file conflict, or workflow changes the fixer's token cannot push).
-            # enqueue_isolated, not block_pr_agent: that one is a gate's and ends the process.
-            from diaktoros.run_supervisor import CONFLICT_KEY
-            try:
-                outcome = gate.enqueue_isolated(loop, "fixer", number, head,
-                                                turn_key=f"{CONFLICT_KEY}{base_sha}")
-                log(f"#{number} @ {head[:7]} conflict with {loop['base']} at {base_sha[:7]}: "
-                    f"fixer {outcome}")
-            except Exception as exc:
-                log(f"#{number} @ {head[:7]} conflict turn at {base_sha[:7]} not queued: "
-                    f"{type(exc).__name__}: {exc}")
-        next_review_only = ""
-        if review_only:
-            # The cause, the files and the commands (a dry merge on the host, nothing pushed);
-            # with review_only_update on, a clean merge is pushed first, once, under a lease.
-            tried = ""
-            try:
-                # The dry merge, and an attempt that stopped, are kept per (head, base tip): a
-                # sweep that sees the same pair again reads them instead of fetching (#504).
-                key = (number, head, tip or base_tip(loop) or "", config.review_only_update(loop))
-                cached = st.review_only_conflict(*key) if key[2] else None
-                if cached:
-                    facts, tried, attempt = cached
-                else:
-                    facts, attempt = review_only_conflict.assess(
-                        loop, number, head, conflict_live.get(number) or {}), True
-                if (conflict_live.get(number) or {}).get("mergeable_state") == "behind" \
-                        and (facts["conflicted"] or facts["error"]):
-                    continue                  # behind, not conflicting: nothing to say
-                pushed = ""
-                # A stop that is not a fact about the pair (pushes off, a broker refusal, a
-                # failed push) keeps the dry merge but is attempted again (shadow on #1151).
-                if attempt:
-                    pushed, tried = review_only_conflict.update(loop, number, head, facts)
-                    if not pushed and key[2] and "clean" in facts:   # the dry merge ran
-                        st.review_only_conflict_set(
-                            *key, facts, tried,
-                            retry=isinstance(tried, review_only_conflict.Retry))
-                if pushed:
-                    log(f"#{number} @ {head[:7]} merged {loop['base']} in: {pushed[:7]}")
-                    observer.notify(loop, st, "updated", number, pushed, identity="updated",
-                                    outcome=f"merged {loop['base']} into #{number} at "
-                                            f"{pushed[:7]}; review resumes",
-                                    next_turn="reviewer: the new head is reviewed as usual")
-                    continue
-                next_review_only = review_only_conflict.message(loop, author, facts, tried)
-            except Exception as exc:
-                log(f"#{number} review-only conflict facts unavailable: "
-                    f"{type(exc).__name__}: {exc}")
-                next_review_only = (f"{author}: merge {loop['base']} into the branch "
-                                    "(review-only — no fixer)")
-            if (conflict_live.get(number) or {}).get("mergeable_state") == "behind":
-                continue                      # behind and the host did not update: no conflict
-        # Keyed by head (the observer dedups on it): a new push that still conflicts is a new
-        # notice, a sweep that sees the same conflicted head again is not.
-        observer.notify(loop, st, "conflict", number, head, identity="conflict",
-                        outcome=f"conflicts with {loop['base']} — GitHub cannot merge it as it is",
-                        next_turn=(next_review_only if review_only else
-                                   f"the fixer will try to merge {loop['base']} into the branch "
-                                   "and resolve it (a whole-file conflict or workflow changes "
-                                   "come back to you)" if resolving else
-                                   f"you: merge {loop['base']} into the branch (unattended fixer "
-                                   "pushes are off, so the loop does not resolve it)"))
-
-
-def scan_conflicts(loop: dict, st: state_mod.LoopState) -> int:
-    """The sweep's conflict step alone, for the scan a merge requests (``conflict_scan``).
-
-    The same PRs as the sweep (reviewed authors, not drafts, on the loop's base, not held), the
-    same detection and the same action. Nothing else: stalls and alerts stay the sweep's,
-    whose output is the one delivered. Returns how many conflicts it acted on.
-    """
-    armed = True if watch_mode.TEST else gate.hooks_read(loop)[0]
-    if armed is not True:
-        log("conflict scan skipped: hooks paused or unreadable")
-        return 0
-    prs = gh.open_prs(loop)
-    if not isinstance(prs, list):
-        log("conflict scan skipped: open PRs could not be listed")
-        return 0
-    conflicts: list[tuple[int, str, str, str]] = []
-    conflict_live: dict[int, dict] = {}
-    unknown: list[tuple[int, str, str]] = []
-    for pr in prs:
-        if (listed := config.loop_pr(loop, pr)) is None:
-            continue
-        number, head, author = listed
-        hold, hold_error = pr_hold.read(loop, number)
-        if hold or hold_error:
-            continue                          # a held or unreadable hold: the sweep's to judge
-        live = gh.pr(loop, number)
-        verdict = mergeability(loop, live, head, author)
-        if verdict == "conflict":
-            conflicts.append((number, head, str((live.get("base") or {}).get("sha") or ""), author))
-            conflict_live[number] = live
-        elif verdict == "unknown":
-            unknown.append((number, head, author))
-    conflicts += recheck_unknown(loop, unknown, conflict_live)
-    act_on_conflicts(loop, st, conflicts, conflict_live)
-    observer.flush(loop, st, wait_s=0 if watch_mode.TEST else observer.digest_wait(loop))
-    log(f"conflict scan: {len(conflicts)} conflicted PR(s) acted on")
-    return len(conflicts)
-
-
-def base_tip(loop: dict) -> str | None:
-    """The base branch's current commit, or None when it cannot be read.
-
-    A conflict turn merges this, not a PR's ``base.sha`` (the base as of the PR's last update).
-    """
-    from urllib.parse import quote
-    ref = gh.api(loop, f"/repos/{loop['repo']}/git/ref/heads/{quote(loop['base'], safe='/')}",
-                 login=loop["read_token"])
-    obj = ref.get("object") if isinstance(ref, dict) else None
-    sha = obj.get("sha") if isinstance(obj, dict) else None
-    if (not isinstance(ref, dict) or ref.get("ref") != f"refs/heads/{loop['base']}"
-            or not isinstance(obj, dict) or obj.get("type") != "commit"
-            or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", sha)):
-        return None
-    return sha.lower()
 
 
 def record_overrides(loop: dict, st) -> None:
@@ -635,8 +317,8 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     except Exception as exc:                  # never let the recovery hide the stall scan
         lines.append(f"⚠️ Diaktoros [{loop['id']}] triage recovery sweep: "
                      f"{type(exc).__name__}: {exc}")
-    reconcile_stacked(loop, st, watch, prs, lines)
-    retry_fresh_reviews(loop, st, prs, lines, since=now)
+    watch_stacked.reconcile_stacked(loop, st, watch, prs, lines)
+    watch_stacked.retry_fresh_reviews(loop, st, prs, lines, since=now)
 
     # A commit's authored/committed date says nothing about when its SHA reached a PR.
     # Snapshot the heads on the first *successful* armed sweep, before any stall evaluation.
@@ -776,7 +458,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         # The listing carries no mergeability, so this is one read of the PR; GitHub computes it
         # lazily, and an unknown answer (null) is simply not a conflict yet.
         live = gh.pr(loop, number)
-        verdict = mergeability(loop, live, head, author)
+        verdict = watch_conflicts.mergeability(loop, live, head, author)
         if verdict == "conflict":
             conflicts.append((number, head, str((live.get("base") or {}).get("sha") or ""), author))
             conflict_live[number] = live
@@ -1041,8 +723,8 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             log(f"#{number}: pending escalation dropped (the PR is closed, or it lapsed)")
     except Exception as exc:
         log(f"pending escalation prune failed: {type(exc).__name__}: {exc}")
-    conflicts += recheck_unknown(loop, unknown, conflict_live)
-    act_on_conflicts(loop, st, conflicts, conflict_live)
+    conflicts += watch_conflicts.recheck_unknown(loop, unknown, conflict_live)
+    watch_conflicts.act_on_conflicts(loop, st, conflicts, conflict_live)
     try:
         # #914: the issues a shadow review asked for, once the real review is in and did not
         # file them (off unless shadow.file_issues; bounded per day).
@@ -1252,7 +934,8 @@ def run(args: argparse.Namespace, budget: float) -> None:
         for loop in loops:
             st = state_mod.state_for(loop)
             # Inside this process's GitHub budget (main's begin_gate), with half left for a scan.
-            conflict_scan.run(st, lambda: scan_conflicts(loop, st), lifetime=budget / 2)
+            conflict_scan.run(st, lambda: watch_conflicts.scan_conflicts(loop, st),
+                              lifetime=budget / 2)
         return
 
     if args.drain:

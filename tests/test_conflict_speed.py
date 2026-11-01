@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import conflict_scan, gate, gh, pr_hold  # noqa: E402
+from diaktoros import watch_conflicts  # noqa: E402
 from diaktoros import watch_mode  # noqa: E402
 
 TIP = "c" * 40
@@ -47,7 +48,7 @@ class Detection(fg.Base):
             mock.patch.object(gh, "pr", side_effect=list(reads)),
             mock.patch.object(gh, "reviews", return_value=[fg.verdict()]),
             mock.patch.object(pr_hold, "read", return_value=hold),
-            mock.patch.object(watchdog, "base_tip", return_value=TIP),
+            mock.patch.object(watch_conflicts, "base_tip", return_value=TIP),
             mock.patch.object(watchdog, "retry_pending_breaches"),
             mock.patch.object(watchdog.routes, "fire"),
             mock.patch.object(watchdog.observer, "notify"),
@@ -78,14 +79,14 @@ class Detection(fg.Base):
 
     def test_the_scan_acts_on_a_conflict_as_the_sweep_does_and_leaves_a_held_pr(self):
         found = []
-        queued = self.run_with(lambda w: found.append(w.scan_conflicts(self.loop, self.st)),
-                               [UNKNOWN, DIRTY])
+        queued = self.run_with(lambda _: found.append(
+            watch_conflicts.scan_conflicts(self.loop, self.st)), [UNKNOWN, DIRTY])
         self.assertEqual(found, [1])
         (call,) = queued.call_args_list
         self.assertEqual((call.args[1:3], call.kwargs["turn_key"].split(":")[-1]),
                          (("fixer", 7), TIP))
-        queued = self.run_with(lambda w: w.scan_conflicts(self.loop, self.st), [DIRTY],
-                               hold=({"by": "boss"}, ""))
+        queued = self.run_with(lambda _: watch_conflicts.scan_conflicts(self.loop, self.st),
+                               [DIRTY], hold=({"by": "boss"}, ""))
         queued.assert_not_called()
 
 
@@ -95,8 +96,8 @@ class ScanFilters(Detection):
 
     def scan(self, prs, reads, **kw):
         found = []
-        queued = self.run_with(lambda w: found.append(w.scan_conflicts(self.loop, self.st)),
-                               reads, prs=prs, **kw)
+        queued = self.run_with(lambda _: found.append(
+            watch_conflicts.scan_conflicts(self.loop, self.st)), reads, prs=prs, **kw)
         return found[0], queued
 
     def test_drafts_strangers_and_other_bases_get_no_turn_and_a_loop_pr_still_does(self):
@@ -121,7 +122,7 @@ class ScanFilters(Detection):
             from scripts import watchdog
             with mock.patch.object(watch_mode, "TEST", True), \
                     mock.patch.object(gh, "pr", side_effect=AssertionError("no PR read")):
-                self.assertEqual(watchdog.scan_conflicts(self.loop, self.st), 0)
+                self.assertEqual(watch_conflicts.scan_conflicts(self.loop, self.st), 0)
 
 
 class Plumbing(fg.Base):
