@@ -293,6 +293,8 @@ A ruling is not a merge and does not grant permission to blindly resume the old 
 ## Token files: one PAT per account
 
 Each GitHub login maps to its own nonempty private token file readable by the gateway user.
+A login that is a GitHub App has a private key file instead (see [GitHub Apps](github-apps.md));
+a loop made only of Apps needs no PAT files.
 Reviewer/fixer writes use their own identities; read/control identity is separate. A
 profile name does not establish GitHub identity: the broker checks the token principal.
 See [accounts](accounts.md) for separation, least privilege and rotation.
