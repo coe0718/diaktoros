@@ -76,9 +76,11 @@ def changed_files(loop: dict, number: int, prev_head: str | None, head: str) -> 
 
     A compare listing that reaches GitHub's cap may be cut, so it is not a complete set: the
     round's files are then taken as the whole PR's (paginated, like the first round).
-    That covers every file that still differs from base, so a finding is never refused for
-    citing one past the cap. A file the round reverted to base is not in the PR's list, so
-    a finding citing it is still refused."""
+    That covers every file that still differs from base, up to GitHub's own 3,000-file limit
+    on a PR's file listing (``gh.PR_FILES_LISTING_LIMIT``): a PR past it lists only its
+    first 3,000 files here too, so a finding citing a file beyond them is refused (it can say
+    `missed earlier`). A file the round reverted to base is not in the PR's list, so a
+    finding citing it is still refused."""
     from . import gh
     if prev_head:
         data = gh.api(loop, f"/repos/{loop['repo']}/compare/{prev_head}...{head}")
