@@ -58,6 +58,13 @@ class CommandsDoc(unittest.TestCase):
         self.assertIn("the gate did not finish", exit2)
         self.assertIn("the gate did not finish — it crashed (Type)", exit2)
 
+    def test_arm_names_the_app_webhook_permission(self):
+        """`arm` edits hooks as an App login too (hook_write_need, #1276): its section must
+        name the App's Webhooks: Read and write permission, not only PAT scopes (#1570)."""
+        text = commands_doc.DOC.read_text()
+        section = text.split("### arm\n", 1)[1].split("<!-- flags:arm -->", 1)[0]
+        self.assertIn("Webhooks: Read and write", " ".join(section.split()))
+
     def test_every_command_is_in_the_quick_index(self):
         text = commands_doc.DOC.read_text()
         index = text.split("\n---\n", 1)[0]

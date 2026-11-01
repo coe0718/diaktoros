@@ -341,7 +341,8 @@ def add_arm(sub) -> None:  # noqa: ANN001
     arm.add_argument("--loop", help="loop id (default: every configured loop)")
     arm.add_argument("--pause", action="store_true", help="pause instead of arming")
     arm.add_argument("--admin-token", default="",
-                     help="login whose token can edit the repo's hooks (default: the reader)")
+                     help="login whose credential can edit the repo's hooks: a token, or a GitHub "
+                          "App with Webhooks: Read and write (default: the reader)")
     arm.set_defaults(func=cmd_arm)
 
 
