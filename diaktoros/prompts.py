@@ -268,7 +268,9 @@ What to do:
      file changed in that round, or say `missed earlier` (the stats count those against you).
      GitHub cuts a compare's file list at 300 files without saying so: when a round's list
      reaches 300, any file in the whole PR counts as changed that round, so do not label a
-     finding on a PR file `missed earlier` there.
+     finding on a PR file `missed earlier` there. The one exception is a PR past GitHub's
+     3,000-file listing limit: only its first 3,000 files count, so a new finding on a file
+     beyond them is refused unless it says `missed earlier`; use the marker there.
    - **issue** — everything else (usually P2/P3): real, but not worth another round. With only
      issue-tier findings the verdict is APPROVE. File each one yourself, before the review,
      through the broker's `file_issue` command (below): a one-line title, the finding with its
