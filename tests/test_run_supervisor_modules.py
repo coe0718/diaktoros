@@ -26,6 +26,11 @@ PACKAGE = pathlib.Path(run_supervisor.__file__).resolve().parent
 ROOT = PACKAGE.parents[1]
 SUBMODULES = ("pr_facts", "turn_prompts", "records", "views", "notices", "intake", "workers", "claims",
               "issue_inputs")
+# Every real submodule, for the shadow rules. ``turns`` is not in SUBMODULES: the package
+# deliberately re-exports its state classes (_ClaimRead, _Turn, _Launch), which the one-home
+# tests would refuse, but a local named ``turns`` shadows the module like any other (#1528).
+ALL_SUBMODULES = tuple(sorted(
+    p.stem for p in PACKAGE.glob("*.py") if p.stem not in ("__init__", "__main__")))
 
 
 def _top_level_names(path: pathlib.Path) -> set[str]:
@@ -40,13 +45,30 @@ def _top_level_names(path: pathlib.Path) -> set[str]:
     return names
 
 
+def _local_submodule_shadows(source: str, filename: str) -> list[tuple[str, str]]:
+    """(function, name) for each function in the source with a local (not imported) binding named
+    like any run_supervisor submodule."""
+    found = []
+
+    def walk(table):
+        for child in table.get_children():
+            if child.get_type() == "function":
+                for sub in ALL_SUBMODULES:
+                    symbol = child.lookup(sub) if sub in child.get_identifiers() else None
+                    if symbol is not None and symbol.is_local() and not symbol.is_imported():
+                        found.append((child.get_name(), sub))
+            walk(child)
+    walk(symtable.symtable(source, filename, "exec"))
+    return found
+
+
 def _shadowed_submodules(source: str) -> list[tuple[int, str]]:
     """(line, name) for each function-local binding named like a run_supervisor submodule that
     the source imports from diaktoros.run_supervisor."""
     tree = ast.parse(source)
     imported = {a.asname or a.name for node in ast.walk(tree)
                 if isinstance(node, ast.ImportFrom) and node.module == "diaktoros.run_supervisor"
-                for a in node.names if (a.asname or a.name) in SUBMODULES}
+                for a in node.names if (a.asname or a.name) in ALL_SUBMODULES}
     found = set()
     for func in ast.walk(tree):
         if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -129,19 +151,21 @@ class Split(unittest.TestCase):
 
     def test_no_function_shadows_a_submodule_it_calls(self):
         for path in PACKAGE.glob("*.py"):
-            top = symtable.symtable(path.read_text(), str(path), "exec")
+            for function, sub in _local_submodule_shadows(path.read_text(), str(path)):
+                with self.subTest(file=path.name, function=function, name=sub):
+                    self.fail(f"a local `{sub}` shadows the submodule")
 
-            def walk(table):
-                for child in table.get_children():
-                    if child.get_type() == "function":
-                        for sub in SUBMODULES:
-                            symbol = child.lookup(sub) if sub in child.get_identifiers() else None
-                            with self.subTest(file=path.name, function=child.get_name(), name=sub):
-                                self.assertFalse(symbol is not None and symbol.is_local()
-                                                 and not symbol.is_imported(),
-                                                 f"a local `{sub}` shadows the submodule")
-                    walk(child)
-            walk(top)
+    def test_the_package_shadow_rule_flags_a_local_turns(self):
+        # Drives the package-side rule on source text, so it does not depend on the package being
+        # shadow-free today: with the rule filtering by SUBMODULES, `turns` slips through (#1528).
+        local = "def f():\n    turns = []\n    return turns\n"
+        self.assertEqual(_local_submodule_shadows(local, "x.py"), [("f", "turns")])
+        argument = "def g(turns):\n    return turns\n"
+        self.assertEqual(_local_submodule_shadows(argument, "x.py"), [("g", "turns")])
+        nested = "def outer():\n    def inner():\n        views = 1\n        return views\n"
+        self.assertEqual(_local_submodule_shadows(nested, "x.py"), [("inner", "views")])
+        self.assertEqual(_local_submodule_shadows("def h():\n    return turns.x\n", "x.py"), [])
+        self.assertEqual(_local_submodule_shadows("def h():\n    import turns\n", "x.py"), [])
 
     def test_prose_names_a_moved_function_by_its_submodule(self):
         # Docs and docstrings that write `run_supervisor.<name>` for a moved name point at a path
@@ -181,6 +205,18 @@ class Split(unittest.TestCase):
                  "def test_x():\n    view_lines = []\n    return views.next_step, view_lines\n")
         self.assertEqual(_shadowed_submodules(clean), [])
         self.assertEqual(_shadowed_submodules("def test_x():\n    views = []\n"), [])
+
+    def test_the_shadow_check_covers_the_turns_submodule(self):
+        # turns is a real submodule that SUBMODULES leaves out (its state classes are re-exported
+        # on purpose); the shadow check must still see it (#1528).
+        self.assertNotIn("turns", SUBMODULES)
+        self.assertEqual(set(SUBMODULES) | {"turns"}, set(ALL_SUBMODULES))
+        shadowing = ("from diaktoros.run_supervisor import turns\n"
+                     "def f():\n    turns = []\n    return turns\n")
+        self.assertEqual(_shadowed_submodules(shadowing), [(3, "turns")])
+        as_argument = ("from diaktoros.run_supervisor import turns\n"
+                       "def f(turns):\n    return turns\n")
+        self.assertEqual(_shadowed_submodules(as_argument), [(2, "turns")])
 
 
 if __name__ == "__main__":
