@@ -24,7 +24,7 @@ Give every agent that writes to the repository its own GitHub account and its ow
 Agents that have to post as your own account (an assistant, a docs agent, a bug-hunting agent) are named in `operator_agents`: `set --operator-agent LOGIN` (repeatable; `--no-operator-agents` clears it), `init`, `setup` or the settings form. A login there:
 
 - speaks with maintainer authority, as if it were in `triage.maintainers`: its comments reach the seats, it can hold a PR, and its `continue` reply and fix label are honoured. This is no extra trust: whatever your account can do, the agent can;
-- is **labelled** as an operator agent, not as you, in the comments the seats read, in `explain`, in `doctor`, and in the weekly report (an agent's hold is counted as `agent hold`, apart from a person's `hold`);
+- is **labelled** as an operator agent, not as you, in the comments the seats read, in `explain`, in `doctor`, and in the weekly report (an agent's hold on an issue-fix PR proposed in the report's window is counted as `agent hold`, apart from a person's `hold`; holds on other PRs are not in the report);
 - cannot also be a fixer, a reviewer or another seat's account.
 
 The loop cannot tell two agents that share one account apart: the list names logins, not agents. If you need to tell them apart, give them accounts.

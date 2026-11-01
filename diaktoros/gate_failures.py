@@ -620,8 +620,9 @@ class Ledger:
                 data[key] = {**data[key], **fields}
                 self._save(data)
 
-    def resolve(self, key: str, how: str, settle: bool = True, duplicate_of: str = "") -> bool:
-        with self._locked():
+    def resolve(self, key: str, how: str, settle: bool = True, duplicate_of: str = "",
+                deadline: float | None = None) -> bool:
+        with self._locked(deadline):
             data = self._load_for_write()
             entry = data.get(key)
             if not isinstance(entry, dict) or entry.get("resolved"):
@@ -1017,6 +1018,78 @@ def _record_overrun(_signum, _frame):
     raise _RecordTimeout(f"post-failure bookkeeping exceeded {RECORD_S:g}s")
 
 
+def _route_of(gate: str, payload) -> str:
+    """The loop's route for ``gate`` (for the re-deliver hint); empty when it cannot be told."""
+    try:
+        from .route_intent import routes_of
+        loop = _loop_for(payload)
+        return routes_of(loop).get(gate.removeprefix("gate_"), "") if loop else ""
+    except Exception:  # noqa: BLE001 - the hint then names the route generically
+        return ""
+
+
+IN_PROCESS = "in-process"   # ``via`` of an entry recorded by an operator's `hermes dk review`
+
+
+def _in_process_key(gate: str, payload) -> tuple[str, str]:
+    """The event's identity: repo, PR, head and action only. The in-process payload is built
+    from the live PR, so its bytes differ between runs; the same request must be one entry."""
+    raw = json.dumps({"in_process": describe(payload)}, sort_keys=True)
+    return fingerprint(gate, raw), raw
+
+
+def record_in_process(gate: str, payload, exc: BaseException, started: float) -> str:
+    """Record a gate that crashed or ran out of budget when called in-process (``hermes dk
+    review``, the Desktop's review), which does not go through :func:`run`. Same ledgers, key
+    scheme and entry shape, so ``explain``, ``doctor`` and the watchdog sweep see it. It is
+    never re-driven: the watchdog cannot rebuild the operator's call (``--reconsider``), so the
+    entry only alerts. ``started`` is a ``time.monotonic()`` reading. Returns the ledger path,
+    or ``""`` when none could be written. Never raises: it runs on the failure path."""
+    try:
+        key, _raw = _in_process_key(gate, payload)
+        timed_out = isinstance(exc, (gh.GateBudgetExceeded, TimeoutError))
+        message = f"exit code {exc.code}" if isinstance(exc, SystemExit) else str(exc)
+        trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        entry = {"gate": gate, "kind": "timeout" if timed_out else "crash", **describe(payload),
+                 "error_type": type(exc).__name__, "route": _route_of(gate, payload),
+                 "error": _bounded(message, 500), "traceback": _bounded(trace, 4000),
+                 "elapsed_s": round(time.monotonic() - started, 2), "budget_s": None,
+                 "redrivable": False, "released_claims": [], "via": IN_PROCESS,
+                 "run_started_at": time.time() - (time.monotonic() - started)}
+        ledgers = _ledgers_for(payload)
+        for i, ledger in enumerate(ledgers):
+            try:
+                ledger.record(key, entry, "",
+                              deadline=time.monotonic() + RECORD_S / (len(ledgers) - i))
+                return str(ledger.path)
+            except Exception as err:  # noqa: BLE001 - try the fallback ledger
+                log(f"gate-failure ledger write failed ({ledger.path}): {type(err).__name__}: {err}")
+    except Exception as err:  # noqa: BLE001
+        log(f"in-process gate failure not recorded: {type(err).__name__}: {err}")
+    return ""
+
+
+def resolve_in_process(gate: str, payload) -> None:
+    """The in-process gate finished this payload: settle an earlier in-process failure of it,
+    as a later webhook delivery does in :func:`run`. Never raises."""
+    try:
+        key, _raw = _in_process_key(gate, payload)
+        how = f"the same review request completed on a later in-process run at {iso_at(time.time())}"
+        ledgers = _ledgers_for(payload)
+        for i, ledger in enumerate(ledgers):
+            try:
+                if isinstance(ledger.entries().get(key), dict):   # nothing recorded: write nothing
+                    # Bounded like the record: a busy ledger must neither hang the command
+                    # nor keep the next ledger from being tried.
+                    ledger.resolve(key, how,
+                                   deadline=time.monotonic() + RECORD_S / (len(ledgers) - i))
+            except Exception as err:  # noqa: BLE001 - try the next ledger
+                log(f"in-process gate-failure resolve failed ({ledger.path}): "
+                    f"{type(err).__name__}: {err}")
+    except Exception as err:  # noqa: BLE001
+        log(f"in-process gate-failure resolve failed: {type(err).__name__}: {err}")
+
+
 def run(gate: str, main: Callable[[], None]) -> None:
     """Run one gate's ``main`` with a budget, and never let a failure pass as ``[SILENT]``."""
     raw = sys.stdin.read()
@@ -1102,13 +1175,7 @@ def run(gate: str, main: Callable[[], None]) -> None:
         error_type = type(exc).__name__
         message = str(exc) if not isinstance(exc, SystemExit) else f"exit code {code}"
         trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-    route = ""
-    try:
-        from .route_intent import routes_of
-        loop = _loop_for(payload)
-        route = routes_of(loop).get(gate.removeprefix("gate_"), "") if loop else ""
-    except Exception:  # noqa: BLE001 - the hint then names the route generically
-        pass
+    route = _route_of(gate, payload)
     entry = {"gate": gate, "kind": kind, **facts, "error_type": error_type, "route": route,
              "error": _bounded(message, 500), "traceback": _bounded(trace, 4000),
              "elapsed_s": round(elapsed, 2), "budget_s": budget,
@@ -1206,6 +1273,10 @@ def explain_status(entry: dict) -> str:
 
 def not_driven(entry: dict, scripts_dir: pathlib.Path | None = None, held: str = "") -> str:
     """Why an unresolved entry is not re-driven, as the operator should read it."""
+    if entry.get("via") == IN_PROCESS:
+        return ("not re-driven (an operator's `hermes dk review` or Desktop review, not a webhook "
+                "delivery) — ask again with `hermes dk review --loop <loop> --pr "
+                f"{entry.get('pr') or '<n>'}`")
     if not entry.get("redrivable"):
         return "not re-driven (its output is a dispatch) — " + redeliver_hint(entry)
     if not entry.get("payload_kept"):
@@ -1249,6 +1320,25 @@ def _corrupt_line(header: str, entry: dict) -> str:
             f"you need from it, then delete it (this clears itself).")
 
 
+def _same_episode(home_entry, seen: dict) -> bool:
+    """Whether ``seen`` (an entry of another ledger) is the failure ``home_entry`` holds. An
+    in-process key is stable across retries, so one key can span several episodes:
+
+    * a home entry resolved *before* ``seen`` last failed settled an earlier episode;
+    * an in-process ``seen`` records when its failing run began (``run_started_at``). A home
+      entry last written before that cannot be this run's failure, even if it is still open (a
+      recovery that could not take the home lock leaves it open): ``seen`` is a new failure and
+      gets its own alert. A home write of the same run lands after the run began."""
+    if not isinstance(home_entry, dict):
+        return False
+    began = seen.get("run_started_at")
+    if isinstance(began, (int, float)) and _number(home_entry.get("last_at")) < began:
+        return False
+    if not home_entry.get("resolved"):
+        return True
+    return _number(seen.get("last_at")) <= _number(home_entry.get("resolved_at"))
+
+
 def sweep(ledger: Ledger, header: str, scripts_dir: pathlib.Path, *, cooldown_s: float,
           may_redrive: bool = True, held: str = "",
           emit: Callable[[str], None] | None = None) -> list[str]:
@@ -1277,7 +1367,8 @@ def sweep(ledger: Ledger, header: str, scripts_dir: pathlib.Path, *, cooldown_s:
             ledger.resolve(key, f"corrupt copy removed by the operator; noticed at {iso_at(time.time())}")
             continue
         home = _home_ledger(seen)
-        if home is not None and home.path != ledger.path and isinstance(home.entries().get(key), dict):
+        if home is not None and home.path != ledger.path and _same_episode(
+                home.entries().get(key), seen):
             # One event, two ledgers (a handover that raced a landed write): the loop's own
             # ledger owns it, so the alert and the re-drive budget are counted once, there.
             ledger.resolve(key, f"duplicate of the same event in {home.path}; handled there",

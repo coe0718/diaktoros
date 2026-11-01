@@ -13,13 +13,14 @@ import os
 import pathlib
 import sys
 import threading
+import time
 import unittest
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 
-from diaktoros import config, gh, one_shot_action as actions, util  # noqa: E402
+from diaktoros import config, explain, gate_failures, gh, one_shot_action as actions, util  # noqa: E402
 from diaktoros.run_supervisor import RECONSIDER_KEY  # noqa: E402
 
 
@@ -260,6 +261,179 @@ class ReconsiderTurn(unittest.TestCase):
         self.assertIn("request changes if it does not meet", text)
         self.assertEqual(other, "")
         st.reconsider_get.assert_called_once_with(7, "a" * 40)
+
+
+class RecordedFailure(Harness):
+    """#1455: a crashed or timed-out in-process gate is in the gate-failure ledger, as the
+    webhook path's ``gate_failures.run`` leaves it, so explain, doctor and the sweep see it."""
+
+    def setUp(self):
+        t.reset(prs={"7": t.pr(7)})
+        self.ledger = gate_failures.Ledger(t.STATE_DIR)
+        for path in (self.ledger.path, *self.ledger.payload_dir.glob("*")):
+            path.unlink(missing_ok=True)
+
+    def failures(self):
+        return [e for e in self.ledger.entries().values() if not e.get("resolved")]
+
+    def test_a_crashed_gate_is_recorded(self):
+        with mock.patch.object(actions, "_run_reviewer", side_effect=RuntimeError("/private boom")):
+            result = actions.review(self.loop(), 7)
+        self.assertEqual(result["code"], 2)
+        self.assertIn("recorded in the gate-failure ledger", result["lines"][-1])
+        (entry,) = self.failures()
+        self.assertEqual((entry["gate"], entry["kind"], entry["pr"], entry["head"]),
+                         ("gate_reviewer", "crash", 7, t.HEAD_A))
+        self.assertEqual(entry["error_type"], "RuntimeError")
+        self.assertFalse(entry["redrivable"])
+
+    def test_a_timed_out_gate_is_recorded(self):
+        with mock.patch.object(actions, "_run_reviewer", side_effect=gh.GateBudgetExceeded("t")):
+            result = actions.review(self.loop(), 7)
+        self.assertEqual(result["code"], 2)
+        (entry,) = self.failures()
+        self.assertEqual(entry["kind"], "timeout")
+
+    def test_a_gate_that_exits_nonzero_is_recorded(self):
+        with mock.patch.object(actions, "_run_reviewer", side_effect=SystemExit(2)):
+            actions.review(self.loop(), 7)
+        (entry,) = self.failures()
+        self.assertEqual((entry["kind"], entry["error"]), ("crash", "exit code 2"))
+
+    def test_the_same_request_failing_again_is_one_entry_and_a_finish_resolves_it(self):
+        with mock.patch.object(actions, "_run_reviewer", side_effect=RuntimeError("x")):
+            actions.review(self.loop(), 7)
+            actions.review(self.loop(), 7)
+        (entry,) = self.failures()
+        self.assertEqual(entry["attempts"], 2)
+        actions.review(self.loop(), 7)          # the real gate finishes this time
+        self.assertEqual(self.failures(), [])
+
+    def test_explain_and_the_sweep_report_it_without_a_redrive(self):
+        with mock.patch.object(actions, "_run_reviewer", side_effect=RuntimeError("x")):
+            actions.review(self.loop(), 7)
+        (entry,) = self.failures()
+        line = explain.gate_failure_line(entry)
+        self.assertIn("gate_reviewer crash", line)
+        self.assertIn("not re-driven", line)
+        self.assertNotIn("Redeliver", line)
+        said = gate_failures.sweep(self.ledger, "[widgets]", gate_failures.SCRIPTS_DIR,
+                                   cooldown_s=3600)
+        self.assertEqual(len(said), 1)
+        self.assertIn("gate_reviewer crash on #7", said[0])
+        self.assertEqual(self.ledger.entries()[entry["id"]]["redrives"], 0)
+
+    def test_an_unwritable_ledger_is_said_not_hidden(self):
+        with mock.patch.object(actions, "_run_reviewer", side_effect=RuntimeError("x")), \
+                mock.patch.object(gate_failures.Ledger, "record", side_effect=OSError("ro")):
+            result = actions.review(self.loop(), 7)
+        self.assertEqual(result["code"], 2)
+        self.assertIn("could NOT be recorded", result["lines"][-1])
+
+
+class RecordedFailureEpisodes(Harness):
+    """#1578 review: the stable in-process key spans separate failure/recovery episodes, a busy
+    ledger never hangs the recovery, and a clean SystemExit settles nothing by crashing."""
+
+    def setUp(self):
+        t.reset(prs={"7": t.pr(7)})
+        self.ledger = gate_failures.Ledger(t.STATE_DIR)
+        self.fallback = gate_failures.fallback_ledger()
+        for ledger in (self.ledger, self.fallback):
+            for path in (ledger.path, *ledger.payload_dir.glob("*")):
+                path.unlink(missing_ok=True)
+
+    def failures(self):
+        return [e for e in self.ledger.entries().values() if not e.get("resolved")]
+
+    def fail(self):
+        with mock.patch.object(actions, "_run_reviewer", side_effect=RuntimeError("x")):
+            return actions.review(self.loop(), 7)
+
+    def test_a_failure_in_the_fallback_after_a_resolved_home_episode_is_alerted(self):
+        self.fail()
+        actions.review(self.loop(), 7)                       # recovers: the home entry resolves
+        (key,) = self.ledger.entries()
+        self.assertTrue(self.ledger.entries()[key]["resolved"])
+        real = gate_failures.Ledger.record
+        def home_busy(ledger, *a, **kw):
+            if ledger.path == self.ledger.path:
+                raise OSError("busy")
+            return real(ledger, *a, **kw)
+        with mock.patch.object(gate_failures.Ledger, "record", home_busy):
+            self.fail()                                      # the next episode lands in the fallback
+        self.assertFalse(self.fallback.entries()[key]["resolved"])
+        said = gate_failures.sweep(self.fallback, "[widgets]", gate_failures.SCRIPTS_DIR,
+                                   cooldown_s=3600)
+        self.assertEqual(len(said), 1)
+        self.assertIn("gate_reviewer crash on #7", said[0])
+        self.assertFalse(self.fallback.entries()[key]["resolved"])
+
+    def test_a_fallback_copy_of_a_still_open_home_failure_is_still_a_duplicate(self):
+        self.fail()
+        (key,) = self.ledger.entries()
+        entry = dict(self.ledger.entries()[key])
+        self.fallback.record(key, {k: v for k, v in entry.items() if k not in ("id", "attempts")}, "")
+        self.assertEqual(gate_failures.sweep(self.fallback, "[widgets]",
+                                             gate_failures.SCRIPTS_DIR, cooldown_s=3600), [])
+        self.assertIn("duplicate", self.fallback.entries()[key]["resolution"])
+
+    def test_a_failure_after_a_recovery_that_could_not_settle_home_is_its_own_episode(self):
+        self.fail()
+        (key,) = self.ledger.entries()
+        first = gate_failures.sweep(self.ledger, "[widgets]", gate_failures.SCRIPTS_DIR,
+                                    cooldown_s=3600)
+        self.assertEqual(len(first), 1)
+        with mock.patch.object(gate_failures, "RECORD_S", 0.2), self.holding_home_lock():
+            actions.review(self.loop(), 7)       # the gate finishes; the busy home stays open
+        self.assertFalse(self.ledger.entries()[key]["resolved"])
+        real = gate_failures.Ledger.record
+
+        def home_busy(ledger, *a, **kw):
+            if ledger.path == self.ledger.path:
+                raise OSError("busy")
+            return real(ledger, *a, **kw)
+        time.sleep(0.05)
+        with mock.patch.object(gate_failures.Ledger, "record", home_busy):
+            self.fail()                          # a new crash lands in the fallback
+        said = gate_failures.sweep(self.fallback, "[widgets]", gate_failures.SCRIPTS_DIR,
+                                   cooldown_s=3600)
+        self.assertEqual(len(said), 1)           # its own alert, not a silent duplicate
+        self.assertFalse(self.fallback.entries()[key]["resolved"])
+
+    @contextlib.contextmanager
+    def holding_home_lock(self):
+        """A real flock on the home ledger, held through another file description."""
+        with self.ledger._locked():
+            yield
+
+    def test_a_busy_first_ledger_does_not_hang_the_recovery_or_hide_the_fallback(self):
+        self.fail()
+        (key,) = self.ledger.entries()
+        self.fallback.record(key, {**self.ledger.entries()[key]}, "")
+        done = threading.Event()
+
+        def recover():
+            gate_failures.resolve_in_process("gate_reviewer", self.payload())
+            done.set()
+        with mock.patch.object(gate_failures, "RECORD_S", 0.4), self.holding_home_lock():
+            worker = threading.Thread(target=recover, daemon=True)
+            worker.start()
+            self.assertTrue(done.wait(5), "resolve_in_process hung on a locked ledger")
+            self.assertFalse(self.ledger.entries()[key]["resolved"])   # busy: left open
+        self.assertTrue(self.fallback.entries()[key]["resolved"])      # the fallback was tried
+
+    def payload(self):
+        return {"action": "ready_for_review", "number": 7,
+                "pull_request": t.pr(7), "repository": {"full_name": t.REPO}}
+
+    def test_a_clean_exit_zero_neither_crashes_nor_loses_an_open_failure(self):
+        self.fail()
+        self.assertEqual(len(self.failures()), 1)
+        with mock.patch.object(actions, "_run_reviewer", side_effect=SystemExit(0)):
+            result = actions.review(self.loop(), 7)      # must not raise UnboundLocalError
+        self.assertIn(result["code"], (0, 1))
+        self.assertEqual(self.failures(), [])            # the gate did finish: settled on purpose
 
 
 class Desktop(Harness):

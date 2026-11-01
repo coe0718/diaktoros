@@ -261,6 +261,20 @@ class Ledger(unittest.TestCase):
         self.assertIn("hunk check: 2 unguarded hunk(s) in 1 fix(es) · guarded 2 · not checked 1",
                       out)
 
+    def test_an_agent_hold_counts_only_on_an_issue_fix_pr_of_the_window(self):
+        # #1587: the docs say so; a hold on an ordinary PR is recorded, never in the report.
+        self.proposal(20, "pr", 120, NOW - 4000)
+        self.action(120, "agent hold", NOW - 3500)
+        self.action(7, "agent hold", NOW - 3400)                  # an ordinary PR
+        data = stats.fix_outcomes(self.db, REPO, NOW - 7 * DAY, NOW, lambda number: "open")
+        self.assertEqual(data["steps"], {"agent hold": 1})
+        self.assertEqual(stats.fix_outcomes(self.db, REPO, NOW - 14 * DAY, NOW - 7 * DAY,
+                                            lambda number: "open")["steps"], {})
+        loop = {"repo": REPO, "id": "w", "operator_agents": ["quill-bot"]}
+        out = stats.report_text(stats.report(loop, self.db, NOW - 7 * DAY, NOW, breaches={},
+                                             pr_state=lambda n: "open"))
+        self.assertIn('issue-fix steps counted apart as "agent hold"', out)
+
     def test_steps_from_is_this_repos_first_operator_action(self):
         self.proposal(20, "pr", 120, NOW - 4000)
         self.action(120, "retry", NOW - 3500)
