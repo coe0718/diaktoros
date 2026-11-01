@@ -42,6 +42,13 @@ class CommandsDoc(unittest.TestCase):
         self.assertEqual(blank, [], "give these flags help= text, then run "
                                     "`python3 tests/commands_doc.py --write`")
 
+    def test_init_distinctness_text_does_not_assume_a_token_file(self):
+        """`init --app` gives a login a GitHub App key file, not a token file (#1282): the
+        sentence on what `init` checks must say "credential", as the adjudicator setting does."""
+        text = commands_doc.DOC.read_text()
+        self.assertNotIn("each has its own token file", text.replace("\n", " "))
+        self.assertIn("each has its own credential", text.replace("\n", " "))
+
     def test_every_command_is_in_the_quick_index(self):
         text = commands_doc.DOC.read_text()
         index = text.split("\n---\n", 1)[0]

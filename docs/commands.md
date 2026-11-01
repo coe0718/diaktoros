@@ -474,7 +474,7 @@ Installs a new loop for one repository. Through a staged installation it writes:
 
 Everything is checked before the first file is written: the profiles exist, the logins are in
 their allowlists, the four accounts (reader, reviewer, fixer, optional adjudicator) are distinct
-and each has its own token file, and no route name belongs to someone else. A refused `init`
+and each has its own credential (a PAT's token file, or a GitHub App's key file), and no route name belongs to someone else. A refused `init`
 writes no installed loop. Config/route and hook-install failures attempt rollback, but shims,
 cron and ping failures can leave a partial install. This is not one atomic transaction across
 GitHub, routes and cron. Follow the failure output before retrying.
