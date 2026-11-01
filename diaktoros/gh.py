@@ -392,14 +392,16 @@ def failure_hint(status: int | None) -> str:
 def principal(loop: dict, login: str, fetch=None) -> dict | None:
     """Who ``login``'s credential authenticates as: GitHub's account object, or ``None`` when the
     answer is not an object. The one place a seat or reader identity is resolved (#1163): today
-    ``GET /user`` with that login's token; a GitHub App identity will answer from its bot user
-    here instead, since an installation token cannot call ``/user``. ``fetch(path)`` is the
+    ``GET /user`` with that login's token; a GitHub App identity answers from its bot user
+    instead, since an installation token cannot call ``/user``. ``fetch(path)`` is the
     caller's own transport (a bounded read, a read that raises), so each caller keeps its exact
-    failure behaviour and its own checks on what comes back."""
+    failure behaviour and its own checks on what comes back. A PAT identity reads ``/user``
+    through ``fetch``; an App identity reads ``/app`` with the App's JWT (never through
+    ``fetch``) and then its ``/users/<slug>[bot]`` through ``fetch``, never ``/user``."""
     from . import github_app
     if token_path(loop, login) is None and github_app.is_app(loop, login):
         # An installation token cannot call /user: the App's bot user is the principal.
-        return github_app.principal(loop, login)
+        return github_app.principal(loop, login, fetch)
     if fetch is None:
         def fetch(path):
             return api(loop, path, login=login)

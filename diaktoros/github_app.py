@@ -233,10 +233,13 @@ def installation_token(loop: dict, login: str) -> str:
         return token
 
 
-def principal(loop: dict, login: str) -> dict | None:
+def principal(loop: dict, login: str, fetch=None) -> dict | None:
     """The App's bot user (login, numeric id, ``type: Bot``) when the key in ``apps`` belongs to
     the App ``login`` names; ``None`` when it cannot be read. A key for another App answers with
-    that App's bot, so the caller's own login check refuses it."""
+    that App's bot, so the caller's own login check refuses it. ``/app`` is always read with the
+    App's JWT; ``fetch(path)``, when given, is the caller's transport for the ``/users/<slug>[bot]``
+    read (so its size bound and its refusal apply), and it may raise. A principal already
+    resolved for this App is cached and answered without calling ``fetch``."""
     found = entry(loop, login)
     if not found:
         return None
@@ -250,7 +253,8 @@ def principal(loop: dict, login: str) -> dict | None:
     if not isinstance(app, dict) or not isinstance(app.get("slug"), str) \
             or app.get("id") != found.get("app_id"):
         return None
-    user = gh.api(loop, f"/users/{app['slug']}[bot]", login=login)
+    path = f"/users/{app['slug']}[bot]"
+    user = fetch(path) if fetch else gh.api(loop, path, login=login)
     if not isinstance(user, dict) or type(user.get("id")) is not int or user.get("type") != "Bot":
         return None
     account = {"login": user.get("login"), "id": user["id"], "type": "Bot", "app_id": app["id"],
