@@ -742,7 +742,7 @@ State is operational data, not additional user configuration. Do not hand-edit l
 
 ## Validation and coverage limits
 
-The authoritative implementation is `diaktoros/config/`, with host-path detection in `runtime_detect.py`, model resolution in `seat_model.py`, containment in `contained.py`, and wake/admission behavior in `gate.py`. CLI installation, broker checks, the run supervisor, observer, watchdog, dependency prefetch, and cleanup add validations that cannot be inferred from a successfully parsed JSON file.
+The authoritative implementation is `diaktoros/config/`, with host-path detection in `runtime_detect.py`, model resolution in `seat_model.py` (the program it runs in Hermes' python is `seat_resolver.py`), containment in `contained.py`, and wake/admission behavior in `gate.py`. CLI installation, broker checks, the run supervisor, observer, watchdog, dependency prefetch, and cleanup add validations that cannot be inferred from a successfully parsed JSON file.
 
 Important boundaries:
 
