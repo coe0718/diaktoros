@@ -42,6 +42,15 @@ class GeneralDocsNameAppKeys(unittest.TestCase):
         self.assertIn("App", text)
         self.assertNotIn("distinct token files", text)
 
+    def test_security_authorize_step_does_not_claim_user_for_app_tokens(self):
+        # An installation token cannot call /user; gh.principal uses github_app.principal (/app,
+        # /users/<slug>[bot]) for Apps and reserves /user for PATs.
+        text = row("security.md", "3. Explicit reader/reviewer/fixer mappings")
+        self.assertNotIn("called with an App's installation token", text)
+        self.assertIn("cannot call `/user`", text)
+        self.assertIn("`GET /app`", text)
+        self.assertIn("`GET /users/<slug>[bot]`", text)
+
     def test_operations_token_section_points_apps_to_their_guide(self):
         ops = " ".join((ROOT / "docs" / "operations.md").read_text().split())
         section = ops.split("## Token files: one PAT per account", 1)[1].split("## ", 1)[0]

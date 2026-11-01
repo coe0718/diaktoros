@@ -61,7 +61,7 @@ For ordinary PR writes, `broker.authorize` verifies:
 
 1. The repository equals the configured repository; PR number and SHA have the expected types/formats.
 2. The role/operation pair is permitted.
-3. Explicit reader/reviewer/fixer mappings resolve to distinct credential files (a PAT file, or a GitHub App's private key) and distinct verified GitHub principals (`/user`, called with an App's installation token).
+3. Explicit reader/reviewer/fixer mappings resolve to distinct credential files (a PAT file, or a GitHub App's private key) and distinct verified GitHub principals. A PAT's principal is the account `GET /user` returns; an App's installation token cannot call `/user`, so its principal is the App's bot user, read through `GET /app` and `GET /users/<slug>[bot]`.
 4. The live PR has the exact number, is open and explicitly non-draft, has the configured base repository/branch and scoped head/branch, and is not a fork head.
 5. Fixer writes additionally require an allowlisted PR author and a current effective `CHANGES_REQUESTED` review where required. The post-push handoff checks the new head without requiring a verdict that cannot yet exist there.
 
