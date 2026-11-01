@@ -13,6 +13,7 @@ import os
 import pathlib
 import sys
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -328,6 +329,94 @@ class RecordedFailure(Harness):
             result = actions.review(self.loop(), 7)
         self.assertEqual(result["code"], 2)
         self.assertIn("could NOT be recorded", result["lines"][-1])
+
+
+class RecordedFailureEpisodes(Harness):
+    """#1578 review: the stable in-process key spans separate failure/recovery episodes, a busy
+    ledger never hangs the recovery, and a clean SystemExit settles nothing by crashing."""
+
+    def setUp(self):
+        t.reset(prs={"7": t.pr(7)})
+        self.ledger = gate_failures.Ledger(t.STATE_DIR)
+        self.fallback = gate_failures.fallback_ledger()
+        for ledger in (self.ledger, self.fallback):
+            for path in (ledger.path, *ledger.payload_dir.glob("*")):
+                path.unlink(missing_ok=True)
+
+    def failures(self):
+        return [e for e in self.ledger.entries().values() if not e.get("resolved")]
+
+    def fail(self):
+        with mock.patch.object(actions, "_run_reviewer", side_effect=RuntimeError("x")):
+            return actions.review(self.loop(), 7)
+
+    def test_a_failure_in_the_fallback_after_a_resolved_home_episode_is_alerted(self):
+        self.fail()
+        actions.review(self.loop(), 7)                       # recovers: the home entry resolves
+        (key,) = self.ledger.entries()
+        self.assertTrue(self.ledger.entries()[key]["resolved"])
+        real = gate_failures.Ledger.record
+        def home_busy(ledger, *a, **kw):
+            if ledger.path == self.ledger.path:
+                raise OSError("busy")
+            return real(ledger, *a, **kw)
+        with mock.patch.object(gate_failures.Ledger, "record", home_busy):
+            self.fail()                                      # the next episode lands in the fallback
+        self.assertFalse(self.fallback.entries()[key]["resolved"])
+        said = gate_failures.sweep(self.fallback, "[widgets]", gate_failures.SCRIPTS_DIR,
+                                   cooldown_s=3600)
+        self.assertEqual(len(said), 1)
+        self.assertIn("gate_reviewer crash on #7", said[0])
+        self.assertFalse(self.fallback.entries()[key]["resolved"])
+
+    def test_a_fallback_copy_of_a_still_open_home_failure_is_still_a_duplicate(self):
+        self.fail()
+        (key,) = self.ledger.entries()
+        entry = dict(self.ledger.entries()[key])
+        self.fallback.record(key, {k: v for k, v in entry.items() if k not in ("id", "attempts")}, "")
+        self.assertEqual(gate_failures.sweep(self.fallback, "[widgets]",
+                                             gate_failures.SCRIPTS_DIR, cooldown_s=3600), [])
+        self.assertIn("duplicate", self.fallback.entries()[key]["resolution"])
+
+    def test_a_busy_first_ledger_does_not_hang_the_recovery_or_hide_the_fallback(self):
+        self.fail()
+        (key,) = self.ledger.entries()
+        self.fallback.record(key, {**self.ledger.entries()[key]}, "")
+        with mock.patch.object(gate_failures, "RECORD_S", 0.4), \
+                mock.patch.object(gate_failures.Ledger, "_locked", self._lock_busy_for_home()):
+            began = time.monotonic()
+            gate_failures.resolve_in_process("gate_reviewer", self.payload())
+            took = time.monotonic() - began
+        self.assertLess(took, 3)
+        self.assertFalse(self.ledger.entries()[key]["resolved"])      # busy: left open
+        self.assertTrue(self.fallback.entries()[key]["resolved"])     # but the fallback was tried
+
+    def _lock_busy_for_home(self):
+        real = gate_failures.Ledger._locked
+        home = self.ledger.path
+        @contextlib.contextmanager
+        def locked(ledger, deadline=None):
+            if ledger.path == home:
+                if deadline is None:
+                    raise AssertionError("an unbounded wait on a busy ledger")
+                while time.monotonic() < deadline:
+                    time.sleep(0.02)
+                raise gate_failures.LedgerBusy("busy")
+            with real(ledger, deadline) as held:
+                yield held
+        return locked
+
+    def payload(self):
+        return {"action": "ready_for_review", "number": 7,
+                "pull_request": t.pr(7), "repository": {"full_name": t.REPO}}
+
+    def test_a_clean_exit_zero_neither_crashes_nor_loses_an_open_failure(self):
+        self.fail()
+        self.assertEqual(len(self.failures()), 1)
+        with mock.patch.object(actions, "_run_reviewer", side_effect=SystemExit(0)):
+            result = actions.review(self.loop(), 7)      # must not raise UnboundLocalError
+        self.assertIn(result["code"], (0, 1))
+        self.assertEqual(self.failures(), [])            # the gate did finish: settled on purpose
 
 
 class Desktop(Harness):

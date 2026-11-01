@@ -620,8 +620,9 @@ class Ledger:
                 data[key] = {**data[key], **fields}
                 self._save(data)
 
-    def resolve(self, key: str, how: str, settle: bool = True, duplicate_of: str = "") -> bool:
-        with self._locked():
+    def resolve(self, key: str, how: str, settle: bool = True, duplicate_of: str = "",
+                deadline: float | None = None) -> bool:
+        with self._locked(deadline):
             data = self._load_for_write()
             entry = data.get(key)
             if not isinstance(entry, dict) or entry.get("resolved"):
@@ -1073,9 +1074,17 @@ def resolve_in_process(gate: str, payload) -> None:
     try:
         key, _raw = _in_process_key(gate, payload)
         how = f"the same review request completed on a later in-process run at {iso_at(time.time())}"
-        for ledger in _ledgers_for(payload):
-            if isinstance(ledger.entries().get(key), dict):   # nothing recorded: write nothing
-                ledger.resolve(key, how)
+        ledgers = _ledgers_for(payload)
+        for i, ledger in enumerate(ledgers):
+            try:
+                if isinstance(ledger.entries().get(key), dict):   # nothing recorded: write nothing
+                    # Bounded like the record: a busy ledger must neither hang the command
+                    # nor keep the next ledger from being tried.
+                    ledger.resolve(key, how,
+                                   deadline=time.monotonic() + RECORD_S / (len(ledgers) - i))
+            except Exception as err:  # noqa: BLE001 - try the next ledger
+                log(f"in-process gate-failure resolve failed ({ledger.path}): "
+                    f"{type(err).__name__}: {err}")
     except Exception as err:  # noqa: BLE001
         log(f"in-process gate-failure resolve failed: {type(err).__name__}: {err}")
 
@@ -1310,6 +1319,17 @@ def _corrupt_line(header: str, entry: dict) -> str:
             f"you need from it, then delete it (this clears itself).")
 
 
+def _same_episode(home_entry, seen: dict) -> bool:
+    """Whether ``seen`` (an entry of another ledger) is the failure ``home_entry`` holds. A home
+    entry resolved *before* ``seen`` last failed settled an earlier episode of the same key (an
+    in-process key is stable across retries): ``seen`` is a new failure, not a duplicate."""
+    if not isinstance(home_entry, dict):
+        return False
+    if not home_entry.get("resolved"):
+        return True
+    return _number(seen.get("last_at")) <= _number(home_entry.get("resolved_at"))
+
+
 def sweep(ledger: Ledger, header: str, scripts_dir: pathlib.Path, *, cooldown_s: float,
           may_redrive: bool = True, held: str = "",
           emit: Callable[[str], None] | None = None) -> list[str]:
@@ -1338,7 +1358,8 @@ def sweep(ledger: Ledger, header: str, scripts_dir: pathlib.Path, *, cooldown_s:
             ledger.resolve(key, f"corrupt copy removed by the operator; noticed at {iso_at(time.time())}")
             continue
         home = _home_ledger(seen)
-        if home is not None and home.path != ledger.path and isinstance(home.entries().get(key), dict):
+        if home is not None and home.path != ledger.path and _same_episode(
+                home.entries().get(key), seen):
             # One event, two ledgers (a handover that raced a landed write): the loop's own
             # ledger owns it, so the alert and the re-drive budget are counted once, there.
             ledger.resolve(key, f"duplicate of the same event in {home.path}; handled there",

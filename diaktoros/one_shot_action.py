@@ -565,6 +565,7 @@ def _review(loop, args, emit=print):
     except SystemExit as exc:
         if exc.code not in (None, 0):
             return _gate_unfinished(emit, args, payload, exc, started, "no answer")
+        gate_lines = []                 # a clean exit: the gate finished, with no lines to show
     except (gh.GateBudgetExceeded, TimeoutError) as exc:
         return _gate_unfinished(emit, args, payload, exc, started, "no answer")
     except Exception as exc:  # noqa: BLE001 - a crashed gate is an answer too, never a traceback
