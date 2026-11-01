@@ -19,8 +19,21 @@ To set a loop up with Apps, see [Getting started with GitHub Apps](github-apps.m
   reviewer — contents read, pull requests and issues read and write (and checks write, for 9);
   fixer — contents, pull requests and issues read and write. Both writers need issues: the
   reviewer files issues and labels for triage; the fixer comments on issues it fixes.
-- [`tools/github_app_spike.py`](../tools/github_app_spike.py) repeats every step below on fresh
-  branches and prints one JSON line per step. Each run agreed with the one before.
+- [`tools/github_app_spike.py`](../tools/github_app_spike.py) repeats the steps below on fresh
+  branches and prints one JSON line per step. Each run agreed with the one before. It sets up
+  none of the repository, the branch protection or the Apps (an App has no Administration
+  permission). Notes on what it needs and covers:
+  - Row 6 needs a person's token (a personal access token with write access to the repository)
+    in the variable named by `--person-token-env` (default `SPIKE_PERSON_TOKEN`): the harness
+    opens a PR as that person, has the reviewer App approve it, pushes as the person, and prints
+    `reviewDecision`, `mergeStateStatus` and the App's reviews again. Without the token the
+    `stale_approval` step prints `skipped` and row 6 is not reproduced. The same re-check is
+    printed after the fixer's own `git push` (`git_push`).
+  - Rows 9a–9i, and the second protected branch (no required approvals), run only with
+    `--check-branch BRANCH`, naming that branch; every other step opens its PRs against `main`.
+  - The permission probes in "The reviewer App's permissions are wider than its seat" (contents
+    push, merge, title edit, adding a label, close and then reopen) are the `reviewer_permissions`
+    step.
 
 ## Results
 
