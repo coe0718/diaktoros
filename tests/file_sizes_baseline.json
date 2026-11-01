@@ -1,6 +1,6 @@
 {
   "files": {
-    "diaktoros/broker_ipc.py": 1642,
+    "diaktoros/broker_ipc.py": 1305,
     "diaktoros/cli/install.py": 1607,
     "diaktoros/cli/lifecycle.py": 1024,
     "diaktoros/cli/operations.py": 1016,
@@ -28,7 +28,7 @@
     "diaktoros/arm_action.py::set_hooks": 157,
     "diaktoros/broker_client.py::main": 173,
     "diaktoros/broker_ipc.py::RunBroker._dispatch": 387,
-    "diaktoros/broker_ipc.py::RunBroker._issue_fix_write": 129,
+    "diaktoros/broker_issues.py::IssueWrites._issue_fix_write": 134,
     "diaktoros/cli/__init__.py::register_cli": 89,
     "diaktoros/cli/apply_command.py::_apply": 351,
     "diaktoros/cli/common.py::_install_routes": 81,

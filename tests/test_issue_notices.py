@@ -26,6 +26,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import test_issue_fix as fixture  # noqa: E402
 from diaktoros import broker_ipc, config, ledger, observer, run_supervisor  # noqa: E402
+from diaktoros import broker_issues  # noqa: E402
 from diaktoros.state import LoopState  # noqa: E402
 
 REPO, BASE = fixture.REPO, fixture.BASE
@@ -63,19 +64,19 @@ class Outcomes(fixture.Base):
 
     def test_issue_fix_outcomes_read_from_the_ledger(self):
         sup, run_id = self.fix_row()
-        self.assertEqual(broker_ipc._issue_fix_outcome(self.scope(run_id)), "")  # no write yet
+        self.assertEqual(broker_issues._issue_fix_outcome(self.scope(run_id)), "")  # no write yet
         sup.record_issue_fix(run_id, REPO, 12, BASE, "pr", "diaktoros/issue-12")
         sup.issue_fix_status(run_id, "opened", pr_number=280)
-        self.assertEqual(broker_ipc._issue_fix_outcome(self.scope(run_id)), "PR #280 opened")
+        self.assertEqual(broker_issues._issue_fix_outcome(self.scope(run_id)), "PR #280 opened")
         sup.issue_fix_status(run_id, "requested")
-        self.assertEqual(broker_ipc._issue_fix_outcome(self.scope(run_id)),
+        self.assertEqual(broker_issues._issue_fix_outcome(self.scope(run_id)),
                          "PR #280 opened, review requested")
 
     def test_an_uncertain_push_says_to_inspect(self):
         sup, run_id = self.fix_row()
         sup.record_issue_fix(run_id, REPO, 12, BASE, "pr", "diaktoros/issue-12")
         sup.issue_fix_status(run_id, "uncertain", error="push unknown")
-        outcome = broker_ipc._issue_fix_outcome(self.scope(run_id))
+        outcome = broker_issues._issue_fix_outcome(self.scope(run_id))
         self.assertIn("uncertain: push unknown", outcome)
         self.assertIn("never replayed", outcome)
 
@@ -83,7 +84,7 @@ class Outcomes(fixture.Base):
         sup, run_id = self.fix_row()
         sup.record_issue_fix(run_id, REPO, 12, BASE, "comment", "diaktoros/issue-12")
         sup.issue_fix_status(run_id, "posted", comment_id=5)
-        self.assertIn("could not fix", broker_ipc._issue_fix_outcome(self.scope(run_id)))
+        self.assertIn("could not fix", broker_issues._issue_fix_outcome(self.scope(run_id)))
 
     def triage_row(self, number):
         sup = run_supervisor.Supervisor(self.db)
