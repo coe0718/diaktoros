@@ -27,9 +27,10 @@ CLEAN = {"mergeable": True, "mergeable_state": "clean", "number": 7, "state": "o
          "draft": False, "head": {"sha": fg.HEAD}, "base": {"ref": "main"}}
 
 
-def review(rid, state, login="reviewer", at="2026-01-01T00:00:00Z", head=fg.HEAD):
+def review(rid, state, login="reviewer", at="2026-01-01T00:00:00Z", head=fg.HEAD, pr=7):
     return {"id": rid, "state": state, "commit_id": head, "submitted_at": at,
-            "user": {"login": login, "id": rid}}
+            "user": {"login": login, "id": rid},
+            "pull_request_url": f"https://api.github.com/repos/{fg.REPO}/pulls/{pr}"}
 
 
 CHANGES = review(5, "CHANGES_REQUESTED")
@@ -41,6 +42,18 @@ class Base(ser.Base):
     def setUp(self):
         super().setUp()
         self.loop = {**self.loop, "seats": {**self.loop["seats"], "adjudicator": {"login": "adj"}}}
+
+    def ruled_on(self, pr, verdict):
+        """A ruling on another PR at the same head (``ser.Base.ruled`` writes PR 7's)."""
+        import sqlite3
+        import time
+        from contextlib import closing
+        self.n += 1
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("INSERT INTO rulings(run_id,repo,pr,head,turn_key,verdict,body,created,"
+                        "updated) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (f"o{self.n}", fg.REPO, pr, fg.HEAD, "breach:1", verdict, "because",
+                         time.time() + self.n, time.time() + self.n))
 
     def latest(self, reviews):
         return gate.latest_effective_review_at_head(reviews, self.loop, fg.HEAD)
@@ -96,12 +109,30 @@ class Counting(Base):
         with mock.patch.object(views, "read_only_connect", return_value=None):
             self.assertIs(self.latest([CHANGES, TUCK]), CHANGES)
 
-    def test_ruling_at_head_reads_any_pr_at_the_head(self):
-        self.assertIsNone(views.ruling_at_head(self.db, fg.REPO, fg.HEAD))
-        self.ruled("REJECT")
+    def test_a_ruling_on_another_pr_at_the_same_commit_backs_nothing(self):
+        # Review of #1591, F1: a ruling is the PR's; the same commit on PR 8 decides nothing here.
+        self.ruled_on(8, "ACCEPT")
+        self.assertIs(self.latest([CHANGES, TUCK]), CHANGES)
         self.ruled("ACCEPT")
-        self.assertEqual(views.ruling_at_head(self.db, fg.REPO, fg.HEAD), "ACCEPT")
-        self.assertIsNone(views.ruling_at_head(self.db, "other/repo", fg.HEAD))
+        self.ruled_on(8, "REJECT")                     # nor does PR 8's later REJECT cancel it
+        self.assertIs(self.latest([CHANGES, TUCK]), TUCK)
+
+    def test_an_approval_that_does_not_name_its_pr_counts_for_nothing(self):
+        self.ruled("ACCEPT")
+        for url in (None, "", "https://api.github.com/repos/other/repo/pulls/7",
+                    f"https://api.github.com/repos/{fg.REPO}/pulls/0"):
+            with self.subTest(url=url):
+                self.assertIs(self.latest([CHANGES, {**TUCK, "pull_request_url": url}]), CHANGES)
+
+    def test_the_adjudicators_later_change_request_withdraws_its_approval(self):
+        # Review of #1591, F2: only the adjudicator's newest verdict at the head counts.
+        self.ruled("ACCEPT")
+        later = review(10, "CHANGES_REQUESTED", login="adj", at="2026-01-03T00:00:00Z")
+        self.assertIsNone(self.latest([DISMISSED, TUCK, later]))
+        self.assertEqual(gate.blocking_reviews([DISMISSED, TUCK, later], self.loop), [later])
+        self.assertFalse(gate.reviewed_at_head([DISMISSED, TUCK, later], self.loop, fg.HEAD))
+        comment = review(11, "COMMENTED", login="adj", at="2026-01-04T00:00:00Z")
+        self.assertIs(self.latest([DISMISSED, TUCK, comment]), TUCK)
 
 
 class Blocking(Base):
@@ -137,6 +168,19 @@ class Ready(Base):
                                   "but reviewer's changes-requested review 5 still blocks "
                                   "GitHub's merge until it is dismissed")])
         self.assertEqual(merge_check.decide(kinds)[0], merge_check.FAILURE)
+
+    def test_no_green_for_another_prs_ruling_or_a_withdrawn_approval(self):
+        # Review of #1591, F1 and F2, end to end through ready and the merge check.
+        self.mark_escalated(by="dispute")
+        self.ruled_on(8, "ACCEPT")
+        self.assertEqual(merge_check.decide(self.kinds([DISMISSED, TUCK]))[0],
+                         merge_check.PENDING)              # no verdict yet: never green
+        self.ruled("ACCEPT")
+        self.assertEqual(merge_check.decide(self.kinds([DISMISSED, TUCK]))[0],
+                         merge_check.SUCCESS)
+        later = review(10, "CHANGES_REQUESTED", login="adj", at="2026-01-03T00:00:00Z")
+        self.assertEqual(merge_check.decide(self.kinds([DISMISSED, TUCK, later]))[0],
+                         merge_check.FAILURE)
 
     def test_an_accept_not_acted_on_still_waits_for_a_person(self):
         self.mark_escalated(by="dispute")

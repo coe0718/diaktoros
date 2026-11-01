@@ -723,19 +723,42 @@ NOT_VERDICTS = frozenset({"DISMISSED", "COMMENTED", "PENDING"})
 
 
 def ruled_approvals(reviews: list, loop: dict, head: str) -> list:
-    """The adjudicator's approvals at this head that its ACCEPT ruling there backs (#905): they
-    count as a verdict, like the reviewer's. A bare approval by that login is none, nor is one at
-    a head whose newest ruling is not ACCEPT, nor any when the ledger can't be read."""
+    """The adjudicator's approval at this head, when its ACCEPT ruling on that PR backs it (#905):
+    it counts as a verdict, like the reviewer's. Only that login's newest verdict at the head
+    counts, so a later change request from it withdraws the approval. The ruling is the newest
+    on the PR the review names (``pull_request_url``), at this head: a ruling on another PR at the
+    same commit backs nothing, and cancels nothing. A bare approval, one whose PR can't be told,
+    or any when the ledger can't be read counts for nothing."""
     login = config.adjudicator_login(loop).lower()
     if not login or login in set(loop["reviewers"]):
         return []
     mine = [r for r in reviews if isinstance(r, dict) and reviewer_login(r) == login
-            and r.get("commit_id") == head and gh.review_state(r) == "APPROVED"]
+            and r.get("commit_id") == head and gh.review_state(r) not in NOT_VERDICTS]
     if not mine:
         return []
+    newest = max(mine, key=_review_order)
+    number = _review_pr(newest, loop["repo"])
+    if gh.review_state(newest) != "APPROVED" or number is None:
+        return []
     from .run_supervisor import views
-    return mine if views.ruling_at_head(config.host_path("ledger"), loop["repo"],
-                                        head) == "ACCEPT" else []
+    ruled = views.ruling_at(config.host_path("ledger"), loop["repo"], number, head)
+    return [newest] if ruled == "ACCEPT" else []
+
+
+def _review_order(review: dict) -> tuple:
+    """A review's place in one login's history: submitted time, then id (GitHub's order)."""
+    return (str(review.get("submitted_at") or ""),
+            review["id"] if type(review.get("id")) is int else 0)
+
+
+def _review_pr(review: dict, repo: str) -> int | None:
+    """The PR number a review names in its ``pull_request_url``, if it is in ``repo``."""
+    import re
+    url = str(review.get("pull_request_url") or "")
+    match = re.search(r"/repos/([^/]+/[^/]+)/pulls/([1-9][0-9]*)$", url)
+    if not match or match.group(1).lower() != str(repo).lower():
+        return None
+    return int(match.group(2))
 
 
 def is_ruled_approval(review, loop: dict) -> bool:
@@ -744,16 +767,16 @@ def is_ruled_approval(review, loop: dict) -> bool:
 
 
 def blocking_reviews(reviews: list, loop: dict) -> list:
-    """The reviewer reviews GitHub still counts against the merge (#905): each reviewer's newest
-    approval, change request or dismissal, where that is a change request. Only a dismissal
-    or the same reviewer's approval lifts one; the adjudicator's approval does not."""
+    """The reviews GitHub still counts against the merge (#905): each reviewer's, and the
+    adjudicator's, newest approval, change request or dismissal, where that is a change request.
+    Only a dismissal or the same login's approval lifts one; the adjudicator's does not."""
     newest: dict[str, tuple] = {}
+    counted = (set(loop["reviewers"]) | {config.adjudicator_login(loop).lower()}) - {""}
     for review in reviews:
-        if (not isinstance(review, dict) or not is_reviewer(review, loop) or gh.review_state(review)
-                not in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}):
+        if (not isinstance(review, dict) or reviewer_login(review) not in counted
+                or gh.review_state(review) not in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}):
             continue
-        key = (str(review.get("submitted_at") or ""), review.get("id") or 0)
-        login = reviewer_login(review)
+        key, login = _review_order(review), reviewer_login(review)
         if login not in newest or key > newest[login][0]:
             newest[login] = (key, review)
     return [r for _, r in newest.values() if gh.review_state(r) == "CHANGES_REQUESTED"]
