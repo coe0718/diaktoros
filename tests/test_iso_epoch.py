@@ -6,7 +6,7 @@ first 19 characters, so an offset (``+05:00``) was dropped and the time taken as
 today ends in ``Z``, so neither showed; the rule now has one home. The parsers that read another
 format or apply a stricter rule on purpose are named in ``DIFFERENT``.
 
-Code shipped as source to another interpreter keeps its own parser: ``seat_model._RESOLVER`` runs
+Code shipped as source to another interpreter keeps its own parser: ``seat_resolver.RESOLVER`` runs
 in Hermes' python with ``-c`` and cannot import the plugin. The scan reads the AST, so it does not
 reach into such strings.
 """

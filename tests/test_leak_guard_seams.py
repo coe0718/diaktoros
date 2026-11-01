@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from diaktoros import broker, safe_push, seat_model
+from diaktoros import broker, safe_push, seat_model, seat_resolver
 
 LEAK = 'import os\nf = open(os.devnull)\ndel f\n'
 RESOLVER_ENV = {'PATH', 'HOME', 'HERMES_HOME', 'LANG', 'PYTHONDONTWRITEBYTECODE',
@@ -66,16 +66,25 @@ class Seams(unittest.TestCase):
         self.guard(False)
         argv, env = self.resolver_call()
         self.assertEqual(argv[:6], [str(self.tmp / 'venv/bin/python'), '-E', '-s', '-B', '-c',
-                                    seat_model._RESOLVER])
+                                    seat_resolver.RESOLVER])
         self.assertEqual(set(env), RESOLVER_ENV)
+
+    def test_the_resolver_program_has_one_home(self):
+        # Split out of seat_model (#1349): run_resolver reads seat_resolver.RESOLVER at the call,
+        # so a patch there is the program Hermes runs, and seat_model keeps no copy.
+        self.guard(False)
+        self.assertFalse(hasattr(seat_model, '_RESOLVER') or hasattr(seat_model, 'RESOLVER'))
+        with mock.patch.object(seat_resolver, 'RESOLVER', 'print(1)'):
+            argv, _env = self.resolver_call()
+        self.assertEqual(argv[5], 'print(1)')
 
     def test_resolver_leak_is_recorded_under_the_guard(self):
         self.guard(True)
         argv, env = self.resolver_call()
-        self.assertTrue(argv[5].endswith(seat_model._RESOLVER))
+        self.assertTrue(argv[5].endswith(seat_resolver.RESOLVER))
         self.assertEqual(set(env), RESOLVER_ENV | {'DIAKTOROS_LEAK_LOG'})
         # The same flags and environment, with a leaking program after the recorder.
-        loader = argv[5][:-len(seat_model._RESOLVER)]
+        loader = argv[5][:-len(seat_resolver.RESOLVER)]
         subprocess.run([sys.executable, '-E', '-s', '-B', '-c', loader + LEAK], env=env, check=True,
                        capture_output=True, timeout=60)
         self.assertTrue(any('unclosed file' in leak for leak in self.recorded()), self.recorded())
