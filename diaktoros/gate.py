@@ -786,9 +786,11 @@ def blocking_reviews(reviews: list) -> list:
     order can't be told (an undatable review), every change request of it blocks."""
     history: dict[str, list] = {}
     for review in reviews:
-        if (isinstance(review, dict) and reviewer_login(review)
+        if (isinstance(review, dict)
                 and gh.review_state(review) in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}):
-            history.setdefault(reviewer_login(review), []).append((_review_when(review), review))
+            # A review with no login is its own history: nothing can be said to lift it.
+            login = reviewer_login(review) or f"#{review.get('id')}"
+            history.setdefault(login, []).append((_review_when(review), review))
     blocking = []
     for dated in history.values():
         if any(when is None for when, _ in dated):

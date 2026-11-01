@@ -138,7 +138,7 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
             if stale_approval.is_stale(st.watch(), number, head):
                 add(FAILURE, stale_approval.line(stale_approval.record(st.watch(), number)))
             on_ruling = gate.is_ruled_approval(latest, loop)   # #905: the adjudicator's, on ACCEPT
-            why.extend((FAILURE, line) for line in _unlifted(raw) if on_ruling)
+            why.extend((FAILURE, line) for line in unlifted(raw) if on_ruling)
 
     gating = ci.gating(ci_state, config.required_checks(loop))
     if gating is None:
@@ -215,9 +215,10 @@ def _escalation(loop: dict, number: int, head: str, marker) -> list[tuple[str, s
     return [(PENDING, "escalated: parked awaiting adjudication")]
 
 
-def _unlifted(reviews: list) -> list[str]:
+def unlifted(reviews: list) -> list[str]:
     """Approved on the adjudicator's ACCEPT ruling (#905), but GitHub still counts a reviewer's
-    change request until it is dismissed: the merge stays blocked, and the check says why."""
+    change request until it is dismissed: the merge stays blocked, and the check (and
+    ``explain``) say why."""
     return [f"approved on the adjudicator's ACCEPT ruling, but {gate.reviewer_login(r)}'s "
             f"changes-requested review {r.get('id')} still blocks GitHub's merge until it is "
             "dismissed" for r in gate.blocking_reviews(reviews)]
