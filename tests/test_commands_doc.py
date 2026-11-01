@@ -57,6 +57,11 @@ class CommandsDoc(unittest.TestCase):
         self.assertNotIn("120 seconds", section)
         self.assertIn("did not finish", section)
         self.assertIn("check `explain` before asking again", section)
+        # A hang outside a GitHub call is not interrupted by any read deadline (#1529 F1).
+        flat = " ".join(section.split())
+        self.assertNotIn("bounded only by that read", flat)
+        self.assertIn("Only the gate's GitHub calls are deadline-limited", flat)
+        self.assertIn("a hang outside a GitHub call has no bound", flat)
 
 
 if __name__ == "__main__":
