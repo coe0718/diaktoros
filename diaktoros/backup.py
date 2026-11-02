@@ -57,14 +57,30 @@ def default_out() -> pathlib.Path:
 
 # ``tempfile.mkstemp`` names, as ``util.atomic_write`` and the route registry make them:
 # ``.<name>.`` plus eight random characters. A live writer owns them and one may vanish between
-# the listing and the read.
-_TEMP_NAME = re.compile(r"^\..+\.[A-Za-z0-9_]{8}$")
+# the listing and the read. ``mkstemp`` draws from lowercase letters, digits and ``_``.
+_TEMP_NAME = re.compile(r"^\..+\.[a-z0-9_]{8}$")
 
 
-def _transient(path: pathlib.Path) -> bool:
-    """A write-in-progress temp file or a ``*.lock`` file (``state.lock``, ``breach.lock``, ...):
-    process-local scaffolding that a restore would write back as litter nothing cleans (#1060)."""
-    return path.name.endswith(".lock") or bool(_TEMP_NAME.match(path.name))
+def _transient(path: pathlib.Path, root: pathlib.Path) -> bool:
+    """Is ``path`` writer scaffolding that a restore would write back as litter (#1060)?
+
+    Only what can be told apart from real state, and only where the writers put it: directly in
+    the directory they own (``root``), never below it (``artifacts/<n>/`` holds a loop's work
+    product, which may legitimately contain any name):
+    - an *empty* ``*.lock`` file: ``state.lock``, ``breach.lock``, ``watchdog.log.lock``,
+      ``gate-failures.lock`` ... are flock files and never hold data, so a ``Cargo.lock`` or any
+      lockfile with content is state and is kept;
+    - a name of the ``mkstemp`` shape above. A user file in ``root`` named like one is skipped."""
+    if path.parent != root:
+        return False
+    if _TEMP_NAME.match(path.name):
+        return True
+    if not path.name.endswith(".lock"):
+        return False
+    try:
+        return path.stat().st_size == 0
+    except OSError:
+        return True      # gone between the listing and now: nothing to archive
 
 
 def _regular_files(root: pathlib.Path) -> list[pathlib.Path]:
@@ -73,7 +89,7 @@ def _regular_files(root: pathlib.Path) -> list[pathlib.Path]:
     if root.is_file():
         return [root]
     return sorted(p for p in root.rglob("*")
-                  if p.is_file() and not p.is_symlink() and not _transient(p))
+                  if p.is_file() and not p.is_symlink() and not _transient(p, root))
 
 
 def _snapshot_ledger(src: pathlib.Path, dest: pathlib.Path) -> None:

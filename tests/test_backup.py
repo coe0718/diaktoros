@@ -365,6 +365,30 @@ class Create(Base):
         self.assertIn(".hidden-config", names)      # a real dotfile is state, not a temp file
         self.assertFalse(names & {"state.lock", "breach.lock", ".queue.json.a1b2c3d4"})
 
+    def test_legitimate_lookalikes_survive_backup_and_restore(self):
+        """#1624 review F1: a lockfile with content, and temp-shaped names below the writers' own
+        directory, are artifacts: archived and brought back by restore."""
+        art = self.state / "artifacts" / "42"
+        art.mkdir(parents=True)
+        keep = {art / "Cargo.lock": "[[package]]\n", art / ".x.abcd1234": "x",
+                art / ".queue.json.a1b2c3d4": "t", art / "state.lock": "",
+                self.state / "Cargo.lock": "[[package]]\n", art / "normal.txt": "n"}
+        for path, text in keep.items():
+            path.write_text(text)
+        (self.state / "state.lock").write_text("")
+        (self.state / ".queue.json.a1b2c3d4").write_text("half")
+        out = self.root / "b.tar.gz"
+        backup.create(out)
+        archived = {f["path"] for f in backup.read_manifest(out)["files"]}
+        self.assertEqual({str(p) for p in keep} - archived, set())
+        self.assertFalse(archived & {str(self.state / "state.lock"),
+                                     str(self.state / ".queue.json.a1b2c3d4")})
+        for path in keep:
+            path.unlink()
+        self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        for path, text in keep.items():
+            self.assertEqual(path.read_text(), text, str(path))
+
     def test_refuses_to_overwrite(self):
         out = self.root / "b.tar.gz"
         out.write_text("keep")
