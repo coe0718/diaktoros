@@ -236,6 +236,35 @@ class OnePR(KindsBase):
         self.assertEqual(sorted(read), [1, 2, 3])
         self.assertEqual(merge_check.decide(kinds[3])[0], merge_check.decide(kinds[1])[0])
 
+    def test_a_refresh_for_one_pr_reads_only_that_pr_from_github(self):
+        # #1652 review, F1: through refresh itself, down to the four GitHub/CI readers.
+        prs = [self.open_pr(5), self.open_pr(6), self.open_pr(7)]
+        calls = []
+        def number_of(path):
+            return int(path.rstrip("/").split("/pulls/")[1].split("/")[0].split("?")[0])
+        def reviews(_loop, number, *_a, **_k):
+            calls.append(("reviews", number))
+            return [review("APPROVED")], ""
+        def fetch(_loop, path, *_a, **_k):
+            calls.append(("pr", number_of(path)))
+            return {**CLEAN, "number": number_of(path)}, ""
+        def files(_loop, number, *_a, **_k):
+            calls.append(("files", number))
+            return [{"filename": "a"}], ""
+        def ci_read(_loop, head, *_a, **_k):
+            calls.append(("ci", head))
+            return ci.CIState(passed=["tests"])
+        self.loop = {**self.loop, "merge_check": "on"}
+        with mock.patch.object(ready.gh, "open_prs_read", return_value=(prs, "")), \
+                mock.patch.object(ready.gh, "reviews_read", side_effect=reviews), \
+                mock.patch.object(ready.gh, "fetch", side_effect=fetch), \
+                mock.patch.object(ready.gh, "pr_files_read", side_effect=files), \
+                mock.patch.object(ready.ci, "read", side_effect=ci_read), \
+                mock.patch.object(merge_check, "post", return_value=(None, "")):
+            merge_check.refresh(self.loop, self.st, only={7})
+        self.assertEqual(sorted(calls, key=str), sorted(
+            [("reviews", 7), ("pr", 7), ("files", 7), ("ci", "7" * 40)], key=str))
+
     def test_without_only_every_open_pr_is_read(self):
         prs = [self.open_pr(5), self.open_pr(6), self.open_pr(7)]
         self.assertEqual(sorted(self.collect(prs, None)[3]), [5, 6, 7])
