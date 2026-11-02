@@ -213,8 +213,17 @@ def _upgrade_prompts(loop: dict, intent: dict, label: str) -> tuple[set, str]:
     if upgraded:
         # Re-read the record (#1418 review, F1): whatever a concurrent rebind or rotation
         # recorded meanwhile is what the heal restores, never this sweep's older snapshot.
+        try:
+            fresh = load(loop) or {}
+        except (OSError, IntentError) as exc:
+            # The record cannot be trusted now, so nothing is restored from the older snapshot
+            # (fail closed): an empty ``intent`` leaves the heal nothing to write.
+            intent.clear()
+            return upgraded, (f"⚠️ Diaktoros {label} — route intent record unreadable after a "
+                              f"prompt upgrade, routes NOT self-healed: {exc}. Re-run "
+                              "`hermes dk apply` or restore the file.")
         intent.clear()
-        intent.update(load(loop) or {})
+        intent.update(fresh)
     return upgraded, ""
 
 
