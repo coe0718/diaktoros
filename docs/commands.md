@@ -980,8 +980,10 @@ hermes dk update --loop "<loop-id>" --apply
 
 By default it only reads. It prints the installed commit, the target commit, how many commits the
 update picks up, the merged PRs among them (squash `title (#N)` and `Merge pull request #N`
-commits; a direct push counts as a commit only), and the exact install line. GitHub's compare lists
-at most 250 commits, so past that the PR list says it is partial.
+commits; only the subject is read, so a commit whose subject ends in `(#N)` counts as PR #N even
+when it is a direct push naming an issue, and a commit naming no PR counts as a commit only), and
+the exact install line. GitHub's compare lists at most 250 commits, so past that the PR list says
+it is partial.
 
 - `--apply` runs that install line with `--ref` set to the target's commit, then
   `hermes dk doctor --loop <id>`, and reports the new commit. It refuses while any run is in
