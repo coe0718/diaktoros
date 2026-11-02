@@ -673,3 +673,75 @@ class ScheduleFailureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArmRecordsOnboardingTests(unittest.TestCase):
+    """#1617: ``arm`` records the ``armed`` stage, and only for a confirmed arm."""
+    setUp = ArmVerifyTests.setUp
+    write_registry = ArmVerifyTests.write_registry
+    arm = ArmVerifyTests.arm
+
+    def stored(self):
+        from diaktoros import onboarding
+        return onboarding._load(config.load_id("widgets"))
+
+    def test_a_confirmed_arm_records_armed_with_the_plan_state(self):
+        rc, out = self.arm(FakeGitHub(hooks(False)))
+        self.assertEqual(rc, 0, out)
+        entry = self.stored()["armed"]
+        self.assertEqual(entry["status"], "passed", entry)
+        self.assertEqual(entry["command"], "hermes dk arm --loop widgets")
+        from diaktoros import onboarding
+        self.assertEqual(onboarding.read(config.load_id("widgets"),
+                                         hook_state=lambda loop: "armed")["armed"], "passed")
+
+    def test_pause_records_nothing(self):
+        rc, out = self.arm(FakeGitHub(hooks(True)), pause=True)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.stored(), {})
+
+    def test_an_arm_that_was_not_confirmed_records_nothing(self):
+        rc, out = self.arm(FakeGitHub(hooks(False), patch_error="HTTP 403"))
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(self.stored(), {})
+
+    def test_an_ok_arm_whose_fresh_plan_is_not_armed_records_nothing(self):
+        from diaktoros import arm_action
+        with patch.object(arm_action, "plan", return_value={"state": "unknown"}):
+            rc, out = self.arm(FakeGitHub(hooks(False)))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.stored(), {})
+
+    def test_a_failed_record_write_keeps_the_exit_code_and_says_so(self):
+        from diaktoros import onboarding
+        with patch.object(onboarding, "record", side_effect=OSError("disk full")):
+            rc, out = self.arm(FakeGitHub(hooks(False)))
+            bad_rc, bad_out = self.arm(FakeGitHub(hooks(False), patch_error="HTTP 403"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("the armed stage could not be recorded", out)
+        self.assertIn("disk full", out)
+        self.assertEqual(bad_rc, 1, bad_out)
+
+    def test_doctor_records_nothing(self):
+        # doctor only produces the runtime:* checks; the stages are selftest's and arm's.
+        args = argparse.Namespace(loop="widgets", offline=True, strict=False, repair=False)
+        with patch.object(gh, "fetch", FakeGitHub(hooks(True)).fetch), \
+                redirect_stdout(io.StringIO()):
+            cli.cmd_doctor(args)
+        self.assertEqual(self.stored(), {})
+
+    def test_fixer_push_setting_survives_a_recording_arm_on_disk(self):
+        for value in (True, False):
+            with self.subTest(unattended_fixer_push=value):
+                file = config.config_dir() / "widgets.json"
+                file.write_text(json.dumps({**raw_loop("widgets"), "unattended_fixer_push": value}))
+                before = file.read_bytes()
+                rc, out = self.arm(FakeGitHub(hooks(False)))
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(self.stored()["armed"]["status"], "passed")   # it really recorded
+                self.assertEqual(file.read_bytes(), before)
+                self.assertIs(json.loads(file.read_text())["unattended_fixer_push"], value)
+                self.assertIs(config.load_id("widgets")["unattended_fixer_push"], value)
+                self.assertNotIn("unattended_fixer_push", json.dumps(self.stored()))
+                rc, out = self.arm(FakeGitHub(hooks(True)), pause=True)
+                self.assertEqual(file.read_bytes(), before)

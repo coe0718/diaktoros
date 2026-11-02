@@ -14,6 +14,7 @@ from .. import (
     doctor,
     gate_shims,
     onboarding,
+    onboarding_record,
     route_intent,
 )
 from ..doctor import hook_checks
@@ -194,6 +195,9 @@ def cmd_arm(args) -> int:
             print(f"[{loop['id']}] {line}")
         if not ok:
             failed.append(loop["id"])
+        onboarding_record.record_arm(
+            loop, pause=args.pause, ok=ok,
+            say=lambda text, lid=loop["id"]: print(f"[{lid}] {text.strip()}"))
     if failed:
         print(f"{'pause' if args.pause else 'arm'} NOT confirmed for: {', '.join(failed)} "
               "— the lines above show what GitHub reports now")
