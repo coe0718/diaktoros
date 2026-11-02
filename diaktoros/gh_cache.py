@@ -7,9 +7,14 @@ So a GET whose answer carries an ``ETag`` is kept here, per login and path, and 
 it asks GitHub whether it changed. A 304 is GitHub's word that the stored body is current:
 nothing stale is ever served.
 
+A 304 validates the body, not the credential that asked: its answer carries only its own
+headers, never a stored one (#1653 review). The reads that exist to inspect the credential itself
+(``IDENTITY``: ``/user``, ``/rate_limit``, ``/app``, whose scopes, expiry and limits are read from
+headers) are never conditional.
+
 Disposable: a missing, unreadable or corrupt entry is a plain GET. Entries are 0600 files of
-at most ``MAX_BYTES``, dropped once unused for ``KEEP_S``. Bodies are what GitHub returned, never
-a token: the login only names the entry.
+at most ``MAX_BYTES`` bytes as stored, dropped once unused for ``KEEP_S``. Bodies are what GitHub
+returned, never a token: the login only names the entry.
 """
 from __future__ import annotations
 
@@ -20,7 +25,8 @@ import pathlib
 import random
 import time
 
-MAX_BYTES = 1_000_000          # a bigger answer is not kept
+MAX_BYTES = 1_000_000          # an entry bigger than this, in bytes as stored, is not kept
+IDENTITY = ("/user", "/rate_limit", "/app")   # credential probes: never conditional
 KEEP_S = 2 * 86400             # an entry unused this long is dropped
 PRUNE_ONE_IN = 50              # a store prunes the directory one time in this many
 
@@ -30,18 +36,24 @@ def directory() -> pathlib.Path:
     return config.home() / "state" / "diaktoros-gh-cache"
 
 
+def cacheable(path: str) -> bool:
+    """Whether a GET of ``path`` may be conditional: every read but a credential probe."""
+    return path.split("?", 1)[0] not in IDENTITY
+
+
 def _file(login: str, path: str) -> pathlib.Path:
     return directory() / hashlib.sha256(f"{login}\0{path}".encode()).hexdigest()
 
 
 def lookup(login: str, path: str) -> dict | None:
-    """The stored ``{"etag", "data", "headers"}`` for this login's GET of ``path``, or None."""
+    """The stored ``{"etag", "data"}`` for this login's GET of ``path``, or None."""
+    if not cacheable(path):
+        return None
     try:
         entry = json.loads(_file(login, path).read_text())
     except (OSError, ValueError):
         return None
-    if (not isinstance(entry, dict) or not isinstance(entry.get("etag"), str)
-            or not isinstance(entry.get("headers"), dict) or "data" not in entry):
+    if not isinstance(entry, dict) or not isinstance(entry.get("etag"), str) or "data" not in entry:
         return None
     return entry
 
@@ -54,16 +66,19 @@ def hit(login: str, path: str) -> None:
         pass
 
 
-def store(login: str, path: str, raw: str, data, headers: dict) -> None:
-    """Keep a 200's body when GitHub gave it an ``ETag``; best effort, never raises."""
+def store(login: str, path: str, data, headers: dict) -> None:
+    """Keep a 200's body when GitHub gave it an ``ETag``; best effort, never raises. Only the
+    body and its ETag: no header is ever served from here."""
     etag = headers.get("etag")
-    if not isinstance(etag, str) or not etag or len(raw) > MAX_BYTES:
+    if not isinstance(etag, str) or not etag or not cacheable(path):
         return
     from .util import atomic_write
     try:
+        entry = json.dumps({"etag": etag, "data": data}, ensure_ascii=False).encode()
+        if len(entry) > MAX_BYTES:
+            return
         directory().mkdir(parents=True, exist_ok=True, mode=0o700)
-        atomic_write(_file(login, path),
-                     json.dumps({"etag": etag, "data": data, "headers": headers}))   # 0600
+        atomic_write(_file(login, path), entry)                                     # 0600
     except (OSError, TypeError, ValueError):
         return
     if random.randrange(PRUNE_ONE_IN) == 0:

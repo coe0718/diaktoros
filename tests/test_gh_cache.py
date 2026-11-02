@@ -29,12 +29,28 @@ class Cache(unittest.TestCase):
         shutil.rmtree(gh_cache.directory(), ignore_errors=True)
         self.addCleanup(shutil.rmtree, gh_cache.directory(), True)
         self.body, self.etag, self.seen = [{"id": 1}], '"v1"', []
+        self.scopes = "repo, read:repo_hook"          # /user's classic-PAT header; "" = fine-grained
         test = self
 
         class Api(http.server.BaseHTTPRequestHandler):
             def answer(self):
                 test.seen.append((self.command, self.headers.get("If-None-Match"),
                                   self.headers.get("Authorization")))
+                if self.path == "/user":
+                    body = json.dumps({"login": "reader"}).encode()
+                    if self.headers.get("If-None-Match") == '"me"':
+                        self.send_response(304)               # as GitHub might: no scopes header
+                        self.send_header("ETag", '"me"')
+                        self.end_headers()
+                        return
+                    self.send_response(200)
+                    self.send_header("ETag", '"me"')
+                    if test.scopes:
+                        self.send_header("X-OAuth-Scopes", test.scopes)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 if self.command == "GET" and self.headers.get("If-None-Match") == test.etag:
                     self.send_response(304)
                     self.send_header("ETag", test.etag)
@@ -46,6 +62,7 @@ class Cache(unittest.TestCase):
                 if test.etag:
                     self.send_header("ETag", test.etag)
                 self.send_header("X-RateLimit-Remaining", "5000")
+                self.send_header("X-Only-On-The-200", "stale")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -77,6 +94,8 @@ class Cache(unittest.TestCase):
         self.assertEqual((second.data, second.error, second.status), ([{"id": 1}], "", 200))
         self.assertEqual([inm for _m, inm, _a in self.seen], [None, '"v1"'])
         self.assertEqual(second.headers.get("x-ratelimit-remaining"), "4999")   # the fresh ones
+        # #1653 review, F1: a 304 vouches for the body only; no header of the old 200 rides along.
+        self.assertNotIn("x-only-on-the-200", second.headers)
 
     def test_a_changed_answer_replaces_the_stored_one(self):
         self.get()
@@ -110,6 +129,34 @@ class Cache(unittest.TestCase):
         entry.write_text("{not json")
         self.assertEqual(self.get().data, [{"id": 1}])
         self.assertEqual([inm for _m, inm, _a in self.seen], [None, None])
+
+    def test_a_rotated_token_reads_its_own_scopes_in_doctor(self):
+        # #1653 review, F1: /user is a credential probe and is never conditional, so after a
+        # classic PAT is rotated to a fine-grained one, doctor reads the new token's headers.
+        from diaktoros.doctor import identity_checks
+        loop = {**LOOP, "seats": {}}
+        def scopes():
+            with mock.patch.object(identity_checks, "_token_roles",
+                                   return_value={"reader": ["reader"]}):
+                checks = identity_checks.check_token_expiry_scopes(loop, offline=False)
+            return {c.name: c.status for c in checks}["token-scopes:reader"]
+        self.assertEqual(scopes(), "verified")
+        self.scopes = ""                                       # rotated: a fine-grained PAT
+        self.assertEqual(scopes(), "skipped")
+        self.assertEqual([inm for _m, inm, _a in self.seen], [None, None])
+
+    def test_the_size_bound_is_bytes_as_stored(self):
+        # #1653 review, F2: the bound counts the stored entry's bytes, multibyte text included.
+        self.body = ["é" * 120]                                # 240 bytes of UTF-8 in the body
+        with mock.patch.object(gh_cache, "MAX_BYTES", 250):
+            self.get()                                         # the entry is over 250 bytes
+            self.assertFalse(gh_cache.directory().exists() and any(gh_cache.directory().iterdir()))
+        with mock.patch.object(gh_cache, "MAX_BYTES", 300):
+            self.get()
+            [entry] = list(gh_cache.directory().iterdir())
+            self.assertLessEqual(entry.stat().st_size, 300)
+            self.assertEqual(self.get().data, ["é" * 120])
+        self.assertEqual([inm for _m, inm, _a in self.seen], [None, None, '"v1"'])
 
     def test_entries_are_private_and_hold_no_token(self):
         self.get()

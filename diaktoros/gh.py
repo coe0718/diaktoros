@@ -265,7 +265,7 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
             headers = {k.lower(): v for k, v in resp.headers.items()}
             parsed = json.loads(raw)
             if method == "GET":
-                gh_cache.store(who, path, raw, parsed, headers)
+                gh_cache.store(who, path, parsed, headers)
             return Response(parsed, "", resp.status, headers)
     except urllib.error.HTTPError as exc:
         try:   # an HTTPError holds the response open: close it, not the collector
@@ -274,9 +274,9 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
             exc.close()
         # Safe after close(): HTTPError.headers is a property over .hdrs, which close() leaves.
         headers = {k.lower(): v for k, v in (exc.headers or {}).items()}
-        if exc.code == 304 and cached:              # unchanged: the stored answer is current
-            gh_cache.hit(who, path)
-            return Response(cached["data"], "", 200, {**cached["headers"], **headers})
+        if exc.code == 304 and cached:              # unchanged: the stored body is current, and
+            gh_cache.hit(who, path)                 # only this answer's own headers are true now
+            return Response(cached["data"], "", 200, headers)
         return Response(None, f"HTTP {exc.code}{f' {detail}' if detail else ''}", exc.code, headers)
     except Exception as exc:
         return Response(None, f"{type(exc).__name__}: {exc}")
