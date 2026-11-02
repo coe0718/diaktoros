@@ -33,6 +33,15 @@ class NumberSettingsTest(unittest.TestCase):
                         config.normalize(raw_loop(**{key: bad}))
                     self.assertIn(repr(key), str(ctx.exception))
 
+    def test_out_of_range_integers_are_a_config_error_not_an_overflow(self):
+        for key in KEYS:
+            for bad in (-(10 ** 400), 10 ** 400):
+                with self.subTest(key=key, negative=bad < 0):
+                    with self.assertRaises(config.ConfigError) as ctx:
+                        config.normalize(raw_loop(**{key: bad}))
+                    self.assertIn(repr(key), str(ctx.exception))
+                    self.assertLess(len(str(ctx.exception)), 300)
+
     def test_a_bad_value_fails_when_the_loop_file_loads(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "widgets.json"

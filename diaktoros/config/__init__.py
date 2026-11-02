@@ -1088,9 +1088,18 @@ def _positive_number(value, key: str, where: str):
     a bool, zero, a negative or ``Infinity``/``NaN`` must fail when the loop file loads."""
     if value is None or value == "":
         return DEFAULTS[key]
-    if (isinstance(value, bool) or not isinstance(value, (int, float))
-            or not math.isfinite(value) or value <= 0):
-        raise ConfigError(f"{where}: {key!r} must be a positive number, got {value!r}")
+    ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+    if ok:
+        try:
+            # float() is what the watchdog does; math.isfinite converts too, so a huge int
+            # raises OverflowError. Refuse an out-of-range number here instead of leaking it.
+            ok = math.isfinite(float(value)) and value > 0
+        except OverflowError:
+            ok = False
+    if not ok:
+        text = repr(value)
+        text = text if len(text) <= 60 else text[:57] + "..."   # not a 400-digit integer whole
+        raise ConfigError(f"{where}: {key!r} must be a positive number, got {text}")
     return value
 
 
