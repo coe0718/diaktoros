@@ -10,7 +10,7 @@ class WireProfile(ProviderProfile):
 
 register_provider(WireProfile(
     name='review-loop-directsdk-wire',
-    display_name='Review loop bounded DirectSDK wire',
+    display_name='Diaktoros bounded DirectSDK wire',
     api_mode='chat_completions', auth_type='api_key',
     env_vars=('OPENAI_API_KEY',),
     base_url='http://127.0.0.1:18761/v1',
