@@ -209,6 +209,49 @@ class Debounce(unittest.TestCase):
         fcntl.flock(fd, fcntl.LOCK_EX)
         self.assertEqual(self.run_scan(lambda: self.fail("lock is held")), 0)
 
+    def test_a_scan_that_raises_is_logged_and_a_later_request_is_still_scanned(self):
+        self.during_sleep = []
+        conflict_scan.request(self.st, now=self.now)
+        scans = []
+
+        def scan():
+            scans.append(self.now)
+            if len(scans) == 1:
+                conflict_scan.request(self.st, now=self.now)     # a merge arrives meanwhile
+                raise RuntimeError("gh exploded")
+        with mock.patch.object(conflict_scan, "log") as log:
+            ran = self.run_scan(scan)                            # must not raise
+        self.assertEqual((len(scans), ran), (2, 1))              # the failure is not counted
+        self.assertIn("RuntimeError: gh exploded", log.call_args.args[0])
+
+    def test_a_failed_scan_is_not_retried_in_a_loop(self):
+        self.during_sleep = []
+        conflict_scan.request(self.st, now=self.now)
+        scans = []
+
+        def scan():
+            scans.append(1)
+            raise ValueError("persistent")
+        with mock.patch.object(conflict_scan, "log"):
+            self.assertEqual(self.run_scan(scan), 0)
+        self.assertEqual(len(scans), 1)
+
+    def test_a_scan_that_raises_does_not_kill_the_watchdog_conflicts_mode(self):
+        import argparse
+        from scripts import watchdog
+        conflict_scan.request(self.st, now=self.now)
+        args = argparse.Namespace(loop="x", drain=False, seat="reviewer", conflicts=True)
+        loop = {"id": "x"}
+        with mock.patch.object(watchdog.config, "load_id", return_value=loop), \
+                mock.patch.object(watchdog.state_mod, "state_for", return_value=self.st), \
+                mock.patch.object(watch_conflicts, "scan_conflicts",
+                                  side_effect=RuntimeError("boom")) as scanned, \
+                mock.patch.object(conflict_scan, "log"), \
+                mock.patch.object(conflict_scan.time, "time", self.clock), \
+                mock.patch.object(conflict_scan.time, "sleep", self.sleep):
+            watchdog.run(args, 600.0)                            # must not raise
+        scanned.assert_called_once()
+
     def test_a_scanner_stops_at_its_lifetime(self):
         self.during_sleep = []
 
