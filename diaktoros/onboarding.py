@@ -73,10 +73,12 @@ _OUTCOME = {"pass": "pass", "verified": "pass", "fail": "fail", "absent": "fail"
             "mismatch": "fail", "warn": "warn", "unknown": "warn", "skip": "skip",
             "skipped": "skip"}
 _SUMMARY_MAX = 240
+FILE = "onboarding.json"
+LOCK = ".onboarding.lock"       # its flock file, beside it
 
 
 def path(loop: dict) -> Path:
-    return config.state_dir(loop) / "onboarding.json"
+    return config.state_dir(loop) / FILE
 
 
 _RANK = {"pass": 0, "skip": 1, "warn": 2, "fail": 3}
@@ -248,7 +250,7 @@ def fingerprint(loop: dict, stage: str, *, pr: tuple | None = None,
 @contextlib.contextmanager
 def _locked(loop: dict):
     root = hostdirs.ensure(config.state_dir(loop), 0o700)
-    with (root / ".onboarding.lock").open("a+b") as lock:
+    with (root / LOCK).open("a+b") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
             yield

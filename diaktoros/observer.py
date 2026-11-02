@@ -245,6 +245,11 @@ def _target(loop: dict, urgent: bool = False):
 # -- the ledger ----------------------------------------------------------------
 
 
+def lock_path(path: pathlib.Path) -> pathlib.Path:
+    """The flock file ``_lock`` keeps beside a ledger file."""
+    return path.with_name(path.name + ".lock")
+
+
 @contextlib.contextmanager
 def _lock(path: pathlib.Path):
     """Serialize ledger read-modify-write against a sibling lock inode.
@@ -253,8 +258,7 @@ def _lock(path: pathlib.Path):
     across the POST. A delivery that hangs must not hold a lock that the next transition needs.
     """
     hostdirs.ensure(path.parent)
-    lock = path.with_name(path.name + ".lock")
-    fd = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    fd = os.open(lock_path(path), os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         os.fchmod(fd, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)

@@ -20,6 +20,7 @@ from .util import LOG_PREFIX
 KEEP = 200
 LIMIT = 300
 FILE = "gate-decisions.jsonl"
+LOCK = "gate-decisions.lock"      # its flock file, beside it
 
 
 def _clip(value, limit: int = LIMIT) -> str:
@@ -47,7 +48,7 @@ def record(loop: dict, gate: str, payload: dict, decision: str, reason: str) -> 
         directory = config.state_dir(loop)
         directory.mkdir(parents=True, exist_ok=True)
         line = json.dumps(_entry(gate, payload, decision, reason), sort_keys=True) + "\n"
-        fd = os.open(directory / "gate-decisions.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        fd = os.open(directory / LOCK, os.O_CREAT | os.O_RDWR, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             path = directory / FILE

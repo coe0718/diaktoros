@@ -739,7 +739,7 @@ State is operational data, not additional user configuration. Do not hand-edit l
 | `fix-asks.json` | The issue fixer's one open question or plan per issue (#483): `open`, `count`, `approved`, `handoff`. |
 | `held-fixes.json`, `held-fixes-said.json` | Issue-fix hand-offs waiting for their origin PR to merge (#324), and the one "waiting for PR" comment already posted for an issue. |
 | `issue-deps.json`, `dep-waits.json`, `dep-waits-said.json` | Declared issue dependencies (#671): `{issue: {prerequisite: {by, at}}}`, the issues whose hand-off waits on one, and the one dependency-wait comment already posted. |
-| `*.lock` | Advisory lock files (`state.lock`, `breach.lock`, `stack-transitions.lock`, `watchdog.log.lock`). Never delete one while a process may be running. |
+| `*.lock` | Advisory lock files (`state.lock`, `breach.lock`, `stack-transitions.lock`, `watchdog.log.lock`). Never delete one while a process may be running. `backup` leaves out the empty lock files the plugin's own writers create (their names come from those writers, plus `.onboarding.lock` and `conflict-scan.lock`) and the half-written temp file of a state file's first write; any other `*.lock` is kept. |
 | `artifacts/<PR>/` | Legacy per-PR workspaces still eligible for cleanup; production isolated turns do not use a shared clone-per-run workspace here. |
 | `isolated-runs/`, `deps/` | Host-created private run work roots and dependency caches for isolated workers. |
 

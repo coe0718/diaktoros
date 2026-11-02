@@ -22,6 +22,9 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import backup, cli, config, migrate, routes  # noqa: E402
+from diaktoros import (conflict_scan, gate_decisions, gate_failures, merge_check, observer,  # noqa: E402
+                       onboarding, route_intent)
+from diaktoros import state as state_mod  # noqa: E402
 from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
 
@@ -407,6 +410,39 @@ class Create(Base):
         self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
         for path, text in keep.items():
             self.assertEqual(path.read_text(), text, str(path))
+
+    def test_locks_made_by_their_writers_and_first_write_temps_are_not_archived(self):
+        """#1651: the locks ``onboarding`` and ``conflict_scan`` really create, and a temp file for
+        a state file that does not exist yet, stay out of the archive; user files of the same
+        shape stay in."""
+        loop = config.all_loops()[0]
+        with onboarding._locked(loop):
+            pass
+        conflict_scan.run(state_mod.LoopState(loop), scan=lambda: None)
+        for name in (onboarding.LOCK, conflict_scan.LOCK):
+            self.assertTrue((self.state / name).is_file(), name)   # the writers made them
+        first_write = [f".{onboarding.FILE}.a1b2c3d4", f".{conflict_scan.FILE}.a1b2c3d4",
+                       f".{state_mod.OBSERVATIONS_FILE}.a1b2c3d4"]
+        for name in first_write:
+            self.assertFalse((self.state / name[1:-9]).exists())    # nothing to replace yet
+            (self.state / name).write_text("half")
+        keep = {"user.lock": "", ".notes.txt.a1b2c3d4": "mine", "Cargo.lock": "x"}
+        for name, text in keep.items():
+            (self.state / name).write_text(text)
+        out = self.root / "b.tar.gz"
+        backup.create(out)
+        manifest = backup.read_manifest(out)
+        archived = {Path(f["path"]).name for f in manifest["files"]}
+        self.assertFalse(archived & {onboarding.LOCK, conflict_scan.LOCK, *first_write})
+        self.assertEqual(set(keep) - archived, set())
+        self.assertEqual({Path(p).name for p in manifest["skipped"]}, set(first_write))
+
+    def test_every_lock_a_writer_names_is_left_out(self):
+        for name in (state_mod.STATE_LOCK, state_mod.LOG_LOCK, state_mod.BREACH_LOCK,
+                     state_mod.TRANSITIONS_LOCK, merge_check.LOCK, gate_decisions.LOCK,
+                     gate_failures.LOCK, onboarding.LOCK, conflict_scan.LOCK, route_intent.LOCK,
+                     observer.lock_path(self.state / state_mod.OBSERVATIONS_FILE).name):
+            self.assertIn(name, backup._LOCK_NAMES)
 
     def test_a_temp_name_left_out_is_reported_not_silent(self):
         (self.state / ".queue.json.a1b2c3d4").write_text("half")

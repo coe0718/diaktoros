@@ -28,8 +28,12 @@ DELAY_S = 45.0
 MAX_LIFETIME_S = 1800.0
 
 
+FILE = "conflict-scan.json"
+LOCK = "conflict-scan.lock"       # the scanner's flock file, beside the request
+
+
 def path(st) -> pathlib.Path:
-    return pathlib.Path(st.dir) / "conflict-scan.json"
+    return pathlib.Path(st.dir) / FILE
 
 
 def due(st) -> float | None:
@@ -53,7 +57,7 @@ def request(st, now: float | None = None) -> float:
 def run(st, scan, *, clock=time.time, sleep=time.sleep, lifetime: float = MAX_LIFETIME_S) -> int:
     """Wait for the requested scan and run ``scan()``, again while new requests arrive. Returns
     how many scans ran; 0 when another scanner holds the lock (it will see the request)."""
-    lock_path = path(st).with_suffix(".lock")
+    lock_path = pathlib.Path(st.dir) / LOCK
     lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     started, handled, ran = clock(), 0.0, 0
     while True:

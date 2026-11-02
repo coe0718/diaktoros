@@ -29,7 +29,10 @@ import time
 
 from .ledger import read_only
 from .config import credentials
-from . import config, gate_shims, route_intent, routes, run_supervisor
+from . import (app_ingress, config, conflict_person, conflict_scan, escalate_pending, gate_decisions,
+               gate_failures, gate_shims, main_check, merge_check, observer, onboarding, ready,
+               route_intent, routes, run_supervisor)
+from . import state as state_mod
 
 VERSION = 1
 MANIFEST = "manifest.json"
@@ -62,11 +65,22 @@ _TEMP_NAME = re.compile(r"^\..+\.[a-z0-9_]{8}$")
 
 
 # The flock files the plugin's own writers keep directly in a state directory (or the gate-failure
-# directory). Exact names, not a ``*.lock`` pattern: a user's ``user.lock`` is state (#1060). The
-# ``<file>.lock`` ones are named by the file they guard (``observer._lock``, ``route_intent._lock``).
-_LOCK_NAMES = frozenset({"state.lock", "breach.lock", "watchdog.log.lock", "gate-failures.lock",
-                         "gate-decisions.lock", "merge-check.lock", "stack-transitions.lock",
-                         "observations.json.lock", f"{route_intent.INTENT_FILE}.lock"})
+# directory). Each name comes from the module that creates the file, so a new lock is named once,
+# by its writer, and cannot be missed here. Exact names, not a ``*.lock`` pattern: a user's
+# ``user.lock`` is state (#1060).
+_LOCK_NAMES = frozenset({
+    state_mod.STATE_LOCK, state_mod.LOG_LOCK, state_mod.BREACH_LOCK, state_mod.TRANSITIONS_LOCK,
+    observer.lock_path(pathlib.Path(state_mod.OBSERVATIONS_FILE)).name, merge_check.LOCK,
+    gate_decisions.LOCK, gate_failures.LOCK, onboarding.LOCK, conflict_scan.LOCK,
+    route_intent.LOCK})
+
+# The files the plugin's own writers replace through ``util.atomic_write`` directly in a state
+# directory, each named by its writer. A ``mkstemp`` temp for one of these is the writer's, whether
+# or not the file it is replacing exists yet (#1651).
+_WRITTEN_NAMES = state_mod.STATE_FILES | frozenset({
+    onboarding.FILE, conflict_scan.FILE, route_intent.INTENT_FILE, gate_failures.LEDGER,
+    gate_decisions.FILE, ready.FILE, main_check.FILE, escalate_pending.FILE, conflict_person.FILE,
+    app_ingress.FILE})
 
 
 def _transient(path: pathlib.Path, root: pathlib.Path) -> bool:
@@ -77,11 +91,13 @@ def _transient(path: pathlib.Path, root: pathlib.Path) -> bool:
     which may legitimately contain any name):
     - an *empty* file with one of the plugin's own lock names (``_LOCK_NAMES``): flock files never
       hold data. Any other ``*.lock`` (``Cargo.lock``, ``user.lock``) is state and is kept;
-    - a name of the ``mkstemp`` shape whose target ``<name>`` exists beside it: what a writer's
-      temp file looks like while it replaces an existing file. A temp-shaped name with no such
-      target is ambiguous (a first write, or a user's file) and is archived, not guessed at.
-    A user file that does have a target beside it and a temp-shaped name is still left out, but
-    never silently: ``_regular_files`` reports it and the manifest lists it."""
+    - a name of the ``mkstemp`` shape for a file a writer replaces: either the target ``<name>``
+      exists beside it (a writer's temp file while it replaces an existing file), or ``<name>`` is
+      one the plugin's writers own (``_WRITTEN_NAMES``: a first write, nothing to replace yet).
+      A temp-shaped name for any other ``<name>`` with no target beside it is ambiguous, perhaps
+      a user's file, and is archived, not guessed at.
+    A user file that does match is still left out, but never silently: ``_regular_files`` reports
+    it and the manifest lists it."""
     if path.parent != root:
         return False
     if path.name in _LOCK_NAMES:
@@ -90,7 +106,8 @@ def _transient(path: pathlib.Path, root: pathlib.Path) -> bool:
         except OSError:
             return True      # gone between the listing and now: nothing to archive
     if _TEMP_NAME.match(path.name):
-        return (root / path.name[1:-9]).is_file()     # strip the leading "." and ".XXXXXXXX"
+        target = path.name[1:-9]                      # strip the leading "." and ".XXXXXXXX"
+        return target in _WRITTEN_NAMES or (root / target).is_file()
     return False
 
 

@@ -36,6 +36,23 @@ from . import config, hostdirs
 from .config import settings_form
 from .util import atomic_write, log, now_iso
 
+# The flock files this module keeps in a loop's state directory, and the state files it writes
+# there. ``backup`` reads these names (never a list of its own) to leave the locks out of an archive
+# and to tell a writer's half-written temp file from a user's file of the same shape.
+STATE_LOCK = "state.lock"
+LOG_LOCK = "watchdog.log.lock"
+BREACH_LOCK = "breach.lock"
+TRANSITIONS_LOCK = "stack-transitions.lock"
+OBSERVATIONS_FILE = "observations.json"
+STATE_FILES = frozenset({
+    "locks.json", "pending.json", "inflight.json", "breach.json", OBSERVATIONS_FILE,
+    "watchdog.json", "stack-transitions.json", "review-situations.json", "github-reads.json",
+    "review-only-conflicts.json", "watchdog.log", "human-holds.json", "held-prs.json",
+    "held-scope.json", "held-fixes.json", "held-fixes-said.json", "late-triage.json",
+    "fix-asks.json", "issue-deps.json", "dep-waits.json", "dep-waits-said.json",
+    "findings.json", "override-checked.json", "reconsider.json", "review-only-caps.json",
+    "shadow-findings.json"})
+
 # Per-thread depth of the state lock we already hold, keyed by lock path. ``flock`` is tied to
 # the open file description, so a second ``open`` + ``flock`` in the same thread would deadlock
 # against itself; nested sections (``take_seat`` queueing under its own claim) reuse the outer one.
@@ -195,7 +212,7 @@ class LoopState:
         self.pending = self.dir / "pending.json"
         self.inflight_file = self.dir / "inflight.json"
         self.breach = self.dir / "breach.json"
-        self.observations = self.dir / "observations.json"
+        self.observations = self.dir / OBSERVATIONS_FILE
         self.watch_file = self.dir / "watchdog.json"
         self.transitions_file = self.dir / "stack-transitions.json"
         # A review's commit_id identifies a head, not the base it reviewed. This ledger
@@ -236,7 +253,7 @@ class LoopState:
         write the ledger, drop the queue entry) and must be one step to every other process.
         Reentrant within a thread, so a locked caller can use the ordinary methods.
         """
-        path = str(self.dir / "state.lock")
+        path = str(self.dir / STATE_LOCK)
         held = getattr(_HELD, "paths", None)
         if held is None:
             held = _HELD.paths = {}
@@ -278,7 +295,7 @@ class LoopState:
     def _log_lock(self):
         """Serialize ``note`` across processes. A leaf lock of its own, never the state lock:
         ``note`` is called from inside ``locked()`` sections and must not wait on others."""
-        fd = os.open(self.dir / "watchdog.log.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        fd = os.open(self.dir / LOG_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             yield
@@ -689,7 +706,7 @@ class LoopState:
     @contextlib.contextmanager
     def _breach_lock(self):
         hostdirs.ensure(self.dir)
-        fd = os.open(self.dir / "breach.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        fd = os.open(self.dir / BREACH_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             yield
@@ -1346,7 +1363,7 @@ class LoopState:
 
     def _transition_write(self, number: int, change) -> dict:
         hostdirs.ensure(self.dir)
-        with (self.dir / "stack-transitions.lock").open("a+") as lock:
+        with (self.dir / TRANSITIONS_LOCK).open("a+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             data = _mapping(self._load(self.transitions_file, {}))
             prior = data.get(str(number))
