@@ -608,7 +608,9 @@ def _shadow_labels(loop: dict, repo: str, number: int, head: str, issue: dict,
     """Add the labels GitHub dropped from a new shadow issue (#1589); '' when it carries them
     all, else why not. GitHub drops create-time labels, silently, for a token that can't set them
     on a new issue (push access), so they are added with the labels endpoint after the POST. The
-    issue stands either way, and is never filed again: a gap is reported, never raised."""
+    issue stands either way, and is never filed again: a gap is reported (and audited), never
+    raised, and neither is a failure to write either audit line once GitHub has confirmed the
+    issue (#1622 review)."""
     def names(found) -> set:
         return {str(x.get("name")).casefold() for x in found or [] if isinstance(x, dict)}
     missing = [x for x in wanted if x.casefold() not in names(issue.get("labels"))]
@@ -620,12 +622,24 @@ def _shadow_labels(loop: dict, repo: str, number: int, head: str, issue: dict,
     except Exception as exc:  # noqa: BLE001 - the issue is filed: report, never raise
         added, why = None, f"{type(exc).__name__}: {exc}"
     if isinstance(added, list):
-        _audit(loop, repo, number, head, "", "reader", "shadow_issue_labels", login)
+        _audit_confirmed(loop, repo, number, head, "shadow_issue_labels", login)
         missing = [x for x in missing if x.casefold() not in names(added)]
     if not missing:
         return ""
+    _audit_confirmed(loop, repo, number, head, "shadow_issue_labels_missing", login)
     return (f"GitHub did not apply {', '.join(missing)} ({why or 'the label write left them off'})"
             f": the reader {login} needs permission to label issues in {repo}")
+
+
+def _audit_confirmed(loop: dict, repo: str, number: int, head: str, operation: str,
+                     login: str) -> None:
+    """The reader's audit line after GitHub confirmed the shadow issue: a failure to write it is
+    said on stderr, never raised, so the filed issue's number is never lost to it."""
+    try:
+        _audit(loop, repo, number, head, "", "reader", operation, login)
+    except Exception as exc:  # noqa: BLE001 - the issue exists: its outcome stands
+        print(f"diaktoros broker: audit record {operation} not written for #{number}: "
+              f"{type(exc).__name__}: {exc}", file=sys.stderr)
 
 
 def ruling_comment_body(verdict: str, body: str, *, head: str, turn_key: str, run_id: str,

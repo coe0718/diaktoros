@@ -31,7 +31,7 @@ def _same(title: str, filed: list[str]) -> bool:
 def file_pending(loop: dict, db=None, now: float | None = None,
                  log=lambda _msg: None) -> list[int]:
     """File what is due; the numbers of the issues filed this call. An issue GitHub filed
-    without some of its labels (#1589) is posted, with the gap recorded and logged."""
+    without some of its labels (#1589) is ``unlabelled``, with the gap recorded and logged."""
     from . import run_supervisor
     if not config.shadow_file_issues(loop):
         return []
@@ -94,8 +94,10 @@ def file_pending(loop: dict, db=None, now: float | None = None,
             sup.filed_issue_status(row["run_id"], filing, "uncertain", error=why)
             continue
         sup.filed_issue_status(row["run_id"], filing, "posted", issue_number=issue)
-        sup.shadow_issue_status(row["run_id"], row["seq"], "posted", issue_number=issue,
-                                error=f"labels: {gap}"[:200] if gap else None)
+        # Filed either way (the hold and lineage read filed_issues); a shadow row whose labels
+        # did not land is ``unlabelled``, not ``posted`` (#1589).
+        sup.shadow_issue_status(row["run_id"], row["seq"], "unlabelled" if gap else "posted",
+                                issue_number=issue, error=f"labels: {gap}"[:200] if gap else None)
         if gap:
             log(f"shadow-found issue #{issue} filed without its labels: {gap}")
         filed.append(issue)

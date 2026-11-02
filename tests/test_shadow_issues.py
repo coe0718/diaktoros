@@ -192,10 +192,12 @@ class FilePending(unittest.TestCase):
                         "state,created,updated) VALUES('r',1,?,7,?,?,?,1,'posted',1,1)",
                         (REPO, HEAD, title, " ".join(title.casefold().split())))
 
-    def file(self, reviews=APPROVED, now=None, branch="fix-7", labelled=None, logged=None):
+    def file(self, reviews=APPROVED, now=None, branch="fix-7", labelled=None, logged=None,
+             audit=None):
         """One sweep against a fake GitHub. It keeps the labels a new issue is created with, as
         GitHub does for a token with push access; with ``labelled`` it drops them (#1589), and
-        the labels endpoint answers with ``labelled(names)``: the issue's labels, or a refusal."""
+        the labels endpoint answers with ``labelled(names)``: the issue's labels, or a refusal.
+        ``audit``: what stands in for the broker's audit writer (default: a no-op mock)."""
         posts = []
 
         def write(loop, path, method, body, login):
@@ -208,7 +210,7 @@ class FilePending(unittest.TestCase):
         with mock.patch.object(gh, "reviews", return_value=reviews), \
                 mock.patch.object(gh, "pr", return_value=pr), \
                 mock.patch.object(broker, "_write", side_effect=write), \
-                mock.patch.object(broker, "_audit"):
+                mock.patch.object(broker, "_audit", **({} if audit is None else audit)):
             filed = shadow_issues.file_pending(self.loop, db=self.db, now=now,
                                                log=(logged if logged is not None else []).append)
         return filed, posts
@@ -359,7 +361,7 @@ class FilePending(unittest.TestCase):
         refused = (None, "HTTP 403: Resource not accessible")
         filed, posts = self.file(labelled=lambda _names: refused, logged=logged)
         self.assertEqual((filed, len(posts)), ([101], 2))
-        self.assertEqual(self.state(run), "posted")             # it is filed: never again
+        self.assertEqual(self.state(run), "unlabelled")         # filed, not fully: never again
         self.assertIn("labels: GitHub did not apply bug, shadow-found (HTTP 403", self.error(run))
         self.assertIn("the reader reader needs permission to label issues", self.error(run))
         [line] = logged
@@ -371,8 +373,48 @@ class FilePending(unittest.TestCase):
         def boom(_names):
             raise TimeoutError("read timed out")
         self.assertEqual(self.file(labelled=boom)[0], [101])
-        self.assertEqual(self.state(run), "posted")
+        self.assertEqual(self.state(run), "unlabelled")
         self.assertIn("(TimeoutError: read timed out)", self.error(run))
+
+    def audited(self, labelled):
+        """The operations the real broker audit records for one filing (#1622 review, F1)."""
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.loop = {**self.loop, "state_dir": tmp.name}
+        self.file(labelled=labelled, audit={"wraps": broker._audit})
+        lines = (Path(tmp.name) / "broker-audit.jsonl").read_text().splitlines()
+        return [json.loads(line)["operation"] for line in lines]
+
+    def test_a_label_gap_is_in_the_audit_record(self):
+        self.recorded("A finding")
+        self.assertEqual(self.audited(lambda _names: (None, "HTTP 403")),
+                         ["file_shadow_issue", "shadow_issue_labels_missing"])
+
+    def test_labels_added_after_the_post_are_audited_as_added(self):
+        self.recorded("A finding")
+        self.assertEqual(self.audited(lambda names: ([{"name": x} for x in names], "")),
+                         ["file_shadow_issue", "shadow_issue_labels"])
+
+    def test_an_audit_failure_after_the_labels_landed_keeps_the_filed_issue(self):
+        # #1622 review, F3: GitHub confirmed the issue and its labels; the audit line can't be
+        # written. The issue's number is kept, and it is never filed again.
+        run = self.recorded("A finding")
+        failing = {"side_effect": [None, OSError("audit disk full")]}
+        filed, _posts = self.file(labelled=lambda names: ([{"name": x} for x in names], ""),
+                                  audit=failing)
+        self.assertEqual(filed, [101])
+        with ledger.connect(self.db) as con:
+            self.assertEqual(con.execute("SELECT state, issue_number FROM shadow_issues WHERE "
+                                         "run_id=?", (run,)).fetchone()[:], ("posted", 101))
+        self.assertEqual(self.file()[1], [])
+
+    def test_an_unlabelled_filing_counts_toward_the_daily_cap(self):
+        self.loop = {**self.loop, "shadow": {**self.loop["shadow"], "issues_daily": 1}}
+        self.recorded("A finding")
+        self.assertEqual(self.file(labelled=lambda _names: (None, "HTTP 403"))[0], [101])
+        self.recorded("Another, unrelated topic entirely")
+        self.assertEqual(self.file()[0], [])                     # the day's one is spent
 
     def test_a_label_the_endpoint_leaves_off_is_named(self):
         run = self.recorded("A finding")

@@ -332,7 +332,7 @@ class LedgerRecords:
     def shadow_issues_posted_since(self, repo: str, since: float) -> int:
         with self._connect() as con:
             return con.execute("SELECT COUNT(*) FROM shadow_issues WHERE repo=? AND state IN "
-                               "('posting','posted','uncertain') AND updated>=?",
+                               "('posting','posted','unlabelled','uncertain') AND updated>=?",
                                (repo, since)).fetchone()[0]
 
     def shadow_issue_status(self, run_id: str, seq: int, state: str, *, expect: str | None = None,
