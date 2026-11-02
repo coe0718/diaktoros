@@ -741,7 +741,7 @@ def _parallel_lines(loop: dict) -> list[str]:
              for seat in ("reviewer", "fixer")
              if (loop["seats"].get(seat) or {}).get("concurrency") is not None]
     lines.append("parallel now: " + " · ".join(
-        f"{seat} {config.seat_concurrency(loop, seat)}" for seat in ("reviewer", "fixer"))
+        f"{seat} {config.seat_concurrency(loop, seat)}" for seat in config.capacity_seats(loop))
         + "   (1 = serialized; everything above the limit queues)")
     return lines
 

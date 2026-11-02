@@ -103,7 +103,7 @@ def cmd_list(args) -> int:
         return 2 if skipped else 0
     for loop in loops:
         seats = " ".join(f"{seat}={config.seat_concurrency(loop, seat)}"
-                         for seat in ("reviewer", "fixer"))
+                         for seat in config.capacity_seats(loop))
         print(f"{loop['id']:<20} {loop['repo']:<30} cap={loop['cap']} {seats} "
               f"fixers={','.join(loop['fixers'])} reviewers={','.join(loop['reviewers'])}")
     return 2 if skipped else 0
@@ -155,7 +155,7 @@ def cmd_status(args) -> int:
         print("  parallel:   " + " · ".join(
             f"{seat} {config.seat_concurrency(loop, seat)}"
             + ("" if config.seat_concurrency(loop, seat) > 1 else " (serialized)")
-            for seat in ("reviewer", "fixer")))
+            for seat in config.capacity_seats(loop)))
         for line in _pinned_seat_notes(loop):
             print(f"  note:       {line}")
         print(f"  clone:      {loop['clone'] or '(none)'}")
