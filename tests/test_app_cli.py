@@ -284,6 +284,27 @@ class Setup(Base):
         self.assertFalse(any(f"token file for {BOT_REV}" in q for q in asked), asked)
         self.assertIn(f"--token={tfs.FIX}={self.pats['fix']}", argv)
 
+    def test_an_app_hook_admin_is_not_asked_for_a_token_file(self):
+        key, admin = self.key("rev"), "admin[bot]"
+        admin_key = self.key("admin")
+        args = self.argv("--reviewer", BOT_REV, "--fixer", tfs.FIX, "--reviewer-profile", "critic",
+                         "--fixer-profile", "coder", "--read-token", tfs.READER,
+                         "--read-token-file", str(self.pats["read"]),
+                         "--fixer-token", str(self.pats["fix"]),
+                         "--host", "https://gateway.example", "--admin-token", admin,
+                         "--app", f"{BOT_REV}=5416187:{key}", "--app", f"{admin}=9:{admin_key}")
+        asked = []
+        orig = setup_command._ask
+        setup_command._ask = lambda question, default="", interactive=False: \
+            asked.append(question) or default
+        self.addCleanup(setattr, setup_command, "_ask", orig)
+        argv, got = setup_command._setup_init_argv(args, "acme/widgets", "widgets",
+                                                   interactive=True)
+        self.assertEqual(got, admin)
+        self.assertIn(f"--app={admin}=9:{admin_key}", argv)
+        self.assertFalse(any(a.startswith(f"--token={admin}=") for a in argv), argv)
+        self.assertFalse(any(f"token file for {admin}" in q for q in asked), asked)
+
 
 if __name__ == "__main__":
     unittest.main()

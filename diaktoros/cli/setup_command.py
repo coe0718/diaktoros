@@ -158,7 +158,8 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
              _ask("hook admin login, to create the repo hooks (blank: add them yourself)", "",
                   interactive))
     admin_file = ""
-    if admin and admin.lower() not in {x.lower() for x in (reviewer, fixer, reader) if x}:
+    if (admin and not has_app(admin)
+            and admin.lower() not in {x.lower() for x in (reviewer, fixer, reader) if x}):
         admin_file = ask(args.admin_token_file, f"token file for {admin}")
     argv = ["init", f"--repo={repo}", f"--id={loop_id}", f"--reviewer={reviewer}",
             f"--fixer={fixer}", f"--reviewer-profile={reviewer_profile}",
