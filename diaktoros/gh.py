@@ -37,6 +37,9 @@ from .util import log, login_entry
 from . import envnames
 
 API = "https://api.github.com"
+# The reads that inspect the credential itself, read for their headers (scopes, expiry, limits):
+# never conditional (#1646, gh_cache), since a 304 vouches for a body, not for who asked.
+CREDENTIAL_PROBES = ("/user", "/rate_limit", "/app")
 REVIEW_PAGE_SIZE = 100
 # A persistently full endpoint must not loop forever or authorize a partial history.
 MAX_REVIEW_PAGES = 100
@@ -247,18 +250,26 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
         tok = token(loop, login)
     except GitHubError as exc:
         return Response(None, str(exc))
+    from . import gh_cache
+    who = str(login or loop.get("read_token") or "")
+    # #1646: a GET asks whether its stored answer changed; a 304 is free on the rate limit.
+    cached = gh_cache.lookup(who, path) if method == "GET" else None
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
         f"{API}{path}", data=data, method=method,
         headers={"Accept": "application/vnd.github+json", "Authorization": f"token {tok}",
-                 "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "diaktoros"})
+                 "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "diaktoros",
+                 **({"If-None-Match": cached["etag"]} if cached else {})})
     from .config.host_guards import guard_network
     guard_network(req.full_url)         # under the test guard: loopback fakes only
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode() or "null"
             headers = {k.lower(): v for k, v in resp.headers.items()}
-            return Response(json.loads(raw), "", resp.status, headers)
+            parsed = json.loads(raw)
+            if method == "GET":
+                gh_cache.store(who, path, parsed, headers)
+            return Response(parsed, "", resp.status, headers)
     except urllib.error.HTTPError as exc:
         try:   # an HTTPError holds the response open: close it, not the collector
             detail = one_line(exc.read().decode(errors="replace"), 120)
@@ -266,6 +277,9 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
             exc.close()
         # Safe after close(): HTTPError.headers is a property over .hdrs, which close() leaves.
         headers = {k.lower(): v for k, v in (exc.headers or {}).items()}
+        if exc.code == 304 and cached:              # unchanged: the stored body is current, and
+            gh_cache.hit(who, path)                 # only this answer's own headers are true now
+            return Response(cached["data"], "", 200, headers)
         return Response(None, f"HTTP {exc.code}{f' {detail}' if detail else ''}", exc.code, headers)
     except Exception as exc:
         return Response(None, f"{type(exc).__name__}: {exc}")

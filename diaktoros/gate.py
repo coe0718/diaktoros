@@ -56,6 +56,8 @@ def context(payload: dict):
     loop = payload_loop(payload)
     # A gate's failed GitHub read ends in [SILENT]; keep it on disk for the watchdog and explain.
     gh.record_failures()
+    from . import gh_cache
+    gh_cache.enable_writes()            # #1646: a gate is a writer process: it keeps the GET cache
     _record_decisions(loop, payload)
     from . import app_ingress
     if config.app_ingress(loop) and app_ingress.woken_by_repo_hook():
