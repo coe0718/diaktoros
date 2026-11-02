@@ -370,7 +370,7 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
         return (f"cancelled by an operator, no external write — a new head queues a fresh run; "
                 f"to re-arm this one: hermes dk retry --loop {loop_id} --pr {row['pr']} "
                 f"--seat {row['seat']}")
-    if row['write'] is None and ((row['state'] == 'cancelled' and run_supervisor.policy_cancelled(row['error']))
+    if row.get('write') is None and ((row['state'] == 'cancelled' and run_supervisor.policy_cancelled(row['error']))
                                  or run_supervisor.policy_hold(row['error'])):
         # The retry names the row's own seat: `retry --seat fixer` filters an issue_fixer row out.
         if row['seat'] == 'issue_fixer':
@@ -384,7 +384,7 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
                 f"(`{config.fixer_push_enable_command(loop_id)}`), then re-admit it: `hermes dk retry --loop "
                 f"{loop_id} --pr {row['pr']} --seat {row['seat']}` (an operator retry admits it "
                 f"under the policy then in force; a redelivered event never does)")
-    if row['write'] is None:
+    if row.get('write') is None:
         rearm = (f"re-arm: hermes dk retry --loop {loop_id} "
                  f"--pr {row['pr']} --seat {row['seat']}")
         if row['state'] == 'failed' and BUDGET_KILL in (row['error'] or ''):
