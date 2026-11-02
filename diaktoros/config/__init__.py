@@ -1082,6 +1082,30 @@ def _as_int(value, key: str, where: str) -> int:
         raise ConfigError(f"{where}: {key!r} must be a whole number, got {value!r}") from None
 
 
+def _positive_number(value, key: str, where: str):
+    """A positive, finite number setting (``null`` or ``""`` = the default), or a ConfigError
+    naming it. The watchdog does ``float(...)``/``int(...)`` on these mid-sweep, so a string,
+    a bool, zero, a negative or ``Infinity``/``NaN`` must fail when the loop file loads."""
+    if value is None or value == "":
+        return DEFAULTS[key]
+    ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+    if ok:
+        try:
+            # float() is what the watchdog does; math.isfinite converts too, so a huge int
+            # raises OverflowError. Refuse an out-of-range number here instead of leaking it.
+            ok = math.isfinite(float(value)) and value > 0
+        except OverflowError:
+            ok = False
+    if not ok:
+        try:
+            text = repr(value)
+        except (ValueError, RecursionError):   # an int past the 4300-digit str limit, even nested
+            text = f"an unprintable {type(value).__name__}"
+        text = text if len(text) <= 60 else text[:57] + "..."   # not a 400-digit integer whole
+        raise ConfigError(f"{where}: {key!r} must be a positive number, got {text}")
+    return value
+
+
 def load_id_for_reader_repair(loop_id: str, reader: str) -> dict | None:
     """The loop ``set --read-token`` may repair: one whose *only* defect is a missing reader.
 

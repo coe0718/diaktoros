@@ -108,6 +108,8 @@ def _check_limits(loop: dict, where: str) -> None:
     for key in ("review_only_cap", "review_only_daily"):
         loop[key] = lists._check_review_only_limit(loop.get(key), key, where)
     loop["ci_fix_cap"] = lists.check_ci_fix_cap(loop.get("ci_fix_cap"), where)
+    for key in ("cooldown_h", "marker_grace_min"):
+        loop[key] = config._positive_number(loop.get(key), key, where)
 
 
 def _check_tokens(loop: dict, where: str) -> None:

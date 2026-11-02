@@ -176,8 +176,8 @@ The last command removes the reviewer's stored cap. Adjudicator overrides are fi
 | `turn_budget_s` | `900` | One agent turn's wall-clock budget, 60–14400 seconds. Includes reading, building, testing, and submission inside the turn, not host prefetch/drain. |
 | `seats.<seat>.turn_budget_s` | Loop budget | Override for reviewer, fixer, adjudicator, or triage; same 60–14400 range. Missing, `null`, or empty inherits. |
 | `grace_min` | `35` | Quiet-head stall grace in minutes, raised per seat to cover its whole worst-case turn. |
-| `marker_grace_min` | `60` | Grace for a marker awaiting adjudication. For an `adjudicating` marker without a live run, the threshold is at least the adjudicator's whole turn; with a live run it is not a stall. |
-| `cooldown_h` | `6` | Hours between repeated alerts for the same persistent stall or stuck entry. A cleared condition that returns can alert immediately. |
+| `marker_grace_min` | `60` | Grace for a marker awaiting adjudication. For an `adjudicating` marker without a live run, the threshold is at least the adjudicator's whole turn; with a live run it is not a stall. A positive number; `null` means the default; anything else (text, a bool, zero, a negative) is refused when the loop file loads. |
+| `cooldown_h` | `6` | Hours between repeated alerts for the same persistent stall or stuck entry. A cleared condition that returns can alert immediately. A positive number; `null` means the default; anything else is refused when the loop file loads. |
 | `ttl_min` | `45` | Seat-claim backstop in minutes, raised to the seat's whole worst-case turn. The watchdog's dead-claim threshold is twice that effective TTL. |
 | `inflight_ttl_min` | `10` | Minutes a same-head in-flight mark suppresses duplicate handling. The run ledger provides additional durable deduplication. |
 
