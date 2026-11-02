@@ -17,12 +17,15 @@ from .operations import _one_loop
 PR_LIST_MAX = 20
 _SQUASH = re.compile(r"\s*\(#(\d+)\)\s*$")
 _MERGE = re.compile(r"^Merge pull request #(\d+)\b")
+_INNER_REF = re.compile(r"\s*\(#\d+\)")
 
 
 def merged_prs(commits) -> list[tuple[int, str]]:
     """``(number, title)`` of each PR the commits merged, newest first. A squash or rebase merge
     names it as ``title (#N)``; a merge commit as ``Merge pull request #N`` with the title below.
-    A commit that names no PR (a direct push) is counted as a commit only."""
+    A commit that names no PR is counted as a commit only. Only the subject is read, so a direct
+    push whose subject ends in ``(#N)`` counts as PR #N, issue or not. A ``(#N)`` inside the title
+    (a revert of a squash commit) is dropped from the shown title."""
     found: dict[int, str] = {}
     for commit in reversed(list(commits)):
         message = str(((commit.get("commit") or {}).get("message")) or "")
@@ -31,11 +34,12 @@ def merged_prs(commits) -> list[tuple[int, str]]:
         merge = _MERGE.match(first)
         if merge:
             title = next((ln.strip() for ln in lines[1:] if ln.strip()), "")
-            found.setdefault(int(merge.group(1)), title)
+            found.setdefault(int(merge.group(1)), _INNER_REF.sub("", title).strip())
             continue
         squash = _SQUASH.search(first)
         if squash:
-            found.setdefault(int(squash.group(1)), _SQUASH.sub("", first).strip())
+            title = _INNER_REF.sub("", _SQUASH.sub("", first)).strip()
+            found.setdefault(int(squash.group(1)), title)
     return list(found.items())
 
 

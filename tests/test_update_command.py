@@ -214,6 +214,11 @@ class UpdateCommand(unittest.TestCase):
                                      commit("no pr"), commit("A again (#1)")])
         self.assertEqual(got, [(1, "A again"), (2, "T2")])      # newest first, one entry per PR
 
+    def test_merged_prs_drops_the_reverted_pr_ref_from_the_title(self):
+        got = cli_update.merged_prs([commit('Revert "Fix a thing (#876)" (#900)'),
+                                     commit("Merge pull request #5 from a/b\n\nUndo (#4) thing")])
+        self.assertEqual(got, [(5, "Undo thing"), (900, 'Revert "Fix a thing"')])
+
     def test_registered_on_the_real_parser(self):
         class Ctx:
             def register_cli_command(self, name, summary, setup, **kw):
