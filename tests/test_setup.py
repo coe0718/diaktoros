@@ -29,6 +29,11 @@ LOOP_ID = "setupwidgets"
 LOOP_FILE = t.LOOPS_DIR / f"{LOOP_ID}.json"
 
 
+def onboarding_path(loop: dict) -> pathlib.Path:
+    from diaktoros import onboarding
+    return onboarding.path(loop)
+
+
 def host_layout(root: pathlib.Path) -> dict[str, pathlib.Path]:
     """A Hermes checkout, its venv, a uv-style Python install and a rust toolchain."""
     python = root / "uv" / "python"
@@ -402,6 +407,124 @@ class Setup(unittest.TestCase):
         self.assertIn("not armed", out)          # the arm question defaults to no
         self.assertTrue(any("Arm the repo hooks" in q for q in asked), asked)
         self.assertTrue(any(f"[{t.REVIEWER}]" in q for q in asked), asked)   # the form's default
+
+    # -- #1618: setup resumes from the onboarding record ------------------------------------
+
+    def installed(self):
+        """A finished first install, then the seats and the hooks pinned for the record."""
+        from diaktoros import onboarding, seat_model
+        self.assertEqual(self.setup_cli(*self.flags())[0], 0)
+        self.hooks = "armed"
+        for target, value in (
+                (seat_model, ("resolve_seat", lambda loop, seat, settings, resolver=None:
+                              seat_model.SeatInference(seat, "p", "profile", "prov", "model-a",
+                                                       "https://api.example/v1/chat/completions",
+                                                       "k" * 12))),
+                (onboarding, ("_hook_state", lambda loop: self.hooks))):
+            patcher = patch.object(target, *value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.ran.clear()
+        return config.load_id(LOOP_ID)
+
+    def record(self, loop, stage, status="passed"):
+        from diaktoros import onboarding
+        return onboarding.record(loop, stage, status, f"hermes dk {stage}", f"{stage} ok",
+                                 runtime_file=self.runtime_file,
+                                 hook_state=lambda _loop: self.hooks)
+
+    def record_checks(self, loop):
+        for stage, status in (("identities", "passed"), ("loop", "passed"),
+                              ("model", "skipped")):
+            self.record(loop, stage, status)
+
+    def test_a_current_record_skips_doctor_and_selftest_and_says_so(self):
+        loop = self.installed()
+        self.record_checks(loop)
+        rc, out = self.setup_cli(*self.flags())
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.ran, [])
+        self.assertIn("skipped doctor and selftest --no-model", out)
+        self.assertIn("identities passed, loop passed, model skipped", out)
+        # The end of setup is the onboard summary, the same function `onboard` prints with.
+        self.assertIn(f"[{LOOP_ID}] onboarding for {t.REPO}", out)
+        self.assertIn("next: hermes dk selftest --loop " + LOOP_ID, out)
+
+    def test_a_partial_record_resumes_at_the_first_stage_it_does_not_cover(self):
+        loop = self.installed()
+        self.record(loop, "identities")
+        rc, out = self.setup_cli(*self.flags())
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.ran, ["doctor", "selftest"])
+        self.assertIn("starting at the loop stage (not_attempted)", out)
+        self.assertNotIn("skipped doctor", out)
+
+    def test_a_failed_stage_is_not_skipped(self):
+        loop = self.installed()
+        self.record(loop, "identities")
+        self.record(loop, "loop", "failed")
+        self.record(loop, "model", "skipped")
+        rc, out = self.setup_cli(*self.flags())
+        self.assertEqual(self.ran, ["doctor", "selftest"], out)
+        self.assertIn("starting at the loop stage (failed)", out)
+
+    def test_a_changed_fingerprint_restarts_at_the_stale_stage(self):
+        loop = self.installed()
+        self.record_checks(loop)
+        # The runtime file feeds the loop stage's fingerprint (identities does not read it).
+        data = json.loads(self.runtime_file.read_text())
+        data["seats"] = {"reviewer": {"model": "changed"}}
+        self.runtime_file.write_text(json.dumps(data))
+        self.runtime_file.chmod(0o600)
+        rc, out = self.setup_cli(*self.flags())
+        self.assertEqual(self.ran, ["doctor", "selftest"], out)
+        self.assertIn("starting at the loop stage (stale: loop fingerprint changed", out)
+        self.assertNotIn("skipped doctor", out)
+
+    def test_an_armed_record_skips_arm_even_with_arm_and_a_changed_hook_state_runs_it(self):
+        loop = self.installed()
+        self.record_checks(loop)
+        self.record(loop, "armed")
+        rc, out = self.setup_cli(*self.flags("--arm"))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.ran, [])
+        self.assertIn("skipped arm: armed in the onboarding record", out)
+        self.hooks = "paused"                     # the hooks were paused since
+        rc, out = self.setup_cli(*self.flags("--arm"))
+        self.assertEqual(self.ran, ["arm"], out)
+        self.assertIn("starting at the armed stage (stale: ", out)
+
+    def test_a_dry_run_over_a_current_record_writes_nothing(self):
+        loop = self.installed()
+        self.record_checks(loop)
+        self.record(loop, "armed")
+        files = [LOOP_FILE, self.runtime_file, onboarding_path(loop)]
+        before = [(f.read_bytes(), f.stat().st_mtime_ns) for f in files]
+        jobs = list(self.hermes.jobs)
+        rc, out = self.setup_cli(*self.flags("--dry-run", "--arm"))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([(f.read_bytes(), f.stat().st_mtime_ns) for f in files], before)
+        self.assertEqual((self.ran, self.hermes.jobs), ([], jobs))
+
+    def test_resuming_leaves_unattended_fixer_push_as_it_was(self):
+        loop = self.installed()
+        self.record_checks(loop)
+        self.record(loop, "armed")
+        bytes_before = LOOP_FILE.read_bytes()
+        pushing = config.unattended_fixer_push_enabled(loop)
+        rc, out = self.setup_cli(*self.flags("--arm"))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(LOOP_FILE.read_bytes(), bytes_before)
+        self.assertEqual(config.unattended_fixer_push_enabled(config.load_id(LOOP_ID)), pushing)
+        self.assertFalse(pushing)
+        self.assertIn("unattended fixer pushes: off", out)
+
+    def test_without_a_record_every_step_runs_and_the_summary_names_the_next_command(self):
+        self.installed()
+        rc, out = self.setup_cli(*self.flags())
+        self.assertEqual(self.ran, ["doctor", "selftest"], out)
+        self.assertNotIn("skipped", out)
+        self.assertIn("next: hermes dk selftest", out)
 
     def test_without_a_terminal_it_asks_for_yes(self):
         tty = io.StringIO()

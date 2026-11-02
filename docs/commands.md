@@ -365,12 +365,21 @@ using the same code as the command named in it:
    already exists is kept as it is.
 3. **The watchdog.** It schedules the shared watchdog job, only if it is missing.
 4. **Checks.** It runs [`doctor`](#doctor) and [`selftest --no-model`](#selftest). Any ❌ stops it
-   here, with the fix line above.
+   here, with the fix line above. If the [onboarding record](#onboard) already has `identities`
+   and `loop` `passed` and `model` `passed` or `skipped`, each still current, it skips both and
+   says so; after a fingerprint change it starts over at the first stale stage and names what
+   changed.
 5. **The merge check.** Only when the loop posts `diaktoros/review` (an App reviewer, or
    `merge_check` `on`) and the base does not require it yet: it offers [`protect`](#protect)
    (the question defaults to no; `--protect` says yes). Declining keeps going: the check is
    posted, but the merge button ignores it until it is required.
 6. **Arm.** Only after a clean pass, and only if you say yes (the question defaults to no).
+   Skipped, with a line saying so, when the record has `armed` `passed` and the hooks are still
+   as recorded (`--arm` included); a stale `armed` stage asks again.
+
+At the end (also when step 4 stops it) `setup` prints the [`onboard`](#onboard) summary: each
+stage's status and the next command, read-only. `--dry-run` stops before steps 4 to 6 and
+prints no summary.
 
 ```bash
 hermes dk setup --repo "<owner>/<repository>"
@@ -381,6 +390,12 @@ Running it again is safe: whatever is already in place is kept, so a second run 
 is missing or broken. `--dry-run` shows every step and writes nothing. `--yes` asks no questions:
 your flags and the settings form are the answers and every confirmation is yes, except arming,
 which still needs `--arm`. Without a terminal (in a script), it refuses unless you pass `--yes`.
+
+Resuming reads the onboarding record, which `selftest` and `arm` write (#1617). A loop whose
+checks were never recorded (verified by hand, or before #1617) runs every step as before. The
+record does not know about `doctor`: a `runtime:*` problem `doctor` alone finds is not seen
+while the record is current, so run `hermes dk doctor` yourself after changing the host.
+`setup` never changes `unattended_fixer_push`.
 
 `setup` asks "Adjudicate a PR whose rounds are spent? Profile [blank = no]" (or takes
 `--adjudicator-profile`; the plugin setting is the default) and, on a profile, passes
