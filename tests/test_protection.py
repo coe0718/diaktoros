@@ -90,6 +90,18 @@ class Read(Fake):
         self.rules = []
         self.assertEqual(protection.read(app_loop()).sources, [9])     # a listed check, not twice
 
+    def test_a_stored_unicode_digit_app_id_is_none_not_a_crash(self):
+        def stored(app_id):
+            loop = app_loop()
+            loop["apps"]["r[bot]"]["app_id"] = app_id
+            return protection.reviewer_app_id(loop)
+        self.assertEqual(stored("5"), 5)
+        self.assertEqual(stored(7), 7)
+        for bad in ("²", "٣", "５", "x"):      # superscript, Arabic-Indic, fullwidth: isdigit() but not int()
+            with self.subTest(app_id=bad):
+                self.assertIsNone(stored(bad))
+        self.assertIsNone(protection.reviewer_app_id(pat_loop()))
+
     def test_unread_answers_are_kept_apart_from_an_unprotected_base(self):
         self.assertTrue(protection.read(app_loop()).known)             # 404s: nothing required
         self.rules, self.classic = None, "forbidden"

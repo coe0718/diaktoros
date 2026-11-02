@@ -86,6 +86,8 @@ class Init(Base):
                           (f"acme-reviewer=5:{good}", "not an App's bot login"),
                           (f"{BOT_REV}=five:{good}", "not a number"),
                           (f"{BOT_REV}=0:{good}", "not a number"),
+                          (f"{BOT_REV}=²:{good}", "not a number"),
+                          (f"{BOT_REV}=٣:{good}", "not a number"),
                           (f"{BOT_REV}=5:{loose}", "group/other"),
                           (f"{BOT_REV}=5:relative.pem", "absolute|relative")):
             with self.subTest(pair=pair):
