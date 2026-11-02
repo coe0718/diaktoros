@@ -616,7 +616,7 @@ def check_sandbox_caps(loop: dict) -> Check:
     """
     from .. import contained
     per_turn = contained.CHECKOUT_SIZE + contained.SCRATCH_SIZE
-    turns = sum(config.seat_concurrency(loop, seat) for seat in config.capacity_seats(loop)) + 1
+    turns = config.worst_case_turns(loop)
     worst = per_turn * turns
     detail = (f"/work {_gib(contained.CHECKOUT_SIZE)} + /tmp {_gib(contained.SCRATCH_SIZE)}"
               f" = {_gib(per_turn)} per turn, {_gib(worst)} at {turns} concurrent turns")

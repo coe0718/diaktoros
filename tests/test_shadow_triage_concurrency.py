@@ -16,7 +16,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from test_init_concurrency import LOOP_FILE, LOOP_ID, Base  # noqa: E402
-from diaktoros import config  # noqa: E402
+from diaktoros import config, routes  # noqa: E402
 from diaktoros.cli import setup_command as cli_setup  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 
@@ -116,6 +116,71 @@ class ShadowTriageConcurrency(Base):
                                   return_value=(64 * 1024 ** 3, 64 * 1024 ** 3)):
             check = doctor.check_sandbox_caps(config.load_id(LOOP_ID))
         self.assertIn("8 concurrent turns", check.detail)    # 1 + 1 + 3 + 2, plus the adjudicator
+
+    def test_an_enabled_but_unpinned_seat_is_named_with_its_default(self):
+        """The seat runs, so the summary states its capacity (1) though nobody set a value."""
+        (config.profiles_root() / "arbiter").mkdir(parents=True, exist_ok=True)
+        rc, out = self.init("--shadow-profile", "critic", "--shadow-every", "1")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("concurrency", self.written()["seats"].get("shadow", {}))
+        self.assertIn("parallel now: reviewer 1 · fixer 1 · shadow 1   (", out)
+        rc, out = self.cli("status", "--loop", LOOP_ID)
+        self.assertIn("reviewer 1 (serialized) · fixer 1 (serialized) · shadow 1 (serialized)", out)
+        rc, out = self.cli("list")
+        self.assertIn("reviewer=1 fixer=1 shadow=1 ", out)
+        self.assertNotIn("triage=", out)
+        self.addCleanup(lambda: routes.restore_entries({f"{LOOP_ID}-triage": None}))
+        rc, out = self.cli("triage", "--loop", LOOP_ID, "--enable", "--triage-profile", "arbiter",
+                           "--author", "Owner", "--labels", "bug,docs,P1", "--maintainer", "owner")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("concurrency", self.written()["seats"].get("triage", {}))
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--cap", "4")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("parallel now: reviewer 1 · fixer 1 · shadow 1 · triage 1   (", out)
+        rc, out = self.cli("status", "--loop", LOOP_ID)
+        self.assertIn("shadow 1 (serialized) · triage 1 (serialized)", out)
+        rc, out = self.cli("list")
+        self.assertIn("reviewer=1 fixer=1 shadow=1 triage=1 ", out)
+
+    def test_capacity_seats_selects_on_enabled_or_pinned(self):
+        base = {"id": "t", "seats": {}}
+        self.assertEqual(config.capacity_seats(base), ("reviewer", "fixer"))
+        self.assertEqual(config.capacity_seats({**base, "shadow": {"profile": "critic"}}),
+                         ("reviewer", "fixer", "shadow"))
+        self.assertEqual(config.capacity_seats({**base, "triage": {"route": "r"}}),
+                         ("reviewer", "fixer", "triage"))
+        self.assertEqual(config.capacity_seats({"id": "t", "seats": {"shadow": {"concurrency": 2},
+                                                                     "triage": {"concurrency": 2}}}),
+                         ("reviewer", "fixer", "shadow", "triage"))
+
+    def sandbox_caps(self, loop, available_gib):
+        from unittest import mock
+        from diaktoros import contained, doctor
+        with mock.patch.object(contained, "IGNORED_SIZE_OVERRIDES", []), \
+                mock.patch.object(doctor, "_host_memory",
+                                  return_value=(available_gib * 1024 ** 3, 64 * 1024 ** 3)):
+            return doctor.check_sandbox_caps(loop)
+
+    def test_sandbox_caps_counts_the_adjudicators_own_concurrency(self):
+        """Review of #1629 F1: shadow 3 + adjudicator 4 + reviewer/fixer 1 is 9 turns, not 6."""
+        loop = {"id": "t", "shadow": {"profile": "critic"},
+                "seats": {"shadow": {"concurrency": 3}, "adjudicator": {"concurrency": 4}}}
+        self.assertEqual(config.worst_case_turns(loop), 9)
+        per_turn = 10                                  # GiB: /work 8 + /tmp 2 at the defaults
+        check = self.sandbox_caps(loop, 9 * per_turn - 1)         # one turn short of the worst case
+        self.assertEqual(check.status, "mismatch", check.detail)
+        self.assertIn("9 concurrent turns", check.detail)
+        check = self.sandbox_caps(loop, 9 * per_turn)
+        self.assertEqual(check.status, "verified", check.detail)
+        # No adjudicator concurrency set: the one the check always allowed for.
+        self.assertEqual(config.worst_case_turns({"id": "t"}), 3)
+
+    def test_sandbox_caps_counts_the_issue_fixer_when_issue_fixes_are_on(self):
+        from unittest import mock
+        loop = {"id": "t", "triage": {"route": "r", "fix_label": "agent-fix"}, "seats": {}}
+        with mock.patch.object(config, "unattended_fixer_push_enabled", return_value=True):
+            self.assertEqual(config.worst_case_turns(loop), 5)   # reviewer, fixer, triage, adjudicator, issue fixer
+        self.assertEqual(config.worst_case_turns(loop), 4)
 
     def test_set_back_to_one_and_refusals(self):
         rc, out = self.init("--shadow-concurrency", "3")
