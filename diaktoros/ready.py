@@ -137,7 +137,7 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
             approved = True
             if stale_approval.is_stale(st.watch(), number, head):
                 add(FAILURE, stale_approval.line(stale_approval.record(st.watch(), number)))
-    why.extend(_acting(loop, number, head, raw, latest))
+    why.extend(acting(loop, number, head, raw, latest))
 
     gating = ci.gating(ci_state, config.required_checks(loop))
     if gating is None:
@@ -214,19 +214,23 @@ def _escalation(loop: dict, number: int, head: str, marker) -> list[tuple[str, s
     return [(PENDING, "escalated: parked awaiting adjudication")]
 
 
-def _acting(loop: dict, number: int, head: str, reviews: list | None,
-            latest) -> list[tuple[str, str]]:
+def acting(loop: dict, number: int, head: str, reviews: list | None,
+           latest) -> list[tuple[str, str]]:
     """What still holds a head approved on the adjudicator's ACCEPT (#905), and how the sweep's
-    acting on an ACCEPT at this head stands. ``reviews`` is the PR's review list and ``latest``
-    the head's effective verdict (None: unknown). A change request GitHub still counts, or an
-    uncertain or denied step with its reason, keeps the check red. Once the reviewer itself
-    approves the head, the record no longer holds it: that approval lifts its own request."""
+    acting on an ACCEPT at this head stands; ``explain`` reads the same. ``reviews`` is the PR's
+    review list and ``latest`` the head's effective verdict (None: unknown). A change request
+    GitHub still counts, or an uncertain or denied step with its reason, keeps the check red.
+    Once the reviewer itself approves, the record no longer holds the head (that approval lifts
+    the reviewer's own request), but where the sweep acted, every other account's change request
+    GitHub still counts does."""
     from .run_supervisor import production_ledger, views
     on_ruling = gate.is_ruled_approval(latest, loop)
-    if latest is not None and not on_ruling and gh.review_state(latest) == "APPROVED":
-        return []
-    found = [(FAILURE, line) for line in unlifted(reviews or [])] if on_ruling else []
     row, error = views.ruled_approval(production_ledger(), loop["repo"], number, head)
+    if latest is not None and not on_ruling and gh.review_state(latest) == "APPROVED":
+        return [(FAILURE, f"{gate.reviewer_login(r) or '?'}'s changes-requested review "
+                          f"{r.get('id')} still blocks GitHub's merge until it is dismissed")
+                for r in gate.blocking_reviews(reviews or [])] if row or error else []
+    found = [(FAILURE, line) for line in unlifted(reviews or [])] if on_ruling else []
     if error:
         return found + ([(FAILURE, f"the record of acting on the ACCEPT can't be read "
                                    f"({error[:120]})")] if on_ruling else [])

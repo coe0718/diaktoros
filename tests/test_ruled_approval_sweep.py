@@ -239,7 +239,7 @@ class Interrupted(Base):
         self.reviews = [DISMISSED, TUCK]
         self.assertEqual(self.sweep(), [])
         self.assertEqual(self.row()["dismiss"], "posting")
-        lines = ready._acting(self.loop, 7, fg.HEAD, list(self.reviews), TUCK)
+        lines = ready.acting(self.loop, 7, fg.HEAD, list(self.reviews), TUCK)
         self.assertTrue(lines and lines[0][0] == ready.FAILURE, lines)
         self.assertIn("unconfirmed (being written, or interrupted)", lines[0][1])
 
@@ -479,6 +479,11 @@ class Overlap(Base):
         self.dismiss.assert_called_once()
 
 
+def ready_mod():
+    from diaktoros import ready
+    return ready
+
+
 class CheckShowsIt(Base):
     """Review of #1605, F3: ready and the merge check never go green past an unconfirmed or
     refused step, and say why."""
@@ -531,6 +536,34 @@ class CheckShowsIt(Base):
         kinds = self.kinds()
         self.assertFalse(any("was not made" in text for _, text in kinds), kinds)
         self.assertEqual(merge_check.decide(kinds)[0], merge_check.SUCCESS)
+
+    def test_after_the_reviewers_approval_another_accounts_request_still_blocks(self):
+        # Review of #1605, round 5, F9: the reviewer's approval lifts only its own request; a
+        # maintainer's, which GitHub still counts, keeps the check red, and explain says so too.
+        from diaktoros import explain
+        self.ruled("ACCEPT")
+        self.sweep()
+        with mock.patch.object(broker, "authorize_adjudicator",
+                               side_effect=broker.BrokerDenied("HTTP 403 forbidden")):
+            self.sweep()
+        human = tra.review(12, "CHANGES_REQUESTED", login="coe0718", at="2026-01-02T12:00:00Z")
+        mine = tra.review(19, "APPROVED", at="2026-01-03T00:00:00Z")
+        self.reviews = [*self.reviews, human, mine]
+        kinds = self.kinds()
+        line = "coe0718's changes-requested review 12 still blocks GitHub's merge until it is dismissed"
+        self.assertEqual(kinds, [(ready_mod().FAILURE, line)])
+        self.assertEqual(merge_check.decide(kinds)[0], merge_check.FAILURE)
+        facts = {"pr": fg.LIVE, "reviews": list(self.reviews), "armed": True, "read_at": 0,
+                 "shadow_hold": ("", "")}
+        report = explain.explain(self.loop, self.st, 7, facts)
+        self.assertIn(line, report["blockers"])
+        self.assertNotIn("nothing —", report["next"]["action"])
+
+    def test_a_plain_approval_with_no_acting_on_record_is_unchanged(self):
+        # Where the sweep never acted, the merge check reads the head as it always has.
+        human = tra.review(12, "CHANGES_REQUESTED", login="coe0718", at="2026-01-02T12:00:00Z")
+        self.reviews = [CHANGES, human, tra.review(19, "APPROVED", at="2026-01-03T00:00:00Z")]
+        self.assertEqual(self.kinds(), [])
 
     def test_an_unreadable_record_is_never_green(self):
         self.mark_escalated(by="dispute")
