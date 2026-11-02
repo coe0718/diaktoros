@@ -908,10 +908,9 @@ class ClaimAndLaunch:
             # neither its round count nor its PR record.
             reviews = pr_facts.effective_reviews(loop, row, gh.reviews(loop, row['pr']), self.db)
             if row['seat'] == run_supervisor.SHADOW and isinstance(reviews, list):
-                # The shadow sees what the real reviewer saw when both were queued (#218): a
-                # review posted since, the real one's included, would tell it the answer.
-                reviews = [r for r in reviews
-                           if not util.epoch(r.get('submitted_at')) > row['created']]
+                # The shadow sees what the real reviewer saw when it was queued (#218, #1647).
+                from .. import shadow_queue
+                reviews = shadow_queue.shown_reviews(row, reviews, self.db)
         # The reviewer and fixer see the change itself (#50); the adjudicator needs both
         # sides' comments. A read that failed is transient (retry); a moved head is not.
         # The shadow is prompted as the reviewer it shadows.

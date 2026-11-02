@@ -428,7 +428,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--operator-agent` | `OPERATOR_AGENT` (repeatable) |  | a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated) (default: the plugin setting) |
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting) |
 | `--shadow-profile` | `SHADOW_PROFILE` |  | the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted (default: the plugin setting, else none) |
-| `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5) |
+| `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many heads the reviewer approves, 1-1000 (default: the plugin setting, else 5) |
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
 | `--shadow-file-issues` | `on` \| `off` |  | on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to --shadow-issues-daily a day (#914) (default: the plugin setting, else off) |
 | `--shadow-issues-daily` | `N` |  | most shadow-found issues filed per rolling 24 hours, 0-1000; 0 = no cap (#1515) (default: the plugin setting, else 25) |
@@ -566,7 +566,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--operator-agent` | `OPERATOR_AGENT` (repeatable) |  | a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated) (default: the plugin setting) |
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting) |
 | `--shadow-profile` | `SHADOW_PROFILE` |  | the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted (default: the plugin setting, else none) |
-| `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5) |
+| `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many heads the reviewer approves, 1-1000 (default: the plugin setting, else 5) |
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
 | `--shadow-file-issues` | `on` \| `off` |  | on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to --shadow-issues-daily a day (#914) (default: the plugin setting, else off) |
 | `--shadow-issues-daily` | `N` |  | most shadow-found issues filed per rolling 24 hours, 0-1000; 0 = no cap (#1515) (default: the plugin setting, else 25) |
@@ -672,7 +672,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--no-required-checks` |  |  | clear the list: every check gates again (one of `--required-check`, `--no-required-checks`) |
 | `--shadow-profile` | `SHADOW_PROFILE` |  | the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted; 'off' turns them off (one of `--shadow-profile`, `--no-shadow`) |
 | `--no-shadow` |  |  | turn shadow reviews off (one of `--shadow-profile`, `--no-shadow`) |
-| `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (needs a shadow profile) |
+| `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many heads the reviewer approves, 1-1000 (needs a shadow profile) |
 | `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 |
 | `--shadow-file-issues` | `on` \| `off` |  | on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to --shadow-issues-daily a day (#914); needs a shadow profile |
 | `--shadow-issues-daily` | `N` |  | most shadow-found issues filed per rolling 24 hours, 0-1000; 0 = no cap (#1515, default 25); needs a shadow profile |

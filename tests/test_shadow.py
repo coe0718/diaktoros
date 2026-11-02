@@ -83,15 +83,19 @@ class Enqueue(unittest.TestCase):
     def loop(self, **shadow):
         return config.normalize({**RAW, "shadow": shadow} if shadow else dict(RAW))
 
-    def test_a_sampled_reviewer_turn_queues_one_shadow_beside_it(self):
+    def test_a_sampled_reviewer_turn_keeps_the_snapshot_and_queues_no_shadow_yet(self):
+        # #1647: the shadow is queued once the reviewer approves, not beside its turn.
+        from diaktoros import state as state_mod
         sup = mock.Mock()
         sup.submit.return_value = "enqueued"
         loop = self.loop(profile="grok", every=1)
         with mock.patch.object(gate, "isolated_supervisor", return_value=sup):
             self.assertEqual(gate.enqueue_isolated(loop, "reviewer", 8, HEAD), "enqueued")
-        seats = [call.args[4] for call in sup.submit.call_args_list]
-        self.assertEqual(seats, ["reviewer", "shadow"])
-        self.assertEqual(sup.submit.call_args_list[1].args[0], f"acme/widgets:8:{HEAD}:shadow")
+        self.assertEqual([call.args[4] for call in sup.submit.call_args_list], ["reviewer"])
+        self.assertEqual(state_mod.state_for(loop).shadow_findings_get(8, HEAD), {})
+        self.assertEqual(gate.enqueue_shadow(loop, sup, 8, HEAD), "enqueued")   # on its APPROVE
+        self.assertEqual(sup.submit.call_args_list[1].args[:5],
+                         (f"acme/widgets:8:{HEAD}:shadow", "acme/widgets", 8, HEAD, "shadow"))
 
     def test_no_profile_or_no_sample_or_another_seat_queues_none(self):
         sup = mock.Mock()
@@ -117,10 +121,13 @@ class Enqueue(unittest.TestCase):
             gate.enqueue_isolated(self.loop(profile="grok", every=1), "reviewer", 8, HEAD)
         self.assertEqual([c.args[4] for c in sup.submit.call_args_list], ["reviewer"])
 
-    def test_a_failing_shadow_enqueue_never_changes_the_reviewers_answer(self):
+    def test_a_failing_shadow_snapshot_never_changes_the_reviewers_answer(self):
+        from diaktoros import state as state_mod
         sup = mock.Mock()
-        sup.submit.side_effect = ["enqueued", OSError("disk full")]
-        with mock.patch.object(gate, "isolated_supervisor", return_value=sup):
+        sup.submit.return_value = "enqueued"
+        with mock.patch.object(gate, "isolated_supervisor", return_value=sup), \
+                mock.patch.object(state_mod.LoopState, "shadow_findings_put",
+                                  side_effect=OSError("disk full")):
             self.assertEqual(gate.enqueue_isolated(self.loop(profile="grok", every=1),
                                                    "reviewer", 8, HEAD), "enqueued")
 
@@ -373,11 +380,13 @@ class ProductionTurn(unittest.TestCase):
         with mock.patch.object(Supervisor, "_spawn"), \
                 mock.patch.object(config, "by_repo", return_value=self.loop):
             gate.enqueue_isolated(self.loop, "reviewer", 8, HEAD)
+            # #1647: the shadow follows the reviewer's APPROVE, on the snapshot kept above.
+            gate.enqueue_shadow(self.loop, gate.isolated_supervisor(self.loop), 8, HEAD)
         sup = Supervisor(self.home / "state" / "diaktoros-runs.sqlite",
                          production_config=self.home / "diaktoros-runtime.json",
                          hermes_home=self.home)
         row = sup.get(f"acme/widgets:8:{HEAD}:shadow")
-        self.assertIsNotNone(row, "the sampled reviewer turn queued a shadow")
+        self.assertIsNotNone(row, "the approved head queued a shadow")
         with closing(sqlite3.connect(sup.db)) as con, con:
             con.execute("UPDATE runs SET state='launching', owner='w', launch_intent=1 WHERE id=?",
                         (row["id"],))

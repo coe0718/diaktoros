@@ -45,6 +45,7 @@ from diaktoros import conflict_person  # noqa: E402
 from diaktoros import escalate_pending  # noqa: E402
 from diaktoros import merge_check  # noqa: E402
 from diaktoros import shadow_issues  # noqa: E402
+from diaktoros import shadow_queue  # noqa: E402
 from diaktoros import review_kick  # noqa: E402
 from diaktoros import (  # noqa: E402
     ci_fix,
@@ -824,6 +825,11 @@ def _best_effort_sweeps(c: _Sweep) -> None:
         ruled_approval.sweep(loop, st, prs, log)  # #905: an ACCEPT approves, its block dismissed
     except Exception as exc:
         log(f"ruled approval sweep failed: {type(exc).__name__}: {exc}")
+    try:
+        for number in shadow_queue.sweep(loop, prs):   # #1647: a shadow its APPROVE did not queue
+            log(f"#{number}: shadow review queued after the reviewer's approval")
+    except Exception as exc:
+        log(f"shadow queue sweep failed: {type(exc).__name__}: {exc}")
     try:
         main_check.sweep(loop, st, log)       # a required check red on main after merges
     except Exception as exc:

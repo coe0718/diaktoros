@@ -53,11 +53,12 @@ class Snapshot(unittest.TestCase):
         loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
         st = state_mod.state_for(loop)
         supervisor = mock.Mock()
-        gate.enqueue_shadow(loop, supervisor, 7, ts.HEAD)
-        supervisor.submit.assert_called_once()
+        gate.snapshot_shadow(loop, 7, ts.HEAD)          # as the reviewer's turn is queued
         self.assertEqual(st.shadow_findings_get(7, ts.HEAD), {})
-        st.findings_put(7, VEX_SAME_ROUND)
-        gate.enqueue_shadow(loop, supervisor, 7, ts.HEAD)  # a redelivery after the review
+        st.findings_put(7, VEX_SAME_ROUND)               # the real review records its findings
+        gate.snapshot_shadow(loop, 7, ts.HEAD)           # a redelivery after the review
+        gate.enqueue_shadow(loop, supervisor, 7, ts.HEAD)    # #1647: on the APPROVE
+        supervisor.submit.assert_called_once()
         self.assertEqual(st.shadow_findings_get(7, ts.HEAD), {})    # the first one stands
         self.assertIsNone(st.shadow_findings_get(7, "b" * 40))
 
@@ -72,8 +73,8 @@ class Retention(unittest.TestCase):
         for i in range(n):
             st.shadow_findings_put(1000 + i, ts.HEAD, {})
 
-    def ledger(self, *runs):
-        """A run ledger holding shadow rows ``(pr, state)``, as the production one would."""
+    def ledger(self, *runs, seat="shadow"):
+        """A run ledger holding ``seat`` rows ``(pr, state)``, as the production one would."""
         import pathlib
         import sqlite3
         import tempfile
@@ -85,8 +86,8 @@ class Retention(unittest.TestCase):
         sup = Supervisor(db, fixture_mode=True)
         sup._spawn = lambda: None
         for pr, state in runs:
-            delivery = f"acme/widgets:{pr}:{ts.HEAD}:shadow"
-            sup.enqueue(delivery, "acme/widgets", pr, ts.HEAD, "shadow")
+            delivery = f"acme/widgets:{pr}:{ts.HEAD}:{seat}"
+            sup.enqueue(delivery, "acme/widgets", pr, ts.HEAD, seat)
             with closing(sqlite3.connect(db)) as con, con:
                 con.execute("UPDATE runs SET state=? WHERE delivery=?", (state, delivery))
         return db
@@ -110,7 +111,7 @@ class Retention(unittest.TestCase):
         self.fill(st, st.SHADOW_FINDINGS_KEPT)
         db = self.ledger((1000, "waiting"), (1001, "succeeded"))
         with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=db):
-            gate.enqueue_shadow(loop, mock.Mock(), 7, ts.HEAD)
+            gate.snapshot_shadow(loop, 7, ts.HEAD)
         self.assertEqual(st.shadow_findings_get(1000, ts.HEAD), {})   # delayed, still open
         self.assertIsNone(st.shadow_findings_get(1001, ts.HEAD))      # ended: evicted
         self.assertEqual(st.shadow_findings_get(7, ts.HEAD), {})
@@ -124,35 +125,32 @@ class Retention(unittest.TestCase):
         answer, server = Snapshot.approve(self)
         self.assertTrue(answer.get("ok"), answer)
 
-    def test_a_second_enqueue_in_the_gap_before_submit_cannot_evict_the_first_snapshot(self):
-        """299 open snapshots; B's enqueue starts while A's run is not yet in the ledger."""
-        import threading
-        from diaktoros.run_supervisor import Supervisor
+    def test_a_snapshot_waiting_for_its_reviewers_approve_is_kept(self):
+        """#1647: the snapshot is taken as the reviewer is queued, and its shadow comes after the
+        APPROVE. While that reviewer's run is open, the cap never evicts it."""
         loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
         st = state_mod.state_for(loop)
+        st.shadow_findings_put(7, ts.HEAD, {}, set())          # the oldest: reviewer 7's
         self.fill(st, st.SHADOW_FINDINGS_KEPT - 1)
-        db = self.ledger(*[(1000 + i, "waiting") for i in range(st.SHADOW_FINDINGS_KEPT - 1)])
-        sup = Supervisor(db, fixture_mode=True)
-        sup._spawn = lambda: None
-        seen = {}
-        second = threading.Thread(target=lambda: seen.update(
-            b=gate.enqueue_shadow(loop, sup, 8, ts.HEAD)))
-        real_submit = sup.submit
-
-        def submit_a(*args, **kwargs):
-            if not second.is_alive() and not seen:
-                second.start()              # B arrives after A's snapshot, before A's row
-                second.join(0.5)            # unfixed, B finishes here and evicts A's snapshot
-            return real_submit(*args, **kwargs)
-
-        sup.submit = submit_a
+        db = self.ledger((7, "waiting"), seat="reviewer")
         with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=db):
-            a = gate.enqueue_shadow(loop, sup, 7, ts.HEAD)
-            second.join(30)
-        self.assertEqual(a, "enqueued")
-        self.assertEqual(seen.get("b"), "enqueued")
-        self.assertEqual(st.shadow_findings_get(7, ts.HEAD), {})      # A's run is open: kept
-        self.assertEqual(st.shadow_findings_get(8, ts.HEAD), {})
+            gate.snapshot_shadow(loop, 8, ts.HEAD)
+        self.assertEqual(st.shadow_findings_get(7, ts.HEAD), {})       # its reviewer is open
+        self.assertIsNone(st.shadow_findings_get(1000, ts.HEAD))       # the oldest that is not
+
+    def test_the_approval_queues_under_the_lock_so_the_snapshot_is_never_lost(self):
+        """The snapshot read and the submit share one state lock: a put that would evict it waits
+        until the shadow's row exists, and then keeps it."""
+        loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
+        st = state_mod.state_for(loop)
+        st.shadow_findings_put(7, ts.HEAD, {}, set())
+        lock = str(st.dir / "state.lock")
+        held = []
+        sup = mock.Mock()
+        sup.submit.side_effect = lambda *a, **k: held.append(
+            (getattr(state_mod._HELD, "paths", None) or {}).get(lock, 0)) or "enqueued"
+        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD), "enqueued")
+        self.assertEqual(held, [1])                     # submitted with the state lock held
 
     def test_no_snapshot_no_shadow(self):
         loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}

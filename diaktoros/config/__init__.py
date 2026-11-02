@@ -769,7 +769,7 @@ def hook_roles(loop: dict) -> tuple[str, ...]:
     return ("reviewer", "fixer") + (("triage",) if triage_enabled(loop) else ())
 
 
-# Shadow reviews (#218): one in this many reviewer turns also gets a no-write review by the
+# Shadow reviews (#218): one in this many approved heads also gets a no-write review by the
 # shadow profile's model, unless the loop says otherwise.
 DEFAULT_SHADOW_EVERY = 5
 SHADOW_EVERY_RANGE = (1, 1000)
@@ -781,7 +781,7 @@ def shadow_profile(loop: dict) -> str:
 
 
 def shadow_every(loop: dict) -> int:
-    """Shadow one in this many reviewer turns (#218); 1 shadows every one."""
+    """Shadow one in this many heads the reviewer approves (#218, #1647); 1 shadows every one."""
     value = (loop.get("shadow") or {}).get("every")
     return (value if isinstance(value, int) and not isinstance(value, bool) and value >= 1
             else DEFAULT_SHADOW_EVERY)

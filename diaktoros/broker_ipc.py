@@ -724,15 +724,25 @@ class RunBroker(broker_issues.IssueWrites):
             if pending is not None:
                 self._kick_review(pending, head)
         if operation == 'review':
-            try:
-                from . import findings
-                findings.record(self._loop, self.scope.number, self.scope.head, body)
-            except Exception:
-                pass  # the review is already written; state is best effort
-            from . import merge_check
-            merge_check.refresh_quietly(self._loop, self.scope.number)   # #1163: a new verdict
+            self._after_review(verdict, body)
         self.completed = True
         return result
+
+    def _after_review(self, verdict: str, body: str) -> None:
+        """What follows a posted verdict: its findings recorded, a sampled head's shadow review
+        queued after an APPROVE (#1647), and the merge check refreshed (#1163). Best effort: the
+        review is already written."""
+        try:
+            from . import findings
+            findings.record(self._loop, self.scope.number, self.scope.head, body)
+        except Exception:
+            pass  # the review is already written; state is best effort
+        if verdict == "APPROVE":
+            from . import shadow_queue
+            shadow_queue.after_approval(self._loop, self.scope.number, self.scope.head,
+                                        self.scope.run_id, self.scope.ledger_db)
+        from . import merge_check
+        merge_check.refresh_quietly(self._loop, self.scope.number)   # #1163: a new verdict
 
     def _human_paths_check(self) -> tuple[str, str]:
         """``(refusal, held)`` for an APPROVE under ``human_paths`` (#478):
