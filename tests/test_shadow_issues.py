@@ -431,6 +431,43 @@ class FilePending(unittest.TestCase):
         self.assertEqual(self.state(run), "uncertain")
         self.assertEqual(self.file()[1], [])
 
+    def test_a_denial_before_the_post_stays_recorded_and_is_filed_once_fixed(self):
+        run = self.recorded("A finding")
+        self.loop["read_token"] = ""
+        with mock.patch.object(gh, "reviews", return_value=APPROVED), \
+                mock.patch.object(gh, "pr", return_value={"number": 7, "head": {"ref": "fix-7"}}):
+            self.assertEqual(shadow_issues.file_pending(self.loop, db=self.db), [])
+        self.assertEqual(self.state(run), "recorded")
+        self.assertIn("no reader identity", self.error(run))
+        self.assertEqual(self.sup.filed_titles(REPO, 7), [])
+        self.loop["read_token"] = "reader"
+        filed, posts = self.file()
+        self.assertEqual(len(filed), 1)
+        self.assertEqual(self.state(run), "posted")
+
+    def test_githubs_4xx_refusal_stays_recorded_and_a_5xx_is_uncertain(self):
+        for status, state in (("HTTP 403: Resource not accessible by integration", "recorded"),
+                              ("HTTP 502", "uncertain")):
+            run = self.recorded(f"A finding {state}")
+            with mock.patch.object(gh, "reviews", return_value=APPROVED), \
+                    mock.patch.object(gh, "pr",
+                                      return_value={"number": 7, "head": {"ref": "fix-7"}}), \
+                    mock.patch.object(broker, "_write", return_value=(None, status)):
+                self.assertEqual(shadow_issues.file_pending(self.loop, db=self.db), [])
+            self.assertEqual(self.state(run), state)
+
+    def test_a_4xx_refusal_is_retried_and_filed_after_the_permission_is_fixed(self):
+        run = self.recorded("A finding")
+        with mock.patch.object(gh, "reviews", return_value=APPROVED), \
+                mock.patch.object(gh, "pr", return_value={"number": 7, "head": {"ref": "fix-7"}}), \
+                mock.patch.object(broker, "_write",
+                                  return_value=(None, "HTTP 403: Resource not accessible")):
+            self.assertEqual(shadow_issues.file_pending(self.loop, db=self.db), [])
+        self.assertEqual(self.state(run), "recorded")
+        filed, _ = self.file()
+        self.assertEqual(len(filed), 1)
+        self.assertEqual(self.state(run), "posted")
+
 
 import test_shadow_escalate_ruling as ruling  # noqa: E402
 

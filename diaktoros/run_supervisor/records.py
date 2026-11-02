@@ -317,6 +317,13 @@ class LedgerRecords:
             con.execute('COMMIT')
             return seq
 
+    def release_shadow_filing(self, run_id: str, seq: int) -> None:
+        """Take back a ``record_shadow_filing`` row whose POST was refused with nothing written, so
+        the shadow issue can be filed again; only a row still ``recorded``, never one posted."""
+        with self._connect() as con:
+            con.execute("DELETE FROM filed_issues WHERE run_id=? AND seq=? AND state='recorded'",
+                        (run_id, seq))
+
     def filed_titles(self, repo: str, number: int) -> list[str]:
         """The normalized titles of the issues the reviewer filed (or is filing) from a PR."""
         with self._connect() as con:

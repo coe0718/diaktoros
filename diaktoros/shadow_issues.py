@@ -7,7 +7,9 @@ the same finding there (the same normalized title, or one close to it). It is fi
 not the reviewer, labelled ``shadow-found``, and says which model found it. Off unless
 ``shadow.file_issues`` is on; at most ``config.shadow_issues_daily(loop)`` a day (0 = no cap). An
 unreadable review or ledger files nothing that sweep. A shadow issue whose head never gets a real
-review is dropped after ``WAIT_S``.
+review is dropped after ``WAIT_S``. A POST refused with nothing written (``broker.BrokerNotSent``: no
+reader identity, a repository mismatch, a 4xx from GitHub) leaves the issue ``recorded`` with the
+reason, and the next sweep tries again; any other failure of the POST is ``uncertain``, never replayed.
 """
 from __future__ import annotations
 
@@ -88,6 +90,16 @@ def file_pending(loop: dict, db=None, now: float | None = None,
                 loop, repo=loop["repo"], number=number, head=head, title=row["title"],
                 body=row["body"], labels=json.loads(row["labels"] or "[]"),
                 model=sup.shadow_model(row["run_id"]) or "unknown", depth=depth)
+        except broker.BrokerNotSent as exc:
+            # Refused with nothing written (no reader identity, a repository mismatch, GitHub's
+            # 4xx): not an unknown outcome. Back to `recorded` with the reason, so a sweep after the
+            # operator fixes it files the issue; the filed_issues row is released for that retry.
+            sup.release_shadow_filing(row["run_id"], filing)
+            sup.shadow_issue_status(row["run_id"], row["seq"], "recorded", expect="posting",
+                                    error=f"not sent, retried next sweep: {exc}"[:200])
+            log(f"shadow-found issue for #{number} not filed, retried next sweep: {exc}")
+            room += 1                                 # nothing was posted: it takes no cap room
+            continue
         except Exception as exc:
             why = f"POST outcome unknown: {type(exc).__name__}: {exc}"[:200]
             sup.shadow_issue_status(row["run_id"], row["seq"], "uncertain", error=why)
