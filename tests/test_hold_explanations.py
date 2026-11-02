@@ -222,6 +222,63 @@ class LedgerExplanations(unittest.TestCase):
         stuck = stats.stuck(self.db, self.loop['repo'], time.time())
         self.assertEqual(stuck['head'], '')
 
+    def _now_with_two_heads(self, older: str, newer: str) -> dict:
+        """Two waiting reviewer runs for PR 7, the older then the newer one with these recorded
+        heads. Returns /now's rows keyed by the (display) head."""
+        self.row(error='held: provider window')
+        with ledger.connect(self.db) as con:
+            con.execute('UPDATE runs SET head=?, created=100, updated=100', (older,))
+            con.execute("INSERT INTO runs (id, delivery, repo, pr, head, seat, state, error, "
+                        "retry_at, turn_key, created, updated) SELECT 'second', 'delivery-2', "
+                        "repo, pr, ?, seat, state, error, retry_at, turn_key, 200, 200 FROM runs",
+                        (newer,))
+        with mock.patch.object(config, 'readable_loops', return_value=([self.loop], [])), \
+                mock.patch.object(run_supervisor, 'production_ledger', return_value=self.db):
+            view = desktop_api.now_view('widgets')
+        self.assertEqual(len(view['runs']), 2)
+        self.assertNotIn('ghp_SEC', json.dumps(view))
+        return {run['head']: run for run in view['runs']}
+
+    def test_malformed_older_head_is_not_eligible_beside_a_newer_valid_row(self):
+        # The collision the review found: the withheld head '' must not be a join key. The
+        # malformed row gets no retry; the valid newer row keeps its own, naming its own head.
+        rows = self._now_with_two_heads('ghp_SECRETTOKEN', 'b' * 40)
+        bad, good = rows[''], rows['bbbbbbb']
+        self.assertFalse(bad['retry']['eligible'])
+        self.assertEqual(bad['retry']['head'], '')
+        self.assertTrue(good['retry']['eligible'])
+        self.assertEqual(good['retry']['head'], 'b' * 40)
+
+    def test_malformed_newer_head_never_makes_a_valid_row_eligible_or_names_it(self):
+        # The malformed run is the ledger's retry target: the valid older row is "not the newest",
+        # not eligible, and neither row's retry carries the malformed head or reason.
+        rows = self._now_with_two_heads('b' * 40, 'ghp_SECRETTOKEN')
+        bad, good = rows[''], rows['bbbbbbb']
+        self.assertFalse(bad['retry']['eligible'])
+        self.assertEqual(bad['retry']['head'], '')
+        self.assertFalse(good['retry']['eligible'])
+        self.assertEqual(good['retry']['head'], '')
+        self.assertIn('not the newest', good['retry']['reason'])
+
+    def test_empty_recorded_head_beside_a_malformed_one_is_not_eligible(self):
+        # The review's second ordering: a genuinely empty head is newer than a malformed one. Both
+        # display as '', so a join on the display head made both rows eligible with head ''.
+        self.row(error='held: provider window')
+        with ledger.connect(self.db) as con:
+            con.execute('UPDATE runs SET head=?, created=100, updated=100', ('ghp_SECRETTOKEN',))
+            con.execute("INSERT INTO runs (id, delivery, repo, pr, head, seat, state, error, "
+                        "retry_at, turn_key, created, updated) SELECT 'second', 'delivery-2', "
+                        "repo, pr, '', seat, state, error, retry_at, turn_key, 200, 200 FROM runs")
+        with mock.patch.object(config, 'readable_loops', return_value=([self.loop], [])), \
+                mock.patch.object(run_supervisor, 'production_ledger', return_value=self.db):
+            view = desktop_api.now_view('widgets')
+        self.assertEqual(len(view['runs']), 2)
+        self.assertNotIn('ghp_SEC', json.dumps(view))
+        for run in view['runs']:
+            self.assertEqual(run['head'], '')
+            self.assertFalse(run['retry']['eligible'])
+            self.assertEqual(run['retry']['head'], '')
+
     def test_production_pr_route_missing_and_unreadable_ledger(self):
         import importlib.util
         from hermes_prereqs import skip_or_fail

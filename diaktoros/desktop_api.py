@@ -574,6 +574,12 @@ def _with_retry(db, repo: str, runs: list[dict], loop: dict) -> list[dict]:
         # offers an action: the reason says which, so no row grows a button on a guess.
         return without("the retry state could not be read")
     for run in out:
+        if not run["head"]:
+            # A withheld head (``stats.recorded_head``) is not an identity to join on: every
+            # malformed row would share '', and a retry could not be confirmed against it.
+            run["retry"] = {"eligible": False, "head": "",
+                            "reason": "the recorded head is not a valid commit id; no retry offered"}
+            continue
         entry = found.get((run["pr"], run["seat"], run["head"], run["state"]))
         if entry is not None:
             run["retry"] = {"eligible": bool(entry["eligible"]),
