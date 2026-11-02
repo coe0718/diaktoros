@@ -115,6 +115,12 @@ def _given(args, flags: tuple) -> list[str]:
             if getattr(args, flag, None) is not None]
 
 
+def _switch(flag, question: str, default: bool, interactive: bool) -> str:
+    """An on/off answer for ``init``: the flag when given, else asked (the form's ``default`` when
+    there is no one to ask)."""
+    return flag or ("on" if _agree(question, default, interactive, default) else "off")
+
+
 def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[list[str], str]:
     """Step 2's answers as the ``init`` command line, and the hook admin login ("" for none)."""
     d = settings_form.settings_defaults(cli_common._SETTINGS)
@@ -139,15 +145,12 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     observer = (args.observer_profile if args.observer_profile is not None else
                 _ask("Hermes profile whose chat gets the loop's notices (blank: none)", "",
                      interactive))
-    after_ci = args.review_after_ci or (
-        "on" if _agree("Start each review after the head's CI finishes (up to an hour)?",
-                       d["review_after_ci"], interactive, d["review_after_ci"]) else "off")
-    fix_ci = args.fix_ci or (
-        "on" if _agree("Give a failed CI check on a fixer's PR to the fixer (needs fixer pushes)?",
-                       d["fix_ci"], interactive, d["fix_ci"]) else "off")
-    attribution = args.attribution or (
-        "on" if _agree("Sign what the loop posts ('Automated by Diaktoros')?",
-                       d["attribution"], interactive, d["attribution"]) else "off")
+    after_ci = _switch(args.review_after_ci, "Start each review after the head's CI finishes "
+                       "(up to an hour)?", d["review_after_ci"], interactive)
+    fix_ci = _switch(args.fix_ci, "Give a failed CI check on a fixer's PR to the fixer (needs "
+                     "fixer pushes)?", d["fix_ci"], interactive)
+    attribution = _switch(args.attribution, "Sign what the loop posts ('Automated by Diaktoros')?",
+                          d["attribution"], interactive)
     adjudicator = (args.adjudicator_profile if args.adjudicator_profile is not None else
                    _ask("Adjudicate a PR whose rounds are spent? Profile [blank = no]",
                         d["adjudicator_profile"], interactive)).strip()
@@ -158,7 +161,8 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
              _ask("hook admin login, to create the repo hooks (blank: add them yourself)", "",
                   interactive))
     admin_file = ""
-    if admin and admin.lower() not in {x.lower() for x in (reviewer, fixer, reader) if x}:
+    if (admin and not has_app(admin)
+            and admin.lower() not in {x.lower() for x in (reviewer, fixer, reader) if x}):
         admin_file = ask(args.admin_token_file, f"token file for {admin}")
     argv = ["init", f"--repo={repo}", f"--id={loop_id}", f"--reviewer={reviewer}",
             f"--fixer={fixer}", f"--reviewer-profile={reviewer_profile}",

@@ -39,7 +39,7 @@
     "diaktoros/cli/route_sync.py::_ensure_hooks": 84,
     "diaktoros/cli/set_adjudication.py::_set_adjudication": 98,
     "diaktoros/cli/set_command.py::_credentials": 82,
-    "diaktoros/cli/setup_command.py::_setup_init_argv": 89,
+    "diaktoros/cli/setup_command.py::_setup_init_argv": 87,
     "diaktoros/cli/triage_command.py::cmd_triage": 196,
     "diaktoros/config/blocks.py::normalize_triage": 128,
     "diaktoros/config/credentials.py::verify_seats": 86,
