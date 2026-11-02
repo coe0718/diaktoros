@@ -458,5 +458,49 @@ class Review2(Fixture):
         self.assertEqual(got["live_turn"], "stale")
 
 
+class UnresolvedSeats(Fixture):
+    """F8 of the ACCEPT ruling on #1606: an unknown input never matches another unknown."""
+
+    def _failing(self, profile, seat, settings):
+        raise seat_model.SeatModelError("profile unreadable")
+
+    def test_the_model_fingerprint_raises_when_a_seat_does_not_resolve(self):
+        with self.assertRaises(onboarding.SeatUnresolved):
+            onboarding.fingerprint(self.loop, "model", runtime_file=self.runtime,
+                                   resolver=self._failing)
+
+    def test_record_never_stores_model_passed_when_no_seat_resolves(self):
+        entry = onboarding.record(
+            self.loop, "model", "passed", "dk selftest", "ok", runtime_file=self.runtime,
+            resolver=self._failing)
+        self.assertNotEqual(entry["status"], "passed")
+        self.assertEqual(entry["fingerprint"], "")
+        self.assertNotEqual(self.read()["model"], "passed")
+
+    def test_a_passed_model_check_does_not_survive_resolution_failing_later(self):
+        entry = self.record("model")
+        self.assertEqual(entry["status"], "passed")
+        self.assertEqual(self.read()["model"], "passed")
+        # Resolution now fails for every seat: "unresolved then" must not match "unresolved now".
+        for _ in range(2):
+            got = onboarding.read(self.loop, runtime_file=self.runtime, resolver=self._failing,
+                                  pr_head=lambda loop, number: self.head,
+                                  hook_state=lambda loop: self.hooks)
+            self.assertEqual(got["model"], "stale")
+        onboarding.record(self.loop, "model", "passed", "dk selftest", "ok",
+                          runtime_file=self.runtime, resolver=self._failing)
+        got = onboarding.read(self.loop, runtime_file=self.runtime, resolver=self._failing)
+        self.assertNotIn("passed", (got["model"], got["live_turn"], got["armed"]))
+
+    def test_one_unresolved_seat_is_enough(self):
+        def half(profile, seat, settings):
+            if seat == "fixer":
+                raise seat_model.SeatModelError("profile unreadable")
+            return self.resolver(profile, seat, settings)
+        entry = onboarding.record(self.loop, "model", "passed", "dk selftest", "ok",
+                                  runtime_file=self.runtime, resolver=half)
+        self.assertEqual((entry["status"], entry["fingerprint"]), ("failed", ""))
+
+
 if __name__ == "__main__":
     unittest.main()
