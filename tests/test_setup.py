@@ -347,6 +347,16 @@ class Setup(unittest.TestCase):
         self.assertFalse(LOOP_FILE.exists())
         self.assertEqual(self.hermes.jobs, [])
         self.assertEqual(self.ran, [])
+        self.assertNotIn("3. The watchdog", out)          # stops after init's dry run
+
+    def test_a_dry_run_over_an_existing_loop_stops_at_the_watchdog(self):
+        self.assertEqual(self.setup_cli(*self.flags())[0], 0)
+        self.ran.clear()
+        rc, out = self.setup_cli(*self.flags("--dry-run"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("would schedule the shared watchdog job (15m", out)
+        self.assertEqual(self.ran, [])                     # no checks, no arm
+        self.assertNotIn("4. Checks", out)
 
     def test_init_refusing_the_answers_stops_setup(self):
         argv = [a for a in self.flags() if a not in ("--read-token", t.READ_LOGIN)]

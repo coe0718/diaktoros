@@ -236,6 +236,7 @@ def _setup_check_argv(args, d: dict, interactive: bool) -> list[str]:
     argv += [f"--ci-covers={entry}" for entry in covers]
     return argv
 
+
 def cmd_setup(args) -> int:
     """A first install in one command, safe to re-run (#215).
 
@@ -263,6 +264,22 @@ def cmd_setup(args) -> int:
 
     runtime_ok = _setup_runtime(args, interactive)
 
+    rc, admin = _setup_loop(args, repo, loop_id, interactive)
+    if rc is not None:
+        return rc
+    rc, scheduled = _setup_watchdog(args, loop_id, interactive)
+    if rc is not None:
+        return rc
+    if (rc := _setup_checks(repo, loop_id, scheduled, runtime_ok)) is not None:
+        return rc
+    _setup_merge_check(args, config.load_id(loop_id), admin, interactive)
+    return _setup_arm(args, loop_id, admin, interactive)
+
+
+def _setup_loop(args, repo: str, loop_id: str,
+                interactive: bool) -> tuple[int | None, str]:
+    """Step 2: the loop, kept when it exists, else ``init``'s answers, its dry run and ``init``.
+    ``(rc, admin)``: rc is where setup stops (None: go on); admin, the hook admin login."""
     print("\n2. The loop")
     existing = (config.config_dir() / f"{loop_id}.json").exists()
     admin = args.admin_token or ""
@@ -271,11 +288,11 @@ def cmd_setup(args) -> int:
             loop = config.load_id(loop_id)
         except config.ConfigError as exc:
             print(f"   ❌ loop {loop_id!r} exists but does not load: {exc}")
-            return 2
+            return 2, admin
         if loop["repo"].lower() != repo.lower():
             print(f"   ❌ loop {loop_id!r} serves {loop['repo']}, not {repo} — pass --id to name "
                   "a new loop")
-            return 2
+            return 2, admin
         print(f"   ✅ loop {loop_id!r} is configured — kept as it is (change it with `hermes "
               f"dk set --loop {loop_id}`)")
     else:
@@ -283,20 +300,25 @@ def cmd_setup(args) -> int:
         print("   init dry run:")
         if _verb(*argv, "--dry-run") != 0:
             print("\nsetup stopped: init refused the answers — fix what it names and re-run setup")
-            return 2
+            return 2, admin
         if args.dry_run:
             print("\n3. would schedule the shared watchdog job (if missing)\n"
                   "4. would run doctor and selftest --no-model\n5. would offer to require the "
                   "diaktoros/review merge check, when the loop posts it\n6. would arm only when "
                   "asked")
-            return 0
+            return 0, admin
         if not _agree("Install this loop?", True, interactive, True):
             print("setup stopped: nothing installed")
-            return 1
+            return 1, admin
         if _verb(*argv) == 2:
             print("\nsetup stopped: init failed — see above; re-running setup is safe")
-            return 2
+            return 2, admin
+    return None, admin
 
+
+def _setup_watchdog(args, loop_id: str, interactive: bool) -> tuple[int | None, bool]:
+    """Step 3: the shared watchdog job, created only if missing. ``(rc, scheduled)``: rc is
+    where setup stops (None: go on)."""
     print("\n3. The watchdog")
     schedule = args.schedule or _ask("how often the watchdog sweeps", "15m", interactive)
     deliver = args.watchdog_deliver or _ask("where its alerts go (local, telegram, …)", "local",
@@ -304,11 +326,16 @@ def cmd_setup(args) -> int:
     if args.dry_run:
         print(f"   would schedule the shared watchdog job ({schedule}, deliver={deliver}) "
               "if it is missing")
-        return 0
+        return 0, False
     lines, scheduled = cli_install._install_schedule(config.load_id(loop_id), schedule, deliver)
     for line in lines:
         print(f"   {'✅' if scheduled else '❌'} {line}")
+    return None, scheduled
 
+
+def _setup_checks(repo: str, loop_id: str, scheduled: bool,
+                  runtime_ok: bool) -> int | None:
+    """Step 4: ``doctor`` and ``selftest --no-model``; where setup stops on a ❌ (None: go on)."""
     print("\n4. Checks")
     doctor_rc = _verb("doctor", f"--loop={loop_id}")
     selftest_rc = _verb("selftest", f"--loop={loop_id}", "--no-model")
@@ -316,9 +343,11 @@ def cmd_setup(args) -> int:
         print("\nsetup stopped before arming: fix each ❌ above (its fix line says how), then "
               f"re-run `hermes dk setup --repo {shlex.quote(repo)}` — it keeps what is done")
         return 1
+    return None
 
-    _setup_merge_check(args, config.load_id(loop_id), admin, interactive)
 
+def _setup_arm(args, loop_id: str, admin: str, interactive: bool) -> int:
+    """Step 6: ``arm``, only when asked."""
     print("\n6. Arm")
     if not (args.arm or _agree("Arm the repo hooks now? The loop goes live.", False,
                                interactive, False)):
