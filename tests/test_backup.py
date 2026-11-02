@@ -389,6 +389,52 @@ class Create(Base):
         for path, text in keep.items():
             self.assertEqual(path.read_text(), text, str(path))
 
+    def test_root_level_lookalikes_survive_backup_and_restore(self):
+        """#1624 review round 2 F1: directly in the state directory, an empty ``user.lock`` and a
+        temp-shaped file with no target beside it are user state: archived and restored."""
+        keep = {self.state / "user.lock": "", self.state / ".x.abcd1234": "mine",
+                self.state / "Cargo.lock": "[[package]]\n"}
+        for path, text in keep.items():
+            path.write_text(text)
+        (self.state / "state.lock").write_text("")
+        out = self.root / "b.tar.gz"
+        backup.create(out)
+        archived = {f["path"] for f in backup.read_manifest(out)["files"]}
+        self.assertEqual({str(p) for p in keep} - archived, set())
+        self.assertNotIn(str(self.state / "state.lock"), archived)
+        for path in keep:
+            path.unlink()
+        self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        for path, text in keep.items():
+            self.assertEqual(path.read_text(), text, str(path))
+
+    def test_a_temp_name_left_out_is_reported_not_silent(self):
+        (self.state / ".queue.json.a1b2c3d4").write_text("half")
+        out = self.root / "b.tar.gz"
+        code, text = self.run_cmd(cli.cmd_backup, out=str(out))
+        self.assertEqual(code, 0)
+        self.assertEqual(backup.read_manifest(out)["skipped"],
+                         [str(self.state / ".queue.json.a1b2c3d4")])
+        self.assertIn(".queue.json.a1b2c3d4", text)
+
+    def test_a_temp_file_renamed_away_before_the_read_does_not_fail_the_backup(self):
+        """The window #1060 names: listed, then gone by ``tar.add`` (a first write's temp file has
+        no target yet, so it is listed)."""
+        temp = self.state / ".fresh.json.a1b2c3d4"
+        temp.write_text("half")
+        real = backup.tarfile.TarFile.add
+
+        def vanish(tar, name, *args, **kw):
+            if str(name) == str(temp):
+                temp.unlink()
+            return real(tar, name, *args, **kw)
+        out = self.root / "b.tar.gz"
+        with mock.patch.object(backup.tarfile.TarFile, "add", vanish):
+            backup.create(out)
+        manifest = backup.read_manifest(out)
+        self.assertNotIn(str(temp), {f["path"] for f in manifest["files"]})
+        self.assertEqual(manifest["skipped"], [str(temp)])
+
     def test_refuses_to_overwrite(self):
         out = self.root / "b.tar.gz"
         out.write_text("keep")

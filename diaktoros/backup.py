@@ -61,35 +61,56 @@ def default_out() -> pathlib.Path:
 _TEMP_NAME = re.compile(r"^\..+\.[a-z0-9_]{8}$")
 
 
+# The flock files the plugin's own writers keep directly in a state directory (or the gate-failure
+# directory). Exact names, not a ``*.lock`` pattern: a user's ``user.lock`` is state (#1060). The
+# ``<file>.lock`` ones are named by the file they guard (``observer._lock``, ``route_intent._lock``).
+_LOCK_NAMES = frozenset({"state.lock", "breach.lock", "watchdog.log.lock", "gate-failures.lock",
+                         "gate-decisions.lock", "merge-check.lock", "stack-transitions.lock",
+                         "observations.json.lock", f"{route_intent.INTENT_FILE}.lock"})
+
+
 def _transient(path: pathlib.Path, root: pathlib.Path) -> bool:
     """Is ``path`` writer scaffolding that a restore would write back as litter (#1060)?
 
-    Only what can be told apart from real state, and only where the writers put it: directly in
-    the directory they own (``root``), never below it (``artifacts/<n>/`` holds a loop's work
-    product, which may legitimately contain any name):
-    - an *empty* ``*.lock`` file: ``state.lock``, ``breach.lock``, ``watchdog.log.lock``,
-      ``gate-failures.lock`` ... are flock files and never hold data, so a ``Cargo.lock`` or any
-      lockfile with content is state and is kept;
-    - a name of the ``mkstemp`` shape above. A user file in ``root`` named like one is skipped."""
+    Only what is known to be scaffolding, and only where the writers put it: directly in the
+    directory they own (``root``), never below it (``artifacts/<n>/`` holds a loop's work product,
+    which may legitimately contain any name):
+    - an *empty* file with one of the plugin's own lock names (``_LOCK_NAMES``): flock files never
+      hold data. Any other ``*.lock`` (``Cargo.lock``, ``user.lock``) is state and is kept;
+    - a name of the ``mkstemp`` shape whose target ``<name>`` exists beside it: what a writer's
+      temp file looks like while it replaces an existing file. A temp-shaped name with no such
+      target is ambiguous (a first write, or a user's file) and is archived, not guessed at.
+    A user file that does have a target beside it and a temp-shaped name is still left out, but
+    never silently: ``_regular_files`` reports it and the manifest lists it."""
     if path.parent != root:
         return False
+    if path.name in _LOCK_NAMES:
+        try:
+            return path.stat().st_size == 0
+        except OSError:
+            return True      # gone between the listing and now: nothing to archive
     if _TEMP_NAME.match(path.name):
-        return True
-    if not path.name.endswith(".lock"):
-        return False
-    try:
-        return path.stat().st_size == 0
-    except OSError:
-        return True      # gone between the listing and now: nothing to archive
+        return (root / path.name[1:-9]).is_file()     # strip the leading "." and ".XXXXXXXX"
+    return False
 
 
-def _regular_files(root: pathlib.Path) -> list[pathlib.Path]:
+def _regular_files(root: pathlib.Path, skipped: list[str] | None = None) -> list[pathlib.Path]:
+    """The regular files to archive under ``root``. Each temp-shaped name left out is appended to
+    ``skipped`` when given, so the archive says what it did not take."""
     if root.is_symlink() or not root.exists():
         return []
     if root.is_file():
         return [root]
-    return sorted(p for p in root.rglob("*")
-                  if p.is_file() and not p.is_symlink() and not _transient(p, root))
+    found = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        if _transient(path, root):
+            if skipped is not None and _TEMP_NAME.match(path.name):
+                skipped.append(str(path))
+            continue
+        found.append(path)
+    return found
 
 
 def _snapshot_ledger(src: pathlib.Path, dest: pathlib.Path) -> None:
@@ -137,15 +158,17 @@ def create(out: pathlib.Path | None = None) -> pathlib.Path:
         path = config.host_path(key)
         if path.is_file() and not path.is_symlink():
             files.append((path, path, "file"))
+    skipped: list[str] = []      # temp-shaped names left out; the manifest lists them
     for key in ("gate_failures",):
-        for path in _regular_files(config.host_path(key)):
+        for path in _regular_files(config.host_path(key), skipped):
             files.append((path, path, "file"))
     for loop in loops:
-        for path in _regular_files(config.state_dir(loop)):
+        for path in _regular_files(config.state_dir(loop), skipped):
             files.append((path, path, "file"))
     ledger = run_supervisor.production_ledger()
     manifest = {"version": VERSION, "created": time.time(), "loops": [l["id"] for l in loops],
-                "files": [], "state_dirs": sorted({str(config.state_dir(l)) for l in loops}),
+                "files": [], "skipped": skipped,
+                "state_dirs": sorted({str(config.state_dir(l)) for l in loops}),
                 "routes": {name: entry for name, entry in routes.all_routes().items()
                            if isinstance(entry, dict) and route_intent.owned(entry)},
                 "cron": watchdog_job(),
@@ -174,6 +197,11 @@ def create(out: pathlib.Path | None = None) -> pathlib.Path:
                 member = f"files/{index}"
                 try:
                     tar.add(source, arcname=member, recursive=False)
+                except FileNotFoundError as exc:
+                    if kind == "file" and _TEMP_NAME.match(target.name):
+                        manifest["skipped"].append(str(target))   # renamed away since the listing
+                        continue
+                    raise BackupError(f"cannot read {source}: {exc}") from exc
                 except OSError as exc:
                     raise BackupError(f"cannot read {source}: {exc}") from exc
                 manifest["files"].append({"member": member, "path": str(target), "kind": kind})

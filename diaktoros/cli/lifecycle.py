@@ -498,6 +498,10 @@ def cmd_backup(args) -> int:
         print(f"cannot back up: {exc}")
         return 2
     print(f"backup written: {archive}")
+    left_out = backup.read_manifest(archive).get("skipped") or []
+    if left_out:
+        print(f"left out ({len(left_out)} temp-named file(s), assumed a writer's scratch): "
+              + ", ".join(left_out[:5]) + (" ..." if len(left_out) > 5 else ""))
     print(f"warning: {backup.WARNING}")
     return 0
 
