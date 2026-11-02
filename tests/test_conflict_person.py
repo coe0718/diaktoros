@@ -47,6 +47,27 @@ class Requeue(fg.Base):
         self.assertEqual(conflict_person.get(self.st, 7, HEAD), "r")
         self.assertEqual(conflict_person.get(mock.Mock(), 7, HEAD), "")   # unreadable: none
 
+    def test_an_unreadable_store_is_logged_but_a_missing_one_is_not(self):
+        with mock.patch.object(conflict_person, "log") as log:
+            self.assertEqual(conflict_person.get(self.st, 7, HEAD), "")   # no file yet
+            log.assert_not_called()
+            self.st.dir.mkdir(parents=True, exist_ok=True)
+            (self.st.dir / conflict_person.FILE).write_text('{"7": {"head": ')   # truncated
+            self.assertEqual(conflict_person.get(self.st, 7, HEAD), "")
+            log.assert_called_once()
+            self.assertIn("conflict-person.json", log.call_args.args[0])
+            log.reset_mock()
+            (self.st.dir / conflict_person.FILE).write_text("[1]")
+            self.assertEqual(conflict_person.get(self.st, 7, HEAD), "")
+            log.assert_called_once()
+
+    def test_the_watchdog_conflict_pass_logs_an_unreadable_store(self):
+        self.st.dir.mkdir(parents=True, exist_ok=True)
+        (self.st.dir / conflict_person.FILE).write_text("{")
+        with mock.patch.object(conflict_person, "log") as log:
+            self.act().assert_called_once()      # old behaviour kept: queued
+        log.assert_called()
+
 
 if __name__ == "__main__":
     unittest.main()

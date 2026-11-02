@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import time
 
+from diaktoros.util import log
+
 FILE = "conflict-person.json"
 
 
@@ -20,15 +22,26 @@ def _path(st):
 
 
 def _read(st) -> dict:
-    """Lock-free (writes are atomic replaces); unreadable is empty, i.e. the old behaviour."""
+    """Lock-free (writes are atomic replaces); unreadable is empty, i.e. the old behaviour, but a
+    file that exists and cannot be read is logged: without the record every base merge requeues
+    the refused conflict turn again (#1154), and nothing else would say why."""
     try:
         path = _path(st)
         if not path.exists():
             return {}
-        data = json.loads(path.read_text())
     except Exception:
         return {}
-    return data if isinstance(data, dict) else {}
+    try:
+        data = json.loads(path.read_text())
+    except Exception as exc:
+        log(f"{FILE} exists but is unreadable ({type(exc).__name__}: {exc}); treating it as "
+            f"empty, so conflict turns requeue on every base merge until it is fixed")
+        return {}
+    if not isinstance(data, dict):
+        log(f"{FILE} does not hold a JSON object; treating it as empty, so conflict turns "
+            f"requeue on every base merge until it is fixed")
+        return {}
+    return data
 
 
 def get(st, number: int, head: str) -> str:
