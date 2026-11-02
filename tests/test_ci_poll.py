@@ -110,11 +110,23 @@ class LightPoll(sm.Base):
 
     def test_a_moved_head_still_ends_the_hold(self):
         self.hold()
+        # CI runs for three polls: the light poll alone keeps the hold (no review or hold
+        # reads), which the pre-#1648 claim did not do, so this fails without the change.
+        for _ in range(3):
+            self.assertIsNone(self.claim())
+            self.assertLessEqual(len(self.calls), 3, self.calls)
+            self.assertNotIn("reviews", self.calls)
+            self.assertNotIn("events", self.calls)
+            self.assertTrue(self.row()[1].startswith(CI_HOLD))
+            self.hold()
+        # then the head moves: one PR read ends the hold, with no CI read and no review read
         self.pr = pull(sha="c" * 40)
         self.assertIsNone(self.claim())
         state, error, _ = self.row()
         self.assertEqual((state, error), ("cancelled", "PR head moved before the review started"))
         self.assertNotIn("/commits/" + HEAD + "/check-runs", self.calls)   # no CI read first
+        self.assertNotIn("reviews", self.calls)
+        self.assertEqual(self.calls.count("/pulls/7"), 2, self.calls)   # the poll's, then the claim's
 
     def test_a_closed_or_unreadable_pr_goes_to_the_full_claim(self):
         for pr, state in ((pull(state="closed"), "cancelled"), (None, "waiting")):
