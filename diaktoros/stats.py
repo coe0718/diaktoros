@@ -210,8 +210,15 @@ def _now_filter(at: float) -> tuple[str, tuple]:
             (*LIVE_STATES, *POLICY_CANCELLATIONS, at - RECENT_FAILED_S))
 
 
+def recorded_head(value) -> str:
+    """A recorded head's 7-character display form, or ``''`` unless it is a 40-lowercase-hex head:
+    a malformed ledger value is withheld, never echoed. The one rule for every view that shows a
+    run's head (``now`` and the Desktop ``/pr``)."""
+    return value[:7] if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) else ""
+
+
 def _now_run(row) -> dict:
-    return {"pr": row["pr"], "seat": row["seat"], "head": str(row["head"] or "")[:7],
+    return {"pr": row["pr"], "seat": row["seat"], "head": recorded_head(row["head"]),
             "state": row["state"], "why": _why(row["state"], row["error"]),
             "since": row["updated"]}
 

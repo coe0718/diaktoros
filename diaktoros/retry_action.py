@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import time
 
-from . import config, gate, scope_lock
+from . import config, gate, scope_lock, stats
 from .run_supervisor import (ISSUE_SEATS, Supervisor, operator_cancelled, policy_cancelled,
                              views, write_evidence)
 
@@ -157,10 +157,18 @@ def page_targets(con, repo: str, loop: dict | None = None) -> dict:
         # one verdict for every offered row at the head, from the same function.
         closed = (closed_refusal(loop, pr, [row for row in offerable_rows if row["head"] == head],
                                  listing) if loop is not None else "")
+        # The target is shown only when it is a well-formed recorded head (``stats.recorded_head``,
+        # the one rule): a malformed ledger value never reaches the page as ``head`` or in a reason.
+        shown = head if stats.recorded_head(head) else ""
         for row in group:
-            entry = {"eligible": False, "head": str(head or ""), "reason": ""}
+            if not stats.recorded_head(row["head"]):
+                # No entry: a withheld head is not an identity, so it must never be a join key
+                # (every malformed row would collide on ''); ``desktop_api._with_retry`` words it.
+                continue
+            entry = {"eligible": False, "head": shown, "reason": ""}
             if row["head"] != head:
-                entry["reason"] = f"not the newest run for this PR: retry targets {str(head)[:7]}"
+                entry["reason"] = ("not the newest run for this PR: retry targets "
+                                   + (shown[:7] if shown else "a run whose recorded head is withheld"))
             elif not offered(row):
                 entry["reason"] = f"{row['state']}: retry does not re-arm this run"
             elif closed:

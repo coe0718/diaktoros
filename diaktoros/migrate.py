@@ -248,16 +248,29 @@ def _active_runs(con, repo: str | None = None) -> int:
         raise
 
 
-def busy_runs(db: pathlib.Path, repo: str) -> int:
-    """Runs for ``repo`` that are claimed, launching, running or uncertain: none may be renamed
-    under."""
+def _count_active(db: pathlib.Path, repo: str | None = None) -> int:
+    """Active runs (all repos, or just ``repo``) in the ledger file ``db`` (0 without one).
+    #767: an unreadable ledger is not proof that no run is active, so it raises ``RunsUnknown``."""
     if not db.exists():
         return 0
-    con = sqlite3.connect(db, timeout=LOCK_WAIT_S)
     try:
-        return _active_runs(con, repo)
-    finally:
-        con.close()
+        con = sqlite3.connect(db, timeout=LOCK_WAIT_S)
+        try:
+            return _active_runs(con, repo)      # no runs table yet: nothing can be in flight
+        finally:
+            con.close()
+    except sqlite3.Error as exc:
+        raise RunsUnknown(
+            f"the run ledger {db} exists but could not be read ({exc}), so active runs "
+            "cannot be ruled out; stop the workers, then restore the ledger from a backup or "
+            "move the damaged file aside (or retry if it was locked)") from exc
+
+
+def busy_runs(db: pathlib.Path, repo: str) -> int:
+    """Runs for ``repo`` that are claimed, launching, running or uncertain: none may be renamed
+    under. A ledger that exists but cannot be read raises ``RunsUnknown`` (as ``runs_in_flight``
+    does), never a raw ``sqlite3.Error``."""
+    return _count_active(db, repo)
 
 
 def _move_ledger(db: pathlib.Path, old: str, new: str, *, dry_run: bool) -> tuple[int, str]:
@@ -465,21 +478,7 @@ def _move_ledger_file(old: pathlib.Path, new: pathlib.Path, *, dry_run: bool) ->
 def runs_in_flight() -> int:
     """Runs that are in flight or uncertain in the host ledger (0 without one). Moving or
     overwriting host files under such a run could tear its state: migrate and restore refuse."""
-    ledger = config.host_path("ledger")
-    if not ledger.exists():
-        return 0
-    try:
-        con = sqlite3.connect(ledger, timeout=LOCK_WAIT_S)
-        try:
-            return _active_runs(con)        # no runs table yet: nothing can be in flight
-        finally:
-            con.close()
-    except sqlite3.Error as exc:
-        # #767: an unreadable ledger is not proof that no run is active
-        raise RunsUnknown(
-            f"the run ledger {ledger} exists but could not be read ({exc}), so active runs "
-            "cannot be ruled out; stop the workers, then restore the ledger from a backup or "
-            "move the damaged file aside (or retry if it was locked)") from exc
+    return _count_active(config.host_path("ledger"))
 
 
 def files_step(write_loop, *, dry_run: bool) -> list[str]:

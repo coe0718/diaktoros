@@ -5,11 +5,12 @@ import io
 import json
 import pathlib
 import tempfile
+import time
 import unittest
 import uuid
 from unittest import mock
 
-from diaktoros import config, desktop_api, ledger, run_supervisor
+from diaktoros import config, desktop_api, ledger, run_supervisor, stats
 from diaktoros.run_supervisor import views
 from diaktoros.cli import operations
 
@@ -216,6 +217,115 @@ class LedgerExplanations(unittest.TestCase):
         self.assertEqual(view['stuck'][0]['head'], '')
         self.assertEqual(view['turns'][0]['head'], '')
         self.assertNotIn('ghp_SEC', json.dumps(view))
+
+    def test_real_malformed_head_is_withheld_from_now_too(self):
+        # /now and /pr answer "which recorded head may be shown" with the same rule (#1459).
+        self.row(error='held: provider window')
+        with ledger.connect(self.db) as con:
+            con.execute('UPDATE runs SET head=?', ('ghp_SECRETTOKEN',))
+        with mock.patch.object(config, 'readable_loops', return_value=([self.loop], [])), \
+                mock.patch.object(run_supervisor, 'production_ledger', return_value=self.db):
+            view = desktop_api.now_view('widgets')
+        self.assertIs(view['available'], True)
+        self.assertEqual(len(view['runs']), 1)
+        self.assertEqual(view['runs'][0]['head'], '')
+        self.assertFalse(view['runs'][0]['retry']['eligible'])
+        self.assertNotIn('ghp_SEC', json.dumps(view))
+        stuck = stats.stuck(self.db, self.loop['repo'], time.time())
+        self.assertEqual(stuck['head'], '')
+
+    def _now_with_two_heads(self, older: str, newer: str) -> dict:
+        """Two waiting reviewer runs for PR 7, the older then the newer one with these recorded
+        heads. Returns /now's rows keyed by the (display) head."""
+        self.row(error='held: provider window')
+        with ledger.connect(self.db) as con:
+            con.execute('UPDATE runs SET head=?, created=100, updated=100', (older,))
+            con.execute("INSERT INTO runs (id, delivery, repo, pr, head, seat, state, error, "
+                        "retry_at, turn_key, created, updated) SELECT 'second', 'delivery-2', "
+                        "repo, pr, ?, seat, state, error, retry_at, turn_key, 200, 200 FROM runs",
+                        (newer,))
+        with mock.patch.object(config, 'readable_loops', return_value=([self.loop], [])), \
+                mock.patch.object(run_supervisor, 'production_ledger', return_value=self.db):
+            view = desktop_api.now_view('widgets')
+        self.assertEqual(len(view['runs']), 2)
+        self.assertNotIn('ghp_SEC', json.dumps(view))
+        return {run['head']: run for run in view['runs']}
+
+    def test_malformed_older_head_is_not_eligible_beside_a_newer_valid_row(self):
+        # The collision the review found: the withheld head '' must not be a join key. The
+        # malformed row gets no retry; the valid newer row keeps its own, naming its own head.
+        rows = self._now_with_two_heads('ghp_SECRETTOKEN', 'b' * 40)
+        bad, good = rows[''], rows['bbbbbbb']
+        self.assertFalse(bad['retry']['eligible'])
+        self.assertEqual(bad['retry']['head'], '')
+        self.assertTrue(good['retry']['eligible'])
+        self.assertEqual(good['retry']['head'], 'b' * 40)
+
+    def test_malformed_newer_head_never_makes_a_valid_row_eligible_or_names_it(self):
+        # The malformed run is the ledger's retry target: the valid older row is "not the newest",
+        # not eligible, and neither row's retry carries the malformed head or reason.
+        rows = self._now_with_two_heads('b' * 40, 'ghp_SECRETTOKEN')
+        bad, good = rows[''], rows['bbbbbbb']
+        self.assertFalse(bad['retry']['eligible'])
+        self.assertEqual(bad['retry']['head'], '')
+        self.assertFalse(good['retry']['eligible'])
+        self.assertEqual(good['retry']['head'], '')
+        self.assertIn('not the newest', good['retry']['reason'])
+
+    def test_empty_recorded_head_beside_a_malformed_one_is_not_eligible(self):
+        # The review's second ordering: a genuinely empty head is newer than a malformed one. Both
+        # display as '', so a join on the display head made both rows eligible with head ''.
+        self.row(error='held: provider window')
+        with ledger.connect(self.db) as con:
+            con.execute('UPDATE runs SET head=?, created=100, updated=100', ('ghp_SECRETTOKEN',))
+            con.execute("INSERT INTO runs (id, delivery, repo, pr, head, seat, state, error, "
+                        "retry_at, turn_key, created, updated) SELECT 'second', 'delivery-2', "
+                        "repo, pr, '', seat, state, error, retry_at, turn_key, 200, 200 FROM runs")
+        with mock.patch.object(config, 'readable_loops', return_value=([self.loop], [])), \
+                mock.patch.object(run_supervisor, 'production_ledger', return_value=self.db):
+            view = desktop_api.now_view('widgets')
+        self.assertEqual(len(view['runs']), 2)
+        self.assertNotIn('ghp_SEC', json.dumps(view))
+        for run in view['runs']:
+            self.assertEqual(run['head'], '')
+            self.assertFalse(run['retry']['eligible'])
+            self.assertEqual(run['retry']['head'], '')
+
+    def test_page_targets_omits_malformed_and_empty_heads_and_keeps_valid_ones(self):
+        # The contract of retry_action.page_targets itself, apart from the desktop guard: a head
+        # that is not a recorded 40-hex head is never a join key; a valid one keeps its entry.
+        from diaktoros import retry_action
+        self.row(error='held: provider window')
+        with ledger.connect(self.db) as con:
+            for n, (pr, head) in enumerate([(8, 'ghp_SECRETTOKEN'), (9, ''), (10, 'c' * 40)]):
+                con.execute("INSERT INTO runs (id, delivery, repo, pr, head, seat, state, error, "
+                            "retry_at, turn_key, created, updated) SELECT ?, ?, repo, ?, ?, seat, "
+                            "state, error, retry_at, ?, 300, 300 FROM runs WHERE id != 'x' LIMIT 1",
+                            (f'extra{n}', f'delivery-x{n}', pr, head, f'turn-x{n}'))
+        con = views.read_only_connect(self.db)
+        try:
+            found = retry_action.page_targets(con, self.loop['repo'], self.loop)
+        finally:
+            con.close()
+        prs = {key[0]: key for key in found}
+        self.assertIn(7, prs)
+        self.assertIn(10, prs)
+        self.assertNotIn(8, prs)
+        self.assertNotIn(9, prs)
+        self.assertEqual(found[prs[10]]['head'], 'c' * 40)
+        self.assertNotIn('ghp_SEC', json.dumps([list(map(str, k)) + [v] for k, v in found.items()]))
+
+    def test_with_retry_refuses_to_join_an_entry_on_an_empty_head(self):
+        # desktop_api._with_retry's own guard: even if the targets hold an entry keyed on '' (a
+        # withheld head), a row with no valid head is not joined to it and is never eligible.
+        run = {'pr': 7, 'seat': 'reviewer', 'head': '', 'state': 'waiting'}
+        entry = {'eligible': True, 'head': '', 'reason': ''}
+        with mock.patch.object(desktop_api.retry_action, 'page_targets',
+                               return_value={(7, 'reviewer', '', 'waiting'): entry}):
+            out = desktop_api._with_retry(self.db, self.loop['repo'], [dict(run)], self.loop)
+        self.assertFalse(out[0]['retry']['eligible'])
+        self.assertEqual(out[0]['retry']['head'], '')
+        self.assertIn('not a valid commit id', out[0]['retry']['reason'])
 
     def test_production_pr_route_missing_and_unreadable_ledger(self):
         import importlib.util

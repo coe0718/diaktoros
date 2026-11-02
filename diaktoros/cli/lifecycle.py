@@ -299,6 +299,20 @@ def _move_watchdog_job(*, dry_run: bool) -> list[str]:
     return lines
 
 
+def _in_flight(base: dict) -> str:
+    """Why a rename must wait for the loop's runs, or '': runs in flight or uncertain, or a
+    ledger that can't be read, which rules none out (#767)."""
+    from .. import migrate, run_supervisor
+    try:
+        busy = migrate.busy_runs(run_supervisor.production_ledger(), base["repo"])
+    except migrate.RunsUnknown as exc:
+        return str(exc)
+    if busy:
+        return (f"{busy} run(s) for {base['repo']} are in flight or uncertain; "
+                "wait for them (or reconcile them), then run migrate again")
+    return ""
+
+
 def _rename_loop(spec: str, *, dry_run: bool, admin: str | None) -> tuple[list[str], bool]:
     """``migrate --rename-loop OLD=NEW`` (#425 stage 3): ``(lines, refused)``.
 
@@ -312,7 +326,6 @@ def _rename_loop(spec: str, *, dry_run: bool, admin: str | None) -> tuple[list[s
         hook_ping,
         migrate,
         pacing,
-        run_supervisor,
     )
     old_id, sep, new_id = spec.partition("=")
     tag = f"rename-loop: {old_id or '?'} → {new_id or '?'}"
@@ -332,10 +345,8 @@ def _rename_loop(spec: str, *, dry_run: bool, admin: str | None) -> tuple[list[s
     base = old_loop or new_loop
     renames = migrate.route_renames(base, old_id, new_id)
     target = new_loop or migrate.renamed_loop(old_loop, new_id, renames)
-    busy = migrate.busy_runs(run_supervisor.production_ledger(), base["repo"])
-    if busy:
-        return [f"{tag}: REFUSED — {busy} run(s) for {base['repo']} are in flight or uncertain; "
-                "wait for them (or reconcile them), then run migrate again"], True
+    if why := _in_flight(base):
+        return [f"{tag}: REFUSED — {why}"], True
     registry = routes.all_routes()
     for old, new in renames.items():
         here = [registry[name] for name in (old, new) if isinstance(registry.get(name), dict)]

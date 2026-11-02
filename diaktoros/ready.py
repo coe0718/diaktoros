@@ -357,14 +357,39 @@ def collect(loop: dict, st) -> tuple[list[dict], list[dict], str]:
     return ready, excluded, ""
 
 
-def collect_kinds(loop: dict, st) -> tuple[list[dict], dict[int, list[tuple[str, str]]], str]:
+def collect_kinds(loop: dict, st, only: set[int] | None = None,
+                  ) -> tuple[list[dict], dict[int, list[tuple[str, str]]], str]:
     """``(open PRs, {number: reasons with kinds}, listing error)``: ``collect``'s reads and
-    judgement, kept per PR for the merge check (#1163 M2b)."""
+    judgement, kept per PR for the merge check (#1163 M2b). With ``only``, just those PRs and the
+    open PRs they are stacked on are read and judged (#1645): a verdict's refresh of one PR reads
+    that PR, not every open one. The listing returned is always the whole one."""
     prs, error = gh.open_prs_read(loop)
     if prs is None:
         return [], {}, error or "open PR listing unreadable"
-    _ready, kinds = build_kinds(loop, st, prs, _reads(loop, prs))
-    return [p for p in prs if isinstance(p, dict) and isinstance(p.get("number"), int)], kinds, ""
+    listed = [p for p in prs if isinstance(p, dict) and isinstance(p.get("number"), int)]
+    judged = listed if only is None else [p for p in listed if p["number"] in
+                                          _with_parents(loop, listed, only)]
+    _ready, kinds = build_kinds(loop, st, judged, _reads(loop, judged))
+    return listed, kinds, ""
+
+
+def _with_parents(loop: dict, prs: list[dict], numbers: set[int]) -> set[int]:
+    """``numbers`` and every open PR they are stacked on, however deep: a stacked PR's reasons
+    depend on its parent's (``build_kinds``)."""
+    by_number = {p["number"]: p for p in prs}
+    by_branch = {(p.get("head") or {}).get("ref"): p["number"] for p in prs
+                 if (p.get("head") or {}).get("ref")}
+    found: set[int] = set()
+    todo = [n for n in numbers if n in by_number]
+    while todo:
+        number = todo.pop()
+        if number in found:
+            continue
+        found.add(number)
+        base = (by_number[number].get("base") or {}).get("ref")
+        if base and base != loop["base"] and base in by_branch:
+            todo.append(by_branch[base])
+    return found
 
 
 FILE = "ready-set.json"
