@@ -18,7 +18,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_ci_fix as tcf  # noqa: E402
 import test_seat_models as sm  # noqa: E402
-from diaktoros import ci, ci_fix, ledger, observer, run_supervisor  # noqa: E402
+from diaktoros import ci, ci_fix, ledger, observer, run_supervisor, stats  # noqa: E402
 from diaktoros.run_supervisor import CI_HOLD  # noqa: E402
 
 RED = ci.CIState(failed=["verticals"], passed=["lint"])
@@ -48,6 +48,15 @@ class Hold(sm.Base):
                 self.assertIn("re-run them on GitHub", row[1])
                 with ledger.connect(self.root / "ledger.sqlite") as con:
                     self.assertEqual(con.execute("SELECT retries FROM runs").fetchone()[0], 0)
+
+    def test_status_shows_the_whole_remedy_for_one_failed_check(self):
+        # stats cuts a held line at WHY_MAX: the remedy comes before the check names (#1124).
+        self.review(RED)
+        view = stats.now(self.root / "ledger.sqlite", self.loop["repo"])
+        why = [r["why"] for r in view["runs"]]
+        self.assertEqual(len(why), 1)
+        self.assertIn("the review starts when they pass (re-run them on GitHub) or a new head "
+                      "is pushed", why[0])
 
     def test_it_outlasts_the_ci_wait(self):
         with mock.patch.object(run_supervisor, "CI_WAIT_MAX_S", 0):
