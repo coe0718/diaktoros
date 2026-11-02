@@ -66,6 +66,22 @@ class _Row:
         self.schema, self.derived, self.off, self.on, self.note = schema, derived, off, on, note
 
 
+def _switches(loop: dict, schema, rows: list, enable: str) -> None:
+    """The plain on/off settings' rows (``_rows``' ``schema``). A switch that is on but lacks
+    what it needs to act says so: it is inert."""
+    pushes = "" if config.unattended_fixer_push_enabled(loop) else f"unattended fixer pushes ({enable})"
+    login = "" if config.adjudicator_login(loop) else "the adjudicator comment login (--adjudicator-login)"
+    for key, off, needs in (
+            ("review_only_update", "a conflicting review-only PR gets a notice, no merge push", ""),
+            ("review_after_ci", "a review starts at once, with whatever CI has finished", ""),
+            ("fix_ci", "red CI on fixer PRs waits for a review", pushes),
+            ("fixer_scope_lock", "a fix round may change any file", pushes),
+            ("adjudicator_approves", "an ACCEPT ruling is left to you", login)):
+        schema(key, (key,), bool(loop[key]), on=bool(loop[key]), off=off)
+        if loop[key] and needs:
+            rows[-1].note = f"on, but inert: needs {needs}"
+
+
 def _rows(loop: dict) -> list[_Row]:
     seats = loop.get("seats") or {}
     triage = loop.get("triage") or {}
@@ -161,15 +177,7 @@ def _rows(loop: dict) -> list[_Row]:
                  if config.review_only_daily(loop) else
                  "unset: review-only turns count against seats.reviewer.daily_turns"))
     enable = config.fixer_push_enable_command(loop)
-    for key, off in (
-            ("review_only_update", "a conflicting review-only PR gets a notice, no merge push"),
-            ("review_after_ci", "a review starts at once, with whatever CI has finished"),
-            ("fix_ci", "red CI on fixer PRs waits for a review"),
-            ("fixer_scope_lock", "a fix round may change any file")):
-        schema(key, (key,), bool(loop[key]), on=bool(loop[key]), off=off)
-        if (key in ("fix_ci", "fixer_scope_lock") and loop[key]
-                and not config.unattended_fixer_push_enabled(loop)):
-            rows[-1].note = f"on, but inert: needs unattended fixer pushes ({enable})"
+    _switches(loop, schema, rows, enable)
     app_in = config.app_ingress(loop)
     schema("ingress", ("ingress",), loop.get("ingress") or "repo-hooks",
            note=(f"events arrive through {loop.get('ingress_app')}'s webhook (route "

@@ -125,6 +125,13 @@ class Counting(Base):
         lifted = review(13, "APPROVED", login="coe0718", at="2026-01-04T00:00:00Z")
         self.assertEqual(gate.blocking_reviews([DISMISSED, TUCK, human, lifted]), [])
 
+    def test_a_change_request_with_no_login_still_blocks(self):
+        # #1591's shadow review: a review whose user is missing is never silently dropped.
+        ghost = {**review(14, "CHANGES_REQUESTED", at="2026-01-03T00:00:00Z"), "user": None}
+        self.assertEqual(gate.blocking_reviews([DISMISSED, TUCK, ghost]), [ghost])
+        nameless = {**ghost, "id": 15, "user": {"login": ""}}
+        self.assertEqual(gate.blocking_reviews([DISMISSED, TUCK, nameless]), [nameless])
+
     def test_an_undatable_change_request_still_blocks(self):
         undated = review(10, "CHANGES_REQUESTED", login="adj", at=None)
         self.assertEqual(gate.blocking_reviews([DISMISSED, TUCK, undated]), [undated])
@@ -247,6 +254,20 @@ class Explain(Base):
         self.assertFalse(any(b.startswith(("ruled:", "escalated:")) for b in report["blockers"]),
                          report["blockers"])
         self.assertIn("a human merges it", report["next"]["action"])
+
+    def test_an_undismissed_change_request_is_named_never_merge_ready(self):
+        # #1591's shadow review: explain agrees with ready and the merge check.
+        self.mark_escalated(by="dispute")
+        self.ruled("ACCEPT")
+        facts = {"pr": fg.LIVE, "reviews": [CHANGES, TUCK], "armed": True, "read_at": 0,
+                 "shadow_hold": ("", "")}
+        with mock.patch.object(explain, "_ruled", return_value="ACCEPT"):
+            report = explain.explain(self.loop, self.st, 7, facts)
+        line = ("approved on the adjudicator's ACCEPT ruling, but reviewer's changes-requested "
+                "review 5 still blocks GitHub's merge until it is dismissed")
+        self.assertIn(line, report["blockers"])
+        self.assertTrue(report["next"]["action"].startswith(line), report["next"])
+        self.assertNotIn("nothing —", report["next"]["action"])
 
 
 if __name__ == "__main__":

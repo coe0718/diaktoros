@@ -226,6 +226,44 @@ def ruling_at(db: str | Path, repo: str, pr: int, head: str,
         return None
 
 
+def ruling_row(db: str | Path, repo: str, pr: int) -> dict | None:
+    """The newest ruling on this PR, at whatever head, read-only, as ``{verdict, created,
+    comment, comment_id, head, run_id}``, or None. #905 acts on it only when its head is the PR's
+    current one: a later ruling on another head voids an older one, even if the branch returns."""
+    keys = ("verdict", "created", "comment", "comment_id", "head", "run_id")
+    try:
+        con = read_only_connect(db)
+        if con is None:
+            return None
+        try:
+            row = con.execute(f"SELECT {', '.join(keys)} FROM rulings WHERE repo=? AND pr=? "
+                              "ORDER BY created DESC LIMIT 1", (repo, pr)).fetchone()
+            return dict(zip(keys, row)) if row else None
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+
+
+def ruled_approval(db: str | Path, repo: str, pr: int, head: str) -> tuple[dict | None, str]:
+    """``(row, error)``: how the adjudicator acted on its ACCEPT at this head (#905), read-only.
+    No row and no error: it has not acted. An error is never "not acted"."""
+    try:
+        con = read_only_connect(db)
+        if con is None:
+            return None, ""
+        try:
+            cur = con.execute("SELECT * FROM ruled_approvals WHERE repo=? AND pr=? AND head=?",
+                              (repo, pr, head))
+            row = cur.fetchone()
+            return (dict(zip([c[0] for c in cur.description], row)) if row else None), ""
+        finally:
+            con.close()
+    except sqlite3.Error as exc:
+        if "no such table" in str(exc):
+            return None, ""                # a ledger from before #905: nothing acted on
+        return None, f"{type(exc).__name__}: {exc}"
+
 def dependency_view(db: str | Path, repo: str, pr: int | None = None,
                     limit: int = 5) -> list[dict] | None:
     """The newest runs that recorded a dependency prefetch, for ``status``/``explain`` (#51).

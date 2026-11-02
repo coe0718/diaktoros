@@ -76,6 +76,7 @@ def _flag_changes(args, loop: dict, host: str | None) -> dict:
               "review_after_ci": cli_common._on_off(args, "review_after_ci", None),
               "fix_ci": cli_common._on_off(args, "fix_ci", None),
               "fixer_scope_lock": cli_common._on_off(args, "fixer_scope_lock", None),
+              "adjudicator_approves": cli_common._on_off(args, "adjudicator_approves", None),
               "review_only_update": cli_common._on_off(args, "review_only_update", None)}
     if (wanted["review_only_update"] and not loop.get("review_only_update")
             and not getattr(args, "acknowledge_branch_push", False)):

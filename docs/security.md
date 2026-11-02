@@ -71,7 +71,7 @@ For ordinary PR writes, `broker.authorize` verifies:
 | `reviewer` (issues, #247) | Up to 3 new issues from its issue-tier findings, filed as the reviewer's own login | Title (one line, 120 chars), body (6 KiB) and labels from the loop's triage list only — no assignee, mention target, milestone or edit; re-authorized against the live PR like a review; recorded before the POST; one title per PR, so a retry never refiles; signed by the host with the PR and lineage depth; an unknown POST outcome is `uncertain`, never replayed |
 | `fixer` | One bounded push followed by one review request; optional answers comment attached to the handoff | Normally requires confirmed push first; host policy is reloaded at write time |
 | Partial-view `fixer` | Answers-only comment | Cannot push or request review of a nonexistent new push |
-| `adjudicator` | One durable `ACCEPT`, `REJECT` or `RESPEC` ruling | Optional notice/comment delivery is separate; no code edits, push or merge authority |
+| `adjudicator` | One durable `ACCEPT`, `REJECT` or `RESPEC` ruling | Optional notice/comment delivery is separate. With `adjudicator_approves` (#905), the host (not the model) approves an `ACCEPT`ed head as the adjudicator login and dismisses the change request it overruled, only with green required checks and no `human_paths` file. No code edits, push or merge authority |
 | `triage` | Configured labels, at most configured `max_labels`, and optional allowed comment | Live open issue, allowlisted author and triage policy are rechecked |
 | `issue_fixer` | New branch/PR/review-request sequence, or one explanation comment | Live issue/fix-label/author/maintainer policy; unattended issue fixing must be enabled |
 

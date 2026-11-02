@@ -312,6 +312,15 @@ SETTINGS_SCHEMA: dict = {
                                         "a maintainer, with a notice listing the extra files; "
                                         "`hermes dk retry` lets it through. Only takes effect "
                                         "with unattended fixer pushes on. Off: no check."},
+    "adjudicator_approves": {"label": "Approve on an adjudicator ACCEPT", "type": "bool",
+                             "default": False,
+                             "description": "On: once the adjudicator rules ACCEPT at a PR's "
+                                            "current head and its required checks are green, the "
+                                            "adjudicator's login approves that head and dismisses "
+                                            "the change request it overruled, so the PR can "
+                                            "merge. Never for a human_paths diff or a held PR. "
+                                            "Needs the adjudicator comment login. Off: the "
+                                            "ruling is left to you."},
     "attribution": {"label": "Sign what the loop posts", "type": "bool", "default": True,
                     "description": "On: every review, comment and commit the loop itself "
                                    "posts ends with 'Automated by Diaktoros' and "
@@ -477,23 +486,17 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
             overlaid[key] = value
     if loop_concurrency is not None:
         overlaid["concurrency"] = loop_concurrency
-    # Attribution (#197) moves only when the form names it, like every other knob.
-    if _form_value(settings, "attribution") is not None:
-        overlaid["attribution"] = d["attribution"]
-    if _form_value(settings, "review_after_ci") is not None:
-        overlaid["review_after_ci"] = d["review_after_ci"]
+    # The on/off knobs, attribution (#197) among them, move only when the form names them.
+    for key in ("attribution", "review_after_ci", "fix_ci", "fixer_scope_lock",
+                "adjudicator_approves", "review_only_update"):
+        if _form_value(settings, key) is not None:
+            overlaid[key] = d[key]
     if str(d.get("merge_check") or "").strip():
         overlaid["merge_check"] = str(d["merge_check"]).strip().lower()
     if str(d.get("ingress") or "").strip():
         overlaid["ingress"] = str(d["ingress"]).strip().lower()
     if str(d.get("ingress_app") or "").strip():
         overlaid["ingress_app"] = str(d["ingress_app"]).strip()
-    if _form_value(settings, "fix_ci") is not None:
-        overlaid["fix_ci"] = d["fix_ci"]
-    if _form_value(settings, "fixer_scope_lock") is not None:
-        overlaid["fixer_scope_lock"] = d["fixer_scope_lock"]
-    if _form_value(settings, "review_only_update") is not None:
-        overlaid["review_only_update"] = d["review_only_update"]
     if _form_value(settings, "review_only") is not None:
         overlaid["review_only"] = [name.strip() for name in str(d["review_only"]).split(",")
                                    if name.strip()]

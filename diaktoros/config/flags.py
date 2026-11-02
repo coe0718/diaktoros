@@ -8,6 +8,8 @@ _BOOLEANS = {
     "review_only_update": " (true lets the host push a clean merge of the base into a "
                           "review-only PR)",
     "fixer_scope_lock": " (true holds a fix round that changes files its findings do not name)",
+    "adjudicator_approves": " (true lets an ACCEPT ruling approve as the adjudicator and "
+                            "dismiss the change request it overruled)",
     "fix_ci": " (true hands a failed required check on a fixer's PR to the fixer)",
     "attribution": " (true signs what the loop posts; false turns it off)",
 }

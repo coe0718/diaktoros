@@ -512,9 +512,55 @@ class LedgerRecords:
             row = con.execute('SELECT * FROM triage_results WHERE run_id=?', (run_id,)).fetchone()
         return dict(row) if row else None
 
-    def rulings(self, limit: int = 50) -> list[dict]:
-        """Read-only operator view of the latest rulings, including their full reason."""
+    def ruled_approval(self, repo: str, pr: int, head: str) -> dict | None:
+        """How the adjudicator acted on its ACCEPT at this head (#905), or None if it has not."""
         with self._connect() as con:
+            row = con.execute('SELECT * FROM ruled_approvals WHERE repo=? AND pr=? AND head=?',
+                              (repo, pr, head)).fetchone()
+        return dict(row) if row else None
+
+    def ruled_approval_step(self, repo: str, pr: int, head: str, step: str, state: str, *,
+                            review_id: int | None = None, overruled: int | None = None,
+                            error: str | None = None, ruling: str | None = None) -> bool:
+        """Move one step (``approve`` or ``dismiss``) of acting on an ACCEPT at this head (#905),
+        forward only: a write that may have been sent is never replayed, and ``uncertain`` moves
+        only once GitHub has been read. With ``ruling`` (its run ID), the move happens only while
+        that ruling is the PR's newest and an ACCEPT, checked in the same transaction: a ruling
+        recorded before the claim always stops it. False when the move is refused, as when
+        another sweep made it first or a newer ruling landed."""
+        allowed = {'pending': {'posting', 'denied', 'none'}, 'posting': {'posted', 'uncertain'},
+                   'uncertain': {'posted', 'denied'}}
+        if step not in ('approve', 'dismiss'):
+            raise ValueError('invalid ruled approval step')
+        now = time.time()
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            newest = con.execute('SELECT run_id, verdict FROM rulings WHERE repo=? AND pr=? '
+                                 'ORDER BY created DESC LIMIT 1', (repo, pr)).fetchone()
+            if ruling is not None and (newest is None or tuple(newest) != (ruling, 'ACCEPT')):
+                con.execute('ROLLBACK')
+                return False
+            con.execute('INSERT OR IGNORE INTO ruled_approvals(repo,pr,head,created,updated) '
+                        'VALUES(?,?,?,?,?)', (repo, pr, head, now, now))
+            row = con.execute(f'SELECT {step} FROM ruled_approvals WHERE repo=? AND pr=? AND '
+                              'head=?', (repo, pr, head)).fetchone()
+            if state not in allowed.get(row[0], set()):
+                con.execute('ROLLBACK')
+                return False
+            con.execute(f'UPDATE ruled_approvals SET {step}=?, review_id=COALESCE(?,review_id), '
+                        'overruled=COALESCE(?,overruled), error=COALESCE(?,error), updated=? '
+                        'WHERE repo=? AND pr=? AND head=?',
+                        (state, review_id, overruled, error, now, repo, pr, head))
+            con.execute('COMMIT')
+        return True
+
+    def rulings(self, limit: int = 50, run_id: str | None = None) -> list[dict]:
+        """Read-only operator view of the latest rulings, including their full reason; with
+        ``run_id``, only that ruling, however old (#905 cites one by its run)."""
+        with self._connect() as con:
+            if run_id:
+                return [dict(row) for row in con.execute(
+                    'SELECT * FROM rulings WHERE run_id=?', (run_id,))]
             return [dict(row) for row in con.execute(
                 'SELECT * FROM rulings ORDER BY created DESC, run_id LIMIT ?',
                 (max(1, min(int(limit), 200)),))]

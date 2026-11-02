@@ -351,7 +351,22 @@ def authorize_ruling_comment(loop: dict, *, repo: str, number: int, head: str,
     distinct ``/user`` principal from the reader and both seats — at a live PR that is still the
     open, non-draft, same-repository, unapproved head the ruling was made on.
     """
-    from . import config, gate
+    from . import gate
+    login = authorize_adjudicator(loop, repo=repo, number=number, head=head, branch=branch)
+    reviews = gh.reviews(loop, number)
+    if not isinstance(reviews, list):
+        raise BrokerDenied("cannot verify the head is still unapproved")
+    latest = gate.latest_effective_review_at_head(reviews, loop, head)
+    if latest is not None and gh.review_state(latest) == "APPROVED":
+        raise BrokerDenied("head was approved after the breach")
+    return login
+
+
+def authorize_adjudicator(loop: dict, *, repo: str, number: int, head: str, branch: str) -> str:
+    """The adjudicator login, cleared to write at this live head, or deny: a fourth identity at
+    the open, non-draft, same-repository head of an authorized fixer's PR. The ruling comment
+    and the approval on an ACCEPT (#905) both need it; each adds its own checks."""
+    from . import config
     if not _REPO.fullmatch(repo) or repo != loop.get("repo"):
         raise BrokerDenied("wrong repository")
     if type(number) is not int or number <= 0 or not _SHA.fullmatch(head):
@@ -369,13 +384,38 @@ def authorize_ruling_comment(loop: dict, *, repo: str, number: int, head: str,
     if not isinstance(author, str) or author.casefold() not in {
             f.casefold() for f in loop.get("fixers") or () if isinstance(f, str)}:
         raise BrokerDenied("PR author is not an authorized fixer")
-    reviews = gh.reviews(loop, number)
-    if not isinstance(reviews, list):
-        raise BrokerDenied("cannot verify the head is still unapproved")
-    latest = gate.latest_effective_review_at_head(reviews, loop, head)
-    if latest is not None and gh.review_state(latest) == "APPROVED":
-        raise BrokerDenied("head was approved after the breach")
     return login
+
+
+def human_paths_check(loop: dict, number: int) -> tuple[str, str]:
+    """``(refusal, held)`` for an APPROVE under ``human_paths`` (#478).
+
+    ``refusal``: the file list could not be read, so nothing can be judged; the seat may
+    retry. ``held``: the approval is a person's, naming why: the diff touches a reserved
+    path, or it is too large for GitHub to list in full. Both empty: the APPROVE proceeds.
+    The diff is read live from GitHub, never from the seat or the PR. The reviewer's broker and
+    the adjudicator's approval on an ACCEPT (#905) both ask it.
+    """
+    from . import config
+    if not config.human_paths(loop):
+        return "", ""
+    files, error = gh.pr_files_read(loop, number)
+    if files is None:
+        return (f"the PR's file list could not be read ({error[:200]}), so the loop cannot "
+                "check it against human_paths; nothing was written, retry"), ""
+    if len(files) >= gh.PR_FILES_LISTING_LIMIT:
+        return "", (f"GitHub lists at most {gh.PR_FILES_LISTING_LIMIT} changed files and "
+                    "this PR reaches that limit, so it cannot be checked in full")
+    paths = []
+    for item in files:
+        for key in ("filename", "previous_filename"):
+            if isinstance(item.get(key), str):
+                paths.append(item[key])
+    hits = config.human_path_hits(loop, paths)
+    if not hits:
+        return "", ""
+    names = ", ".join(hits[:10]) + (f" and {len(hits) - 10} more" if len(hits) > 10 else "")
+    return "", f"it touches {names}"
 
 
 class TriageSkipped(BrokerDenied):
@@ -568,6 +608,31 @@ def ruling_comment_body(verdict: str, body: str, *, head: str, turn_key: str, ru
             f"Head `{head}` · verdicts counted: {rounds} of {cap} · run `{run_id}`\n\n"
             f"{body.strip()}\n\n"
             "_The adjudicator does not merge, push or review. The operator decides._")
+
+
+def approve_on_ruling(loop: dict, *, repo: str, number: int, head: str, branch: str,
+                      login: str, text: str) -> int:
+    """POST one APPROVE review at ``head`` as the adjudicator identity, on its ACCEPT ruling
+    (#905); the review's id, or raise. ``commit_id`` pins it: GitHub refuses a moved head."""
+    result, why = _write(loop, f"/repos/{repo}/pulls/{number}/reviews", method="POST",
+                         body={"commit_id": head, "event": "APPROVE",
+                               "body": _signed(loop, text, "adjudicator", head)}, login=login)
+    if (not isinstance(result, dict) or type(result.get("id")) is not int
+            or gh.review_state(result) != "APPROVED" or result.get("commit_id") != head):
+        raise _denied("GitHub review write did not return the approval", why)
+    _audit(loop, repo, number, head, branch, "adjudicator", "ruled_approval", login)
+    return result["id"]
+
+
+def dismiss_on_ruling(loop: dict, *, repo: str, number: int, head: str, branch: str,
+                      login: str, review_id: int, message: str) -> None:
+    """Dismiss the reviewer's change request ``review_id``, which the adjudicator's ACCEPT
+    overruled (#905), as the adjudicator identity; raise unless GitHub says it is dismissed."""
+    result, why = _write(loop, f"/repos/{repo}/pulls/{number}/reviews/{review_id}/dismissals",
+                         method="PUT", body={"message": message, "event": "DISMISS"}, login=login)
+    if not isinstance(result, dict) or gh.review_state(result) != "DISMISSED":
+        raise _denied("GitHub dismissal did not return a dismissed review", why)
+    _audit(loop, repo, number, head, branch, "adjudicator", "ruled_dismissal", login)
 
 
 def post_ruling_comment(loop: dict, *, repo: str, number: int, head: str, branch: str,

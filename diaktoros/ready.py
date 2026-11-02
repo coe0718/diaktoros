@@ -107,7 +107,7 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
     def add(kind: str, text: str) -> None:
         why.append((kind, text))
 
-    approved = on_ruling = False
+    approved, latest, raw = False, None, None
     number = pr.get("number")
     head = (pr.get("head") or {}).get("sha") or ""
     author = str((pr.get("user") or {}).get("login") or "").lower()
@@ -137,8 +137,7 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
             approved = True
             if stale_approval.is_stale(st.watch(), number, head):
                 add(FAILURE, stale_approval.line(stale_approval.record(st.watch(), number)))
-            on_ruling = gate.is_ruled_approval(latest, loop)   # #905: the adjudicator's, on ACCEPT
-            why.extend((FAILURE, line) for line in _unlifted(raw) if on_ruling)
+    why.extend(acting(loop, number, head, raw, latest))
 
     gating = ci.gating(ci_state, config.required_checks(loop))
     if gating is None:
@@ -183,7 +182,7 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
     if isinstance(held, dict):
         add(FAILURE, f"waiting for a person: {held.get('why') or 'touches human_paths'}")
     marker = st.breach_get(number)
-    if not on_ruling:          # #905: approved on the ACCEPT, so no person is waited for
+    if not gate.is_ruled_approval(latest, loop):   # #905: approved on the ACCEPT, no person waits
         why.extend(_escalation(loop, number, head, marker))
     shadow_kind, shadow_held, _note = gate.shadow_state(loop, number, head, marker=marker)
     if shadow_held:
@@ -215,9 +214,42 @@ def _escalation(loop: dict, number: int, head: str, marker) -> list[tuple[str, s
     return [(PENDING, "escalated: parked awaiting adjudication")]
 
 
-def _unlifted(reviews: list) -> list[str]:
+def acting(loop: dict, number: int, head: str, reviews: list | None,
+           latest) -> list[tuple[str, str]]:
+    """What still holds a head approved on the adjudicator's ACCEPT (#905), and how the sweep's
+    acting on an ACCEPT at this head stands; ``explain`` reads the same. ``reviews`` is the PR's
+    review list and ``latest`` the head's effective verdict (None: unknown). A change request
+    GitHub still counts, or an uncertain or denied step with its reason, keeps the check red.
+    Once the reviewer itself approves, the record no longer holds the head (that approval lifts
+    the reviewer's own request), but where the sweep acted, every other account's change request
+    GitHub still counts does."""
+    from .run_supervisor import production_ledger, views
+    on_ruling = gate.is_ruled_approval(latest, loop)
+    row, error = views.ruled_approval(production_ledger(), loop["repo"], number, head)
+    if latest is not None and not on_ruling and gh.review_state(latest) == "APPROVED":
+        return [(FAILURE, f"{gate.reviewer_login(r) or '?'}'s changes-requested review "
+                          f"{r.get('id')} still blocks GitHub's merge until it is dismissed")
+                for r in gate.blocking_reviews(reviews or [])] if row or error else []
+    found = [(FAILURE, line) for line in unlifted(reviews or [])] if on_ruling else []
+    if error:
+        return found + ([(FAILURE, f"the record of acting on the ACCEPT can't be read "
+                                   f"({error[:120]})")] if on_ruling else [])
+    for step, what in (("approve", "approval"), ("dismiss", "dismissal")):
+        state = (row or {}).get(step)
+        if state in ("uncertain", "posting"):
+            found.append((FAILURE, f"the {what} on the adjudicator's ACCEPT is unconfirmed "
+                                   f"({row.get('error') or 'being written, or interrupted'}); a "
+                                   "later sweep reads GitHub to settle it"))
+        elif state == "denied":
+            found.append((FAILURE, f"the {what} on the adjudicator's ACCEPT was not made: "
+                                   f"{row.get('error') or 'no reason recorded'}; a person decides"))
+    return found
+
+
+def unlifted(reviews: list) -> list[str]:
     """Approved on the adjudicator's ACCEPT ruling (#905), but GitHub still counts a reviewer's
-    change request until it is dismissed: the merge stays blocked, and the check says why."""
+    change request until it is dismissed: the merge stays blocked, and the check (and
+    ``explain``) say why."""
     return [f"approved on the adjudicator's ACCEPT ruling, but {gate.reviewer_login(r)}'s "
             f"changes-requested review {r.get('id')} still blocks GitHub's merge until it is "
             "dismissed" for r in gate.blocking_reviews(reviews)]

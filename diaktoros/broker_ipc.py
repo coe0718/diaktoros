@@ -735,33 +735,9 @@ class RunBroker(broker_issues.IssueWrites):
         return result
 
     def _human_paths_check(self) -> tuple[str, str]:
-        """``(refusal, held)`` for an APPROVE under ``human_paths`` (#478).
-
-        ``refusal``: the file list could not be read, so nothing can be judged; the seat may
-        retry. ``held``: the approval is a person's, naming why: the diff touches a reserved
-        path, or it is too large for GitHub to list in full. Both empty: the APPROVE proceeds.
-        The diff is read live from GitHub, never from the seat or the PR.
-        """
-        if not config.human_paths(self._loop):
-            return "", ""
-        from . import gh
-        files, error = gh.pr_files_read(self._loop, self.scope.number)
-        if files is None:
-            return (f"the PR's file list could not be read ({error[:200]}), so the loop cannot "
-                    "check it against human_paths; nothing was written, retry"), ""
-        if len(files) >= gh.PR_FILES_LISTING_LIMIT:
-            return "", (f"GitHub lists at most {gh.PR_FILES_LISTING_LIMIT} changed files and "
-                        "this PR reaches that limit, so it cannot be checked in full")
-        paths = []
-        for item in files:
-            for key in ("filename", "previous_filename"):
-                if isinstance(item.get(key), str):
-                    paths.append(item[key])
-        hits = config.human_path_hits(self._loop, paths)
-        if not hits:
-            return "", ""
-        names = ", ".join(hits[:10]) + (f" and {len(hits) - 10} more" if len(hits) > 10 else "")
-        return "", f"it touches {names}"
+        """``(refusal, held)`` for an APPROVE under ``human_paths`` (#478):
+        ``broker.human_paths_check`` for this turn's PR."""
+        return broker.human_paths_check(self._loop, self.scope.number)
 
     def _end_on_conflict(self, why: str, body: str = "") -> dict:
         """End a reviewer turn whose APPROVE met a conflict on the live read right before the write
