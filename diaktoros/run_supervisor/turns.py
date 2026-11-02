@@ -751,7 +751,7 @@ class ClaimAndLaunch:
             raise run_supervisor.RetryableError('reviews or receipts unreadable before launch')
         try:
             final = (row['retries'] or 0) + 1 >= run_supervisor.MAX_RETRIES
-            change = pr_facts.pr_change(loop, row, final=final)
+            change = pr_facts.pr_change(loop, row, final=final, cache=self._listings)
             prompt = (turn_prompts.isolated_prompt(loop, row, reviews, None, change)
                       + turn_prompts.upheld_shadow_section(row, ruled))
         except ValueError as exc:
@@ -920,7 +920,7 @@ class ClaimAndLaunch:
             # The last allowed attempt degrades an unreadable file list rather than failing
             # the run (#110): a partial view, stated as such, instead of no turn at all.
             final = (row['retries'] or 0) + 1 >= run_supervisor.MAX_RETRIES
-            change = (pr_facts.pr_change(loop, prompt_row, final=final)
+            change = (pr_facts.pr_change(loop, prompt_row, final=final, cache=self._listings)
                       if prompt_row['seat'] in ('reviewer', 'fixer') else None)
             # A shadow escalation's ruling answers the shadow review read HERE (#1112): the
             # prompt shows it and the scope records its run id, from one read, so a later

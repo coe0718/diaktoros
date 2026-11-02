@@ -413,3 +413,97 @@ class Sandbox(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ListingCache(Base):
+    """#1073: the file listing and tree names of one head are read once per supervisor; the PR
+    itself (title, body, base, head) is read on every turn."""
+
+    def listing_reads(self, world):
+        return [p for _, p, _ in world.calls if p.startswith(FILES)]
+
+    def test_a_second_read_of_the_same_head_reuses_the_listing_but_not_the_pr(self):
+        world, cache = World([changed(1), changed(2)]), {}
+        with mock.patch.object(gh, "fetch", side_effect=world.fetch):
+            first = pr_facts.pr_change(self.loop, self.row, cache=cache)
+            world.pr["title"] = "Fix the parser properly"
+            second = pr_facts.pr_change(self.loop, self.row, cache=cache)
+        self.assertEqual(len(self.listing_reads(world)), 1)
+        self.assertEqual(first.diff, second.diff)
+        self.assertIn("title: Fix the parser properly", second.record)
+        self.assertNotIn("properly", first.record)
+
+    def test_a_retarget_or_a_new_count_misses_the_cache(self):
+        world, cache = World([changed(1)]), {}
+        with mock.patch.object(gh, "fetch", side_effect=world.fetch):
+            pr_facts.pr_change(self.loop, self.row, cache=cache)
+            world.pr["base"] = {"ref": "release", "sha": "c" * 40}
+            pr_facts.pr_change(self.loop, self.row, cache=cache)
+            world.files, world.pr["changed_files"] = [changed(1), changed(2)], 2
+            again = pr_facts.pr_change(self.loop, self.row, cache=cache)
+        self.assertEqual(len(self.listing_reads(world)), 3)
+        self.assertIn("src/f2.rs", again.record)
+
+    def test_a_moved_head_still_fails_with_a_cached_listing(self):
+        world, cache = World([changed(1)]), {}
+        with mock.patch.object(gh, "fetch", side_effect=world.fetch):
+            pr_facts.pr_change(self.loop, self.row, cache=cache)
+            world.pr["head"]["sha"] = "c" * 40
+            with self.assertRaisesRegex(ValueError, "PR head moved"):
+                pr_facts.pr_change(self.loop, self.row, cache=cache)
+
+    def test_a_degraded_or_unreadable_listing_is_never_kept(self):
+        world, cache = World([changed(1)]), {}
+        world.gone[FILES] = "HTTP 404 {}"
+        with mock.patch.object(gh, "fetch", side_effect=world.fetch):
+            degraded = pr_facts.pr_change(self.loop, self.row, cache=cache)
+            self.assertIn("could not read the PR's file list", degraded.record)
+            self.assertEqual(cache, {})
+            world.gone.clear()
+            healed = pr_facts.pr_change(self.loop, self.row, cache=cache)
+        self.assertNotIn("could not read the PR's file list", healed.record)
+
+    def test_unlisted_files_named_from_the_trees_are_read_once(self):
+        world, cache = World([changed(i) for i in range(3)]), {}
+        world.pr["changed_files"] = 4
+        world.trees = {MERGE_BASE: {"src/a.rs": "1"}, HEAD: {"src/a.rs": "1", "src/new.rs": "2"}}
+        with mock.patch.object(gh, "fetch", side_effect=world.fetch):
+            first = pr_facts.pr_change(self.loop, self.row, cache=cache)
+            before = len(world.calls)
+            second = pr_facts.pr_change(self.loop, self.row, cache=cache)
+        self.assertIn("- added: src/new.rs", first.record)
+        self.assertEqual(first, second)
+        # only the PR read itself repeated: no listing page, no compare, no tree
+        self.assertEqual([p for _, p, _ in world.calls[before:]], [f"/repos/{REPO}/pulls/7"])
+
+    def test_the_supervisor_keeps_one_cache_across_its_turns(self):
+        """Through the real entry point: two reviewer turns of one Supervisor read the list once."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            runtime = root / "runtime.json"
+            runtime.write_text("{}")
+            runtime.chmod(0o600)
+            sup = Supervisor(root / "ledger.sqlite", production_config=runtime, hermes_home=root)
+            world = World([changed(1)])
+            settings = {k: str(root) for k in ("source", "venv", "runtime", "rust")}
+            for name in ("d", "e"):
+                with mock.patch.object(sup, "_spawn"):
+                    sup.enqueue(name, REPO, 7, HEAD, "reviewer", turn_key=name)
+                with ledger.connect(sup.db) as con:
+                    con.execute("UPDATE runs SET state='launching', owner='w', generation='g' "
+                                "WHERE id=(SELECT id FROM runs WHERE turn_key=?)", (name,))
+                    run_id = con.execute("SELECT id FROM runs WHERE turn_key=?", (name,)).fetchone()[0]
+                with mock.patch("diaktoros.seat_model.load_runtime", return_value=settings), \
+                     mock.patch("diaktoros.seat_model.resolve_seat"), \
+                     mock.patch.object(config, "by_repo",
+                                       return_value={**self.loop, "state_dir": str(root / "state")}), \
+                     mock.patch.object(gh, "fetch", side_effect=world.fetch), \
+                     mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
+                     mock.patch.object(pr_facts, "effective_reviews", return_value=[]), \
+                     mock.patch.object(trusted_turn, "run_turn", return_value=0) as run_turn, \
+                     mock.patch.object(sup, "recover"):
+                    sup._run_production(run_id, "w")
+                run_turn.assert_called_once()
+                self.assertIn("src/f1.rs", run_turn.call_args.kwargs["prompt"])
+        self.assertEqual(len(self.listing_reads(world)), 1)

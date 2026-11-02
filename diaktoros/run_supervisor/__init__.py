@@ -598,6 +598,8 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch, notices.OperatorNo
         # run id -> set once an operator asks to stop that turn (#1148); the owner's heartbeat
         # sets it, and the turn's sandbox wait reads it.
         self._cancels: dict[str, threading.Event] = {}
+        # The PR file listings this supervisor has read, kept for its later turns (#1073).
+        self._listings: dict = {}
         self.child_timeout = child_timeout
         self.create = create
         self.existing_only = existing_only

@@ -244,7 +244,22 @@ def unlisted_changes(loop: dict, repo: str, base: str, head: str,
     return changes
 
 
-def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
+# How many PR file listings one cache keeps; the oldest goes first.
+LISTINGS_KEPT = 8
+
+
+def _listing_key(row, pr: dict) -> tuple:
+    """What the file listing and the tree comparison depend on, as just read from the PR.
+
+    The head sha alone is not enough: a retarget changes the base (and so the listing) with no
+    push, so the base ref and sha and the declared file count are part of the key (#1073).
+    """
+    base = pr['base']
+    return (row['repo'], row['pr'], row['head'], base.get('ref'), base.get('sha'),
+            pr.get('changed_files'))
+
+
+def pr_change(loop: dict, row, *, final: bool = False, cache: dict | None = None) -> PRChange:
     """The PR's title, description, base and changed files as the host read them, fail-closed.
 
     A reviewer told to verify a change must be able to see it. An unreadable PR raises. An
@@ -253,6 +268,11 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
     spent, the change degrades instead (#110): the record says the file list could not be read and
     why, and that the seat cannot see the whole change and must not approve it. A turn that says
     what it could not see beats a turn that silently dies.
+
+    ``cache`` (a dict the caller keeps, such as one supervisor's) holds the file listing and the
+    names of unlisted files, which are immutable for one head and base (#1073). The PR itself
+    (title, body, base, head) is read every time, so a moved head still ends the turn and an edit
+    to the title or description is never stale; only a complete, error-free listing is kept.
     """
     from .. import gh
     number = row['pr']
@@ -262,13 +282,20 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
         raise ValueError('PR unreadable')
     if pr['head'].get('sha') != row['head']:
         raise ValueError('PR head moved')
-    files, error = gh.pr_files_read(loop, number)
-    files_error = ''
-    if files is None:
-        if not (final or gh.persistent_failure(error)):
-            raise ValueError(f'PR files unreadable: {error}'[:200])
-        files, files_error = [], _line(error, 200) or 'no reason given'
     base = pr['base']
+    key = _listing_key(row, pr)
+    kept = cache.get(key) if cache is not None else None
+    unlisted = []
+    if kept is not None:
+        files, unlisted = kept
+        files_error = ''
+    else:
+        files, error = gh.pr_files_read(loop, number)
+        files_error = ''
+        if files is None:
+            if not (final or gh.persistent_failure(error)):
+                raise ValueError(f'PR files unreadable: {error}'[:200])
+            files, files_error = [], _line(error, 200) or 'no reason given'
     base_ref, base_sha = _line(base.get('ref'), 200), _line(base.get('sha'), 64)
     added = sum(f.get('additions') for f in files if type(f.get('additions')) is int)
     removed = sum(f.get('deletions') for f in files if type(f.get('deletions')) is int)
@@ -282,14 +309,18 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
                   f"{len(files)}" + (f" (it lists at most {GITHUB_FILES_CAP})"
                                      if len(files) >= GITHUB_FILES_CAP else ''))
     # Past GitHub's listing cap, name the rest from the trees; /work has no history to diff.
-    unlisted, unlisted_error = [], ''
-    if type(declared) is int and declared > len(files) and not files_error:
+    unlisted_error = ''
+    if kept is None and type(declared) is int and declared > len(files) and not files_error:
         named = {n for f in files for n in (f.get('filename'), f.get('previous_filename'))
                  if isinstance(n, str)}
         try:
             unlisted = unlisted_changes(loop, row['repo'], base.get('sha') or '', row['head'], named)
         except ValueError as exc:
             unlisted_error = _line(str(exc), 200)
+    if cache is not None and kept is None and not files_error and not unlisted_error:
+        cache[key] = (files, unlisted)
+        while len(cache) > LISTINGS_KEPT:
+            del cache[next(iter(cache))]
 
     listed, patches, patch_total, omitted = [], [], 0, 0
     diff_parts, diff_total, diff_cut = [], 0, 0
