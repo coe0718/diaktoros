@@ -114,6 +114,11 @@ def _check_tokens(loop: dict, where: str) -> None:
     """``tokens`` (absolute paths), ``apps``, and the named reader, ``read_token``."""
     loop["tokens"] = {k: str(v) for k, v in (loop.get("tokens") or {}).items()}
     for login, token_path in loop["tokens"].items():
+        # Every CLI writer refuses an empty login (cli/common.py _split_token_pair); a hand-edited
+        # or restored loop must not smuggle one in, or doctor prints a green, nameless identity.
+        if not login.strip():
+            raise config.ConfigError(f"{where}: tokens.{login}: the login is empty — name the "
+                                     "account this token file belongs to")
         # A relative path would resolve from whatever the current directory is at use time.
         problem = config.relative_path_problem(token_path)
         if problem:
