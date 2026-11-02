@@ -13,6 +13,7 @@ from .. import (
     config,
     doctor,
     gate_shims,
+    onboarding,
     route_intent,
 )
 from ..doctor import hook_checks
@@ -79,6 +80,44 @@ def cmd_selftest(args) -> int:
                                  else config.turn_budget(loop, "reviewer")),
                         ping=getattr(args, "ping", False),
                         ping_login=getattr(args, "admin_token", "") or None)
+
+
+def cmd_onboard(args) -> int:
+    """Read-only checklist of the setup stages (#677): what the onboarding record holds and the
+    one command to run next.
+
+    It runs no check, writes nothing and makes no GitHub write: it reads the record
+    (``onboarding.inspect``, which GETs the PR head and the hooks only for the stages that were
+    recorded against them) and the loop's unattended-push setting. Every action stays behind its
+    own command and that command's flags; this never runs ``arm`` or ``fixer-push``.
+    """
+    try:
+        loop = config.load_id(args.loop)
+    except config.ConfigError as exc:
+        print(f"cannot show onboarding: {hook_checks._safe_report_text(str(exc))}")
+        return 2
+    rows = onboarding.inspect(loop)
+    print(f"[{loop['id']}] onboarding for {loop['repo']} (read-only: nothing was checked or written)")
+    for stage, row in rows.items():
+        print(f"  {stage:<10} {row['status']}")
+        if row["at"] or row["command"]:
+            print(f"      recorded {row['at'] or '(no time)'} by `{row['command'] or '(no command)'}`")
+        if row["summary"]:
+            print(f"      {row['summary']}")
+        if row["reason"]:
+            print(f"      changed: {row['reason']}")
+    step = onboarding.next_step(loop, rows, args.pr)
+    if step is None:
+        print("next: nothing, every stage passed")
+    else:
+        stage, command, label = step
+        print(f"next: {command}   ({label}; for the {stage} stage)")
+        if stage == "live_turn" and "--pr N" in command:
+            print("      N is a PR number: pass --pr N here to name it")
+    push = config.unattended_fixer_push_enabled(loop)
+    print("unattended fixer pushes: " + ("on" if push else
+          f"off (to turn them on yourself: {config.fixer_push_enable_command(loop)})"))
+    return 0
 
 
 def cmd_corpus(args) -> int:
@@ -317,6 +356,18 @@ def add_selftest(sub) -> None:  # noqa: ANN001
                        help="live turn budget in seconds (default: the loop's reviewer "
                             "turn_budget_s — the budget the production worker enforces)")
     check.set_defaults(func=cmd_selftest)
+
+
+def add_onboard(sub) -> None:  # noqa: ANN001
+    """The ``onboard`` subcommand's parser, registered by ``cli.register_cli`` (#677)."""
+    onboard = sub.add_parser("onboard", help="Show which setup stages have been shown to work, and "
+                                             "the next command to run (read-only; runs nothing)")
+    onboard.add_argument("--loop", required=True,
+                         help="loop id (its config file name; `list` shows them)")
+    onboard.add_argument("--pr", type=int,
+                         help="the pull request the live-turn stage's command names "
+                              "(default: the one recorded, else a placeholder N)")
+    onboard.set_defaults(func=cmd_onboard)
 
 
 def add_corpus(sub) -> None:  # noqa: ANN001

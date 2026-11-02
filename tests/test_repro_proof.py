@@ -116,6 +116,23 @@ class Proof(unittest.TestCase):
         self.assertEqual(proof["overall"], repro_proof.UNPROVEN)
         self.assertIn("did not import on the original head", repro_proof.section(proof))
 
+    def test_import_error_note_does_not_assert_a_cause(self):
+        # #1015: a _FailedTest only says the module did not import; an unrelated import failure
+        # looks the same, so the note must not claim the test imports code the fix adds.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            (base / "tests").mkdir(parents=True)
+            (base / "tests" / "__init__.py").write_text("")
+            (base / "widget.py").write_text(OLD_CODE)
+            test = TEST.replace("import widget as c\n", "import widget as c\nimport not_a_module\n")
+            fix = manifest({"widget.py": NEW_CODE, "tests/test_it.py": test})
+            proof = repro_proof.prove(base, fix, ["tests.test_it.Case.test_value"], run_unittest)
+        self.assertEqual(proof["ids"][0]["old"], repro_proof.IMPORT_ERROR, proof)
+        note = repro_proof.section(proof)
+        self.assertIn("did not import on the original head", note)
+        self.assertNotIn("it imports code the fix adds", note)
+        self.assertIn("unrelated", note)
+
     # -- the hunk guard (#1043) ---------------------------------------------------------------
     def guard(self, new_code, test=TEST):
         with tempfile.TemporaryDirectory() as tmp:

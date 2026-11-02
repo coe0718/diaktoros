@@ -208,6 +208,23 @@ class LockTimeouts(unittest.TestCase):
         self.assertEqual(ledger.where(other), "")
         self.assertEqual(ledger.where(ValueError("database is locked")), "")
 
+    def test_a_same_connection_table_lock_is_not_a_lock_timeout(self):
+        # SQLITE_LOCKED ("database table is locked") is misuse within one connection, not
+        # another connection's lock: it must fail fast, not be retried.
+        exc = sqlite3.OperationalError("database table is locked")
+        exc.sqlite_errorcode = sqlite3.SQLITE_LOCKED
+        exc.sqlite_errorname = "SQLITE_LOCKED"
+        self.assertFalse(ledger.locked(exc))
+        self.assertEqual(ledger.where(exc), "")
+        self.assertFalse(run_supervisor.retryable(exc))
+        self.assertFalse(ledger.locked(sqlite3.OperationalError("database table is locked")))
+
+    def test_busy_extended_codes_and_hand_built_errors_still_count(self):
+        exc = sqlite3.OperationalError("database is locked")
+        exc.sqlite_errorcode = sqlite3.SQLITE_BUSY | (2 << 8)       # SQLITE_BUSY_SNAPSHOT
+        self.assertTrue(ledger.locked(exc))
+        self.assertTrue(ledger.locked(sqlite3.OperationalError("database is locked")))
+
     def test_a_lock_timeout_is_retried_and_other_sqlite_errors_are_not(self):
         self.assertTrue(run_supervisor.retryable(self.caught()))
         self.assertFalse(run_supervisor.retryable(sqlite3.OperationalError("no such table: runs")))

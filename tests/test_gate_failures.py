@@ -24,6 +24,7 @@ import run_tests as t  # noqa: E402
 from diaktoros import config, explain, gate, gate_failures, state as state_mod  # noqa: E402
 from diaktoros import watch_mode  # noqa: E402
 from diaktoros import watch_health  # noqa: E402
+from diaktoros.util import iso_at  # noqa: E402
 
 SCRIPTS = t.ROOT / "scripts"
 
@@ -1104,6 +1105,52 @@ class GateFailureTest(unittest.TestCase):
         local = explain._explain_state(loop, state_mod.LoopState(loop), f"{t.REPO}#7", 7, "", time.time())
         self.assertIn(str(gate_failures.fallback_ledger().path), local["github"])
 
+    def test_a_newer_fallback_failure_of_an_in_process_key_is_shown_over_the_older_home_one(self):
+        # #1592, all three steps: (1) failure 1 is recorded in the loop's ledger and alerted;
+        # (2) a later run that succeeds cannot take that ledger's lock in time, so the entry
+        # stays open; (3) failure 2 (same key) finds the ledger busy again and goes to the
+        # fallback ledger. open_for and explain must show failure 2 (error and time).
+        import fcntl
+        payload = t.pr_payload(7)
+        try:
+            raise RuntimeError("first failure")
+        except RuntimeError as err:
+            first = err
+        home_path = gate_failures.record_in_process("gate_reviewer", payload, first, time.monotonic())
+        self.assertEqual(home_path, str(gate_failures.Ledger(t.STATE_DIR).path))
+        (key,) = loop_entries()
+        said = gate_failures.sweep(gate_failures.Ledger(t.STATE_DIR), "[w]", SCRIPTS, cooldown_s=3600)
+        self.assertEqual(len([line for line in said if "first failure" in line]), 1, said)
+        self.assertIn("alerted_at", loop_entries()[key])                # step 1: alerted
+        older = loop_entries()[key]
+        time.sleep(1.1)                         # the displayed time has one-second resolution
+        t.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(t.STATE_DIR / "gate-failures.lock", "a+") as held, \
+                mock.patch.object(gate_failures, "RECORD_S", 0.2):
+            fcntl.flock(held, fcntl.LOCK_EX)                            # the loop ledger is busy
+            gate_failures.resolve_in_process("gate_reviewer", payload)  # step 2: blocked success
+            try:
+                raise RuntimeError("second failure")
+            except RuntimeError as err:
+                second = err
+            spare_path = gate_failures.record_in_process(               # step 3
+                "gate_reviewer", payload, second, time.monotonic())
+        self.assertEqual(spare_path, str(gate_failures.fallback_ledger().path))
+        self.assertFalse(loop_entries()[key]["resolved"])               # the older entry is open
+        loop = config.load_id("widgets")
+        shown = gate_failures.open_for(loop, 7)
+        newer = [e for e in shown if e.get("held_in")]
+        self.assertEqual([e["error"] for e in newer], ["second failure"], shown)
+        self.assertGreater(newer[0]["last_at"], older["last_at"])
+        line = explain.gate_failure_line(newer[0])
+        self.assertIn("second failure", line)
+        self.assertIn(f"last {iso_at(newer[0]['last_at'])}", line)
+        self.assertNotEqual(iso_at(newer[0]["last_at"]), iso_at(older["last_at"]))
+        # A true duplicate (the same run, written to both) is still shown once.
+        fallback = gate_failures.fallback_ledger()
+        fallback.record(key, {**fallback.entries()[key], "run_started_at": time.time() - 3600}, "")
+        self.assertEqual([e["id"] for e in gate_failures.open_for(loop, 7)], [key])
+
     def test_a_claim_cut_off_by_the_record_alarm_is_made_again(self):
         # The claim is the last step of the record phase; on a slow disk the one-shot record
         # alarm fires inside its write, which swallows it. The read must still end up owned.
@@ -1122,6 +1169,61 @@ class GateFailureTest(unittest.TestCase):
         (key, _), = gate_failures.Ledger(t.STATE_DIR).entries().items()
         failure = state_mod.LoopState(config.load_id("widgets")).github_failure()
         self.assertEqual(failure.get("owned_by"), f"gate-failures:{key}", proc.stderr)
+
+    # -- an older overlapping delivery settles neither a newer failure nor its read (#1594) -----
+
+    OVERLAP = ("loop = config.load_id('widgets')\n"
+               "    key = gate_failures.fingerprint('gate_reviewer', sys.stdin.getvalue())\n"
+               "    gate_failures.loop_ledger(loop).record(key, {'gate': 'gate_reviewer', 'kind': 'crash',\n"
+               "        'pr': 7, 'repo': 'acme/widgets', 'error_type': 'X', 'error': 'y'}, '{}')\n"
+               "    gh.record_failures()\n"
+               "    gh.record_failure(loop, 'GET', '/pulls/7', 'HTTP 502')\n"
+               "    st = state.state_for(loop)\n"
+               "    st.github_failure_record({**st.github_failure(), 'owned_by': 'gate-failures:' + key})\n")
+
+    def owned_read_of(self, key: str, at: float) -> state_mod.LoopState:
+        st = state_mod.LoopState(config.load_id("widgets"))
+        st.github_failure_record({"at": at, "where": "gate_reviewer.py", "method": "GET",
+                                  "path": "/pulls/7", "error": "HTTP 502", "status": 502,
+                                  "owned_by": f"gate-failures:{key}"})
+        return st
+
+    def test_an_older_overlapping_delivery_leaves_a_newer_failure_and_its_read_alone(self):
+        key = gate_failures.fingerprint("gate_reviewer", json.dumps(t.pr_payload(7)))
+        # This delivery starts, and while it runs a newer one records its failure and read.
+        proc = self.fault_gate("", body=self.OVERLAP)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        entry = gate_failures.Ledger(t.STATE_DIR).entries()[key]
+        self.assertFalse(entry["resolved"])
+        failure = state_mod.LoopState(config.load_id("widgets")).github_failure()
+        self.assertEqual(failure.get("owned_by"), f"gate-failures:{key}")
+        self.assertNotIn("resolved_by", failure)
+
+    def test_a_newer_read_stays_owned_when_no_ledger_holds_its_entry(self):
+        key = gate_failures.fingerprint("gate_reviewer", json.dumps(t.pr_payload(7)))
+        for ledger in (gate_failures.Ledger(t.STATE_DIR), gate_failures.fallback_ledger()):
+            ledger.path.unlink(missing_ok=True)
+        body = ("st = state.state_for(config.load_id('widgets'))\n"
+                f"    st.github_failure_record({{'at': __import__('time').time(), 'owned_by': "
+                f"'gate-failures:{key}', 'error': 'HTTP 502'}})")
+        proc = self.fault_gate("", body=body)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        failure = state_mod.LoopState(config.load_id("widgets")).github_failure()
+        self.assertEqual(failure.get("owned_by"), f"gate-failures:{key}")
+
+    def test_a_failure_and_read_from_before_the_delivery_started_are_still_settled(self):
+        key = gate_failures.fingerprint("gate_reviewer", json.dumps(t.pr_payload(7)))
+        gate_failures.Ledger(t.STATE_DIR).record(
+            key, {"gate": "gate_reviewer", "kind": "crash", "pr": 7, "repo": t.REPO,
+                  "error_type": "X", "error": "y"}, "{}")
+        self.owned_read_of(key, time.time())
+        time.sleep(0.05)
+        proc = self.fault_gate("", body="pass")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(gate_failures.Ledger(t.STATE_DIR).entries()[key]["resolved"])
+        failure = state_mod.LoopState(config.load_id("widgets")).github_failure()
+        self.assertNotIn("owned_by", failure)
+        self.assertIn(key, failure.get("resolved_by", ""))
 
     def test_the_alert_marks_the_attempt_it_said_not_a_later_one(self):
         ledger = self.redrivable_entry()

@@ -443,6 +443,12 @@ def _head_verdicts(c) -> None:
             c.head_states = sorted({gh.review_state(r) for r in gate.reviews_at_head(c.reviews, c.loop, c.head)})
 
     c.stale_line, c.watch = "", c.st.watch()
+    # #905: approved on the adjudicator's ACCEPT, but GitHub still counts a change request.
+    from . import ready                   # here: ready reads explain at import
+    c.unlifted = ([text for _, text in ready.acting(c.loop, c.number, c.head, c.reviews,
+                                                     getattr(c, "latest", None))]
+                  if c.approved and c.reviews is not None and c.head else [])
+    c.blockers.extend(c.unlifted)
     if c.approved and c.head:
         from . import stale_approval
         found = stale_approval.record(c.watch, c.number)
@@ -509,9 +515,11 @@ def _local_state(c) -> None:
     c.parked = c.local["parked"] and (c.cap_spent or gate.escalated(c.marker, c.head))
     # A ruling at this head ends adjudication: the marker stays, and the decision is a person's.
     c.ruled = _ruled(c.loop, c.number, c.head) if c.parked else None
-    if c.parked and c.ruled == "ACCEPT" and ((c.marker or {}).get("escalated") or {}).get(
-            "by") == gate.SHADOW_ESCALATION:
+    if c.parked and c.ruled == "ACCEPT" and (((c.marker or {}).get("escalated") or {}).get(
+            "by") == gate.SHADOW_ESCALATION or gate.is_ruled_approval(getattr(c, "latest", None),
+                                                                     c.loop)):
         # #1004: the adjudicator overruled the shadow review; the reviewer's approval stands.
+        # #905: the adjudicator approved on its ACCEPT, so no person is waited for either.
         c.parked, c.ruled = False, None
 
 
@@ -801,6 +809,11 @@ def _next_approval(c) -> tuple[str, str] | None:
             kind = "operator"
             action = (f"your decision: {c.shadow_held} — do not merge head {c.short} until you have "
                       "read its findings")
+    elif c.approved and c.unlifted:
+        kind = "operator"
+        action = (f"{c.unlifted[0]} — once nothing holds it (a dismissal by the review's author, "
+                  "a maintainer, or the sweep under `adjudicator_approves` for the reviewer's), a "
+                  f"human merges head {c.short}")
     elif c.approved:
         kind = "none"
         action = f"nothing — head {c.short} is approved; a human merges it"

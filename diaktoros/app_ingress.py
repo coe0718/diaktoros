@@ -68,6 +68,21 @@ def paused(st) -> bool:
     return isinstance(data, dict) and data.get("paused") is True
 
 
+def pause_flag(st) -> bool | None:
+    """Like ``paused`` but ``None`` when the flag cannot be read or is malformed: a missing file is
+    armed (``False``), a corrupt one is unknown, never a guess (#1599)."""
+    try:
+        path = st.dir / FILE
+        if not path.exists():
+            return False
+        data = json.loads(path.read_text())
+    except Exception:
+        return None
+    if not isinstance(data, dict) or type(data.get("paused")) is not bool:
+        return None         # ``set_paused`` always writes a bool: an object without one is damaged
+    return data["paused"]
+
+
 def set_paused(st, value: bool) -> None:
     with st.locked():
         memory = st._load(st.dir / FILE, {})

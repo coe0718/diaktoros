@@ -88,6 +88,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | install a loop | [`setup`](#setup) (guided), or [`init`](#init) (flag by flag) |
 | make the loop's GitHub Apps, one click each | [`create-apps`](#create-apps) |
 | check an install before going live | [`doctor`](#doctor), [`selftest`](#selftest) |
+| see which setup stages passed, and the next command to run | [`onboard`](#onboard) |
 | see what updating the plugin picks up, and update it | [`update`](#update) |
 | move to a renamed plugin or repository | [`migrate`](#migrate) |
 | back up an install, or restore one | [`backup`](#backup), [`restore`](#restore) |
@@ -443,6 +444,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour) (default: the plugin setting, off) |
 | `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer (default: the plugin setting, off) |
 | `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name for a maintainer (default: the plugin setting, off) |
+| `--adjudicator-approves` | `on` \| `off` |  | on an ACCEPT ruling with green checks, approve as the adjudicator login and dismiss the change request it overruled (default: the plugin setting, off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default: the plugin setting, on) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
@@ -555,6 +557,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour) (default off) |
 | `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer, one turn per head; needs unattended fixer pushes (default off) |
 | `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name for a maintainer; needs unattended fixer pushes (default off) |
+| `--adjudicator-approves` | `on` \| `off` |  | on an ACCEPT ruling with green checks, approve as the adjudicator login and dismiss the change request it overruled (default off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default on) |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000 (default: the plugin setting, else the review cap) |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10 (default: the plugin setting, else 3) |
@@ -653,10 +656,11 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--turn-budget` | `TURN_BUDGET` |  | seconds one isolated seat turn may run (loop default) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts ('Automated by Diaktoros'), or stop |
 | `--review-only-update` | `on` \| `off` |  | push a clean merge of the base into a review-only author's PR branch (same repository only), or stop; turning it on needs --acknowledge-branch-push |
-| `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour), or start at once |
 | `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer (needs unattended fixer pushes), or stop |
 | `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name (other than their tests and docs) for a maintainer, or stop; needs unattended fixer pushes |
+| `--adjudicator-approves` | `on` \| `off` |  | on an ACCEPT ruling with green checks, approve as the adjudicator login and dismiss the change request it overruled, or stop; needs the adjudicator comment login |
+| `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000; 0 = the review cap |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10; 0 = the default (3) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000; 0 = no cap |
@@ -1147,6 +1151,41 @@ It is ignored for ordinary tiny probes. Live turn verdicts never post a review o
 | `--ping` |  |  | ask GitHub to ping each loop hook and report whether the gateway accepted its signature (the selftest's only GitHub write) |
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose token may ping hooks (admin:repo_hook or repo) |
 | `--timeout` | `TIMEOUT` |  | live turn budget in seconds (default: the loop's reviewer turn_budget_s — the budget the production worker enforces) |
+<!-- /flags -->
+
+### onboard
+
+Read-only checklist of the setup stages and the one command to run next. It runs no check, spends
+no tokens and writes nothing (no file, nothing on GitHub); it only reads the onboarding record
+(`onboarding.json` in the loop's state directory) that the checks leave. For each of `identities`,
+`loop`, `model`, `live_turn` and `armed` it shows the status (`passed`, `failed`, `skipped`,
+`stale` or `not_attempted`), when it was recorded, the command that recorded it and its one-line
+summary. A `stale` stage also says what changed: which stage's fingerprint (its inputs: the
+identities, the runtime file, a seat's model, the PR head, the hook state), or that an earlier
+stale stage is the cause. A stage whose inputs cannot be read now is stale, never passed.
+
+```bash
+hermes dk onboard --loop "<loop-id>"
+hermes dk onboard --loop "<loop-id>" --pr 12
+```
+
+- The `next:` line is the first stage that is not `passed`, with its command and what running it
+  costs: `live read` (`selftest --no-model`), `model-spending` (`selftest`), `live turn`
+  (`selftest --pr N --live-turn`) or `hook write` (`arm`). `--pr` fills in the PR for the live turn
+  (default: the PR recorded, else the placeholder `N`).
+- There is no `--run`: `onboard` never runs the command it names, never calls `arm` or
+  `fixer-push`, and never edits the loop file. Run each yourself, with its own flags. It reports
+  only whether unattended fixer pushes are on, and the command that turns them on.
+- To tell whether the `live_turn` and `armed` stages are still current, it reads the PR's head
+  and the repo's hooks from GitHub (GET only), and only for stages that were recorded. If a read
+  fails, the stage shows `stale`. The record is written by part 1 (#1598); until the checks write
+  to it, a loop that has been verified by hand still shows `not_attempted`.
+
+<!-- flags:onboard -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
+| `--pr` | `PR` |  | the pull request the live-turn stage's command names (default: the one recorded, else a placeholder N) |
 <!-- /flags -->
 
 ### corpus

@@ -44,8 +44,18 @@ _PLUMBING = {"connect", "_connect", "_worker_connect", "read_only_connect", "__e
 
 
 def locked(exc: BaseException) -> bool:
-    """Whether ``exc`` is SQLite giving up on another connection's lock (transient)."""
-    return isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).lower()
+    """Whether ``exc`` is SQLite giving up on another connection's lock (transient).
+
+    That is SQLITE_BUSY ("database is locked"), including its extended codes. SQLITE_LOCKED
+    ("database table is locked") is a conflict inside one connection, a logic error that a
+    retry cannot cure, so it is not matched. An error without ``sqlite_errorcode`` (one built
+    by hand) is judged by its message."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code is not None:
+        return code & 0xFF == sqlite3.SQLITE_BUSY
+    return "database is locked" in str(exc).lower()
 
 
 def where(exc: BaseException) -> str:

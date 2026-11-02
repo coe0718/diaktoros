@@ -572,7 +572,7 @@ def _review(loop, args, emit=print):
         return _gate_unfinished(emit, args, payload, exc, started,
                                 f"it crashed ({type(exc).__name__})")
     from . import gate_failures
-    gate_failures.resolve_in_process("gate_reviewer", payload)
+    gate_failures.resolve_in_process("gate_reviewer", payload, started)
     reasons = logged(gate_lines if isinstance(gate_lines, list) else [])
     committed = _reviewer_runs(loop["repo"], args.pr, head) > before[0]
     if committed and reasons and "turn held:" in reasons[-1]:

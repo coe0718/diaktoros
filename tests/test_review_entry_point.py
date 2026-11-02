@@ -369,6 +369,32 @@ class RecordedFailureEpisodes(Harness):
         self.assertIn("gate_reviewer crash on #7", said[0])
         self.assertFalse(self.fallback.entries()[key]["resolved"])
 
+    def test_an_older_overlapping_run_does_not_resolve_a_newer_runs_crash(self):
+        """#1593: run A starts, run B starts later and crashes, run A then finishes."""
+        def overlapped_crash(payload, **_kw):
+            self.fail()                          # run B starts after A did, and crashes
+            return []                            # run A finishes
+        time.sleep(0.02)
+        with mock.patch.object(actions, "_run_reviewer", side_effect=overlapped_crash):
+            actions.review(self.loop(), 7)
+        (entry,) = self.failures()               # B's crash is still open
+        self.assertEqual((entry["gate"], entry["kind"]), ("gate_reviewer", "crash"))
+
+    def test_a_failure_from_before_the_run_started_is_still_resolved(self):
+        self.fail()
+        self.assertEqual(len(self.failures()), 1)
+        time.sleep(0.02)
+        actions.review(self.loop(), 7)           # a later run, started after the crash
+        self.assertEqual(self.failures(), [])
+
+    def test_the_webhook_path_leaves_a_newer_failure_open_too(self):
+        self.fail()
+        (key,) = self.ledger.entries()
+        last_at = self.ledger.entries()[key]["last_at"]
+        self.assertFalse(self.ledger.resolve(key, "x", not_after=last_at - 1))
+        self.assertFalse(self.ledger.entries()[key]["resolved"])
+        self.assertTrue(self.ledger.resolve(key, "x", not_after=last_at + 1))
+
     def test_a_fallback_copy_of_a_still_open_home_failure_is_still_a_duplicate(self):
         self.fail()
         (key,) = self.ledger.entries()

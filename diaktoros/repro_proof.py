@@ -159,8 +159,8 @@ IMPORT_ERROR = "import_error"
 def status(results: dict[str, str], wanted: str) -> str:
     """ok / fail / skipped / missing / import_error for the tests an id names (a method, class
     or module). ``import_error``: its test module did not import (unittest's ``_FailedTest``),
-    so none of its tests ran — on the original head, typically a test file that imports code the
-    fix adds."""
+    so none of its tests ran. The cause is not established: it may be code the fix adds or an
+    unrelated import failure, so callers must not state one."""
     found = [r for name, r in results.items() if name == wanted or name.startswith(wanted + ".")]
     if not found:
         # unittest names the failed import after one dotted part of the id (the module it could
@@ -439,10 +439,11 @@ def section(proof: dict | None, fix_head: str = "", head: str = "") -> str:
         text += (f"- {json.dumps(str(row.get('id'))[:120])}{ran}: original head {row.get('old')}, "
                  f"fix {row.get('new')} → {row.get('verdict')}\n")
     if any((row.get("old") == IMPORT_ERROR) for row in proof.get("ids") or []):
-        text += ("- a test module did not import on the original head (it imports code the fix "
-                 "adds), so its tests ran nowhere there: that proves nothing about any other "
-                 "behaviour it tests. A test of code that already existed belongs in a file that "
-                 "imports only existing code.\n")
+        text += ("- a test module did not import on the original head (the cause is not "
+                 "established: it may import code the fix adds, or fail for an unrelated reason), "
+                 "so its tests ran nowhere there: that proves nothing about any other behaviour it "
+                 "tests. If the cause is code the fix adds, a test of code that already existed "
+                 "belongs in a file that imports only existing code.\n")
     if proof.get("why"):
         text += f"- reason: {json.dumps(str(proof['why'])[:200])}\n"
     hunks = [h for h in proof.get("hunks") or [] if isinstance(h, dict)]

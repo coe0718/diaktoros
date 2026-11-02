@@ -250,14 +250,7 @@ def plan(loop: dict, token_login: str | None = None) -> dict:
               'reason': 'Hook state could not be verified.', 'read_at': time.time()}
     from . import config
     if config.app_ingress(loop):
-        # #1239: no repo hooks to snapshot; the pause flag is switched on the host (its change is
-        # not one Desktop's hook-bound confirmation can verify).
-        from . import app_ingress, state as state_mod
-        paused = app_ingress.paused(state_mod.state_for(loop))
-        result.update(state='paused' if paused else 'armed',
-                      reason=("Events arrive through the App's webhook; pause or resume it on the "
-                              f"host: `hermes dk arm --loop {loop['id']}{'' if paused else ' --pause'}`."))
-        return result
+        return _app_ingress_plan(loop, result)
     try:
         hooks = _common()._hook_listing(loop, token_login, require_active=False)
         names = _common()._routes_of(loop)
@@ -305,6 +298,20 @@ def plan(loop: dict, token_login: str | None = None) -> dict:
         result['read_at'] = time.time()
     return result
 
+
+def _app_ingress_plan(loop: dict, result: dict) -> dict:
+    """``plan`` for a loop whose events arrive through the App's webhook (#1239): no repo hooks
+    to snapshot; the pause flag is switched on the host (its change is not one Desktop's
+    hook-bound confirmation can verify). An unreadable or malformed flag is unknown, not armed."""
+    from . import app_ingress, state as state_mod
+    paused = app_ingress.pause_flag(state_mod.state_for(loop))
+    if paused is None:
+        result['reason'] = 'The App-ingress pause flag could not be read.'
+        return result
+    result.update(state='paused' if paused else 'armed',
+                  reason=("Events arrive through the App's webhook; pause or resume it on the "
+                          f"host: `hermes dk arm --loop {loop['id']}{'' if paused else ' --pause'}`."))
+    return result
 
 def public_plan(plan: dict) -> dict:
     return {key: value for key, value in plan.items() if not key.startswith('_')}

@@ -29,7 +29,7 @@ NOON = 1793361600.0              # 2026-10-30T12:00:00Z
 # The parsers that differ on purpose, by function: another format, or a stricter rule.
 DIFFERENT = {
     "diaktoros/util.py::iso_epoch": "the helper itself",
-    "diaktoros/gate.py::latest_effective_review_at_head":
+    "diaktoros/gate.py::_review_when":
         "verdict order refuses a stamp with no zone instead of reading it as UTC",
     "diaktoros/gh.py::parse_token_expiry":
         "GitHub's token-expiry header: '2026-10-01 12:00:00 UTC', not ISO-8601",

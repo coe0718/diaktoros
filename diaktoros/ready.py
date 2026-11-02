@@ -107,7 +107,7 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
     def add(kind: str, text: str) -> None:
         why.append((kind, text))
 
-    approved = False
+    approved, latest, raw = False, None, None
     number = pr.get("number")
     head = (pr.get("head") or {}).get("sha") or ""
     author = str((pr.get("user") or {}).get("login") or "").lower()
@@ -121,7 +121,7 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
     if not isinstance(reviews, list):
         add(PENDING, "review list unreadable: approval unknown")
     else:
-        reviews = transition.effective_reviews(loop, st, number, head, reviews)
+        raw, reviews = reviews, transition.effective_reviews(loop, st, number, head, reviews)
         latest = (gate.latest_effective_review_at_head(reviews, loop, head)
                   if isinstance(reviews, list) else None)
         if not isinstance(reviews, list):
@@ -137,6 +137,7 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
             approved = True
             if stale_approval.is_stale(st.watch(), number, head):
                 add(FAILURE, stale_approval.line(stale_approval.record(st.watch(), number)))
+    why.extend(acting(loop, number, head, raw, latest))
 
     gating = ci.gating(ci_state, config.required_checks(loop))
     if gating is None:
@@ -181,23 +182,8 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
     if isinstance(held, dict):
         add(FAILURE, f"waiting for a person: {held.get('why') or 'touches human_paths'}")
     marker = st.breach_get(number)
-    overruled = gate.shadow_overruled(loop, marker, head)        # #1004: ACCEPT, approval stands
-    if overruled:
-        pass
-    elif gate.escalated(marker, head) or gate.breach_delivery_status(
-            marker if isinstance(marker, dict) else {}, head) in {"awaiting-adjudication",
-                                                                  "adjudicating"}:
-        # Waiting for the ruling; once it is in, the decision is the operator's.
-        # With no adjudicator route no ruling ever comes: a person decides (shadow, #1225).
-        # The reason says which (#1245): a stale "awaiting" after the ruling misled.
-        ruled = explain._ruled(loop, number, head)
-        if ruled:
-            add(FAILURE, f"escalated: the adjudicator ruled {ruled} at head {head[:7]}; a person "
-                         "decides (merge, close, or push a new head)")
-        elif not (loop.get("adjudicator") or {}).get("route"):
-            add(FAILURE, "escalated, and this loop has no adjudicator route: a person decides")
-        else:
-            add(PENDING, "escalated: parked awaiting adjudication")
+    if not gate.is_ruled_approval(latest, loop):   # #905: approved on the ACCEPT, no person waits
+        why.extend(_escalation(loop, number, head, marker))
     shadow_kind, shadow_held, _note = gate.shadow_state(loop, number, head, marker=marker)
     if shadow_held:
         add(shadow_kind or PENDING, "shadow review: " + shadow_held)
@@ -207,6 +193,71 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
     if not approved and transition.hold(st, number, head):
         add(PENDING, "same-head base retarget hold")
     return why
+
+
+def _escalation(loop: dict, number: int, head: str, marker) -> list[tuple[str, str]]:
+    """An escalated or parked head waits for its ruling; once it is in, the decision is the
+    operator's. With no adjudicator route no ruling ever comes: a person decides (shadow, #1225).
+    The reason says which (#1245): a stale "awaiting" after the ruling misled."""
+    if gate.shadow_overruled(loop, marker, head):        # #1004: ACCEPT, approval stands
+        return []
+    if not (gate.escalated(marker, head) or gate.breach_delivery_status(
+            marker if isinstance(marker, dict) else {}, head) in {"awaiting-adjudication",
+                                                                  "adjudicating"}):
+        return []
+    ruled = explain._ruled(loop, number, head)
+    if ruled:
+        return [(FAILURE, f"escalated: the adjudicator ruled {ruled} at head {head[:7]}; a person "
+                          "decides (merge, close, or push a new head)")]
+    if not (loop.get("adjudicator") or {}).get("route"):
+        return [(FAILURE, "escalated, and this loop has no adjudicator route: a person decides")]
+    return [(PENDING, "escalated: parked awaiting adjudication")]
+
+
+def acting(loop: dict, number: int, head: str, reviews: list | None,
+           latest) -> list[tuple[str, str]]:
+    """What still holds a head approved on the adjudicator's ACCEPT (#905), and how the sweep's
+    acting on an ACCEPT at this head stands; ``explain`` reads the same. ``reviews`` is the PR's
+    review list and ``latest`` the head's effective verdict (None: unknown). A change request
+    GitHub still counts, or an uncertain or denied step with its reason, keeps the check red.
+    Once the reviewer itself approves, the record no longer holds the head (that approval lifts
+    the reviewer's own request), but where the sweep acted, every other account's change request
+    GitHub still counts does. The sweep keeps a record per ruling: any of them may be unconfirmed,
+    but only the newest ruling's denial stands (a later ACCEPT is acted on afresh)."""
+    from .run_supervisor import production_ledger, views
+    on_ruling = gate.is_ruled_approval(latest, loop)
+    db = production_ledger()
+    rows, error = views.ruled_approvals(db, loop["repo"], number, head)
+    if latest is not None and not on_ruling and gh.review_state(latest) == "APPROVED":
+        return [(FAILURE, f"{gate.reviewer_login(r) or '?'}'s changes-requested review "
+                          f"{r.get('id')} still blocks GitHub's merge until it is dismissed")
+                for r in gate.blocking_reviews(reviews or [])] if rows or error else []
+    found = [(FAILURE, line) for line in unlifted(reviews or [])] if on_ruling else []
+    if error:
+        return found + ([(FAILURE, f"the record of acting on the ACCEPT can't be read "
+                                   f"({error[:120]})")] if on_ruling else [])
+    newest = (views.ruling_row(db, loop["repo"], number) or {}).get("run_id")
+    for row in rows:
+        for step, what in (("approve", "approval"), ("dismiss", "dismissal")):
+            state = row.get(step)
+            if state in ("uncertain", "posting"):
+                found.append((FAILURE, f"the {what} on the adjudicator's ACCEPT is unconfirmed "
+                                       f"({row.get('error') or 'being written, or interrupted'}); "
+                                       "a later sweep reads GitHub to settle it"))
+            elif state == "denied" and row.get("ruling") == newest:
+                found.append((FAILURE, f"the {what} on the adjudicator's ACCEPT was not made: "
+                                       f"{row.get('error') or 'no reason recorded'}; a person "
+                                       "decides"))
+    return found
+
+
+def unlifted(reviews: list) -> list[str]:
+    """Approved on the adjudicator's ACCEPT ruling (#905), but GitHub still counts a reviewer's
+    change request until it is dismissed: the merge stays blocked, and the check (and
+    ``explain``) say why."""
+    return [f"approved on the adjudicator's ACCEPT ruling, but {gate.reviewer_login(r)}'s "
+            f"changes-requested review {r.get('id')} still blocks GitHub's merge until it is "
+            "dismissed" for r in gate.blocking_reviews(reviews)]
 
 
 def _depth(by_number: dict, number: int) -> int:

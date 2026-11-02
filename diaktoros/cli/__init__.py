@@ -72,6 +72,7 @@ from .checks import (
     cmd_protect,
     cmd_corpus,
     cmd_doctor,
+    cmd_onboard,
     cmd_selftest,
 )  # noqa: F401
 from .install import cmd_init  # noqa: F401
@@ -132,6 +133,24 @@ def _renamed(func):
     return run
 
 
+# Every ``hermes dk`` command after ``list`` and ``init`` (those two need the settings), in the
+# order help lists them: a new command adds its registrar here, and ``register_cli`` stays as is.
+_COMMANDS = (
+    cli_setup.add_setup, cli_operations.add_status, cli_reports.add_stats, cli_reports.add_report,
+    cli_operations.add_review, cli_operations.add_escalate, cli_operations.add_depends,
+    cli_operations.add_regression, cli_operations.add_explain, cli_operations.add_ready,
+    cli_reports.add_trace, cli_lifecycle.add_migrate, cli_lifecycle.add_backup,
+    cli_lifecycle.add_restore, cli_checks.add_doctor, cli_checks.add_selftest,
+    cli_checks.add_onboard, cli_update.add_update, cli_checks.add_corpus, cli_reports.add_models,
+    set_parser.add_set, identity_command.add_identity, apply_command.add_apply,
+    cli_settings.add_settings, cli_settings.add_show, cli_checks.add_arm, cli_checks.add_protect,
+    cli_checks.add_app_webhook, cli_checks.add_create_apps, triage_command.add_triage,
+    identity_command.add_fixer_push, cli_operations.add_retry, cli_operations.add_cancel,
+    cli_operations.add_continue, cli_operations.add_drain, cli_operations.add_observer,
+    cli_operations.add_cleanup, cli_lifecycle.add_uninstall,
+)
+
+
 def register_cli(ctx, settings: dict | None = None) -> None:
     """Wire ``hermes diaktoros``, its short name ``hermes dk``, and the old ``hermes review-loop``.
 
@@ -163,43 +182,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         parser.set_defaults(func=_usage)
         cli_operations.add_list(sub)
         cli_install.add_init(sub, d, both)
-        cli_setup.add_setup(sub)
-        cli_operations.add_status(sub)
-        cli_reports.add_stats(sub)
-        cli_reports.add_report(sub)
-        cli_operations.add_review(sub)
-        cli_operations.add_escalate(sub)
-        cli_operations.add_depends(sub)
-        cli_operations.add_regression(sub)
-        cli_operations.add_explain(sub)
-        cli_operations.add_ready(sub)
-        cli_reports.add_trace(sub)
-        cli_lifecycle.add_migrate(sub)
-        cli_lifecycle.add_backup(sub)
-        cli_lifecycle.add_restore(sub)
-        cli_checks.add_doctor(sub)
-        cli_checks.add_selftest(sub)
-        cli_update.add_update(sub)
-        cli_checks.add_corpus(sub)
-        cli_reports.add_models(sub)
-        set_parser.add_set(sub)
-        identity_command.add_identity(sub)
-        apply_command.add_apply(sub)
-        cli_settings.add_settings(sub)
-        cli_settings.add_show(sub)
-        cli_checks.add_arm(sub)
-        cli_checks.add_protect(sub)
-        cli_checks.add_app_webhook(sub)
-        cli_checks.add_create_apps(sub)
-        triage_command.add_triage(sub)
-        identity_command.add_fixer_push(sub)
-        cli_operations.add_retry(sub)
-        cli_operations.add_cancel(sub)
-        cli_operations.add_continue(sub)
-        cli_operations.add_drain(sub)
-        cli_operations.add_observer(sub)
-        cli_operations.add_cleanup(sub)
-        cli_lifecycle.add_uninstall(sub)
+        for add in _COMMANDS:                          # the rest, in help order
+            add(sub)
 
     summary = "Diaktoros — bounded, autonomous software maintenance: review, fix, triage"
     description = ("Configure, inspect and drive Diaktoros loops. Each loop is one JSON file under "
