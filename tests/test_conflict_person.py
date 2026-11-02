@@ -4,6 +4,7 @@ sent another failure notice (six in a day on #1154)."""
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import os
 import pathlib
 import sys
 import unittest
@@ -60,6 +61,39 @@ class Requeue(fg.Base):
             (self.st.dir / conflict_person.FILE).write_text("[1]")
             self.assertEqual(conflict_person.get(self.st, 7, HEAD), "")
             log.assert_called_once()
+
+    def test_an_inaccessible_store_or_parent_is_logged_not_taken_for_missing(self):
+        conflict_person.record(self.st, 7, HEAD, "r")
+        path = self.st.dir / conflict_person.FILE
+        real_read, real_exists = pathlib.Path.read_text, pathlib.Path.exists
+
+        def denied(real):            # what an unsearchable parent raises, even when run as root
+            def call(p, *a, **k):
+                if p == path:
+                    raise PermissionError(13, "Permission denied", str(p))
+                return real(p, *a, **k)
+            return call
+
+        with mock.patch.object(conflict_person, "log") as log, \
+                mock.patch.object(pathlib.Path, "read_text", denied(real_read)), \
+                mock.patch.object(pathlib.Path, "exists", denied(real_exists)):
+            self.assertEqual(conflict_person.get(self.st, 7, HEAD), "")
+            self.assertEqual(log.call_count, 1)
+            self.assertIn("PermissionError", log.call_args.args[0])
+            log.reset_mock()
+            conflict_person.prune(self.st, [])           # prune reads the same way
+            self.assertEqual(log.call_count, 1)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root ignores modes")
+    def test_a_real_unsearchable_parent_is_logged(self):
+        conflict_person.record(self.st, 7, HEAD, "r")
+        self.st.dir.chmod(0)
+        try:
+            with mock.patch.object(conflict_person, "log") as log:
+                self.assertEqual(conflict_person.get(self.st, 7, HEAD), "")
+            log.assert_called_once()
+        finally:
+            self.st.dir.chmod(0o700)
 
     def test_the_watchdog_conflict_pass_logs_an_unreadable_store(self):
         self.st.dir.mkdir(parents=True, exist_ok=True)

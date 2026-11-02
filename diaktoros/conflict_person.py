@@ -26,14 +26,12 @@ def _read(st) -> dict:
     file that exists and cannot be read is logged: without the record every base merge requeues
     the refused conflict turn again (#1154), and nothing else would say why."""
     try:
-        path = _path(st)
-        if not path.exists():
-            return {}
-    except Exception:
-        return {}
-    try:
-        data = json.loads(path.read_text())
+        data = json.loads(_path(st).read_text())
+    except (FileNotFoundError, NotADirectoryError):
+        return {}          # genuinely absent: the normal case, silent
     except Exception as exc:
+        # Anything else (permissions on the file or an unsearchable parent, bad JSON, ...) is a
+        # store we cannot tell from an absent one: say so rather than treating it as missing.
         log(f"{FILE} exists but is unreadable ({type(exc).__name__}: {exc}); treating it as "
             f"empty, so conflict turns requeue on every base merge until it is fixed")
         return {}
