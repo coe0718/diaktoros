@@ -139,13 +139,14 @@ def post(loop: dict, number: int, head: str, state: str, summary: str,
 def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None) -> int:
     """Post the merge check for every open loop PR (or those in ``only``) whose state changed since
     it was last posted; the number written. Nothing is read or written while the check is off. An
-    unreadable PR listing writes nothing (never a guess)."""
+    unreadable PR listing writes nothing (never a guess). With ``only``, only those PRs (and the
+    PRs they are stacked on) are read (#1645)."""
     from . import config
     if not config.merge_check_on(loop):
         return 0
     import time
     listed_at = time.time()             # entries written after this are newer than the listing
-    prs, kinds, error = ready.collect_kinds(loop, st)
+    prs, kinds, error = ready.collect_kinds(loop, st, only)
     if error:
         log(f"merge check not refreshed: {error}")
         return 0

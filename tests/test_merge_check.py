@@ -204,6 +204,72 @@ class Stacked(KindsBase):
                          ["stacked on #1, which is not ready"])
 
 
+class OnePR(KindsBase):
+    """#1645: a refresh for one PR reads that PR (and any PR it is stacked on), not every open one."""
+
+    def collect(self, prs, only):
+        read = []
+        def reads(_loop, listed):
+            read.extend(p["number"] for p in listed)
+            return {p["number"]: {"reviews": [review("APPROVED")],
+                                  "ci": ci.CIState(passed=["tests"]),
+                                  "detail": {**CLEAN, "number": p["number"]}, "files": ["a"]}
+                    for p in listed}
+        with mock.patch.object(ready.gh, "open_prs_read", return_value=(prs, "")), \
+                mock.patch.object(ready, "_reads", side_effect=reads):
+            listed, kinds, error = ready.collect_kinds(self.loop, self.st, only)
+        return listed, kinds, error, read
+
+    def open_pr(self, number, base="main"):
+        return {**self.pr, "number": number, "base": {"ref": base},
+                "head": {"sha": f"{number}" * 40, "ref": f"b{number}"}}
+
+    def test_only_reads_that_pr_and_still_lists_them_all(self):
+        prs = [self.open_pr(5), self.open_pr(6), self.open_pr(7)]
+        listed, kinds, error, read = self.collect(prs, {7})
+        self.assertEqual((read, list(kinds), error), ([7], [7], ""))
+        self.assertEqual([p["number"] for p in listed], [5, 6, 7])   # the prune needs them all
+
+    def test_a_stacked_pr_reads_its_parents_too(self):
+        prs = [self.open_pr(5), self.open_pr(1), self.open_pr(2, base="b1"), self.open_pr(3, base="b2")]
+        _listed, kinds, _error, read = self.collect(prs, {3})
+        self.assertEqual(sorted(read), [1, 2, 3])
+        self.assertEqual(merge_check.decide(kinds[3])[0], merge_check.decide(kinds[1])[0])
+
+    def test_a_refresh_for_one_pr_reads_only_that_pr_from_github(self):
+        # #1652 review, F1: through refresh itself, down to the four GitHub/CI readers.
+        prs = [self.open_pr(5), self.open_pr(6), self.open_pr(7)]
+        calls = []
+        def number_of(path):
+            return int(path.rstrip("/").split("/pulls/")[1].split("/")[0].split("?")[0])
+        def reviews(_loop, number, *_a, **_k):
+            calls.append(("reviews", number))
+            return [review("APPROVED")], ""
+        def fetch(_loop, path, *_a, **_k):
+            calls.append(("pr", number_of(path)))
+            return {**CLEAN, "number": number_of(path)}, ""
+        def files(_loop, number, *_a, **_k):
+            calls.append(("files", number))
+            return [{"filename": "a"}], ""
+        def ci_read(_loop, head, *_a, **_k):
+            calls.append(("ci", head))
+            return ci.CIState(passed=["tests"])
+        self.loop = {**self.loop, "merge_check": "on"}
+        with mock.patch.object(ready.gh, "open_prs_read", return_value=(prs, "")), \
+                mock.patch.object(ready.gh, "reviews_read", side_effect=reviews), \
+                mock.patch.object(ready.gh, "fetch", side_effect=fetch), \
+                mock.patch.object(ready.gh, "pr_files_read", side_effect=files), \
+                mock.patch.object(ready.ci, "read", side_effect=ci_read), \
+                mock.patch.object(merge_check, "post", return_value=(None, "")):
+            merge_check.refresh(self.loop, self.st, only={7})
+        self.assertEqual(sorted(calls, key=str), sorted(
+            [("reviews", 7), ("pr", 7), ("files", 7), ("ci", "7" * 40)], key=str))
+
+    def test_without_only_every_open_pr_is_read(self):
+        prs = [self.open_pr(5), self.open_pr(6), self.open_pr(7)]
+        self.assertEqual(sorted(self.collect(prs, None)[3]), [5, 6, 7])
+
+
 class ShadowKinds(__import__("test_shadow_escalate_ruling").Base):
     """Shadow review of #1225 (F1): ``gate.shadow_state``'s kinds on a real run ledger."""
 
@@ -438,6 +504,7 @@ class Posting(unittest.TestCase):
         self.kinds[8] = []
         self.assertEqual(self.refresh(only={8}), 1)
         self.assertEqual(list(self.memory()), ["8"])
+        self.assertEqual(ready.collect_kinds.call_args.args[2], {8})   # #1645: read just #8
         self.prs = [{"number": 7, "head": {"sha": HEAD}}]
         self.assertEqual(self.refresh(), 1)
         self.assertEqual(list(self.memory()), ["7"])
