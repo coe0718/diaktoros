@@ -332,7 +332,10 @@ def _rename_loop(spec: str, *, dry_run: bool, admin: str | None) -> tuple[list[s
     base = old_loop or new_loop
     renames = migrate.route_renames(base, old_id, new_id)
     target = new_loop or migrate.renamed_loop(old_loop, new_id, renames)
-    busy = migrate.busy_runs(run_supervisor.production_ledger(), base["repo"])
+    try:
+        busy = migrate.busy_runs(run_supervisor.production_ledger(), base["repo"])
+    except migrate.RunsUnknown as exc:
+        return [f"{tag}: REFUSED — {exc}"], True
     if busy:
         return [f"{tag}: REFUSED — {busy} run(s) for {base['repo']} are in flight or uncertain; "
                 "wait for them (or reconcile them), then run migrate again"], True
