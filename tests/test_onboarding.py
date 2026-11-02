@@ -542,6 +542,11 @@ class UnreadableCredentialFiles(Fixture):
             self.assertIn("[REDACTED]", entry["summary"], name)
             self.assertNotIn(text, entry["command"] + entry["summary"], name)
 
+    def test_an_unreadable_file_keeps_its_reason_when_a_short_secret_is_also_present(self):
+        (self.root / "reader-pat").unlink()
+        entry = self.record("identities", summary="saw ab", secrets=("ab",))
+        self.assertEqual((entry["command"], entry["summary"]), (self.WITHHELD, self.WITHHELD))
+
 
 class ModelNeedsASeat(Fixture):
     """F8 of #1616: ``read()`` trusts a resolved seat only."""
