@@ -1097,7 +1097,10 @@ def _positive_number(value, key: str, where: str):
         except OverflowError:
             ok = False
     if not ok:
-        text = repr(value)
+        try:
+            text = repr(value)
+        except (ValueError, RecursionError):   # an int past the 4300-digit str limit, even nested
+            text = f"an unprintable {type(value).__name__}"
         text = text if len(text) <= 60 else text[:57] + "..."   # not a 400-digit integer whole
         raise ConfigError(f"{where}: {key!r} must be a positive number, got {text}")
     return value

@@ -35,8 +35,9 @@ class NumberSettingsTest(unittest.TestCase):
 
     def test_out_of_range_integers_are_a_config_error_not_an_overflow(self):
         for key in KEYS:
-            for bad in (-(10 ** 400), 10 ** 400):
-                with self.subTest(key=key, negative=bad < 0):
+            # 10**5000 is past Python's 4300-digit int->str limit: repr() itself raises ValueError
+            for bad in (-(10 ** 400), 10 ** 400, -(10 ** 5000), 10 ** 5000, [10 ** 5000]):
+                with self.subTest(key=key, kind=type(bad).__name__):
                     with self.assertRaises(config.ConfigError) as ctx:
                         config.normalize(raw_loop(**{key: bad}))
                     self.assertIn(repr(key), str(ctx.exception))
