@@ -37,6 +37,9 @@ from .util import log, login_entry
 from . import envnames
 
 API = "https://api.github.com"
+# The reads that inspect the credential itself, read for their headers (scopes, expiry, limits):
+# never conditional (#1646, gh_cache), since a 304 vouches for a body, not for who asked.
+CREDENTIAL_PROBES = ("/user", "/rate_limit", "/app")
 REVIEW_PAGE_SIZE = 100
 # A persistently full endpoint must not loop forever or authorize a partial history.
 MAX_REVIEW_PAGES = 100

@@ -9,8 +9,8 @@ nothing stale is ever served.
 
 A 304 validates the body, not the credential that asked: its answer carries only its own
 headers, never a stored one (#1653 review). The reads that exist to inspect the credential itself
-(``IDENTITY``: ``/user``, ``/rate_limit``, ``/app``, whose scopes, expiry and limits are read from
-headers) are never conditional.
+(``gh.CREDENTIAL_PROBES``, whose scopes, expiry and limits are read from headers) are never
+conditional.
 
 Disposable: a missing, unreadable or corrupt entry is a plain GET. Entries are 0600 files of
 at most ``MAX_BYTES`` bytes as stored, dropped once unused for ``KEEP_S``. Bodies are what GitHub
@@ -26,7 +26,6 @@ import random
 import time
 
 MAX_BYTES = 1_000_000          # an entry bigger than this, in bytes as stored, is not kept
-IDENTITY = ("/user", "/rate_limit", "/app")   # credential probes: never conditional
 KEEP_S = 2 * 86400             # an entry unused this long is dropped
 PRUNE_ONE_IN = 50              # a store prunes the directory one time in this many
 
@@ -38,7 +37,8 @@ def directory() -> pathlib.Path:
 
 def cacheable(path: str) -> bool:
     """Whether a GET of ``path`` may be conditional: every read but a credential probe."""
-    return path.split("?", 1)[0] not in IDENTITY
+    from . import gh
+    return path.split("?", 1)[0] not in gh.CREDENTIAL_PROBES
 
 
 def _file(login: str, path: str) -> pathlib.Path:
