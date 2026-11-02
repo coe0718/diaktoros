@@ -88,6 +88,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | install a loop | [`setup`](#setup) (guided), or [`init`](#init) (flag by flag) |
 | make the loop's GitHub Apps, one click each | [`create-apps`](#create-apps) |
 | check an install before going live | [`doctor`](#doctor), [`selftest`](#selftest) |
+| see which setup stages passed, and the next command to run | [`onboard`](#onboard) |
 | see what updating the plugin picks up, and update it | [`update`](#update) |
 | move to a renamed plugin or repository | [`migrate`](#migrate) |
 | back up an install, or restore one | [`backup`](#backup), [`restore`](#restore) |
@@ -1144,6 +1145,41 @@ It is ignored for ordinary tiny probes. Live turn verdicts never post a review o
 | `--ping` |  |  | ask GitHub to ping each loop hook and report whether the gateway accepted its signature (the selftest's only GitHub write) |
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose token may ping hooks (admin:repo_hook or repo) |
 | `--timeout` | `TIMEOUT` |  | live turn budget in seconds (default: the loop's reviewer turn_budget_s — the budget the production worker enforces) |
+<!-- /flags -->
+
+### onboard
+
+Read-only checklist of the setup stages and the one command to run next. It runs no check, spends
+no tokens and writes nothing (no file, nothing on GitHub); it only reads the onboarding record
+(`onboarding.json` in the loop's state directory) that the checks leave. For each of `identities`,
+`loop`, `model`, `live_turn` and `armed` it shows the status (`passed`, `failed`, `skipped`,
+`stale` or `not_attempted`), when it was recorded, the command that recorded it and its one-line
+summary. A `stale` stage also says what changed: which stage's fingerprint (its inputs: the
+identities, the runtime file, a seat's model, the PR head, the hook state), or that an earlier
+stale stage is the cause. A stage whose inputs cannot be read now is stale, never passed.
+
+```bash
+hermes dk onboard --loop "<loop-id>"
+hermes dk onboard --loop "<loop-id>" --pr 12
+```
+
+- The `next:` line is the first stage that is not `passed`, with its command and what running it
+  costs: `live read` (`selftest --no-model`), `model-spending` (`selftest`), `live turn`
+  (`selftest --pr N --live-turn`) or `hook write` (`arm`). `--pr` fills in the PR for the live turn
+  (default: the PR recorded, else the placeholder `N`).
+- There is no `--run`: `onboard` never runs the command it names, never calls `arm` or
+  `fixer-push`, and never edits the loop file. Run each yourself, with its own flags. It reports
+  only whether unattended fixer pushes are on, and the command that turns them on.
+- To tell whether the `live_turn` and `armed` stages are still current, it reads the PR's head
+  and the repo's hooks from GitHub (GET only), and only for stages that were recorded. If a read
+  fails, the stage shows `stale`. The record is written by part 1 (#1598); until the checks write
+  to it, a loop that has been verified by hand still shows `not_attempted`.
+
+<!-- flags:onboard -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
+| `--pr` | `PR` |  | the pull request the live-turn stage's command names (default: the one recorded, else a placeholder N) |
 <!-- /flags -->
 
 ### corpus

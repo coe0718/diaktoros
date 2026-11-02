@@ -72,6 +72,7 @@ from .checks import (
     cmd_protect,
     cmd_corpus,
     cmd_doctor,
+    cmd_onboard,
     cmd_selftest,
 )  # noqa: F401
 from .install import cmd_init  # noqa: F401
@@ -179,6 +180,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         cli_lifecycle.add_restore(sub)
         cli_checks.add_doctor(sub)
         cli_checks.add_selftest(sub)
+        cli_checks.add_onboard(sub)
         cli_update.add_update(sub)
         cli_checks.add_corpus(sub)
         cli_reports.add_models(sub)

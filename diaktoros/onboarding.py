@@ -171,10 +171,18 @@ def _resolve_seats(loop: dict, runtime_file: Path, resolver) -> dict:
     return found
 
 
+class SeatUnresolved(Exception):
+    """A seat's model could not be resolved; there is nothing to fingerprint."""
+
+
 def _seat_identities(seats: dict) -> dict:
-    """seat → a hash of ``SeatInference.identity()``, or ``unresolved``."""
-    return {seat: _digest(list(found.identity())) if found else "unresolved"
-            for seat, found in seats.items()}
+    """seat → a hash of ``SeatInference.identity()``. Raises ``SeatUnresolved`` when any seat
+    did not resolve: an unknown input must never match another unknown (an "unresolved" then
+    and an "unresolved" now are not the same model)."""
+    missing = sorted(seat for seat, found in seats.items() if found is None)
+    if missing or not seats:
+        raise SeatUnresolved(f"seat model unresolved: {', '.join(missing) or 'no seats'}")
+    return {seat: _digest(list(found.identity())) for seat, found in seats.items()}
 
 
 def _live_head(loop: dict, number: int) -> str:
@@ -203,7 +211,8 @@ def fingerprint(loop: dict, stage: str, *, pr: tuple | None = None,
     ``seats`` is ``_resolve_seats``' answer when the caller already has it. Raises
     ``HookStateUnknown`` for ``armed`` when the hook state is not ``armed`` or ``paused``:
     ``arm_action.plan`` reports an unreadable, missing or mixed hook set as ``unknown``, and
-    that must never match a later ``unknown``.
+    that must never match a later ``unknown``. Raises ``SeatUnresolved`` for ``model`` when
+    any seat does not resolve, for the same reason.
     """
     runtime_file = Path(runtime_file or config.host_path("runtime"))
     if stage == "identities":
@@ -318,7 +327,8 @@ def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
     ``checks`` (``{name: outcome}`` or ``[(name, outcome), ...]`` of the stage's checks) keeps a
     SKIP, a WARN or a FAIL from being stored as ``passed`` (see ``stage_status``). ``live_turn``
     needs ``pr=(number, head)``. An ``armed`` result whose hook state cannot be verified is stored
-    ``failed`` (never ``passed``) with a fingerprint that matches nothing. Recording a stage
+    ``failed`` (never ``passed``) with a fingerprint that matches nothing, and so is a ``model``
+    result when any seat's model does not resolve. Recording a stage
     against other inputs than its previous entry marks the later entries ``invalidated``.
     Returns the stored entry.
     """
@@ -335,9 +345,11 @@ def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
     try:
         prints = fingerprint(loop, stage, pr=pr, runtime_file=runtime_file, resolver=resolver,
                              hook_state=hook_state, seats=seats)
-    except HookStateUnknown:
+    except (HookStateUnknown, SeatUnresolved):
         prints, status = "", (FAILED if status == PASSED else status)
     distinct = len({found.identity() for found in seats.values() if found is not None})
+    if stage == "model" and not distinct and status == PASSED:
+        status = FAILED         # no seat resolves: nothing was shown to work
     kept = required_checks(stage, loop)
     entry = {"status": stage_status(stage, status, checks, loop=loop, completions=distinct),
              "at": util.now_iso(),
@@ -362,6 +374,51 @@ def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
     return entry
 
 
+# What each stage's fingerprint covers, for saying what changed (never the values).
+_INPUTS = {"identities": "the repo, a token mapping or an App mapping",
+           "loop": "the runtime file or a seat's profile path",
+           "model": "a seat's model, endpoint or key",
+           "live_turn": "the PR's head or the reviewer prompt",
+           "armed": "the hooks' state"}
+
+
+def inspect(loop: dict, *, runtime_file: Path | None = None, resolver=None, pr_head=None,
+            hook_state=None) -> dict:
+    """``{stage: row}`` for every stage; ``row`` is the entry's ``status``, ``at``, ``command``,
+    ``summary`` and ``pr`` (empty when never recorded) and ``reason``: for a ``stale`` stage,
+    which fingerprint changed (or why it cannot be compared). ``read`` is its statuses.
+
+    Reads the record and, for ``live_turn`` and ``armed`` only, GitHub (GET); writes nothing.
+    """
+    runtime_file = Path(runtime_file or config.host_path("runtime"))
+    stored = _load(loop)
+    out: dict = {}
+    cause = first = ""
+    for stage in STAGES:
+        entry = stored.get(stage)
+        row = {"status": NOT_ATTEMPTED, "reason": "", "at": "", "command": "", "summary": "",
+               "pr": None}
+        out[stage] = row
+        if (not isinstance(entry, dict) or entry.get("status") not in RECORDED
+                or not isinstance(entry.get("fingerprint"), str)):
+            continue
+        row.update(status=entry["status"], at=str(entry.get("at") or ""),
+                   command=str(entry.get("command") or ""),
+                   summary=str(entry.get("summary") or ""),
+                   pr=entry["pr"] if type(entry.get("pr")) is int else None)
+        if cause:
+            reason = f"{first} is stale, and this was shown against it"
+        elif entry.get("invalidated") is True:
+            reason = "an earlier stage was re-recorded against other inputs since this was recorded"
+        else:
+            reason = _change(loop, stage, entry, runtime_file, resolver, pr_head, hook_state)
+        if reason:
+            row.update(status=STALE, reason=reason)
+            if not cause:
+                cause, first = reason, stage
+    return out
+
+
 def read(loop: dict, *, runtime_file: Path | None = None, resolver=None, pr_head=None,
          hook_state=None) -> dict:
     """Each stage's status: what was recorded, ``not_attempted``, or ``stale``.
@@ -370,34 +427,57 @@ def read(loop: dict, *, runtime_file: Path | None = None, resolver=None, pr_head
     stage after it. ``pr_head(loop, number)`` and ``hook_state(loop)`` read GitHub (injectable);
     when they cannot be read the stage is ``stale``.
     """
-    runtime_file = Path(runtime_file or config.host_path("runtime"))
-    stored = _load(loop)
-    out: dict = {}
-    changed = False
-    for stage in STAGES:
-        entry = stored.get(stage)
-        if (not isinstance(entry, dict) or entry.get("status") not in RECORDED
-                or not isinstance(entry.get("fingerprint"), str)):
-            out[stage] = NOT_ATTEMPTED
-            continue
-        if not changed:
-            changed = entry.get("invalidated") is True or _differs(loop, stage, entry, runtime_file, resolver, pr_head, hook_state)
-        out[stage] = STALE if changed else entry["status"]
-    return out
+    rows = inspect(loop, runtime_file=runtime_file, resolver=resolver, pr_head=pr_head,
+                   hook_state=hook_state)
+    return {stage: row["status"] for stage, row in rows.items()}
 
 
-def _differs(loop, stage, entry, runtime_file, resolver, pr_head, hook_state) -> bool:
+def _change(loop, stage, entry, runtime_file, resolver, pr_head, hook_state) -> str:
+    """``""`` while ``stage``'s inputs still hash to its recorded fingerprint, else what changed.
+    Anything that cannot be compared counts as changed."""
+    if not entry["fingerprint"]:
+        return f"{stage} was recorded with inputs that could not be verified, so it is never current"
     pr = None
     if stage == "live_turn":
         number = entry.get("pr")
         if type(number) is not int:
-            return True
+            return "live_turn has no PR number recorded"
         try:
             pr = (number, (pr_head or _live_head)(loop, number))
         except Exception:
-            return True
+            return f"PR #{number}'s head could not be read"
     try:
-        return fingerprint(loop, stage, pr=pr, runtime_file=runtime_file, resolver=resolver,
-                           hook_state=hook_state) != entry["fingerprint"]
-    except Exception:
-        return True
+        now = fingerprint(loop, stage, pr=pr, runtime_file=runtime_file, resolver=resolver,
+                          hook_state=hook_state)
+    except (HookStateUnknown, SeatUnresolved, ValueError) as exc:
+        return f"{stage} fingerprint cannot be computed now ({exc})"
+    except Exception as exc:
+        return f"{stage} fingerprint cannot be computed now ({type(exc).__name__})"
+    return "" if now == entry["fingerprint"] else (
+        f"{stage} fingerprint changed ({_INPUTS[stage]})")
+
+
+# -- the next command ----------------------------------------------------------------------
+
+# stage -> (``hermes dk`` arguments, what running it costs). One home for the command each
+# stage's record comes from, so ``onboard`` names the same one the docs do.
+NEXT_COMMAND = {
+    "identities": ("selftest --loop {loop} --no-model", "live read"),
+    "loop": ("selftest --loop {loop} --no-model", "live read"),
+    "model": ("selftest --loop {loop}", "model-spending"),
+    "live_turn": ("selftest --loop {loop} --pr {pr} --live-turn", "live turn"),
+    "armed": ("arm --loop {loop}", "hook write"),
+}
+
+
+def next_step(loop: dict, rows: dict, pr: int | None = None) -> tuple | None:
+    """``(stage, command, label)`` for the first stage that is not ``passed``, or ``None``.
+
+    ``pr`` is the PR a ``live_turn`` command names; without it the stage's recorded PR, else
+    the placeholder ``N``."""
+    for stage in STAGES:
+        if rows[stage]["status"] != PASSED:
+            template, label = NEXT_COMMAND[stage]
+            number = pr or rows[stage]["pr"] or "N"
+            return stage, "hermes dk " + template.format(loop=loop["id"], pr=number), label
+    return None

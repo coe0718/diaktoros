@@ -172,6 +172,7 @@ hermes dk selftest --loop ID --pr N
 hermes dk selftest --loop ID --pr N --live-turn
 hermes dk arm --loop ID --admin-token "<reader-login>"
 hermes dk status --loop ID
+hermes dk onboard --loop ID
 ```
 
 | Command / option | What it proves or changes |
@@ -183,6 +184,7 @@ hermes dk status --loop ID
 | `arm --loop ID` | Activates matching existing hooks and sends each a GitHub ping (a write); exits 1 if a ping is rejected. Does not create missing hooks or enable fixer pushes |
 | `--admin-token` on `arm` | Hook editor login mapped in loop tokens; omit only if the reader already has hook write |
 | `status --loop ID` | Read back seats, route mapping, policy, live/queued runs and holds |
+| `onboard --loop ID` | Read-only checklist from the onboarding record: each stage's status (`passed`, `failed`, `skipped`, `stale`, `not_attempted`), when and by which command, and the next command to run with its cost (offline, live read, model-spending, live turn, hook write). Runs nothing and writes nothing; whether unattended fixer pushes are on is reported, never changed |
 
 Use an **open, non-draft, same-repository PR** authored by a fixer-allowlisted login and targeting the configured base. Review every failed or unknown check rather than counting green lines. `doctor --offline` skips network probes and therefore cannot prove public delivery. `selftest --ping` explicitly requests a GitHub hook-ping write; ordinary selftest probes do not post a review. `arm` also pings hooks, so the full sequence above is not write-free. See [operations](operations.md) for individual steps and [troubleshooting](troubleshooting.md) for failures.
 
