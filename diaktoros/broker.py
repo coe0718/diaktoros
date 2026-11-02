@@ -576,10 +576,11 @@ SHADOW_FOUND_LABEL = "shadow-found"     # every issue a shadow review found carr
 
 
 def file_shadow_issue(loop: dict, *, repo: str, number: int, head: str, title: str, body: str,
-                      labels: list[str], model: str, depth: int) -> int:
+                      labels: list[str], model: str, depth: int) -> tuple[int, str]:
     """POST one issue a shadow review found (#914), as the **reader**: the reviewer did not find
-    it. Its number, or raise. The labels were checked when the shadow asked (the loop's triage
-    list, never the fix label); ``shadow-found`` is added here. Host-built header and footer."""
+    it. ``(number, gap)``, or raise: gap says which labels it could not carry ('' when all do,
+    #1589). The labels were checked when the shadow asked (the loop's triage list, never the fix
+    label); ``shadow-found`` is added here. Host-built header and footer."""
     if repo != loop.get("repo"):
         raise BrokerDenied("repository mismatch")
     login = str(loop.get("read_token") or "")
@@ -598,7 +599,33 @@ def file_shadow_issue(loop: dict, *, repo: str, number: int, head: str, title: s
             or result["number"] <= 0 or "pull_request" in result):
         raise _denied("GitHub issue write did not return a successful response", why)
     _audit(loop, repo, number, head, "", "reader", "file_shadow_issue", login)
-    return result["number"]
+    return result["number"], _shadow_labels(loop, repo, number, head, result, payload["labels"],
+                                            login)
+
+
+def _shadow_labels(loop: dict, repo: str, number: int, head: str, issue: dict,
+                   wanted: list[str], login: str) -> str:
+    """Add the labels GitHub dropped from a new shadow issue (#1589); '' when it carries them
+    all, else why not. GitHub drops create-time labels, silently, for a token that can't set them
+    on a new issue (push access), so they are added with the labels endpoint after the POST. The
+    issue stands either way, and is never filed again: a gap is reported, never raised."""
+    def names(found) -> set:
+        return {str(x.get("name")).casefold() for x in found or [] if isinstance(x, dict)}
+    missing = [x for x in wanted if x.casefold() not in names(issue.get("labels"))]
+    if not missing:
+        return ""
+    try:
+        added, why = _write(loop, f"/repos/{repo}/issues/{issue['number']}/labels",
+                            method="POST", body={"labels": missing}, login=login)
+    except Exception as exc:  # noqa: BLE001 - the issue is filed: report, never raise
+        added, why = None, f"{type(exc).__name__}: {exc}"
+    if isinstance(added, list):
+        _audit(loop, repo, number, head, "", "reader", "shadow_issue_labels", login)
+        missing = [x for x in missing if x.casefold() not in names(added)]
+    if not missing:
+        return ""
+    return (f"GitHub did not apply {', '.join(missing)} ({why or 'the label write left them off'})"
+            f": the reader {login} needs permission to label issues in {repo}")
 
 
 def ruling_comment_body(verdict: str, body: str, *, head: str, turn_key: str, run_id: str,

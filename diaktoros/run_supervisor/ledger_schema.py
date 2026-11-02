@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS filed_issues (
 -- here, never posted by the seat. The host files it once the real review exists at that head and
 -- the reviewer did not file the same finding (shadow_issues.file_pending), as the reader, labelled
 -- shadow-found. state: recorded → posting → posted (issue_number), duplicate, uncertain or denied.
+-- A posted issue GitHub filed without some of its labels has error 'labels: ...' (#1589).
 CREATE TABLE IF NOT EXISTS shadow_issues (
  run_id TEXT NOT NULL REFERENCES runs(id), seq INTEGER NOT NULL, repo TEXT NOT NULL,
  pr INTEGER NOT NULL, head TEXT NOT NULL, title TEXT NOT NULL, title_key TEXT NOT NULL,

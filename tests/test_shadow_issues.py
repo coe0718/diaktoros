@@ -192,19 +192,31 @@ class FilePending(unittest.TestCase):
                         "state,created,updated) VALUES('r',1,?,7,?,?,?,1,'posted',1,1)",
                         (REPO, HEAD, title, " ".join(title.casefold().split())))
 
-    def file(self, reviews=APPROVED, now=None, branch="fix-7"):
+    def file(self, reviews=APPROVED, now=None, branch="fix-7", labelled=None, logged=None):
+        """One sweep against a fake GitHub. It keeps the labels a new issue is created with, as
+        GitHub does for a token with push access; with ``labelled`` it drops them (#1589), and
+        the labels endpoint answers with ``labelled(names)``: the issue's labels, or a refusal."""
         posts = []
 
         def write(loop, path, method, body, login):
             posts.append((path, body, login))
-            return {"number": 100 + len(posts)}, ""
+            if path.endswith("/labels"):
+                return labelled(body["labels"])
+            kept = body["labels"] if labelled is None else []
+            return {"number": 100 + len(posts), "labels": [{"name": x} for x in kept]}, ""
         pr = None if branch is None else {"number": 7, "head": {"sha": HEAD, "ref": branch}}
         with mock.patch.object(gh, "reviews", return_value=reviews), \
                 mock.patch.object(gh, "pr", return_value=pr), \
                 mock.patch.object(broker, "_write", side_effect=write), \
                 mock.patch.object(broker, "_audit"):
-            filed = shadow_issues.file_pending(self.loop, db=self.db, now=now)
+            filed = shadow_issues.file_pending(self.loop, db=self.db, now=now,
+                                               log=(logged if logged is not None else []).append)
         return filed, posts
+
+    def error(self, run):
+        with ledger.connect(self.db) as con:
+            return con.execute("SELECT error FROM shadow_issues WHERE run_id=?",
+                               (run,)).fetchone()[0]
 
     def state(self, run):
         with ledger.connect(self.db) as con:
@@ -330,6 +342,44 @@ class FilePending(unittest.TestCase):
             self.recorded(topic)
         self.assertEqual(len(self.file()[0]), 8)
 
+    def test_labels_github_drops_at_creation_are_added_after_it(self):
+        # #1589: GitHub drops create-time labels, silently, for a token without push access.
+        run = self.recorded("A finding")
+        filed, posts = self.file(labelled=lambda names: ([{"name": x} for x in names], ""))
+        self.assertEqual(filed, [101])
+        self.assertEqual([(path, body.get("labels")) for path, body, _login in posts],
+                         [(f"/repos/{REPO}/issues", ["bug", "shadow-found"]),
+                          (f"/repos/{REPO}/issues/101/labels", ["bug", "shadow-found"])])
+        self.assertEqual(posts[1][2], "reader")
+        self.assertEqual((self.state(run), self.error(run)), ("posted", None))
+
+    def test_labels_that_still_do_not_land_are_reported_never_refiled(self):
+        run = self.recorded("A finding")
+        logged = []
+        refused = (None, "HTTP 403: Resource not accessible")
+        filed, posts = self.file(labelled=lambda _names: refused, logged=logged)
+        self.assertEqual((filed, len(posts)), ([101], 2))
+        self.assertEqual(self.state(run), "posted")             # it is filed: never again
+        self.assertIn("labels: GitHub did not apply bug, shadow-found (HTTP 403", self.error(run))
+        self.assertIn("the reader reader needs permission to label issues", self.error(run))
+        [line] = logged
+        self.assertIn("#101 filed without its labels", line)
+        self.assertEqual(self.file()[1], [])
+
+    def test_a_label_write_that_raises_is_a_gap_not_an_uncertain_filing(self):
+        run = self.recorded("A finding")
+        def boom(_names):
+            raise TimeoutError("read timed out")
+        self.assertEqual(self.file(labelled=boom)[0], [101])
+        self.assertEqual(self.state(run), "posted")
+        self.assertIn("(TimeoutError: read timed out)", self.error(run))
+
+    def test_a_label_the_endpoint_leaves_off_is_named(self):
+        run = self.recorded("A finding")
+        self.file(labelled=lambda names: ([{"name": x} for x in names if x != "shadow-found"], ""))
+        self.assertIn("did not apply shadow-found (the label write left them off)", self.error(run))
+        self.assertNotIn("bug", self.error(run).split("(")[0])
+
     def test_a_failed_post_is_uncertain_and_never_replayed(self):
         run = self.recorded("A finding")
         with mock.patch.object(gh, "reviews", return_value=APPROVED), \
@@ -351,6 +401,9 @@ class Sweep(ruling.Base):
             self.sweep()                     # the first sweep only snapshots the heads
             self.sweep()
         self.assertTrue(any(call.args[0].get("repo") == self.loop["repo"]
+                            for call in file_pending.call_args_list))
+        # #1589: a filing that lost its labels is said in the sweep's log.
+        self.assertTrue(all(callable(call.kwargs.get("log"))
                             for call in file_pending.call_args_list))
 
 
