@@ -71,7 +71,8 @@ class LightPoll(sm.Base):
              mock.patch.object(gh, "issue_comments_read",
                                side_effect=lambda *a, **k: self.calls.append("comments") or ([], "")), \
              mock.patch("diaktoros.state.state_for") as state_for, \
-             mock.patch.object(observer, "notify"):
+             mock.patch.object(observer, "notify") as notify:
+            self.notify = notify
             state_for.return_value.breach_get.return_value = None
             return self.sup._claim()
 
@@ -127,6 +128,30 @@ class LightPoll(sm.Base):
         self.assertNotIn("/commits/" + HEAD + "/check-runs", self.calls)   # no CI read first
         self.assertNotIn("reviews", self.calls)
         self.assertEqual(self.calls.count("/pulls/7"), 2, self.calls)   # the poll's, then the claim's
+
+    def test_a_light_poll_sends_the_held_notice_once_per_kind(self):
+        """A running hold is silent. The poll that finds a cancelled check sends the same
+        ``held`` notice a held turn would, launching nothing; every later poll presents the
+        same identity, so the observer records it once."""
+        self.hold()
+        self.assertIsNone(self.claim())
+        self.notify.assert_not_called()                     # the normal wait for CI is silent
+        self.checks = {"check_runs": [{"id": 1, "name": "tests", "status": "completed",
+                                       "conclusion": "cancelled"}], "total_count": 1}
+        identities = []
+        for _ in range(2):
+            self.hold()
+            self.assertIsNone(self.claim())
+            self.assertNotIn("reviews", self.calls)
+            self.assertIn("cancelled", self.row()[1])
+            self.assertEqual(self.notify.call_count, 1, self.notify.call_args_list)
+            args, kw = self.notify.call_args
+            self.assertEqual(args[2], "held")
+            self.assertIn("cancelled", kw["outcome"])
+            identities.append(kw["identity"])
+            self.notify.reset_mock()
+        self.assertEqual(len(set(identities)), 1, identities)
+        self.assertTrue(identities[0].endswith(":held:ci-cancelled"), identities)
 
     def test_a_closed_or_unreadable_pr_goes_to_the_full_claim(self):
         for pr, state in ((pull(state="closed"), "cancelled"), (None, "waiting")):
