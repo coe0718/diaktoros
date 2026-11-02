@@ -116,5 +116,23 @@ class Log(unittest.TestCase):
                          ["one", "two"])
 
 
+class WireProfile(unittest.TestCase):
+    def test_the_provider_ui_says_diaktoros_and_the_profile_id_is_unchanged(self):
+        import runpy
+        import types
+        registered = []
+        base = types.ModuleType("providers.base")
+        base.ProviderProfile = type("ProviderProfile", (), {
+            "__init__": lambda self, **kw: self.__dict__.update(kw)})
+        pkg = types.ModuleType("providers")
+        pkg.register_provider = registered.append
+        pkg.base = base
+        with mock.patch.dict(sys.modules, {"providers": pkg, "providers.base": base}):
+            runpy.run_path(str(ROOT / "diaktoros" / "directsdk_wire.py"))
+        (profile,) = registered
+        self.assertEqual(profile.display_name, "Diaktoros bounded DirectSDK wire")
+        self.assertEqual(profile.name, "review-loop-directsdk-wire")
+
+
 if __name__ == "__main__":
     unittest.main()
