@@ -1082,6 +1082,18 @@ def _as_int(value, key: str, where: str) -> int:
         raise ConfigError(f"{where}: {key!r} must be a whole number, got {value!r}") from None
 
 
+def _positive_number(value, key: str, where: str):
+    """A positive, finite number setting (``null`` or ``""`` = the default), or a ConfigError
+    naming it. The watchdog does ``float(...)``/``int(...)`` on these mid-sweep, so a string,
+    a bool, zero, a negative or ``Infinity``/``NaN`` must fail when the loop file loads."""
+    if value is None or value == "":
+        return DEFAULTS[key]
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value) or value <= 0):
+        raise ConfigError(f"{where}: {key!r} must be a positive number, got {value!r}")
+    return value
+
+
 def load_id_for_reader_repair(loop_id: str, reader: str) -> dict | None:
     """The loop ``set --read-token`` may repair: one whose *only* defect is a missing reader.
 
