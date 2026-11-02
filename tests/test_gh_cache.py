@@ -1,0 +1,134 @@
+"""#1646: a GET whose answer carried an ETag asks GitHub whether it changed (``gh_cache``).
+
+A local server stands in for the API: it gives each body an ETag and answers ``If-None-Match``
+for the current one with ``304 Not Modified`` and no body, as GitHub does. A 304 is free on
+GitHub's rate limit, and it is GitHub's word that the stored body is current.
+"""
+from __future__ import annotations
+
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import http.server
+import json
+import shutil
+import sys
+import threading
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from diaktoros import gh, gh_cache  # noqa: E402
+
+LOOP = {"repo": "owner/one", "read_token": "reader"}
+PATH = "/repos/owner/one/pulls/7/reviews?per_page=100"
+
+
+class Cache(unittest.TestCase):
+    def setUp(self):
+        shutil.rmtree(gh_cache.directory(), ignore_errors=True)
+        self.addCleanup(shutil.rmtree, gh_cache.directory(), True)
+        self.body, self.etag, self.seen = [{"id": 1}], '"v1"', []
+        test = self
+
+        class Api(http.server.BaseHTTPRequestHandler):
+            def answer(self):
+                test.seen.append((self.command, self.headers.get("If-None-Match"),
+                                  self.headers.get("Authorization")))
+                if self.command == "GET" and self.headers.get("If-None-Match") == test.etag:
+                    self.send_response(304)
+                    self.send_header("ETag", test.etag)
+                    self.send_header("X-RateLimit-Remaining", "4999")
+                    self.end_headers()
+                    return
+                body = json.dumps(test.body).encode()
+                self.send_response(200)
+                if test.etag:
+                    self.send_header("ETag", test.etag)
+                self.send_header("X-RateLimit-Remaining", "5000")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_GET = do_POST = answer
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Api)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        for patch in (mock.patch.object(gh, "API", f"http://127.0.0.1:{server.server_port}"),
+                      mock.patch.object(gh, "token", side_effect=lambda _loop, login=None:
+                                        f"tok-{login or 'reader'}"),
+                      mock.patch.dict("os.environ", {"DIAKTOROS_GH_STUB": "",
+                                                     "REVIEW_LOOP_GH_STUB": ""})):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def get(self, login=None):
+        return gh.request(LOOP, PATH, login=login)
+
+    def test_an_unchanged_answer_is_a_304_serving_the_stored_body(self):
+        first = self.get()
+        self.assertEqual((first.data, first.status), ([{"id": 1}], 200))
+        second = self.get()
+        self.assertEqual((second.data, second.error, second.status), ([{"id": 1}], "", 200))
+        self.assertEqual([inm for _m, inm, _a in self.seen], [None, '"v1"'])
+        self.assertEqual(second.headers.get("x-ratelimit-remaining"), "4999")   # the fresh ones
+
+    def test_a_changed_answer_replaces_the_stored_one(self):
+        self.get()
+        self.body, self.etag = [{"id": 1}, {"id": 2}], '"v2"'
+        self.assertEqual(self.get().data, [{"id": 1}, {"id": 2}])
+        self.assertEqual(self.get().data, [{"id": 1}, {"id": 2}])
+        self.assertEqual([inm for _m, inm, _a in self.seen], [None, '"v1"', '"v2"'])
+
+    def test_one_logins_entry_is_never_another_logins(self):
+        self.get()
+        self.get(login="reviewer")
+        self.assertEqual([(inm, auth) for _m, inm, auth in self.seen],
+                         [(None, "token tok-reader"), (None, "token tok-reviewer")])
+
+    def test_an_answer_without_an_etag_is_not_kept(self):
+        self.etag = ""
+        self.get()
+        self.get()
+        self.assertEqual([inm for _m, inm, _a in self.seen], [None, None])
+
+    def test_a_write_is_never_conditional_and_never_kept(self):
+        gh.request(LOOP, PATH, method="POST", body={"x": 1})
+        self.get()
+        gh.request(LOOP, PATH, method="POST", body={"x": 1})       # a GET's entry is there now
+        self.assertEqual([(m, inm) for m, inm, _a in self.seen],
+                         [("POST", None), ("GET", None), ("POST", None)])
+
+    def test_a_corrupt_entry_is_a_plain_get(self):
+        self.get()
+        [entry] = [f for f in gh_cache.directory().iterdir()]
+        entry.write_text("{not json")
+        self.assertEqual(self.get().data, [{"id": 1}])
+        self.assertEqual([inm for _m, inm, _a in self.seen], [None, None])
+
+    def test_entries_are_private_and_hold_no_token(self):
+        self.get()
+        [entry] = list(gh_cache.directory().iterdir())
+        self.assertEqual(entry.stat().st_mode & 0o777, 0o600)
+        self.assertNotIn("tok-reader", entry.read_text())
+
+    def test_an_entry_unused_for_two_days_is_pruned_and_a_304_keeps_it(self):
+        self.get()
+        [entry] = list(gh_cache.directory().iterdir())
+        old = time.time() - gh_cache.KEEP_S - 60
+        import os
+        os.utime(entry, (old, old))
+        self.get()                                              # a 304 marks it used
+        self.assertEqual(gh_cache.prune(), 0)
+        os.utime(entry, (old, old))
+        self.assertEqual(gh_cache.prune(), 1)
+        self.assertEqual(list(gh_cache.directory().iterdir()), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

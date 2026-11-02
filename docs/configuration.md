@@ -749,6 +749,7 @@ State is operational data, not additional user configuration. Do not hand-edit l
 | `diaktoros-runs.sqlite.workers.log` | Detached worker diagnostics, rotated once to `.1` after 256 KiB. |
 | `diaktoros-pacing.json` | Account usage-window holds and local-day start counts; account metadata, not credentials. |
 | `diaktoros-seat-locks/` | Per-profile model-resolution/refresh serialization locks. |
+| `diaktoros-gh-cache/` | GitHub GET answers that carried an `ETag`, per login and path (#1646), so the next read of each asks GitHub whether it changed; a `304 Not Modified` doesn't count against the rate limit. Files are mode 0600, hold GitHub's response bodies and never a token, and are dropped after two days unused. Disposable: delete it any time, and it isn't backed up. |
 
 `status` reports these structures; `explain` combines their non-pruning read views with live GitHub facts. It does not claim, prune, drain, or submit a write. Diagnostic files can still contain private repository metadata even when credentials are redacted. See [Architecture](architecture.md) for ledger ownership and [Security](security.md) before exporting logs/state.
 
