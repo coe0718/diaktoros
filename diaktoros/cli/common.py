@@ -197,7 +197,9 @@ def _split_app_pair(pair: str) -> tuple[str, dict] | None:
     if not config.APP_LOGIN.match(login.lower()):
         print(f"refused: {usage}: {login!r} is not an App's bot login")
         return None
-    if not app_id.strip().isdigit() or int(app_id) <= 0:
+    app_id = app_id.strip()
+    # ``isdigit()`` alone accepts "²" and other non-decimal digits that ``int()`` cannot parse.
+    if not (app_id.isascii() and app_id.isdigit()) or int(app_id) <= 0:
         print(f"refused: {usage}: the App id {app_id!r} is not a number")
         return None
     try:
