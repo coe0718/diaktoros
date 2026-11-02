@@ -96,6 +96,35 @@ class ShowTests(_Base):
             rows = {row["name"]: row for row in json.loads(out)["settings"]}
             self.assertNotIn("not applied", rows["reviewer_app_key_file"]["note"], (stored, held))
 
+    def _key_note(self, stored, held):
+        from test_token_file_settings import REV
+        if not self.loop_file().exists():
+            self.install()
+        bot = "review-seat[bot]"
+        raw = self.loop_json()
+        raw["reviewers"] = [bot]
+        raw["reviewer_seat"] = bot
+        raw["seats"]["reviewer"]["login"] = bot
+        raw["tokens"].pop(REV, None)
+        raw["apps"] = {bot: {"app_id": 42, "key_file": stored}}
+        self.loop_file().write_text(json.dumps(raw))
+        form = {"reviewer_app_id": "42", "reviewer_app_key_file": held}
+        rc, out = self.run_cli(["show", "--loop", "widgets", "--json"], form)
+        self.assertEqual(rc, 0, out)
+        rows = {row["name"]: row for row in json.loads(out)["settings"]}
+        return rows["reviewer_app_key_file"]["note"]
+
+    def test_an_unresolvable_tilde_user_key_path_does_not_crash_show(self):
+        # review of #1634 F1: Path.expanduser raises on `~nosuchuser`; show must still report.
+        held = "~definitely_no_such_diaktoros_user_83627/key.pem"
+        self.assertIn("not applied", self._key_note("/keys/other.pem", held))
+
+    def test_a_key_path_differing_by_a_trailing_space_is_called_unapplied(self):
+        # review of #1634 F2: `rev-app.pem ` and `rev-app.pem` are different files.
+        self.assertIn("not applied", self._key_note("/keys/rev-app.pem ", "/keys/rev-app.pem"))
+        self.assertIn("not applied", self._key_note("/keys/rev-app.pem", "/keys/rev-app.pem "))
+        self.assertNotIn("not applied", self._key_note("/keys/rev-app.pem ", "/keys/rev-app.pem "))
+
     def test_every_loop_key_is_shown(self):
         rows = self.rows()
         covered = {n.split(".")[0] for n in rows}

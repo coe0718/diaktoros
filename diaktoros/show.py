@@ -361,6 +361,18 @@ def _rows_observer(obs, schema, rows, loop) -> None:  # noqa: ANN001
         rows.append(row)
 
 
+def _key_spelling(value: str) -> str:
+    """``value`` as ``config._path`` spells it, whitespace kept (a trailing space names another file).
+
+    An unresolvable ``~user`` makes ``Path.expanduser`` raise; ``show`` must still report, so that
+    value stays as written (``os.path.expanduser`` left it alone too).
+    """
+    try:
+        return str(config._path(value))
+    except RuntimeError:
+        return value
+
+
 def collect(loop: dict, raw: dict, form: dict | None = None) -> list[dict]:
     """Every row as a JSON-safe dict: name, value, source, meaning, state, note."""
     out = []
@@ -382,9 +394,9 @@ def collect(loop: dict, raw: dict, form: dict | None = None) -> list[dict]:
                 # apply stores the key path as ``config._path`` spells it (#1212, #1279): expanded
                 # and normalized, so `~/keys/x.pem/` is the same file. A loop file written by hand
                 # with a raw `~` is the same file too (``github_app.key_path`` expands at use).
-                held = str(config._path(held.strip()))
+                held = _key_spelling(held)
                 if isinstance(shown, str) and shown.strip() and shown != _UNSET:
-                    shown = str(config._path(shown.strip()))
+                    shown = _key_spelling(shown)
             if row.name not in config.TOKEN_FILE_SETTINGS.values() and held != shown \
                     and str(held) != str(shown):
                 note = "; ".join(x for x in (
