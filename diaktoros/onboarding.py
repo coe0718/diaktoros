@@ -219,6 +219,8 @@ def fingerprint(loop: dict, stage: str, *, pr: tuple | None = None,
         facts = _seat_identities(seats if seats is not None
                                  else _resolve_seats(loop, runtime_file, resolver))
     elif stage == "live_turn":
+        if not str(pr[1] or "").strip():
+            raise ValueError("no usable PR head: nothing to fingerprint")
         facts = {"pr": pr[0], "head": pr[1], "prompt": prompts.revision("reviewer")}
     elif stage == "armed":
         state = (hook_state or _hook_state)(loop)
@@ -253,32 +255,65 @@ def _load(loop: dict) -> dict:
     return stages if isinstance(stages, dict) else {}
 
 
-def _one_line(text: object, redact) -> str:
+WITHHELD = "[withheld: {}]"
+# The stages whose commands and summaries can carry a model key (a turn talks to the model).
+MODEL_STAGES = ("model", "live_turn")
+_MIN_REDACTABLE = 4      # ``selftest.Redactor.add`` ignores anything shorter
+
+
+def _one_line(text: object, redact, withheld: str = "") -> str:
+    if withheld:
+        return WITHHELD.format(withheld)
     return " ".join(redact(text).split())[:_SUMMARY_MAX]
 
 
-def _redactor(loop: dict, runtime_file: Path, seats: dict):
-    """Every configured credential's text, the model key files', each resolved seat's key (a
-    Hermes profile's key has no token shape), and token shapes."""
+def _redactor(loop: dict, runtime_file: Path, seats: dict, stage: str, secrets=()):
+    """``(redact, withheld)``: every configured credential's text, the model key files', each
+    resolved seat's key (a Hermes profile's key has no token shape), the ``secrets`` the caller's
+    check saw, and token shapes.
+
+    ``withheld`` is why the command and summary must not be stored at all, or ``""``: the
+    fail-closed cases. ``selftest.Redactor`` cannot redact a credential shorter than four
+    characters, and a model-facing stage with a seat that did not resolve may carry a key this
+    record never saw.
+    """
     from . import selftest, seat_model
     redact = selftest.redactor_for(loop)
-    for inference in seats.values():
-        if inference is not None:
-            redact.add(inference.key)
+    texts = [inference.key for inference in seats.values() if inference is not None]
+    texts += [secret for secret in secrets if secret]
+    files = [Path(str(raw)).expanduser() for raw in config.credentials_map(loop).values() if raw]
     try:
         settings = seat_model.load_runtime(runtime_file)
     except (OSError, ValueError):
-        return redact
-    for block in [seat_model.legacy_override(settings), *(settings.get("seats") or {}).values()]:
-        if block:
-            redact.add_file(Path(block["key_file"]).expanduser())
-    return redact
+        settings = None
+    if settings:
+        for block in [seat_model.legacy_override(settings), *(settings.get("seats") or {}).values()]:
+            if block:
+                files.append(Path(block["key_file"]).expanduser())
+    for file in files:
+        try:
+            texts.append(file.read_text())
+        except Exception:
+            pass
+    withheld = ""
+    for text in texts:
+        redact.add(text)
+        if isinstance(text, str) and 0 < len(text.strip()) < _MIN_REDACTABLE:
+            withheld = "a credential is too short to redact"
+    if not withheld and stage in MODEL_STAGES and any(found is None for found in seats.values()):
+        withheld = "a seat's credentials could not be resolved, so its key cannot be redacted"
+    return redact, withheld
 
 
 def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
            checks=None, pr: tuple | None = None, runtime_file: Path | None = None,
-           resolver=None, hook_state=None) -> dict:
+           resolver=None, hook_state=None, secrets=()) -> dict:
     """Store ``stage``'s result with the fingerprint of its inputs as they are now.
+
+    ``secrets`` are credentials the caller's check saw (a key it resolved) that must not reach
+    the file. If one cannot be redacted (shorter than four characters), or a model-facing stage
+    (``MODEL_STAGES``) has a seat whose key was never resolved, the command and summary are
+    withheld rather than stored.
 
     ``checks`` (``{name: outcome}`` or ``[(name, outcome), ...]`` of the stage's checks) keeps a
     SKIP, a WARN or a FAIL from being stored as ``passed`` (see ``stage_status``). ``live_turn``
@@ -291,11 +326,12 @@ def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
         raise ValueError(f"unknown onboarding stage {stage!r} (use {', '.join(STAGES)})")
     if status not in RECORDED:
         raise ValueError(f"status must be one of {', '.join(RECORDED)}, not {status!r}")
-    if stage == "live_turn" and (not pr or len(pr) != 2):
-        raise ValueError("the live_turn stage is recorded against a PR: pass pr=(number, head)")
+    if stage == "live_turn" and (not pr or len(pr) != 2 or not str(pr[1] or "").strip()):
+        raise ValueError("the live_turn stage is recorded against a PR: pass pr=(number, head) "
+                         "with the head SHA it was shown against")
     runtime_file = Path(runtime_file or config.host_path("runtime"))
     seats = _resolve_seats(loop, runtime_file, resolver)
-    redact = _redactor(loop, runtime_file, seats)
+    redact, withheld = _redactor(loop, runtime_file, seats, stage, secrets)
     try:
         prints = fingerprint(loop, stage, pr=pr, runtime_file=runtime_file, resolver=resolver,
                              hook_state=hook_state, seats=seats)
@@ -305,8 +341,8 @@ def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
     kept = required_checks(stage, loop)
     entry = {"status": stage_status(stage, status, checks, loop=loop, completions=distinct),
              "at": util.now_iso(),
-             "command": _one_line(command, redact),
-             "summary": _one_line(summary, redact),
+             "command": _one_line(command, redact, withheld),
+             "summary": _one_line(summary, redact, withheld),
              "checks": {name: outcome for name, (outcome, _) in normalize_checks(checks or {}).items()
                         if name in kept},
              "fingerprint": prints}

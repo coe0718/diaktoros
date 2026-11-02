@@ -379,5 +379,84 @@ class Review1(Fixture):
         self.assertEqual(self.record("model", checks=checks)["status"], "passed")    # shared
 
 
+class Review2(Fixture):
+    """Vex's round-2 findings on PR #1606."""
+
+    def _keyed(self, key, fail_after=None):
+        """A resolver returning ``key``; after ``fail_after`` calls it raises, as a profile whose
+        Hermes read fails the second time."""
+        calls = []
+
+        def resolver(profile, seat, settings):
+            calls.append(seat)
+            if fail_after is not None and len(calls) > fail_after:
+                raise seat_model.SeatModelError("profile unreadable")
+            return seat_model.SeatInference(seat, profile, "profile", "prov", "m",
+                                            "https://api.example/v1/chat/completions", key)
+        return resolver
+
+    def test_a_profile_key_shorter_than_four_characters_is_not_written(self):              # F2
+        key = "xyz"
+        entry = onboarding.record(
+            self.loop, "model", "passed", f"run {key}", f"key {key}",
+            runtime_file=self.runtime, resolver=self._keyed(key))
+        self.assertNotIn(key, entry["command"])
+        self.assertNotIn(key, entry["summary"])
+        self.assertIn("withheld", entry["summary"])
+        self.assertNotIn(f"key {key}", onboarding.path(self.loop).read_text())
+
+    def test_a_failed_resolution_withholds_a_model_stage_text(self):                       # F2
+        # The check saw the key through a first resolution; recording resolves again and fails.
+        key = "profile-key-seen-by-the-check"
+        for stage, extra in (("model", {}), ("live_turn", {"pr": (12, HEAD)})):
+            entry = onboarding.record(
+                self.loop, stage, "failed", f"dk {stage} --key {key}", f"rejected {key}",
+                runtime_file=self.runtime, resolver=self._keyed(key, fail_after=0), **extra)
+            self.assertNotIn(key, json.dumps(entry), stage)
+        self.assertNotIn(key, onboarding.path(self.loop).read_text())
+
+    def test_secrets_the_caller_saw_are_redacted_and_short_ones_withhold(self):            # F2
+        key = "caller-saw-this-profile-key"
+        entry = onboarding.record(
+            self.loop, "model", "failed", f"dk model {key}", f"bad {key}",
+            runtime_file=self.runtime, resolver=self.resolver, secrets=[key])
+        self.assertNotIn(key, json.dumps(entry))
+        self.assertIn("[REDACTED]", entry["summary"])
+        entry = onboarding.record(
+            self.loop, "model", "failed", "dk model ab", "bad ab",
+            runtime_file=self.runtime, resolver=self.resolver, secrets=["ab"])
+        self.assertIn("withheld", entry["command"])
+
+    def test_text_is_kept_when_every_credential_is_redactable(self):                       # F2
+        entry = self.record("model", summary="both seats answered")
+        self.assertEqual(entry["summary"], "both seats answered")
+
+    def test_a_live_turn_needs_a_head_to_record(self):                                     # F7
+        for head in ("", "  ", None):
+            with self.assertRaises(ValueError):
+                self.record("live_turn", pr=(12, head))
+        self.assertFalse(onboarding.path(self.loop).exists())
+
+    def test_an_empty_live_head_reads_stale_never_passed(self):                            # F7
+        self.record("live_turn")
+        for lookup in ("", "  ", None):
+            got = onboarding.read(self.loop, runtime_file=self.runtime, resolver=self.resolver,
+                                  pr_head=lambda loop, number, v=lookup: v,
+                                  hook_state=lambda loop: self.hooks)
+            self.assertEqual(got["live_turn"], "stale", repr(lookup))
+
+    def test_an_entry_stored_with_an_empty_head_never_reads_passed(self):                  # F7
+        # A record written before the guard (or by hand) holds the hash of an empty head.
+        entry = self.record("live_turn")
+        stored = json.loads(onboarding.path(self.loop).read_text())
+        stored["stages"]["live_turn"]["fingerprint"] = onboarding._digest(
+            ["live_turn", {"pr": 12, "head": "", "prompt": prompts.revision("reviewer")}])
+        onboarding.path(self.loop).write_text(json.dumps(stored))
+        got = onboarding.read(self.loop, runtime_file=self.runtime, resolver=self.resolver,
+                              pr_head=lambda loop, number: "", hook_state=lambda l: self.hooks)
+        self.assertEqual(entry["status"], "passed")
+        self.assertEqual(got["live_turn"], "stale")
+
+
 if __name__ == "__main__":
     unittest.main()
