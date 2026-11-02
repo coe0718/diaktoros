@@ -1015,6 +1015,8 @@ def main() -> None:
     ap.add_argument("--conflicts", action="store_true",
                     help="wait for a requested conflict scan (after a merge) and run only that")
     args = ap.parse_args()
+    from diaktoros import gh_cache
+    gh_cache.enable_writes()           # #1646: a writer process keeps the GET cache
     global EMIT
     EMIT = lambda line: print(line, flush=True)  # noqa: E731
     budget = watchdog_budget()

@@ -76,7 +76,8 @@ class Cache(unittest.TestCase):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        for patch in (mock.patch.object(gh, "API", f"http://127.0.0.1:{server.server_port}"),
+        for patch in (mock.patch.object(gh_cache, "_WRITES", True),      # a writer process
+                      mock.patch.object(gh, "API", f"http://127.0.0.1:{server.server_port}"),
                       mock.patch.object(gh, "token", side_effect=lambda _loop, login=None:
                                         f"tok-{login or 'reader'}"),
                       mock.patch.dict("os.environ", {"DIAKTOROS_GH_STUB": "",
@@ -157,6 +158,50 @@ class Cache(unittest.TestCase):
             self.assertLessEqual(entry.stat().st_size, 300)
             self.assertEqual(self.get().data, ["é" * 120])
         self.assertEqual([inm for _m, inm, _a in self.seen], [None, None, '"v1"'])
+
+    def test_a_read_only_process_never_stores_marks_or_prunes(self):
+        # #1653 review, F3: doctor, explain, status and the Desktop routes promise to write
+        # nothing. Writes are off unless the process is a writer (enable_writes).
+        self.get()                                             # a writer stores the entry
+        [entry] = list(gh_cache.directory().iterdir())
+        old = time.time() - gh_cache.KEEP_S - 60
+        import os
+        os.utime(entry, (old, old))
+        with mock.patch.object(gh_cache, "_WRITES", False):
+            self.assertEqual(self.get().data, [{"id": 1}])     # it still uses the entry (a 304)
+            self.assertEqual(entry.stat().st_mtime, old)       # ...but never marks it,
+            self.assertEqual(gh_cache.prune(), 0)              # ...never prunes,
+            gh.request(LOOP, PATH + "&page=2")
+            self.assertEqual(list(gh_cache.directory().iterdir()), [entry])   # never stores
+        self.assertEqual([inm for _m, inm, _a in self.seen], [None, '"v1"', None])
+
+    def test_only_the_writer_processes_turn_writes_on(self):
+        import re
+        root = Path(__file__).resolve().parents[1]
+        found = sorted(str(f.relative_to(root)) for f in
+                       [*(root / "diaktoros").rglob("*.py"), *(root / "scripts").glob("*.py")]
+                       if re.search(r"gh_cache\.enable_writes\(\)", f.read_text()))
+        # The gates through gate.context, and the watchdog; a worker is one by its env.
+        self.assertEqual(found, ["diaktoros/gate.py", "scripts/watchdog.py"])
+
+    def test_a_worker_never_creates_the_cache_directory(self):
+        from diaktoros import hostdirs
+        with mock.patch.dict("os.environ", {hostdirs.WORKER_ENV: "1"}), \
+                mock.patch.object(gh_cache, "_WRITES", False):     # a worker is a writer anyway
+            self.get()
+            self.assertFalse(gh_cache.directory().exists())
+            gh_cache.directory().mkdir(parents=True)           # the host made it: a worker may
+            self.get()
+            self.assertEqual(len(list(gh_cache.directory().iterdir())), 1)
+
+    def test_a_stored_etag_that_is_no_header_value_is_a_plain_get(self):
+        # #1653 review, F4: valid JSON holding an ETag with a newline is never sent.
+        self.get()
+        [entry] = list(gh_cache.directory().iterdir())
+        entry.write_text(json.dumps({"etag": '"v1"\r\nX-Injected: 1', "data": ["forged"]}))
+        response = self.get()
+        self.assertEqual((response.data, response.error), ([{"id": 1}], ""))
+        self.assertEqual([inm for _m, inm, _a in self.seen], [None, None])
 
     def test_entries_are_private_and_hold_no_token(self):
         self.get()

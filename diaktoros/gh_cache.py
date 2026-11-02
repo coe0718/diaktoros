@@ -12,7 +12,13 @@ headers, never a stored one (#1653 review). The reads that exist to inspect the 
 (``gh.CREDENTIAL_PROBES``, whose scopes, expiry and limits are read from headers) are never
 conditional.
 
-Disposable: a missing, unreadable or corrupt entry is a plain GET. Entries are 0600 files of
+Only a writer process keeps the cache (the watchdog and the gates through ``gate.context`` call
+``enable_writes``; a worker always is one; together they make nearly every read). Any other, such as ``doctor``, ``explain``, ``status`` and
+the Desktop routes, which promise to write nothing, uses what is stored but never stores, marks or
+prunes an entry (#1653 review). A worker writes only into a directory that already exists: it
+never creates host state (``hostdirs``).
+
+Disposable: a missing, unreadable or corrupt entry (a malformed ETag among them) is a plain GET. Entries are 0600 files of
 at most ``MAX_BYTES`` bytes as stored, dropped once unused for ``KEEP_S``. Bodies are what GitHub
 returned, never a token: the login only names the entry.
 """
@@ -23,11 +29,30 @@ import json
 import os
 import pathlib
 import random
+import re
 import time
 
 MAX_BYTES = 1_000_000          # an entry bigger than this, in bytes as stored, is not kept
 KEEP_S = 2 * 86400             # an entry unused this long is dropped
 PRUNE_ONE_IN = 50              # a store prunes the directory one time in this many
+# An entity tag as HTTP defines it (RFC 9110 8.8.3): anything else is never sent as a header.
+ETAG = re.compile(r'(W/)?"[\x21\x23-\x7e]*"')
+_WRITES = False
+
+
+def enable_writes() -> None:
+    """This process may store, mark and prune entries: called by the writer processes only."""
+    global _WRITES
+    _WRITES = True
+
+
+def _writable() -> bool:
+    """Whether this process may write the cache now: a writer that called ``enable_writes``, or
+    a worker (always a writer), which writes only into a directory the host already made."""
+    from . import hostdirs
+    if hostdirs.in_worker():
+        return directory().is_dir()
+    return _WRITES
 
 
 def directory() -> pathlib.Path:
@@ -53,13 +78,16 @@ def lookup(login: str, path: str) -> dict | None:
         entry = json.loads(_file(login, path).read_text())
     except (OSError, ValueError):
         return None
-    if not isinstance(entry, dict) or not isinstance(entry.get("etag"), str) or "data" not in entry:
+    if (not isinstance(entry, dict) or not isinstance(entry.get("etag"), str)
+            or not ETAG.fullmatch(entry["etag"]) or "data" not in entry):
         return None
     return entry
 
 
 def hit(login: str, path: str) -> None:
     """Mark an entry used (a 304 served it), so ``prune`` keeps it."""
+    if not _writable():
+        return
     try:
         os.utime(_file(login, path))
     except OSError:
@@ -70,7 +98,8 @@ def store(login: str, path: str, data, headers: dict) -> None:
     """Keep a 200's body when GitHub gave it an ``ETag``; best effort, never raises. Only the
     body and its ETag: no header is ever served from here."""
     etag = headers.get("etag")
-    if not isinstance(etag, str) or not etag or not cacheable(path):
+    if not isinstance(etag, str) or not ETAG.fullmatch(etag) or not cacheable(path) \
+            or not _writable():
         return
     from .util import atomic_write
     try:
@@ -87,6 +116,8 @@ def store(login: str, path: str, data, headers: dict) -> None:
 
 def prune(now: float | None = None) -> int:
     """Drop entries (and stray temp files) unused for ``KEEP_S``; how many went."""
+    if not _writable():
+        return 0
     cutoff = (time.time() if now is None else now) - KEEP_S
     gone = 0
     try:
