@@ -147,6 +147,34 @@ class History(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertIn("tests/test_x.py (modified, +1 -9)", second)
 
+    def test_the_commit_cache_is_bounded_and_drops_the_oldest_first(self):
+        detail = {"files": [{"filename": "tests/test_x.py", "status": "modified",
+                             "additions": 1, "deletions": 1}]}
+        rows = [{"head": "a" * 40, "state": "succeeded", "push_confirmed": 1.0}]
+
+        def read(n):                       # fix_history for the CI-fix commit "<n>" * 40
+            commits = [{"sha": str(n) * 40, "parents": [{"sha": "a" * 40}]}]
+            with mock.patch.object(ci_fix, "rows", return_value=rows), \
+                    mock.patch.object(gh, "fetch", return_value=(commits, "")):
+                return ci_fix.fix_history(LOOP, 7)
+
+        with mock.patch.object(ci_fix, "TESTS_SEEN_MAX", 3), \
+                mock.patch.object(gh, "api", return_value=detail) as api:
+            for n in (1, 2, 3, 4):         # the fourth pushes commit 1 out
+                read(n)
+            self.assertEqual(api.call_count, 4)
+            self.assertEqual(len(ci_fix._TESTS_SEEN), 3)
+            for n in (2, 3, 4):            # still cached: no new call
+                read(n)
+            self.assertEqual(api.call_count, 4)
+            read(1)                        # the evicted one is fetched again ...
+            self.assertEqual(api.call_count, 5)
+            self.assertEqual(len(ci_fix._TESTS_SEEN), 3)
+            read(3)                        # ... and it pushed out 2 (the oldest), not 3
+            self.assertEqual(api.call_count, 5)
+            read(2)
+            self.assertEqual(api.call_count, 6)
+
     def test_an_unreadable_commit_is_asked_again(self):
         rows = [{"head": "a" * 40, "state": "succeeded", "push_confirmed": 1.0}]
         commits = [{"sha": "c" * 40, "parents": [{"sha": "a" * 40}]}]
