@@ -273,6 +273,9 @@ class Setup(unittest.TestCase):
                 self.assertEqual(rc, 1, out)
                 self.assertNotIn("arm", self.ran)
                 self.assertIn("setup stopped before arming", out)
+                # #1618: the stop also prints the onboard summary (the same printer `onboard` uses).
+                self.assertIn(f"[{LOOP_ID}] onboarding for {t.REPO}", out)
+                self.assertIn("unattended fixer pushes: off", out)
 
     def test_arm_runs_only_after_a_clean_pass_when_asked(self):
         rc, out = self.setup_cli(*self.flags("--arm"))
@@ -505,6 +508,10 @@ class Setup(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual([(f.read_bytes(), f.stat().st_mtime_ns) for f in files], before)
         self.assertEqual((self.ran, self.hermes.jobs), ([], jobs))
+        # It stops before steps 4 to 6: no summary is printed and the record is not even read.
+        self.assertNotIn("onboarding for", out)
+        with patch("diaktoros.onboarding.inspect", side_effect=AssertionError("record read")):
+            self.assertEqual(self.setup_cli(*self.flags("--dry-run", "--arm"))[0], 0)
 
     def test_resuming_leaves_unattended_fixer_push_as_it_was(self):
         loop = self.installed()
