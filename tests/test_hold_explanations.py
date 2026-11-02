@@ -279,6 +279,42 @@ class LedgerExplanations(unittest.TestCase):
             self.assertFalse(run['retry']['eligible'])
             self.assertEqual(run['retry']['head'], '')
 
+    def test_page_targets_omits_malformed_and_empty_heads_and_keeps_valid_ones(self):
+        # The contract of retry_action.page_targets itself, apart from the desktop guard: a head
+        # that is not a recorded 40-hex head is never a join key; a valid one keeps its entry.
+        from diaktoros import retry_action
+        self.row(error='held: provider window')
+        with ledger.connect(self.db) as con:
+            for n, (pr, head) in enumerate([(8, 'ghp_SECRETTOKEN'), (9, ''), (10, 'c' * 40)]):
+                con.execute("INSERT INTO runs (id, delivery, repo, pr, head, seat, state, error, "
+                            "retry_at, turn_key, created, updated) SELECT ?, ?, repo, ?, ?, seat, "
+                            "state, error, retry_at, ?, 300, 300 FROM runs WHERE id != 'x' LIMIT 1",
+                            (f'extra{n}', f'delivery-x{n}', pr, head, f'turn-x{n}'))
+        con = views.read_only_connect(self.db)
+        try:
+            found = retry_action.page_targets(con, self.loop['repo'], self.loop)
+        finally:
+            con.close()
+        prs = {key[0]: key for key in found}
+        self.assertIn(7, prs)
+        self.assertIn(10, prs)
+        self.assertNotIn(8, prs)
+        self.assertNotIn(9, prs)
+        self.assertEqual(found[prs[10]]['head'], 'c' * 40)
+        self.assertNotIn('ghp_SEC', json.dumps([list(map(str, k)) + [v] for k, v in found.items()]))
+
+    def test_with_retry_refuses_to_join_an_entry_on_an_empty_head(self):
+        # desktop_api._with_retry's own guard: even if the targets hold an entry keyed on '' (a
+        # withheld head), a row with no valid head is not joined to it and is never eligible.
+        run = {'pr': 7, 'seat': 'reviewer', 'head': '', 'state': 'waiting'}
+        entry = {'eligible': True, 'head': '', 'reason': ''}
+        with mock.patch.object(desktop_api.retry_action, 'page_targets',
+                               return_value={(7, 'reviewer', '', 'waiting'): entry}):
+            out = desktop_api._with_retry(self.db, self.loop['repo'], [dict(run)], self.loop)
+        self.assertFalse(out[0]['retry']['eligible'])
+        self.assertEqual(out[0]['retry']['head'], '')
+        self.assertIn('not a valid commit id', out[0]['retry']['reason'])
+
     def test_production_pr_route_missing_and_unreadable_ledger(self):
         import importlib.util
         from hermes_prereqs import skip_or_fail
