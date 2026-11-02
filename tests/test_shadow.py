@@ -633,6 +633,45 @@ class Cli(unittest.TestCase):
         rc, out = self.cli("apply", "--loop", LOOP_ID, settings={"shadow_profile": "off"})
         self.assertEqual((rc, self.shadow()), (0, {}), out)
 
+    def test_shadow_issues_daily_in_every_path(self):
+        # #1515: init (flag and form), set, apply, setup and show, with the 0-1000 bound.
+        form = {"shadow_profile": "grok", "shadow_issues_daily": "40"}
+        for extra, settings, want in (
+                ((), form, {"profile": "grok", "issues_daily": 40}),
+                (("--shadow-issues-daily", "0"), form, {"profile": "grok", "issues_daily": 0}),
+                (("--shadow-profile", "x", "--shadow-issues-daily", "7"), None,
+                 {"profile": "x", "issues_daily": 7})):
+            with self.subTest(extra=extra, settings=settings):
+                self.file.unlink(missing_ok=True)
+                rc, out = self.init(*extra, settings=settings)
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(self.shadow(), want)
+        self.file.unlink(missing_ok=True)
+        rc, out = self.init("--shadow-profile", "x", "--shadow-issues-daily", "1001")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("issues_daily", out)
+        self.assertEqual(self.init()[0], 0)
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-issues-daily", "5")
+        self.assertEqual(rc, 2, out)                      # needs a profile
+        self.assertIn("needs a shadow profile", out)
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-profile", "grok",
+                           "--shadow-issues-daily", "50")
+        self.assertEqual((rc, self.shadow()), (0, {"profile": "grok", "issues_daily": 50}), out)
+        rc, out = self.cli("show", "--loop", LOOP_ID)
+        self.assertIn("50", next(line for line in out.splitlines()
+                                 if line.strip().startswith("shadow_issues_daily")))
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-issues-daily", "1001")
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(self.shadow(), {"profile": "grok", "issues_daily": 50})
+        rc, out = self.cli("apply", "--loop", LOOP_ID, settings={"shadow_issues_daily": "0"})
+        self.assertEqual((rc, self.shadow()), (0, {"profile": "grok", "issues_daily": 0}), out)
+        from diaktoros.cli import setup_command as cli_setup
+        t = self.t
+        args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--shadow-profile", "x",
+                                            "--shadow-issues-daily", "9"])
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        self.assertIn("--shadow-issues-daily=9", argv)
+
     def seat(self) -> dict:
         return json.loads(self.file.read_text()).get("seats", {}).get("shadow", {})
 

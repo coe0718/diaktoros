@@ -81,7 +81,7 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
 
 def normalize_shadow(raw, where: str) -> dict:
     """The ``shadow`` block (#218): ``profile`` (required to turn it on), ``every`` and
-    ``escalate`` (#1004) and ``file_issues`` (#914), or ``{}``.
+    ``escalate`` (#1004), ``file_issues`` (#914) and ``issues_daily`` (#1515), or ``{}``.
 
     A shadow review is a second reviewer model in no-write mode: it never posts, so it needs no
     route, login or token, only the profile its model and account come from. Its limits
@@ -90,9 +90,10 @@ def normalize_shadow(raw, where: str) -> dict:
     """
     if raw in (None, {}):
         return {}
-    if not isinstance(raw, dict) or not set(raw) <= {"profile", "every", "escalate", "file_issues"}:
-        raise config.ConfigError(f"{where}: shadow may only hold 'profile', 'every', 'escalate' and "
-                          "'file_issues'")
+    if not isinstance(raw, dict) or not set(raw) <= {"profile", "every", "escalate", "file_issues",
+                                                       "issues_daily"}:
+        raise config.ConfigError(f"{where}: shadow may only hold 'profile', 'every', 'escalate', "
+                          "'file_issues' and 'issues_daily'")
     profile = str(raw.get("profile") or "").strip()
     if not profile:
         raise config.ConfigError(f"{where}: shadow.profile is required (the Hermes profile shadow "
@@ -120,6 +121,14 @@ def normalize_shadow(raw, where: str) -> dict:
             raise config.ConfigError(f"{where}: shadow.file_issues must be true or false, "
                               f"got {raw['file_issues']!r}")
         shadow["file_issues"] = raw["file_issues"]
+    if raw.get("issues_daily") not in (None, ""):
+        issues_daily = raw["issues_daily"]
+        low, high = config.SHADOW_ISSUES_DAILY_RANGE
+        if (isinstance(issues_daily, bool) or not isinstance(issues_daily, int)
+                or not low <= issues_daily <= high):
+            raise config.ConfigError(f"{where}: shadow.issues_daily must be a whole number, "
+                              f"{low}-{high} (0 = no cap), got {issues_daily!r}")
+        shadow["issues_daily"] = issues_daily
     return shadow
 
 

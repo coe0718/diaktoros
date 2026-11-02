@@ -268,7 +268,12 @@ config_schema:
     label: "File the shadow's issues"
     type: str
     default: ""
-    description: "on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914). Blank = not set here: the loop keeps its own value (default: off)"
+    description: "on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to the daily cap below (#914). Blank = not set here: the loop keeps its own value (default: off)"
+  shadow_issues_daily:
+    label: "Shadow issues a day"
+    type: str
+    default: ""
+    description: "Most shadow-found issues filed per repo in a rolling 24 hours (#1515), a whole number 0-1000; 0 = no cap. Issues over the cap stay recorded for a later sweep. Needs a shadow profile, and only takes effect with shadow_file_issues on. Blank = not set here: the loop keeps its own value (default 25)"
   human_paths:
     label: "Human-only paths (comma-separated globs)"
     type: str
