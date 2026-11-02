@@ -170,12 +170,10 @@ def _still_ruled(loop: dict, number: int, ruling: dict) -> bool:
 
 
 def _still_current(loop: dict, number: int, ruling: dict, step: str, target) -> bool:
-    """Right before a write, read the ruling and the reviews again: the write goes ahead only if
-    the ruling is still the PR's newest ACCEPT and the reviews still call for this exact write. A
-    verdict the reviewer posts while the sweep reads CI, paths or holds supersedes the snapshot it
-    began with, and nothing is written."""
-    if not _still_ruled(loop, number, ruling):
-        return False
+    """Right before a write, read the reviews again: the write goes ahead only if they still call
+    for this exact write. A verdict the reviewer posts while the sweep reads CI, paths or holds
+    supersedes the snapshot it began with, and nothing is written. The ruling is checked after
+    this, in the ledger transaction that claims the write (``ruled_approval_step(ruling=...)``)."""
     reviews, head = gh.reviews(loop, number), ruling["head"]
     if not isinstance(reviews, list):
         return False
@@ -210,7 +208,7 @@ def _approve(loop: dict, sup, ruling: dict, number: int, branch: str, target: in
         log(f"#{number} @ {head[:7]}: not approved on the ACCEPT: {exc}")
         return True
     if not _still_current(loop, number, ruling, "approve", target) or not sup.ruled_approval_step(
-            repo, number, head, "approve", "posting", overruled=target):
+            repo, number, head, "approve", "posting", overruled=target, ruling=ruling["run_id"]):
         return False
     text = (f"Approved on the adjudicator's ACCEPT ruling at `{head[:7]}` "
             f"({cite(loop, number, ruling)}): the ruling found the remaining change request "
@@ -243,7 +241,7 @@ def _dismiss(loop: dict, sup, ruling: dict, reviews: list, number: int, branch: 
         return sup.ruled_approval_step(repo, number, head, "dismiss", "denied",
                                        error=str(exc)[:200])
     if not _still_current(loop, number, ruling, "dismiss", target) or not sup.ruled_approval_step(
-            repo, number, head, "dismiss", "posting"):
+            repo, number, head, "dismiss", "posting", ruling=ruling["run_id"]):
         return False
     message = (f"Dismissed on the adjudicator's ACCEPT ruling at {head[:7]}, which overruled "
                f"this change request: {cite(loop, number, ruling)}")

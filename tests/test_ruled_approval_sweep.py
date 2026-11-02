@@ -200,6 +200,35 @@ class Superseded(Base):
         self.assertEqual(self.row()["dismiss"], "pending")
 
 
+class SupersededAtTheClaim(Base):
+    """Review of #1605, round 7, F11: a REJECT that lands during the final review read, the last
+    read before the write: the ruling is checked in the transaction that claims the write."""
+
+    def reject_on_read(self, n):
+        calls = []
+        def read(*_a, **_k):
+            calls.append(1)
+            if len(calls) == n:
+                self.ruled("REJECT")
+            return list(self.reviews)
+        return mock.patch.object(ruled_approval.gh, "reviews", side_effect=read)
+
+    def test_no_approval_when_a_reject_lands_during_the_last_read(self):
+        self.ruled("ACCEPT")
+        with self.reject_on_read(2):          # the sweep's own read, then the one before the write
+            self.sweep()
+        self.approve.assert_not_called()
+        self.assertIsNone(self.row())
+
+    def test_no_dismissal_when_a_reject_lands_during_the_last_read(self):
+        self.ruled("ACCEPT")
+        self.sweep()
+        with self.reject_on_read(2):
+            self.sweep()
+        self.dismiss.assert_not_called()
+        self.assertEqual(self.row()["dismiss"], "pending")
+
+
 class NewVerdict(Base):
     """Review of #1605, round 6, F10: a reviewer verdict that lands while the sweep reads."""
 
