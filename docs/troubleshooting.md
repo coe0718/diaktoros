@@ -150,7 +150,9 @@ permission. Do not treat a failed broker push as a harmless retryable model fail
 - Draft/closed/moved/retargeted PR or new effective approval: live eligibility can
   supersede a queued adjudication.
 - Failed/uncertain turn: follow run recovery below. Do not reset the marker to force
-  another ruling. ACCEPT/REJECT/RESPEC never automatically merges the PR.
+  another ruling. ACCEPT/REJECT/RESPEC never automatically merges the PR. With
+  `adjudicator_approves` on, an ACCEPT is approved and its change request dismissed once
+  the required checks are green; `ready` then lists it for you to merge.
 
 ## Runtime file problems
 

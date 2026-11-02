@@ -725,9 +725,9 @@ NOT_VERDICTS = frozenset({"DISMISSED", "COMMENTED", "PENDING"})
 def ruled_approvals(reviews: list, loop: dict, head: str) -> list:
     """The adjudicator's approval at this head, when its ACCEPT ruling on that PR backs it (#905):
     it counts as a verdict, like the reviewer's. Only that login's newest verdict at the head
-    counts, so a later change request from it withdraws the approval. The ruling is the newest
-    on the PR the review names (``pull_request_url``), at this head: a ruling on another PR at the
-    same commit backs nothing, and cancels nothing. A bare approval, one whose PR can't be told,
+    counts, so a later change request from it withdraws the approval. The ruling is the newest on
+    the PR the review names (``pull_request_url``), and it must be at this head: a ruling on another
+    PR at the same commit backs or cancels nothing, and a later one on this PR's other head voids it. A bare approval, one whose PR can't be told,
     or any when the ledger can't be read counts for nothing."""
     login = config.adjudicator_login(loop).lower()
     if not login or login in set(loop["reviewers"]):
@@ -745,8 +745,8 @@ def ruled_approvals(reviews: list, loop: dict, head: str) -> list:
     if gh.review_state(newest) != "APPROVED" or number is None:
         return []
     from .run_supervisor import views
-    ruled = views.ruling_at(config.host_path("ledger"), loop["repo"], number, head)
-    return [newest] if ruled == "ACCEPT" else []
+    ruling = views.ruling_row(config.host_path("ledger"), loop["repo"], number) or {}
+    return [newest] if (ruling.get("head"), ruling.get("verdict")) == (head, "ACCEPT") else []
 
 
 def _review_when(review: dict) -> tuple | None:
@@ -786,9 +786,11 @@ def blocking_reviews(reviews: list) -> list:
     order can't be told (an undatable review), every change request of it blocks."""
     history: dict[str, list] = {}
     for review in reviews:
-        if (isinstance(review, dict) and reviewer_login(review)
+        if (isinstance(review, dict)
                 and gh.review_state(review) in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}):
-            history.setdefault(reviewer_login(review), []).append((_review_when(review), review))
+            # A review with no login is its own history: nothing can be said to lift it.
+            login = reviewer_login(review) or f"#{review.get('id')}"
+            history.setdefault(login, []).append((_review_when(review), review))
     blocking = []
     for dated in history.values():
         if any(when is None for when, _ in dated):

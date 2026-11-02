@@ -319,6 +319,11 @@ config_schema:
     type: bool
     default: false
     description: "On: a fix round that changes files the open findings do not name (other than their tests and docs) is held for a maintainer, with a notice listing the extra files; `hermes dk retry` lets it through. Only takes effect with unattended fixer pushes on. Off: no check."
+  adjudicator_approves:
+    label: "Approve on an adjudicator ACCEPT"
+    type: bool
+    default: false
+    description: "On: once the adjudicator rules ACCEPT at a PR's current head and its required checks are green, the adjudicator's login approves that head and dismisses the change request it overruled, so the PR can merge. Never for a human_paths diff or a held PR. Needs the adjudicator comment login. Off: the ruling is left to you."
   attribution:
     label: "Sign what the loop posts"
     type: bool

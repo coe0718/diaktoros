@@ -36,26 +36,25 @@ def add_set(sub) -> None:  # noqa: ANN001
                         help="minutes an in-flight mark blocks a second run at the same head")
     change.add_argument("--turn-budget", type=int,
                         help="seconds one isolated seat turn may run (loop default)")
-    change.add_argument("--attribution", choices=("on", "off"), default=None,
-                        help="sign what the loop posts ('Automated by Diaktoros'), "
-                             "or stop")
-    change.add_argument("--review-only-update", choices=("on", "off"), default=None,
-                        help="push a clean merge of the base into a review-only author's PR "
-                             "branch (same repository only), or stop; turning it on needs "
-                             "--acknowledge-branch-push")
+    for flag, text in (
+            ("--attribution", "sign what the loop posts ('Automated by Diaktoros'), or stop"),
+            ("--review-only-update", "push a clean merge of the base into a review-only "
+                                     "author's PR branch (same repository only), or stop; "
+                                     "turning it on needs --acknowledge-branch-push"),
+            ("--review-after-ci", "start each review after the head's checks finish (up to an "
+                                  "hour), or start at once"),
+            ("--fix-ci", "hand a failed required check on a fixer's PR to the fixer (needs "
+                         "unattended fixer pushes), or stop"),
+            ("--fixer-scope-lock", "hold a fix round that changes files its findings do not name "
+                                   "(other than their tests and docs) for a maintainer, or stop; "
+                                   "needs unattended fixer pushes"),
+            ("--adjudicator-approves", "on an ACCEPT ruling with green checks, approve as the "
+                                       "adjudicator login and dismiss the change request it "
+                                       "overruled, or stop; needs the adjudicator comment login")):
+        change.add_argument(flag, choices=("on", "off"), default=None, help=text)
     change.add_argument("--acknowledge-branch-push", action="store_true",
                         help="accept that the host pushes to a branch the loop does not own; "
                              "required to turn --review-only-update on")
-    change.add_argument("--review-after-ci", choices=("on", "off"), default=None,
-                        help="start each review after the head's checks finish (up to an hour), "
-                             "or start at once")
-    change.add_argument("--fix-ci", choices=("on", "off"), default=None,
-                        help="hand a failed required check on a fixer's PR to the fixer "
-                             "(needs unattended fixer pushes), or stop")
-    change.add_argument("--fixer-scope-lock", choices=("on", "off"), default=None,
-                        help="hold a fix round that changes files its findings do not name "
-                             "(other than their tests and docs) for a maintainer, or stop; "
-                             "needs unattended fixer pushes")
     change.add_argument("--review-only-cap", default=None, metavar="N",
                         help="verdicts the reviewer gives one review-only PR before it waits "
                              "for `review --another-round`, 1-1000; 0 = the review cap")

@@ -399,11 +399,11 @@ def cmd_init(args) -> int:
         "observer": _observer_args(args, args.id or args.repo.split("/")[-1]),
         # Sign what the loop posts (#197): on unless --attribution off or the form says so.
         "attribution": cli_common._attribution_arg(args, d["attribution"]),
-        "review_after_ci": cli_common._on_off(args, "review_after_ci", d["review_after_ci"]),
-        "fix_ci": cli_common._on_off(args, "fix_ci", d["fix_ci"]),
-        "fixer_scope_lock": cli_common._on_off(args, "fixer_scope_lock", d["fixer_scope_lock"]),
-        # Host merge pushes to a review-only author's branch: off unless asked for and acknowledged.
-        "review_only_update": cli_common._on_off(args, "review_only_update", d["review_only_update"]),
+        # Each as asked, else the form's. review_only_update (host merge pushes to a review-only
+        # author's branch) is also refused below unless acknowledged.
+        **{key: cli_common._on_off(args, key, d[key]) for key in (
+            "review_after_ci", "fix_ci", "fixer_scope_lock", "adjudicator_approves",
+            "review_only_update")},
         # The checks CI always runs, which a fixer running only its touched tests would miss.
         "fixer_check": (d["fixer_check"] if getattr(args, "fixer_check", None) is None
                         else args.fixer_check),
@@ -826,20 +826,20 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
     init.add_argument("--acknowledge-branch-push", action="store_true",
                       help="accept that the host pushes to a branch the loop does not own; "
                            "required to turn --review-only-update on")
-    init.add_argument("--review-after-ci", choices=("on", "off"), default=None,
-                      help="start each review after the head's checks finish (up to an hour) "
-                           f"(default {'on' if d['review_after_ci'] else 'off'})")
-    init.add_argument("--fix-ci", choices=("on", "off"), default=None,
-                      help="hand a failed required check on a fixer's PR to the fixer, one "
-                           "turn per head; needs unattended fixer pushes "
-                           f"(default {'on' if d['fix_ci'] else 'off'})")
-    init.add_argument("--fixer-scope-lock", choices=("on", "off"), default=None,
-                      help="hold a fix round that changes files its findings do not name for a "
-                           "maintainer; needs unattended fixer pushes "
-                           f"(default {'on' if d['fixer_scope_lock'] else 'off'})")
-    init.add_argument("--attribution", choices=("on", "off"), default=None,
-                      help="sign what the loop posts with 'Automated by Diaktoros' "
-                           f"(default {'on' if d['attribution'] else 'off'})")
+    for flag, text in (
+            ("--review-after-ci", "start each review after the head's checks finish (up to an "
+                                  "hour)"),
+            ("--fix-ci", "hand a failed required check on a fixer's PR to the fixer, one turn per "
+                         "head; needs unattended fixer pushes"),
+            ("--fixer-scope-lock", "hold a fix round that changes files its findings do not name "
+                                   "for a maintainer; needs unattended fixer pushes"),
+            ("--adjudicator-approves", "on an ACCEPT ruling with green checks, approve as the "
+                                       "adjudicator login and dismiss the change request it "
+                                       "overruled"),
+            ("--attribution", "sign what the loop posts with 'Automated by Diaktoros'")):
+        on = d[flag[2:].replace("-", "_")]
+        init.add_argument(flag, choices=("on", "off"), default=None,
+                          help=f"{text} (default {'on' if on else 'off'})")
     init.add_argument("--review-only-cap", default=None, metavar="N",
                       help="verdicts the reviewer gives one review-only PR before it waits "
                            "for `review --another-round`, 1-1000 (default: the plugin "

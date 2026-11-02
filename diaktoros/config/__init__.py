@@ -257,6 +257,7 @@ DEFAULTS: dict = {
     "review_only_daily": None,  # reviewer turns a day on review-only PRs; None = no cap
     "ci_fix_cap": None,       # CI-fix turns per PR before the reviewer reviews red CI; None = 3
     "fixer_scope_lock": False,  # hold a fix round that changes files its findings do not name (#482)
+    "adjudicator_approves": False,  # an ACCEPT ruling approves as the adjudicator (#905)
 }
 
 def unattended_fixer_push_enabled(loop: dict) -> bool:
@@ -1230,6 +1231,13 @@ def fixer_scope_lock(loop: dict) -> bool:
     """Whether a fix round's push is held when it changes files outside its findings (#482).
     Off unless set. It acts only where the broker pushes, so it needs unattended fixer pushes."""
     return loop.get("fixer_scope_lock") is True
+
+
+def adjudicator_approves(loop: dict) -> bool:
+    """Whether an ACCEPT ruling is acted on (#905): the adjudicator approves the head and
+    dismisses the change request it overruled. Off unless set, and it needs the adjudicator's
+    comment login (``seats.adjudicator.login``), the identity that writes both."""
+    return loop.get("adjudicator_approves") is True and bool(adjudicator_login(loop))
 
 
 def review_only_update(loop: dict) -> bool:

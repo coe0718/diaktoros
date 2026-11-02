@@ -108,6 +108,13 @@ def _setup_runtime(args, interactive: bool) -> bool:
     return True
 
 
+def _given(args, flags: tuple) -> list[str]:
+    """``--flag=value`` for each of ``flags`` the command line set, passed on to ``init`` as
+    given; one left unset (None) is not passed, so ``init`` applies its own default."""
+    return [f"--{flag.replace('_', '-')}={getattr(args, flag)}" for flag in flags
+            if getattr(args, flag, None) is not None]
+
+
 def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[list[str], str]:
     """Step 2's answers as the ``init`` command line, and the hook admin login ("" for none)."""
     d = settings_form.settings_defaults(cli_common._SETTINGS)
@@ -194,12 +201,7 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
                    "are recorded, never posted (blank: none)", d["shadow_profile"], interactive))
     if str(shadow or "").strip():
         argv.append(f"--shadow-profile={str(shadow).strip()}")
-    if getattr(args, "shadow_every", None) is not None:
-        argv.append(f"--shadow-every={args.shadow_every}")
-    if getattr(args, "shadow_escalate", None) is not None:
-        argv.append(f"--shadow-escalate={args.shadow_escalate}")
-    if getattr(args, "shadow_file_issues", None) is not None:
-        argv.append(f"--shadow-file-issues={args.shadow_file_issues}")
+    argv += _given(args, ("shadow_every", "shadow_escalate", "shadow_file_issues"))
     reviewed = (args.review_only if getattr(args, "review_only", None) is not None else
                 [name for name in _ask("GitHub logins whose PRs the reviewer reviews but the fixer "
                                        "never touches, comma-separated (blank: none)",
@@ -208,18 +210,13 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     agents = (args.operator_agent if getattr(args, "operator_agent", None) is not None else
               [name for name in str(d["operator_agents"]).split(",") if name.strip()])
     argv += [f"--operator-agent={name.strip()}" for name in agents]
-    if getattr(args, "review_only_update", None) is not None:
-        argv.append(f"--review-only-update={args.review_only_update}")
-    if getattr(args, "fixer_scope_lock", None) is not None:
-        argv.append(f"--fixer-scope-lock={args.fixer_scope_lock}")
+    argv += _given(args, ("review_only_update", "fixer_scope_lock", "adjudicator_approves"))
     if getattr(args, "acknowledge_branch_push", False):
         argv.append("--acknowledge-branch-push")
-    for flag in ("reviewer_max_steps", "fixer_max_steps", "reviewer_daily_tokens",
-                 "fixer_daily_tokens", "shadow_daily_tokens", "fix_daily_turns",
-                 "shadow_concurrency", "triage_concurrency",
-                 "review_only_cap", "review_only_daily", "ci_fix_cap"):
-        if getattr(args, flag, None) is not None:
-            argv.append(f"--{flag.replace('_', '-')}={getattr(args, flag)}")
+    argv += _given(args, ("reviewer_max_steps", "fixer_max_steps", "reviewer_daily_tokens",
+                          "fixer_daily_tokens", "shadow_daily_tokens", "fix_daily_turns",
+                          "shadow_concurrency", "triage_concurrency",
+                          "review_only_cap", "review_only_daily", "ci_fix_cap"))
     if admin:
         argv += ["--hooks", f"--admin-token={admin}"]   # created paused; step 5 arms them
     return argv, admin
@@ -440,17 +437,18 @@ def add_setup(sub) -> None:  # noqa: ANN001
     first.add_argument("--acknowledge-branch-push", action="store_true",
                        help="accept that the host pushes to a branch the loop does not own; "
                             "required to turn --review-only-update on")
-    first.add_argument("--review-after-ci", choices=("on", "off"), default=None,
-                       help="start each review after the head's checks finish (up to an hour) (default: the plugin setting, off)")
-    first.add_argument("--fix-ci", choices=("on", "off"), default=None,
-                       help="hand a failed required check on a fixer's PR to the fixer "
-                            "(default: the plugin setting, off)")
-    first.add_argument("--fixer-scope-lock", choices=("on", "off"), default=None,
-                       help="hold a fix round that changes files its findings do not name for "
-                            "a maintainer (default: the plugin setting, off)")
-    first.add_argument("--attribution", choices=("on", "off"), default=None,
-                       help="sign what the loop posts with 'Automated by Diaktoros' "
-                            "(default: the plugin setting, on)")
+    for flag, text, default in (
+            ("--review-after-ci", "start each review after the head's checks finish (up to an "
+                                  "hour)", "off"),
+            ("--fix-ci", "hand a failed required check on a fixer's PR to the fixer", "off"),
+            ("--fixer-scope-lock", "hold a fix round that changes files its findings do not name "
+                                   "for a maintainer", "off"),
+            ("--adjudicator-approves", "on an ACCEPT ruling with green checks, approve as the "
+                                       "adjudicator login and dismiss the change request it "
+                                       "overruled", "off"),
+            ("--attribution", "sign what the loop posts with 'Automated by Diaktoros'", "on")):
+        first.add_argument(flag, choices=("on", "off"), default=None,
+                           help=f"{text} (default: the plugin setting, {default})")
     first.add_argument("--reviewer-max-steps", type=int, default=None,
                        help="agent steps one reviewer turn may take, 8-200 (0 = default 60) "
                             "(default: the plugin setting)")

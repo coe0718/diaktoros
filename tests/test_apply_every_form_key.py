@@ -82,6 +82,7 @@ PUSHES = {
     "ingress_app": "events-app[bot]",
     "fix_ci": True,
     "fixer_scope_lock": True,
+    "adjudicator_approves": True,
     "attribution": False,
 }
 
