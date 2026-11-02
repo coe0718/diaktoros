@@ -70,6 +70,73 @@ class ShowTests(_Base):
         rows = {row["name"]: row for row in json.loads(out)["settings"]}
         self.assertIn("not applied", rows["reviewer_app_key_file"]["note"])
 
+    def test_an_equivalent_spelling_of_the_key_path_is_not_called_unapplied(self):
+        # #1279: apply stores `str(Path(value).expanduser())`, which also drops a trailing slash
+        # and a `.` segment; a hand-written loop file may keep a raw `~`. Both name the same file.
+        import pathlib
+        from test_token_file_settings import REV
+        self.install()
+        key = pathlib.Path.home() / "rev-app.pem"
+        key.write_text("not a key")
+        key.chmod(0o600)
+        bot = "review-seat[bot]"
+        form = {"reviewer_app_id": "42"}
+        for stored, held in ((str(key), "~/rev-app.pem/"), (str(key), "~/./rev-app.pem"),
+                             ("~/rev-app.pem", "~/rev-app.pem"), ("~/rev-app.pem", str(key))):
+            raw = self.loop_json()
+            raw["reviewers"] = [bot]
+            raw["reviewer_seat"] = bot
+            raw["seats"]["reviewer"]["login"] = bot
+            raw["tokens"].pop(REV, None)
+            raw["apps"] = {bot: {"app_id": 42, "key_file": stored}}
+            self.loop_file().write_text(json.dumps(raw))
+            form["reviewer_app_key_file"] = held
+            rc, out = self.run_cli(["show", "--loop", "widgets", "--json"], form)
+            self.assertEqual(rc, 0, out)
+            rows = {row["name"]: row for row in json.loads(out)["settings"]}
+            self.assertNotIn("not applied", rows["reviewer_app_key_file"]["note"], (stored, held))
+
+    def _key_note(self, stored, held):
+        from test_token_file_settings import REV
+        if not self.loop_file().exists():
+            self.install()
+        bot = "review-seat[bot]"
+        raw = self.loop_json()
+        raw["reviewers"] = [bot]
+        raw["reviewer_seat"] = bot
+        raw["seats"]["reviewer"]["login"] = bot
+        raw["tokens"].pop(REV, None)
+        raw["apps"] = {bot: {"app_id": 42, "key_file": stored}}
+        self.loop_file().write_text(json.dumps(raw))
+        form = {"reviewer_app_id": "42", "reviewer_app_key_file": held}
+        rc, out = self.run_cli(["show", "--loop", "widgets", "--json"], form)
+        self.assertEqual(rc, 0, out)
+        rows = {row["name"]: row for row in json.loads(out)["settings"]}
+        return rows["reviewer_app_key_file"]["note"]
+
+    def test_an_unresolvable_tilde_user_key_path_does_not_crash_show(self):
+        # review of #1634 F1: Path.expanduser raises on `~nosuchuser`; show must still report.
+        held = "~definitely_no_such_diaktoros_user_83627/key.pem"
+        self.assertIn("not applied", self._key_note("/keys/other.pem", held))
+
+    def test_a_key_path_differing_by_a_trailing_space_is_judged_as_apply_selects_it(self):
+        # review of #1634 F2/F3: apply strips the form value (config.seat_mapping) but the stored
+        # path keeps its space (github_app.key_path), so only a stored space is a real difference.
+        bot = "review-seat[bot]"
+        cases = (("/keys/rev-app.pem ", "/keys/rev-app.pem", True),   # apply would change the file
+                 ("/keys/rev-app.pem", "/keys/rev-app.pem ", False),  # apply strips the form's space
+                 ("/keys/rev-app.pem ", "/keys/rev-app.pem ", True),
+                 ("/keys/rev-app.pem", "/keys/rev-app.pem", False))
+        for stored, held, unapplied in cases:
+            note = self._key_note(stored, held)
+            self.assertEqual("not applied" in note, unapplied, (stored, held, note))
+            # the same answer from apply's own selection of the credentials
+            settings = {"reviewer_login": bot, "reviewer_app_id": "42",
+                        "reviewer_app_key_file": held}
+            loop = {"apps": {bot: {"app_id": 42, "key_file": stored}}, "reviewer_seat": bot}
+            _, apps, _, _ = settings_form.select_credentials(loop, settings)
+            self.assertEqual(apps[bot]["key_file"] != stored, unapplied, (stored, held, apps))
+
     def test_every_loop_key_is_shown(self):
         rows = self.rows()
         covered = {n.split(".")[0] for n in rows}

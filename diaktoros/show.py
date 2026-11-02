@@ -17,8 +17,6 @@ Token values are never read: ``tokens`` rows show the file paths from the loop f
 """
 from __future__ import annotations
 
-import os
-
 import json
 
 from . import config, observer, util
@@ -363,6 +361,18 @@ def _rows_observer(obs, schema, rows, loop) -> None:  # noqa: ANN001
         rows.append(row)
 
 
+def _key_spelling(value: str) -> str:
+    """``value`` as ``config._path`` spells it, whitespace kept (a trailing space names another file).
+
+    An unresolvable ``~user`` makes ``Path.expanduser`` raise; ``show`` must still report, so that
+    value stays as written (``os.path.expanduser`` left it alone too).
+    """
+    try:
+        return str(config._path(value))
+    except RuntimeError:
+        return value
+
+
 def collect(loop: dict, raw: dict, form: dict | None = None) -> list[dict]:
     """Every row as a JSON-safe dict: name, value, source, meaning, state, note."""
     out = []
@@ -379,11 +389,18 @@ def collect(loop: dict, raw: dict, form: dict | None = None) -> list[dict]:
             note = "; ".join(x for x in (f"from {row.derived}", note) if x)
         if row.schema and form and settings_form._form_value(form, row.name) is not None:
             held = settings_form.settings_defaults(form)[row.name]
+            shown = row.value
             if row.name.endswith("_app_key_file") and isinstance(held, str) and held.strip():
-                # apply stores the key path expanded (#1212): `~/keys/x.pem` is the same file.
-                held = os.path.expanduser(held.strip())
-            if row.name not in config.TOKEN_FILE_SETTINGS.values() and held != row.value \
-                    and str(held) != str(row.value):
+                # apply stores the key path as ``config._path`` spells it (#1212, #1279): expanded
+                # and normalized, so `~/keys/x.pem/` is the same file. A loop file written by hand
+                # with a raw `~` is the same file too (``github_app.key_path`` expands at use).
+                # The form value is read the way apply reads it (``seat_mapping`` strips it); the
+                # stored path keeps its whitespace, as ``github_app.key_path`` does at use.
+                held = _key_spelling(held.strip())
+                if isinstance(shown, str) and shown.strip() and shown != _UNSET:
+                    shown = _key_spelling(shown)
+            if row.name not in config.TOKEN_FILE_SETTINGS.values() and held != shown \
+                    and str(held) != str(shown):
                 note = "; ".join(x for x in (
                     note, f"settings form holds {held!r}, not applied (hermes dk apply --loop "
                           f"{loop['id']})") if x)
