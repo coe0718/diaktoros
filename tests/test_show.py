@@ -70,6 +70,32 @@ class ShowTests(_Base):
         rows = {row["name"]: row for row in json.loads(out)["settings"]}
         self.assertIn("not applied", rows["reviewer_app_key_file"]["note"])
 
+    def test_an_equivalent_spelling_of_the_key_path_is_not_called_unapplied(self):
+        # #1279: apply stores `str(Path(value).expanduser())`, which also drops a trailing slash
+        # and a `.` segment; a hand-written loop file may keep a raw `~`. Both name the same file.
+        import pathlib
+        from test_token_file_settings import REV
+        self.install()
+        key = pathlib.Path.home() / "rev-app.pem"
+        key.write_text("not a key")
+        key.chmod(0o600)
+        bot = "review-seat[bot]"
+        form = {"reviewer_app_id": "42"}
+        for stored, held in ((str(key), "~/rev-app.pem/"), (str(key), "~/./rev-app.pem"),
+                             ("~/rev-app.pem", "~/rev-app.pem"), ("~/rev-app.pem", str(key))):
+            raw = self.loop_json()
+            raw["reviewers"] = [bot]
+            raw["reviewer_seat"] = bot
+            raw["seats"]["reviewer"]["login"] = bot
+            raw["tokens"].pop(REV, None)
+            raw["apps"] = {bot: {"app_id": 42, "key_file": stored}}
+            self.loop_file().write_text(json.dumps(raw))
+            form["reviewer_app_key_file"] = held
+            rc, out = self.run_cli(["show", "--loop", "widgets", "--json"], form)
+            self.assertEqual(rc, 0, out)
+            rows = {row["name"]: row for row in json.loads(out)["settings"]}
+            self.assertNotIn("not applied", rows["reviewer_app_key_file"]["note"], (stored, held))
+
     def test_every_loop_key_is_shown(self):
         rows = self.rows()
         covered = {n.split(".")[0] for n in rows}
