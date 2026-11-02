@@ -739,7 +739,7 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
         # The host's own "what moves it" line, for the runs that are actually not moving.
         for row in views.runs_view(con, repo, pr):
             created, _ = stamp.get(row["id"], (None, None))
-            view["stuck"].append({"seat": row["seat"], "head": _recorded_head(row["head"]),
+            view["stuck"].append({"seat": row["seat"], "head": stats.recorded_head(row["head"]),
                                   "state": row["state"], "since": created,
                                   "next": views.next_step(row, loop["id"]),
                                   "explanation": views.hold_explanation(row)})
@@ -749,7 +749,7 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
         for row in reversed(con.execute(
                 "SELECT seat, head, state, created, updated FROM runs WHERE repo=? AND pr=? "
                 "ORDER BY created DESC, id DESC LIMIT ?", (repo, pr, TURNS_MAX)).fetchall()):
-            view["turns"].append({"seat": row["seat"], "head": _recorded_head(row["head"]),
+            view["turns"].append({"seat": row["seat"], "head": stats.recorded_head(row["head"]),
                                   "state": row["state"], "created": row["created"],
                                   "updated": row["updated"]})
         # Every stored receipt's verdict counts: review_receipt.submit refuses a COMMENT before
@@ -767,21 +767,15 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
                 "SELECT verdict, head, created FROM rulings WHERE repo=? AND pr=? "
                 "ORDER BY created DESC, rowid DESC LIMIT ?", (repo, pr, TURNS_MAX)).fetchall()):
             view["rulings"].append({"verdict": str(row["verdict"] or "")[:80],
-                                    "head": _recorded_head(row["head"]), "created": row["created"]})
+                                    "head": stats.recorded_head(row["head"]), "created": row["created"]})
     finally:
         con.close()
     view["breach"] = _breach(loop, pr)
     view["pacing"] = pacing.seats(loop)
     # Shadow reviews (#218): a second model's would-be verdicts, recorded and never posted.
-    from . import stats
     view["shadows"], view["shadows_older"] = stats.shadow_reviews_for(db, repo, pr)
     view["ledger_available"] = True
     return view
-
-
-def _recorded_head(value) -> str:
-    """A safe recorded identity, or unavailable; never echo malformed ledger contents."""
-    return value[:7] if isinstance(value, str) and re.fullmatch(r'[0-9a-f]{40}', value) else ''
 
 
 def _count(con, table: str, repo: str, pr: int) -> int:

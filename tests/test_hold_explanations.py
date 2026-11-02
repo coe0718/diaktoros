@@ -5,11 +5,12 @@ import io
 import json
 import pathlib
 import tempfile
+import time
 import unittest
 import uuid
 from unittest import mock
 
-from diaktoros import config, desktop_api, ledger, run_supervisor
+from diaktoros import config, desktop_api, ledger, run_supervisor, stats
 from diaktoros.run_supervisor import views
 from diaktoros.cli import operations
 
@@ -204,6 +205,22 @@ class LedgerExplanations(unittest.TestCase):
         self.assertEqual(view['stuck'][0]['head'], '')
         self.assertEqual(view['turns'][0]['head'], '')
         self.assertNotIn('ghp_SEC', json.dumps(view))
+
+    def test_real_malformed_head_is_withheld_from_now_too(self):
+        # /now and /pr answer "which recorded head may be shown" with the same rule (#1459).
+        self.row(error='held: provider window')
+        with ledger.connect(self.db) as con:
+            con.execute('UPDATE runs SET head=?', ('ghp_SECRETTOKEN',))
+        with mock.patch.object(config, 'readable_loops', return_value=([self.loop], [])), \
+                mock.patch.object(run_supervisor, 'production_ledger', return_value=self.db):
+            view = desktop_api.now_view('widgets')
+        self.assertIs(view['available'], True)
+        self.assertEqual(len(view['runs']), 1)
+        self.assertEqual(view['runs'][0]['head'], '')
+        self.assertFalse(view['runs'][0]['retry']['eligible'])
+        self.assertNotIn('ghp_SEC', json.dumps(view))
+        stuck = stats.stuck(self.db, self.loop['repo'], time.time())
+        self.assertEqual(stuck['head'], '')
 
     def test_production_pr_route_missing_and_unreadable_ledger(self):
         import importlib.util
