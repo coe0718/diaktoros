@@ -109,6 +109,18 @@ class LedgerExplanations(unittest.TestCase):
             self.assertEqual(result['reason_code'], reason)
             self.assertEqual(result['automatic_resume'], 'unknown')
 
+    def test_next_step_tolerates_a_row_without_a_write_key(self):
+        # hold_explanation already accepts such a row; next_step must advise, not KeyError (#1366).
+        for state, error in (('cancelled', run_supervisor.POLICY_CANCELLATIONS[0]),
+                             ('failed', 'boom'), ('waiting', 'held: x')):
+            row = self.row(state=state, error=error)
+            del row['write']
+            with self.subTest(state=state):
+                self.assertIsInstance(views.next_step(row, 'widgets'), str)
+        row = self.row(state='cancelled', error=run_supervisor.POLICY_CANCELLATIONS[0])
+        del row['write']
+        self.assertIn('no external write', views.next_step(row, 'widgets'))
+
     def test_real_write_ahead_receipt_overrides_a_waiting_state(self):
         row = self.row()
         with ledger.connect(self.db) as con:
