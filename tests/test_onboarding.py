@@ -6,6 +6,7 @@ PR head read and the hook-state read are injected.
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import io
 import json
 import stat
 import sys
@@ -107,6 +108,7 @@ class Reading(Fixture):
 
     def test_a_skip_or_warn_in_a_required_check_is_never_passed(self):
         every = {name: "pass" for name in onboarding.REQUIRED_CHECKS["model"]}
+        self.models["fixer"] = "model-a"       # one shared model: one completion to expect
         self.assertEqual(self.record("model", checks=every)["status"], "passed")
         self.assertEqual(self.record("model", checks={**every, "model:completion": "skip"})
                          ["status"], "skipped")
@@ -237,6 +239,144 @@ class OnDisk(Fixture):
         self.record("loop", "failed")
         self.assertEqual(self.read()["identities"], "passed")
         self.assertEqual(self.read()["loop"], "failed")
+
+
+PROFILE_KEY = "hunter2-profile-key-no-token-shape"
+LOOP_OK = [(name, "pass") for name in onboarding.REQUIRED_CHECKS["loop"]]
+
+
+class Review1(Fixture):
+    """Vex's round-1 findings on PR #1606."""
+
+    def test_re_recording_only_an_earlier_stale_stage_does_not_revive_later_ones(self):    # F1
+        self.record_all()
+        self.models["fixer"] = "model-c"
+        self.assertEqual(self.read()["model"], "stale")
+        self.record("model")
+        self.assertEqual(self.read(), {"identities": "passed", "loop": "passed",
+                                       "model": "passed", "live_turn": "stale",
+                                       "armed": "stale"})
+        # Recording them again is what makes them current.
+        self.record("live_turn")
+        self.record("armed")
+        self.assertEqual(set(self.read().values()), {"passed"})
+
+    def test_re_recording_unchanged_inputs_leaves_later_stages_alone(self):                # F1
+        self.record_all()
+        self.record("model")
+        self.assertEqual(set(self.read().values()), {"passed"})
+
+    def test_a_profile_key_with_no_token_shape_is_redacted_from_command_and_summary(self):   # F2
+        def resolver(profile, seat, settings):
+            return seat_model.SeatInference(seat, profile, "profile", "prov", "m",
+                                            "https://api.example/v1/chat/completions",
+                                            PROFILE_KEY)
+        entry = onboarding.record(
+            self.loop, "model", "passed", f"dk model --key {PROFILE_KEY}",
+            f"fixer answered with {PROFILE_KEY}", runtime_file=self.runtime, resolver=resolver)
+        self.assertNotIn(PROFILE_KEY, json.dumps(entry))
+        self.assertNotIn(PROFILE_KEY, onboarding.path(self.loop).read_text())
+        self.assertIn("[REDACTED]", entry["summary"])
+        self.assertIn("[REDACTED]", entry["command"])
+
+    def test_an_unknown_hook_state_is_never_passed_and_never_current(self):               # F3
+        entry = self.record("armed", hook_state=lambda loop: "unknown")
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["fingerprint"], "")
+        self.assertEqual(self.record("armed", "skipped", hook_state=lambda loop: "unknown")
+                         ["status"], "skipped")
+        self.hooks = "unknown"
+        self.assertEqual(self.read()["armed"], "stale")
+
+    def test_the_real_hook_adapter_answering_unknown_reads_stale(self):                    # F3
+        from diaktoros import arm_action
+        real = arm_action.plan
+        self.addCleanup(setattr, arm_action, "plan", real)
+        arm_action.plan = lambda loop, token_login=None: {"state": "unknown", "eligible": False}
+        entry = onboarding.record(self.loop, "armed", "passed", "dk arm", "ok",
+                                  runtime_file=self.runtime, resolver=self.resolver)
+        self.assertEqual(entry["status"], "failed")
+        got = onboarding.read(self.loop, runtime_file=self.runtime, resolver=self.resolver)
+        self.assertEqual(got["armed"], "stale")
+        arm_action.plan = lambda loop, token_login=None: {"state": "armed"}
+        self.assertEqual(onboarding.fingerprint(self.loop, "armed"),
+                         onboarding.fingerprint(self.loop, "armed", hook_state=lambda l: "armed"))
+
+    def test_the_names_selftest_emits_cover_every_required_check(self):                    # F4
+        import re
+        from diaktoros import selftest
+        source = Path(selftest.__file__).read_text()
+        emitted = set(re.findall(r'report\.add\([^,]+,\s*(?:f?"([^"{]+)")', source))
+        for stage, names in onboarding.REQUIRED_CHECKS.items():
+            for name in names:
+                # f-string names (github:{role}, seat:{seat}) and the arm_action placeholder
+                if name != "arm:hooks" and not name.startswith(("github:r", "github:f", "seat:")):
+                    self.assertIn(name, emitted, f"{stage}: selftest never emits {name}")
+
+    def test_a_healthy_loop_report_passes_and_containment_trouble_does_not(self):          # F4
+        self.assertEqual(onboarding.stage_status("loop", "passed", LOOP_OK, loop=self.loop),
+                         "passed")
+        for status, want in (("skip", "skipped"), ("fail", "failed")):
+            got = onboarding.stage_status(
+                "loop", "passed", LOOP_OK + [("sandbox:containment", status)], loop=self.loop)
+            self.assertEqual(got, want)
+        broken = [(n, "fail" if n == "sandbox:network" else s) for n, s in LOOP_OK]
+        self.assertEqual(onboarding.stage_status("loop", "passed", broken, loop=self.loop),
+                         "failed")
+        self.assertEqual(onboarding.stage_status("loop", "passed", LOOP_OK[:-1], loop=self.loop),
+                         "skipped")
+
+    def test_identity_safety_failures_outside_the_required_list_block_passed(self):        # F5
+        ok = [(name, "pass") for name in onboarding.REQUIRED_CHECKS["identities"]]
+        self.assertEqual(self.record("identities", checks=ok)["status"], "passed")
+        for extra in ("github:distinct-files", "github:adjudicator"):
+            entry = self.record("identities", checks=ok + [(extra, "fail")])
+            self.assertEqual(entry["status"], "failed", extra)
+
+    def test_a_configured_adjudicator_is_required_and_an_unconfigured_one_is_not(self):    # F5
+        ok = [(name, "pass") for name in onboarding.REQUIRED_CHECKS["identities"]]
+        self.assertEqual(onboarding.stage_status("identities", "passed", ok, loop=self.loop),
+                         "passed")
+        self.loop["seats"]["adjudicator"] = {"login": "judge"}
+        self.assertEqual(onboarding.stage_status("identities", "passed", ok, loop=self.loop),
+                         "skipped")
+        self.assertEqual(onboarding.stage_status(
+            "identities", "passed", ok + [("github:adjudicator", "pass")], loop=self.loop),
+            "passed")
+        self.assertEqual(onboarding.stage_status(
+            "identities", "passed", ok + [("github:adjudicator", "fail")], loop=self.loop),
+            "failed")
+
+    def _model_report(self, outcomes):
+        """selftest.check_model's real grouping, with each completion's outcome stubbed."""
+        from diaktoros import selftest
+        seats = {seat: self.resolver("p", seat, {}) for seat in ("reviewer", "fixer")}
+        results = iter(outcomes)
+        real = selftest._one_completion
+        self.addCleanup(setattr, selftest, "_one_completion", real)
+        selftest._one_completion = lambda report, names, inference: report.add(
+            "inference", "model:completion", next(results), names)
+        report = selftest.Report(out=io.StringIO())
+        selftest.check_model(report, seats)
+        seat_checks = [(f"seat:{seat}", "pass") for seat in seats]
+        return seat_checks + onboarding.report_checks(
+            [r for r in report.results if r[1] == "model:completion"])
+
+    def test_one_failing_model_completion_fails_the_model_stage_in_either_order(self):     # F6
+        for order in (("fail", "pass"), ("pass", "fail")):
+            checks = self._model_report(order)
+            self.assertEqual(len([c for c in checks if c[0] == "model:completion"]), 2)
+            self.assertEqual(self.record("model", checks=checks)["status"], "failed", order)
+        self.assertEqual(self.record("model", checks=self._model_report(("pass", "pass")))
+                         ["status"], "passed")
+        self.assertEqual(self.record("model", checks=self._model_report(("pass", "skip")))
+                         ["status"], "skipped")
+
+    def test_a_shared_model_needs_one_completion_and_distinct_models_need_each(self):      # F6
+        checks = [("seat:reviewer", "pass"), ("seat:fixer", "pass"), ("model:completion", "pass")]
+        self.assertEqual(self.record("model", checks=checks)["status"], "skipped")   # 2 models
+        self.models["fixer"] = "model-a"
+        self.assertEqual(self.record("model", checks=checks)["status"], "passed")    # shared
 
 
 if __name__ == "__main__":

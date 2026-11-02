@@ -18,6 +18,12 @@ against an earlier one's inputs. A stage never recorded reads ``not_attempted``.
 What cannot be known offline: ``live_turn`` compares the PR's current head, and ``armed`` the
 repo's current hooks, so ``read`` makes GitHub reads for those two stages (only when they were
 recorded). A read that fails counts as a change: the stage reads ``stale``, never ``passed``.
+A hook state that could not be verified (``arm_action.plan`` answers ``unknown``) is neither: it is
+recorded as ``failed`` with a fingerprint that never matches, and reads ``stale`` every time.
+
+Recording a stage against inputs other than its previous entry's marks every later entry
+``invalidated`` on disk, so re-checking one stage cannot bring an older later result back to life;
+those stages read ``stale`` until they are recorded again.
 """
 from __future__ import annotations
 
@@ -36,15 +42,30 @@ NOT_ATTEMPTED, STALE = "not_attempted", "stale"
 
 # The checks each stage needs, by the name selftest (``report.add``), doctor or arm_action gives
 # them. A stage is ``passed`` only when every one of these was seen and passed.
+# ``required_checks`` adds the ones that depend on the loop (a configured adjudicator, its seats).
 REQUIRED_CHECKS = {
     "identities": ("github:read", "github:reviewer", "github:fixer", "github:distinct",
                    "github:repo"),
     "loop": ("runtime:file", "runtime:source", "runtime:venv", "runtime:runtime", "runtime:rust",
-             "bwrap:installed", "bwrap:userns", "sandbox:containment", "ledger"),
+             "bwrap:installed", "bwrap:userns", "sandbox:snapshot", "sandbox:secret-files",
+             "sandbox:start", "sandbox:secrets", "sandbox:network", "sandbox:env",
+             "sandbox:toolchain", "ledger"),
     "model": ("seat:reviewer", "seat:fixer", "model:completion"),
     "live_turn": ("broker:pr", "broker:reviewer", "broker:receipt", "turn:reviewer"),
     "armed": ("arm:hooks",),
 }
+# Any other check under these prefixes that FAILED also keeps its stage from being ``passed``
+# (selftest's ``github:distinct-files``, ``github:adjudicator``, ``ledger:production``, ...).
+FAILURE_SCOPE = {
+    "identities": ("github:",),
+    "loop": ("runtime:", "bwrap:", "sandbox:", "ledger"),
+    "model": ("seat:", "model:"),
+    "live_turn": ("broker:", "turn:"),
+    "armed": ("arm:",),
+}
+# Checks selftest emits only when something stopped the stage early (SKIP: no usable runtime
+# config; FAIL: unusable work root). Seen at all, they count and are never a ``pass``.
+TROUBLE_CHECKS = {"loop": ("sandbox:containment",)}
 
 # One vocabulary for the three sources: selftest's pass/fail/warn/skip, doctor's
 # verified/absent/mismatch/unknown/skipped.
@@ -58,18 +79,63 @@ def path(loop: dict) -> Path:
     return config.state_dir(loop) / "onboarding.json"
 
 
-def stage_status(stage: str, requested: str, checks: dict | None) -> str:
+_RANK = {"pass": 0, "skip": 1, "warn": 2, "fail": 3}
+
+
+def required_checks(stage: str, loop: dict | None = None) -> tuple:
+    """The checks ``stage`` needs, with the ones this loop adds (its adjudicator, its seats)."""
+    names = list(REQUIRED_CHECKS[stage])
+    if loop is not None:
+        from . import seat_model
+        if stage == "identities" and config.adjudicator_login(loop):
+            names.append("github:adjudicator")
+        if stage == "model":
+            names += [f"seat:{seat}" for seat in seat_model.seats_for(loop)
+                      if f"seat:{seat}" not in names]
+    return tuple(names)
+
+
+def normalize_checks(checks) -> dict:
+    """``{name: (outcome, times seen)}`` from a mapping or an iterable of ``(name, outcome)``.
+
+    A name seen more than once (selftest runs ``model:completion`` once per distinct seat model)
+    keeps its worst outcome: one failing completion is a failure."""
+    pairs = checks.items() if hasattr(checks, "items") else checks
+    out: dict = {}
+    for name, outcome in pairs:
+        outcome = _OUTCOME.get(str(outcome).lower(), "warn")
+        worst, count = out.get(name, (outcome, 0))
+        out[name] = (outcome if _RANK[outcome] > _RANK[worst] else worst, count + 1)
+    return out
+
+
+def report_checks(results) -> list:
+    """``(name, status)`` pairs from ``selftest.Report.results``, repeated names kept."""
+    return [(result[1], result[2]) for result in results]
+
+
+def stage_status(stage: str, requested: str, checks, *, loop: dict | None = None,
+                 completions: int | None = None) -> str:
     """What ``requested`` may honestly be given the required checks' outcomes.
 
-    ``checks`` is ``{check name: outcome}``; ``None`` means the caller states the status itself.
-    A FAIL in a required check is ``failed``; a SKIP, a WARN, or a required check that never ran
-    is never ``passed`` either (``skipped`` for a SKIP or a missing check, ``failed`` for a WARN).
-    A ``failed`` or ``skipped`` request stays as asked.
+    ``checks`` is ``{name: outcome}`` or ``[(name, outcome), ...]`` (``normalize_checks``);
+    ``None`` means the caller states the status itself. A FAIL in a required check, or in any
+    other check of the stage's ``FAILURE_SCOPE``, is ``failed``; so is a WARN in a required one.
+    A SKIP, or a required check that never ran, is ``skipped``. Neither is ever ``passed``.
+    ``completions`` is the number of distinct seat models the loop resolves: fewer
+    ``model:completion`` results than that is ``skipped``. A ``failed`` or ``skipped`` request
+    stays as asked.
     """
     if requested != PASSED or checks is None:
         return requested
-    seen = {name: _OUTCOME.get(str(outcome).lower(), "warn") for name, outcome in checks.items()}
-    outcomes = [seen.get(name, "skip") for name in REQUIRED_CHECKS[stage]]
+    seen = normalize_checks(checks)
+    names = required_checks(stage, loop) + tuple(
+        name for name in TROUBLE_CHECKS.get(stage, ()) if name in seen)
+    outcomes = [seen[name][0] if name in seen else "skip" for name in names]
+    outcomes += [outcome for name, (outcome, _) in seen.items()
+                 if outcome == "fail" and name.startswith(FAILURE_SCOPE[stage])]
+    if stage == "model" and completions and seen.get("model:completion", (0, 0))[1] < completions:
+        outcomes.append("skip")
     if "fail" in outcomes or "warn" in outcomes:
         return FAILED
     return SKIPPED if "skip" in outcomes else PASSED
@@ -89,21 +155,26 @@ def _runtime_hash(runtime_file: Path) -> str:
         return "absent"
 
 
-def _seat_identities(loop: dict, runtime_file: Path, resolver) -> dict:
-    """seat → a hash of ``SeatInference.identity()``, or ``unresolved``."""
+def _resolve_seats(loop: dict, runtime_file: Path, resolver) -> dict:
+    """seat → its ``SeatInference`` (key included: never store it), or ``None`` if unresolved."""
     from . import seat_model
     try:
         settings = seat_model.load_runtime(runtime_file)
     except (OSError, ValueError):
-        return {seat: "unresolved" for seat in seat_model.seats_for(loop)}
+        return {seat: None for seat in seat_model.seats_for(loop)}
     found = {}
     for seat in seat_model.seats_for(loop):
         try:
-            found[seat] = _digest(list(seat_model.resolve_seat(
-                loop, seat, settings, resolver=resolver).identity()))
+            found[seat] = seat_model.resolve_seat(loop, seat, settings, resolver=resolver)
         except seat_model.SeatModelError:
-            found[seat] = "unresolved"
+            found[seat] = None
     return found
+
+
+def _seat_identities(seats: dict) -> dict:
+    """seat → a hash of ``SeatInference.identity()``, or ``unresolved``."""
+    return {seat: _digest(list(found.identity())) if found else "unresolved"
+            for seat, found in seats.items()}
 
 
 def _live_head(loop: dict, number: int) -> str:
@@ -112,14 +183,28 @@ def _live_head(loop: dict, number: int) -> str:
     return str(((pr or {}).get("head") or {}).get("sha") or "") if isinstance(pr, dict) else ""
 
 
+HOOK_STATES = ("armed", "paused")
+
+
+class HookStateUnknown(Exception):
+    """The hooks' state could not be verified; there is nothing to fingerprint."""
+
+
 def _hook_state(loop: dict) -> str:
     from . import arm_action
     return str(arm_action.plan(loop).get("state") or "unknown")
 
 
 def fingerprint(loop: dict, stage: str, *, pr: tuple | None = None,
-                runtime_file: Path | None = None, resolver=None, hook_state=None) -> str:
-    """The hash of ``stage``'s inputs as they are now (``pr`` is ``(number, head)``)."""
+                runtime_file: Path | None = None, resolver=None, hook_state=None,
+                seats: dict | None = None) -> str:
+    """The hash of ``stage``'s inputs as they are now (``pr`` is ``(number, head)``).
+
+    ``seats`` is ``_resolve_seats``' answer when the caller already has it. Raises
+    ``HookStateUnknown`` for ``armed`` when the hook state is not ``armed`` or ``paused``:
+    ``arm_action.plan`` reports an unreadable, missing or mixed hook set as ``unknown``, and
+    that must never match a later ``unknown``.
+    """
     runtime_file = Path(runtime_file or config.host_path("runtime"))
     if stage == "identities":
         # Logins and file paths (an App's id and key_file path), never the files' contents.
@@ -131,11 +216,15 @@ def fingerprint(loop: dict, stage: str, *, pr: tuple | None = None,
                  "profiles": {seat: str(config.profile_dir(config.seat_profile(loop, seat)))
                               for seat in seat_model.seats_for(loop)}}
     elif stage == "model":
-        facts = _seat_identities(loop, runtime_file, resolver)
+        facts = _seat_identities(seats if seats is not None
+                                 else _resolve_seats(loop, runtime_file, resolver))
     elif stage == "live_turn":
         facts = {"pr": pr[0], "head": pr[1], "prompt": prompts.revision("reviewer")}
     elif stage == "armed":
-        facts = {"hooks": (hook_state or _hook_state)(loop)}
+        state = (hook_state or _hook_state)(loop)
+        if state not in HOOK_STATES:
+            raise HookStateUnknown(f"hook state is {state!r}, not one of {', '.join(HOOK_STATES)}")
+        facts = {"hooks": state}
     else:
         raise ValueError(f"unknown onboarding stage {stage!r}")
     return _digest([stage, facts])
@@ -168,10 +257,14 @@ def _one_line(text: object, redact) -> str:
     return " ".join(redact(text).split())[:_SUMMARY_MAX]
 
 
-def _redactor(loop: dict, runtime_file: Path):
-    """Every configured credential's text, the model key files', and token shapes."""
+def _redactor(loop: dict, runtime_file: Path, seats: dict):
+    """Every configured credential's text, the model key files', each resolved seat's key (a
+    Hermes profile's key has no token shape), and token shapes."""
     from . import selftest, seat_model
     redact = selftest.redactor_for(loop)
+    for inference in seats.values():
+        if inference is not None:
+            redact.add(inference.key)
     try:
         settings = seat_model.load_runtime(runtime_file)
     except (OSError, ValueError):
@@ -183,12 +276,15 @@ def _redactor(loop: dict, runtime_file: Path):
 
 
 def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
-           checks: dict | None = None, pr: tuple | None = None,
-           runtime_file: Path | None = None, resolver=None, hook_state=None) -> dict:
+           checks=None, pr: tuple | None = None, runtime_file: Path | None = None,
+           resolver=None, hook_state=None) -> dict:
     """Store ``stage``'s result with the fingerprint of its inputs as they are now.
 
-    ``checks`` ({name: outcome} of the stage's required checks) keeps a SKIP or WARN from being
-    stored as ``passed`` (see ``stage_status``). ``live_turn`` needs ``pr=(number, head)``.
+    ``checks`` (``{name: outcome}`` or ``[(name, outcome), ...]`` of the stage's checks) keeps a
+    SKIP, a WARN or a FAIL from being stored as ``passed`` (see ``stage_status``). ``live_turn``
+    needs ``pr=(number, head)``. An ``armed`` result whose hook state cannot be verified is stored
+    ``failed`` (never ``passed``) with a fingerprint that matches nothing. Recording a stage
+    against other inputs than its previous entry marks the later entries ``invalidated``.
     Returns the stored entry.
     """
     if stage not in STAGES:
@@ -198,20 +294,33 @@ def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
     if stage == "live_turn" and (not pr or len(pr) != 2):
         raise ValueError("the live_turn stage is recorded against a PR: pass pr=(number, head)")
     runtime_file = Path(runtime_file or config.host_path("runtime"))
-    redact = _redactor(loop, runtime_file)
-    entry = {"status": stage_status(stage, status, checks),
+    seats = _resolve_seats(loop, runtime_file, resolver)
+    redact = _redactor(loop, runtime_file, seats)
+    try:
+        prints = fingerprint(loop, stage, pr=pr, runtime_file=runtime_file, resolver=resolver,
+                             hook_state=hook_state, seats=seats)
+    except HookStateUnknown:
+        prints, status = "", (FAILED if status == PASSED else status)
+    distinct = len({found.identity() for found in seats.values() if found is not None})
+    kept = required_checks(stage, loop)
+    entry = {"status": stage_status(stage, status, checks, loop=loop, completions=distinct),
              "at": util.now_iso(),
              "command": _one_line(command, redact),
              "summary": _one_line(summary, redact),
-             "checks": {name: _OUTCOME.get(str(outcome).lower(), "warn")
-                        for name, outcome in (checks or {}).items() if name in REQUIRED_CHECKS[stage]},
-             "fingerprint": fingerprint(loop, stage, pr=pr, runtime_file=runtime_file,
-                                        resolver=resolver, hook_state=hook_state)}
+             "checks": {name: outcome for name, (outcome, _) in normalize_checks(checks or {}).items()
+                        if name in kept},
+             "fingerprint": prints}
     if pr:
         entry["pr"] = int(pr[0])
     with _locked(loop):
         stages = _load(loop)
+        before = stages.get(stage)
         stages[stage] = entry
+        if not prints or not isinstance(before, dict) or before.get("fingerprint") != prints:
+            # The later stages were shown against other inputs than these.
+            for later in STAGES[STAGES.index(stage) + 1:]:
+                if isinstance(stages.get(later), dict):
+                    stages[later]["invalidated"] = True
         util.atomic_write(path(loop), json.dumps({"version": 1, "stages": stages},
                                                  indent=2, sort_keys=True) + "\n", mode=0o600)
     return entry
@@ -236,7 +345,7 @@ def read(loop: dict, *, runtime_file: Path | None = None, resolver=None, pr_head
             out[stage] = NOT_ATTEMPTED
             continue
         if not changed:
-            changed = _differs(loop, stage, entry, runtime_file, resolver, pr_head, hook_state)
+            changed = entry.get("invalidated") is True or _differs(loop, stage, entry, runtime_file, resolver, pr_head, hook_state)
         out[stage] = STALE if changed else entry["status"]
     return out
 
