@@ -49,9 +49,10 @@ CALLERS = {
     "diaktoros/app_manifest.py::save_session", "diaktoros/cli/common.py::_write_config_locked",
     "diaktoros/cli/common.py::_restore_config_locked", "diaktoros/gate_decisions.py::record",
     "diaktoros/gate_shims.py::_write", "diaktoros/gate_shims.py::heal_watchdog_shim",
-    "diaktoros/observer.py::_save", "diaktoros/pacing.py::_save", "diaktoros/route_intent.py::_write",
-    "diaktoros/run_supervisor/__init__.py::Supervisor.__init__", "diaktoros/runtime_detect.py::write",
-    "diaktoros/state.py::_atomic_publish", "diaktoros/state.py::LoopState._transition_write",
+    "diaktoros/observer.py::_save", "diaktoros/onboarding.py::record", "diaktoros/pacing.py::_save",
+    "diaktoros/route_intent.py::_write", "diaktoros/run_supervisor/__init__.py::Supervisor.__init__",
+    "diaktoros/runtime_detect.py::write", "diaktoros/state.py::_atomic_publish",
+    "diaktoros/state.py::LoopState._transition_write",
 }
 BY_HAND = {"os.replace", "os.rename", "tempfile.mkstemp", "tempfile.NamedTemporaryFile"}
 
