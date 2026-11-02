@@ -18,7 +18,6 @@ import json
 import os
 import pathlib
 import random
-import tempfile
 import time
 
 MAX_BYTES = 1_000_000          # a bigger answer is not kept
@@ -60,23 +59,13 @@ def store(login: str, path: str, raw: str, data, headers: dict) -> None:
     etag = headers.get("etag")
     if not isinstance(etag, str) or not etag or len(raw) > MAX_BYTES:
         return
-    tmp = None
+    from .util import atomic_write
     try:
-        folder = directory()
-        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fd, tmp = tempfile.mkstemp(dir=folder, prefix=".tmp-")        # 0600
-        with os.fdopen(fd, "w") as out:
-            json.dump({"etag": etag, "data": data, "headers": headers}, out)
-        os.replace(tmp, _file(login, path))
-        tmp = None
+        directory().mkdir(parents=True, exist_ok=True, mode=0o700)
+        atomic_write(_file(login, path),
+                     json.dumps({"etag": etag, "data": data, "headers": headers}))   # 0600
     except (OSError, TypeError, ValueError):
         return
-    finally:
-        if tmp is not None:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
     if random.randrange(PRUNE_ONE_IN) == 0:
         prune()
 
