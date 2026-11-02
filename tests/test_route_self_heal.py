@@ -383,6 +383,26 @@ class PromptUpgrade(Fixture):
         self.assertEqual((live["secret"], live["profile"]), ("new-secret", "new-profile"))
         self.assertEqual(recorded["prompt"], prompts.REVIEWER, "and still upgraded")
 
+    def test_an_unreadable_record_after_the_upgrade_is_an_alert_not_a_raise(self):
+        # The re-read after a successful upgrade must keep heal's "never raises" contract
+        # (doctor --repair calls heal bare). Nothing is restored from the older snapshot.
+        self.old_install()
+        self.native(lambda data: data["widgets-review"].update(secret="drifted"))
+        real, reads = route_intent.load, []
+
+        def third_read_fails(loop):
+            reads.append(1)
+            if len(reads) == 3:
+                raise route_intent.IntentError("record replaced by garbage")
+            return real(loop)
+        with mock.patch.object(route_intent, "load", side_effect=third_read_fails):
+            lines = route_intent.heal(self.loop)
+        self.assertEqual(len(reads), 3, "the upgrade's re-read is the third read")
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("unreadable after a prompt upgrade", lines[0])
+        self.assertIn("record replaced by garbage", lines[0])
+        self.assertEqual(self.live()["widgets-review"]["secret"], "drifted", "nothing restored")
+
     def test_doctor_does_not_name_the_repair_when_the_record_has_another_profile(self):
         # #1418 review F2: the repair would restore the recorded (wrong) profile.
         from diaktoros import gate_shims
