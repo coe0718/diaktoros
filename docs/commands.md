@@ -1178,8 +1178,16 @@ hermes dk onboard --loop "<loop-id>" --pr 12
   only whether unattended fixer pushes are on, and the command that turns them on.
 - To tell whether the `live_turn` and `armed` stages are still current, it reads the PR's head
   and the repo's hooks from GitHub (GET only), and only for stages that were recorded. If a read
-  fails, the stage shows `stale`. The record is written by part 1 (#1598); until the checks write
-  to it, a loop that has been verified by hand still shows `not_attempted`.
+  fails, the stage shows `stale`. The record is kept by `onboarding.py` (#1598) and written by the
+  commands themselves (#1617); a loop whose commands have not run since then, or that was verified
+  by hand, still shows `not_attempted`.
+- Which command writes which stage. `doctor` writes nothing (it only produces the `runtime:*`
+  checks). `selftest` writes `identities`, `loop` and `model` on every run, from the results it
+  already computed; `selftest --no-model` writes `model` as `skipped`, never `passed`; and
+  `live_turn` only when `--pr N --live-turn` ran a turn. `arm` writes `armed`, only for a confirmed
+  arm: not `--pause`, the hook write read back ok, and a fresh read of the hooks that says `armed`.
+  A record that cannot be written never changes a command's result or exit code: the command prints
+  that the stage could not be recorded.
 
 <!-- flags:onboard -->
 | flag | value | default | what it does |

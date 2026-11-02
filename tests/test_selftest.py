@@ -780,3 +780,91 @@ class ClaudeConfigDirProbe(unittest.TestCase):
             os.environ.pop("CLAUDE_CONFIG_DIR", None)
             os.environ.pop("CLAUDE_SUBSCRIPTION_DIRECTSDK_CONFIG_DIR", None)
             self.assertNotIn("/cfg/a", selftest.host_secret_paths({"id": "x"}, {}, pathlib.Path("/rt.json")))
+
+
+class OnboardingRecordTests(SelftestBase):
+    """#1617: selftest records its stages in the onboarding record, through ``selftest.run``."""
+
+    def stored(self):
+        from diaktoros import onboarding
+        return onboarding._load(self.fx.loop)
+
+    def live_turn_passes(self, report, loop, settings, pr, timeout, reviewer=None):
+        report.add("live-turn", "turn:reviewer", selftest.PASS, "isolated turn submitted COMMENT")
+
+    def profile_seats(self, profile, seat, settings):
+        """Seats that resolve from their profile (a legacy fallback is a WARN, never a pass)."""
+        from diaktoros import seat_model
+        return seat_model.SeatInference(seat, profile, "profile", "prov", "tiny-model",
+                                        self.fx.settings["upstream"], MODEL_KEY)
+
+    def test_a_full_run_records_identities_loop_and_model(self):
+        rc, text = self.run_selftest(pr=7, resolver=self.profile_seats)
+        self.assertEqual(rc, 0, text)
+        stored = self.stored()
+        for stage in ("identities", "loop", "model"):
+            self.assertEqual(stored[stage]["status"], "passed", (stage, stored))
+        self.assertNotIn("live_turn", stored)         # no live turn ran
+        self.assertNotIn("armed", stored)             # selftest never owns the hooks
+        self.assert_no_secrets(json.dumps(stored))
+
+    def test_no_model_records_model_skipped_never_passed(self):
+        rc, text = self.run_selftest(model=False)
+        self.assertEqual(rc, 0, text)
+        stored = self.stored()
+        self.assertEqual(stored["model"]["status"], "skipped", stored)
+        self.assertEqual(stored["identities"]["status"], "passed")
+        self.assertEqual(stored["loop"]["status"], "passed")
+
+    def test_a_failing_check_records_its_stage_failed(self):
+        self.fx.ids["fixer"] = self.fx.ids["reviewer"]        # one principal behind two seats
+        rc, text = self.run_selftest(model=False)
+        self.assertEqual(rc, 1, text)
+        self.assertEqual(self.stored()["identities"]["status"], "failed")
+
+    def test_a_live_turn_on_a_pr_records_live_turn_with_its_head(self):
+        with mock.patch.object(selftest, "run_live_turn", side_effect=self.live_turn_passes):
+            rc, text = self.run_selftest(pr=7, live_turn=True, timeout=30)
+        self.assertEqual(rc, 0, text)
+        entry = self.stored()["live_turn"]
+        self.assertEqual(entry["status"], "passed", entry)
+        self.assertEqual(entry["pr"], 7)
+
+    def test_a_skipped_live_turn_records_nothing_for_live_turn(self):
+        def skipped(report, *args, **kwargs):
+            report.add("live-turn", "turn:reviewer", selftest.SKIP, "no usable runtime")
+        with mock.patch.object(selftest, "run_live_turn", side_effect=skipped):
+            self.run_selftest(pr=7, live_turn=True, timeout=30)
+        self.assertNotIn("live_turn", self.stored())
+
+    def test_an_unreadable_pr_records_no_live_turn(self):
+        self.fx.pr = None
+        with mock.patch.object(selftest, "run_live_turn", side_effect=self.live_turn_passes):
+            self.run_selftest(pr=7, live_turn=True, timeout=30)
+        self.assertNotIn("live_turn", self.stored())
+
+    def test_a_failed_record_write_leaves_the_result_and_says_so(self):
+        _, clean = self.run_selftest(pr=7)
+        from diaktoros import onboarding
+        with mock.patch.object(onboarding, "record", side_effect=OSError("disk full")):
+            rc, text = self.run_selftest(pr=7)
+        self.assertEqual(rc, 0, text)
+        self.assertIn("the identities stage could not be recorded", text)
+        self.assertIn("disk full", text)
+        self.assertIn("✅ the isolated path is ready", text)
+
+    def test_a_failed_record_write_keeps_a_failing_exit_code(self):
+        self.fx.ids["fixer"] = self.fx.ids["reviewer"]
+        from diaktoros import onboarding
+        with mock.patch.object(onboarding, "record", side_effect=ValueError("boom")):
+            rc, text = self.run_selftest(model=False)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("could not be recorded", text)
+
+    def test_the_loop_file_and_fixer_push_setting_are_untouched(self):
+        from diaktoros import config
+        before = json.dumps(self.fx.loop, sort_keys=True)
+        enabled = config.unattended_fixer_push_enabled(self.fx.loop)
+        self.run_selftest(pr=7)
+        self.assertEqual(json.dumps(self.fx.loop, sort_keys=True), before)
+        self.assertEqual(config.unattended_fixer_push_enabled(self.fx.loop), enabled)
