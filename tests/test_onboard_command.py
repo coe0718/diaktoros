@@ -151,29 +151,107 @@ class Onboard(_Loop):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def test_an_app_reader_is_never_asked_to_mint_a_token_by_onboard(self):
-        """F1: reading as an App mints an installation token (a POST); onboard must not."""
-        from diaktoros import github_app
-        loop = dict(self.loop, read_token="reader-app",
-                    apps={"reader-app": {"app_id": 7, "key_file": str(self.root / "k.pem")}})
+    def transport(self, loop):
+        """Fake GitHub under the real ``gh`` / ``github_app`` code: only ``urlopen`` is replaced.
+        Returns ``(sent, violations)``: every (method, path) sent, and those that are a write to
+        ``/repos/...`` (a minted installation token, a POST to ``/app/...``, is authentication)."""
+        import io
+        import time as time_mod
+        from urllib.parse import urlsplit
+        from diaktoros import github_app, route_intent
+        from diaktoros.doctor import hook_checks
+        hooks = [{"id": i, "active": True, "events": ["pull_request"],
+                  "config": {"url": hook_checks.seat_hook_url(loop, name), "content_type": "json"}}
+                 for i, name in enumerate(sorted(set(
+                     name for role, name in route_intent.routes_of(loop).items()
+                     if role in config.hook_roles(loop))), 1)]
+        answers = {"/repos/acme/widgets/installation": {"id": 5},
+                   "/app/installations/5/access_tokens": {
+                       "token": "tok", "expires_at": time_mod.strftime(
+                           "%Y-%m-%dT%H:%M:%SZ", time_mod.gmtime(time_mod.time() + 3600))},
+                   "/repos/acme/widgets/pulls/12": {"head": {"sha": self.head}},
+                   "/repos/acme/widgets/hooks?per_page=100": hooks}
+        sent, violations = [], []
+
+        class Response(io.BytesIO):
+            status, headers = 200, {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def urlopen(req, timeout=None):
+            parts = urlsplit(req.full_url)
+            path = parts.path + (f"?{parts.query}" if parts.query else "")
+            sent.append((req.get_method(), path))
+            if req.get_method() != "GET" and path.startswith("/repos/"):
+                violations.append(sent[-1])
+            if path not in answers or (req.get_method() != "GET" and "access_tokens" not in path):
+                raise OSError(f"fake GitHub: no answer for {req.get_method()} {path}")
+            return Response(json.dumps(answers[path]).encode())
         github_app.forget()
         self.addCleanup(github_app.forget)
-        for stage in ("identities", "loop", "model"):   # recorded against this loop's App mapping
-            onboarding.record(loop, stage, "passed", f"dk {stage}", "ok",
-                              runtime_file=self.runtime)
-        onboarding.record(loop, "live_turn", "passed", "dk selftest", "ok",
-                          pr=(12, self.head), runtime_file=self.runtime)
-        calls = []
+        for patcher in (patch.object(github_app, "jwt", lambda *a, **k: "jwt"),
+                        patch("urllib.request.urlopen", side_effect=urlopen),
+                        patch("diaktoros.config.host_guards.guard_network")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return sent, violations
 
-        def as_app(lp, login, path, method="GET", body=None):
-            calls.append((method, path))
-            return gh.Response(None, "refused")
+    def onboard_over_the_transport(self, loop):
+        """Record every stage against ``loop``, then run ``onboard`` with the real GitHub readers."""
+        self.loop = loop
+        for stage in STAGES:
+            self.record(stage)
+        sent, violations = self.transport(loop)
         self.real()
-        with patch.object(config, "load_id", return_value=loop), \
-                patch.object(github_app, "_as_app", side_effect=as_app):
+        with patch.object(config, "load_id", return_value=loop):
             out = self.onboard()
-        self.assertEqual(calls, [], "onboard reached the App token path")
-        self.assertRegex(out, r"live_turn\s+stale")
+        return out, sent, violations
+
+    def app_reader(self):
+        return dict(self.loop, read_token="reader-app",
+                    apps={"reader-app": {"app_id": 7, "key_file": str(self.root / "k.pem")}})
+
+    def test_a_pat_reader_reads_the_pr_and_the_hooks_with_gets_only(self):
+        out, sent, violations = self.onboard_over_the_transport(self.loop)
+        self.assertIn(("GET", "/repos/acme/widgets/pulls/12"), sent)
+        self.assertIn(("GET", "/repos/acme/widgets/hooks?per_page=100"), sent)
+        self.assertEqual(violations, [])
+        self.assertEqual({method for method, _ in sent}, {"GET"})
+        self.assertRegex(out, r"live_turn\s+passed")
+        self.assertRegex(out, r"armed\s+passed")
+
+    def test_an_app_reader_still_reads_the_pr_and_the_hooks(self):
+        """F4: an App reader's installation-token mint (a POST to /app/...) is authentication; the
+        reads that follow work, and onboard writes nothing to /repos/..."""
+        out, sent, violations = self.onboard_over_the_transport(self.app_reader())
+        self.assertIn(("POST", "/app/installations/5/access_tokens"), sent)
+        self.assertIn(("GET", "/repos/acme/widgets/pulls/12"), sent)
+        self.assertIn(("GET", "/repos/acme/widgets/hooks?per_page=100"), sent)
+        self.assertEqual(violations, [])
+        self.assertRegex(out, r"live_turn\s+passed")
+        self.assertRegex(out, r"armed\s+passed")
+        self.assertIn("next: nothing", self.next_line(out))
+
+    def test_the_transport_test_catches_a_repository_write(self):
+        """F5: the recorder is not vacuous: an onboard that wrote to /repos/... would turn it red."""
+        def writes(loop, number):
+            gh.fetch(loop, f"/repos/{loop['repo']}/pulls/{number}", method="PATCH",
+                     body={"state": "closed"}, login=loop.get("read_token"))
+            return self.head
+        for loop in (self.loop, self.app_reader()):
+            self.loop = loop
+            for stage in STAGES:
+                self.record(stage)
+            sent, violations = self.transport(loop)
+            self.real()
+            with patch.object(config, "load_id", return_value=loop), \
+                    patch.object(onboarding, "_live_head", writes):
+                self.onboard()
+            self.assertEqual(violations, [("PATCH", "/repos/acme/widgets/pulls/12")])
 
     def test_a_corrupt_app_ingress_pause_flag_never_reads_armed(self):
         """F2: an unreadable pause flag is unknown, so a recorded `armed` goes stale."""
@@ -186,7 +264,8 @@ class Onboard(_Loop):
         entry = onboarding.record(loop, "armed", "passed", "dk arm", "ok",
                                   runtime_file=self.runtime)
         self.assertEqual(entry["status"], "passed")
-        for bad in ("{not json", json.dumps({"paused": "no"})):
+        for bad in ("{not json", json.dumps({"paused": "no"}), "{}", json.dumps({"other": 1}),
+                    json.dumps({"paused": None}), "[]"):
             flag.write_text(bad)
             with patch.object(config, "load_id", return_value=loop):
                 self.assertRegex(self.onboard(), r"armed\s+stale")

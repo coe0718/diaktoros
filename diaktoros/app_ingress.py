@@ -78,9 +78,9 @@ def pause_flag(st) -> bool | None:
         data = json.loads(path.read_text())
     except Exception:
         return None
-    if not isinstance(data, dict) or ("paused" in data and type(data["paused"]) is not bool):
-        return None
-    return data.get("paused") is True
+    if not isinstance(data, dict) or type(data.get("paused")) is not bool:
+        return None         # ``set_paused`` always writes a bool: an object without one is damaged
+    return data["paused"]
 
 
 def set_paused(st, value: bool) -> None:
