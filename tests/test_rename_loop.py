@@ -317,6 +317,21 @@ class Rename(fg.Base):
         self.assertEqual(self.patched, [])
         self.assertNotIn("two-review", routes.all_routes())
 
+    def test_a_corrupt_ledger_refuses_instead_of_crashing(self):
+        path = run_supervisor.production_ledger()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"this is not a sqlite database " * 40)
+        with self.assertRaises(migrate.RunsUnknown):
+            migrate.busy_runs(path, self.loop["repo"])
+        # cmd_migrate's own backup refuses a corrupt ledger first (rc 2); the rename step is
+        # driven directly, as it is also the step that must not crash on its own.
+        with mock.patch.object(cli_common, "_hook_listing", side_effect=AssertionError("moved on")):
+            lines, refused = cli_lifecycle._rename_loop("one=two", dry_run=False, admin="admin")
+        self.assertTrue(refused, lines)
+        self.assertIn("REFUSED", lines[0])
+        self.assertIn("could not be read", lines[0])
+        self.assertTrue((config.config_dir() / "one.json").exists())
+
     def test_a_new_name_held_with_another_secret_refuses(self):
         live = routes.all_routes()
         live["two-review"] = entry("gate_reviewer.py", "z" * 64)
