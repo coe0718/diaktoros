@@ -175,6 +175,31 @@ class Rulings(Base):
         self.approve.assert_not_called()
 
 
+class Superseded(Base):
+    """Review of #1605, round 4, F7: a ruling that lands while the sweep reads GitHub."""
+
+    def reject_during_hold_read(self):
+        def read(*_a):
+            self.ruled("REJECT")              # a newer adjudication lands mid-sweep
+            return (None, "")
+        return mock.patch.object(pr_hold, "read", side_effect=read)
+
+    def test_no_approval_on_an_accept_superseded_mid_sweep(self):
+        self.ruled("ACCEPT")
+        with self.reject_during_hold_read():
+            self.assertEqual(self.sweep(), [])
+        self.approve.assert_not_called()
+        self.assertIsNone(self.row())
+
+    def test_no_dismissal_on_an_accept_superseded_mid_sweep(self):
+        self.ruled("ACCEPT")
+        self.sweep()                          # approved
+        with self.reject_during_hold_read():
+            self.sweep()
+        self.dismiss.assert_not_called()
+        self.assertEqual(self.row()["dismiss"], "pending")
+
+
 class Interrupted(Base):
     """Review of #1605, round 2, F3: a step left ``posting`` by a stopped process."""
 
@@ -214,7 +239,7 @@ class Interrupted(Base):
         self.reviews = [DISMISSED, TUCK]
         self.assertEqual(self.sweep(), [])
         self.assertEqual(self.row()["dismiss"], "posting")
-        lines = ready._acting(self.loop, 7, fg.HEAD, list(self.reviews))
+        lines = ready._acting(self.loop, 7, fg.HEAD, list(self.reviews), TUCK)
         self.assertTrue(lines and lines[0][0] == ready.FAILURE, lines)
         self.assertIn("unconfirmed (being written, or interrupted)", lines[0][1])
 
@@ -492,6 +517,20 @@ class CheckShowsIt(Base):
         kinds = self.kinds()
         self.assertEqual(merge_check.decide(kinds)[0], merge_check.FAILURE)
         self.assertTrue(any("was not made: HTTP 403 forbidden" in text for _, text in kinds), kinds)
+
+    def test_the_reviewers_own_approval_clears_a_denied_dismissal(self):
+        # Review of #1605, round 4, F8: once the reviewer approves, its request is lifted by
+        # its own approval, and the denied dismissal no longer holds the head.
+        self.ruled("ACCEPT")
+        self.sweep()
+        with mock.patch.object(broker, "authorize_adjudicator",
+                               side_effect=broker.BrokerDenied("HTTP 403 forbidden")):
+            self.sweep()
+        self.assertEqual(self.row()["dismiss"], "denied")
+        self.reviews = [*self.reviews, tra.review(19, "APPROVED", at="2026-01-03T00:00:00Z")]
+        kinds = self.kinds()
+        self.assertFalse(any("was not made" in text for _, text in kinds), kinds)
+        self.assertEqual(merge_check.decide(kinds)[0], merge_check.SUCCESS)
 
     def test_an_unreadable_record_is_never_green(self):
         self.mark_escalated(by="dispute")

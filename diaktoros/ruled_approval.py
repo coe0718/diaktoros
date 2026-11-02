@@ -86,8 +86,8 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
             "denied", "uncertain", "posting"):
         return False                                   # done, left for a person, or being written
     wait, deny = _wait_or_deny(loop, st, number, head)
-    if wait:
-        return False
+    if wait or not _still_ruled(loop, number, ruling):
+        return False                                   # a newer ruling since: the next sweep sees it
     step = "approve" if row.get("approve", "pending") == "pending" else "dismiss"
     if deny:
         return sup.ruled_approval_step(repo, number, head, step, "denied", error=deny[:200])
@@ -162,6 +162,13 @@ def _wait_or_deny(loop: dict, st, number: int, head: str) -> tuple[str, str]:
     return "", ""
 
 
+def _still_ruled(loop: dict, number: int, ruling: dict) -> bool:
+    """Whether ``ruling`` is still the PR's newest, read again right before a write: an
+    adjudication that lands while this sweep reads GitHub supersedes it, and nothing is written."""
+    now = views.ruling_row(production_ledger(), loop["repo"], number) or {}
+    return now.get("run_id") == ruling.get("run_id") and now.get("verdict") == "ACCEPT"
+
+
 def cite(loop: dict, number: int, ruling: dict) -> str:
     """Where the ruling can be read: its PR comment's link, or, with none, the host command that
     prints its full text from the run ledger."""
@@ -183,7 +190,8 @@ def _approve(loop: dict, sup, ruling: dict, number: int, branch: str, target: in
         sup.ruled_approval_step(repo, number, head, "approve", "denied", error=str(exc)[:200])
         log(f"#{number} @ {head[:7]}: not approved on the ACCEPT: {exc}")
         return True
-    if not sup.ruled_approval_step(repo, number, head, "approve", "posting", overruled=target):
+    if not _still_ruled(loop, number, ruling) or not sup.ruled_approval_step(
+            repo, number, head, "approve", "posting", overruled=target):
         return False
     text = (f"Approved on the adjudicator's ACCEPT ruling at `{head[:7]}` "
             f"({cite(loop, number, ruling)}): the ruling found the remaining change request "
@@ -215,7 +223,8 @@ def _dismiss(loop: dict, sup, ruling: dict, reviews: list, number: int, branch: 
     except broker.BrokerDenied as exc:
         return sup.ruled_approval_step(repo, number, head, "dismiss", "denied",
                                        error=str(exc)[:200])
-    if not sup.ruled_approval_step(repo, number, head, "dismiss", "posting"):
+    if not _still_ruled(loop, number, ruling) or not sup.ruled_approval_step(
+            repo, number, head, "dismiss", "posting"):
         return False
     message = (f"Dismissed on the adjudicator's ACCEPT ruling at {head[:7]}, which overruled "
                f"this change request: {cite(loop, number, ruling)}")
