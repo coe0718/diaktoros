@@ -502,5 +502,74 @@ class UnresolvedSeats(Fixture):
         self.assertEqual((entry["status"], entry["fingerprint"]), ("failed", ""))
 
 
+class UnreadableCredentialFiles(Fixture):
+    """F2 of #1616: a credential file that cannot be read cannot be redacted, so withhold."""
+
+    WITHHELD = "[withheld: a credential file could not be read]"
+    SEAT_KEY = "seat-override-key-material"
+
+    def _seat_key_file(self):
+        (self.root / "seat.key").write_text(self.SEAT_KEY)
+        self.write_runtime(seats={"fixer": {"model": "m", "upstream": "https://api.example/v1",
+                                            "key_file": str(self.root / "seat.key")}})
+
+    def _assert_withheld(self, secret):
+        entry = self.record("identities", summary=f"saw {secret}")
+        self.assertEqual((entry["command"], entry["summary"]), (self.WITHHELD, self.WITHHELD))
+        self.assertNotIn(secret, onboarding.path(self.loop).read_text())
+
+    def test_an_unreadable_token_file_withholds_command_and_summary(self):
+        (self.root / "reader-pat").unlink()
+        self._assert_withheld(PAT)
+
+    def test_an_unreadable_app_key_file_withholds_command_and_summary(self):
+        (self.root / "app.pem").unlink()
+        self._assert_withheld(APP_KEY)
+
+    def test_an_unreadable_seat_key_file_withholds_command_and_summary(self):
+        self._seat_key_file()
+        (self.root / "seat.key").unlink()
+        self._assert_withheld(self.SEAT_KEY)
+
+    def test_the_summary_is_stored_redacted_once_the_file_is_readable_again(self):
+        self._seat_key_file()
+        for name, text in (("reader-pat", PAT), ("app.pem", APP_KEY), ("seat.key", self.SEAT_KEY)):
+            (self.root / name).unlink()
+            self.assertEqual(self.record("identities", summary=f"saw {text}")["summary"],
+                             self.WITHHELD)
+            (self.root / name).write_text(text)
+            entry = self.record("identities", summary=f"saw {text}")
+            self.assertIn("[REDACTED]", entry["summary"], name)
+            self.assertNotIn(text, entry["command"] + entry["summary"], name)
+
+
+class ModelNeedsASeat(Fixture):
+    """F8 of #1616: ``read()`` trusts a resolved seat only."""
+
+    def _failing(self, profile, seat, settings):
+        raise seat_model.SeatModelError("profile unreadable")
+
+    def test_read_never_returns_passed_for_model_with_an_unresolved_seat(self):
+        self.record("model")
+        self.assertEqual(self.read()["model"], "passed")
+        onboarding.record(self.loop, "model", "passed", "dk selftest", "ok",
+                          runtime_file=self.runtime, resolver=self._failing)
+        for resolver in (self.resolver, self._failing):
+            got = onboarding.read(self.loop, runtime_file=self.runtime, resolver=resolver)
+            self.assertNotEqual(got["model"], "passed")
+
+    def test_an_unresolved_seat_never_fingerprints_as_matching(self):
+        entry = self.record("model")
+        self.assertEqual(onboarding.fingerprint(self.loop, "model", runtime_file=self.runtime,
+                                                resolver=self.resolver), entry["fingerprint"])
+        for _ in range(2):
+            with self.assertRaises(onboarding.SeatUnresolved):
+                onboarding.fingerprint(self.loop, "model", runtime_file=self.runtime,
+                                       resolver=self._failing)
+        with self.assertRaises(onboarding.SeatUnresolved):
+            onboarding.fingerprint(self.loop, "model", runtime_file=self.runtime,
+                                   seats={"reviewer": None, "fixer": None})
+
+
 if __name__ == "__main__":
     unittest.main()
