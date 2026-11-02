@@ -613,12 +613,11 @@ class ClaimAndLaunch:
                              if checks.cancelled and not red else
                              f"{len(checks.failed)} check(s) failed, the fixer is taking them first"
                              if fixing else
-                             f"{len(checks.failed)} required check(s) failed "
-                             f"({ci._names(checks.failed[:5])}) — "
+                             f"{len(checks.failed)} required check(s) failed — the review starts "
+                             "when they pass (re-run them on GitHub) or a new head is pushed "
+                             f"({ci._names(checks.failed[:5])}); "
                              + ("no fixer takes a review-only PR" if review_only else
                                 "the fixer's CI fixes are done")
-                             + ": the review starts when they pass (re-run them on GitHub) or a "
-                             "new head is pushed"
                              if red else
                              f"{len(checks.missing)} required check(s) never reported "
                              f"({ci._names(checks.missing[:5])}); check the name"
