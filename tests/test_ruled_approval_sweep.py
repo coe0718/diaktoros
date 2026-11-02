@@ -200,6 +200,32 @@ class Superseded(Base):
         self.assertEqual(self.row()["dismiss"], "pending")
 
 
+class NewVerdict(Base):
+    """Review of #1605, round 6, F10: a reviewer verdict that lands while the sweep reads."""
+
+    def verdict_during_hold_read(self):
+        def read(*_a):
+            self.reviews = [*self.reviews, tra.review(29, "CHANGES_REQUESTED",
+                                                      at="2026-01-04T00:00:00Z")]
+            return (None, "")
+        return mock.patch.object(pr_hold, "read", side_effect=read)
+
+    def test_no_approval_after_a_verdict_that_lands_mid_sweep(self):
+        self.ruled("ACCEPT")
+        with self.verdict_during_hold_read():
+            self.assertEqual(self.sweep(), [])
+        self.approve.assert_not_called()
+        self.assertIsNone(self.row())
+
+    def test_no_dismissal_after_a_verdict_that_lands_mid_sweep(self):
+        self.ruled("ACCEPT")
+        self.sweep()                          # approved
+        with self.verdict_during_hold_read():
+            self.sweep()
+        self.dismiss.assert_not_called()
+        self.assertEqual(self.row()["dismiss"], "pending")
+
+
 class Interrupted(Base):
     """Review of #1605, round 2, F3: a step left ``posting`` by a stopped process."""
 
