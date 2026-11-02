@@ -253,7 +253,10 @@ def plan(loop: dict, token_login: str | None = None) -> dict:
         # #1239: no repo hooks to snapshot; the pause flag is switched on the host (its change is
         # not one Desktop's hook-bound confirmation can verify).
         from . import app_ingress, state as state_mod
-        paused = app_ingress.paused(state_mod.state_for(loop))
+        paused = app_ingress.pause_flag(state_mod.state_for(loop))
+        if paused is None:      # unreadable or malformed flag: unknown, not armed
+            result['reason'] = 'The App-ingress pause flag could not be read.'
+            return result
         result.update(state='paused' if paused else 'armed',
                       reason=("Events arrive through the App's webhook; pause or resume it on the "
                               f"host: `hermes dk arm --loop {loop['id']}{'' if paused else ' --pause'}`."))

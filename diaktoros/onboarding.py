@@ -185,8 +185,18 @@ def _seat_identities(seats: dict) -> dict:
     return {seat: _digest(list(found.identity())) for seat, found in seats.items()}
 
 
+def reader_mints_tokens(loop: dict) -> bool:
+    """Whether reading as the loop's reader means minting an App installation token (a POST).
+    ``onboard`` promises no GitHub write, so it does not read as such a reader."""
+    from . import gh, github_app
+    reader = loop.get("read_token")
+    return gh.token_path(loop, reader) is None and github_app.is_app(loop, reader)
+
+
 def _live_head(loop: dict, number: int) -> str:
     from . import gh
+    if reader_mints_tokens(loop):
+        raise RuntimeError("the reader is a GitHub App: reading would mint a token (a POST)")
     pr, _ = gh.fetch(loop, f"/repos/{loop['repo']}/pulls/{number}", login=loop.get("read_token"))
     return str(((pr or {}).get("head") or {}).get("sha") or "") if isinstance(pr, dict) else ""
 
@@ -199,7 +209,9 @@ class HookStateUnknown(Exception):
 
 
 def _hook_state(loop: dict) -> str:
-    from . import arm_action
+    from . import arm_action, config as config_mod
+    if not config_mod.app_ingress(loop) and reader_mints_tokens(loop):
+        return "unknown"        # listing hooks as an App reader would mint a token (a POST)
     return str(arm_action.plan(loop).get("state") or "unknown")
 
 

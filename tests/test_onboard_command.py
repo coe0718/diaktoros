@@ -17,6 +17,7 @@ from diaktoros import config, gh, onboarding, seat_model  # noqa: E402
 from diaktoros.cli import checks as cli_checks, identity_command  # noqa: E402
 
 HEAD = "a" * 40
+_REAL = {"_live_head": onboarding._live_head, "_hook_state": onboarding._hook_state}
 STAGES = onboarding.STAGES
 
 
@@ -142,6 +143,56 @@ class Onboard(_Loop):
         self.assertEqual(methods, [])
         self.assertIn("unattended fixer pushes: off", out)
         self.assertIn("fixer-push --loop widgets --enable --acknowledge-pr-race", out)
+
+    def real(self):
+        """The real GitHub-reading defaults setUp replaced (the transport boundary)."""
+        for name in ("_live_head", "_hook_state"):
+            patcher = patch.object(onboarding, name, _REAL[name])
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_an_app_reader_is_never_asked_to_mint_a_token_by_onboard(self):
+        """F1: reading as an App mints an installation token (a POST); onboard must not."""
+        from diaktoros import github_app
+        loop = dict(self.loop, read_token="reader-app",
+                    apps={"reader-app": {"app_id": 7, "key_file": str(self.root / "k.pem")}})
+        github_app.forget()
+        self.addCleanup(github_app.forget)
+        for stage in ("identities", "loop", "model"):   # recorded against this loop's App mapping
+            onboarding.record(loop, stage, "passed", f"dk {stage}", "ok",
+                              runtime_file=self.runtime)
+        onboarding.record(loop, "live_turn", "passed", "dk selftest", "ok",
+                          pr=(12, self.head), runtime_file=self.runtime)
+        calls = []
+
+        def as_app(lp, login, path, method="GET", body=None):
+            calls.append((method, path))
+            return gh.Response(None, "refused")
+        self.real()
+        with patch.object(config, "load_id", return_value=loop), \
+                patch.object(github_app, "_as_app", side_effect=as_app):
+            out = self.onboard()
+        self.assertEqual(calls, [], "onboard reached the App token path")
+        self.assertRegex(out, r"live_turn\s+stale")
+
+    def test_a_corrupt_app_ingress_pause_flag_never_reads_armed(self):
+        """F2: an unreadable pause flag is unknown, so a recorded `armed` goes stale."""
+        from diaktoros import app_ingress, state as state_mod
+        loop = dict(self.loop, ingress="app-webhook", ingress_app="reader-acct")
+        flag = state_mod.state_for(loop).dir / app_ingress.FILE
+        flag.parent.mkdir(parents=True, exist_ok=True)
+        flag.write_text(json.dumps({"paused": False}))
+        self.real()
+        entry = onboarding.record(loop, "armed", "passed", "dk arm", "ok",
+                                  runtime_file=self.runtime)
+        self.assertEqual(entry["status"], "passed")
+        for bad in ("{not json", json.dumps({"paused": "no"})):
+            flag.write_text(bad)
+            with patch.object(config, "load_id", return_value=loop):
+                self.assertRegex(self.onboard(), r"armed\s+stale")
+        entry = onboarding.record(loop, "armed", "passed", "dk arm", "ok",
+                                  runtime_file=self.runtime)
+        self.assertEqual((entry["status"], entry["fingerprint"]), ("failed", ""))
 
     def test_it_reports_unattended_fixer_pushes_on(self):
         loop = dict(self.loop, unattended_fixer_push=True)
