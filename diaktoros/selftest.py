@@ -48,7 +48,7 @@ import sys
 import tempfile
 from urllib.parse import urlsplit
 
-from . import config, doctor, envnames, gh, util
+from . import config, doctor, envnames, gh, onboarding_record, util
 from .doctor import cron_checks, hook_checks, identity_checks
 
 PASS, FAIL, WARN, SKIP = "pass", "fail", "warn", "skip"
@@ -1355,6 +1355,9 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
     if ping:
         # Outside the read-only guard on purpose: the one write --ping asked for.
         check_hook_signatures(report, loop, ping=True, login=ping_login)
+    onboarding_record.record_selftest(
+        loop, report, say=report.text, pr=pr, live_pr=live_pr, model=model,
+        live_turn=live_turn, seats=seats, runtime_file=runtime_file, resolver=resolver)
     counts = report.counts()
     report.text(f"\n{loop['id']}: {counts[PASS]} passed, {counts[FAIL]} failed, "
                 f"{counts[WARN]} warnings, {counts[SKIP]} skipped")
