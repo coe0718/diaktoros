@@ -11,6 +11,20 @@ def add_set(sub) -> None:  # noqa: ANN001
     change = sub.add_parser("set", help="Change a loop's settings in place")
     change.add_argument("--loop", required=True,
                         help="loop id (its config file name; `list` shows them)")
+    _set_capacity_flags(change)
+    _set_switch_flags(change)
+    _set_review_only_flags(change)
+    _set_check_flags(change)
+    _set_path_flags(change)
+    _set_ingress_flags(change)
+    _set_turn_flags(change)
+    _set_identity_flags(change)
+    _set_observer_flags(change)
+    change.set_defaults(func=set_command.cmd_set)
+
+
+def _set_capacity_flags(change) -> None:  # noqa: ANN001
+    """``set``: how many PRs each seat works at once, and the verdict cap."""
     change.add_argument("--concurrency", type=int,
                         help="default PRs per seat at once (1 = serialized; above 1 needs a "
                              "clone unless the isolated worker's runtime file exists, since each run gets its own)")
@@ -25,6 +39,10 @@ def add_set(sub) -> None:  # noqa: ANN001
                         help="how many issue triages may run at once (>= 1; only the triage "
                              "seat's own value: the loop default does not reach it)")
     change.add_argument("--cap", type=int, help="verdicts allowed before adjudication")
+
+
+def _set_switch_flags(change) -> None:  # noqa: ANN001
+    """``set``: the clone, the base, the loop's clocks, and its on/off switches."""
     change.add_argument("--clone", help="local clone the runs isolate from")
     change.add_argument("--base", help="base branch the loop watches")
     change.add_argument("--grace-min", type=int, help="quiet minutes before the watchdog speaks")
@@ -52,6 +70,10 @@ def add_set(sub) -> None:  # noqa: ANN001
                                        "adjudicator login and dismiss the change request it "
                                        "overruled, or stop; needs the adjudicator comment login")):
         change.add_argument(flag, choices=("on", "off"), default=None, help=text)
+
+
+def _set_review_only_flags(change) -> None:  # noqa: ANN001
+    """``set``: review-only authors, their limits, and operator agents."""
     change.add_argument("--acknowledge-branch-push", action="store_true",
                         help="accept that the host pushes to a branch the loop does not own; "
                              "required to turn --review-only-update on")
@@ -73,6 +95,10 @@ def add_set(sub) -> None:  # noqa: ANN001
                         help="a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated); replaces the list")
     agents.add_argument("--no-operator-agents", action="store_true",
                         help="clear the operator-agents list")
+
+
+def _set_check_flags(change) -> None:  # noqa: ANN001
+    """``set``: required checks and the shadow review."""
     required = change.add_mutually_exclusive_group()
     required.add_argument("--required-check", action="append", default=None,
                           help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates); replaces the list")
@@ -90,6 +116,10 @@ def add_set(sub) -> None:  # noqa: ANN001
                         help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1")
     change.add_argument("--shadow-file-issues", choices=("on", "off"), default=None,
                         help="on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, at most 5 a day (#914); needs a shadow profile")
+
+
+def _set_path_flags(change) -> None:  # noqa: ANN001
+    """``set``: reserved, covered and generated paths."""
     humans = change.add_mutually_exclusive_group()
     humans.add_argument("--human-path", action="append", default=None,
                         help="a glob pattern for paths only a human may approve (repeat it); replaces the list")
@@ -105,12 +135,20 @@ def add_set(sub) -> None:  # noqa: ANN001
                            help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox (repeat it); replaces the list")
     generated.add_argument("--no-generated", action="store_true",
                            help="clear the list: the conflict shortcut is off")
+
+
+def _set_ingress_flags(change) -> None:  # noqa: ANN001
+    """``set``: where events arrive, the merge check, and the fixer's always-run check."""
     change.add_argument("--ingress", choices=("repo-hooks", "app-webhook"), default=None,
                         help="where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks)")
     change.add_argument("--ingress-app", default=None, help="with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app)")
     change.add_argument("--merge-check", choices=("auto", "on", "off"), default=None,
                         help="post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off")
     change.add_argument("--fixer-check", default=None, help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none)")
+
+
+def _set_turn_flags(change) -> None:  # noqa: ANN001
+    """``set``: each seat's turn budget, steps, and daily tokens and turns."""
     change.add_argument("--reviewer-turn-budget", type=int, default=None,
                         help="the reviewer seat's own turn budget in seconds")
     change.add_argument("--fixer-turn-budget", type=int, default=None,
@@ -140,6 +178,10 @@ def add_set(sub) -> None:  # noqa: ANN001
     change.add_argument("--fixer-max-steps", type=int, default=None,
                         help="agent steps one fixer or issue-fix turn may take, 8-200 "
                              "(0 = default 80)")
+
+
+def _set_identity_flags(change) -> None:  # noqa: ANN001
+    """``set``: the gateway, the adjudicator, and the credentials the loop works as."""
     change.add_argument("--host", help="gateway webhook host")
     change.add_argument("--adjudicator-login", default=None,
                         help="optional fourth GitHub account the ruling is also posted as; "
@@ -164,6 +206,10 @@ def add_set(sub) -> None:  # noqa: ANN001
                              "instead of a PAT for the --read-token or --adjudicator-login login, "
                              "or an extra login such as a hook admin (--admin-token); the key "
                              "stays on the host, mode 0600")
+
+
+def _set_observer_flags(change) -> None:  # noqa: ANN001
+    """``set``: the observer feed."""
     change.add_argument("--observer-route", help="route the observer feed delivers through")
     change.add_argument("--observer-profile", help="profile that owns the observer destination")
     change.add_argument("--observer-deliver",
@@ -190,4 +236,3 @@ def add_set(sub) -> None:  # noqa: ANN001
     change.add_argument("--observer-unmute", action="store_true", help="resume a muted feed")
     change.add_argument("--observer-disable", action="store_true",
                         help="drop this loop's observer config entirely")
-    change.set_defaults(func=set_command.cmd_set)

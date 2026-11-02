@@ -448,6 +448,33 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     """
     d = settings_defaults(settings)
     seats = {k: dict(v or {}) for k, v in (loop_raw.get("seats") or {}).items()}
+    loop_concurrency = _apply_capacity(seats, loop_raw, d, settings)
+    # A blank clone in the form means "not set here", never "forget the clone this loop uses":
+    # silently dropping it would quietly downgrade the cleanup, which prunes worktrees through it.
+    clone = d["clone"] or str(loop_raw.get("clone") or "")
+    # An unset form value cannot erase an existing loop's explicitly configured gateway.
+    host = d["host"] or loop_raw.get("host") or ""
+    overlaid = {**loop_raw, "clone": clone, "host": host, "seats": seats}
+    # Only the knobs the operator actually set are written; a blank/absent field keeps the loop's
+    # own value (None on a bare dict is the same "leave it alone", since `normalize` defaults it).
+    for key in ("cap", "base", "grace_min", "ttl_min", "inflight_ttl_min", "turn_budget_s"):
+        value = _form_value(settings, key)
+        if value is not None:
+            overlaid[key] = value
+    if loop_concurrency is not None:
+        overlaid["concurrency"] = loop_concurrency
+    _apply_switches(overlaid, d, settings)
+    _apply_checks(overlaid, d, settings)
+    _apply_seat_knobs(seats, settings)
+    _apply_triage_observer(overlaid, loop_raw, settings)
+    # Seat identity rides the same push: the form names who serves each seat, and a blank field
+    # stays blank rather than unsetting what the loop already answered for itself.
+    return apply_seats(overlaid, settings)
+
+
+def _apply_capacity(seats: dict, loop_raw: dict, d: dict, settings: dict | None):
+    """``apply_settings``: the two seats' capacity, written into ``seats``; returns the loop's
+    default capacity to write (None: leave the loop's as it is)."""
     # The form's two seat numbers land as the loop default they agree on, and a seat carries its
     # own value only where it differs. Writing both seats every time would pin them, and a later
     # `set --concurrency` would move nothing (#76). The effective per-seat values are the form's —
@@ -472,20 +499,10 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     else:
         # No seat named: leave the seats and the loop default exactly as the loop has them.
         loop_concurrency = loop_raw.get("concurrency")
-    # A blank clone in the form means "not set here", never "forget the clone this loop uses":
-    # silently dropping it would quietly downgrade the cleanup, which prunes worktrees through it.
-    clone = d["clone"] or str(loop_raw.get("clone") or "")
-    # An unset form value cannot erase an existing loop's explicitly configured gateway.
-    host = d["host"] or loop_raw.get("host") or ""
-    overlaid = {**loop_raw, "clone": clone, "host": host, "seats": seats}
-    # Only the knobs the operator actually set are written; a blank/absent field keeps the loop's
-    # own value (None on a bare dict is the same "leave it alone", since `normalize` defaults it).
-    for key in ("cap", "base", "grace_min", "ttl_min", "inflight_ttl_min", "turn_budget_s"):
-        value = _form_value(settings, key)
-        if value is not None:
-            overlaid[key] = value
-    if loop_concurrency is not None:
-        overlaid["concurrency"] = loop_concurrency
+    return loop_concurrency
+
+def _apply_switches(overlaid, d, settings) -> None:  # noqa: ANN001
+    """``apply_settings``: the on/off and named settings, and the review-only and CI-fix limits."""
     # The on/off knobs, attribution (#197) among them, move only when the form names them.
     for key in ("attribution", "review_after_ci", "fix_ci", "fixer_scope_lock",
                 "adjudicator_approves", "review_only_update"):
@@ -508,6 +525,10 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     for key in ("review_only_cap", "review_only_daily"):
         if _form_value(settings, key) is not None:
             overlaid[key] = lists._check_review_only_limit(config._form_int(d[key].strip()), key, "settings")
+
+
+def _apply_checks(overlaid, d, settings) -> None:  # noqa: ANN001
+    """``apply_settings``: required checks, reserved, covered and generated paths, the always-run check, and the shadow block."""
     if _form_value(settings, "required_checks") is not None:
         overlaid["required_checks"] = lists.check_required_checks(
             lists.split_check_names(d["required_checks"]), "settings")
@@ -528,6 +549,10 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
                           file_issues=_form_value(settings, "shadow_file_issues"))
     if shadow is not None:
         overlaid["shadow"] = shadow
+
+
+def _apply_seat_knobs(seats, settings) -> None:  # noqa: ANN001
+    """``apply_settings``: each seat's steps, daily tokens and own capacity (#309)."""
     # Turn knobs (#309): validated like the CLI/loop file, and only when the form names them.
     for seat in ("reviewer", "fixer"):
         raw_steps = _form_value(settings, f"{seat}_max_steps")
@@ -546,6 +571,10 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
         if raw_capacity is not None:
             seats.setdefault(seat, {})["concurrency"] = config.check_concurrency(
                 config._form_int(raw_capacity), f"seats.{seat}.concurrency", "settings")
+
+
+def _apply_triage_observer(overlaid, loop_raw, settings) -> None:  # noqa: ANN001
+    """``apply_settings``: the weekly report, and triage's issue-fix turns and auto-fix labels."""
     weekly = _form_value(settings, "observer_weekly_report")
     if weekly is not None and str(weekly).strip():
         observer = dict(loop_raw.get("observer") or {})
@@ -584,9 +613,6 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
             triage["auto_fix_daily"] = config._check_daily_turns(
                 config._form_int(raw_auto_cap), "triage.auto_fix_daily", "settings")
         overlaid["triage"] = triage
-    # Seat identity rides the same push: the form names who serves each seat, and a blank field
-    # stays blank rather than unsetting what the loop already answered for itself.
-    return apply_seats(overlaid, settings)
 
 
 def apply_seats(loop_raw: dict, settings: dict | None) -> dict:
