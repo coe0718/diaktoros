@@ -81,6 +81,42 @@ class ShadowTriageConcurrency(Base):
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.capacity(), {"shadow": 3, "triage": 2})
 
+    def test_the_capacity_summary_names_every_seat_set_can_move(self):
+        """Issue #1129: the summary printed after the delta lines listed reviewer and fixer only."""
+        rc, out = self.init("--shadow-concurrency", "3", "--triage-concurrency", "2")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("parallel now: reviewer 1 · fixer 1 · shadow 3 · triage 2", out)
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-concurrency", "4",
+                           "--triage-concurrency", "5")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("parallel now: reviewer 1 · fixer 1 · shadow 4 · triage 5", out)
+
+    def test_a_seat_nobody_configured_stays_out_of_the_summary(self):
+        rc, out = self.init()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("parallel now: reviewer 1 · fixer 1   (", out)
+        self.assertNotIn("shadow 1", out)
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--cap", "4")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("shadow", out.split("parallel now:")[-1])
+
+    def test_status_list_and_doctor_agree_with_the_summary(self):
+        from unittest import mock
+        from diaktoros import contained, doctor
+        rc, out = self.init("--shadow-concurrency", "3", "--triage-concurrency", "2")
+        self.assertEqual(rc, 0, out)
+        rc, out = self.cli("status", "--loop", LOOP_ID)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("parallel:   reviewer 1 (serialized) · fixer 1 (serialized) · shadow 3 · "
+                      "triage 2", out)
+        rc, out = self.cli("list")
+        self.assertIn("reviewer=1 fixer=1 shadow=3 triage=2", out)
+        with mock.patch.object(contained, "IGNORED_SIZE_OVERRIDES", []), \
+                mock.patch.object(doctor, "_host_memory",
+                                  return_value=(64 * 1024 ** 3, 64 * 1024 ** 3)):
+            check = doctor.check_sandbox_caps(config.load_id(LOOP_ID))
+        self.assertIn("8 concurrent turns", check.detail)    # 1 + 1 + 3 + 2, plus the adjudicator
+
     def test_set_back_to_one_and_refusals(self):
         rc, out = self.init("--shadow-concurrency", "3")
         self.assertEqual(rc, 0, out)

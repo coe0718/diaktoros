@@ -633,6 +633,22 @@ def seat_concurrency(loop: dict, seat: str) -> int:
     return int(value)
 
 
+def capacity_seats(loop: dict) -> tuple[str, ...]:
+    """The seats whose concurrency a capacity summary (``set``, ``init``, ``status``, ``list``,
+    ``doctor``) states: the two working seats always, and ``shadow`` / ``triage`` when the loop
+    runs them or pins their own ``concurrency`` (the ``--shadow-concurrency`` /
+    ``--triage-concurrency`` flags). A seat that is off and unset stays out: it has no capacity
+    to describe. Every summary calls this, so none can disagree about which seats count."""
+    seats = loop.get("seats") or {}
+
+    def pinned(seat: str) -> bool:
+        return (seats.get(seat) or {}).get("concurrency") not in (None, "")
+
+    return (SEAT_KEYS
+            + (("shadow",) if shadow_profile(loop) or pinned("shadow") else ())
+            + (("triage",) if triage_enabled(loop) or pinned("triage") else ()))
+
+
 def adjudicator_login(loop: dict) -> str:
     """The optional GitHub identity the adjudicator comments as, or ``""`` for operator-only.
 
