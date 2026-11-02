@@ -228,10 +228,10 @@ def _acting(loop: dict, number: int, head: str, reviews: list | None) -> list[tu
                                    f"({error[:120]})")] if reviews is not None else [])
     for step, what in (("approve", "approval"), ("dismiss", "dismissal")):
         state = (row or {}).get(step)
-        if state == "uncertain":
+        if state in ("uncertain", "posting"):
             found.append((FAILURE, f"the {what} on the adjudicator's ACCEPT is unconfirmed "
-                                   f"({row.get('error') or 'no reason recorded'}); the next "
-                                   "sweep reads GitHub to settle it"))
+                                   f"({row.get('error') or 'being written, or interrupted'}); a "
+                                   "later sweep reads GitHub to settle it"))
         elif state == "denied":
             found.append((FAILURE, f"the {what} on the adjudicator's ACCEPT was not made: "
                                    f"{row.get('error') or 'no reason recorded'}; a person decides"))

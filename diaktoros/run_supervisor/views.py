@@ -226,19 +226,19 @@ def ruling_at(db: str | Path, repo: str, pr: int, head: str,
         return None
 
 
-def ruling_row(db: str | Path, repo: str, pr: int, head: str) -> dict | None:
-    """The newest ruling on this PR head, read-only, as ``{verdict, created, comment,
-    comment_id, head}`` (#905: when it was made, and the PR comment that cites it), or None."""
+def ruling_row(db: str | Path, repo: str, pr: int) -> dict | None:
+    """The newest ruling on this PR, at whatever head, read-only, as ``{verdict, created,
+    comment, comment_id, head, run_id}``, or None. #905 acts on it only when its head is the PR's
+    current one: a later ruling on another head voids an older one, even if the branch returns."""
+    keys = ("verdict", "created", "comment", "comment_id", "head", "run_id")
     try:
         con = read_only_connect(db)
         if con is None:
             return None
         try:
-            row = con.execute("SELECT verdict, created, comment, comment_id, head FROM rulings "
-                              "WHERE repo=? AND pr=? AND head=? ORDER BY created DESC LIMIT 1",
-                              (repo, pr, head)).fetchone()
-            return dict(zip(("verdict", "created", "comment", "comment_id", "head"), row)) \
-                if row else None
+            row = con.execute(f"SELECT {', '.join(keys)} FROM rulings WHERE repo=? AND pr=? "
+                              "ORDER BY created DESC LIMIT 1", (repo, pr)).fetchone()
+            return dict(zip(keys, row)) if row else None
         finally:
             con.close()
     except sqlite3.Error:

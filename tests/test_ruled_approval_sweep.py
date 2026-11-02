@@ -18,7 +18,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 import test_ruled_approval as tra  # noqa: E402
-from diaktoros import broker, ci, config, merge_check, pr_hold, ruled_approval  # noqa: E402
+from diaktoros import broker, ci, config, gate, merge_check, pr_hold, ruled_approval  # noqa: E402
 from diaktoros import run_supervisor  # noqa: E402
 
 PR = {**fg.LIVE, "user": {"login": "fixer"}}
@@ -104,13 +104,116 @@ class Acts(Base):
         self.ruled("ACCEPT")
         self.sweep()
         self.sweep()
+        command = f"python -m diaktoros.run_supervisor rulings {self.db}"
         for text in (self.approve.call_args.kwargs["text"],
                      self.dismiss.call_args.kwargs["message"]):
             self.assertIn("not posted as a comment (comment pending)", text)
-            self.assertIn("hermes dk explain --loop one --pr 7", text)
+            self.assertIn(f"ruling run r{self.n} in `{command}`", text)
+        # Review of #1605, round 2, F4: the cited command really prints that ruling's text.
+        import contextlib
+        import io
+        import json
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["run_supervisor", "rulings", str(self.db)]), \
+                contextlib.redirect_stdout(out):
+            run_supervisor.main()
+        printed = {row["run_id"]: row for row in json.loads(out.getvalue())}
+        self.assertEqual(printed[f"r{self.n}"]["body"], "because")
         ruling = {"comment": "posted", "comment_id": 6563270384}
         self.assertEqual(ruled_approval.cite(self.loop, 7, ruling),
                          f"https://github.com/{fg.REPO}/pull/7#issuecomment-6563270384")
+
+
+class Rulings(Base):
+    """Review of #1605, round 2: which ruling, and which review, the sweep acts on."""
+
+    def rule(self, verdict, created, head=fg.HEAD):
+        import sqlite3
+        from contextlib import closing
+        self.n += 1
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("INSERT INTO rulings(run_id,repo,pr,head,turn_key,verdict,body,created,"
+                        "updated) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (f"q{self.n}", fg.REPO, 7, head, "breach:1", verdict, "because", created,
+                         created))
+
+    def test_a_change_request_in_the_rulings_own_second_was_not_overruled(self):
+        # F2: GitHub's second-precision stamp could be up to a second after the ruling.
+        from datetime import datetime, timezone
+        second = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
+        self.rule("ACCEPT", second + 0.1)
+        self.assertEqual(self.sweep(), [])
+        self.approve.assert_not_called()
+        self.assertIsNone(ruled_approval.overruled([CHANGES], self.loop, fg.HEAD, second + 0.1))
+        self.assertIs(ruled_approval.overruled([CHANGES], self.loop, fg.HEAD, second + 1), CHANGES)
+
+    def test_a_later_ruling_on_another_head_voids_this_heads_accept(self):
+        # F5: the branch returns to an old head after a REJECT on a newer one.
+        import time
+        self.rule("ACCEPT", time.time())
+        self.rule("REJECT", time.time() + 5, head="b" * 40)
+        self.assertEqual(self.sweep(), [])
+        self.approve.assert_not_called()
+        self.assertEqual(gate.ruled_approvals([CHANGES, TUCK], self.loop, fg.HEAD), [])
+        self.rule("ACCEPT", time.time() + 10)            # ruled again at the returned head
+        self.assertEqual(gate.ruled_approvals([CHANGES, TUCK], self.loop, fg.HEAD), [TUCK])
+
+    def test_an_accept_at_an_old_head_is_never_acted_on_at_the_current_one(self):
+        # The PR moved on after an ACCEPT at "b"*40, whose change request is still listed.
+        import time
+        old = "b" * 40
+        self.rule("ACCEPT", time.time())
+        self.reviews = [tra.review(4, "CHANGES_REQUESTED", head=old), CHANGES]
+        with mock.patch.object(ruled_approval.views, "ruling_row",
+                               return_value={"verdict": "ACCEPT", "head": old, "created": 4e9,
+                                             "comment": "none", "comment_id": None,
+                                             "run_id": "q1"}):
+            self.assertEqual(self.sweep(), [])
+        self.approve.assert_not_called()
+
+
+class Interrupted(Base):
+    """Review of #1605, round 2, F3: a step left ``posting`` by a stopped process."""
+
+    def claim(self, step, age):
+        import sqlite3
+        import time
+        from contextlib import closing
+        sup = run_supervisor.Supervisor(self.db)
+        if step == "dismiss":
+            sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, "approve", "posting", overruled=5)
+            sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, "approve", "posted", review_id=9)
+            self.reviews = [CHANGES, TUCK]
+        sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, step, "posting", overruled=5)
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("UPDATE ruled_approvals SET updated=?", (time.time() - age,))
+
+    def test_an_interrupted_dismissal_that_landed_settles_as_posted_never_resent(self):
+        self.ruled("ACCEPT")
+        self.claim("dismiss", ruled_approval.POSTING_STALE_S + 1)
+        self.reviews = [DISMISSED, TUCK]                   # it landed before the stop
+        self.assertEqual(self.sweep(), [7])
+        self.dismiss.assert_not_called()
+        self.assertEqual(self.row()["dismiss"], "posted")
+
+    def test_an_interrupted_approval_that_never_landed_settles_as_denied(self):
+        self.ruled("ACCEPT")
+        self.claim("approve", ruled_approval.POSTING_STALE_S + 1)
+        self.assertEqual(self.sweep(), [7])
+        self.approve.assert_not_called()
+        self.assertEqual(self.row()["approve"], "denied")
+        self.assertIn("interrupted", self.row()["error"])
+
+    def test_a_fresh_posting_step_is_left_alone_but_keeps_the_check_red(self):
+        from diaktoros import ready
+        self.ruled("ACCEPT")
+        self.claim("dismiss", 5)
+        self.reviews = [DISMISSED, TUCK]
+        self.assertEqual(self.sweep(), [])
+        self.assertEqual(self.row()["dismiss"], "posting")
+        lines = ready._acting(self.loop, 7, fg.HEAD, list(self.reviews))
+        self.assertTrue(lines and lines[0][0] == ready.FAILURE, lines)
+        self.assertIn("unconfirmed (being written, or interrupted)", lines[0][1])
 
 
 class DoesNothing(Base):
@@ -298,6 +401,14 @@ class LeftToAPerson(Base):
         self.dismiss.assert_not_called()
         self.assertEqual(self.row()["dismiss"], "denied")
         self.assertIn("changes_requested 17", self.row()["error"])
+
+    def test_the_reviewers_own_later_approval_leaves_nothing_to_dismiss(self):
+        self.ruled("ACCEPT")
+        self.sweep()
+        self.reviews = [*self.reviews, tra.review(18, "APPROVED", at="2026-01-03T00:00:00Z")]
+        self.sweep()
+        self.dismiss.assert_not_called()
+        self.assertEqual((self.row()["dismiss"], self.row()["error"]), ("none", None))
 
     def test_a_change_request_from_after_the_ruling_was_not_overruled(self):
         self.ruled("ACCEPT")

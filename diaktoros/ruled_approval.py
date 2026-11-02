@@ -28,6 +28,8 @@ an unreadable read) writes nothing and is checked again on the next sweep.
 """
 from __future__ import annotations
 
+import time
+
 from . import broker, ci, config, gate, gh, pr_hold
 from .run_supervisor import Supervisor, production_ledger, views
 
@@ -43,9 +45,9 @@ def sweep(loop: dict, st, prs: list, log=lambda _msg: None) -> list[int]:
         if (listed := config.loop_pr(loop, pr)) is None:
             continue
         number, head, _author = listed
-        ruling = views.ruling_row(db, loop["repo"], number, head)
-        if not ruling or ruling["verdict"] != "ACCEPT":
-            continue
+        ruling = views.ruling_row(db, loop["repo"], number)
+        if not ruling or (ruling["head"], ruling["verdict"]) != (head, "ACCEPT"):
+            continue                           # the PR's newest ruling: an ACCEPT at this head
         try:
             if _act(loop, st, Supervisor(db, create=False), pr, ruling, log):
                 moved.append(number)
@@ -60,14 +62,15 @@ def sweep(loop: dict, st, prs: list, log=lambda _msg: None) -> list[int]:
 
 def overruled(reviews: list, loop: dict, head: str, ruled_at: float) -> dict | None:
     """The one review an ACCEPT at ``head`` overruled: the reviewer seat's latest effective
-    verdict there, a change request submitted before the ruling. None when there is none, or
-    when it can't be told (an unproved order): then nothing is dismissed."""
+    verdict there, a change request submitted before the ruling. GitHub dates a review to the
+    second, so one dated within the ruling's own second may have come after it. None when there
+    is none, or when it can't be told (an unproved order): then nothing is dismissed."""
     mine = [r for r in reviews if isinstance(r, dict) and gate.is_reviewer(r, loop)]
     latest = gate.latest_effective_review_at_head(mine, loop, head)
     if latest is None or gh.review_state(latest) != "CHANGES_REQUESTED":
         return None
     when = gate._review_when(latest)
-    return latest if when is not None and when[0].timestamp() <= float(ruled_at) else None
+    return latest if when is not None and when[0].timestamp() + 1 <= float(ruled_at) else None
 
 
 def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
@@ -100,16 +103,29 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
     if not gate.is_ruled_approval(latest, loop):
         if latest is None:
             return False                               # the approval not readable yet: wait
+        if gh.review_state(latest) == "APPROVED":      # the reviewer approved: its own block
+            return sup.ruled_approval_step(repo, number, head, "dismiss", "none")   # is lifted
         return sup.ruled_approval_step(
             repo, number, head, "dismiss", "denied",
             error=f"a newer verdict at the head ({_named(latest)}) supersedes the approval")
     return _dismiss(loop, sup, ruling, reviews, number, branch, row.get("overruled"), log)
 
 
+POSTING_STALE_S = 300   # a write is answered in well under this: a posting step older is cut off
+
+
 def _reconcile(loop: dict, sup, row: dict, reviews: list, number: int, head: str, log) -> bool:
     """Settle an ``uncertain`` step from what GitHub now shows, never by writing again: the
-    adjudicator's approval at the head is there, or the overruled review is dismissed."""
+    adjudicator's approval at the head is there, or the overruled review is dismissed. A step
+    left ``posting`` past ``POSTING_STALE_S`` (the process stopped after claiming the write) is
+    uncertain too: its write may or may not have landed."""
     repo = loop["repo"]
+    for step in ("approve", "dismiss"):
+        if row.get(step) == "posting" and time.time() - float(row.get("updated") or 0) > \
+                POSTING_STALE_S and sup.ruled_approval_step(
+                    repo, number, head, step, "uncertain",
+                    error="interrupted after the write was claimed; outcome unknown"):
+            row = {**row, step: "uncertain"}
     if row.get("approve") == "uncertain":
         found = gate.ruled_approvals(reviews, loop, head)
         state = "posted" if found else "denied"
@@ -146,12 +162,14 @@ def _wait_or_deny(loop: dict, st, number: int, head: str) -> tuple[str, str]:
 
 
 def cite(loop: dict, number: int, ruling: dict) -> str:
-    """Where the ruling can be read: its PR comment's link, or, with none, the ledger."""
+    """Where the ruling can be read: its PR comment's link, or, with none, the host command that
+    prints its full text from the run ledger."""
     if type(ruling.get("comment_id")) is int and ruling.get("comment") == "posted":
         return (f"https://github.com/{loop['repo']}/pull/{number}"
                 f"#issuecomment-{ruling['comment_id']}")
-    return (f"not posted as a comment (comment {ruling.get('comment') or 'unknown'}); read it with "
-            f"`hermes dk explain --loop {loop.get('id') or '<loop>'} --pr {number}`")
+    return (f"not posted as a comment (comment {ruling.get('comment') or 'unknown'}); its full text "
+            f"is ruling run {ruling.get('run_id') or '?'} in `python -m diaktoros.run_supervisor "
+            f"rulings {production_ledger()}` on the host")
 
 
 def _approve(loop: dict, sup, ruling: dict, number: int, branch: str, target: int, log) -> bool:
