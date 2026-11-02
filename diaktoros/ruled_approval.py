@@ -20,7 +20,9 @@ approval only while an ACCEPT backs it and it is the head's newest verdict
 verdict from the reviewer after the approval stops the dismissal for a person. Any other blocking
 review (a maintainer's, one at another head) is never dismissed: the merge check names it.
 
-Each write is recorded before it is sent (``ruled_approvals``) and never sent again. A lost
+Each write is recorded before it is sent (``ruled_approvals``, a record per ruling) and never
+sent again; a later ACCEPT at the same head is acted on afresh, once every earlier ruling's write
+there is settled. A lost
 response is ``uncertain`` until a later sweep reads GitHub: the approval or dismissal is there
 (``posted``) or it is not (``denied``). A refusal is ``denied`` with its reason. ``ready`` and the
 merge check show an uncertain or denied step with its reason. A wait (red or running CI, a hold,
@@ -74,14 +76,18 @@ def overruled(reviews: list, loop: dict, head: str, ruled_at: float) -> dict | N
 
 
 def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
-    """Approve, then dismiss, for one PR whose newest ruling at its head is ACCEPT."""
-    repo, number, head = loop["repo"], int(pr["number"]), ruling["head"]
+    """Approve, then dismiss, for one PR whose newest ruling at its head is ACCEPT, as this
+    ruling's record says; an earlier ruling's record there is only settled (its write in flight
+    stops this ruling's claim, ``ruled_approval_step(claim=True)``)."""
+    repo, number, head, run = loop["repo"], int(pr["number"]), ruling["head"], ruling["run_id"]
     reviews = gh.reviews(loop, number)
     if not isinstance(reviews, list):
         return False
-    row = sup.ruled_approval(repo, number, head) or {}
-    if _reconcile(loop, sup, row, reviews, number, head, log):
+    rows = sup.ruled_approvals(repo, number, head)
+    settled = [_reconcile(loop, sup, r, reviews, number, log) for r in rows]   # every one
+    if any(settled):
         return True                                    # an uncertain step, settled from GitHub
+    row = next((r for r in rows if r["ruling"] == run), {})
     if row.get("dismiss", "pending") != "pending" or row.get("approve") in (
             "denied", "uncertain", "posting"):
         return False                                   # done, left for a person, or being written
@@ -90,7 +96,7 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
         return False                                   # a newer ruling since: the next sweep sees it
     step = "approve" if row.get("approve", "pending") == "pending" else "dismiss"
     if deny:
-        return sup.ruled_approval_step(repo, number, head, step, "denied", error=deny[:200])
+        return sup.ruled_approval_step(repo, number, head, run, step, "denied", error=deny[:200])
     branch = str((pr.get("head") or {}).get("ref") or "")
     latest = gate.latest_effective_review_at_head(reviews, loop, head)
     if step == "approve":
@@ -98,16 +104,16 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
         if found is None:
             return False                               # no change request it overruled
         if gate.is_ruled_approval(latest, loop):       # approved already, by hand
-            return sup.ruled_approval_step(repo, number, head, "approve", "none",
+            return sup.ruled_approval_step(repo, number, head, run, "approve", "none",
                                            overruled=found["id"])
         return _approve(loop, sup, ruling, number, branch, found["id"], log)
     if not gate.is_ruled_approval(latest, loop):
         if latest is None:
             return False                               # the approval not readable yet: wait
         if gh.review_state(latest) == "APPROVED":      # the reviewer approved: its own block
-            return sup.ruled_approval_step(repo, number, head, "dismiss", "none")   # is lifted
+            return sup.ruled_approval_step(repo, number, head, run, "dismiss", "none")   # is lifted
         return sup.ruled_approval_step(
-            repo, number, head, "dismiss", "denied",
+            repo, number, head, run, "dismiss", "denied",
             error=f"a newer verdict at the head ({_named(latest)}) supersedes the approval")
     return _dismiss(loop, sup, ruling, reviews, number, branch, row.get("overruled"), log)
 
@@ -115,32 +121,47 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
 POSTING_STALE_S = 300   # a write is answered in well under this: a posting step older is cut off
 
 
-def _reconcile(loop: dict, sup, row: dict, reviews: list, number: int, head: str, log) -> bool:
-    """Settle an ``uncertain`` step from what GitHub now shows, never by writing again: the
-    adjudicator's approval at the head is there, or the overruled review is dismissed. A step
+def _reconcile(loop: dict, sup, row: dict, reviews: list, number: int, log) -> bool:
+    """Settle an ``uncertain`` step of one ruling's record from what GitHub now shows, never by
+    writing again: the adjudicator's approval at the head naming that ruling is there, or the
+    overruled review is dismissed. A step
     left ``posting`` past ``POSTING_STALE_S`` (the process stopped after claiming the write) is
     uncertain too: its write may or may not have landed."""
-    repo = loop["repo"]
+    repo, head, run = loop["repo"], row["head"], row["ruling"]
     for step in ("approve", "dismiss"):
         if row.get(step) == "posting" and time.time() - float(row.get("updated") or 0) > \
                 POSTING_STALE_S and sup.ruled_approval_step(
-                    repo, number, head, step, "uncertain",
+                    repo, number, head, run, step, "uncertain",
                     error="interrupted after the write was claimed; outcome unknown"):
             row = {**row, step: "uncertain"}
     if row.get("approve") == "uncertain":
-        found = gate.ruled_approvals(reviews, loop, head)
+        found = _landed(loop, reviews, head, run)
         state = "posted" if found else "denied"
-        sup.ruled_approval_step(repo, number, head, "approve", state,
+        sup.ruled_approval_step(repo, number, head, run, "approve", state,
                                 review_id=found[0]["id"] if found else None)
     elif row.get("dismiss") == "uncertain":
         target = next((r for r in reviews if isinstance(r, dict)
                        and r.get("id") == row.get("overruled")), None)
         state = "posted" if target and gh.review_state(target) == "DISMISSED" else "denied"
-        sup.ruled_approval_step(repo, number, head, "dismiss", state)
+        sup.ruled_approval_step(repo, number, head, run, "dismiss", state)
     else:
         return False
     log(f"#{number} @ {head[:7]}: an uncertain write on the ACCEPT read back as {state}")
     return True
+
+
+def _landed(loop: dict, reviews: list, head: str, run: str) -> list:
+    """The adjudicator's approval at ``head`` that names ruling ``run`` in its text: only that
+    write's own review, never one an earlier ruling at the head posted."""
+    login = config.adjudicator_login(loop).lower()
+    return [r for r in reviews if isinstance(r, dict) and gate.reviewer_login(r) == login
+            and r.get("commit_id") == head and gh.review_state(r) == "APPROVED"
+            and ruling_tag(run) in str(r.get("body") or "")]
+
+
+def ruling_tag(run: str) -> str:
+    """How an approval on a ruling names it, so its own write can be told from another's."""
+    return f"ruling `{run}`"
 
 
 def _wait_or_deny(loop: dict, st, number: int, head: str) -> tuple[str, str]:
@@ -173,7 +194,7 @@ def _still_current(loop: dict, number: int, ruling: dict, step: str, target) -> 
     """Right before a write, read the reviews again: the write goes ahead only if they still call
     for this exact write. A verdict the reviewer posts while the sweep reads CI, paths or holds
     supersedes the snapshot it began with, and nothing is written. The ruling is checked after
-    this, in the ledger transaction that claims the write (``ruled_approval_step(ruling=...)``)."""
+    this, in the ledger transaction that claims the write (``ruled_approval_step(claim=True)``)."""
     reviews, head = gh.reviews(loop, number), ruling["head"]
     if not isinstance(reviews, list):
         return False
@@ -199,30 +220,30 @@ def cite(loop: dict, number: int, ruling: dict) -> str:
 
 def _approve(loop: dict, sup, ruling: dict, number: int, branch: str, target: int, log) -> bool:
     """The approval step, with the review it overrules recorded first."""
-    repo, head = loop["repo"], ruling["head"]
+    repo, head, run = loop["repo"], ruling["head"], ruling["run_id"]
     try:
         login = broker.authorize_adjudicator(loop, repo=repo, number=number, head=head,
                                              branch=branch)
     except broker.BrokerDenied as exc:
-        sup.ruled_approval_step(repo, number, head, "approve", "denied", error=str(exc)[:200])
+        sup.ruled_approval_step(repo, number, head, run, "approve", "denied", error=str(exc)[:200])
         log(f"#{number} @ {head[:7]}: not approved on the ACCEPT: {exc}")
         return True
     if not _still_current(loop, number, ruling, "approve", target) or not sup.ruled_approval_step(
-            repo, number, head, "approve", "posting", overruled=target, ruling=ruling["run_id"]):
+            repo, number, head, run, "approve", "posting", overruled=target, claim=True):
         return False
-    text = (f"Approved on the adjudicator's ACCEPT ruling at `{head[:7]}` "
-            f"({cite(loop, number, ruling)}): the ruling found the remaining change request "
+    text = (f"Approved on the adjudicator's ACCEPT ruling at `{head[:7]}` ({ruling_tag(run)}, "
+            f"{cite(loop, number, ruling)}): the ruling found the remaining change request "
             "does not block. The reviewer did not re-review this head; this is the "
             "adjudicator's decision.")
     try:
         review_id = broker.approve_on_ruling(loop, repo=repo, number=number, head=head,
                                              branch=branch, login=login, text=text)
     except Exception as exc:  # noqa: BLE001 - the POST may have landed: never replayed
-        sup.ruled_approval_step(repo, number, head, "approve", "uncertain",
+        sup.ruled_approval_step(repo, number, head, run, "approve", "uncertain",
                                 error=f"POST outcome unknown: {type(exc).__name__}: {exc}"[:200])
         log(f"#{number} @ {head[:7]}: the approval on the ACCEPT is uncertain: {exc}")
         return True
-    sup.ruled_approval_step(repo, number, head, "approve", "posted", review_id=review_id)
+    sup.ruled_approval_step(repo, number, head, run, "approve", "posted", review_id=review_id)
     log(f"#{number} @ {head[:7]}: approved on the adjudicator's ACCEPT (review {review_id})")
     return True
 
@@ -230,18 +251,18 @@ def _approve(loop: dict, sup, ruling: dict, number: int, branch: str, target: in
 def _dismiss(loop: dict, sup, ruling: dict, reviews: list, number: int, branch: str,
              target, log) -> bool:
     """The dismissal step: the one review the ruling overruled, never another."""
-    repo, head = loop["repo"], ruling["head"]
+    repo, head, run = loop["repo"], ruling["head"], ruling["run_id"]
     review = next((r for r in reviews if isinstance(r, dict) and r.get("id") == target), None)
     if review is None or gh.review_state(review) != "CHANGES_REQUESTED":
-        return sup.ruled_approval_step(repo, number, head, "dismiss", "none")
+        return sup.ruled_approval_step(repo, number, head, run, "dismiss", "none")
     try:
         login = broker.authorize_adjudicator(loop, repo=repo, number=number, head=head,
                                              branch=branch)
     except broker.BrokerDenied as exc:
-        return sup.ruled_approval_step(repo, number, head, "dismiss", "denied",
+        return sup.ruled_approval_step(repo, number, head, run, "dismiss", "denied",
                                        error=str(exc)[:200])
     if not _still_current(loop, number, ruling, "dismiss", target) or not sup.ruled_approval_step(
-            repo, number, head, "dismiss", "posting", ruling=ruling["run_id"]):
+            repo, number, head, run, "dismiss", "posting", claim=True):
         return False
     message = (f"Dismissed on the adjudicator's ACCEPT ruling at {head[:7]}, which overruled "
                f"this change request: {cite(loop, number, ruling)}")
@@ -249,11 +270,11 @@ def _dismiss(loop: dict, sup, ruling: dict, reviews: list, number: int, branch: 
         broker.dismiss_on_ruling(loop, repo=repo, number=number, head=head, branch=branch,
                                  login=login, review_id=target, message=message)
     except Exception as exc:  # noqa: BLE001 - the PUT may have landed: never replayed
-        sup.ruled_approval_step(repo, number, head, "dismiss", "uncertain",
+        sup.ruled_approval_step(repo, number, head, run, "dismiss", "uncertain",
                                 error=f"dismissal outcome unknown: {type(exc).__name__}: {exc}"[:200])
         log(f"#{number} @ {head[:7]}: the dismissal on the ACCEPT is uncertain: {exc}")
         return True
-    sup.ruled_approval_step(repo, number, head, "dismiss", "posted")
+    sup.ruled_approval_step(repo, number, head, run, "dismiss", "posted")
     others = [r for r in gate.blocking_reviews(reviews) if r.get("id") != target]
     log(f"#{number} @ {head[:7]}: dismissed review {target} on the ACCEPT; "
         + (f"{_named(others[0])} still blocks, for a person" if others else

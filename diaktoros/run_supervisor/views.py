@@ -245,24 +245,25 @@ def ruling_row(db: str | Path, repo: str, pr: int) -> dict | None:
         return None
 
 
-def ruled_approval(db: str | Path, repo: str, pr: int, head: str) -> tuple[dict | None, str]:
-    """``(row, error)``: how the adjudicator acted on its ACCEPT at this head (#905), read-only.
-    No row and no error: it has not acted. An error is never "not acted"."""
+def ruled_approvals(db: str | Path, repo: str, pr: int, head: str) -> tuple[list[dict], str]:
+    """``(rows, error)``: how the adjudicator acted on each ACCEPT at this head (#905), one row
+    per ruling, oldest first, read-only. No rows and no error: it has not acted. An error is never
+    "not acted"."""
     try:
         con = read_only_connect(db)
         if con is None:
-            return None, ""
+            return [], ""
         try:
-            cur = con.execute("SELECT * FROM ruled_approvals WHERE repo=? AND pr=? AND head=?",
-                              (repo, pr, head))
-            row = cur.fetchone()
-            return (dict(zip([c[0] for c in cur.description], row)) if row else None), ""
+            cur = con.execute("SELECT * FROM ruled_approvals WHERE repo=? AND pr=? AND head=? "
+                              "ORDER BY created, rowid", (repo, pr, head))
+            keys = [c[0] for c in cur.description]
+            return [dict(zip(keys, row)) for row in cur.fetchall()], ""
         finally:
             con.close()
     except sqlite3.Error as exc:
         if "no such table" in str(exc):
-            return None, ""                # a ledger from before #905: nothing acted on
-        return None, f"{type(exc).__name__}: {exc}"
+            return [], ""                  # a ledger from before #905: nothing acted on
+        return [], f"{type(exc).__name__}: {exc}"
 
 def dependency_view(db: str | Path, repo: str, pr: int | None = None,
                     limit: int = 5) -> list[dict] | None:

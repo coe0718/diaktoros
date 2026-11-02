@@ -49,8 +49,8 @@ class Base(tra.Base):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def _approved(self, *_a, **_kw):
-        self.reviews = [*self.reviews, TUCK]
+    def _approved(self, *_a, **kw):
+        self.reviews = [*self.reviews, {**TUCK, "body": kw.get("text", "")}]
         return TUCK["id"]
 
     def _dismissed(self, *_a, review_id, **_kw):
@@ -60,7 +60,9 @@ class Base(tra.Base):
         return ruled_approval.sweep(self.loop, self.st, [PR], self.logged.append)
 
     def row(self):
-        return run_supervisor.Supervisor(self.db).ruled_approval(fg.REPO, 7, fg.HEAD)
+        """The newest ruling's record at the head: the one acted on last."""
+        rows = run_supervisor.Supervisor(self.db).ruled_approvals(fg.REPO, 7, fg.HEAD)
+        return rows[-1] if rows else None
 
 
 class Acts(Base):
@@ -262,12 +264,12 @@ class Interrupted(Base):
         import sqlite3
         import time
         from contextlib import closing
-        sup = run_supervisor.Supervisor(self.db)
+        sup, run = run_supervisor.Supervisor(self.db), f"r{self.n}"
         if step == "dismiss":
-            sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, "approve", "posting", overruled=5)
-            sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, "approve", "posted", review_id=9)
+            sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, run, "approve", "posting", overruled=5)
+            sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, run, "approve", "posted", review_id=9)
             self.reviews = [CHANGES, TUCK]
-        sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, step, "posting", overruled=5)
+        sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, run, step, "posting", overruled=5)
         with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("UPDATE ruled_approvals SET updated=?", (time.time() - age,))
 
@@ -433,7 +435,7 @@ class LeftToAPerson(Base):
     def test_a_lost_approval_that_landed_settles_as_posted(self):
         self.ruled("ACCEPT")
         def landed(*a, **kw):
-            self._approved()
+            self._approved(**kw)
             raise TimeoutError("read timed out")
         self.approve.side_effect = landed
         self.sweep()
@@ -519,16 +521,82 @@ class LeftToAPerson(Base):
                 self.assertEqual(self.row()["dismiss"], state)
 
 
+class LaterRuling(Base):
+    """Review of #1605, round 8, F12: the record is a ruling's, not a head's. A later ACCEPT at the
+    same head is acted on afresh; an earlier ruling's write there is settled first, never sent
+    again, and only that write's own review settles it."""
+
+    def test_a_later_accept_acts_after_an_earlier_one_was_denied(self):
+        self.ruled("ACCEPT")
+        self.paths = ("", "docs/reserved.md")
+        self.sweep()
+        self.assertEqual(self.row()["approve"], "denied")
+        self.paths = ("", "")                              # the restriction is cleared...
+        self.ruled("ACCEPT")                               # ...and a new ACCEPT at the head
+        self.sweep()
+        self.sweep()
+        self.approve.assert_called_once()
+        self.dismiss.assert_called_once()
+        self.assertEqual((self.row()["ruling"], self.row()["approve"], self.row()["dismiss"]),
+                         (f"r{self.n}", "posted", "posted"))
+        lines = ready_mod().acting(self.loop, 7, fg.HEAD, list(self.reviews), self.reviews[-1])
+        self.assertEqual(lines, [])                        # the earlier denial no longer stands
+
+    def test_an_earlier_uncertain_approval_that_landed_is_not_sent_again(self):
+        self.ruled("ACCEPT")
+        def landed(*a, **kw):
+            self._approved(**kw)
+            raise TimeoutError("read timed out")
+        self.approve.side_effect = landed
+        self.sweep()
+        self.ruled("ACCEPT")
+        self.assertEqual(self.sweep(), [7])                # settles the earlier write only
+        self.approve.assert_called_once()
+        rows = run_supervisor.Supervisor(self.db).ruled_approvals(fg.REPO, 7, fg.HEAD)
+        self.assertEqual([(r["ruling"], r["approve"]) for r in rows], [("r1", "posted")])
+        self.sweep()                                       # the approval stands: only dismissed
+        self.sweep()
+        self.approve.assert_called_once()
+        self.dismiss.assert_called_once()
+        self.assertEqual((self.row()["approve"], self.row()["dismiss"]), ("none", "posted"))
+
+    def test_an_earlier_rulings_approval_never_settles_a_later_uncertain_one(self):
+        self.ruled("ACCEPT")
+        self.sweep()                                       # approved on the first ruling
+        newer = tra.review(29, "CHANGES_REQUESTED", at="2026-01-04T00:00:00Z")
+        self.reviews = [*self.reviews, newer]
+        self.sweep()                                       # its dismissal: superseded
+        self.assertEqual(self.row()["dismiss"], "denied")
+        self.ruled("ACCEPT")                               # a new ACCEPT overrules the newer one
+        self.approve.side_effect = TimeoutError("read timed out")   # and its approval is lost
+        self.sweep()
+        self.assertEqual((self.row()["ruling"], self.row()["approve"]), (f"r{self.n}", "uncertain"))
+        self.sweep()                                       # only the first ruling's approval there
+        self.assertEqual(self.row()["approve"], "denied")
+        self.assertEqual(self.approve.call_count, 2)
+
+    def test_a_later_rulings_claim_waits_for_an_earlier_write_in_flight(self):
+        sup = run_supervisor.Supervisor(self.db)
+        self.ruled("ACCEPT")
+        sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, "r1", "approve", "posting", overruled=5)
+        self.ruled("ACCEPT")
+        claim = lambda: sup.ruled_approval_step(  # noqa: E731
+            fg.REPO, 7, fg.HEAD, "r2", "approve", "posting", overruled=5, claim=True)
+        self.assertFalse(claim())
+        sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, "r1", "approve", "posted", review_id=9)
+        self.assertTrue(claim())
+
+
 class Overlap(Base):
     def test_a_fresh_approval_still_being_written_makes_the_sweep_wait(self):
         # Review of #1605, round 3, F6: never take the dismissal step past a posting approval.
         self.ruled("ACCEPT")
-        sup = run_supervisor.Supervisor(self.db)
-        sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, "approve", "posting", overruled=5)
+        sup, run = run_supervisor.Supervisor(self.db), f"r{self.n}"
+        sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, run, "approve", "posting", overruled=5)
         self.assertEqual(self.sweep(), [])
         self.dismiss.assert_not_called()
         self.assertEqual((self.row()["approve"], self.row()["dismiss"]), ("posting", "pending"))
-        sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, "approve", "posted", review_id=9)
+        sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, run, "approve", "posted", review_id=9)
         self.reviews = [CHANGES, TUCK]                     # the approval landed
         self.sweep()
         self.dismiss.assert_called_once()
@@ -624,8 +692,8 @@ class CheckShowsIt(Base):
         self.mark_escalated(by="dispute")
         self.ruled("ACCEPT")
         self.reviews = [DISMISSED, TUCK]
-        with mock.patch.object(run_supervisor.views, "ruled_approval",
-                               return_value=(None, "OperationalError: disk I/O error")):
+        with mock.patch.object(run_supervisor.views, "ruled_approvals",
+                               return_value=([], "OperationalError: disk I/O error")):
             kinds = self.kinds()
         self.assertEqual(merge_check.decide(kinds)[0], merge_check.FAILURE)
         self.assertIn("can't be read", kinds[-1][1])
@@ -634,7 +702,7 @@ class CheckShowsIt(Base):
 class Steps(Base):
     def test_a_step_only_moves_forward(self):
         sup = run_supervisor.Supervisor(self.db)
-        step = lambda *a, **kw: sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, *a, **kw)  # noqa: E731
+        step = lambda *a, **kw: sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, "r1", *a, **kw)  # noqa: E731
         self.assertFalse(step("approve", "posted"))           # not before posting
         self.assertTrue(step("approve", "posting"))
         self.assertFalse(step("approve", "posting"))          # a second sweep claims nothing
@@ -647,7 +715,7 @@ class Steps(Base):
         self.assertFalse(step("dismiss", "denied"))
         with self.assertRaises(ValueError):
             step("merge", "posting")
-        self.assertEqual(sup.ruled_approval(fg.REPO, 7, fg.HEAD)["review_id"], 9)
+        self.assertEqual(sup.ruled_approvals(fg.REPO, 7, fg.HEAD)[0]["review_id"], 9)
 
 
 class BrokerWrites(unittest.TestCase):

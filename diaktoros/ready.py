@@ -222,27 +222,32 @@ def acting(loop: dict, number: int, head: str, reviews: list | None,
     GitHub still counts, or an uncertain or denied step with its reason, keeps the check red.
     Once the reviewer itself approves, the record no longer holds the head (that approval lifts
     the reviewer's own request), but where the sweep acted, every other account's change request
-    GitHub still counts does."""
+    GitHub still counts does. The sweep keeps a record per ruling: any of them may be unconfirmed,
+    but only the newest ruling's denial stands (a later ACCEPT is acted on afresh)."""
     from .run_supervisor import production_ledger, views
     on_ruling = gate.is_ruled_approval(latest, loop)
-    row, error = views.ruled_approval(production_ledger(), loop["repo"], number, head)
+    db = production_ledger()
+    rows, error = views.ruled_approvals(db, loop["repo"], number, head)
     if latest is not None and not on_ruling and gh.review_state(latest) == "APPROVED":
         return [(FAILURE, f"{gate.reviewer_login(r) or '?'}'s changes-requested review "
                           f"{r.get('id')} still blocks GitHub's merge until it is dismissed")
-                for r in gate.blocking_reviews(reviews or [])] if row or error else []
+                for r in gate.blocking_reviews(reviews or [])] if rows or error else []
     found = [(FAILURE, line) for line in unlifted(reviews or [])] if on_ruling else []
     if error:
         return found + ([(FAILURE, f"the record of acting on the ACCEPT can't be read "
                                    f"({error[:120]})")] if on_ruling else [])
-    for step, what in (("approve", "approval"), ("dismiss", "dismissal")):
-        state = (row or {}).get(step)
-        if state in ("uncertain", "posting"):
-            found.append((FAILURE, f"the {what} on the adjudicator's ACCEPT is unconfirmed "
-                                   f"({row.get('error') or 'being written, or interrupted'}); a "
-                                   "later sweep reads GitHub to settle it"))
-        elif state == "denied":
-            found.append((FAILURE, f"the {what} on the adjudicator's ACCEPT was not made: "
-                                   f"{row.get('error') or 'no reason recorded'}; a person decides"))
+    newest = (views.ruling_row(db, loop["repo"], number) or {}).get("run_id")
+    for row in rows:
+        for step, what in (("approve", "approval"), ("dismiss", "dismissal")):
+            state = row.get(step)
+            if state in ("uncertain", "posting"):
+                found.append((FAILURE, f"the {what} on the adjudicator's ACCEPT is unconfirmed "
+                                       f"({row.get('error') or 'being written, or interrupted'}); "
+                                       "a later sweep reads GitHub to settle it"))
+            elif state == "denied" and row.get("ruling") == newest:
+                found.append((FAILURE, f"the {what} on the adjudicator's ACCEPT was not made: "
+                                       f"{row.get('error') or 'no reason recorded'}; a person "
+                                       "decides"))
     return found
 
 
