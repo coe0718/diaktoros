@@ -228,6 +228,64 @@ def _init_seat_concurrency(args, d: dict) -> dict:
     return out
 
 
+def _init_shadow(args, d: dict) -> dict:
+    """The shadow block (#218, #1004): each flag wins, else the plugin settings. Built before the
+    loop dict so a bad value is a refusal: raises ``config.ConfigError``."""
+    def given(key: str):
+        value = getattr(args, key, None)
+        return value if value is not None else settings_form._form_value(d, key)
+    return settings_form.shadow_block(
+        {}, given("shadow_profile"), given("shadow_every"), "init",
+        escalate=given("shadow_escalate"), file_issues=given("shadow_file_issues"),
+        issues_daily=given("shadow_issues_daily")) or {}
+
+
+def _init_settings(args, d: dict) -> dict:
+    """``init``'s loop settings, each from its flag, else the plugin settings form (``d``)."""
+    return {
+        # Sign what the loop posts (#197): on unless --attribution off or the form says so.
+        "attribution": cli_common._attribution_arg(args, d["attribution"]),
+        # Each as asked, else the form's. review_only_update (host merge pushes to a review-only
+        # author's branch) is also refused below unless acknowledged.
+        **{key: cli_common._on_off(args, key, d[key]) for key in (
+            "review_after_ci", "fix_ci", "fixer_scope_lock", "adjudicator_approves",
+            "review_only_update")},
+        # The checks CI always runs, which a fixer running only its touched tests would miss.
+        "fixer_check": (d["fixer_check"] if getattr(args, "fixer_check", None) is None
+                        else args.fixer_check),
+        "merge_check": (getattr(args, "merge_check", None)
+                        or str(d.get("merge_check") or "").strip().lower() or "auto"),
+        "ingress": (getattr(args, "ingress", None)
+                    or str(d.get("ingress") or "").strip().lower() or "repo-hooks"),
+        "ingress_app": (getattr(args, "ingress_app", None) or str(d.get("ingress_app") or "").strip()),
+        # The checks that gate an approval (#368); none named = every check gates.
+        "required_checks": (lists.split_check_names(d["required_checks"])
+                            if getattr(args, "required_check", None) is None
+                            else [name for name in args.required_check if name.strip()]),
+        # Paths only a human may approve (#478).
+        "human_paths": (lists.split_human_paths(d["human_paths"])
+                        if getattr(args, "human_path", None) is None
+                        else [name for name in args.human_path if name.strip()]),
+        # Generated files the host regenerates on a conflict (#551).
+        "generated": lists.parse_generated(
+            lists.split_generated(d["generated"]) if getattr(args, "generated", None) is None
+            else args.generated, "--generated"),
+        # What each CI check covers, told to the reviewer (#756).
+        "ci_coverage": lists.parse_ci_coverage(
+            lists.split_ci_coverage(d["ci_coverage"]) if getattr(args, "ci_covers", None) is None
+            else args.ci_covers, "--ci-covers"),
+        # Authors reviewed but never fixed (#191).
+        "review_only": ([name.strip() for name in str(d["review_only"]).split(",") if name.strip()]
+                        if getattr(args, "review_only", None) is None
+                        else [name for name in args.review_only if name.strip()]),
+        # Agents that post as the operator's account (#757).
+        "operator_agents": ([name.strip() for name in str(d["operator_agents"]).split(",")
+                             if name.strip()]
+                            if getattr(args, "operator_agent", None) is None
+                            else [name for name in args.operator_agent if name.strip()]),
+    }
+
+
 def _init_hooks_preview(loop: dict, args) -> list[str]:
     """``init --hooks --dry-run``'s hook lines (#1391): one hook per role ``_install_hooks``
     creates (``config.hook_roles``), not a fixed count, and none when events arrive through the
@@ -356,19 +414,7 @@ def cmd_init(args) -> int:
     # Shadow reviews (#218, #1004): the flags win, else the plugin settings. Built before the
     # loop dict so a bad value is a refusal, not a traceback.
     try:
-        shadow = settings_form.shadow_block(
-            {}, (args.shadow_profile if getattr(args, "shadow_profile", None) is not None
-                 else settings_form._form_value(d, "shadow_profile")),
-            (args.shadow_every if getattr(args, "shadow_every", None) is not None
-             else settings_form._form_value(d, "shadow_every")), "init",
-            escalate=(args.shadow_escalate if getattr(args, "shadow_escalate", None) is not None
-                      else settings_form._form_value(d, "shadow_escalate")),
-            file_issues=(args.shadow_file_issues
-                         if getattr(args, "shadow_file_issues", None) is not None
-                         else settings_form._form_value(d, "shadow_file_issues")),
-            issues_daily=(args.shadow_issues_daily
-                          if getattr(args, "shadow_issues_daily", None) is not None
-                          else settings_form._form_value(d, "shadow_issues_daily"))) or {}
+        shadow = _init_shadow(args, d)
     except config.ConfigError as exc:
         print(f"refused: {exc}")
         return 2
@@ -400,46 +446,8 @@ def cmd_init(args) -> int:
         "ttl_min": args.ttl_min, "inflight_ttl_min": args.inflight_ttl_min,
         "turn_budget_s": getattr(args, "turn_budget", None),
         "observer": _observer_args(args, args.id or args.repo.split("/")[-1]),
-        # Sign what the loop posts (#197): on unless --attribution off or the form says so.
-        "attribution": cli_common._attribution_arg(args, d["attribution"]),
-        # Each as asked, else the form's. review_only_update (host merge pushes to a review-only
-        # author's branch) is also refused below unless acknowledged.
-        **{key: cli_common._on_off(args, key, d[key]) for key in (
-            "review_after_ci", "fix_ci", "fixer_scope_lock", "adjudicator_approves",
-            "review_only_update")},
-        # The checks CI always runs, which a fixer running only its touched tests would miss.
-        "fixer_check": (d["fixer_check"] if getattr(args, "fixer_check", None) is None
-                        else args.fixer_check),
-        "merge_check": (getattr(args, "merge_check", None)
-                        or str(d.get("merge_check") or "").strip().lower() or "auto"),
-        "ingress": (getattr(args, "ingress", None)
-                    or str(d.get("ingress") or "").strip().lower() or "repo-hooks"),
-        "ingress_app": (getattr(args, "ingress_app", None) or str(d.get("ingress_app") or "").strip()),
-        # The checks that gate an approval (#368); none named = every check gates.
-        "required_checks": (lists.split_check_names(d["required_checks"])
-                            if getattr(args, "required_check", None) is None
-                            else [name for name in args.required_check if name.strip()]),
-        # Paths only a human may approve (#478).
-        "human_paths": (lists.split_human_paths(d["human_paths"])
-                        if getattr(args, "human_path", None) is None
-                        else [name for name in args.human_path if name.strip()]),
-        # Generated files the host regenerates on a conflict (#551).
-        "generated": lists.parse_generated(
-            lists.split_generated(d["generated"]) if getattr(args, "generated", None) is None
-            else args.generated, "--generated"),
-        # What each CI check covers, told to the reviewer (#756).
-        "ci_coverage": lists.parse_ci_coverage(
-            lists.split_ci_coverage(d["ci_coverage"]) if getattr(args, "ci_covers", None) is None
-            else args.ci_covers, "--ci-covers"),
-        # Authors reviewed but never fixed (#191).
-        "review_only": ([name.strip() for name in str(d["review_only"]).split(",") if name.strip()]
-                        if getattr(args, "review_only", None) is None
-                        else [name for name in args.review_only if name.strip()]),
-        # Agents that post as the operator's account (#757).
-        "operator_agents": ([name.strip() for name in str(d["operator_agents"]).split(",")
-                             if name.strip()]
-                            if getattr(args, "operator_agent", None) is None
-                            else [name for name in args.operator_agent if name.strip()]),
+        # The loop's settings: each flag wins, else the plugin settings form's value.
+        **_init_settings(args, d),
     }
     if raw["review_only_update"] and not getattr(args, "acknowledge_branch_push", False):
         print(BRANCH_PUSH_REFUSAL)
@@ -725,6 +733,28 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
     init = sub.add_parser("init", help="Configure a loop and install its routes")
     init.add_argument("--repo", required=True, help="owner/name")
     init.add_argument("--id", help="loop id (default: the repository name)")
+    _init_seat_flags(init, d)
+    _init_capacity_flags(init, d, both)
+    _init_place_flags(init, d)
+    _init_route_flags(init)
+    _init_switch_flags(init, d)
+    _init_review_only_flags(init)
+    _init_review_flags(init)
+    _init_ingress_flags(init)
+    _init_turn_flags(init, d)
+    init.add_argument("--hooks", action="store_true", help="create the GitHub hooks too, paused until `arm`")
+    init.add_argument("--arm", action="store_true",
+                      help="with --hooks: create them armed (live at once) instead of paused")
+    init.add_argument("--admin-token", default="", help="login whose token can create hooks")
+    init.add_argument("--schedule", default="", help="e.g. 15m — install the watchdog cron job")
+    init.add_argument("--watchdog-deliver", default="local", help="cron delivery target for watchdog alerts")
+    init.add_argument("--dry-run", action="store_true",
+                      help="print the seat mapping and what would be written, write nothing")
+    init.set_defaults(func=cmd_init)
+
+
+def _init_seat_flags(init, d) -> None:  # noqa: ANN001
+    """``init``: the logins and profiles of the two working seats, and the verdict cap."""
     init.add_argument("--fixer", action="append", default=[],
                       help="GitHub login that pushes (repeatable; default: the plugin setting)")
     init.add_argument("--reviewer", action="append", default=[],
@@ -738,6 +768,10 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
     init.add_argument("--fixer-agent", default="", help="display name for the fixer")
     init.add_argument("--cap", type=int, default=d["cap"],
                       help="verdicts allowed before adjudication")
+
+
+def _init_capacity_flags(init, d, both) -> None:  # noqa: ANN001
+    """``init``: how many PRs each seat works at once."""
     # None, not the settings value: a flag nobody passed must not be written as a seat
     # override, or the loop default is dead for that seat forever (#76). cmd_init fills in the
     # settings form's values at read time.
@@ -761,6 +795,10 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                       help="issue triages that may run at once, >= 1 (the triage seat's own "
                            "value: --concurrency does not reach it) (default: the plugin "
                            "setting, else 1)")
+
+
+def _init_place_flags(init, d) -> None:  # noqa: ANN001
+    """``init``: where the loop works, and the credentials it works as."""
     init.add_argument("--base", default=d["base"],
                       help="the branch PRs target; only PRs against it are reviewed")
     init.add_argument("--clone", default=d["clone"], help="local clone the runs may use")
@@ -778,6 +816,10 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
     init.add_argument("--skill", default="",
                       help="skill the seats are told to load. A plugin-provided skill is "
                            "qualified, e.g. diaktoros:review-loop")
+
+
+def _init_route_flags(init) -> None:  # noqa: ANN001
+    """``init``: the optional adjudicator and observer routes."""
     init.add_argument("--adjudicator-route", default="",
                       help="route name for the adjudicator (e.g. <id>-breach): setting it "
                            "turns adjudication on when the verdict cap is spent")
@@ -814,6 +856,10 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                       help="profile for the urgent route (default: the observer profile)")
     init.add_argument("--observer-urgent-deliver", default="",
                       help="where the gateway delivers urgent notices (default: the feed's)")
+
+
+def _init_switch_flags(init, d) -> None:  # noqa: ANN001
+    """``init``: the gateway, the loop's clocks, and its on/off switches."""
     init.add_argument("--host", default=d["host"],
                       help="your gateway webhook origin (required unless set in plugin settings)")
     init.add_argument("--grace-min", type=int, default=d["grace_min"],
@@ -843,6 +889,10 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
         on = d[flag[2:].replace("-", "_")]
         init.add_argument(flag, choices=("on", "off"), default=None,
                           help=f"{text} (default {'on' if on else 'off'})")
+
+
+def _init_review_only_flags(init) -> None:  # noqa: ANN001
+    """``init``: review-only authors, their limits, and operator agents."""
     init.add_argument("--review-only-cap", default=None, metavar="N",
                       help="verdicts the reviewer gives one review-only PR before it waits "
                            "for `review --another-round`, 1-1000 (default: the plugin "
@@ -857,6 +907,10 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                       help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting)")
     init.add_argument("--operator-agent", action="append", default=None,
                       help="a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated) (default: the plugin setting)")
+
+
+def _init_review_flags(init) -> None:  # noqa: ANN001
+    """``init``: what gates and informs a review: required checks, the shadow, reserved paths."""
     init.add_argument("--required-check", action="append", default=None,
                       help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
     init.add_argument("--shadow-profile", default=None,
@@ -875,6 +929,10 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                       help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting)")
     init.add_argument("--ci-covers", action="append", default=None, metavar="CHECK=COVERS",
                       help="what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting)")
+
+
+def _init_ingress_flags(init) -> None:  # noqa: ANN001
+    """``init``: where events arrive, the merge check, and the fixer's always-run check."""
     init.add_argument("--ingress", choices=("repo-hooks", "app-webhook"), default=None,
                       help="where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks)")
     init.add_argument("--ingress-app", default=None, help="with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app)")
@@ -882,6 +940,10 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                       help="post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off")
     init.add_argument("--fixer-check", default=None,
                       help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
+
+
+def _init_turn_flags(init, d) -> None:  # noqa: ANN001
+    """``init``: each seat's turn budget, steps, and daily tokens and turns."""
     init.add_argument("--turn-budget", type=int, default=d["turn_budget_s"],
                       help="seconds one isolated seat turn may run, build and tests included "
                            f"(default {d['turn_budget_s']}; the sandbox is killed past it)")
@@ -907,12 +969,3 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
     init.add_argument("--fix-daily-turns", type=int, default=None,
                       help="issue-fix turns per day: refused here, a new loop has no fix "
                            "label; set it with `triage --fix-daily-turns N` (0 = ignore)")
-    init.add_argument("--hooks", action="store_true", help="create the GitHub hooks too, paused until `arm`")
-    init.add_argument("--arm", action="store_true",
-                      help="with --hooks: create them armed (live at once) instead of paused")
-    init.add_argument("--admin-token", default="", help="login whose token can create hooks")
-    init.add_argument("--schedule", default="", help="e.g. 15m — install the watchdog cron job")
-    init.add_argument("--watchdog-deliver", default="local", help="cron delivery target for watchdog alerts")
-    init.add_argument("--dry-run", action="store_true",
-                      help="print the seat mapping and what would be written, write nothing")
-    init.set_defaults(func=cmd_init)

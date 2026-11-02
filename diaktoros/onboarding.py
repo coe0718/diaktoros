@@ -285,8 +285,9 @@ def _redactor(loop: dict, runtime_file: Path, seats: dict, stage: str, secrets=(
 
     ``withheld`` is why the command and summary must not be stored at all, or ``""``: the
     fail-closed cases. ``selftest.Redactor`` cannot redact a credential shorter than four
-    characters, and a model-facing stage with a seat that did not resolve may carry a key this
-    record never saw.
+    characters, a configured credential file (a token file, an App or seat ``key_file``) that
+    cannot be read has no text to redact, and a model-facing stage with a seat that did not
+    resolve may carry a key this record never saw.
     """
     from . import selftest, seat_model
     redact = selftest.redactor_for(loop)
@@ -301,16 +302,17 @@ def _redactor(loop: dict, runtime_file: Path, seats: dict, stage: str, secrets=(
         for block in [seat_model.legacy_override(settings), *(settings.get("seats") or {}).values()]:
             if block:
                 files.append(Path(block["key_file"]).expanduser())
+    withheld = ""
     for file in files:
         try:
             texts.append(file.read_text())
         except Exception:
-            pass
-    withheld = ""
+            # Its text can't be redacted, so nothing that might hold it can be stored.
+            withheld = "a credential file could not be read"
     for text in texts:
         redact.add(text)
         if isinstance(text, str) and 0 < len(text.strip()) < _MIN_REDACTABLE:
-            withheld = "a credential is too short to redact"
+            withheld = withheld or "a credential is too short to redact"
     if not withheld and stage in MODEL_STAGES and any(found is None for found in seats.values()):
         withheld = "a seat's credentials could not be resolved, so its key cannot be redacted"
     return redact, withheld
