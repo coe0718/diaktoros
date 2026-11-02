@@ -547,9 +547,13 @@ class LedgerRecords:
             con.execute('COMMIT')
         return True
 
-    def rulings(self, limit: int = 50) -> list[dict]:
-        """Read-only operator view of the latest rulings, including their full reason."""
+    def rulings(self, limit: int = 50, run_id: str | None = None) -> list[dict]:
+        """Read-only operator view of the latest rulings, including their full reason; with
+        ``run_id``, only that ruling, however old (#905 cites one by its run)."""
         with self._connect() as con:
+            if run_id:
+                return [dict(row) for row in con.execute(
+                    'SELECT * FROM rulings WHERE run_id=?', (run_id,))]
             return [dict(row) for row in con.execute(
                 'SELECT * FROM rulings ORDER BY created DESC, run_id LIMIT ?',
                 (max(1, min(int(limit), 200)),))]

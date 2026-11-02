@@ -70,7 +70,7 @@
     "diaktoros/ready.py::assess_kinds": 105,
     "diaktoros/retry_action.py::perform": 88,
     "diaktoros/run_supervisor/__init__.py::Supervisor.__init__": 122,
-    "diaktoros/run_supervisor/__init__.py::main": 104,
+    "diaktoros/run_supervisor/__init__.py::main": 103,
     "diaktoros/run_supervisor/intake.py::RunIntake.retry": 118,
     "diaktoros/run_supervisor/intake.py::RunIntake.submit": 92,
     "diaktoros/run_supervisor/notices.py::OperatorNotices.notify": 126,

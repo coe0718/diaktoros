@@ -1012,17 +1012,15 @@ def main():
         except LedgerMissing as exc:
             print(f'diaktoros: {exc}; no ledger was created', file=sys.stderr)
             raise SystemExit(2)
+        extra = a.capacity if a.operation == 'rulings' else a.command   # rulings: one run ID
+        if a.operation in ('status', 'sweep', 'rulings') and (
+                extra or a.reason or a.acknowledge_no_live_worker):
+            p.error(f'unexpected {a.operation} arguments')
         if a.operation == 'rulings':
-            if a.command or a.reason or a.acknowledge_no_live_worker:
-                p.error('unexpected rulings arguments')
-            print(json.dumps(sup.rulings(), sort_keys=True))
+            print(json.dumps(sup.rulings(run_id=a.command), sort_keys=True))
         elif a.operation == 'status':
-            if a.command or a.reason or a.acknowledge_no_live_worker:
-                p.error('unexpected status arguments')
             print(json.dumps(sup.status(), sort_keys=True))
         elif a.operation == 'sweep':
-            if a.command or a.reason or a.acknowledge_no_live_worker:
-                p.error('unexpected sweep arguments')
             sup.recover()  # no production configuration: cannot launch waiting work
             sup.notify(lambda message: print(message, flush=True))
         elif a.operation == 'retry':

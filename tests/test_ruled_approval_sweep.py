@@ -104,21 +104,24 @@ class Acts(Base):
         self.ruled("ACCEPT")
         self.sweep()
         self.sweep()
-        command = f"python -m diaktoros.run_supervisor rulings {self.db}"
+        cited = self.n
+        command = f"python -m diaktoros.run_supervisor rulings {self.db} r{cited}"
         for text in (self.approve.call_args.kwargs["text"],
                      self.dismiss.call_args.kwargs["message"]):
             self.assertIn("not posted as a comment (comment pending)", text)
-            self.assertIn(f"ruling run r{self.n} in `{command}`", text)
-        # Review of #1605, round 2, F4: the cited command really prints that ruling's text.
+            self.assertIn(f"`{command}` on the host", text)
+        # Review of #1605, rounds 2 and 3, F4: the cited command prints that ruling's text, even
+        # after more than the 50 a plain listing shows have been made since.
         import contextlib
         import io
         import json
+        for _ in range(55):
+            self.ruled("REJECT", head="c" * 40)
         out = io.StringIO()
-        with mock.patch.object(sys, "argv", ["run_supervisor", "rulings", str(self.db)]), \
-                contextlib.redirect_stdout(out):
+        with mock.patch.object(sys, "argv", command.split()[2:]), contextlib.redirect_stdout(out):
             run_supervisor.main()
-        printed = {row["run_id"]: row for row in json.loads(out.getvalue())}
-        self.assertEqual(printed[f"r{self.n}"]["body"], "because")
+        (printed,) = json.loads(out.getvalue())
+        self.assertEqual((printed["run_id"], printed["body"]), (f"r{cited}", "because"))
         ruling = {"comment": "posted", "comment_id": 6563270384}
         self.assertEqual(ruled_approval.cite(self.loop, 7, ruling),
                          f"https://github.com/{fg.REPO}/pull/7#issuecomment-6563270384")
@@ -434,6 +437,21 @@ class LeftToAPerson(Base):
                 self.sweep()
                 self.dismiss.assert_not_called()
                 self.assertEqual(self.row()["dismiss"], state)
+
+
+class Overlap(Base):
+    def test_a_fresh_approval_still_being_written_makes_the_sweep_wait(self):
+        # Review of #1605, round 3, F6: never take the dismissal step past a posting approval.
+        self.ruled("ACCEPT")
+        sup = run_supervisor.Supervisor(self.db)
+        sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, "approve", "posting", overruled=5)
+        self.assertEqual(self.sweep(), [])
+        self.dismiss.assert_not_called()
+        self.assertEqual((self.row()["approve"], self.row()["dismiss"]), ("posting", "pending"))
+        sup.ruled_approval_step(fg.REPO, 7, fg.HEAD, "approve", "posted", review_id=9)
+        self.reviews = [CHANGES, TUCK]                     # the approval landed
+        self.sweep()
+        self.dismiss.assert_called_once()
 
 
 class CheckShowsIt(Base):

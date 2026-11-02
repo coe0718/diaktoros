@@ -82,8 +82,9 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
     row = sup.ruled_approval(repo, number, head) or {}
     if _reconcile(loop, sup, row, reviews, number, head, log):
         return True                                    # an uncertain step, settled from GitHub
-    if row.get("dismiss", "pending") != "pending" or row.get("approve") in ("denied", "uncertain"):
-        return False                                   # done, or left for a person
+    if row.get("dismiss", "pending") != "pending" or row.get("approve") in (
+            "denied", "uncertain", "posting"):
+        return False                                   # done, left for a person, or being written
     wait, deny = _wait_or_deny(loop, st, number, head)
     if wait:
         return False
@@ -167,9 +168,9 @@ def cite(loop: dict, number: int, ruling: dict) -> str:
     if type(ruling.get("comment_id")) is int and ruling.get("comment") == "posted":
         return (f"https://github.com/{loop['repo']}/pull/{number}"
                 f"#issuecomment-{ruling['comment_id']}")
-    return (f"not posted as a comment (comment {ruling.get('comment') or 'unknown'}); its full text "
-            f"is ruling run {ruling.get('run_id') or '?'} in `python -m diaktoros.run_supervisor "
-            f"rulings {production_ledger()}` on the host")
+    return (f"not posted as a comment (comment {ruling.get('comment') or 'unknown'}); its full text: "
+            f"`python -m diaktoros.run_supervisor rulings {production_ledger()} "
+            f"{ruling.get('run_id') or '?'}` on the host")
 
 
 def _approve(loop: dict, sup, ruling: dict, number: int, branch: str, target: int, log) -> bool:
