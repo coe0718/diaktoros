@@ -12,15 +12,17 @@ headers, never a stored one (#1653 review). The reads that exist to inspect the 
 (``gh.CREDENTIAL_PROBES``, whose scopes, expiry and limits are read from headers) are never
 conditional.
 
-Only a writer process keeps the cache (the watchdog and the gates through ``gate.context`` call
-``enable_writes``; a worker always is one; together they make nearly every read). Any other, such as ``doctor``, ``explain``, ``status`` and
-the Desktop routes, which promise to write nothing, uses what is stored but never stores, marks or
-prunes an entry (#1653 review). A worker writes only into a directory that already exists: it
-never creates host state (``hostdirs``).
+Only a writer process keeps the cache: the watchdog and the gates (through ``gate.context``)
+call ``enable_writes``, and a worker always is one; together they make nearly every read. Any
+other, such as ``doctor``, ``explain``, ``status`` and the Desktop routes, which promise to write
+nothing, uses what is stored but never stores, marks or prunes an entry (#1653 review). A worker
+writes only into a directory that already exists: it never creates host state (``hostdirs``).
 
-Disposable: a missing, unreadable or corrupt entry (a malformed ETag among them) is a plain GET. Entries are 0600 files of
-at most ``MAX_BYTES`` bytes as stored, dropped once unused for ``KEEP_S``. Bodies are what GitHub
-returned, never a token: the login only names the entry.
+Disposable: a missing, unreadable or corrupt entry (a malformed ETag among them) is a plain GET.
+Entries are 0600 files of at most ``MAX_BYTES`` bytes as stored, and an entry unused for
+``KEEP_S`` may be pruned. Pruning is opportunistic: a writer's store runs it about one time in
+``PRUNE_ONE_IN``, so an old entry stays until a later store happens to prune, and with no stores
+nothing is pruned. Bodies are what GitHub returned, never a token: the login only names the entry.
 """
 from __future__ import annotations
 
@@ -33,7 +35,7 @@ import re
 import time
 
 MAX_BYTES = 1_000_000          # an entry bigger than this, in bytes as stored, is not kept
-KEEP_S = 2 * 86400             # an entry unused this long is dropped
+KEEP_S = 2 * 86400             # an entry unused this long may be pruned (on a later store)
 PRUNE_ONE_IN = 50              # a store prunes the directory one time in this many
 # An entity tag as HTTP defines it (RFC 9110 8.8.3): anything else is never sent as a header.
 ETAG = re.compile(r'(W/)?"[\x21\x23-\x7e]*"')
