@@ -14,12 +14,14 @@ ledger alone, with no GitHub read:
 * a confirmed APPROVE: it runs;
 * a confirmed change request, or a turn that ended without a verdict: it is skipped (cancelled),
   nothing spent;
+* a newer reviewer turn at the same head: it is skipped, since that turn's shadow is the one
+  that counts (an older approval never runs a shadow on a head since sent back);
 * the reviewer's turn still running, its review being posted or confirmed, or an uncertain or
-  unreadable record: it waits and is polled again, until ``WAIT_MAX_S``, then skipped.
+  unreadable record: it waits and is polled again, for as long as that lasts. No time bound: a
+  bound would end it with the head clear, and a late APPROVE would then be green with no shadow.
 """
 from __future__ import annotations
 
-WAIT_MAX_S = 3 * 60 * 60        # a reviewer turn's CI wait, its budget and retries fit in this
 APPROVED = ("APPROVE", "APPROVED")          # a receipt names the event or GitHub's state
 OPEN = ("pending", "waiting", "claimed", "launching", "running", "uncertain")
 
@@ -34,18 +36,23 @@ def after_reviewer(db, row) -> tuple[str, str]:
             return "wait", "the run ledger is unreadable, so the reviewer's verdict is unknown"
         try:
             reviewer = con.execute(
-                "SELECT id, state FROM runs WHERE repo=? AND pr=? AND head=? AND seat='reviewer' "
-                "AND turn_key=? ORDER BY created DESC LIMIT 1",
+                "SELECT id, state, created FROM runs WHERE repo=? AND pr=? AND head=? AND "
+                "seat='reviewer' AND turn_key=? ORDER BY created DESC LIMIT 1",
                 (row["repo"], row["pr"], row["head"], row["turn_key"] or "")).fetchone()
             receipt = reviewer and con.execute(
                 "SELECT state, verdict FROM review_receipts WHERE run_id=?",
                 (reviewer[0],)).fetchone()
+            newer = reviewer and con.execute(
+                "SELECT 1 FROM runs WHERE repo=? AND pr=? AND head=? AND seat='reviewer' AND "
+                "created>? LIMIT 1", (row["repo"], row["pr"], row["head"], reviewer[2])).fetchone()
         finally:
             con.close()
     except Exception as exc:  # noqa: BLE001 - unknown is never "approved"
         return "wait", f"the reviewer's verdict is unreadable ({type(exc).__name__})"
     if reviewer is None:
         return "run", ""                   # a row from before #1647: run as it was queued
+    if newer:
+        return "skip", f"a newer review at {short} supersedes the one this shadow was queued with"
     if receipt and receipt[0] == "confirmed":
         if str(receipt[1]) in APPROVED:
             return "run", ""

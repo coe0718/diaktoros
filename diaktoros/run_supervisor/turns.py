@@ -654,15 +654,16 @@ class ClaimAndLaunch:
         row, loop = turn.row, turn.loop
         head = row['head']
         # #1647: only once its own reviewer turn approved the head; from the ledger, no read.
+        # It holds for as long as that turn is unresolved, however long: a time bound would
+        # end it with the head clear, and a late APPROVE would then be green with no shadow.
         what, why = shadow_queue.after_reviewer(self.db, row)
-        if what == "skip" or (what == "wait"
-                              and time.time() - row['created'] >= shadow_queue.WAIT_MAX_S):
+        if what == "skip":
             turn.cancel = True
             turn.error = f"shadow review skipped: {why}"[:600]
             return
         if what == "wait":
             turn.paced_until = time.time() + run_supervisor.CI_POLL_S
-            turn.error = f"held: {why}"[:600]
+            turn.error = f"{run_supervisor.VERDICT_HOLD} at {head[:7]} — {why}"[:600]
             self.held_for_ci = True
             return
 

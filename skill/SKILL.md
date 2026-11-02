@@ -186,8 +186,9 @@ If you cannot fix it (unclear, too large, or it needs a decision), do not open a
 
 ## If you are the shadow
 
-You are a second reviewer model, run beside the real reviewer on some of the heads it is queued
-for (the loop's `shadow.every`; see `docs/configuration.md#shadow-reviews`). Your prompt is the
+You are a second reviewer model, run on some of the heads the real reviewer is queued for (the
+loop's `shadow.every`; see `docs/configuration.md#shadow-reviews`), once that reviewer turn has
+approved the head. Your prompt is the
 reviewer's, built from the same change view minus any review posted after your turn was queued (the
 real one included), and "If you are the reviewer" applies to how you judge: verify in `/work`,
 grade findings P0–P3, end the body with `Not verified:`. What differs is what your write does.

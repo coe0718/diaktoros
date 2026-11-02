@@ -169,9 +169,9 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
     """
     supervisor = isolated_supervisor(loop)
     supervisor.recover()
-    if seat == "reviewer":
-        # Before the reviewer's row exists, so its worker can record nothing first (#1647).
-        snapshot_shadow(loop, number, head)
+    # Before the reviewer's row exists, so its worker can record nothing first (#1647). A shadow
+    # is queued only on that snapshot: one taken later could hold the review's own findings.
+    snapped = seat == "reviewer" and snapshot_shadow(loop, number, head)
     delivery = f"{loop['repo']}:{number}:{head}:{seat}"
     # The turn's wall clock rides on the row (#49): whichever worker claims it — possibly one
     # spawned by another loop's event — runs it for this loop's seat budget, not a worker default.
@@ -179,7 +179,7 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
                                 loop["repo"], number, head, seat, turn_key=turn_key,
                                 require_push_admission=seat == "fixer",
                                 budget=config.turn_budget(loop, seat))
-    if seat == "reviewer" and outcome == "enqueued":
+    if snapped and outcome == "enqueued":
         enqueue_shadow(loop, supervisor, number, head, turn_key=turn_key)
     return outcome
 

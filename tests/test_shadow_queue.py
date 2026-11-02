@@ -86,6 +86,18 @@ class AfterReviewer(Ledger):
         self.run_row("reviewer", turn_key="reconsider:2", state="running")
         self.assertEqual(self.decide("reconsider:2")[0], "wait")
 
+    def test_a_newer_review_at_the_head_supersedes_an_older_turns_shadow(self):
+        # Review of #1656, F4: an older approved turn's pending shadow never runs on a head a
+        # newer turn sent back.
+        import time as clock
+        self.receipt(self.run_row("reviewer", state="succeeded"), "APPROVED")
+        clock.sleep(0.01)
+        self.receipt(self.run_row("reviewer", turn_key="reconsider:1", state="succeeded"),
+                     "CHANGES_REQUESTED")
+        what, why = self.decide()
+        self.assertEqual(what, "skip")
+        self.assertIn("a newer review", why)
+
     def test_an_unreadable_ledger_waits_and_a_row_from_before_runs(self):
         with mock.patch("diaktoros.run_supervisor.views.read_only_connect", return_value=None):
             self.assertEqual(self.decide()[0], "wait")
@@ -112,11 +124,26 @@ class SnapshotFirst(Ledger):
         self.assertEqual(st.shadow_findings_get(7, HEAD), {})
         self.assertEqual([c.args[4] for c in sup.submit.call_args_list], ["reviewer", "shadow"])
 
+    def test_a_failed_first_snapshot_queues_no_shadow(self):
+        # Review of #1656, F6: fail closed. A snapshot taken after the reviewer is queued could
+        # hold the review's own findings, so none is taken then and no shadow is queued.
+        loop = {"id": "w", "repo": REPO, "state_dir": str(self.tmp / "state"),
+                "shadow": {"profile": "shadow", "every": 1}}
+        sup = mock.Mock()
+        sup.submit.return_value = "enqueued"
+        with mock.patch.object(gate, "isolated_supervisor", return_value=sup), \
+                mock.patch.object(state_mod.LoopState, "shadow_findings_put",
+                                  side_effect=[OSError("disk full"), None]):   # then it works
+            self.assertEqual(gate.enqueue_isolated(loop, "reviewer", 7, HEAD), "enqueued")
+        self.assertEqual([c.args[4] for c in sup.submit.call_args_list], ["reviewer"])
+        self.assertIsNone(state_mod.state_for(loop).shadow_findings_get(7, HEAD))
+
 
 class NeverGreenInTheGap(Ledger):
-    """Review of #1656, F1/F7: through ``ready`` and the merge check, on the real ledger. While
-    the reviewer's APPROVE is being posted (GitHub already shows it), its shadow's row is open, so
-    the head holds; it is green only once the shadow's review is in."""
+    """Review of #1656, F1/F7: through the real enqueue, ``ready`` and the merge check, on the real
+    ledger. The shadow's row exists from the reviewer's queueing, so the head holds while the
+    reviewer's APPROVE is posted (GitHub already shows it) and until the shadow's review is in;
+    then the shadow no longer holds it."""
 
     LOOP = {"id": "w", "repo": REPO, "base": "main", "cap": 3, "read_token": "rev",
             "reviewers": ["rev"], "reviewer_seat": "rev", "fixers": ["fix"], "review_only": [],
@@ -124,8 +151,11 @@ class NeverGreenInTheGap(Ledger):
             "seats": {"reviewer": {"route": "w-review"}, "fixer": {"route": "w-fix"}},
             "shadow": {"profile": "shadow", "every": 1, "escalate": True}}
 
+    def loop(self):
+        return {**self.LOOP, "state_dir": str(self.tmp / "state")}
+
     def kinds(self):
-        loop = {**self.LOOP, "state_dir": str(self.tmp / "state")}
+        loop = self.loop()
         pr = {"number": 7, "draft": False, "user": {"login": "fix"}, "base": {"ref": "main"},
               "head": {"sha": HEAD, "ref": "b7"}}
         approval = {"id": 1, "state": "APPROVED", "commit_id": HEAD,
@@ -137,13 +167,24 @@ class NeverGreenInTheGap(Ledger):
             return ready.assess_kinds(loop, state_mod.state_for(loop), pr, [approval],
                                       ci.CIState(passed=["tests"]), detail)
 
-    def test_the_head_holds_from_the_post_until_the_shadow_lands(self):
-        reviewer = self.run_row("reviewer", state="running")
+    def shadow_reasons(self):
+        return [why for _kind, why in self.kinds() if "shadow review" in why]
+
+    def test_the_head_holds_from_the_reviewers_queueing_until_the_shadow_lands(self):
+        with mock.patch.object(gate, "isolated_supervisor", return_value=self.sup), \
+                mock.patch("diaktoros.run_supervisor.production_ledger", return_value=self.db):
+            self.assertEqual(gate.enqueue_isolated(self.loop(), "reviewer", 7, HEAD), "enqueued")
+        reviewer = self.sup.get(f"{REPO}:7:{HEAD}:reviewer")["id"]
+        shadow = self.sup.get(f"{REPO}:7:{HEAD}:shadow")["id"]
         self.receipt(reviewer, "APPROVE", state="claimed")      # posted, not yet confirmed
-        self.run_row("shadow", state="pending")                 # queued with the reviewer
-        state, _summary = merge_check.decide(self.kinds())
-        self.assertEqual(state, merge_check.PENDING)
-        self.assertTrue(any("shadow review" in why for _kind, why in self.kinds()))
+        self.assertEqual(merge_check.decide(self.kinds())[0], merge_check.PENDING)
+        self.assertTrue(self.shadow_reasons(), self.kinds())
+        with closing(sqlite3.connect(self.db)) as con, con:     # the shadow's review lands
+            con.execute("UPDATE runs SET state='succeeded' WHERE id=?", (shadow,))
+            con.execute("INSERT INTO shadow_reviews(run_id,repo,pr,head,model,verdict,body,"
+                        "authorized,denial,held,created) VALUES(?,?,7,?,'m','APPROVE','ok',1,'',0,?)",
+                        (shadow, REPO, HEAD, time.time()))
+        self.assertEqual(self.shadow_reasons(), [])
 
 
 if __name__ == "__main__":

@@ -53,6 +53,8 @@ MAX_RETRIES = 4
 # CI every CI_POLL_S, for at most CI_WAIT_MAX_S from when the run was queued; then it reviews
 # anyway and its prompt says what never finished.
 CI_HOLD = "held: waiting for CI"
+# A shadow held for its reviewer turn's verdict (#1647): polled like a CI hold.
+VERDICT_HOLD = "held: waiting for the reviewer's verdict"
 CI_POLL_S = 90
 CI_WAIT_MAX_S = 60 * 60
 MAX_REARMS = 8

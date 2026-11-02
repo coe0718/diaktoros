@@ -20,7 +20,6 @@ from contextlib import closing
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from diaktoros import shadow_queue  # noqa: E402
 from diaktoros import ci, config, gate, gh, run_supervisor, seat_model, stats, trusted_turn  # noqa: E402
 from diaktoros.run_supervisor import claims  # noqa: E402
 from diaktoros.run_supervisor import views  # noqa: E402
@@ -559,12 +558,15 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual((self.seen, row["state"]), ({}, "cancelled"))
         self.assertIn("ended succeeded without a verdict", row["error"])
 
-    def test_a_shadow_that_waited_past_the_bound_is_skipped(self):
+    def test_a_shadow_waits_however_long_its_reviewer_takes(self):
+        # Review of #1656, F9: no time bound. One would end the shadow with the head clear, and
+        # a late APPROVE would then be green with no shadow review.
         sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok"}],
                                    reviewer=("claimed", "APPROVE"), reviewer_state="running",
-                                   created=time.time() - shadow_queue.WAIT_MAX_S - 60)
-        self.assertEqual((self.seen, row["state"]), ({}, "cancelled"))
-        self.assertIn("shadow review skipped: waiting for the reviewer's verdict", row["error"])
+                                   created=time.time() - 30 * 86400)
+        self.assertEqual((self.seen, row["state"]), ({}, "waiting"))
+        self.assertTrue(row["error"].startswith(f"{run_supervisor.VERDICT_HOLD} at {HEAD[:7]} — "),
+                        row["error"])
 
     def test_the_shadow_takes_its_own_step_budget(self):
         self.run_shadow([{"verdict": "APPROVE", "body": "ok", "authorized": True}])

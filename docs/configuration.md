@@ -437,12 +437,14 @@ A shadow turn gets the reviewer's prompt and change view at that head, minus any
 **It runs only on a head its reviewer turn approved (#1647).** The shadow's row is queued with its reviewer turn, on a findings snapshot taken before that turn's row exists. When the shadow is claimed, it reads from the run ledger, with no GitHub read, what that same reviewer turn decided (same PR, head and turn key):
 - **A confirmed APPROVE:** it runs.
 - **A change request, or a reviewer turn that ended without a verdict:** it is skipped (`cancelled`, "shadow review skipped: …"), with nothing spent. On a head the reviewer sent back, a second opinion decides nothing, because the PR isn't ready either way and the fixer pushes a new head. A week of the ledger had about 46% of the shadow's tokens spent on such heads.
-- **Anything still in flight** (the reviewer's turn running, its review being posted or confirmed, an uncertain or unreadable record): it is held ("held: waiting for the reviewer's verdict"), polled again like a CI hold, and skipped after three hours.
+- **A newer reviewer turn at the same head:** it is skipped. That newer turn's shadow is the one that counts, so an older approval never runs a shadow on a head since sent back.
+- **Anything still in flight** (the reviewer's turn running, its review being posted or confirmed, an uncertain or unreadable record): it is held ("held: waiting for the reviewer's verdict") and polled again like a CI hold, for as long as that lasts. There is no time bound. A bound would end it with the head clear, and a late APPROVE would then be green with no shadow review.
+- **If the findings snapshot can't be taken before the reviewer is queued:** no shadow is queued for that turn. A snapshot taken later could already hold the review's own findings.
 
 Its row is open from the moment the reviewer is queued, so with `shadow.escalate` the head holds the whole time, including while the reviewer's APPROVE is being posted.
 
 It is not part of the loop:
-- it never occupies the PR, so the real reviewer and fixer never wait for it, and it never waits for them;
+- it never occupies the PR, so the real reviewer and fixer never wait for it, and it waits for nothing of theirs except its own reviewer turn's verdict (above);
 - it claims no seat and marks no head in flight;
 - it pages nobody when it fails, and a failed one is not retried: it is a lost sample, not stuck work (a closed usage window still waits for its reset, which costs nothing);
 - `stats`, `retry` (unless `--seat shadow`) and `escalate` leave it out.
