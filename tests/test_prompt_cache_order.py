@@ -2,6 +2,7 @@
 reuse it across rounds; what changes with the round or the head comes after, newest last."""
 from __future__ import annotations
 
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import unittest
 from unittest import mock
 
