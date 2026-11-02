@@ -353,6 +353,18 @@ class Create(Base):
         self.assertEqual(manifest["cron"], {"name": "diaktoros watchdog", "schedule": "5m",
                                             "deliver": "telegram"})
 
+    def test_transient_files_are_not_archived(self):
+        (self.state / "state.lock").write_text("")
+        (self.state / "breach.lock").write_text("")
+        (self.state / ".queue.json.a1b2c3d4").write_text("half")
+        (self.state / ".hidden-config").write_text("kept")
+        out = self.root / "b.tar.gz"
+        backup.create(out)
+        names = {Path(f["path"]).name for f in backup.read_manifest(out)["files"]}
+        self.assertIn("queue.json", names)
+        self.assertIn(".hidden-config", names)      # a real dotfile is state, not a temp file
+        self.assertFalse(names & {"state.lock", "breach.lock", ".queue.json.a1b2c3d4"})
+
     def test_refuses_to_overwrite(self):
         out = self.root / "b.tar.gz"
         out.write_text("keep")

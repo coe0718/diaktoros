@@ -20,6 +20,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import shlex
 import sqlite3
 import tarfile
@@ -54,12 +55,25 @@ def default_out() -> pathlib.Path:
     return path
 
 
+# ``tempfile.mkstemp`` names, as ``util.atomic_write`` and the route registry make them:
+# ``.<name>.`` plus eight random characters. A live writer owns them and one may vanish between
+# the listing and the read.
+_TEMP_NAME = re.compile(r"^\..+\.[A-Za-z0-9_]{8}$")
+
+
+def _transient(path: pathlib.Path) -> bool:
+    """A write-in-progress temp file or a ``*.lock`` file (``state.lock``, ``breach.lock``, ...):
+    process-local scaffolding that a restore would write back as litter nothing cleans (#1060)."""
+    return path.name.endswith(".lock") or bool(_TEMP_NAME.match(path.name))
+
+
 def _regular_files(root: pathlib.Path) -> list[pathlib.Path]:
     if root.is_symlink() or not root.exists():
         return []
     if root.is_file():
         return [root]
-    return sorted(p for p in root.rglob("*") if p.is_file() and not p.is_symlink())
+    return sorted(p for p in root.rglob("*")
+                  if p.is_file() and not p.is_symlink() and not _transient(p))
 
 
 def _snapshot_ledger(src: pathlib.Path, dest: pathlib.Path) -> None:
