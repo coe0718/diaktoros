@@ -30,6 +30,19 @@ class RelativeTokenPath(unittest.TestCase):
             with self.assertRaisesRegex(config.ConfigError, "not an absolute path"):
                 config.load_file(path)
 
+    def test_normalize_refuses_an_empty_token_login(self):
+        for login in ("", "  "):
+            with self.subTest(login=login), self.assertRaisesRegex(
+                    config.ConfigError, r"tokens\.\s*: the login is empty"):
+                config.normalize(raw_loop({"reader": "/abs/reader.pat", login: "/abs/x.pat"}))
+
+    def test_load_file_refuses_a_hand_edited_empty_token_login(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "widgets.json"
+            path.write_text(json.dumps(raw_loop({"reader": "/abs/reader.pat", "": "/abs/x.pat"})))
+            with self.assertRaisesRegex(config.ConfigError, "the login is empty"):
+                config.load_file(path)
+
     def test_absolute_and_home_paths_still_load(self):
         loop = config.normalize(raw_loop({"reader": "/abs/reader.pat",
                                           "rev-bot": "~/keys/rev.pat"}))
