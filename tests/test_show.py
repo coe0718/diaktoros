@@ -119,11 +119,23 @@ class ShowTests(_Base):
         held = "~definitely_no_such_diaktoros_user_83627/key.pem"
         self.assertIn("not applied", self._key_note("/keys/other.pem", held))
 
-    def test_a_key_path_differing_by_a_trailing_space_is_called_unapplied(self):
-        # review of #1634 F2: `rev-app.pem ` and `rev-app.pem` are different files.
-        self.assertIn("not applied", self._key_note("/keys/rev-app.pem ", "/keys/rev-app.pem"))
-        self.assertIn("not applied", self._key_note("/keys/rev-app.pem", "/keys/rev-app.pem "))
-        self.assertNotIn("not applied", self._key_note("/keys/rev-app.pem ", "/keys/rev-app.pem "))
+    def test_a_key_path_differing_by_a_trailing_space_is_judged_as_apply_selects_it(self):
+        # review of #1634 F2/F3: apply strips the form value (config.seat_mapping) but the stored
+        # path keeps its space (github_app.key_path), so only a stored space is a real difference.
+        bot = "review-seat[bot]"
+        cases = (("/keys/rev-app.pem ", "/keys/rev-app.pem", True),   # apply would change the file
+                 ("/keys/rev-app.pem", "/keys/rev-app.pem ", False),  # apply strips the form's space
+                 ("/keys/rev-app.pem ", "/keys/rev-app.pem ", True),
+                 ("/keys/rev-app.pem", "/keys/rev-app.pem", False))
+        for stored, held, unapplied in cases:
+            note = self._key_note(stored, held)
+            self.assertEqual("not applied" in note, unapplied, (stored, held, note))
+            # the same answer from apply's own selection of the credentials
+            settings = {"reviewer_login": bot, "reviewer_app_id": "42",
+                        "reviewer_app_key_file": held}
+            loop = {"apps": {bot: {"app_id": 42, "key_file": stored}}, "reviewer_seat": bot}
+            _, apps, _, _ = settings_form.select_credentials(loop, settings)
+            self.assertEqual(apps[bot]["key_file"] != stored, unapplied, (stored, held, apps))
 
     def test_every_loop_key_is_shown(self):
         rows = self.rows()

@@ -394,7 +394,9 @@ def collect(loop: dict, raw: dict, form: dict | None = None) -> list[dict]:
                 # apply stores the key path as ``config._path`` spells it (#1212, #1279): expanded
                 # and normalized, so `~/keys/x.pem/` is the same file. A loop file written by hand
                 # with a raw `~` is the same file too (``github_app.key_path`` expands at use).
-                held = _key_spelling(held)
+                # The form value is read the way apply reads it (``seat_mapping`` strips it); the
+                # stored path keeps its whitespace, as ``github_app.key_path`` does at use.
+                held = _key_spelling(held.strip())
                 if isinstance(shown, str) and shown.strip() and shown != _UNSET:
                     shown = _key_spelling(shown)
             if row.name not in config.TOKEN_FILE_SETTINGS.values() and held != shown \
