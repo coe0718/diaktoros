@@ -478,6 +478,11 @@ each one once the real review exists at that head:
   needs issue write access (a PAT with `repo`, or a reader App with Issues: Read and write).
 - **How it reads:** it's labelled `shadow-found`, and opens with a line naming the shadow model, the
   PR and the head.
+- **Its labels:** GitHub silently drops the labels a new issue is created with when the token
+  can't set them (push access), so any it drops are added right after, with the labels endpoint.
+  If they still don't land, the issue stays filed (never again), the watchdog log names the
+  labels and the missing permission, the broker audit records the gap, and its `shadow_issues`
+  row is `unlabelled`, not `posted`.
 - **What's skipped:** an issue the reviewer already filed from that PR, with the same title or one
   close to it, is marked `duplicate` and never filed.
 - **Limits:** at most `shadow.issues_daily` a day per loop, counted over a rolling 24 hours (#1515;

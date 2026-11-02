@@ -853,7 +853,7 @@ def _finish(c: _Sweep) -> None:
     try:
         # #914: the issues a shadow review asked for, once the real review is in and did not
         # file them (off unless shadow.file_issues; bounded per day).
-        for issue in shadow_issues.file_pending(loop):
+        for issue in shadow_issues.file_pending(loop, log=log):
             log(f"shadow-found issue #{issue} filed")
     except Exception as exc:
         log(f"shadow issue filing failed: {type(exc).__name__}: {exc}")
