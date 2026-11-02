@@ -19,6 +19,7 @@ from pathlib import Path
 from . import gh, onboarding
 
 PASS, FAIL, SKIP = "pass", "fail", "skip"      # selftest's status words
+TURN_CHECK = "turn:reviewer"                   # reported only once a turn has started
 _STAGE_OF = {"identities": ("github:",), "loop": onboarding.FAILURE_SCOPE["loop"],
              "model": onboarding.FAILURE_SCOPE["model"]}
 
@@ -78,8 +79,9 @@ def record_selftest(loop: dict, report, *, say, pr: int | None, live_pr: dict | 
     plan = [("identities", onboarding.PASSED, {}),
             ("loop", onboarding.PASSED, {}),
             ("model", onboarding.PASSED if model else onboarding.SKIPPED, {})]
-    # A live turn is recorded only when one ran: a turn check that is not a SKIP, on a PR.
-    ran = any(r[1].startswith("turn:") and r[2] != SKIP for r in results)
+    # A live turn is recorded only when one ran: the turn's own verdict check, not a SKIP, on a PR.
+    # ``turn:prompt`` is no evidence: run_live_turn reports it FAIL and returns before any turn.
+    ran = any(r[1] == TURN_CHECK and r[2] != SKIP for r in results)
     if live_turn and live_pr is not None and ran:
         head = str((live_pr.get("head") or {}).get("sha") or "")
         plan.append(("live_turn", onboarding.PASSED, {"pr": (live_pr.get("number"), head)}))

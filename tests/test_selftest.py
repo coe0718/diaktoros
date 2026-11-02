@@ -868,3 +868,43 @@ class OnboardingRecordTests(SelftestBase):
         self.run_selftest(pr=7)
         self.assertEqual(json.dumps(self.fx.loop, sort_keys=True), before)
         self.assertEqual(config.unattended_fixer_push_enabled(self.fx.loop), enabled)
+
+    def test_a_failed_prompt_is_not_a_live_turn_and_keeps_an_earlier_entry(self):
+        # run_live_turn reports turn:prompt FAIL and returns before any turn starts (#1621 F1).
+        from diaktoros import onboarding
+        from diaktoros.run_supervisor import pr_facts
+        onboarding.record(self.fx.loop, "live_turn", onboarding.PASSED, "earlier", "earlier run",
+                          checks=[("turn:reviewer", "pass")], pr=(7, "e" * 40),
+                          runtime_file=self.fx.runtime_file, secrets=[MODEL_KEY])
+        earlier = self.stored()["live_turn"]
+        with mock.patch.object(pr_facts, "pr_change", side_effect=RuntimeError("no diff")):
+            rc, text = self.run_selftest(pr=7, live_turn=True, timeout=30)
+        self.assertIn("turn:prompt", text)
+        entry = self.stored()["live_turn"]      # other stages may invalidate it; it is not rewritten
+        self.assertEqual((entry["command"], entry["summary"], entry["at"]),
+                         (earlier["command"], earlier["summary"], earlier["at"]))
+        onboarding.path(self.fx.loop).unlink()                 # and with no earlier entry
+        with mock.patch.object(pr_facts, "pr_change", side_effect=RuntimeError("no diff")):
+            self.run_selftest(pr=7, live_turn=True, timeout=30)
+        self.assertNotIn("live_turn", self.stored())
+        self.assertIn("identities", self.stored())             # the rest was still recorded
+
+    def test_fixer_push_setting_survives_a_recording_selftest_on_disk(self):
+        import shutil
+        from diaktoros import config
+        for value in (True, False):
+            with self.subTest(unattended_fixer_push=value):
+                cfg = pathlib.Path(tempfile.mkdtemp(dir=os.environ.get("TMPDIR")))
+                self.addCleanup(shutil.rmtree, cfg, True)
+                loop = {**self.fx.loop, "unattended_fixer_push": value}
+                file = cfg / "demo.json"
+                file.write_text(json.dumps(loop, sort_keys=True))
+                before = file.read_bytes()
+                out = io.StringIO()
+                with mock.patch.dict(os.environ, {"DIAKTOROS_CONFIG_DIR": str(cfg)}):
+                    selftest.run(loop, pr=7, out=out)
+                self.assertIn("identities", self.stored(), out.getvalue())   # it really recorded
+                self.assertEqual(file.read_bytes(), before)
+                self.assertIs(json.loads(file.read_text())["unattended_fixer_push"], value)
+                self.assertIs(config.unattended_fixer_push_enabled(loop), value)
+                self.assertNotIn("unattended_fixer_push", json.dumps(self.stored()))

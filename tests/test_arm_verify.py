@@ -729,3 +729,19 @@ class ArmRecordsOnboardingTests(unittest.TestCase):
                 redirect_stdout(io.StringIO()):
             cli.cmd_doctor(args)
         self.assertEqual(self.stored(), {})
+
+    def test_fixer_push_setting_survives_a_recording_arm_on_disk(self):
+        for value in (True, False):
+            with self.subTest(unattended_fixer_push=value):
+                file = config.config_dir() / "widgets.json"
+                file.write_text(json.dumps({**raw_loop("widgets"), "unattended_fixer_push": value}))
+                before = file.read_bytes()
+                rc, out = self.arm(FakeGitHub(hooks(False)))
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(self.stored()["armed"]["status"], "passed")   # it really recorded
+                self.assertEqual(file.read_bytes(), before)
+                self.assertIs(json.loads(file.read_text())["unattended_fixer_push"], value)
+                self.assertIs(config.load_id("widgets")["unattended_fixer_push"], value)
+                self.assertNotIn("unattended_fixer_push", json.dumps(self.stored()))
+                rc, out = self.arm(FakeGitHub(hooks(True)), pause=True)
+                self.assertEqual(file.read_bytes(), before)
