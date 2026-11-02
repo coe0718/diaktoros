@@ -20,6 +20,7 @@ from contextlib import closing
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from diaktoros import shadow_queue  # noqa: E402
 from diaktoros import ci, config, gate, gh, run_supervisor, seat_model, stats, trusted_turn  # noqa: E402
 from diaktoros.run_supervisor import claims  # noqa: E402
 from diaktoros.run_supervisor import views  # noqa: E402
@@ -83,19 +84,15 @@ class Enqueue(unittest.TestCase):
     def loop(self, **shadow):
         return config.normalize({**RAW, "shadow": shadow} if shadow else dict(RAW))
 
-    def test_a_sampled_reviewer_turn_keeps_the_snapshot_and_queues_no_shadow_yet(self):
-        # #1647: the shadow is queued once the reviewer approves, not beside its turn.
-        from diaktoros import state as state_mod
+    def test_a_sampled_reviewer_turn_queues_one_shadow_beside_it(self):
         sup = mock.Mock()
         sup.submit.return_value = "enqueued"
         loop = self.loop(profile="grok", every=1)
         with mock.patch.object(gate, "isolated_supervisor", return_value=sup):
             self.assertEqual(gate.enqueue_isolated(loop, "reviewer", 8, HEAD), "enqueued")
-        self.assertEqual([call.args[4] for call in sup.submit.call_args_list], ["reviewer"])
-        self.assertEqual(state_mod.state_for(loop).shadow_findings_get(8, HEAD), {})
-        self.assertEqual(gate.enqueue_shadow(loop, sup, 8, HEAD), "enqueued")   # on its APPROVE
-        self.assertEqual(sup.submit.call_args_list[1].args[:5],
-                         (f"acme/widgets:8:{HEAD}:shadow", "acme/widgets", 8, HEAD, "shadow"))
+        seats = [call.args[4] for call in sup.submit.call_args_list]
+        self.assertEqual(seats, ["reviewer", "shadow"])
+        self.assertEqual(sup.submit.call_args_list[1].args[0], f"acme/widgets:8:{HEAD}:shadow")
 
     def test_no_profile_or_no_sample_or_another_seat_queues_none(self):
         sup = mock.Mock()
@@ -121,13 +118,10 @@ class Enqueue(unittest.TestCase):
             gate.enqueue_isolated(self.loop(profile="grok", every=1), "reviewer", 8, HEAD)
         self.assertEqual([c.args[4] for c in sup.submit.call_args_list], ["reviewer"])
 
-    def test_a_failing_shadow_snapshot_never_changes_the_reviewers_answer(self):
-        from diaktoros import state as state_mod
+    def test_a_failing_shadow_enqueue_never_changes_the_reviewers_answer(self):
         sup = mock.Mock()
-        sup.submit.return_value = "enqueued"
-        with mock.patch.object(gate, "isolated_supervisor", return_value=sup), \
-                mock.patch.object(state_mod.LoopState, "shadow_findings_put",
-                                  side_effect=OSError("disk full")):
+        sup.submit.side_effect = ["enqueued", OSError("disk full")]
+        with mock.patch.object(gate, "isolated_supervisor", return_value=sup):
             self.assertEqual(gate.enqueue_isolated(self.loop(profile="grok", every=1),
                                                    "reviewer", 8, HEAD), "enqueued")
 
@@ -376,18 +370,26 @@ class ProductionTurn(unittest.TestCase):
                                    key="k", model="grok-x", api_mode="chat_completions",
                                    proxy_model="", client_identity="")
 
-    def run_shadow(self, submissions, reviews=(), rc=0, checks=GREEN, pr=None, created=None):
+    def run_shadow(self, submissions, reviews=(), rc=0, checks=GREEN, pr=None, created=None,
+                   reviewer=("confirmed", "APPROVED"), reviewer_state="succeeded"):
         with mock.patch.object(Supervisor, "_spawn"), \
                 mock.patch.object(config, "by_repo", return_value=self.loop):
             gate.enqueue_isolated(self.loop, "reviewer", 8, HEAD)
-            # #1647: the shadow follows the reviewer's APPROVE, on the snapshot kept above.
-            gate.enqueue_shadow(self.loop, gate.isolated_supervisor(self.loop), 8, HEAD)
         sup = Supervisor(self.home / "state" / "diaktoros-runs.sqlite",
                          production_config=self.home / "diaktoros-runtime.json",
                          hermes_home=self.home)
         row = sup.get(f"acme/widgets:8:{HEAD}:shadow")
-        self.assertIsNotNone(row, "the approved head queued a shadow")
+        self.assertIsNotNone(row, "the sampled reviewer turn queued a shadow")
         with closing(sqlite3.connect(sup.db)) as con, con:
+            # #1647: the shadow runs once its reviewer turn's APPROVE is confirmed (``reviewer``:
+            # that turn's receipt, or None for none yet).
+            con.execute("UPDATE runs SET state=? WHERE seat='reviewer'", (reviewer_state,))
+            if reviewer is not None:
+                rid = sup.get(f"acme/widgets:8:{HEAD}:reviewer")["id"]
+                con.execute("INSERT OR REPLACE INTO review_receipts(run_id,state,generation,"
+                            "principal_id,"
+                            "review_id,verdict,created,confirmed) VALUES(?,?,'g',1,9,?,?,?)",
+                            (rid, reviewer[0], reviewer[1], time.time(), time.time()))
             con.execute("UPDATE runs SET state='launching', owner='w', launch_intent=1 WHERE id=?",
                         (row["id"],))
             if created is not None:
@@ -527,6 +529,42 @@ class ProductionTurn(unittest.TestCase):
         sup, row = self.run_shadow([], rc=1)
         self.assertEqual(sup.shadow_reviews(), [])
         self.assertEqual((row["state"], row["retries"]), ("failed", 0))
+
+    def test_a_head_the_reviewer_sent_back_gets_no_shadow_and_spends_nothing(self):
+        # #1647: on a change-requested head the shadow decides nothing, so it never runs.
+        sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok"}],
+                                   reviewer=("confirmed", "CHANGES_REQUESTED"))
+        self.assertEqual(self.seen, {}, "no shadow turn launched")
+        self.assertEqual(row["state"], "cancelled")
+        self.assertIn("the reviewer requested changes", row["error"])
+        self.assertEqual(sup.shadow_reviews(), [])
+
+    def test_the_shadow_waits_for_its_reviewers_verdict_and_spends_nothing(self):
+        # #1647: the reviewer's review is still being posted (receipt claimed, not confirmed),
+        # or no receipt yet: the shadow is held and polled again, nothing launched.
+        for name, reviewer, state in (("posting", ("claimed", "APPROVE"), "running"),
+                                      ("running", None, "running"),
+                                      ("uncertain", None, "uncertain")):
+            with self.subTest(name):
+                self.setUp()
+                sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok"}],
+                                           reviewer=reviewer, reviewer_state=state)
+                self.assertEqual(self.seen, {}, "no shadow turn launched")
+                self.assertEqual(row["state"], "waiting")
+                self.assertIn("waiting for the reviewer's verdict", row["error"])
+                self.assertEqual(row["retries"], 0)
+
+    def test_a_reviewer_turn_that_ended_without_a_verdict_gets_no_shadow(self):
+        sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok"}], reviewer=None)
+        self.assertEqual((self.seen, row["state"]), ({}, "cancelled"))
+        self.assertIn("ended succeeded without a verdict", row["error"])
+
+    def test_a_shadow_that_waited_past_the_bound_is_skipped(self):
+        sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok"}],
+                                   reviewer=("claimed", "APPROVE"), reviewer_state="running",
+                                   created=time.time() - shadow_queue.WAIT_MAX_S - 60)
+        self.assertEqual((self.seen, row["state"]), ({}, "cancelled"))
+        self.assertIn("shadow review skipped: waiting for the reviewer's verdict", row["error"])
 
     def test_the_shadow_takes_its_own_step_budget(self):
         self.run_shadow([{"verdict": "APPROVE", "body": "ok", "authorized": True}])

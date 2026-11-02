@@ -111,7 +111,7 @@ def _set_check_flags(change) -> None:  # noqa: ANN001
     shadows.add_argument("--no-shadow", action="store_true",
                          help="turn shadow reviews off")
     change.add_argument("--shadow-every", type=int, default=None,
-                        help="shadow one in this many heads the reviewer approves, 1-1000 (needs a shadow profile)")
+                        help="shadow one in this many reviewer turns, 1-1000 (needs a shadow profile)")
     change.add_argument("--shadow-escalate", choices=("on", "off"), default=None,
                         help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1")
     change.add_argument("--shadow-file-issues", choices=("on", "off"), default=None,

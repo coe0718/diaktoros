@@ -650,9 +650,21 @@ class ClaimAndLaunch:
         spent), and past ``run_supervisor.CI_WAIT_MAX_S`` with CI unfinished it gives the head up rather than
         review it. A shadow verdict is a sample of a model, so it is taken only on code CI
         passed. Sets ``turn.error``."""
-        from .. import ci, config, gh
+        from .. import ci, config, gh, shadow_queue
         row, loop = turn.row, turn.loop
         head = row['head']
+        # #1647: only once its own reviewer turn approved the head; from the ledger, no read.
+        what, why = shadow_queue.after_reviewer(self.db, row)
+        if what == "skip" or (what == "wait"
+                              and time.time() - row['created'] >= shadow_queue.WAIT_MAX_S):
+            turn.cancel = True
+            turn.error = f"shadow review skipped: {why}"[:600]
+            return
+        if what == "wait":
+            turn.paced_until = time.time() + run_supervisor.CI_POLL_S
+            turn.error = f"held: {why}"[:600]
+            self.held_for_ci = True
+            return
 
         def hold(why: str) -> None:
             if time.time() - row['created'] >= run_supervisor.CI_WAIT_MAX_S:
@@ -908,9 +920,10 @@ class ClaimAndLaunch:
             # neither its round count nor its PR record.
             reviews = pr_facts.effective_reviews(loop, row, gh.reviews(loop, row['pr']), self.db)
             if row['seat'] == run_supervisor.SHADOW and isinstance(reviews, list):
-                # The shadow sees what the real reviewer saw when it was queued (#218, #1647).
-                from .. import shadow_queue
-                reviews = shadow_queue.shown_reviews(row, reviews, self.db)
+                # The shadow sees what the real reviewer saw when both were queued (#218): a
+                # review posted since, the real one's included, would tell it the answer.
+                reviews = [r for r in reviews
+                           if not util.epoch(r.get('submitted_at')) > row['created']]
         # The reviewer and fixer see the change itself (#50); the adjudicator needs both
         # sides' comments. A read that failed is transient (retry); a moved head is not.
         # The shadow is prompted as the reviewer it shadows.

@@ -420,7 +420,7 @@ Do not add `seats.issue_fixer` and expect it to tune this behavior: normalizatio
 
 ## Shadow reviews
 
-A shadow review runs a second reviewer model on a head the real reviewer **approved**, in no-write mode. It authorizes with live reads, records what it would have submitted, and posts nothing. The recorded reviews are for comparing models on the same PRs. Nothing in the loop decides from them.
+A shadow review runs a second reviewer model on a head the real reviewer was queued for, in no-write mode. It authorizes with live reads, records what it would have submitted, and posts nothing. The recorded reviews are for comparing models on the same PRs. Nothing in the loop decides from them.
 
 ```json
 "shadow": {"profile": "shadow", "every": 5},
@@ -428,11 +428,20 @@ A shadow review runs a second reviewer model on a head the real reviewer **appro
 ```
 
 - `shadow.profile`: the Hermes profile shadow reviews run as. Its model and account are the shadow's. Without it, shadow reviews are off. Doctor fails a shadow that runs as the reviewer's own profile: it would compare a model with itself, and a 429 on the shared account would hold the real reviewer.
-- `shadow.every`: shadow one in this many heads, 1-1000, default 5. The choice is made from the repo, PR and head, so a redelivered event chooses the same way. A chosen head gets its shadow review only once the reviewer's APPROVE there is confirmed (#1647): on a head the reviewer sent back, a second opinion decides nothing, since the PR isn't ready either way and the fixer pushes a new head. A week of the ledger had about 46% of the shadow's tokens spent on such heads.
+- `shadow.every`: shadow one in this many reviewer turns, 1-1000, default 5. The choice is made from the repo, PR and head, so a redelivered event chooses the same way.
 - Set them with `hermes dk set --loop ID --shadow-profile P [--shadow-every N]` (`--no-shadow` turns it off), with the same flags on `init` and `setup`, or with the settings form's *Shadow review profile* and *Shadow one in N reviews* (`apply` pushes them; `off` as the profile turns it off).
 - `seats.shadow`: the seat's limits, like any seat's: `daily_turns`, `daily_tokens`, `turn_budget_s` (default: the loop's), `concurrency` (default 1, never the loop's) and `max_steps` (default 100, not the reviewer's 60: another model may explore more before it submits). There is no route, login or token: a shadow never writes.
 
-When the reviewer's turn is queued, the shadow's findings snapshot is taken. After the APPROVE posts, the broker queues the shadow, and the watchdog queues any the broker missed. A shadow turn gets the reviewer's prompt and change view at that head, minus any review posted after the **reviewer's** turn was queued, so the real review and its APPROVE never tell it the answer. It is not part of the loop:
+A shadow turn gets the reviewer's prompt and change view at that head, minus any review posted after it was queued (the real one included).
+
+**It runs only on a head its reviewer turn approved (#1647).** The shadow's row is queued with its reviewer turn, on a findings snapshot taken before that turn's row exists. When the shadow is claimed, it reads from the run ledger, with no GitHub read, what that same reviewer turn decided (same PR, head and turn key):
+- **A confirmed APPROVE:** it runs.
+- **A change request, or a reviewer turn that ended without a verdict:** it is skipped (`cancelled`, "shadow review skipped: …"), with nothing spent. On a head the reviewer sent back, a second opinion decides nothing, because the PR isn't ready either way and the fixer pushes a new head. A week of the ledger had about 46% of the shadow's tokens spent on such heads.
+- **Anything still in flight** (the reviewer's turn running, its review being posted or confirmed, an uncertain or unreadable record): it is held ("held: waiting for the reviewer's verdict"), polled again like a CI hold, and skipped after three hours.
+
+Its row is open from the moment the reviewer is queued, so with `shadow.escalate` the head holds the whole time, including while the reviewer's APPROVE is being posted.
+
+It is not part of the loop:
 - it never occupies the PR, so the real reviewer and fixer never wait for it, and it never waits for them;
 - it claims no seat and marks no head in flight;
 - it pages nobody when it fails, and a failed one is not retried: it is a lost sample, not stuck work (a closed usage window still waits for its reset, which costs nothing);
@@ -444,7 +453,7 @@ changes. `hermes dk ready` and `explain` say which (and `explain` won't recommen
 the ready-set notice leaves it out of the set. It needs `shadow.every: 1`,
 because a head the sampling skips would have no second review to hold it. A head with no shadow
 review to wait for is never held: one queued before escalate was on, or a shadow run that ended
-without a review, or a loop whose run ledger doesn't exist yet (`explain` notes it). A chosen head the reviewer approved but whose shadow run isn't queued yet is held ("its shadow review is being queued"), so the check is never green in that gap. A shadow run
+without a review, or a loop whose run ledger doesn't exist yet (`explain` notes it). A shadow run
 queued after the newest review of the head, such as a re-review, holds until it lands, even past
 an earlier approval. A run ledger that exists but can't be read holds, because unknown isn't ready. Set it with `set`/`init`/`setup --shadow-escalate on|off`, the settings form's *Shadow
 review holds the PR*, or the loop file.

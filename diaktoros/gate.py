@@ -169,6 +169,9 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
     """
     supervisor = isolated_supervisor(loop)
     supervisor.recover()
+    if seat == "reviewer":
+        # Before the reviewer's row exists, so its worker can record nothing first (#1647).
+        snapshot_shadow(loop, number, head)
     delivery = f"{loop['repo']}:{number}:{head}:{seat}"
     # The turn's wall clock rides on the row (#49): whichever worker claims it — possibly one
     # spawned by another loop's event — runs it for this loop's seat budget, not a worker default.
@@ -177,7 +180,7 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
                                 require_push_admission=seat == "fixer",
                                 budget=config.turn_budget(loop, seat))
     if seat == "reviewer" and outcome == "enqueued":
-        snapshot_shadow(loop, number, head)     # its shadow is queued after an APPROVE (#1647)
+        enqueue_shadow(loop, supervisor, number, head, turn_key=turn_key)
     return outcome
 
 
@@ -227,11 +230,10 @@ def ruling_answers(ruling, review_run: str, review_created: float) -> bool:
     return str(shown) == str(review_run)
 
 
-def shadow_open_heads(db=None, seat: str = "shadow") -> set[tuple[int, str]]:
+def shadow_open_heads(db=None) -> set[tuple[int, str]]:
     """``(pr, head)`` of every shadow run still open (``SHADOW_OPEN``), whose findings snapshot
-    must outlive it (#1013); with ``seat="reviewer"``, of every open reviewer run, whose head's
-    snapshot waits for its APPROVE (#1647). Empty when the ledger does not exist yet; raises when
-    it exists but cannot be read, so the caller never evicts on a guess."""
+    must outlive it (#1013). Empty when the ledger does not exist yet; raises when it exists
+    but cannot be read, so the caller never evicts on a guess."""
     from . import run_supervisor
     path = pathlib.Path(db or run_supervisor.production_ledger())
     if not path.exists():
@@ -240,9 +242,8 @@ def shadow_open_heads(db=None, seat: str = "shadow") -> set[tuple[int, str]]:
     if con is None:
         return set()
     try:
-        rows = con.execute(f"SELECT pr, head FROM runs WHERE seat=? AND "
-                           f"state IN ({','.join('?' * len(SHADOW_OPEN))})",
-                           (seat, *SHADOW_OPEN)).fetchall()
+        rows = con.execute(f"SELECT pr, head FROM runs WHERE seat='shadow' AND "
+                           f"state IN ({','.join('?' * len(SHADOW_OPEN))})", SHADOW_OPEN).fetchall()
     finally:
         con.close()
     return {(int(r[0]), str(r[1])) for r in rows}
@@ -298,9 +299,6 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
                                    if ruling_answers(r, review[2], review[1])), None)
             except sqlite3.OperationalError:
                 ruling = None
-            from . import shadow_queue
-            unqueued = run is None and shadow_sampled(loop, number, head) and \
-                shadow_queue.approved_unqueued(con, loop["repo"], number, head)
             pending = con.execute(
                 f"SELECT state FROM runs WHERE repo=? AND pr=? AND head=? AND seat='shadow' AND "
                 f"state IN ({','.join('?' * len(SHADOW_OPEN))}) AND created>? "
@@ -313,49 +311,38 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
         return "pending", (f"the run ledger is unreadable ({type(exc).__name__}), so the shadow review at "
                 f"{short} is unknown"), ""
     if review is not None and str(review[0]) == "REQUEST_CHANGES":
-        return _shadow_dissent(loop, number, head, short, marker, ruling)
+        mine = isinstance(marker, dict) and str(marker.get("head") or "") == head and (
+            (marker.get("escalated") or {}).get("by") == SHADOW_ESCALATION)
+        verdict = str(ruling[0]) if ruling else ""
+        if mine and verdict == "ACCEPT":
+            # Part 2 (#1004): the adjudicator overruled it; the reviewer's approval stands.
+            return "", "", f"the adjudicator overruled the shadow review at {short} (ACCEPT)"
+        if mine and verdict == "REJECT":
+            # Part 3 (#1004): upheld. The fixer answers it where queue_shadow_fix can hand it on;
+            # a loop without unattended pushes, or a review-only author's PR, is the operator's.
+            if config.unattended_fixer_push_enabled(loop) and not _review_only_pr(loop, number):
+                return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT): "
+                        "the fixer answers its findings, and the fixed head is reviewed fresh"), ""
+            return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT) — no "
+                    "fixer takes it here, so the decision is yours (`hermes dk explain --pr N` "
+                    "shows the findings)"), ""
+        if mine and verdict:
+            return "failure", (f"the adjudicator ruled {verdict} on the shadow review at {short} — the "
+                    "decision is yours (`hermes dk explain --pr N` shows the findings)"), ""
+        if mine:
+            return "pending", (f"the shadow review requested changes at {short}; escalated to the "
+                    "adjudicator, waiting for its ruling"), ""
+        return "failure", (f"the shadow review requested changes at {short} — it holds the PR until "
+                "you decide (`hermes dk explain --pr N` shows its findings)"), ""
     if pending is not None:
         # A shadow run queued after the newest review (a re-review at the same head, #1097's
         # shadow review) can still change it: wait for it, even past an earlier approval.
         return "pending", f"waiting on the shadow review at {short} ({pending[0]})", ""
     if review is not None:
         return "", "", ""
-    if unqueued:
-        # #1647: the shadow is queued after the reviewer's APPROVE; until its row exists the head
-        # waits for it, never green in between (the watchdog queues one the broker did not).
-        return "pending", (f"the reviewer approved {short}; its shadow review is being queued"), ""
     if run is None:
         return "", "", f"no shadow review was queued for {short}: nothing to wait for"
     return "", "", f"the shadow run at {short} ended {run[0]} without a review: nothing to wait for"
-
-
-def _shadow_dissent(loop: dict, number: int, head: str, short: str, marker,
-                    ruling) -> tuple[str, str, str]:
-    """``shadow_state`` for a head whose newest shadow review requested changes: held for the
-    adjudicator, overruled by it, upheld, or the operator's (#1004)."""
-    mine = isinstance(marker, dict) and str(marker.get("head") or "") == head and (
-        (marker.get("escalated") or {}).get("by") == SHADOW_ESCALATION)
-    verdict = str(ruling[0]) if ruling else ""
-    if mine and verdict == "ACCEPT":
-        # Part 2 (#1004): the adjudicator overruled it; the reviewer's approval stands.
-        return "", "", f"the adjudicator overruled the shadow review at {short} (ACCEPT)"
-    if mine and verdict == "REJECT":
-        # Part 3 (#1004): upheld. The fixer answers it where queue_shadow_fix can hand it on;
-        # a loop without unattended pushes, or a review-only author's PR, is the operator's.
-        if config.unattended_fixer_push_enabled(loop) and not _review_only_pr(loop, number):
-            return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT): "
-                    "the fixer answers its findings, and the fixed head is reviewed fresh"), ""
-        return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT) — no "
-                "fixer takes it here, so the decision is yours (`hermes dk explain --pr N` "
-                "shows the findings)"), ""
-    if mine and verdict:
-        return "failure", (f"the adjudicator ruled {verdict} on the shadow review at {short} — the "
-                "decision is yours (`hermes dk explain --pr N` shows the findings)"), ""
-    if mine:
-        return "pending", (f"the shadow review requested changes at {short}; escalated to the "
-                "adjudicator, waiting for its ruling"), ""
-    return "failure", (f"the shadow review requested changes at {short} — it holds the PR until "
-            "you decide (`hermes dk explain --pr N` shows its findings)"), ""
 
 
 SHADOW_ESCALATION = "shadow"           # the breach marker's ``escalated.by`` for #1004
@@ -483,38 +470,33 @@ def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) 
                   escalated={"by": SHADOW_ESCALATION, "at": now_iso(), "reason": reason})
 
 
-def snapshot_shadow(loop: dict, number: int, head: str) -> str:
-    """Keep the findings ledger as the reviewer's turn is queued, for the shadow review a sampled
-    head gets once the reviewer approves it (#218, #1647): the shadow is judged against what the
-    reviewer saw, never what it recorded. First snapshot wins. Best effort and silent: a shadow is
-    never part of the loop. Returns what happened, for logs and tests."""
+def snapshot_shadow(loop: dict, number: int, head: str) -> bool:
+    """Keep the findings ledger for a sampled head's shadow review (#218): the broker judges the
+    shadow against it, never against what the real review records. Taken before the reviewer's
+    row exists (#1647); the first snapshot wins. Whether one is kept; never raises."""
+    if not config.shadow_profile(loop) or not shadow_sampled(loop, number, head):
+        return False
     try:
-        if not config.shadow_profile(loop):
-            return "off"
-        if not shadow_sampled(loop, number, head):
-            return "not sampled"
         st = state_mod.state_for(loop)
-        # One state lock over the open-runs read and the snapshot write: a second put cannot
-        # sample the ledger before this snapshot exists and evict it (#1013).
         with st.locked():
             try:
-                keep = shadow_open_heads() | shadow_open_heads(seat="reviewer")
+                keep = shadow_open_heads()
             except Exception as exc:
                 keep = None                  # unknown open runs: evict nothing
                 log(f"#{number}: shadow runs unreadable, no snapshot evicted: "
                     f"{type(exc).__name__}: {exc}")
             st.shadow_findings_put(number, head, st.findings_get(number), keep)
-        return "kept"
+        return True
     except Exception as exc:
         log(f"#{number}: shadow findings snapshot not kept: {type(exc).__name__}: {exc}")
-        return "error"
+        return False
 
 
 def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: str = "") -> str:
-    """Queue the shadow review of a head the reviewer approved (#1647), when the loop has a shadow
-    profile and this head is sampled. It needs the snapshot taken as the reviewer was queued
-    (``snapshot_shadow``): without one there is no shadow, since its broker would judge it on the
-    live ledger, which the real review has changed (#218, #1013). Best effort and silent. Returns
+    """Queue a shadow review beside a newly queued reviewer turn (#218), when the loop has a
+    shadow profile and this head is sampled. It runs only once that reviewer turn's APPROVE is
+    confirmed (#1647, ``shadow_queue.after_reviewer``). Best effort and silent: a shadow is never
+    part of the loop, so nothing here can change what the reviewer's enqueue answers. Returns
     what happened, for logs and tests."""
     try:
         if not config.shadow_profile(loop):
@@ -522,19 +504,27 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
         if not shadow_sampled(loop, number, head):
             return "not sampled"
         delivery = f"{loop['repo']}:{number}:{head}:shadow" + (f":{turn_key}" if turn_key else "")
-        st = state_mod.state_for(loop)
-        # The snapshot read and the submit under one state lock (the order intake's re-arm
-        # uses), so the snapshot cannot be evicted between them; once queued, the run keeps it.
+        # No durable snapshot, no shadow: the broker would judge it on the live ledger, which
+        # the real review of this head may change meanwhile (#218, #1013).
+        try:
+            st = state_mod.state_for(loop)
+        except Exception as exc:
+            log(f"#{number}: shadow findings snapshot not kept, shadow not queued: "
+                f"{type(exc).__name__}: {exc}")
+            return "no snapshot"
+        # One state lock over the open-runs read, the snapshot write and the submit: a second
+        # enqueue cannot sample the ledger before this run is visible in it and then evict this
+        # snapshot as unused (#1013). The lock is reentrant.
         with st.locked():
-            if st.shadow_findings_get(number, head) is None:
-                log(f"#{number} @ {head[:7]}: no findings snapshot from the reviewer's queueing, "
-                    "shadow not queued")
+            if not snapshot_shadow(loop, number, head):
+                log(f"#{number}: no shadow findings snapshot, shadow not queued")
                 return "no snapshot"
             return supervisor.submit(delivery, loop["repo"], number, head, "shadow",
                                      turn_key=turn_key, budget=config.turn_budget(loop, "shadow"))
     except Exception as exc:
         log(f"#{number}: shadow review not queued: {type(exc).__name__}: {exc}")
         return "error"
+
 
 def resume_isolated(loop: dict) -> bool:
     """Schedule ledger work that is due — a backed-off pre-write retry (#53), or a pending

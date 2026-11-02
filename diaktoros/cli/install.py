@@ -916,7 +916,7 @@ def _init_review_flags(init) -> None:  # noqa: ANN001
     init.add_argument("--shadow-profile", default=None,
                      help="the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted (default: the plugin setting, else none)")
     init.add_argument("--shadow-every", type=int, default=None,
-                     help="shadow one in this many heads the reviewer approves, 1-1000 (default: the plugin setting, else 5)")
+                     help="shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5)")
     init.add_argument("--shadow-escalate", choices=("on", "off"), default=None,
                       help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off)")
     init.add_argument("--shadow-file-issues", choices=("on", "off"), default=None,
