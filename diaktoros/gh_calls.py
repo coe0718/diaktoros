@@ -14,8 +14,10 @@ count, as for the cache (``gh_cache.writes_enabled``): the watchdog, the gates a
 which make nearly every call. A command that promises to write nothing (``doctor``, ``explain``,
 ``status``, the Desktop) is not counted, and ``calls`` says so. A worker writes only into a
 directory that already exists: the host makes it as it starts one (``prepare``). Files older
-than ``KEEP_S`` are pruned by a later flush. Nothing here holds a token, a body or an error
-text: logins and path shapes only.
+than ``KEEP_S`` are pruned by a later flush, and a process drops its own hours older than that
+as it flushes, since a long-lived writer's file never ages. Nothing here holds a token, a body or
+an error text: logins and path shapes only. Calls made as a GitHub App itself (its JWT, not an
+installation token) are counted under ``app_login``: GitHub keeps them in a bucket of their own.
 """
 from __future__ import annotations
 
@@ -60,12 +62,23 @@ def prepare(home: pathlib.Path | None = None) -> None:
         pass
 
 
+def app_login(login: str) -> str:
+    """The login a call made as the App itself is counted under: apart from its installation
+    token's, whose rate-limit figure its own headers would otherwise overwrite (#1765)."""
+    return f"{login} (App JWT)"
+
+
 def shape(path: str) -> str:
     """A path with what varies call to call taken out: ``/repos/R/pulls/N/reviews?page``."""
     base, _, query = path.partition("?")
     base = re.sub(r"^/repos/[^/]+/[^/]+", "/repos/R", base)
     base = re.sub(r"/git/(refs|ref)/heads/.+$", r"/git/\1/heads/REF", base)
     base = re.sub(r"/compare/.+$", "/compare/X", base)
+    # A branch name may hold "/": it runs up to the route's own suffix, if it has one (#1759).
+    base = re.sub(r"/branches/.+?(/protection(?:/.*)?)?$", r"/branches/REF\1", base)
+    base = re.sub(r"/commits/(?![0-9a-f]{40}(?:/|$)).+?"
+                  r"(/(?:check-runs|check-suites|status|statuses|pulls|comments))?$",
+                  r"/commits/REF\1", base)
     base = re.sub(r"/users/[^/]+", "/users/X", base)
     base = re.sub(r"/[0-9a-f]{40}(?=/|$)", "/SHA", base)
     base = re.sub(r"/\d+(?=/|$)", "/N", base)
@@ -124,6 +137,9 @@ def flush() -> None:
     from .util import atomic_write
     try:
         _name = _name or f"{int(time.time())}-{os.getpid()}-{random.getrandbits(32):08x}.json"
+        cutoff = time.time() - KEEP_S
+        for key in [key for key in _counts if key[0] < cutoff]:
+            del _counts[key]       # this file stays fresh, so prune never takes its old hours
         rows = [[*key, n] for key, n in _counts.items()]
         directory().mkdir(parents=True, exist_ok=True, mode=0o700)
         atomic_write(directory() / _name, json.dumps({"counts": rows, "limits": _limits}))

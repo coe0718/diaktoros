@@ -243,13 +243,18 @@ Beside each login it shows the newest rate-limit figure GitHub sent it (used, li
 GitHub figure well past the host's **spent** count means the same credential is spending
 somewhere else.
 
+Calls made as a GitHub App itself, with its JWT (minting an installation token, reading the App),
+are listed under `<login> (App JWT)`. GitHub keeps them in a rate-limit bucket of their own, apart
+from the installation token's, so each figure is set against its own count.
+
 ```bash
 hermes dk calls
 hermes dk calls --since 24h --top 30
 ```
 
 Counts are kept in whole hours, in one small file per process under
-`$HERMES_HOME/state/diaktoros-gh-calls/`, for two days. Only the processes that keep the read
+`$HERMES_HOME/state/diaktoros-gh-calls/`, for two days (a long-running process drops its own
+older hours as it writes). Only the processes that keep the read
 cache keep a count: the watchdog, the gates and the turn workers, which make nearly every call.
 Commands that promise to write nothing (`doctor`, `explain`, `status`, the Desktop) are not
 counted. Read-only. The files hold logins and path shapes only: no token, body or error text.
