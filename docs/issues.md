@@ -370,7 +370,8 @@ minute) can therefore lose triage turns. Two things cover it:
   was missed`, until that issue's triage run has succeeded (the next sweep then drops the line;
   a failed, cancelled or still-running one stays listed). That cleanup runs first in every sweep,
   so it also happens when `triage` is turned off or the open-issues read fails; it needs only the
-  run ledger. The sweep needs the same private runtime the gate does (without it the line stays),
+  run ledger. The sweep needs the same private runtime the gate does (without it the line stays and the
+  sweep logs `run ledger unavailable` once),
   and for a loop without `triage` it queues nothing and reads no issues.
 - **Doctor.** `gate:rate_limit` reads the gateway's `rate_limit` and warns below 60. Raise it in
   the gateway's `config.yaml` (`platforms.webhook.extra.rate_limit: 120`) and restart that

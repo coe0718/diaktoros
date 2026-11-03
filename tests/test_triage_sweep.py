@@ -239,6 +239,19 @@ class Sweep(fg.Base):
         read.assert_not_called()
         self.assertEqual(self.st.late_triage(), {})
 
+    def test_an_unavailable_ledger_is_logged_once_per_sweep_with_late_entries(self):
+        # #1316: the cleanup and the queued fetch both logged the one ledger failure.
+        self.sweep([issue(7)])
+        self.assertEqual(sorted(self.st.late_triage()), [7])
+        with mock.patch.object(triage_sweep, "log") as log:
+            lines = self.sweep([issue(8)], ledger_error=RuntimeError("no private runtime"))
+        messages = [call.args[0] for call in log.call_args_list]
+        self.assertEqual(len([m for m in messages if "run ledger unavailable" in m]), 1, messages)
+        self.assertEqual([m for m in messages if "cleanup failed" in m], [])
+        self.assertEqual(self.enqueued, [("triage", 7, config.TRIAGE_HEAD, "triage")])
+        self.assertEqual(sorted(self.st.late_triage()), [7])     # the line stays
+        self.assertEqual([line for line in lines if "queued late" in line], [])
+
     def test_status_names_an_issue_the_sweep_queued_late(self):
         self.sweep([issue(7)])
         out = io.StringIO()
