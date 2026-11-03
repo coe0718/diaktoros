@@ -387,9 +387,9 @@ class ProductionTurn(unittest.TestCase):
                              "the sampled reviewer turn queued a shadow")
         return sup
 
-    def reviewer_is(self, sup, reviewer, reviewer_state):
+    def reviewer_is(self, sup, reviewer, reviewer_state, confirmed=None):
         """#1647: the shadow runs once its reviewer turn's APPROVE is confirmed (``reviewer``:
-        that turn's receipt, or None for none yet)."""
+        that turn's receipt, or None for none yet; ``confirmed``: when, default now)."""
         with closing(sqlite3.connect(sup.db)) as con, con:
             con.execute("UPDATE runs SET state=? WHERE seat='reviewer'", (reviewer_state,))
             if reviewer is not None:
@@ -397,7 +397,8 @@ class ProductionTurn(unittest.TestCase):
                 con.execute("INSERT OR REPLACE INTO review_receipts(run_id,state,generation,"
                             "principal_id,"
                             "review_id,verdict,created,confirmed) VALUES(?,?,'g',1,9,?,?,?)",
-                            (rid, reviewer[0], reviewer[1], time.time(), time.time()))
+                            (rid, reviewer[0], reviewer[1], time.time(),
+                             time.time() if confirmed is None else confirmed))
 
     def claim_shadow(self, sup, submissions, reviews=(), rc=0, checks=GREEN, pr=None,
                      created=None):
@@ -502,8 +503,11 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual((row["state"], self.seen), ("waiting", {}))
         self.assertIn("conflicts with its base", row["error"])
         self.setUp()
-        _, row = self.run_shadow([], checks=ci.CIState(pending=["tests"]),
-                                 created=time.time() - run_supervisor.CI_WAIT_MAX_S - 1)
+        # Past the CI wait since the approval (review of #1656, F11: its clock starts there).
+        old = time.time() - run_supervisor.CI_WAIT_MAX_S - 1
+        sup = self.queue_shadow()
+        self.reviewer_is(sup, ("confirmed", "APPROVED"), "succeeded", confirmed=old)
+        _, row = self.claim_shadow(sup, [], checks=ci.CIState(pending=["tests"]), created=old)
         self.assertEqual((row["state"], self.seen), ("cancelled", {}))   # never a late review
         self.assertIn("CI did not finish", row["error"])
 
@@ -610,6 +614,26 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual(merge_check.decide(self.kinds())[0], merge_check.PENDING)
         self.assertTrue([w for _k, w in self.kinds() if w.startswith("shadow review")])
         sup, row = self.claim_shadow(sup, approve)
+        self.assertEqual((self.seen["role"], row["state"]), ("reviewer", "succeeded"), row)
+        self.assertEqual([w for _k, w in self.kinds() if w.startswith("shadow review")], [])
+
+    def test_a_late_approval_starts_the_ci_wait_so_a_transient_ci_read_holds_the_head(self):
+        # Review of #1656, F11: the shadow waited for its reviewer far past the CI wait. Timed
+        # from the queueing, the first unreadable CI answer would cancel it and the approved head
+        # would read green with no second opinion. Timed from the approval, it holds and polls.
+        self.loop = config.normalize({**RAW, "state_dir": str(self.home / "state"),
+                                      "required_checks": ["tests"],
+                                      "shadow": {"profile": "grok", "every": 1, "escalate": True}})
+        approve = [{"verdict": "APPROVE", "body": "ok", "authorized": True}]
+        sup = self.queue_shadow()
+        self.reviewer_is(sup, ("confirmed", "APPROVED"), "succeeded")      # confirmed just now
+        long_ago = time.time() - 2 * run_supervisor.CI_WAIT_MAX_S
+        sup, row = self.claim_shadow(sup, approve, checks=None, created=long_ago)
+        self.assertEqual((self.seen, row["state"]), ({}, "waiting"), row["error"])
+        self.assertTrue(row["error"].startswith(run_supervisor.CI_HOLD), row["error"])
+        self.assertEqual(merge_check.decide(self.kinds())[0], merge_check.PENDING)
+        self.assertTrue([w for _k, w in self.kinds() if w.startswith("shadow review")])
+        sup, row = self.claim_shadow(sup, approve)                          # CI reads green now
         self.assertEqual((self.seen["role"], row["state"]), ("reviewer", "succeeded"), row)
         self.assertEqual([w for _k, w in self.kinds() if w.startswith("shadow review")], [])
 

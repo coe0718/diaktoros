@@ -667,8 +667,12 @@ class ClaimAndLaunch:
             self.held_for_ci = True
             return
 
+        # Review of #1656, F11: the CI wait's clock starts at the approval waited for above, not
+        # at the queueing, or a slow verdict would spend it before CI is first read.
+        since = max(float(row['created']), shadow_queue.approved_at(self.db, row) or 0)
+
         def hold(why: str) -> None:
-            if time.time() - row['created'] >= run_supervisor.CI_WAIT_MAX_S:
+            if time.time() - since >= run_supervisor.CI_WAIT_MAX_S:
                 turn.cancel = True
                 turn.error = (f"shadow review skipped: CI did not finish at {head[:7]} within "
                               f"{run_supervisor.CI_WAIT_MAX_S // 60} min ({why})")[:600]

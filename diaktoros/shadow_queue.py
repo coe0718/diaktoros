@@ -35,10 +35,7 @@ def after_reviewer(db, row) -> tuple[str, str]:
         if con is None:
             return "wait", "the run ledger is unreadable, so the reviewer's verdict is unknown"
         try:
-            reviewer = con.execute(
-                "SELECT id, state, created FROM runs WHERE repo=? AND pr=? AND head=? AND "
-                "seat='reviewer' AND turn_key=? ORDER BY created DESC LIMIT 1",
-                (row["repo"], row["pr"], row["head"], row["turn_key"] or "")).fetchone()
+            reviewer = _reviewer_run(con, row)
             receipt = reviewer and con.execute(
                 "SELECT state, verdict FROM review_receipts WHERE run_id=?",
                 (reviewer[0],)).fetchone()
@@ -60,3 +57,32 @@ def after_reviewer(db, row) -> tuple[str, str]:
     if receipt or reviewer[1] in OPEN:
         return "wait", f"waiting for the reviewer's verdict at {short}"
     return "skip", f"the reviewer's turn at {short} ended {reviewer[1]} without a verdict"
+
+
+def _reviewer_run(con, row):
+    """The reviewer run a shadow row was queued with: same PR, head and turn key, the newest."""
+    return con.execute(
+        "SELECT id, state, created FROM runs WHERE repo=? AND pr=? AND head=? AND "
+        "seat='reviewer' AND turn_key=? ORDER BY created DESC LIMIT 1",
+        (row["repo"], row["pr"], row["head"], row["turn_key"] or "")).fetchone()
+
+
+def approved_at(db, row) -> float | None:
+    """When the shadow's own reviewer turn had its APPROVE confirmed, or None (none yet, a row
+    from before #1647, or an unreadable ledger). The shadow's CI wait starts here, not at its
+    queueing: the verdict wait before it has no bound (review of #1656, F11)."""
+    from .run_supervisor import views
+    try:
+        con = views.read_only_connect(db)
+        if con is None:
+            return None
+        try:
+            reviewer = _reviewer_run(con, row)
+            receipt = reviewer and con.execute(
+                "SELECT confirmed FROM review_receipts WHERE run_id=? AND state='confirmed'",
+                (reviewer[0],)).fetchone()
+        finally:
+            con.close()
+        return float(receipt[0]) if receipt and receipt[0] is not None else None
+    except Exception:  # noqa: BLE001 - unknown: the clock falls back to the queueing
+        return None
