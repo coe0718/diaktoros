@@ -35,6 +35,16 @@ def reproduction_section(loop: dict, row) -> str:
     return repro_proof.section(found[0], found[1], row['head']) if found else ''
 
 
+def issue_labels_fact(loop: dict) -> str:
+    """The labels a filed issue may carry (#247), for the reviewer's prompt: the loop's triage
+    list, the same allowlist the broker enforces, and the broker's cap on how many."""
+    allowed = (loop.get('triage') or {}).get('labels') or []
+    most = int((loop.get('triage') or {}).get('max_labels') or 3)    # the broker's cap
+    return (('this list only: ' + ', '.join(f'`{x}`' for x in allowed)
+             + f' (at most {most} per issue)')
+            if allowed else 'none (this loop has no label list: file without labels)')
+
+
 def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, shadow=_READ) -> str:
     """Render the role's isolated prompt from host facts plus the bounded PR record. ``shadow``
     is the shadow review already read for an adjudicator's shadow escalation
@@ -54,14 +64,7 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, shadow=_
         if change is not None and change.author in config.review_only(loop):
             facts['fixer_agent'] = f"the PR's author ({change.author})"
         facts['round'] = len(counted) + 1 if counted is not None else 'unknown (reviews unreadable)'
-        # The labels a filed issue may carry (#247): the loop's triage list, the same allowlist
-        # the broker enforces.
-        allowed = (loop.get('triage') or {}).get('labels') or []
-        most = int((loop.get('triage') or {}).get('max_labels') or 3)    # the broker's cap
-        facts['issue_labels'] = (('this list only: ' + ', '.join(f'`{x}`' for x in allowed)
-                                  + f' (at most {most} per issue)')
-                                 if allowed else 'none (this loop has no label list: file '
-                                 'without labels)')
+        facts['issue_labels'] = issue_labels_fact(loop)
         comments, error = gh.issue_comments_read(loop, row['pr'])
         if comments is None:
             # A review can still be done without them; say so rather than imply there are none.
