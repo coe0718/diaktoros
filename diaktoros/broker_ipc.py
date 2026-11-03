@@ -387,6 +387,52 @@ class RunBroker(broker_issues.IssueWrites):
                 except OSError:
                     pass
 
+    def _push_under_intent(self, supervisor, current_loop: dict, request: dict) -> dict:
+        """The fixer's push between its write-ahead intent and its outcome: confirmed, withdrawn
+        (nothing written) or held (it may have written). Moved out of ``_dispatch`` (#1763)."""
+        from . import safe_push
+        # Durable write-ahead intent precedes the external Git operation.
+        # If this commit fails, safe_push (and Git) are never called.
+        supervisor.begin_push(self.scope.run_id, self.scope.repo,
+                              self.scope.number, self.scope.head)
+        try:
+            result = safe_push.push(current_loop, repo=self.scope.repo,
+                                    number=self.scope.number, head=self.scope.head,
+                                    role=self.scope.role, branch=self.scope.branch,
+                                    manifest=request["manifest"],
+                                    **({"merge": dict(self.scope.merge)}
+                                       if self.scope.merge else {}),
+                                    ci_fix=self.scope.ci_fix,
+                                    shadow_fix=self.scope.shadow_fix)
+            # safe_push returns only after exact ref + PR readback and
+            # durable audit. Failure to commit completion leaves intent.
+            supervisor.confirm_push(self.scope.run_id, self.scope.repo,
+                                    self.scope.number, self.scope.head)
+        except (safe_push.scope_lock.ScopeHold, safe_push.PreWrite):
+            # A hold (#482) or a failure before the attempt began (#1763): nothing
+            # was written, so the intent is withdrawn and `retry` can re-arm the run,
+            # instead of it holding the fixer seat as one that may have written.
+            supervisor.abort_push(self.scope.run_id, self.scope.repo,
+                                  self.scope.number, self.scope.head)
+            raise
+        except Exception as exc:
+            # An explicit attempt boundary, not exception text, determines
+            # whether a failed push must occupy the host-side hold.
+            if isinstance(exc, safe_push.PushFailure) or not isinstance(
+                    exc, (broker.BrokerDenied, ProtocolError)):
+                if not self.scope.run_id or not self.scope.ledger_db:
+                    raise ProtocolError('post-write hold has no host ledger') from exc
+                from .run_supervisor import Supervisor
+                outcome = safe_push.held_outcome(exc)
+                try:
+                    Supervisor(self.scope.ledger_db, create=False).quarantine_push(
+                        self.scope.run_id, self.scope.repo, self.scope.number,
+                        self.scope.head, outcome)
+                except Exception as persistence_error:
+                    raise ProtocolError('post-write quarantine persistence failed') from persistence_error
+            raise
+        return result
+
     def _dispatch(self, raw: bytes) -> object:
         self.requests += 1
         request = json.loads(raw)
@@ -465,46 +511,7 @@ class RunBroker(broker_issues.IssueWrites):
                             self.scope.run_id, self.scope.repo, self.scope.number,
                             self.scope.head):
                         raise ProtocolError('fixer push not authorized at run admission')
-                    # Durable write-ahead intent precedes the external Git operation.
-                    # If this commit fails, safe_push (and Git) are never called.
-                    supervisor.begin_push(self.scope.run_id, self.scope.repo,
-                                          self.scope.number, self.scope.head)
-                    try:
-                        result = safe_push.push(current_loop, repo=self.scope.repo,
-                                                number=self.scope.number, head=self.scope.head,
-                                                role=self.scope.role, branch=self.scope.branch,
-                                                manifest=request["manifest"],
-                                                **({"merge": dict(self.scope.merge)}
-                                                   if self.scope.merge else {}),
-                                                ci_fix=self.scope.ci_fix,
-                                                shadow_fix=self.scope.shadow_fix)
-                        # safe_push returns only after exact ref + PR readback and
-                        # durable audit. Failure to commit completion leaves intent.
-                        supervisor.confirm_push(self.scope.run_id, self.scope.repo,
-                                                self.scope.number, self.scope.head)
-                    except safe_push.scope_lock.ScopeHold:
-                        # A hold (#482), raised before any write: the intent is withdrawn so the
-                        # run is not mistaken for one that may have written, and `retry` can
-                        # re-arm it once a maintainer releases the hold.
-                        supervisor.abort_push(self.scope.run_id, self.scope.repo,
-                                              self.scope.number, self.scope.head)
-                        raise
-                    except Exception as exc:
-                        # An explicit attempt boundary, not exception text, determines
-                        # whether a failed push must occupy the host-side hold.
-                        if isinstance(exc, safe_push.PushFailure) or not isinstance(
-                                exc, (broker.BrokerDenied, ProtocolError)):
-                            if not self.scope.run_id or not self.scope.ledger_db:
-                                raise ProtocolError('post-write hold has no host ledger') from exc
-                            from .run_supervisor import Supervisor
-                            outcome = safe_push.held_outcome(exc)
-                            try:
-                                Supervisor(self.scope.ledger_db, create=False).quarantine_push(
-                                    self.scope.run_id, self.scope.repo, self.scope.number,
-                                    self.scope.head, outcome)
-                            except Exception as persistence_error:
-                                raise ProtocolError('post-write quarantine persistence failed') from persistence_error
-                        raise
+                    result = self._push_under_intent(supervisor, current_loop, request)
             except (broker.BrokerDenied, ProtocolError):
                 raise
             except Exception:

@@ -234,6 +234,9 @@ An uncertain run keeps its seat slot until reconciled; at concurrency one it can
 other work on that seat.
 **Cause:** a worker may still be active, or an external write may have landed before
 its response/receipt was lost. Known accepted pushes can still require post-write checks.
+A fixer push that fails before its attempt begins (a read of the PR, the branch or the
+fixer's identity, or a check just before the push) is not one of these (#1763): nothing was
+written, so the push intent is withdrawn, the run ends `failed`, and `retry` can re-arm it.
 **Action:** preserve evidence, inspect exact external state, establish no worker remains,
 then reconcile. Never retry, redeliver repeatedly, delete locks or reset the ledger.
 

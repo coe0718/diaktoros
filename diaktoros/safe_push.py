@@ -52,6 +52,21 @@ class PushFailure(broker.BrokerDenied):
         super().__init__(f"Git ref update not confirmed ({outcome})")
 
 
+class PreWrite(broker.BrokerDenied):
+    """A push that failed before its attempt began (#1763): nothing was written, so the caller
+    withdraws the push intent and the run is not quarantined as one that may have written. Only
+    ``push`` raises it, for a failure it saw before ``attempt_started``: a read of the PR, the
+    branch or the fixer's identity, a local Git step, a check in ``before_push``. A denial keeps
+    its own text, so a public denial still reads as itself."""
+
+    @classmethod
+    def of(cls, exc: BaseException) -> "PreWrite":
+        if isinstance(exc, cls):
+            return exc
+        return cls(str(exc) if isinstance(exc, broker.BrokerDenied)
+                   else f"pre-write step failed ({type(exc).__name__})")
+
+
 # Outcomes of a PushFailure that a post-write hold records as they are; any other is "unknown".
 HELD_OUTCOMES = ("published", "published_pr_unverified")
 
@@ -621,45 +636,13 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
     The lease protects the branch SHA, not PR metadata: a close/retarget/draft
     transition after the final PR read and before receive-pack remains possible.
     """
-    base, files, patch = _manifest(manifest)
-    assert isinstance(manifest, dict)  # _manifest rejects any other shape
-    if not config.unattended_fixer_push_enabled(loop):
-        raise broker.BrokerDenied("unattended fixer push disabled")
-    if base != head:
-        raise broker.BrokerDenied("manifest base differs from scoped PR head")
-    # A conflict turn (#303) runs on an approved or unreviewed PR, so it has no changes-requested
-    # verdict to answer. ``merge`` is host-built (RunScope), never the seat's: an ordinary push
-    # still needs the live verdict.
-    verdict = merge is None and not ci_fix and shadow_fix is None   # nor a CI fix (#306)
-    if shadow_fix is not None:
-        # #1004 part 3: the work order is the adjudicator's REJECT of an upheld shadow review,
-        # not a changes-requested review (the head is approved): it must still stand here.
-        from . import gate
-        if gate.upheld_shadow_ruling(loop, number, head) != shadow_fix:
-            raise broker.BrokerDenied("upheld shadow ruling no longer current")
+    try:
+        files, patch, verdict, login, ref_path, check_ref, identity = _before_attempt(
+            loop, repo=repo, number=number, head=head, role=role, branch=branch,
+            manifest=manifest, merge=merge, ci_fix=ci_fix, shadow_fix=shadow_fix)
+    except Exception as exc:
+        raise PreWrite.of(exc) from exc     # reads and checks only: nothing written (#1763)
     scope_check = verdict and role == "fixer"   # only a fix round answering findings (#482)
-    login = broker.authorize(loop, repo=repo, number=number, head=head,
-                             role=role, branch=branch, operation="push", require_verdict=verdict)
-    if not isinstance(branch, str) or len(branch) > 200 or not all(
-            SEGMENT.fullmatch(part) and not part.startswith(".") and not part.endswith(".")
-            and ".." not in part and not part.endswith(".lock")
-            for part in branch.split("/")):
-        raise broker.BrokerDenied("unsafe branch ref")
-    root = f"/repos/{repo}/git"
-    ref_path = f"{root}/ref/heads/{quote(branch, safe='/')}"
-
-    def check_ref() -> None:
-        ref = _api(loop, ref_path, login=login)
-        if ref.get("ref") != f"refs/heads/{branch}" or _sha((ref.get("object") or {}).get("sha")) != head:
-            raise broker.BrokerDenied("PR branch moved")
-
-    check_ref()
-    # Resolve the authenticated fixer before attributing the local commit.
-    identity = _fixer_identity(loop, login)
-    # Refresh BOTH PR identity and branch immediately before ref mutation.
-    broker.authorize(loop, repo=repo, number=number, head=head,
-                     role=role, branch=branch, operation="push", require_verdict=verdict)
-    check_ref()
     # The SHA is known after local construction, before the only remote mutation.
     receipt = {"repo": repo, "pr": number, "old_head": head,
                "branch": branch, "role": role, "login": login,
@@ -710,12 +693,58 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
     except Exception as exc:
         if attempt_started:
             raise PushFailure(outcome) from exc
-        raise
+        raise PreWrite.of(error or exc) from exc
     if error is not None or outcome != "published":
-        failure = PushFailure(outcome) if attempt_started else broker.BrokerDenied(
-            f"Git ref update not confirmed ({outcome})")
+        failure = PushFailure(outcome) if attempt_started else PreWrite.of(
+            error or broker.BrokerDenied(f"Git ref update not confirmed ({outcome})"))
         raise failure from error
     return {**receipt, "new_head": new_head, "outcome": outcome}
+
+
+def _before_attempt(loop: dict, *, repo: str, number: int, head: str, role: str, branch: str,
+                    manifest: object, merge: dict | None, ci_fix: bool,
+                    shadow_fix: float | None) -> tuple:
+    """What ``push`` checks before its attempt begins, every step a read or a local check: the
+    manifest, the policy, a shadow ruling still standing, who pushes, the branch and its head,
+    the fixer's identity. ``(files, patch, verdict, login, ref_path, check_ref, identity)``."""
+    base, files, patch = _manifest(manifest)
+    assert isinstance(manifest, dict)  # _manifest rejects any other shape
+    if not config.unattended_fixer_push_enabled(loop):
+        raise broker.BrokerDenied("unattended fixer push disabled")
+    if base != head:
+        raise broker.BrokerDenied("manifest base differs from scoped PR head")
+    # A conflict turn (#303) runs on an approved or unreviewed PR, so it has no changes-requested
+    # verdict to answer. ``merge`` is host-built (RunScope), never the seat's: an ordinary push
+    # still needs the live verdict.
+    verdict = merge is None and not ci_fix and shadow_fix is None   # nor a CI fix (#306)
+    if shadow_fix is not None:
+        # #1004 part 3: the work order is the adjudicator's REJECT of an upheld shadow review,
+        # not a changes-requested review (the head is approved): it must still stand here.
+        from . import gate
+        if gate.upheld_shadow_ruling(loop, number, head) != shadow_fix:
+            raise broker.BrokerDenied("upheld shadow ruling no longer current")
+    login = broker.authorize(loop, repo=repo, number=number, head=head,
+                             role=role, branch=branch, operation="push", require_verdict=verdict)
+    if not isinstance(branch, str) or len(branch) > 200 or not all(
+            SEGMENT.fullmatch(part) and not part.startswith(".") and not part.endswith(".")
+            and ".." not in part and not part.endswith(".lock")
+            for part in branch.split("/")):
+        raise broker.BrokerDenied("unsafe branch ref")
+    ref_path = f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"
+
+    def check_ref() -> None:
+        ref = _api(loop, ref_path, login=login)
+        if ref.get("ref") != f"refs/heads/{branch}" or _sha((ref.get("object") or {}).get("sha")) != head:
+            raise broker.BrokerDenied("PR branch moved")
+
+    check_ref()
+    # Resolve the authenticated fixer before attributing the local commit.
+    identity = _fixer_identity(loop, login)
+    # Refresh BOTH PR identity and branch immediately before ref mutation.
+    broker.authorize(loop, repo=repo, number=number, head=head,
+                     role=role, branch=branch, operation="push", require_verdict=verdict)
+    check_ref()
+    return files, patch, verdict, login, ref_path, check_ref, identity
 
 
 def _pr_follows(loop: dict, repo: str, number: int, new_head: str, role: str, branch: str,

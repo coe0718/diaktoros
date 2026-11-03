@@ -26,7 +26,7 @@
   },
   "functions": {
     "diaktoros/arm_action.py::set_hooks": 157,
-    "diaktoros/broker_ipc.py::RunBroker._dispatch": 387,
+    "diaktoros/broker_ipc.py::RunBroker._dispatch": 347,
     "diaktoros/broker_issues.py::IssueWrites._issue_fix_write": 134,
     "diaktoros/cli/apply_command.py::_apply": 121,
     "diaktoros/cli/common.py::_install_routes": 81,
@@ -75,7 +75,7 @@
     "diaktoros/run_supervisor/workers.py::WorkerLifecycle.complete_uncertain": 100,
     "diaktoros/safe_push.py::_git_cas": 149,
     "diaktoros/safe_push.py::open_branch": 86,
-    "diaktoros/safe_push.py::push": 124,
+    "diaktoros/safe_push.py::push": 88,
     "diaktoros/safe_push.py::update_branch": 96,
     "diaktoros/seat_model.py::describe_seat_wire": 140,
     "diaktoros/seat_model.py::extras_for": 84,
