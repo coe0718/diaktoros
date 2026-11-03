@@ -656,7 +656,7 @@ class ClaimAndLaunch:
         # #1647: only once its own reviewer turn approved the head; from the ledger, no read.
         # It holds for as long as that turn is unresolved, however long: a time bound would
         # end it with the head clear, and a late APPROVE would then be green with no shadow.
-        what, why = shadow_queue.after_reviewer(self.db, row)
+        what, why, approved = shadow_queue.decide(self.db, row)
         if what == "skip":
             turn.cancel = True
             turn.error = f"shadow review skipped: {why}"[:600]
@@ -667,9 +667,9 @@ class ClaimAndLaunch:
             self.held_for_ci = True
             return
 
-        # Review of #1656, F11: the CI wait's clock starts at the approval waited for above, not
-        # at the queueing, or a slow verdict would spend it before CI is first read.
-        since = max(float(row['created']), shadow_queue.approved_at(self.db, row) or 0)
+        # Review of #1656, F11: the CI wait's clock starts at the approval waited for above, read
+        # with it, not at the queueing, or a slow verdict would spend it before CI is first read.
+        since = max(float(row['created']), approved or 0)
 
         def hold(why: str) -> None:
             if time.time() - since >= run_supervisor.CI_WAIT_MAX_S:

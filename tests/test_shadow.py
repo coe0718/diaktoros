@@ -637,6 +637,32 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual((self.seen["role"], row["state"]), ("reviewer", "succeeded"), row)
         self.assertEqual([w for _k, w in self.kinds() if w.startswith("shadow review")], [])
 
+    def test_the_ci_clock_is_read_with_the_verdict_so_a_later_failed_read_cannot_reset_it(self):
+        # Review of #1656, F11 (round 5): the approval's time used to be a second ledger read
+        # after the verdict's. When only that read failed, the clock fell back to the queueing,
+        # and one unreadable CI answer then cancelled the shadow with the head clear. Here every
+        # ledger read after the first fails; the shadow holds, and recovers once CI reads green.
+        self.loop = config.normalize({**RAW, "state_dir": str(self.home / "state"),
+                                      "required_checks": ["tests"],
+                                      "shadow": {"profile": "grok", "every": 1, "escalate": True}})
+        approve = [{"verdict": "APPROVE", "body": "ok", "authorized": True}]
+        sup = self.queue_shadow()
+        self.reviewer_is(sup, ("confirmed", "APPROVED"), "succeeded")      # confirmed just now
+        real, reads = views.read_only_connect, []
+
+        def first_read_only(db):
+            reads.append(db)
+            return real(db) if len(reads) == 1 else None
+        long_ago = time.time() - 2 * run_supervisor.CI_WAIT_MAX_S
+        with mock.patch.object(views, "read_only_connect", side_effect=first_read_only):
+            sup, row = self.claim_shadow(sup, approve, checks=None, created=long_ago)
+        self.assertEqual((self.seen, row["state"]), ({}, "waiting"), row["error"])
+        self.assertTrue(row["error"].startswith(run_supervisor.CI_HOLD), row["error"])
+        self.assertEqual(merge_check.decide(self.kinds())[0], merge_check.PENDING)
+        sup, row = self.claim_shadow(sup, approve)                          # CI reads green now
+        self.assertEqual((self.seen["role"], row["state"]), ("reviewer", "succeeded"), row)
+        self.assertEqual([w for _k, w in self.kinds() if w.startswith("shadow review")], [])
+
     def test_the_shadow_takes_its_own_step_budget(self):
         self.run_shadow([{"verdict": "APPROVE", "body": "ok", "authorized": True}])
         self.assertEqual(self.seen["steps"], config.DEFAULT_SHADOW_MAX_STEPS)

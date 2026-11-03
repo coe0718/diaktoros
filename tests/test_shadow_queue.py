@@ -104,20 +104,19 @@ class AfterReviewer(Ledger):
             self.assertEqual(self.decide()[0], "wait")
         self.assertEqual(self.decide(), ("run", ""))      # no reviewer row: queued before #1647
 
-    def test_approved_at_is_when_its_own_reviewers_approve_was_confirmed(self):
-        # Review of #1656, F11: the shadow's CI wait starts here.
-        run = self.run_row("reviewer", state="succeeded")
-        self.assertIsNone(shadow_queue.approved_at(self.db, {"repo": REPO, "pr": 7, "head": HEAD,
-                                                             "turn_key": ""}))
-        self.receipt(run, "APPROVE", state="claimed")                   # still being posted
+    def test_a_run_carries_when_its_approve_was_confirmed_from_the_same_read(self):
+        # Review of #1656, F11: the shadow's CI wait starts at this time, read with the verdict.
         row = {"repo": REPO, "pr": 7, "head": HEAD, "turn_key": ""}
-        self.assertIsNone(shadow_queue.approved_at(self.db, row))
+        self.assertEqual(shadow_queue.decide(self.db, row), ("run", "", None))  # before #1647
+        run = self.run_row("reviewer", state="succeeded")
+        self.receipt(run, "APPROVE", state="claimed")                   # still being posted
+        self.assertEqual(shadow_queue.decide(self.db, row)[::2], ("wait", None))
         with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("UPDATE review_receipts SET state='confirmed', confirmed=123.0")
-        self.assertEqual(shadow_queue.approved_at(self.db, row), 123.0)
-        self.assertIsNone(shadow_queue.approved_at(self.db, {**row, "turn_key": "other"}))
-        with mock.patch("diaktoros.run_supervisor.views.read_only_connect", return_value=None):
-            self.assertIsNone(shadow_queue.approved_at(self.db, row))
+        self.assertEqual(shadow_queue.decide(self.db, row), ("run", "", 123.0))
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("UPDATE review_receipts SET confirmed=NULL, created=99.0")
+        self.assertEqual(shadow_queue.decide(self.db, row), ("run", "", 99.0))   # no time: its own
 
 
 class SnapshotFirst(Ledger):

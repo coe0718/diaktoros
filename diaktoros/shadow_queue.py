@@ -28,35 +28,45 @@ OPEN = ("pending", "waiting", "claimed", "launching", "running", "uncertain")
 
 def after_reviewer(db, row) -> tuple[str, str]:
     """``(what, why)`` for a shadow row: ``run``, ``wait`` or ``skip``, by its reviewer turn."""
+    what, why, _approved = decide(db, row)
+    return what, why
+
+
+def decide(db, row) -> tuple[str, str, float | None]:
+    """``after_reviewer``'s answer, and with ``run`` when that APPROVE was confirmed (None for a
+    row from before #1647). One ledger read for both: the shadow's CI wait starts at that time,
+    not at its queueing, since the verdict wait before it has no bound (review of #1656, F11),
+    and a second read that could fail on its own would fall back to the queueing."""
     from .run_supervisor import views
     short = str(row["head"])[:7]
     try:
         con = views.read_only_connect(db)
         if con is None:
-            return "wait", "the run ledger is unreadable, so the reviewer's verdict is unknown"
+            return "wait", "the run ledger is unreadable, so the reviewer's verdict is unknown", None
         try:
             reviewer = _reviewer_run(con, row)
             receipt = reviewer and con.execute(
-                "SELECT state, verdict FROM review_receipts WHERE run_id=?",
-                (reviewer[0],)).fetchone()
+                "SELECT state, verdict, COALESCE(confirmed, created) FROM review_receipts "
+                "WHERE run_id=?", (reviewer[0],)).fetchone()
             newer = reviewer and con.execute(
                 "SELECT 1 FROM runs WHERE repo=? AND pr=? AND head=? AND seat='reviewer' AND "
                 "created>? LIMIT 1", (row["repo"], row["pr"], row["head"], reviewer[2])).fetchone()
         finally:
             con.close()
     except Exception as exc:  # noqa: BLE001 - unknown is never "approved"
-        return "wait", f"the reviewer's verdict is unreadable ({type(exc).__name__})"
+        return "wait", f"the reviewer's verdict is unreadable ({type(exc).__name__})", None
     if reviewer is None:
-        return "run", ""                   # a row from before #1647: run as it was queued
+        return "run", "", None             # a row from before #1647: run as it was queued
     if newer:
-        return "skip", f"a newer review at {short} supersedes the one this shadow was queued with"
+        return ("skip", f"a newer review at {short} supersedes the one this shadow was queued "
+                "with", None)
     if receipt and receipt[0] == "confirmed":
         if str(receipt[1]) in APPROVED:
-            return "run", ""
-        return "skip", f"the reviewer requested changes at {short}, so no shadow review"
+            return "run", "", float(receipt[2] or 0) or None
+        return "skip", f"the reviewer requested changes at {short}, so no shadow review", None
     if receipt or reviewer[1] in OPEN:
-        return "wait", f"waiting for the reviewer's verdict at {short}"
-    return "skip", f"the reviewer's turn at {short} ended {reviewer[1]} without a verdict"
+        return "wait", f"waiting for the reviewer's verdict at {short}", None
+    return "skip", f"the reviewer's turn at {short} ended {reviewer[1]} without a verdict", None
 
 
 def _reviewer_run(con, row):
@@ -65,24 +75,3 @@ def _reviewer_run(con, row):
         "SELECT id, state, created FROM runs WHERE repo=? AND pr=? AND head=? AND "
         "seat='reviewer' AND turn_key=? ORDER BY created DESC LIMIT 1",
         (row["repo"], row["pr"], row["head"], row["turn_key"] or "")).fetchone()
-
-
-def approved_at(db, row) -> float | None:
-    """When the shadow's own reviewer turn had its APPROVE confirmed, or None (none yet, a row
-    from before #1647, or an unreadable ledger). The shadow's CI wait starts here, not at its
-    queueing: the verdict wait before it has no bound (review of #1656, F11)."""
-    from .run_supervisor import views
-    try:
-        con = views.read_only_connect(db)
-        if con is None:
-            return None
-        try:
-            reviewer = _reviewer_run(con, row)
-            receipt = reviewer and con.execute(
-                "SELECT confirmed FROM review_receipts WHERE run_id=? AND state='confirmed'",
-                (reviewer[0],)).fetchone()
-        finally:
-            con.close()
-        return float(receipt[0]) if receipt and receipt[0] is not None else None
-    except Exception:  # noqa: BLE001 - unknown: the clock falls back to the queueing
-        return None
