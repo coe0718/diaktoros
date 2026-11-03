@@ -97,7 +97,13 @@ def cmd_onboard(args) -> int:
     except config.ConfigError as exc:
         print(f"cannot show onboarding: {hook_checks._safe_report_text(str(exc))}")
         return 2
-    rows = onboarding.inspect(loop)
+    print_onboarding(loop, onboarding.inspect(loop), args.pr)
+    return 0
+
+
+def print_onboarding(loop: dict, rows: dict, pr: int | None = None) -> None:
+    """The ``onboard`` checklist (#677): each stage, the next command and the fixer-push line.
+    Shared by ``onboard`` and the end of ``setup`` (#1618); it reads, runs and writes nothing."""
     print(f"[{loop['id']}] onboarding for {loop['repo']} (read-only: nothing was checked or written)")
     for stage, row in rows.items():
         print(f"  {stage:<10} {row['status']}")
@@ -107,7 +113,7 @@ def cmd_onboard(args) -> int:
             print(f"      {row['summary']}")
         if row["reason"]:
             print(f"      changed: {row['reason']}")
-    step = onboarding.next_step(loop, rows, args.pr)
+    step = onboarding.next_step(loop, rows, pr)
     if step is None:
         print("next: nothing, every stage passed")
     else:
@@ -118,7 +124,6 @@ def cmd_onboard(args) -> int:
     push = config.unattended_fixer_push_enabled(loop)
     print("unattended fixer pushes: " + ("on" if push else
           f"off (to turn them on yourself: {config.fixer_push_enable_command(loop)})"))
-    return 0
 
 
 def cmd_corpus(args) -> int:

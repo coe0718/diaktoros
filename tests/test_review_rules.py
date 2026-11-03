@@ -42,19 +42,29 @@ class FixerRules(unittest.TestCase):
         self.assertEqual(source.count("has no git (no `stash`"), 1)
 
     def test_every_fixer_prompt_says_not_to_squeeze_code_under_a_size_limit(self):
-        # #1349: a repository's size ratchet asks for a split, which is a maintainer's call; a
-        # fixer that compresses code to fit hides that. One text, in all three fixer prompts: the
-        # fix round and issue fix publish and say so, a CI fix with nothing else red doesn't push.
+        # #1349: a repository's size ratchet asks for a split; a fixer that compresses code to fit
+        # hides that. One text, in all three fixer prompts. A function over its limit the fixer
+        # splits into a helper, a file is a maintainer's call: the fix round and issue fix publish
+        # and say so, a CI fix with nothing else red doesn't push. Before that a function's
+        # growth stopped the CI fix too, and the PR sat red for a maintainer (#1707, #1717).
         rule = "**Don't squeeze code under a size limit.**"
         for name in ("ISOLATED_FIXER", "ISOLATED_ISSUE_FIX", "ISOLATED_CI_FIX"):
             with self.subTest(prompt=name):
                 text = flat(getattr(prompts, name))
                 self.assertIn(rule, text)
-                self.assertIn("splitting it is a maintainer's call", text)
-                self.assertIn("which file or function is over which limit", text)
-        self.assertIn("publish it, and say in your answers", flat(prompts.ISOLATED_FIXER))
+                self.assertIn("never raise or add a baseline", text)
+                self.assertIn("Split a **function** that is over its limit: move one cohesive part "
+                              "of it", text)
+                self.assertIn("keep the behaviour and output exactly the same", text)
+                self.assertIn("A **file** over its limit is different: splitting it moves code "
+                              "between modules, which is a maintainer's call.", text)
+                self.assertIn("which file is over which limit", text)
+                self.assertNotIn("file or function is over which limit", text)
+        self.assertIn("When a file is over its limit, write the change as you otherwise would, "
+                      "publish it, and say in your answers", flat(prompts.ISOLATED_FIXER))
         self.assertIn("publish it, and say in the PR description", flat(prompts.ISOLATED_ISSUE_FIX))
-        self.assertIn("When that is the only failure, do not push", flat(prompts.ISOLATED_CI_FIX))
+        self.assertIn("When a file over its limit is the only failure, do not push",
+                      flat(prompts.ISOLATED_CI_FIX))
         source = (Path(prompts.__file__)).read_text()
         self.assertEqual(source.count("Don't squeeze code under a size limit"), 1)
 

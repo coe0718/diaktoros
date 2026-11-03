@@ -59,8 +59,10 @@ Setup performs these steps in order:
 1. Detect or keep valid runtime paths and write a private `diaktoros-runtime.json`.
 2. Show an `init` dry run, confirm installation and create configuration/routes (and paused hooks if a hook admin was named).
 3. Install the shared watchdog job if missing.
-4. Run `doctor` and `selftest --no-model`. Failure stops before arming; already completed steps are kept.
-5. Ask whether to arm. It defaults to **no**. Setup does not enable fixer pushes, adjudication or issue automation.
+4. Run `doctor` and `selftest --no-model`. Failure stops before arming; already completed steps are kept. When the [onboarding record](commands.md#onboard) says `identities`, `loop` and `model` already passed (or `model` was skipped) and nothing they depend on has changed, a re-run skips this step and says so; after a change it starts over at the stale stage.
+5. Ask whether to arm. It defaults to **no**, and it is skipped when the record shows the hooks armed and unchanged. Setup does not enable fixer pushes, adjudication or issue automation.
+
+Setup ends by printing the `onboard` summary: each stage's status and the next command to run. If setup stops partway, fix what it names and run the same command again; it resumes at the stage that is not done.
 
 A repeatable, noninteractive example using the reader as hook admin:
 
