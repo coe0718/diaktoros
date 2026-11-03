@@ -50,6 +50,7 @@ _SIGN = ("import sys\n"
 _lock = threading.Lock()
 _tokens: dict = {}              # (login, repo, app_id) -> (token, expires_at epoch)
 _refused: set = set()           # tokens GitHub answered 401 in this process: never used again
+_shared: set = set()            # keys whose token in _tokens is the shared one (app_tokens)
 _principals: dict = {}          # (login, app_id) -> account
 
 
@@ -216,24 +217,49 @@ def installation_token(loop: dict, login: str) -> str:
         raise AppError(f"{login!r} is not an App identity on this loop")
     repo = str(loop.get("repo") or "")
     key = (login.casefold(), repo, found.get("app_id"))
-    with _lock:                             # held for the dict alone, never for a wait or a mint
-        cached = _tokens.get(key)
-    if cached and cached[1] - time.time() > REUSE_MARGIN_S:
-        return cached[0]
+    warm = _reuse(key)
+    if warm:
+        return warm
     # One minter at a time for this token, across the host (#1780), each caller waiting within
     # its own bound: another App, or another thread's slower mint, never holds it (review F6).
     with app_tokens.held(key) as locked:
         shared = app_tokens.load(key)
-        if shared and shared[1] - time.time() > REUSE_MARGIN_S and shared[0] not in _refused:
-            with _lock:
-                _tokens[key] = shared
+        if shared and _keep(key, shared, shared=True):
             return shared[0]
         token, expires = _mint(loop, login, repo)
-        with _lock:
-            _tokens[key] = (token, expires)
+        _keep(key, (token, expires), shared=locked)
         if locked:                          # unlocked, it is this process's alone (F5)
             app_tokens.save(key, token, expires)
         return token
+
+
+def _reuse(key: tuple) -> str | None:
+    """This process's token for ``key`` while it is still good: fresh, never refused, and, when
+    it is the shared one, still the token the shared file holds (review of #1781, F9). Another
+    process that got a 401 drops the file, or replaces it, and this process follows at its next
+    call instead of sending the dead token. None sends the caller to the locked path."""
+    with _lock:
+        cached = _tokens.get(key)
+        shared = key in _shared
+    if not cached or cached[1] - time.time() <= REUSE_MARGIN_S or cached[0] in _refused:
+        return None
+    if shared:
+        stored = app_tokens.load(key)
+        if not stored or stored[0] != cached[0]:
+            return None
+    return cached[0]
+
+
+def _keep(key: tuple, token: tuple, *, shared: bool) -> bool:
+    """Make ``token`` this process's for ``key`` unless it was refused or is not fresh, checked
+    and stored in one step under ``_lock``, so a 401 recorded by another thread meanwhile is
+    never undone (review of #1781, F8). Whether it was kept."""
+    with _lock:
+        if token[1] - time.time() <= REUSE_MARGIN_S or token[0] in _refused:
+            return False
+        _tokens[key] = token
+        (_shared.add if shared else _shared.discard)(key)
+        return True
 
 
 def _mint(loop: dict, login: str, repo: str) -> tuple[str, float]:
@@ -318,6 +344,7 @@ def forget() -> None:
     with _lock:
         _tokens.clear()
         _refused.clear()
+        _shared.clear()
         _principals.clear()
         _signer = None
         app_tokens.drop()

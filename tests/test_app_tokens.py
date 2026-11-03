@@ -299,6 +299,76 @@ class Shared(Fixture):
         release.set()
         minting.join(5)
 
+    def test_a_401_recorded_while_a_thread_reads_the_shared_token_is_never_undone(self):
+        # Review of #1781, F8: a thread read the shared token and checked it against the
+        # refusals, then stored it; another thread's 401 landed in between, and the dead token
+        # went back into memory for good. The reader is paused at its second take of the
+        # process lock (where the check and the store now both happen), the 401 is recorded,
+        # and the reader resumes.
+        dead = gh.token(self.loop, BOT)
+        self.new_process()
+        real, paused, resume = github_app._lock, threading.Event(), threading.Event()
+        reader = {}
+
+        class Gate:
+            taken = 0
+
+            def __enter__(self):
+                if threading.current_thread().name == "reader":
+                    Gate.taken += 1
+                    if Gate.taken == 2:
+                        paused.set()
+                        resume.wait(5)
+                return real.__enter__()
+
+            def __exit__(self, *exc):
+                return real.__exit__(*exc)
+        with mock.patch.object(github_app, "_lock", Gate()), \
+                mock.patch.object(app_tokens, "LOCK_WAIT_S", 0.2):
+            thread = threading.Thread(name="reader", daemon=True,
+                                      target=lambda: reader.setdefault("got", gh.token(self.loop, BOT)))
+            thread.start()
+            self.assertTrue(paused.wait(5))
+            github_app.refused(self.loop, BOT, dead)                # another thread's 401
+            resume.set()
+            thread.join(5)
+            self.assertNotEqual(reader["got"], dead)
+            self.assertNotEqual(gh.token(self.loop, BOT), dead)
+
+    def test_a_process_with_the_token_in_memory_follows_the_shared_file(self):
+        # Review of #1781, F9: a process that had the shared token in memory never looked at
+        # the file again, so after another process dropped it on a 401 and minted a successor,
+        # it kept sending the dead token. Here the other process is a real one, with its own
+        # memory: it reads the token, this process replaces it, and it reads again.
+        script = f"""
+import sys, time
+sys.path.insert(0, {str(ROOT)!r})
+from unittest import mock
+from diaktoros import gh, gh_cache, github_app
+gh_cache.enable_writes()
+def as_app(loop, login, path, method="GET", body=None):
+    if path.endswith("/installation"):
+        return gh.Response({{"id": 9}}, "", 200, {{}})
+    return gh.Response({{"token": "ghs_child_" + "x" * 380, "expires_at": {LATER!r}}}, "", 201, {{}})
+loop = {{"repo": {REPO!r}, "read_token": {BOT!r}, "apps": {{{BOT!r}: {{"app_id": {APP_ID}, "key_file": "/k"}}}}}}
+with mock.patch.object(github_app, "_as_app", side_effect=as_app):
+    print(gh.token(loop, {BOT!r})[:16], flush=True)
+    sys.stdin.readline()                              # this process replaces the token meanwhile
+    print(gh.token(loop, {BOT!r})[:16], flush=True)
+"""
+        from diaktoros import config
+        env = {**os.environ, "HERMES_HOME": str(config.home())}
+        child = subprocess.Popen([sys.executable, "-c", script], env=env, text=True,
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE)
+        self.addCleanup(child.kill)
+        first = child.stdout.readline().strip()
+        self.assertEqual(first, "ghs_child_xxxxxx", child.stderr.read() if not first else "")
+        app_tokens.drop(KEY)                                        # its 401, seen here
+        app_tokens.save(KEY, "ghs_successor_" + "x" * 370, time.time() + 3600)
+        out, err = child.communicate("go\n", timeout=30)
+        self.assertEqual(out.strip(), "ghs_successor_xx", err)
+
     def test_a_mint_for_one_app_never_waits_for_another(self):
         held = self.hold_lock(("other[bot]", REPO, 1))
         with mock.patch.object(app_tokens, "LOCK_WAIT_S", 60):
