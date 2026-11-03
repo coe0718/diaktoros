@@ -806,7 +806,7 @@ class ClaimAndLaunch:
         """#1004 part 3: the fixer answers a shadow review the adjudicator upheld. The ruling is
         re-read now (a moved head or a later ruling ends the run), and the push is allowed only
         while it still stands (``RunScope.shadow_fix``, checked by the broker)."""
-        from .. import broker_ipc, gate, gh
+        from .. import broker_ipc, gate, gh, prompts
         row, loop = turn.row, turn.loop
         ruled = gate.upheld_shadow_ruling(loop, row['pr'], row['head'], db=self.db)
         if ruled is None or row['turn_key'] != f"{run_supervisor.SHADOW_FIX_KEY}{int(ruled)}":
@@ -819,8 +819,9 @@ class ClaimAndLaunch:
         try:
             final = (row['retries'] or 0) + 1 >= run_supervisor.MAX_RETRIES
             change = pr_facts.pr_change(loop, row, final=final)
-            prompt = (turn_prompts.isolated_prompt(loop, row, reviews, None, change)
-                      + turn_prompts.upheld_shadow_section(row, ruled))
+            base = turn_prompts.isolated_prompt(loop, row, reviews, None, change)
+            prompt = prompts.Prompt(base + turn_prompts.upheld_shadow_section(row, ruled),
+                                    base.round_at)   # appended last: the offset still holds
         except ValueError as exc:
             if str(exc) == 'PR unreadable' or str(exc).startswith('PR files unreadable'):
                 raise run_supervisor.RetryableError(str(exc)) from None

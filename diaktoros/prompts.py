@@ -565,16 +565,35 @@ What to do:
 Never claim the push or the review request succeeded without an ok response from the broker."""
 
 # Where a reviewer's or fixer's prompt stops being the same in every round of a PR (#1649): the
-# host puts its own per-turn notes just before this heading, so the text before it stays
-# byte-identical and the provider's prompt cache can reuse it.
+# host puts its own per-turn notes just before this heading (at the offset ``Prompt`` records,
+# never by searching for it), so the text before it stays byte-identical and the provider's
+# prompt cache can reuse it.
 THIS_ROUND = '\n\n## This round'
 
 
-def before_this_round(prompt: str, text: str) -> str:
-    """``text`` placed just before the **This round** section of ``prompt``, else at its start
-    (a seat whose prompt has no such section keeps its host notes first, as before)."""
-    at = prompt.find(THIS_ROUND)
-    return text + prompt if at < 0 else prompt[:at] + text + prompt[at:]
+class Prompt(str):
+    """A prompt that remembers where the host's own **This round** section begins (#1649):
+    ``round_at`` is an offset the host recorded while assembling it, or None when it has no such
+    section. It is never found by searching the text, which holds PR-author text (a description,
+    an issue body, CI logs) that can contain any heading."""
+    round_at: int | None = None
+
+    def __new__(cls, text: str, round_at: int | None = None):
+        self = super().__new__(cls, text)
+        if isinstance(round_at, int) and not isinstance(round_at, bool) and 0 <= round_at <= len(text):
+            self.round_at = round_at
+        return self
+
+
+def before_this_round(prompt: str, text: str) -> 'Prompt':
+    """``text`` placed just before the host's **This round** section of ``prompt``, at the offset
+    the host recorded; for a plain string, or a prompt with no such section, at its start (host
+    notes were always first there). Never located by searching the text: an author could forge
+    the heading."""
+    at = getattr(prompt, 'round_at', None)
+    if at is None:
+        return Prompt(text + prompt)
+    return Prompt(prompt[:at] + text + prompt[at:], at + len(text))
 
 
 ISOLATED = {"reviewer": ISOLATED_REVIEWER, "fixer": ISOLATED_FIXER,

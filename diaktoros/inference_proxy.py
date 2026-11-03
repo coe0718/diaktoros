@@ -794,6 +794,9 @@ class InferenceCapability:
         # Of those, the input tokens the provider's prompt cache served (#1649); None until a
         # reply reports the field, so a provider that never does reads as unknown, not 0.
         self.cache_read: int | None = None
+        # True once a reply with input did not report it: the total is then incomplete, so
+        # ``cache_read`` stays None (unknown) rather than count that reply's input as uncached.
+        self.cache_gap = False
         self.cost = 0.0
         self.cost_known = False
         self.model = model
@@ -865,7 +868,11 @@ class InferenceCapability:
         with self.lock:
             self.tokens_in += meter.tokens_in
             self.tokens_out += meter.tokens_out
-            if meter.cache_read is not None:
+            if meter.cache_read is None and meter.tokens_in > 0:
+                self.cache_gap = True
+            if self.cache_gap:
+                self.cache_read = None
+            elif meter.cache_read is not None:
                 self.cache_read = (self.cache_read or 0) + meter.cache_read
             self.cost += meter.cost
             self.cost_known = self.cost_known or meter.cost_known
