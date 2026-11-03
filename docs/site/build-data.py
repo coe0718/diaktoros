@@ -82,7 +82,10 @@ def main():
 
         try:
             weeks = api("/repos/%s/%s/stats/commit_activity" % (OWNER, REPO))
-            data["commits_year"] = sum(w["total"] for w in weeks)
+            # The endpoint returns an empty list while it computes; a
+            # zero there would overwrite a real snapshot with nothing.
+            if weeks:
+                data["commits_year"] = sum(w["total"] for w in weeks)
         except Exception:
             pass  # endpoint computes async; keep the previous value
 

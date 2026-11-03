@@ -192,6 +192,14 @@ class SiteRefreshTests(unittest.TestCase):
         missing = keys - set(data)
         self.assertFalse(missing, f"data.json missing keys used by the page: {missing}")
 
+    def test_freshness_note_present(self):
+        """The proof strip's freshness note must exist in the HTML and
+        be written by the refresh script, so a stat the page could not
+        refresh never reads as current."""
+        html = (SITE / "index.html").read_text()
+        self.assertIn("stats-freshness", html)
+        self.assertIn("stats-freshness", extract_refresh_script())
+
 
 if __name__ == "__main__":
     unittest.main()
