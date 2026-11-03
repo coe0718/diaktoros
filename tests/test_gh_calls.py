@@ -19,7 +19,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
-from diaktoros import gh, gh_cache, gh_calls, hostdirs  # noqa: E402
+from diaktoros import gh, gh_cache, gh_calls, github_app, hostdirs  # noqa: E402
 
 LOOP = {"repo": "owner/one", "read_token": "reader"}
 
@@ -216,6 +216,67 @@ class Counted(unittest.TestCase):
         self.assertEqual(gh_calls.prune(time.time() + gh_calls.KEEP_S + 1), 1)
         self.assertEqual(list(gh_calls.directory().iterdir()), [])
 
+    # The clock is moved, and a flush's occasional prune would judge real mtimes by it.
+    @mock.patch.object(gh_calls, "PRUNE_ONE_IN", 1 << 62)
+    def test_a_long_lived_writer_drops_its_own_hours_past_the_retention(self):
+        # #1760: such a process rewrites its file every FLUSH_EVERY calls, so the file never
+        # ages and prune never takes it: its old hours have to go as it flushes.
+        start = time.time()
+        with mock.patch.object(gh_calls.time, "time", return_value=start):
+            self.get("/repos/owner/one/pulls/1")
+            gh_calls.flush()
+        later = start + gh_calls.KEEP_S / 2
+        with mock.patch.object(gh_calls.time, "time", return_value=later):
+            self.get("/repos/owner/one/pulls/2")
+            gh_calls.flush()
+        self.assertEqual(self.hours(), sorted({int(start // 3600 * 3600),
+                                               int(later // 3600 * 3600)}))
+        past = start + gh_calls.KEEP_S + 3600
+        with mock.patch.object(gh_calls.time, "time", return_value=past):
+            gh_calls.flush()                                  # nothing new: the old hour goes
+        self.assertEqual(self.hours(), [int(later // 3600 * 3600)])
+        self.assertEqual(gh_calls.summary(0)["reader"]["spent"], 1)
+
+    # The clock is moved, and a flush's occasional prune would judge real mtimes by it.
+    @mock.patch.object(gh_calls, "PRUNE_ONE_IN", 1 << 62)
+    def test_an_hour_is_kept_while_a_call_in_it_is_inside_the_retention(self):
+        # Review of #1779, F2: a bucket is keyed by its hour's start, so judging it by that start
+        # dropped a call made late in the hour before its two days were up.
+        hour = int(time.time() // 3600 * 3600) - 3 * 86400
+        with mock.patch.object(gh_calls.time, "time", return_value=hour + 3500):
+            self.get("/repos/owner/one/pulls/1")
+        with mock.patch.object(gh_calls.time, "time", return_value=hour + gh_calls.KEEP_S + 100):
+            gh_calls.flush()                          # the call is 169,400 s old: kept
+        self.assertEqual(self.hours(), [hour])
+        with mock.patch.object(gh_calls.time, "time",
+                               return_value=hour + 3600 + gh_calls.KEEP_S):
+            gh_calls.flush()                          # the hour's last second is past: gone
+        self.assertEqual(self.hours(), [])
+
+    def hours(self):
+        [file] = list(gh_calls.directory().glob("*.json"))
+        return sorted({row[0] for row in json.loads(file.read_text())["counts"]})
+
+    def test_a_call_made_as_the_app_is_counted_apart_from_its_installation(self):
+        # #1765: `_as_app` (token mints, App reads) built its own request and went uncounted.
+        # GitHub keeps a JWT's calls in their own bucket, so they are counted under their own
+        # login, and their headers never overwrite the installation's figure.
+        app = {"apps": [{"login": "dk-app", "app_id": 1, "key_file": "/nonexistent"}]}
+        self.get("/repos/owner/one/pulls/7", login="dk-app")                  # used 101
+        with mock.patch.object(github_app, "jwt", return_value="jwt"):
+            self.assertEqual(github_app._as_app({**LOOP, **app}, "dk-app", "/app").status, 200)
+            github_app._as_app({**LOOP, **app}, "dk-app", "/app/limited")
+        with mock.patch.object(github_app, "jwt", return_value="jwt"), \
+                mock.patch.object(gh, "API", "http://127.0.0.1:1"):
+            github_app._as_app({**LOOP, **app}, "dk-app", "/app")
+        counts = self.counted()
+        jwt_login = gh_calls.app_login("dk-app")
+        self.assertEqual({k: counts[jwt_login][k] for k in ("spent", "limited", "error")},
+                         {"spent": 1, "limited": 1, "error": 1})
+        self.assertEqual((counts["dk-app"]["spent"], counts["dk-app"]["limit"]["used"]),
+                         (1, "101"))
+        self.assertEqual(counts[jwt_login]["limit"]["used"], "102")
+
     def test_the_calls_command_lists_the_costliest_paths_and_githubs_figure(self):
         for _ in range(3):
             self.get("/repos/owner/one/actions/jobs/1")                   # 1 spent, 2 free
@@ -242,6 +303,33 @@ class Shape(unittest.TestCase):
                 ("/repos/o/r/git/refs/heads/diaktoros/issue-1", "/repos/R/git/refs/heads/REF"),
                 (f"/repos/o/r/compare/{sha}...feat", "/repos/R/compare/X"),
                 ("/users/dk-reader[bot]", "/users/X"),
+                # #1759: a branch name, "/" and all, is taken out of every route that holds one.
+                ("/repos/o/r/commits/private-feature", "/repos/R/commits/REF"),
+                ("/repos/o/r/commits/release/1.0", "/repos/R/commits/REF"),
+                ("/repos/o/r/commits/feat/x/status", "/repos/R/commits/REF/status"),
+                (f"/repos/o/r/commits/{sha}/status", "/repos/R/commits/SHA/status"),
+                (f"/repos/o/r/git/commits/{sha}", "/repos/R/git/commits/SHA"),
+                ("/repos/o/r/pulls/5/commits?per_page=100", "/repos/R/pulls/N/commits?per_page"),
+                ("/repos/o/r/branches/private/feature/protection",
+                 "/repos/R/branches/REF/protection"),
+                ("/repos/o/r/branches/main/protection/required_status_checks",
+                 "/repos/R/branches/REF/protection/required_status_checks"),
+                ("/repos/o/r/rules/branches/feat/2?per_page=100",
+                 "/repos/R/rules/branches/REF?per_page"),
+                # Review of #1779, F1: a name holding "/protection/" is never cut short at it.
+                ("/repos/o/r/branches/feature/protection/private-secret/protection",
+                 "/repos/R/branches/REF/protection"),
+                ("/repos/o/r/branches/feature/protection/private-secret/protection/"
+                 "required_status_checks/contexts",
+                 "/repos/R/branches/REF/protection/required_status_checks/contexts"),
+                ("/repos/o/r/rules/branches/feature/protection/private-secret",
+                 "/repos/R/rules/branches/REF"),
+                ("/repos/o/r/commits/feat/status/x/status", "/repos/R/commits/REF/status"),
+                # Review of #1779, F3: a branch starting with 40 hex is not a SHA.
+                (f"/repos/o/r/commits/{sha}/private-secret", "/repos/R/commits/REF"),
+                (f"/repos/o/r/commits/{sha}/private-secret/status", "/repos/R/commits/REF/status"),
+                (f"/repos/o/r/commits/{sha}", "/repos/R/commits/SHA"),
+                (f"/repos/o/r/commits/{sha}/check-suites", "/repos/R/commits/SHA/check-suites"),
                 ("/rate_limit", "/rate_limit")):
             with self.subTest(path=path):
                 self.assertEqual(gh_calls.shape(path), shape)
