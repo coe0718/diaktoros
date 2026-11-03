@@ -55,10 +55,22 @@ class BuildDataTests(unittest.TestCase):
         data = self.run_main({"commits_year": 1368}, [])
         self.assertEqual(data["commits_year"], 1368)
 
+    def test_empty_activity_keeps_snapshot_date(self):
+        # Retaining the count while stamping today would label it as
+        # part of a snapshot it predates (Vex, PR #1750 round 2).
+        data = self.run_main({"commits_year": 1368, "generated": "2020-01-01"}, [])
+        self.assertEqual(data["commits_year"], 1368)
+        self.assertEqual(data["generated"], "2020-01-01")
+
     def test_populated_activity_updates(self):
         data = self.run_main({"commits_year": 1368},
                              [{"total": 10}, {"total": 20}])
         self.assertEqual(data["commits_year"], 30)
+        # A real refresh still advances the stamp.
+        from datetime import datetime, timedelta, timezone
+        today = datetime.now(timezone.utc).date()
+        self.assertIn(data["generated"],
+                      {today.isoformat(), (today - timedelta(days=1)).isoformat()})
 
 
 if __name__ == "__main__":

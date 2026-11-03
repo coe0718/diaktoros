@@ -50,13 +50,18 @@ global.document = {
 };
 global.fetch = (url) => {
   if (String(url).startsWith('https://api.github.com')) {
-    if (scenario === 'live-ok' || scenario === 'live-partial' || scenario === 'live-mixed') {
+    if (scenario === 'live-ok' || scenario === 'live-partial' || scenario === 'live-mixed' || scenario === 'live-hang') {
       const u = String(url);
       if (u.includes('/stats/commit_activity')) {
         // In the partial scenario this one endpoint fails while the rest
         // succeed, proving one rejection can't abort the live refresh.
         if (scenario === 'live-partial')
           return Promise.resolve({ ok: false, status: 403 });
+        // In the hang scenario the body never finishes: headers arrive,
+        // json() never resolves. The whole-operation deadline must still
+        // let fallback and the note run.
+        if (scenario === 'live-hang')
+          return Promise.resolve({ ok: true, json: () => new Promise(() => {}) });
         return Promise.resolve({ ok: true, json: () => Promise.resolve([{ total: 10 }, { total: 20 }]) });
       }
       if (u.includes('/search/')) {
@@ -97,7 +102,9 @@ setTimeout(() => {
   out['__note'] = noteEl.textContent;
   out['__stale'] = staleBox.added.indexOf('stats-stale') !== -1;
   console.log(JSON.stringify(out));
-}, 200);
+  // The hang scenario's deadline is 10s; every other scenario settles
+  // immediately, so only it waits.
+}, scenario === 'live-hang' ? 11000 : 200);
 """
 
 
@@ -263,6 +270,22 @@ class SiteRefreshTests(unittest.TestCase):
         out = self.run_scenario("all-fail")
         self.assertEqual(out["__note"], "Statistics unavailable — showing last checked-in values")
         self.assertTrue(out["__stale"])
+
+    @unittest.skipUnless(shutil.which("node"), "node unavailable")
+    def test_freshness_note_hang_falls_back(self):
+        # Vex round 2: a stalled body must not hang the page past
+        # fallback. The commit-activity body never resolves; after the
+        # 10s deadline the rest of the page must still be live, the
+        # stuck figure hardcoded, and the note mixed — not blank.
+        # Against the old header-cleared deadline the note never runs.
+        out = self.run_scenario("live-hang")
+        self.assertEqual(out["prs_merged"], "4,242")
+        self.assertEqual(out["commits_year"], "0-test")
+        self.assertEqual(
+            out["__note"],
+            "Mixed sources: some counts are live from GitHub, others are from last checked-in values")
+        self.assertFalse(out["__stale"])
+        self.assertEqual(out["generated"], "1970-01-01-test")
 
 
 if __name__ == "__main__":

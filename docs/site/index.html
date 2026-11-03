@@ -849,7 +849,7 @@
         </ol>
         <p class="flow-branch"><strong>Reviewer requests changes → back to Fixer.</strong> Each round costs a verdict, and the verdict budget caps the rounds — the loop cannot argue forever.</p>
         <p class="flow-branch"><strong>Budget exhausted → Adjudicator.</strong> It reads the findings and the fixer&rsquo;s answers together and rules accept, reject, or respec. Its ruling reaches the operator; it still cannot merge.</p>
-        <p class="flow-note"><strong>CI gates every step where it is configured.</strong> With <code>fix_ci</code> on, red CI goes to the fixer before the reviewer spends a verdict; with it off, a red head is still reviewed. And where the loop posts its <code>diaktoros/review</code> check and the branch requires it (<code>hermes dk protect</code>), that check must be green before a person merges — protection itself is opt-in, not automatic.</p>
+        <p class="flow-note"><strong>CI routing depends on the PR and the settings.</strong> With <code>fix_ci</code> on, red CI on a fixer-authored PR goes to the fixer while CI-fix capacity remains; once it is spent, the head is held — not reviewed, not re-sent — until the checks pass or a new head is pushed. A review-only red head is likewise held with nothing spent. With <code>fix_ci</code> off, red CI on a fixer PR waits for a review instead. And where the loop posts its <code>diaktoros/review</code> check and the branch requires it (<code>hermes dk protect</code>), that check must be green before a person merges — protection itself is opt-in, not automatic.</p>
       </div>
     </section>
 
@@ -1132,27 +1132,37 @@ hermes dk setup --repo "owner/repository"</code></pre>
       if (mo < 12) return mo + 'mo ago';
       return Math.floor(mo / 12) + 'y ago';
     }
-    function timedFetch(url, opts) {
-      // A request that never settles must not leave the initial claim in
-      // place forever: 10s, then the fallback path runs instead.
-      opts = opts || {};
-      if (typeof AbortController === 'undefined') return fetch(url, opts);
-      var ctrl = new AbortController();
-      var timer = setTimeout(function () { ctrl.abort(); }, 10000);
+    function timedJson(url, opts) {
+      // One deadline for the whole operation — headers AND body.
+      // Clearing the timer when headers arrived left a stalled body
+      // hanging the page past fallback (Vex, PR #1750 round 2), and the
+      // no-AbortController path had no deadline at all. The race bounds
+      // both: the timer aborts (when a controller exists) and rejects.
+      var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      var timer;
+      var timeout = new Promise(function (_, reject) {
+        timer = setTimeout(function () {
+          if (ctrl) ctrl.abort();
+          reject(new Error('timeout'));
+        }, 10000);
+      });
       var o = {};
-      for (var k in opts) o[k] = opts[k];
-      o.signal = ctrl.signal;
-      return fetch(url, o).then(function (r) {
+      for (var k in (opts || {})) o[k] = opts[k];
+      if (ctrl) o.signal = ctrl.signal;
+      var attempt = fetch(url, o).then(function (r) {
+        if (!r.ok) throw new Error('http ' + r.status);
+        return r.json();
+      });
+      return Promise.race([attempt, timeout]).then(function (v) {
         clearTimeout(timer);
-        return r;
+        return v;
       }, function (e) {
         clearTimeout(timer);
         throw e;
       });
     }
     function get(path) {
-      return timedFetch(API + path, { headers: { 'Accept': 'application/vnd.github+json' } })
-        .then(function (r) { if (!r.ok) throw new Error('api ' + r.status); return r.json(); });
+      return timedJson(API + path, { headers: { 'Accept': 'application/vnd.github+json' } });
     }
     function soft(promise) {
       return promise.catch(function () { return null; });
@@ -1219,10 +1229,7 @@ hermes dk setup --repo "owner/repository"</code></pre>
       }
     }
     function snapshot() {
-      return timedFetch('data.json', { cache: 'no-store' }).then(function (r) {
-        if (!r.ok) throw new Error('no data');
-        return r.json();
-      }).then(function (d) {
+      return timedJson('data.json', { cache: 'no-store' }).then(function (d) {
         var COUNT_KEYS = ['stars', 'forks', 'prs_merged', 'loop_prs_merged',
                           'issues_closed', 'prs_open', 'issues_open', 'commits_year'];
         Object.keys(d).forEach(function (k) {
