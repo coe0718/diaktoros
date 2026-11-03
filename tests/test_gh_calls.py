@@ -38,6 +38,15 @@ class Counted(unittest.TestCase):
         class Api(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
                 test.used += 1
+                if "/to-storage/" in self.path:      # GitHub's answer to a log read: a redirect
+                    where = self.path.rsplit("/to-storage/", 1)[1]
+                    self.send_response(302)
+                    self.send_header("Location", "http://127.0.0.1:1/log" if where == "down"
+                                     else f"/storage/{where}")
+                    self.send_header("X-RateLimit-Used", str(test.used))
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if self.path.endswith("/limited"):
                     self.send_response(403)
                     self.send_header("X-RateLimit-Remaining", "0")
@@ -112,6 +121,16 @@ class Counted(unittest.TestCase):
         reader = self.counted()["reader"]
         self.assertEqual((reader["limited"], reader["error"], reader["unsent"], reader["spent"]),
                          (1, 1, 1, 0))
+
+    def test_a_log_read_github_redirected_is_spent_whatever_the_storage_host_does(self):
+        # Review of #1758, F3: GitHub answered, so a storage host that is down or refuses
+        # (a 403 that looks like a rate limit) does not turn the API call into error or limited.
+        self.assertIsNone(gh.read_text(LOOP, "/repos/owner/one/actions/jobs/5/to-storage/down"))
+        self.assertIsNone(gh.read_text(LOOP, "/repos/owner/one/actions/jobs/6/to-storage/limited"))
+        self.assertIsNotNone(gh.read_text(LOOP, "/repos/owner/one/actions/jobs/7/to-storage/log"))
+        reader = self.counted()["reader"]
+        self.assertEqual((reader["spent"], reader["error"], reader["limited"]), (3, 0, 0))
+        self.assertEqual(reader["limit"]["used"], "104")     # from the last redirect, not storage
 
     def test_logins_are_kept_apart_and_a_missing_credential_is_unsent(self):
         self.get("/repos/owner/one/pulls/7", login="reviewer")
