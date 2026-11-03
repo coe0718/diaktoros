@@ -854,6 +854,87 @@ class ProbeReasoningReply(unittest.TestCase):
                 self.assertEqual(selftest.probe_reply(mode, "text/event-stream", stream.encode()),
                                  ("", True))
 
+    @staticmethod
+    def sse(*events):
+        return "".join(f"event: {e.get('type', 'chunk')}\ndata: {json.dumps(e)}\n\n"
+                       for e in events).encode()
+
+    def test_each_streamed_and_codex_reasoning_form_passes_and_its_empty_twin_does_not(self):
+        stop = {"type": "message_stop"}
+        done = {"type": "response.completed", "response": {"status": "completed"}}
+        chunk = {"choices": [{"delta": {"content": ""}}]}
+        cases = {
+            # name: (mode, content type, body with reasoning, same shape without reasoning)
+            "chat stream usage": (
+                "chat_completions", "text/event-stream",
+                self.sse(chunk, {"choices": [], "usage": {"completion_tokens_details": {"reasoning_tokens": 9}}}),
+                self.sse(chunk, {"choices": [], "usage": {"completion_tokens_details": {"reasoning_tokens": 0}}})),
+            "anthropic stream usage": (
+                "anthropic_messages", "text/event-stream",
+                self.sse({"type": "message_delta", "usage": {"output_tokens_details": {"reasoning_tokens": 9}}}, stop),
+                self.sse({"type": "message_delta", "usage": {"output_tokens": 0}}, stop)),
+            "anthropic thinking_delta": (
+                "anthropic_messages", "text/event-stream",
+                self.sse({"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "hm"}}, stop),
+                self.sse({"type": "content_block_delta", "delta": {"type": "text_delta", "text": ""}}, stop)),
+            "anthropic redacted_thinking block": (
+                "anthropic_messages", "application/json",
+                json.dumps({"content": [{"type": "redacted_thinking", "data": "x"}]}).encode(),
+                json.dumps({"content": [{"type": "tool_use"}]}).encode()),
+            "codex stream reasoning delta": (
+                "codex_responses", "text/event-stream",
+                self.sse({"type": "response.reasoning_summary_text.delta", "delta": "hm"}, done),
+                self.sse({"type": "response.reasoning_summary_text.delta", "delta": " "}, done)),
+            "codex stream usage": (
+                "codex_responses", "text/event-stream",
+                self.sse({"type": "response.completed", "response": {"usage": {
+                    "output_tokens_details": {"reasoning_tokens": 9}}}}),
+                self.sse({"type": "response.completed", "response": {"usage": {
+                    "output_tokens_details": {"reasoning_tokens": 0}}}})),
+            "codex json reasoning item": (
+                "codex_responses", "application/json",
+                json.dumps({"output": [{"type": "reasoning", "summary": []}]}).encode(),
+                json.dumps({"output": []}).encode()),
+        }
+        for name, (mode, label, reasoning, plain) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(selftest.probe_reply(mode, label, reasoning), ("", True))
+                self.assertEqual(selftest.probe_reply(mode, label, plain), ("", False))
+
+    def test_a_streamed_reasoning_only_reply_passes_through_the_completion_check(self):
+        stream = self.sse({"type": "content_block_delta",
+                           "delta": {"type": "thinking_delta", "thinking": "hm"}},
+                          {"type": "message_stop"})
+        plain = self.sse({"type": "message_stop"})
+
+        class Conn:
+            body = stream
+
+            def __init__(self, *a):
+                pass
+
+            def request(self, *a, **kw):
+                pass
+
+            def getresponse(self):
+                return mock.Mock(status=200, read=lambda n: Conn.body,
+                                 getheader=lambda *a: "text/event-stream")
+
+            def close(self):
+                pass
+
+        capability = mock.MagicMock()
+        capability.__enter__.return_value = mock.Mock(socket_path="/x", contract=mock.Mock(local_path="/p"))
+        for body, want, text in ((stream, selftest.PASS, "reasoning only"),
+                                 (plain, selftest.WARN, "reply is empty")):
+            Conn.body = body
+            report = selftest.Report(io.StringIO())
+            with mock.patch.object(inference_proxy, "InferenceCapability", return_value=capability), \
+                    mock.patch.object(inference_proxy, "_UnixHTTP", Conn):
+                selftest._one_completion(report, "reviewer", _FakeProbeInference("anthropic_messages"))
+            self.assertEqual(report.results[-1][2], want)
+            self.assertIn(text, report.results[-1][3])
+
 
 class ProbeAnswer(unittest.TestCase):
     def test_a_codex_stream_labelled_json_is_still_an_answer(self):
