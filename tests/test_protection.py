@@ -270,6 +270,57 @@ class Write(Fake):
         self.assertEqual([c[:2] for c in self.writes()], [("DELETE", "/repos/acme/w/rulesets/5")])
 
 
+class OutOfRangeAppId(Fake):
+    """#1742 F1: an App reviewer whose stored id is not a valid App id (a hand-edited loop file
+    past ``check_apps``) is never treated as a PAT reviewer: no any-source check is written and
+    the diagnostic blocks instead of reporting a clean PAT fact."""
+
+    def loop(self):
+        loop = app_loop()
+        loop["apps"]["r[bot]"]["app_id"] = 10 ** 20          # 21 digits: over APP_ID_MAX_DIGITS
+        return loop
+
+    def test_config_load_refuses_the_id_so_the_state_is_only_reachable_by_hand(self):
+        from diaktoros.config import blocks
+        with self.assertRaisesRegex(config.ConfigError, "numeric id"):
+            blocks.check_apps(self.loop()["apps"], {}, "w")
+
+    def test_no_any_source_ruleset_is_built_or_written(self):
+        loop = self.loop()
+        self.assertTrue(config.reviewer_is_app(loop))
+        with self.assertRaisesRegex(config.ConfigError, "cannot be pinned"):
+            protection.ruleset_body(loop)
+        done, line = protection.require(loop, "admin")
+        self.assertFalse(done)
+        self.assertIn("no valid App id", line)
+        self.assertEqual(self.writes(), [])
+
+    def test_the_diagnostic_blocks_instead_of_a_clean_pat_fact(self):
+        loop = self.loop()
+        for found in (protection.Protection(sources=[None]), protection.Protection()):
+            blocking, warnings, facts = protection.problems(loop, found)
+            self.assertEqual(len(blocking), 1, (blocking, warnings, facts))
+            self.assertIn("no valid App id", blocking[0])
+            self.assertEqual(facts, [])
+
+    def test_protect_command_fails_closed_with_and_without_dry_run(self):
+        for flags in ((), ("--dry-run",)):
+            self.calls.clear()
+            args = argparse.Namespace(loop="w", admin_token="admin", remove=False,
+                                      dry_run="--dry-run" in flags)
+            out = io.StringIO()
+            with mock.patch.object(config, "load_id", return_value=self.loop()), \
+                    contextlib.redirect_stdout(out):
+                rc = cli_checks.cmd_protect(args)
+            self.assertEqual(rc, 1, out.getvalue())
+            self.assertIn("no valid App id", out.getvalue())
+            self.assertEqual(self.writes(), [])
+
+    def test_a_pat_reviewer_is_unchanged(self):
+        self.assertEqual(protection.unpinnable(pat_loop(merge_check="on")), "")
+        self.assertEqual(protection.unpinnable(app_loop()), "")
+
+
 class Command(Fake):
     def run_cmd(self, loop, *flags):
         args = argparse.Namespace(loop="w", admin_token="admin", remove="--remove" in flags,
