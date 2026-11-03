@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 from diaktoros import app_tokens, gh, gh_cache, gh_calls, github_app, hostdirs  # noqa: E402
 
 REPO, BOT, APP_ID = "acme/widgets", "acme-reader[bot]", 5416187
+OTHER = "acme-other[bot]"
 LATER = "2099-01-01T00:00:00Z"
 
 
@@ -41,16 +42,19 @@ class Fixture(unittest.TestCase):
         self.key.write_text("-----BEGIN PRIVATE KEY-----\nKEYBYTES\n-----END PRIVATE KEY-----\n")
         self.key.chmod(0o600)
         self.loop = {"id": "widgets", "repo": REPO, "base": "main", "read_token": BOT,
-                     "apps": {BOT: {"app_id": APP_ID, "key_file": str(self.key)}}}
+                     "apps": {BOT: {"app_id": APP_ID, "key_file": str(self.key)},
+                              OTHER: {"app_id": 2, "key_file": str(self.key)}}}
         shutil.rmtree(app_tokens.directory(), ignore_errors=True)
         self.addCleanup(shutil.rmtree, app_tokens.directory(), True)
         github_app.forget()
         self.addCleanup(github_app.forget)
-        self.mints, self.expires = 0, LATER
+        self.mints, self.expires, self.slow = 0, LATER, {}
 
         def as_app(loop, login, path, method="GET", body=None):
             if path == f"/repos/{REPO}/installation":
                 return gh.Response({"id": 9}, "", 200, {})
+            if login in self.slow:                    # a mint that hangs until released
+                self.slow[login].wait(10)
             self.mints += 1
             return gh.Response({"token": f"ghs_{self.mints}_" + "x" * 380,
                                 "expires_at": self.expires}, "", 201, {})
@@ -171,6 +175,34 @@ class Shared(Fixture):
         self.new_process()
         self.assertEqual(gh.token(self.loop, BOT), sent[1])          # the replacement is shared
 
+    def test_a_401_to_a_log_read_drops_the_token_but_a_storage_hosts_does_not(self):
+        # Review of #1781, F7: gh.read_text sends the token on a request of its own. GitHub's
+        # 401 drops it; a 401 from the storage host it redirected to is not about the token.
+        sent = []
+        path = f"/repos/{REPO}/actions/jobs/5/logs"
+
+        def storage(req, timeout=None):
+            req.answered = {"x-ratelimit-used": "1"}  # GitHub answered with its redirect
+            _http_error(401, sent)(req, timeout)
+        with _patches(storage):
+            self.assertIsNone(gh.read_text(self.loop, path))
+            self.assertIsNone(gh.read_text(self.loop, path))
+        self.assertEqual(sent[0], sent[1])             # kept: the storage host's refusal
+        with _patches(_http_error(401, sent)):
+            self.assertIsNone(gh.read_text(self.loop, path))
+            self.assertIsNone(gh.read_text(self.loop, path))
+        self.assertEqual(sent[2], sent[1])
+        self.assertNotEqual(sent[3], sent[2])          # GitHub's 401: the retry has a new one
+
+    def test_a_401_to_a_tarball_read_drops_the_token_and_the_retry_uses_a_new_one(self):
+        from diaktoros import trusted_fetch
+        sent = []
+        with _patches(_http_error(401, sent)):
+            for _ in range(2):
+                with self.assertRaises(trusted_fetch.FetchDenied):
+                    trusted_fetch._fetch_tarball(self.loop, REPO, BOT, "a" * 40, 1024)
+        self.assertNotEqual(sent[0], sent[1])
+
     def test_a_late_401_for_an_old_token_never_drops_its_successor(self):
         # Review of #1781, F4: two requests carried the old token. The first 401 led to a new
         # one being minted while the second was in flight; the second's 401 arrives after.
@@ -207,6 +239,65 @@ class Shared(Fixture):
                 gh.token(self.loop, BOT)
             self.assertLess(time.monotonic() - start, 2)
         held.set()
+
+    def test_without_the_lock_nothing_shared_is_changed(self):
+        # Review of #1781, F5: past the bounded wait, refused() still did load-compare-drop
+        # unlocked, so a successor published between the load and the drop was deleted.
+        old = gh.token(self.loop, BOT)
+        held = self.hold_lock(KEY)
+        successor = ("ghs_successor_" + "x" * 370, time.time() + 3600)
+
+        def load(key):                                # another process publishes meanwhile
+            app_tokens._file(key).write_text(json.dumps(
+                {"token": successor[0], "expires": successor[1]}))
+            return (old, successor[1])
+        with mock.patch.object(app_tokens, "LOCK_WAIT_S", 0.2), \
+                mock.patch.object(app_tokens, "load", side_effect=load):
+            github_app.refused(self.loop, BOT, old)
+        self.assertIsNotNone(app_tokens.load(KEY))    # nothing dropped without the lock
+        # And a token minted without the lock is this process's alone: never published.
+        app_tokens.drop(KEY)
+        self.new_process()
+        with mock.patch.object(app_tokens, "LOCK_WAIT_S", 0.2):
+            gh.token(self.loop, BOT)
+        self.assertIsNone(app_tokens.load(KEY))
+        held.set()
+        self.assertNotEqual(gh.token(self.loop, BOT), old)          # refused: never used again
+
+    def test_threads_wait_for_a_token_within_their_own_bounds(self):
+        # Review of #1781, F6: the bounded flock wait ran under one process-wide lock, so a
+        # thread for another App, or with a shorter budget, waited behind a slow mint unbounded.
+        release = threading.Event()
+        self.slow[BOT] = release
+        self.addCleanup(release.set)
+        minting = threading.Thread(target=gh.token, args=(self.loop, BOT), daemon=True)
+        minting.start()
+        time.sleep(0.2)                               # it holds BOT's lock, mid-mint
+        results = {}
+
+        def other_app():
+            with gh.gate_scope(time.monotonic() + 0.3):
+                start = time.monotonic()
+                results["other"] = (gh.token(self.loop, OTHER), time.monotonic() - start)
+
+        def same_app():
+            with gh.gate_scope(time.monotonic() + 0.2):
+                start = time.monotonic()
+                try:
+                    gh.token(self.loop, BOT)
+                    results["same"] = ("token", time.monotonic() - start)
+                except gh.GateBudgetExceeded:
+                    results["same"] = ("budget", time.monotonic() - start)
+        threads = [threading.Thread(target=f, daemon=True) for f in (other_app, same_app)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(5)
+        self.assertLess(results["other"][1], 1)       # another App never waits for this one
+        self.assertEqual(results["same"][0], "budget")
+        self.assertLess(results["same"][1], 1)        # a gate stops within its own budget
+        release.set()
+        minting.join(5)
 
     def test_a_mint_for_one_app_never_waits_for_another(self):
         held = self.hold_lock(("other[bot]", REPO, 1))

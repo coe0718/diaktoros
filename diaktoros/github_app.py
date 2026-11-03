@@ -216,19 +216,24 @@ def installation_token(loop: dict, login: str) -> str:
         raise AppError(f"{login!r} is not an App identity on this loop")
     repo = str(loop.get("repo") or "")
     key = (login.casefold(), repo, found.get("app_id"))
-    with _lock:
+    with _lock:                             # held for the dict alone, never for a wait or a mint
         cached = _tokens.get(key)
-        if cached and cached[1] - time.time() > REUSE_MARGIN_S:
-            return cached[0]
-        with app_tokens.held(key):          # one minter at a time across the host (#1780)
-            shared = app_tokens.load(key)
-            if shared and shared[1] - time.time() > REUSE_MARGIN_S and shared[0] not in _refused:
+    if cached and cached[1] - time.time() > REUSE_MARGIN_S:
+        return cached[0]
+    # One minter at a time for this token, across the host (#1780), each caller waiting within
+    # its own bound: another App, or another thread's slower mint, never holds it (review F6).
+    with app_tokens.held(key) as locked:
+        shared = app_tokens.load(key)
+        if shared and shared[1] - time.time() > REUSE_MARGIN_S and shared[0] not in _refused:
+            with _lock:
                 _tokens[key] = shared
-                return shared[0]
-            token, expires = _mint(loop, login, repo)
+            return shared[0]
+        token, expires = _mint(loop, login, repo)
+        with _lock:
             _tokens[key] = (token, expires)
+        if locked:                          # unlocked, it is this process's alone (F5)
             app_tokens.save(key, token, expires)
-            return token
+        return token
 
 
 def _mint(loop: dict, login: str, repo: str) -> tuple[str, float]:
@@ -263,10 +268,12 @@ def refused(loop: dict, login: str | None, sent: str) -> None:
         _refused.add(sent)
         if _tokens.get(key, ("",))[0] == sent:
             del _tokens[key]
-        with app_tokens.held(key):
-            stored = app_tokens.load(key)
-            if stored and stored[0] == sent:
-                app_tokens.drop(key)
+    with app_tokens.held(key) as locked:
+        if not locked:                      # load-compare-drop is atomic only under the lock (F5)
+            return
+        stored = app_tokens.load(key)
+        if stored and stored[0] == sent:
+            app_tokens.drop(key)
 
 
 def principal(loop: dict, login: str, fetch=None) -> dict | None:

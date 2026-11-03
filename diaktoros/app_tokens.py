@@ -63,24 +63,27 @@ def _file(key: tuple) -> pathlib.Path:
 
 @contextlib.contextmanager
 def held(key: tuple):
-    """One minter at a time for ``key`` across the host's processes; a process that may not
-    write takes no lock (and so writes nothing). The wait is bounded by ``LOCK_WAIT_S`` and by
-    what is left of a gate's budget (review of #1781, F1): past it the caller goes on unlocked
-    and mints for itself, and a gate whose budget ran out while waiting stops as any overrun
+    """One minter at a time for ``key``, across the host's processes and the threads in each:
+    every caller opens the lock file anew, and a flock conflicts across open files. Yields
+    whether the lock is held; without it the caller changes nothing shared (``save``, ``drop``),
+    so a token another process publishes meanwhile is never overwritten or dropped (review of
+    #1781, F5). A process that may not write takes no lock. The wait is bounded by
+    ``LOCK_WAIT_S`` and by what is left of the caller's own gate budget (F1, F6): past it the
+    caller mints for itself, and a gate whose budget ran out while waiting stops as any overrun
     does. Best effort: an unusable directory is an unshared mint."""
     if not _writable():
-        yield
+        yield False
         return
     try:
         directory().mkdir(parents=True, exist_ok=True, mode=0o700)
         lock = (directory() / f".{_file(key).name}.lock").open("a+b")
     except OSError:
-        yield
+        yield False
         return
     with lock:
         got = _wait(lock)
         try:
-            yield
+            yield got
         finally:
             if got:
                 fcntl.flock(lock, fcntl.LOCK_UN)
@@ -117,7 +120,7 @@ def load(key: tuple) -> tuple[str, float] | None:
 
 
 def save(key: tuple, token: str, expires: float) -> None:
-    """Share a freshly minted token; best effort, never raises."""
+    """Share a freshly minted token; best effort, never raises. Only under ``held``'s lock."""
     if not _writable():
         return
     from .util import atomic_write
@@ -128,7 +131,8 @@ def save(key: tuple, token: str, expires: float) -> None:
 
 
 def drop(key: tuple | None = None) -> None:
-    """Forget a stored token (GitHub refused it), or every one with no ``key``; best effort."""
+    """Forget a stored token (GitHub refused it; under ``held``'s lock), or every one with no
+    ``key``; best effort."""
     if not _writable():
         return
     try:
