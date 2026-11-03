@@ -35,6 +35,21 @@ def reproduction_section(loop: dict, row) -> str:
     return repro_proof.section(found[0], found[1], row['head']) if found else ''
 
 
+def _adjudicator_facts(loop: dict, row, marker, facts: dict) -> list:
+    """The adjudicator's facts from its breach marker, into ``facts``; the PR's comments, which
+    a ruling needs whole: both sides are the whole point of a ruling, never half the record."""
+    from .. import gh
+    if not isinstance(marker, dict):
+        raise ValueError('breach marker required')
+    facts['round'] = marker['rounds']
+    facts['reason'] = marker.get('reason') or 'review cap reached without an approval'
+    facts['situation'] = adjudication_situation(marker)
+    comments, _error = gh.issue_comments_read(loop, row['pr'])
+    if comments is None:
+        raise ValueError('fixer answers unreadable')
+    return comments
+
+
 def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, shadow=_READ) -> str:
     """Render the role's isolated prompt from host facts plus the bounded PR record. ``shadow``
     is the shadow review already read for an adjudicator's shadow escalation
@@ -70,15 +85,7 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, shadow=_
         facts['round'] = len(counted) if counted else 'unknown'
         facts['reviewer'] = gate.reviewer_login(latest) if latest else 'the reviewer'
     else:
-        if not isinstance(marker, dict):
-            raise ValueError('breach marker required')
-        facts['round'] = marker['rounds']
-        facts['reason'] = marker.get('reason') or 'review cap reached without an approval'
-        facts['situation'] = adjudication_situation(marker)
-        comments, error = gh.issue_comments_read(loop, row['pr'])
-        if comments is None:
-            # Both sides are the whole point of a ruling; never rule on half the record.
-            raise ValueError('fixer answers unreadable')
+        comments = _adjudicator_facts(loop, row, marker, facts)
     text = prompts.render_isolated(seat, **facts)
     if seat == 'fixer':
         text += prompts.fixer_check_section(loop)

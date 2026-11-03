@@ -135,7 +135,7 @@ class Launch(ruling.Base):
         from diaktoros import ci, issue_facts
         from diaktoros.run_supervisor import pr_facts
         sup, turn = self.row(key)
-        change = mock.Mock(partial="", record="RECORD", diff="", author="fixer")
+        change = mock.Mock(partial="", record="RECORD", diff="", author="fixer", description="")
         with mock.patch.object(gh, "reviews", return_value=list(ruling.APPROVED)), \
                 mock.patch.object(pr_facts, "effective_reviews", side_effect=lambda l, r, rv, d: rv), \
                 mock.patch.object(pr_facts, "pr_change", return_value=change), \

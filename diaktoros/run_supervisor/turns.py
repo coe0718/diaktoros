@@ -93,6 +93,16 @@ def _ci_hold_text(head: str, checks, fixing: bool, red: bool, review_only: bool)
                f"{len(checks.pending)} check(s) still running or not reported"))[:600]
 
 
+def _nudged(row, prompt: str) -> str:
+    """The turn's prompt, with the publish nudge when an earlier turn at this row ended without
+    publishing: placed before "This round", not first, so a retry's prompt keeps the same stable
+    prefix (#1649)."""
+    from .. import prompts
+    if not run_supervisor.unpublished_before(row):
+        return prompt
+    return prompts.before_this_round(prompt, run_supervisor.PUBLISH_NUDGE)
+
+
 class ClaimAndLaunch:
     """The claim and turn methods of :class:`~diaktoros.run_supervisor.Supervisor`."""
 
@@ -489,10 +499,7 @@ class ClaimAndLaunch:
             # A shadow turn is told exactly what the reviewer is told (#218).
             role = 'reviewer' if row['seat'] == run_supervisor.SHADOW else row['seat']
         self.record_launch(run_id, owner, prompts.revision(role), inference.model)
-        prompt = launch.prompt
-        if run_supervisor.unpublished_before(row):
-            # Before "This round", not first: a retry's prompt keeps the same stable prefix (#1649).
-            prompt = prompts.before_this_round(prompt, run_supervisor.PUBLISH_NUDGE)
+        prompt = _nudged(row, launch.prompt)
         cancel = self._cancels.get(run_id)
         if cancel is not None and cancel.is_set():
             raise run_supervisor.TurnCancelled(run_supervisor.OPERATOR_STOPPED)  # before any launch

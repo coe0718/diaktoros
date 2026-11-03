@@ -82,7 +82,10 @@ def not_exported_section(paths: list[str], limit: int = 50) -> str:
 
 def compose_prompt(prompt: str, note: str) -> str:
     """The prompt with the host's build/export ``note`` in its place (#1649): just above the
-    prompt's **This round** section, or first when it has none."""
+    prompt's **This round** section, or first when it has none. Either way it is ahead of every
+    PR record (data a PR author can shape), so a host fact placed after them could not be
+    imitated there; and what is before "This round" is the same in every round, so a note that
+    changes with the prefetch must not sit in front of it."""
     return prompts.before_this_round(prompt, note + '\n\n') if note else prompt
 
 
@@ -748,10 +751,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                     f'Not exported: {len(not_exported)} symlink, submodule or .gitmodules path(s) '
                     'are not in your checkout; their names are listed after the PR record.')
             query = root / 'query.txt'
-            # The note goes ahead of every PR record (data a PR author can shape), so a host
-            # fact placed after them could not be imitated there. A reviewer's or fixer's prompt
-            # takes it just above "This round" (#1649): what is before that is the same in every
-            # round, and a note that changes with the prefetch must not sit in front of it.
+            # compose_prompt puts the note ahead of every PR record (its docstring says why).
             query.write_text(compose_prompt(prompt, note) + '\n\n'
                              + not_exported_section(not_exported)
                              + tool_instructions(scope.role) + '\n')
