@@ -66,6 +66,23 @@ class Meter(unittest.TestCase):
         meter.finish()
         self.assertEqual(meter.tokens_in, 50)
 
+    def test_cached_input_is_kept_apart_and_unreported_is_unknown(self):
+        """#1649: 12 uncached + 100 cache-read and 112 uncached both total 112 in; the meter
+        tells them apart, and a reply that reports no cache field is None, not 0."""
+        def meter(body):
+            m = UsageMeter()
+            m.feed(body, False)
+            m.finish()
+            return m
+        cached = meter(b'{"usage": {"input_tokens": 12, "cache_read_input_tokens": 100}}')
+        plain = meter(b'{"usage": {"input_tokens": 112}}')
+        self.assertEqual((cached.tokens_in, cached.cache_read), (112, 100))
+        self.assertEqual((plain.tokens_in, plain.cache_read), (112, None))
+        zero = meter(b'{"usage": {"input_tokens": 112, "cache_read_input_tokens": 0}}')
+        self.assertEqual(zero.cache_read, 0)
+        chat = meter(b'{"usage": {"prompt_tokens": 50, "prompt_tokens_details": {"cached_tokens": 40}}}')
+        self.assertEqual((chat.tokens_in, chat.cache_read), (50, 40))
+
     def test_reported_zero_cost_is_known(self):
         for body, stream in ((b'{"usage": {"prompt_tokens": 5, "cost": 0}}', False),
                              (b'data: {"usage": {"output_tokens": 3, "cost": 0.0}}\n', True)):
@@ -125,7 +142,8 @@ class ProxyRecordsTokens(unittest.TestCase):
                 self.assertEqual((cap.tokens_in, cap.tokens_out), (320, 85))
                 self.assertTrue(cap.cost_known)
                 self.assertEqual(trusted_turn.usage_of(cap),
-                                 {"tokens_in": 320, "tokens_out": 85, "cost": 0.5})
+                                 {"tokens_in": 320, "tokens_out": 85, "cache_read": None,
+                                  "cost": 0.5})
         finally:
             upstream.shutdown()
             upstream.server_close()
@@ -135,6 +153,12 @@ class ProxyRecordsTokens(unittest.TestCase):
         class Bare:
             tokens_in, tokens_out, cost, cost_known = 5, 6, 0.0, False
         self.assertIsNone(trusted_turn.usage_of(Bare)["cost"])
+
+
+class CacheShare(unittest.TestCase):
+    def test_share_is_over_reporting_turns_and_unknown_without_any(self):
+        self.assertEqual(stats.cache_share({"cache_read": 100, "cached_of": 400}), "100 of 400 (25%)")
+        self.assertEqual(stats.cache_share({"cache_read": 0, "cached_of": 0}), "unknown")
 
 
 class StatsSumsPerSeatAndModel(unittest.TestCase):
@@ -199,5 +223,66 @@ class DailyTokensSetting(unittest.TestCase):
             self.assertIn(settings_form.SETTINGS_SCHEMA[key]["description"], text.replace('\\"', '"'))
 
 
-if __name__ == "__main__":
-    unittest.main()
+class CachePerRound(unittest.TestCase):
+    """#1649: what the provider's cache served is kept for each turn, written through
+    ``Supervisor.record_usage``, read back per round by ``stats``, with an unreporting turn
+    unknown and never 0."""
+    REPO = "acme/widgets"
+
+    def test_two_rounds_are_told_apart_through_the_ledger(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as d:
+            db = Path(d) / "runs.sqlite"
+            sup = Supervisor(db)
+            for n, (head, observed) in enumerate((
+                    ("a" * 40, {"tokens_in": 100, "tokens_out": 1, "cache_read": 0, "cost": None}),
+                    ("b" * 40, {"tokens_in": 100, "tokens_out": 1, "cache_read": 100, "cost": None}),
+                    ("c" * 40, {"tokens_in": 100, "tokens_out": 1, "cache_read": None,
+                                "cost": None}))):
+                sup.enqueue(f"d{n}", self.REPO, 7, head, "reviewer")
+                with closing(sqlite3.connect(db)) as con, con:
+                    con.execute("UPDATE runs SET owner='w', created=? WHERE delivery=?",
+                                (1000.0 + n, f"d{n}"))
+                    run_id = con.execute("SELECT id FROM runs WHERE delivery=?",
+                                         (f"d{n}",)).fetchone()[0]
+                sup.record_usage(run_id, "w", observed)
+            rounds = stats.cache_by_turn(db, self.REPO, 0)
+            self.assertEqual([r["cache_read"] for r in rounds], [0, 100, None])
+            self.assertEqual([r["head"] for r in rounds], ["aaaaaaa", "bbbbbbb", "ccccccc"])
+            rows = stats._cache_turn_rows({"cache_turns": rounds})
+            self.assertEqual([r[4] for r in rows],
+                             ["0 of 100 (0%)", "100 of 100 (100%)", "unknown"])
+            # The per-seat sum covers only the reporting turns: 100 of 200, not of 300.
+            (total,) = stats.usage(db, self.REPO, 0)
+            self.assertEqual((total["cache_read"], total["cached_of"]), (100, 200))
+            self.assertIn("100 of 200 (50%)", stats.cache_share(total))
+            report = {"repo": self.REPO, "loop": "w", "since": 0, "until": 86400, "turns": {},
+                      "usage": [total], "cache_turns": rounds}
+            self.assertIn("Prompt cache per turn", stats.text(report))
+
+    def test_a_reply_that_reports_no_cache_makes_the_turn_unknown(self):
+        """A turn of two requests, one reporting and one not, is not "100 of 300": unknown."""
+        class Cap(InferenceCapability):
+            def __init__(self):                              # the totals only, no socket
+                self.lock = threading.Lock()
+                self.tokens_in = self.tokens_out = 0
+                self.cache_read, self.cache_gap = None, False
+                self.cost, self.cost_known = 0.0, False
+
+        def meter(body):
+            m = UsageMeter()
+            m.feed(body, False)
+            m.finish()
+            return m
+        reporting = b'{"usage": {"input_tokens": 12, "cache_read_input_tokens": 88}}'
+        silent = b'{"usage": {"input_tokens": 200}}'
+        for order in ((reporting, silent), (silent, reporting)):
+            cap = Cap()
+            for body in order:
+                cap.add_usage(meter(body))
+            self.assertEqual(cap.tokens_in, 300)
+            self.assertIsNone(cap.cache_read)
+            self.assertIsNone(trusted_turn.usage_of(cap)["cache_read"])
+        cap = Cap()
+        cap.add_usage(meter(reporting))
+        cap.add_usage(meter(reporting))
+        self.assertEqual(trusted_turn.usage_of(cap)["cache_read"], 176)

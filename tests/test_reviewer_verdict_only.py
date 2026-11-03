@@ -289,7 +289,8 @@ class VerdictOnlyInstructionTests(unittest.TestCase):
             facts["head"] = sha
             text = prompts.render_isolated(role, **facts)
             with self.subTest(role=role):
-                self.assertIn(f"holds the files of head {sha}", text)
+                self.assertNotIn(sha, text)  # #1649: the head is in "This round", not the template
+                self.assertIn("holds the files of the head named under **This round**", text)
                 self.assertIn("with no `.git`", text)
                 self.assertIn("don't try `git`", text)
 

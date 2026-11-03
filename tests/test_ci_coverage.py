@@ -100,7 +100,7 @@ class View(unittest.TestCase):
 def reviewer_prompt(loop, state, seat="reviewer"):
     """The real ``isolated_prompt`` for a PR at HEAD, with GitHub reads and CI mocked."""
     row = {"seat": seat, "repo": tai.REPO, "pr": 7, "head": tai.HEAD}
-    change = mock.Mock(record="CHANGE-RECORD", diff="")
+    change = mock.Mock(record="CHANGE-RECORD", diff="", description="")
     with mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
             mock.patch.object(ci, "read", return_value=state), \
             mock.patch.object(issue_facts, "section", return_value=""), \

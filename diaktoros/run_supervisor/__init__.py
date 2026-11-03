@@ -660,9 +660,12 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch, notices.OperatorNo
             return
         cost = observed.get('cost')
         with self._connect() as con:
-            con.execute("UPDATE runs SET tokens_in=?, tokens_out=?, cost=? WHERE id=? AND owner=?",
+            cached = observed.get('cache_read')
+            con.execute("UPDATE runs SET tokens_in=?, tokens_out=?, cost=?, cache_read=? "
+                        "WHERE id=? AND owner=?",
                         (t_in, t_out, cost if isinstance(cost, (int, float)) else None,
-                         run_id, owner))
+                         cached if isinstance(cached, int) and not isinstance(cached, bool)
+                         else None, run_id, owner))
         if loop_id and seat and t_in + t_out > 0:
             from .. import pacing
             pacing.count_tokens(loop_id, seat, t_in + t_out)
