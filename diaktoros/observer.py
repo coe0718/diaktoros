@@ -879,11 +879,12 @@ def retry(loop: dict, st) -> int:
                         and not entry.get("posting_at")):
                     # #1314: the sender stopped before the POST began (no posting mark), so the
                     # gateway never saw it: a definite pre-POST failure, resent like one.
+                    # `attempts` counts POSTs and `_receipt` counts the resend's, so the sweep
+                    # does not add one here (the failed-retryable branch above does the same).
                     entry.update(status="failed", retryable=True,
-                                 attempts=int(entry.get("attempts") or 0) + 1,
                                  error="the sender stopped before the POST; resending")
                     # A digest's members stay `digesting`: the resent batch carries them.
-                    if int(entry["attempts"]) < MAX_ATTEMPTS:
+                    if int(entry.get("attempts") or 0) < MAX_ATTEMPTS:
                         pending.append((key, dict(entry)))
                 elif status == "pending" and now - float(entry.get("at") or 0) > STALE_CLAIM_S:
                     entry["status"] = "uncertain"

@@ -180,6 +180,17 @@ class ObserverSafetyTests(unittest.TestCase):
         self.assertEqual(observer._read(self.state.observations)["entries"][key]["status"],
                          "delivered")
 
+    def test_a_resent_pre_post_claim_counts_one_attempt(self):
+        # The sweep must not count the attempt too: only the resend's receipt does.
+        for ok in (True, False):
+            key = self.stale_claim()
+            with patch.object(observer, "_post",
+                              return_value=(ok, "" if ok else "boom", not ok)):
+                observer.retry(self.loop, self.state)
+            entry = observer._read(self.state.observations)["entries"][key]
+            self.assertEqual((entry["status"], entry["attempts"]),
+                             ("delivered" if ok else "uncertain", 1))
+
     def test_a_claim_that_reached_its_post_stays_uncertain(self):
         key = self.stale_claim(posting_at=time.time() - observer.STALE_CLAIM_S)
         with patch.object(routes, "fire") as fire:
