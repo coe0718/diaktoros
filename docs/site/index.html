@@ -849,7 +849,7 @@
         </ol>
         <p class="flow-branch"><strong>Reviewer requests changes → back to Fixer.</strong> Each round costs a verdict, and the verdict budget caps the rounds — the loop cannot argue forever.</p>
         <p class="flow-branch"><strong>Budget exhausted → Adjudicator.</strong> It reads the findings and the fixer&rsquo;s answers together and rules accept, reject, or respec. Its ruling reaches the operator; it still cannot merge.</p>
-        <p class="flow-note"><strong>CI gates every step.</strong> Red CI sends the PR to the fixer before the reviewer spends a verdict, and the loop&rsquo;s <code>diaktoros/review</code> check must be green before a person merges.</p>
+        <p class="flow-note"><strong>CI gates every step where it is configured.</strong> With <code>fix_ci</code> on, red CI goes to the fixer before the reviewer spends a verdict; with it off, a red head is still reviewed. And where the loop posts its <code>diaktoros/review</code> check and the branch requires it (<code>hermes dk protect</code>), that check must be green before a person merges — protection itself is opt-in, not automatic.</p>
       </div>
     </section>
 
@@ -932,7 +932,7 @@
           <div class="section-index">04 / In the wild</div>
           <h2 id="wild-title">Proof, not promises.</h2>
         </div>
-        <p class="section-intro">Diaktoros maintains itself the way it maintains your repo. The numbers below are read from the repository every time this page loads — not typed by hand.</p>
+        <p class="section-intro">Diaktoros maintains itself the way it maintains your repo. The numbers below are read live from the repository when the API answers, and fall back to the checked-in snapshot otherwise — the freshness note above says which path supplied them.</p>
       </div>
       <div class="stats" role="list" aria-label="Repository statistics">
         <div class="stat" role="listitem"><div class="stat-num" data-site="loop_prs_merged">379</div><div class="stat-label">Fixer PRs merged</div></div>
@@ -948,6 +948,7 @@
         <div class="stat" role="listitem"><div class="stat-num" data-site="version">v0.5.0</div><div class="stat-label">Current release</div></div>
         <div class="stat" role="listitem"><div class="stat-num stat-date" data-site="generated">2026-11-03</div><div class="stat-label">Page updated</div></div>
       </div>
+      <p class="stats-freshness">Counts update live from GitHub on every visit; the checked-in snapshot fills gaps.</p>
       <div class="proof-points">
         <article class="proof-point">
           <h3>Watch a real run.</h3>
@@ -1079,26 +1080,43 @@ hermes dk setup --repo "owner/repository"</code></pre>
     // snapshot, then to the hardcoded values.
     var OWNER = 'coe0718', REPO = 'diaktoros';
     var API = 'https://api.github.com';
-    var vals = {}, fresh = {};
-    var liveOk = false, snapOk = false, snapDate = '';
+    var vals = {}, fresh = {}, src = {};
+    var snapOk = false, snapDate = '';
+    // Every count the page displays: the freshness note now appears in
+    // both the proof strip and the wild grid, so its claim must cover
+    // every figure, not just the strip's (shadow-filed #1756: a stale
+    // commits_year under a "Live" note is still a stale figure).
+    var DISPLAY_KEYS = ['loop_prs_merged', 'loop_share', 'prs_merged', 'issues_closed',
+                        'prs_open', 'issues_open', 'commits_year', 'last_activity',
+                        'stars', 'forks', 'version'];
     function num(n) {
       return typeof n === 'number' ? n.toLocaleString('en-US') : n;
     }
-    function set(key, val, raw) {
+    function set(key, val, raw, source) {
       if (val === null || val === undefined) return;
       vals[key] = raw !== undefined ? raw : val;
       fresh[key] = true;
+      src[key] = source || 'hardcoded';
       document.querySelectorAll('[data-site="' + key + '"]').forEach(function (el) {
         el.textContent = val;
       });
     }
+    function stalest(a, b) {
+      // A derived value is only as fresh as its stalest input.
+      var rank = { live: 2, snapshot: 1, hardcoded: 0 };
+      var ra = rank[a] === undefined ? 0 : rank[a];
+      var rb = rank[b] === undefined ? 0 : rank[b];
+      return ra <= rb ? (a || 'hardcoded') : (b || 'hardcoded');
+    }
     function derive() {
       // Computed from the raw numbers, whichever path supplied them.
       if (typeof vals.prs_merged === 'number' && typeof vals.loop_prs_merged === 'number' && vals.prs_merged)
-        set('loop_share', Math.round(100 * vals.loop_prs_merged / vals.prs_merged) + '%');
+        set('loop_share', Math.round(100 * vals.loop_prs_merged / vals.prs_merged) + '%', undefined,
+            stalest(src.prs_merged, src.loop_prs_merged));
       if (typeof vals.open_issues_count === 'number' && typeof vals.prs_open === 'number')
-        set('issues_open', num(vals.open_issues_count - vals.prs_open));
-      if (vals.pushed_at) set('last_activity', relTime(vals.pushed_at));
+        set('issues_open', num(vals.open_issues_count - vals.prs_open), undefined,
+            stalest(src.open_issues_count, src.prs_open));
+      if (vals.pushed_at) set('last_activity', relTime(vals.pushed_at), undefined, src.pushed_at);
     }
     function relTime(iso) {
       var ms = Date.now() - new Date(iso).getTime();
@@ -1114,8 +1132,26 @@ hermes dk setup --repo "owner/repository"</code></pre>
       if (mo < 12) return mo + 'mo ago';
       return Math.floor(mo / 12) + 'y ago';
     }
+    function timedFetch(url, opts) {
+      // A request that never settles must not leave the initial claim in
+      // place forever: 10s, then the fallback path runs instead.
+      opts = opts || {};
+      if (typeof AbortController === 'undefined') return fetch(url, opts);
+      var ctrl = new AbortController();
+      var timer = setTimeout(function () { ctrl.abort(); }, 10000);
+      var o = {};
+      for (var k in opts) o[k] = opts[k];
+      o.signal = ctrl.signal;
+      return fetch(url, o).then(function (r) {
+        clearTimeout(timer);
+        return r;
+      }, function (e) {
+        clearTimeout(timer);
+        throw e;
+      });
+    }
     function get(path) {
-      return fetch(API + path, { headers: { 'Accept': 'application/vnd.github+json' } })
+      return timedFetch(API + path, { headers: { 'Accept': 'application/vnd.github+json' } })
         .then(function (r) { if (!r.ok) throw new Error('api ' + r.status); return r.json(); });
     }
     function soft(promise) {
@@ -1126,58 +1162,64 @@ hermes dk setup --repo "owner/repository"</code></pre>
       return Promise.all([
         soft(get('/repos/' + OWNER + '/' + REPO)).then(function (r) {
           if (!r) return;
-          set('stars', num(r.stargazers_count));
-          set('forks', num(r.forks_count));
-          set('open_issues_count', r.open_issues_count);
-          set('pushed_at', r.pushed_at);
+          set('stars', num(r.stargazers_count), undefined, 'live');
+          set('forks', num(r.forks_count), undefined, 'live');
+          set('open_issues_count', r.open_issues_count, undefined, 'live');
+          set('pushed_at', r.pushed_at, undefined, 'live');
         }),
         soft(get('/repos/' + OWNER + '/' + REPO + '/releases/latest')).then(function (r) {
-          if (r) set('version', r.tag_name);
+          if (r) set('version', r.tag_name, undefined, 'live');
         }),
         soft(get('/search/issues?q=' + q('repo:' + OWNER + '/' + REPO + ' type:pr is:merged') + '&per_page=1')).then(function (r) {
-          if (r) set('prs_merged', num(r.total_count), r.total_count);
+          if (r) set('prs_merged', num(r.total_count), r.total_count, 'live');
         }),
         soft(get('/search/issues?q=' + q('repo:' + OWNER + '/' + REPO + ' type:pr is:merged author:drey-coe1') + '&per_page=1')).then(function (r) {
-          if (r) set('loop_prs_merged', num(r.total_count), r.total_count);
+          if (r) set('loop_prs_merged', num(r.total_count), r.total_count, 'live');
         }),
         soft(get('/search/issues?q=' + q('repo:' + OWNER + '/' + REPO + ' type:issue is:closed') + '&per_page=1')).then(function (r) {
-          if (r) set('issues_closed', num(r.total_count));
+          if (r) set('issues_closed', num(r.total_count), undefined, 'live');
         }),
         soft(get('/search/issues?q=' + q('repo:' + OWNER + '/' + REPO + ' type:pr is:open') + '&per_page=1')).then(function (r) {
-          if (r) set('prs_open', num(r.total_count), r.total_count);
+          if (r) set('prs_open', num(r.total_count), r.total_count, 'live');
         }),
         soft(get('/repos/' + OWNER + '/' + REPO + '/stats/commit_activity')).then(function (weeks) {
           if (!Array.isArray(weeks) || !weeks.length) return;
           var total = weeks.reduce(function (a, w) { return a + (w.total || 0); }, 0);
-          set('commits_year', num(total), total);
+          set('commits_year', num(total), total, 'live');
         })
       ]).then(function () {
         derive();
-        if (Object.keys(fresh).length) {
-          liveOk = true;
-          set('generated', new Date().toISOString().slice(0, 10));
-        }
       });
     }
     function updateFreshness() {
-      // A stat the page could not refresh must never read as current:
-      // the strip's note says which path supplied the numbers, and a
-      // total failure dims the grids instead of passing them off as live.
+      // The freshness claim follows every displayed count, not whether
+      // any endpoint at all answered: one live endpoint must not bless
+      // snapshot counts as current, and the "Page updated" stamp must
+      // not claim today for a snapshot either.
+      var today = new Date().toISOString().slice(0, 10);
+      var sources = DISPLAY_KEYS.map(function (k) { return src[k] || 'hardcoded'; });
+      var allLive = sources.every(function (s) { return s === 'live'; });
+      var allSnapshot = sources.every(function (s) { return s === 'snapshot'; });
+      var allHardcoded = sources.every(function (s) { return s === 'hardcoded'; });
+      if (allLive) set('generated', today);
+      else if (snapOk && snapDate) set('generated', snapDate);
       var notes = document.querySelectorAll('.stats-freshness');
       if (!notes.length) return;
       var text;
-      if (liveOk) text = 'Live from GitHub · refreshed ' + new Date().toISOString().slice(0, 10);
-      else if (snapOk) text = 'Snapshot ' + snapDate + ' · live refresh unavailable';
-      else text = 'Statistics unavailable — showing last checked-in values';
+      if (allLive) text = 'Live from GitHub · refreshed ' + today;
+      else if (allSnapshot) text = 'Snapshot ' + snapDate + ' · live refresh unavailable';
+      else if (allHardcoded) text = 'Statistics unavailable — showing last checked-in values';
+      else text = 'Mixed sources: some counts are live from GitHub, others are from ' +
+        (snapDate ? 'the ' + snapDate + ' snapshot' : 'last checked-in values');
       notes.forEach(function (el) { el.textContent = text; });
-      if (!liveOk && !snapOk) {
+      if (allHardcoded) {
         document.querySelectorAll('.stats, .strip-stats').forEach(function (el) {
           el.classList.add('stats-stale');
         });
       }
     }
     function snapshot() {
-      return fetch('data.json', { cache: 'no-store' }).then(function (r) {
+      return timedFetch('data.json', { cache: 'no-store' }).then(function (r) {
         if (!r.ok) throw new Error('no data');
         return r.json();
       }).then(function (d) {
@@ -1186,12 +1228,11 @@ hermes dk setup --repo "owner/repository"</code></pre>
         Object.keys(d).forEach(function (k) {
           if (fresh[k]) return;
           if (COUNT_KEYS.indexOf(k) !== -1 && typeof d[k] === 'number')
-            set(k, num(d[k]), d[k]);
+            set(k, num(d[k]), d[k], 'snapshot');
           else
-            set(k, d[k]);
+            set(k, d[k], undefined, 'snapshot');
         });
         derive();
-        if (!fresh.generated && d.generated) set('generated', d.generated);
         snapOk = true;
         if (d.generated) snapDate = d.generated;
       });
