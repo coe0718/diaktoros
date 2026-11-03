@@ -8,7 +8,11 @@ while later (``request``) and starts a detached ``watchdog.py --conflicts``, whi
 
 A burst of merges is one scan: each merge only pushes the due time later, one scanner holds the
 lock, and a merge during a scan is picked up by another pass after its own delay. A request the
-scanner misses is still found by the next sweep.
+scanner misses is still found by the next sweep. A scan that raises is logged and not retried
+by this scanner; the next request or sweep scans again. The failure goes to the loop's
+watchdog.log (``st.note``), because the detached scanner's stderr is discarded.
+(``gh.GateBudgetExceeded`` is not an ``Exception``: it still ends the scanner, which the
+watchdog catches.)
 """
 from __future__ import annotations
 
@@ -19,6 +23,7 @@ import pathlib
 import time
 
 from . import state as state_mod
+from .util import log
 
 # Long enough for a run of merges to settle and for GitHub to start computing mergeability.
 DELAY_S = 45.0
@@ -52,7 +57,7 @@ def request(st, now: float | None = None) -> float:
 
 def run(st, scan, *, clock=time.time, sleep=time.sleep, lifetime: float = MAX_LIFETIME_S) -> int:
     """Wait for the requested scan and run ``scan()``, again while new requests arrive. Returns
-    how many scans ran; 0 when another scanner holds the lock (it will see the request)."""
+    how many scans completed; 0 when another scanner holds the lock (it will see the request)."""
     lock_path = path(st).with_suffix(".lock")
     lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     started, handled, ran = clock(), 0.0, 0
@@ -71,7 +76,18 @@ def run(st, scan, *, clock=time.time, sleep=time.sleep, lifetime: float = MAX_LI
                     sleep(min(at - clock(), 30.0))
                     continue
                 handled = at
-                scan()
+                try:
+                    scan()
+                except Exception as exc:      # one failed scan must not end the scanner
+                    # Not retried here (that would spin on a persistent error): the next
+                    # merge's request, or the sweep, scans again.
+                    # The detached scanner has stderr on /dev/null (gate.schedule_conflict_scan),
+                    # so the durable record is the loop's watchdog.log; stderr is for a hand run.
+                    message = (f"conflict scan failed: {type(exc).__name__}: {exc}; the next "
+                               "request or the sweep checks")
+                    st.note(message)
+                    log(message)
+                    continue
                 ran += 1
         finally:
             os.close(fd)                      # closing releases the lock
