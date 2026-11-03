@@ -62,16 +62,14 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(data["commits_year"], 1368)
         self.assertEqual(data["generated"], "2020-01-01")
 
-    def test_empty_activity_without_earlier_date_stamps_today(self):
-        # The exception to the rule above: a snapshot with no earlier
-        # date still needs one, even when the activity read came back
-        # empty.
-        from datetime import datetime, timedelta, timezone
+    def test_empty_activity_without_earlier_date_stays_undated(self):
+        # Vex round 3: the exception that stamped a retained count with
+        # today when no earlier date existed claimed an age nobody
+        # knows. Unknown provenance stays unknown — the page reads a
+        # missing date as "last checked-in values", never as today.
         data = self.run_main({"commits_year": 1368}, [])
         self.assertEqual(data["commits_year"], 1368)
-        today = datetime.now(timezone.utc).date()
-        self.assertIn(data["generated"],
-                      {today.isoformat(), (today - timedelta(days=1)).isoformat()})
+        self.assertNotIn("generated", data)
 
     def test_populated_activity_updates(self):
         data = self.run_main({"commits_year": 1368},

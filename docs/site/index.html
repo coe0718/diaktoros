@@ -849,7 +849,7 @@
         </ol>
         <p class="flow-branch"><strong>Reviewer requests changes → back to Fixer.</strong> Each round costs a verdict, and the verdict budget caps the rounds — the loop cannot argue forever.</p>
         <p class="flow-branch"><strong>Budget exhausted → Adjudicator.</strong> It reads the findings and the fixer&rsquo;s answers together and rules accept, reject, or respec. Its ruling reaches the operator; it still cannot merge.</p>
-        <p class="flow-note"><strong>CI routing depends on the PR and the settings.</strong> With <code>fix_ci</code> on, red CI on a fixer-authored PR goes to the fixer while CI-fix capacity remains; once it is spent, the head is held — not reviewed, not re-sent — until the checks pass or a new head is pushed. A review-only red head is likewise held with nothing spent. With <code>fix_ci</code> off, red CI on a fixer PR waits for a review instead. And where the loop posts its <code>diaktoros/review</code> check and the branch requires it (<code>hermes dk protect</code>), that check must be green before a person merges — protection itself is opt-in, not automatic.</p>
+        <p class="flow-note"><strong>CI routing depends on the PR and the settings.</strong> With <code>fix_ci</code> on <em>and</em> <code>unattended_fixer_push</code> on, red CI on a fixer-authored PR goes to the fixer while CI-fix capacity remains; once the budget is spent, or a CI-fix turn ends without a new head, the head is held — not reviewed, not re-sent — until the checks pass or a new head is pushed. A review-only red head is likewise held with nothing spent. With <code>fix_ci</code> off, or on without <code>unattended_fixer_push</code>, red CI on a fixer PR waits for a review instead. And where the loop posts its <code>diaktoros/review</code> check and the branch requires it (<code>hermes dk protect</code>), that check must be green before a person merges — protection itself is opt-in, not automatic.</p>
       </div>
     </section>
 
@@ -988,7 +988,7 @@
         </article>
         <article class="proof-point">
           <h3>A merge button that waits.</h3>
-          <p>GitHub never counts an App&rsquo;s approval, so where the loop posts the check &mdash; <code>merge_check</code> on, or auto with an App reviewer &mdash; it posts its own check, <code>diaktoros/review</code>, at every open PR&rsquo;s head: success once the head is approved and nothing holds it, failure when it needs a change or a person. <code>hermes dk protect</code> makes the merge button wait for it. The loop still never merges &mdash; a person does, only once that check is green where the branch requires it.</p>
+          <p>GitHub never counts an App&rsquo;s approval, so where the loop posts the check &mdash; <code>merge_check</code> on, or auto with an App reviewer &mdash; it posts its own check, <code>diaktoros/review</code>, at every open loop PR&rsquo;s head: success once the head is approved and nothing holds it, failure when it needs a change or a person. <code>hermes dk protect</code> makes the merge button wait for it. The loop still never merges &mdash; a person does, only once that check is green where the branch requires it.</p>
         </article>
       </div>
     </section>

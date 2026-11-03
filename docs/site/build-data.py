@@ -102,9 +102,10 @@ def main():
 
         # The stamp dates the whole snapshot: only advance it when the
         # commit count was actually refreshed, or a retained count would
-        # wear a newer date than its own (Vex, PR #1750 round 2) — except
-        # a snapshot with no earlier date still needs one.
-        if activity_ok or "generated" not in data:
+        # wear a newer date than its own (Vex, PR #1750 rounds 2-3). A
+        # retained count with no earlier date stays undated: stamping
+        # it today would claim an age nobody knows.
+        if activity_ok:
             data["generated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         data.pop("error", None)
     except Exception as exc:  # keep the previous snapshot on failure
