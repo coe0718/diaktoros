@@ -605,15 +605,15 @@ def file_shadow_issue(loop: dict, *, repo: str, number: int, head: str, title: s
     # latest call's, and a stale one from an earlier call would turn an unknown outcome (a 5xx,
     # a timeout) into a retry, and a retry into a second copy of the issue.
     gh._LAST.unsent = False
+    gh._LAST.status = None
     result, why = _write(loop, f"/repos/{repo}/issues", method="POST", body=payload, login=login)
     if (not isinstance(result, dict) or type(result.get("number")) is not int
             or result["number"] <= 0 or "pull_request" in result):
         if result is None and gh.last_unsent():
             # The reader's credential is missing or unreadable: refused before any request.
             raise BrokerNotSent(_denied("no credential to send the issue write with", why).args[0])
-        status = gh.status_of(why)
-        if not isinstance(result, dict) and status is not None and 400 <= status < 500 \
-                and status != 408:
+        status = gh.last_status()       # the response's own status; None when no answer arrived
+        if result is None and status is not None and 400 <= status < 500 and status != 408:
             # GitHub rejected the request (no Issues write, a bad label): no issue was created.
             raise BrokerNotSent(_denied("GitHub refused the issue write", why).args[0])
         raise _denied("GitHub issue write did not return a successful response", why)

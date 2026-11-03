@@ -458,14 +458,22 @@ class FilePending(unittest.TestCase):
         self.assertEqual(len(filed), 1)
         self.assertEqual(self.state(run), "posted")
 
+    @staticmethod
+    def answered(status, text=""):
+        """A ``broker._write`` stand-in for GitHub answering with ``status``: gh records the
+        response's own status (``gh.last_status``) as the real request path does."""
+        def write(*args, **kwargs):
+            gh._LAST.status = status
+            return None, f"HTTP {status}: {text}" if text else f"HTTP {status}"
+        return write
+
     def test_githubs_4xx_refusal_stays_recorded_and_a_5xx_is_uncertain(self):
-        for status, state in (("HTTP 403: Resource not accessible by integration", "recorded"),
-                              ("HTTP 502", "uncertain")):
+        for status, state in ((403, "recorded"), (502, "uncertain")):
             run = self.recorded(f"A finding {state}")
             with mock.patch.object(gh, "reviews", return_value=APPROVED), \
                     mock.patch.object(gh, "pr",
                                       return_value={"number": 7, "head": {"ref": "fix-7"}}), \
-                    mock.patch.object(broker, "_write", return_value=(None, status)):
+                    mock.patch.object(broker, "_write", side_effect=self.answered(status)):
                 self.assertEqual(shadow_issues.file_pending(self.loop, db=self.db), [])
             self.assertEqual(self.state(run), state)
 
@@ -474,7 +482,7 @@ class FilePending(unittest.TestCase):
         with mock.patch.object(gh, "reviews", return_value=APPROVED), \
                 mock.patch.object(gh, "pr", return_value={"number": 7, "head": {"ref": "fix-7"}}), \
                 mock.patch.object(broker, "_write",
-                                  return_value=(None, "HTTP 403: Resource not accessible")):
+                                  side_effect=self.answered(403, "Resource not accessible")):
             self.assertEqual(shadow_issues.file_pending(self.loop, db=self.db), [])
         self.assertEqual(self.state(run), "recorded")
         filed, _ = self.file()
@@ -524,6 +532,40 @@ class FilePending(unittest.TestCase):
         self.assertEqual(self.state(run), "uncertain")
         self.assertEqual(self.file()[1], [])                       # never replayed
 
+    def post_through_gh(self, title, urlopen_effect):
+        """One sweep through the real gh request path, ``urlopen`` playing the network."""
+        import tempfile
+        run = self.recorded(title)
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        token = Path(home.name) / "reader.pat"
+        token.write_text("secret\n")
+        self.loop["tokens"] = {"reader": str(token)}
+        with mock.patch.object(gh, "reviews", return_value=APPROVED), \
+                mock.patch.object(gh, "pr", return_value={"number": 7, "head": {"ref": "fix-7"}}), \
+                mock.patch("diaktoros.config.host_guards.guard_network"), \
+                mock.patch("urllib.request.urlopen", side_effect=urlopen_effect):
+            self.assertEqual(shadow_issues.file_pending(self.loop, db=self.db), [])
+        return run
+
+    def test_a_transport_failure_that_mentions_a_status_is_unknown_and_never_replayed(self):
+        # F4: the exception text reads like a 403, but no HTTP answer arrived: the POST may have
+        # been applied, so it is uncertain and a later sweep never sends it again.
+        run = self.post_through_gh(
+            "A finding", TimeoutError("timed out after HTTP 403 proxy message"))
+        self.assertEqual(self.state(run), "uncertain")
+        self.assertEqual(self.file()[1], [])                       # never replayed
+
+    def test_a_real_403_answer_through_gh_is_not_sent_and_retried(self):
+        import io
+        import urllib.error
+        err = urllib.error.HTTPError("https://api.github.com/x", 403, "Forbidden", {},
+                                     io.BytesIO(b'{"message": "Resource not accessible"}'))
+        run = self.post_through_gh("A finding", err)
+        self.assertEqual(self.state(run), "recorded")
+        self.assertEqual(len(self.file()[0]), 1)
+        self.assertEqual(self.state(run), "posted")
+
     def test_the_broker_refuses_a_repository_mismatch_and_no_reader_as_not_sent(self):
         args = dict(number=7, head=HEAD, title="t", body="b", labels=[], model="m", depth=1)
         with self.assertRaisesRegex(broker.BrokerNotSent, "repository mismatch"):
@@ -533,7 +575,7 @@ class FilePending(unittest.TestCase):
 
     def test_a_408_is_uncertain_and_never_replayed(self):
         run = self.recorded("A finding")
-        self.assertEqual(self.sweep_with(lambda *a, **k: (None, "HTTP 408 timeout")), [])
+        self.assertEqual(self.sweep_with(self.answered(408, "timeout")), [])
         self.assertEqual(self.state(run), "uncertain")
         self.assertEqual(self.file()[1], [])
 
@@ -546,7 +588,7 @@ class FilePending(unittest.TestCase):
 
         def write(loop, path, method, body, login):
             if body["title"] == "Docs miss the flag":
-                return None, "HTTP 422: Validation Failed"
+                return self.answered(422, "Validation Failed")()
             return {"number": 201, "labels": [{"name": x} for x in body["labels"]]}, ""
         self.assertEqual(self.sweep_with(write), [201])
         self.assertEqual((self.state(first), self.state(second)), ("recorded", "posted"))

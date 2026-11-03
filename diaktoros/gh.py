@@ -237,7 +237,10 @@ def request(loop: dict, path: str, method: str = "GET", body=None,
     budget, and a call that fails because the budget ran out raises ``GateBudgetExceeded``.
     """
     timeout = _budgeted(method, path)
-    return _outcome(method, path, _request(loop, path, method, body, login, timeout))
+    _LAST.status = None
+    response = _request(loop, path, method, body, login, timeout)
+    _LAST.status = response.status      # the answer's own status, never one read from error text
+    return _outcome(method, path, response)
 
 
 def _request(loop: dict, path: str, method: str, body, login: str | None,
@@ -495,6 +498,14 @@ def last_error() -> str:
     """The error of this thread's latest ``api`` call (empty when it succeeded): lets a writer
     that must refuse on None say why without a second request."""
     return getattr(_LAST, "error", "")
+
+
+def last_status() -> int | None:
+    """The HTTP status of the answer to this thread's latest call, or None when no answer arrived
+    (no credential, a timeout, a dropped connection). It is the response's own status: an error
+    message that happens to contain ``HTTP 403`` does not make one."""
+    status = getattr(_LAST, "status", None)
+    return status if type(status) is int else None
 
 
 def last_unsent() -> bool:
