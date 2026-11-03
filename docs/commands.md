@@ -453,7 +453,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--shadow-concurrency` | `SHADOW_CONCURRENCY` |  | shadow reviews that may run at once, >= 1 (default: the plugin setting, else 1) |
 | `--triage-concurrency` | `TRIAGE_CONCURRENCY` |  | issue triages that may run at once, >= 1 (default: the plugin setting, else 1) |
 | `--fixer-daily-tokens` | `FIXER_DAILY_TOKENS` |  | most tokens the fixer (and issue fixes) may spend per day (0 = none) (default: the plugin setting) |
-| `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day: refused here, a new loop has no fix label; set it with `triage --fix-daily-turns N` (0 = ignore) |
+| `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day: refused here, a new loop has no triage block; set it with `triage --enable ... --fix-daily-turns N` (0 = ignore) |
 | `--source` | `SOURCE` |  | runtime file's source path (default: detected) |
 | `--venv` | `VENV` |  | runtime file's venv path (default: detected) |
 | `--runtime` | `RUNTIME` |  | runtime file's runtime path (default: detected) |
@@ -585,7 +585,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--reviewer-daily-tokens` | `REVIEWER_DAILY_TOKENS` |  | most tokens the reviewer may spend per day; once spent the next turn waits for midnight (0 = none) (default: the plugin setting) |
 | `--shadow-daily-tokens` | `SHADOW_DAILY_TOKENS` |  | most tokens shadow reviews may spend per day; once spent the next waits for midnight (0 = none) (default: the plugin setting) |
 | `--fixer-daily-tokens` | `FIXER_DAILY_TOKENS` |  | most tokens the fixer (and issue fixes) may spend per day (0 = none) (default: the plugin setting) |
-| `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day: refused here, a new loop has no fix label; set it with `triage --fix-daily-turns N` (0 = ignore) |
+| `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day: refused here, a new loop has no triage block; set it with `triage --enable ... --fix-daily-turns N` (0 = ignore) |
 | `--hooks` |  |  | create the GitHub hooks too, paused until `arm` |
 | `--arm` |  |  | with --hooks: create them armed (live at once) instead of paused |
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose token can create hooks |
