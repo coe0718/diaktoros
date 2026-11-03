@@ -653,6 +653,24 @@ class ProductionTurn(unittest.TestCase):
                 self.assertEqual([w for _k, w in self.kinds() if w.startswith("shadow review")],
                                  [])
 
+    def test_a_reviewer_superseded_at_its_head_ends_its_shadow_and_the_head_clears(self):
+        # Review of #1656, F15: a reviewer turn cancelled because a review already answers its
+        # head is never re-armed (`retry` refuses it; a redelivery re-arms it only to be
+        # cancelled again). A shadow waiting for it would hold the approved head for ever.
+        self.loop = config.normalize({**RAW, "state_dir": str(self.home / "state"),
+                                      "required_checks": ["tests"],
+                                      "shadow": {"profile": "grok", "every": 1, "escalate": True}})
+        sup = self.queue_shadow()
+        self.reviewer_is(sup, None, "cancelled")
+        with closing(sqlite3.connect(sup.db)) as con, con:
+            con.execute("UPDATE runs SET error='superseded: reviewed at this head by reviewer' "
+                        "WHERE seat='reviewer'")
+        sup, row = self.claim_shadow(sup, [{"verdict": "APPROVE", "body": "ok",
+                                            "authorized": True}])
+        self.assertEqual((self.seen, row["state"]), ({}, "cancelled"), row["error"])
+        self.assertIn("without a verdict", row["error"])
+        self.assertEqual([w for _k, w in self.kinds() if w.startswith("shadow review")], [])
+
     def test_a_late_approval_starts_the_ci_wait_so_a_transient_ci_read_holds_the_head(self):
         # Review of #1656, F11: the shadow waited for its reviewer far past the CI wait. Timed
         # from the queueing, the first unreadable CI answer would cancel it and the approved head

@@ -4,8 +4,8 @@ The shadow's row is queued with its reviewer turn, on a findings snapshot taken 
 turn's row exists, so the head holds for it from the start. As it is claimed it reads, from the
 ledger alone, what that very reviewer turn decided: a confirmed APPROVE runs it, a change request
 or a turn that succeeded without a verdict skips it, and anything still in flight, or a turn that
-failed and may be re-armed, waits. The ledger is
-real; GitHub and the worker launch are mocked.
+ended and may be re-armed, waits; a turn that never can be is skipped. The ledger is real; GitHub
+and the worker launch are mocked.
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from diaktoros import ci, gate, merge_check, ready, shadow_queue, state as state_mod  # noqa: E402
+from diaktoros import run_supervisor  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 REPO, HEAD = "acme/widgets", "a" * 40
@@ -37,11 +38,12 @@ class Ledger(unittest.TestCase):
         self.sup = Supervisor(self.db, fixture_mode=True)
         self.sup._spawn = lambda: None
 
-    def run_row(self, seat, *, turn_key="", state="pending", pr=7, head=HEAD):
+    def run_row(self, seat, *, turn_key="", state="pending", pr=7, head=HEAD, error=None):
         delivery = f"{REPO}:{pr}:{head}:{seat}" + (f":{turn_key}" if turn_key else "")
         self.sup.enqueue(delivery, REPO, pr, head, seat, turn_key=turn_key)
         with closing(sqlite3.connect(self.db)) as con, con:
-            con.execute("UPDATE runs SET state=? WHERE delivery=?", (state, delivery))
+            con.execute("UPDATE runs SET state=?, error=? WHERE delivery=?",
+                        (state, error, delivery))
             return con.execute("SELECT id FROM runs WHERE delivery=?", (delivery,)).fetchone()[0]
 
     def receipt(self, run_id, verdict, state="confirmed"):
@@ -71,12 +73,26 @@ class AfterReviewer(Ledger):
 
     def test_a_turn_that_failed_or_was_cancelled_without_a_verdict_waits_to_be_re_armed(self):
         # Review of #1656, F14: a redelivery or `hermes dk retry` re-arms that same turn.
-        for key, state in (("f", "failed"), ("c", "cancelled")):
+        for key, state, error in (("f", "failed", "worker exited 1"),
+                                  ("c", "cancelled", run_supervisor.OPERATOR_CANCEL)):
             with self.subTest(state):
-                self.run_row("reviewer", turn_key=key, state=state)
+                self.run_row("reviewer", turn_key=key, state=state, error=error)
                 what, why = self.decide(key)
                 self.assertEqual(what, "wait")
                 self.assertIn(f"ended {state} without a verdict; held", why)
+
+    def test_a_turn_that_can_never_be_re_armed_skips_it(self):
+        # Review of #1656, F15: `retry` refuses a turn superseded by a review already at its
+        # head, and a redelivery re-arms it only to be cancelled again; a turn that may have
+        # written is never re-armed. Waiting for either would hold the head for ever.
+        for key, state, error in (
+                ("s", "cancelled", "superseded: reviewed at this head by critic"),
+                ("q", "failed", "operator reconciliation: external writes inspected")):
+            with self.subTest(error):
+                self.run_row("reviewer", turn_key=key, state=state, error=error)
+                what, why = self.decide(key)
+                self.assertEqual(what, "skip")
+                self.assertIn(f"ended {state} without a verdict", why)
 
     def test_a_turn_in_flight_its_post_or_an_uncertain_record_waits(self):
         for key, state, receipt in (("a", "running", None), ("b", "running", "claimed"),
