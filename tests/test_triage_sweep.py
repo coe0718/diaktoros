@@ -125,16 +125,20 @@ class Sweep(fg.Base):
         self.sweep(many)
         self.assertEqual(self.enqueued, [])
 
-    def saturated_sweep(self, exactly=False, **kwargs):
+    def saturated_sweep(self, exactly=False, probe=None, **kwargs):
         """The real ``gh.open_issues_read`` over five full stubbed pages; returns (lines, paths).
 
-        With ``exactly`` the listing ends there: the page past the bound is empty."""
+        With ``exactly`` the listing ends there: the page past the bound is empty. ``probe`` is
+        a ``(items, error)`` reply for that page instead (an unreadable probe)."""
         seen = []
 
         def fetch(loop, path, *args, **kw):
             seen.append(path)
-            if exactly and path.endswith(f"&page={gh.MAX_ISSUE_PAGES + 1}"):
-                return [], None
+            if path.endswith(f"&page={gh.MAX_ISSUE_PAGES + 1}"):
+                if probe is not None:
+                    return probe
+                if exactly:
+                    return [], None
             if "&page=" not in path:          # newest page: 99 PRs and the one missed issue
                 return [issue(900 + n, pr=True) for n in range(99)] + [issue(7)], None
             return [issue(5000 + n, pr=True) for n in range(gh.REVIEW_PAGE_SIZE)], None
@@ -148,6 +152,14 @@ class Sweep(fg.Base):
         self.assertEqual(len(seen), gh.MAX_ISSUE_PAGES + 1)
         self.assertEqual([e[1] for e in self.enqueued], [7])
         self.assertEqual([line for line in lines if "not checked" in line], [])
+
+    def test_an_unreadable_probe_still_alerts_and_queues_the_newest(self):
+        # The page past the bound fails: not proven whole, so the sweep keeps the pages it read.
+        lines, seen = self.saturated_sweep(probe=(None, "HTTP 500"))
+        self.assertEqual(len(seen), gh.MAX_ISSUE_PAGES + 1)
+        self.assertEqual([e[1] for e in self.enqueued], [7])
+        self.assertTrue(any("older issues" in line and "not checked" in line
+                            for line in lines), lines)
 
     def test_a_saturated_listing_alerts_even_when_the_run_ledger_is_unavailable(self):
         # The ledger-unavailable branch returns the incomplete-listing alert (not []).

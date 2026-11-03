@@ -76,6 +76,29 @@ class ReviewPaginationTest(unittest.TestCase):
         self.assertEqual((result, reason), (page + page, ""))
         self.assertEqual(fetch.call_count, 3)
 
+    def test_unreadable_probe_keeps_the_exceeds_reason_in_both_keep_partial_modes(self):
+        # The probe past the bound errors or is malformed: the listing is not proven whole, so
+        # it is "exceeds" (pages kept with keep_partial, None without), never the probe's error.
+        page = [verdict(i, "COMMENTED") for i in range(100)]
+        reason = "review listing exceeds 1 full pages"
+        for payload, error in (([], "HTTP 500"), (None, "HTTP 500"), (None, ""),
+                               ({"message": "rate limited"}, ""), ([None], ""),
+                               (page, "")):
+            for keep, expected in ((True, page), (False, None)):
+                with self.subTest(payload=payload, error=error, keep_partial=keep):
+                    with mock.patch.object(gh, "fetch",
+                                           side_effect=[(page, ""), (payload, error)]) as fetch:
+                        got = gh._read_pages(LOOP, PATH, "review", 1, keep_partial=keep)
+                    self.assertEqual(got, (expected, reason))
+                    self.assertEqual(fetch.call_count, 2)
+
+    def test_open_issues_read_keeps_the_pages_when_the_probe_fails(self):
+        page = [verdict(i, "COMMENTED") for i in range(100)]
+        with (mock.patch.object(gh, "MAX_ISSUE_PAGES", 1),
+              mock.patch.object(gh, "fetch", side_effect=[(page, ""), (None, "HTTP 500")])):
+            got = gh.open_issues_read(LOOP, "2026-01-01T00:00:00Z")
+        self.assertEqual(got, (page, "open issue listing exceeds 1 full pages"))
+
 
 if __name__ == "__main__":
     unittest.main()
