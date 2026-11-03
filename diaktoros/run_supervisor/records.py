@@ -308,7 +308,9 @@ class LedgerRecords:
                            (repo, number, key)).fetchone():
                 con.execute('ROLLBACK')
                 raise ValueError('an issue with this title was already filed from this PR')
-            seq = con.execute('SELECT COUNT(*) FROM filed_issues WHERE run_id=?',
+            # MAX, not COUNT: release_shadow_filing leaves holes, and a count would reuse a
+            # sequence another sweep of this run already holds.
+            seq = con.execute('SELECT COALESCE(MAX(seq),0) FROM filed_issues WHERE run_id=?',
                               (run_id,)).fetchone()[0] + 1
             now = time.time()
             con.execute('INSERT INTO filed_issues(run_id,seq,repo,pr,head,title,title_key,depth,'

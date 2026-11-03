@@ -484,7 +484,7 @@ each one once the real review exists at that head:
   labels and the missing permission, the broker audit records the gap, and its `shadow_issues`
   row is `unlabelled`, not `posted`.
 - **A refusal with nothing written:** if the broker refuses it before sending anything (no reader
-  identity, a repository mismatch), or GitHub rejects the POST with a 4xx (a reader App without
+  identity, a repository mismatch, a reader token file that is missing or unreadable), or GitHub rejects the POST with a 4xx (a reader App without
   Issues write gets 403), no issue exists, so it stays `recorded` with the reason in its `error`,
   the watchdog log names it, and each later sweep tries again, so fixing the permission is enough.
   A POST that timed out, got a 5xx or an answer that isn't an issue is `uncertain` and is never

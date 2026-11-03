@@ -27,7 +27,8 @@ class BrokerDenied(Exception):
 
 
 class BrokerNotSent(BrokerDenied):
-    """Refused with nothing written: locally before any request, or by GitHub with a definite 4xx
+    """Refused with nothing written: locally before any request (a missing credential too), or by
+    GitHub with a definite 4xx
     rejection. The caller may try again once the cause is fixed, unlike a write whose outcome is
     unknown (a timeout, a 5xx, an answer that is not an issue)."""
 
@@ -603,6 +604,9 @@ def file_shadow_issue(loop: dict, *, repo: str, number: int, head: str, title: s
     result, why = _write(loop, f"/repos/{repo}/issues", method="POST", body=payload, login=login)
     if (not isinstance(result, dict) or type(result.get("number")) is not int
             or result["number"] <= 0 or "pull_request" in result):
+        if result is None and gh.last_unsent():
+            # The reader's credential is missing or unreadable: refused before any request.
+            raise BrokerNotSent(_denied("no credential to send the issue write with", why).args[0])
         status = gh.status_of(why)
         if not isinstance(result, dict) and status is not None and 400 <= status < 500 \
                 and status != 408:

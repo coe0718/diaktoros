@@ -468,6 +468,88 @@ class FilePending(unittest.TestCase):
         self.assertEqual(len(filed), 1)
         self.assertEqual(self.state(run), "posted")
 
+    def sweep_with(self, write):
+        with mock.patch.object(gh, "reviews", return_value=APPROVED), \
+                mock.patch.object(gh, "pr", return_value={"number": 7, "head": {"ref": "fix-7"}}), \
+                mock.patch.object(broker, "_write", side_effect=write), \
+                mock.patch.object(broker, "_audit"):
+            return shadow_issues.file_pending(self.loop, db=self.db)
+
+    def test_a_missing_reader_credential_is_not_sent_and_is_filed_once_it_exists(self):
+        # F1: the credential lookup fails before any request is built, through the real gh path.
+        import tempfile
+        run = self.recorded("A finding")
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        token = Path(home.name) / "reader.pat"
+        self.loop["tokens"] = {"reader": str(token)}               # mapped, file not there yet
+        with mock.patch.object(gh, "reviews", return_value=APPROVED), \
+                mock.patch.object(gh, "pr", return_value={"number": 7, "head": {"ref": "fix-7"}}):
+            self.assertEqual(shadow_issues.file_pending(self.loop, db=self.db), [])
+        self.assertEqual(self.state(run), "recorded")
+        self.assertIn("not sent", self.error(run))
+        self.assertIn("no token file", self.error(run))
+        token.write_text("secret\n")
+        filed, _ = self.file()
+        self.assertEqual(len(filed), 1)
+        self.assertEqual(self.state(run), "posted")
+
+    def test_a_timeout_after_the_request_left_is_not_treated_as_unsent(self):
+        # A call that failed after the token was read must stay unknown, never retried.
+        import tempfile
+        run = self.recorded("A finding")
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        token = Path(home.name) / "reader.pat"
+        token.write_text("secret\n")
+        self.loop["tokens"] = {"reader": str(token)}
+        with mock.patch.object(gh, "reviews", return_value=APPROVED), \
+                mock.patch.object(gh, "pr", return_value={"number": 7, "head": {"ref": "fix-7"}}), \
+                mock.patch("diaktoros.config.host_guards.guard_network"), \
+                mock.patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+            self.assertEqual(shadow_issues.file_pending(self.loop, db=self.db), [])
+        self.assertEqual(self.state(run), "uncertain")
+        self.assertEqual(self.file()[1], [])                       # never replayed
+
+    def test_the_broker_refuses_a_repository_mismatch_and_no_reader_as_not_sent(self):
+        args = dict(number=7, head=HEAD, title="t", body="b", labels=[], model="m", depth=1)
+        with self.assertRaisesRegex(broker.BrokerNotSent, "repository mismatch"):
+            broker.file_shadow_issue(self.loop, repo="other/repo", **args)
+        with self.assertRaisesRegex(broker.BrokerNotSent, "no reader identity"):
+            broker.file_shadow_issue({**self.loop, "read_token": ""}, repo=REPO, **args)
+
+    def test_a_408_is_uncertain_and_never_replayed(self):
+        run = self.recorded("A finding")
+        self.assertEqual(self.sweep_with(lambda *a, **k: (None, "HTTP 408 timeout")), [])
+        self.assertEqual(self.state(run), "uncertain")
+        self.assertEqual(self.file()[1], [])
+
+    def test_a_refusal_takes_no_room_under_the_daily_cap(self):
+        # F3: cap of 1; the first finding is refused (nothing written), the second still files.
+        self.loop["shadow"] = {**self.loop["shadow"], "issues_daily": 1}
+        now = time.time()
+        first = self.recorded("Docs miss the flag", at=now - 20)
+        second = self.recorded("Retry loops forever", at=now - 10)
+
+        def write(loop, path, method, body, login):
+            if body["title"] == "Docs miss the flag":
+                return None, "HTTP 422: Validation Failed"
+            return {"number": 201, "labels": [{"name": x} for x in body["labels"]]}, ""
+        self.assertEqual(self.sweep_with(write), [201])
+        self.assertEqual((self.state(first), self.state(second)), ("recorded", "posted"))
+
+    def test_a_release_leaves_no_sequence_a_later_filing_collides_with(self):
+        # F2: seq 1 released while seq 2 of the same run stands; the next filing must not take 2.
+        run = self.recorded("A finding")
+        first = self.sup.record_shadow_filing(run, REPO, 7, HEAD, "Ghost one", 1)
+        second = self.sup.record_shadow_filing(run, REPO, 7, HEAD, "Ghost two", 1)
+        self.sup.filed_issue_status(run, second, "posted", issue_number=300)
+        self.sup.release_shadow_filing(run, first)
+        self.assertEqual(self.sup.record_shadow_filing(run, REPO, 7, HEAD, "Ghost three", 1), 3)
+        filed, _ = self.file()                                # through the sweep too
+        self.assertEqual(len(filed), 1)
+        self.assertEqual(self.state(run), "posted")
+
 
 import test_shadow_escalate_ruling as ruling  # noqa: E402
 
