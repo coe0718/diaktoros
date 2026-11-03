@@ -74,6 +74,8 @@ class WorkerLifecycle:
             util.leak_guard_env(env)
 
         env[WORKER_ENV] = "1"  # hostdirs: a worker never creates host state (#108)
+        from .. import gh_calls
+        gh_calls.prepare(host_home)       # so the worker can count its GitHub calls there
         run_supervisor._WORKERS[:] = [worker for worker in run_supervisor._WORKERS if worker.poll() is None]
         log = self._worker_log()
         try:

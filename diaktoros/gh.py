@@ -250,13 +250,14 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
         # The login travels to the stub (as GH_LOGIN, never a token) so a test can play a read
         # token GitHub refuses a hook write.
         return _stub(path, method, body, login or loop.get("read_token") or "", timeout)
+    from . import gh_cache, gh_calls
+    who = str(login or loop.get("read_token") or "")
     try:
         tok = token(loop, login)
     except GitHubError as exc:
         _LAST.unsent = True             # no credential: the request was never built or sent
+        gh_calls.record(who, method, path, "unsent")
         return Response(None, str(exc))
-    from . import gh_cache
-    who = str(login or loop.get("read_token") or "")
     # #1646: a GET asks whether its stored answer changed; a 304 is free on the rate limit.
     cached = gh_cache.lookup(who, path) if method == "GET" else None
     data = json.dumps(body).encode() if body is not None else None
@@ -267,11 +268,14 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
                  **({"If-None-Match": cached["etag"]} if cached else {})})
     from .config.host_guards import guard_network
     guard_network(req.full_url)         # under the test guard: loopback fakes only
+    answered = False
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode() or "null"
             headers = {k.lower(): v for k, v in resp.headers.items()}
-            parsed = json.loads(raw)
+            # Counted on the answer itself: a body that fails to read or parse was still spent.
+            answered = True
+            gh_calls.record(who, method, path, gh_calls.outcome(path, resp.status), headers)
+            parsed = json.loads(resp.read().decode() or "null")
             if method == "GET":
                 gh_cache.store(who, path, parsed, headers)
             return Response(parsed, "", resp.status, headers)
@@ -282,11 +286,15 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
             exc.close()
         # Safe after close(): HTTPError.headers is a property over .hdrs, which close() leaves.
         headers = {k.lower(): v for k, v in (exc.headers or {}).items()}
+        gh_calls.record(who, method, path,
+                        gh_calls.outcome(path, exc.code, exc.code == 304, headers), headers)
         if exc.code == 304 and cached:              # unchanged: the stored body is current, and
             gh_cache.hit(who, path)                 # only this answer's own headers are true now
             return Response(cached["data"], "", 200, headers)
         return Response(None, f"HTTP {exc.code}{f' {detail}' if detail else ''}", exc.code, headers)
     except Exception as exc:
+        if not answered:                                # no HTTP answer: it may have counted
+            gh_calls.record(who, method, path, "error")
         return Response(None, f"{type(exc).__name__}: {exc}")
 
 
@@ -310,9 +318,13 @@ class _TokenlessRedirect(urllib.request.HTTPRedirectHandler):
     included, so GitHub's redirect from a job log to its log storage would hand the read token
     to that storage host. Here the token stays on the host it was meant for, an https request is
     never followed down to http, and the target passes the same network guard as the first URL.
+    The answer's headers are kept on the request as ``answered``: GitHub answered, so the call is
+    spent whatever the storage host does next (``read_text`` counts it).
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not hasattr(req, "answered"):
+            req.answered = {k.lower(): v for k, v in headers.items()}
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
         if new is None:
             return None
@@ -342,15 +354,25 @@ def read_text(loop: dict, path: str, login: str | None = None, limit: int = 2621
         data = _stub(path, "GET", None, login or loop.get("read_token") or "").data
         data = data.get("text") if isinstance(data, dict) else data
         return data[-limit:] if isinstance(data, str) else None
+    from . import gh_calls
+    who, counted, req = str(login or loop.get("read_token") or ""), False, None
     try:
-        tok = token(loop, login or loop.get("read_token"))
+        try:
+            tok = token(loop, login or loop.get("read_token"))
+            timeout = _budgeted("GET", path)
+        except Exception:
+            counted = True       # no credential, or the gate's budget is spent: nothing was sent
+            gh_calls.record(who, "GET", path, "unsent")
+            raise
         req = urllib.request.Request(
             f"{API}{path}", method="GET",
             headers={"Accept": "application/vnd.github+json", "Authorization": f"token {tok}",
                      "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "diaktoros"})
         from .config.host_guards import guard_network
         guard_network(req.full_url)
-        with _TEXT_OPENER.open(req, timeout=_budgeted("GET", path)) as resp:
+        with _TEXT_OPENER.open(req, timeout=timeout) as resp:
+            counted = True
+            gh_calls.record(who, "GET", path, "spent", getattr(req, "answered", None))
             # Only the tail matters: keep reading, keep the last ``limit`` bytes.
             kept = b""
             while True:
@@ -360,8 +382,24 @@ def read_text(loop: dict, path: str, login: str | None = None, limit: int = 2621
                 kept = (kept + chunk)[-limit:]
             return kept.decode(errors="replace")
     except Exception as exc:
+        if not counted:      # each read is counted once: a refusal (a limited 403) or no answer
+            _count_failed_text(who, path, exc, getattr(req, "answered", None))
+        if isinstance(exc, urllib.error.HTTPError):
+            exc.close()      # it holds the response open; its headers were read above
         log(f"gh GET {path} (text) failed: {type(exc).__name__}: {one_line(exc, 120)}")
         return None
+
+
+def _count_failed_text(who: str, path: str, exc: Exception, answered: dict | None) -> None:
+    """Count a log read that failed. Once GitHub has answered with its redirect the API call is
+    spent, whatever the storage host did after: its refusal is not GitHub's rate limit."""
+    from . import gh_calls
+    if answered is not None:
+        gh_calls.record(who, "GET", path, "spent", answered)
+        return
+    headers = {k.lower(): v for k, v in (getattr(exc, "headers", None) or {}).items()}
+    status = exc.code if isinstance(exc, urllib.error.HTTPError) else None
+    gh_calls.record(who, "GET", path, gh_calls.outcome(path, status, False, headers), headers)
 
 
 def one_line(text, limit: int = 200) -> str:
