@@ -21,6 +21,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -149,11 +150,14 @@ class ProductionLaunch(Base):
     def launch(self, role: str, *, kill: subprocess.TimeoutExpired | None = None,
                activity: str = "", observed: dict | None = None, rc: int = 0,
                provider_error: str = "", skipped_paths: tuple = (), on_launch=None,
-               stage_error: Exception | None = None) -> dict:
+               stage_error: Exception | None = None, prefetch_error: Exception | None = None,
+               stop=None) -> dict:
         """Run ``run_turn`` for ``role`` with the launcher spied; return what it was handed.
 
         ``kill``: the launcher raises it instead, as ``contained.run`` does at the budget; the
-        proxy then reports ``activity`` as the agent's last step, into ``observed``."""
+        proxy then reports ``activity`` as the agent's last step, into ``observed``.
+        ``stage_error`` / ``prefetch_error``: staging or the dependency prefetch raises it;
+        ``stop``: the cancel event handed to ``run_turn``."""
         seen = {}
 
         def stage(_loop, **kw):
@@ -198,17 +202,21 @@ class ProductionLaunch(Base):
              mock.patch.object(trusted_turn.inference_proxy, "InferenceCapability", Inference), \
              mock.patch.object(contained.Path, "is_socket", return_value=True), \
              mock.patch.object(contained, "run", side_effect=run), \
+             (mock.patch.object(trusted_turn.deps, "prepare", side_effect=prefetch_error)
+              if prefetch_error is not None else contextlib.nullcontext()), \
              mock.patch.object(trusted_turn.runtime_detect, "node_root",
                                return_value=self.node), \
-             (self.assertRaises(trusted_turn.TurnBudgetExceeded if kill is not None
-                                else trusted_turn.TurnDenied) if kill is not None or rc == 0
+             (self.assertRaises(contained.Stopped) if stop is not None
+              else self.assertRaises(trusted_turn.TurnBudgetExceeded if kill is not None
+                                     else trusted_turn.TurnDenied) if kill is not None or rc == 0
               else contextlib.nullcontext()):  # the spy: no scoped write
             trusted_turn.run_turn(self.loop, scope, source=self.root, venv=self.root / "venv",
                                   runtime=self.runtime, rust=self.root / "rust",
                                   upstream="https://model.invalid", key="k", model="m",
                                   prompt="PROMPT", timeout=5, work_root=self.root / "work",
-                                  observed=observed, on_launch=on_launch)
-        if stage_error is None:     # a staging failure never reaches the launcher
+                                  observed=observed, on_launch=on_launch, stop=stop)
+        if stage_error is None and prefetch_error is None and stop is None:
+            # a failure before the sandbox starts never reaches the launcher
             self.assertIn("argv", seen, "run_turn never reached the launcher")
         return seen
 
@@ -222,6 +230,20 @@ class ProductionLaunch(Base):
         calls = []
         self.launch("fixer", on_launch=lambda: calls.append(1),
                     stage_error=trusted_turn.TurnDenied("base check failed"))
+        self.assertEqual(calls, [])
+
+    def test_a_turn_that_fails_its_prefetch_never_calls_on_launch(self):
+        """#1378: the prefetch runs after staging and before the sandbox; it spends no turn."""
+        calls = []
+        self.launch("fixer", on_launch=lambda: calls.append(1),
+                    prefetch_error=trusted_turn.TurnDenied("prefetch failed"))
+        self.assertEqual(calls, [])
+
+    def test_a_turn_stopped_before_its_sandbox_starts_never_calls_on_launch(self):
+        stop = threading.Event()
+        stop.set()
+        calls = []
+        self.launch("fixer", on_launch=lambda: calls.append(1), stop=stop)
         self.assertEqual(calls, [])
 
     def test_a_submodule_the_source_snapshot_left_out_is_logged(self):

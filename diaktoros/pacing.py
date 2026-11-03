@@ -258,8 +258,20 @@ def turns_today(loop_id: str, seat: str, now: float | None = None) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-def count_turn(loop_id: str, seat: str, now: float | None = None) -> int:
-    """Count one launched turn for today; returns today's count. Old days are dropped."""
+class CapReached(Exception):
+    """``count_turn`` found today's pool already at its ``cap``: nothing was counted."""
+
+    def __init__(self, seat: str, cap: int):
+        super().__init__(f"{seat} daily turn cap ({cap}) reached")
+        self.seat, self.cap = seat, cap
+
+
+def count_turn(loop_id: str, seat: str, now: float | None = None, cap: int | None = None) -> int:
+    """Count one launched turn for today; returns today's count. Old days are dropped.
+
+    With ``cap``, the check and the count are one step under the file lock: a pool already at
+    ``cap`` raises :class:`CapReached` and counts nothing. A turn is counted when its sandbox
+    starts (#1378), so two turns admitted together cannot both take the last slot."""
     now = time.time() if now is None else now
     with _locked() as file:
         data = _load(file)
@@ -268,6 +280,8 @@ def count_turn(loop_id: str, seat: str, now: float | None = None) -> int:
         turns = {day: turns[day] for day in keep if isinstance(turns[day], dict)}
         day = turns.setdefault(_today(now), {})
         key = f"{loop_id}|{seat}"
+        if cap is not None and isinstance(day.get(key), int) and day[key] >= cap:
+            raise CapReached(seat, cap)
         day[key] = (day.get(key) if isinstance(day.get(key), int) else 0) + 1
         data["turns"] = turns
         _save(file, data)

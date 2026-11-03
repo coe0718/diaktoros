@@ -213,9 +213,11 @@ class ProductionWorker(unittest.TestCase):
         self.account = pacing.account_key("openai-codex", self.inference.upstream, "fix")
         self.turns = 0
 
-    def run_production(self, run_turn, loop=None, seat="fixer", author="fixer", launches=True):
+    def run_production(self, run_turn, loop=None, seat="fixer", author="fixer", launches=True,
+                       before_launch=None):
         """``launches=False``: ``run_turn`` fails before it reaches the sandbox (it never calls
-        ``on_launch``), as a staging or prefetch failure does."""
+        ``on_launch``), as a staging or prefetch failure does. ``before_launch`` runs just
+        before the launch hook: what another worker does while this turn stages."""
         loop = loop or self.loop
         with mock.patch.object(Supervisor, "_spawn"), \
                 mock.patch.object(config, "by_repo", return_value=loop):
@@ -231,6 +233,8 @@ class ProductionWorker(unittest.TestCase):
 
         def counted(*args, **kwargs):
             self.turns += 1
+            if before_launch is not None:
+                before_launch()
             if launches:
                 kwargs["on_launch"]()           # the sandbox starts: the turn is counted
             return run_turn(*args, **kwargs)
@@ -427,6 +431,56 @@ class ProductionWorker(unittest.TestCase):
                             author="owner-human")
         self.assertEqual((pacing.turns_today("widgets", pacing.REVIEW_ONLY_SEAT),
                           pacing.turns_today("widgets", "reviewer")), (1, 0))
+
+    def capped_loop(self, cap=1):
+        raw = {**self.raw, "seats": {**self.raw["seats"],
+                                     "fixer": {**self.raw["seats"]["fixer"], "daily_turns": cap}}}
+        return config.normalize(raw)
+
+    def test_a_turn_admitted_alongside_another_does_not_take_the_last_slot_twice(self):
+        # #1378 review: both turns passed the cap check before staging ended; the other worker
+        # launched first and took the last slot. This one must not launch past the cap.
+        launched = []
+        row = self.run_production(
+            lambda *a, **k: launched.append(1) or 0, self.capped_loop(1),
+            before_launch=lambda: pacing.count_turn("widgets", "fixer"))
+        self.assertEqual(launched, [], "launched past the daily cap")
+        self.assertEqual(pacing.turns_today("widgets", "fixer"), 1)
+        self.assertEqual((row["state"], row["retries"]), ("waiting", 0))
+        self.assertAlmostEqual(row["retry_at"], pacing.next_midnight(), delta=2)
+        self.assertIn("fixer daily turn cap (1) reached", row["error"])
+
+    def test_the_last_slot_is_still_taken_by_a_turn_that_launches(self):
+        launched = []
+        self.run_production(lambda *a, **k: launched.append(1) or 0, self.capped_loop(1))
+        self.assertEqual((launched, pacing.turns_today("widgets", "fixer")), ([1], 1))
+
+    def test_a_review_only_turn_does_not_take_the_last_review_only_slot_twice(self):
+        launched = []
+        row = self.run_production(
+            lambda *a, **k: launched.append(1) or 0, self.review_only_loop(1), seat="reviewer",
+            author="owner-human",
+            before_launch=lambda: pacing.count_turn("widgets", pacing.REVIEW_ONLY_SEAT))
+        self.assertEqual((launched, pacing.turns_today("widgets", pacing.REVIEW_ONLY_SEAT)),
+                         ([], 1))
+        self.assertIn("review-only daily turn cap (1) reached", row["error"])
+
+    def test_concurrent_counts_never_pass_the_cap(self):
+        results = []
+
+        def take():
+            try:
+                pacing.count_turn("widgets", "fixer", cap=2)
+                results.append("counted")
+            except pacing.CapReached:
+                results.append("refused")
+        threads = [threading.Thread(target=take) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual((results.count("counted"), results.count("refused")), (2, 4))
+        self.assertEqual(pacing.turns_today("widgets", "fixer"), 2)
 
 
 class SeatView(unittest.TestCase):
