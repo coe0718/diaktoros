@@ -607,5 +607,39 @@ class CallSites(Base):
         refresh.assert_called_once()
         self.assertEqual(refresh.call_args.args[1], 8)
 
+    def _claim_with_unreadable_pr(self, retries):
+        """A queued shadow with ``retries`` behind it whose claim-time PR read fails; returns
+        its row after the claim and the refresh mock."""
+        import sqlite3
+        from contextlib import closing
+        import test_shadow as ts
+        from diaktoros import gh, merge_check
+        turn = ts.ProductionTurn("run")
+        turn.setUp()
+        self.addCleanup(turn.doCleanups)
+        sup = turn.queue_shadow()
+        delivery = f"acme/widgets:8:{ts.HEAD}:shadow"
+        with closing(sqlite3.connect(sup.db)) as con, con:
+            con.execute("UPDATE runs SET retries=? WHERE delivery=?", (retries, delivery))
+        with mock.patch.object(ts.config, "by_repo", return_value=turn.loop), \
+                mock.patch.object(gh, "api", return_value=None), \
+                mock.patch.object(merge_check, "refresh_quietly") as refresh:
+            self.assertIsNone(sup._claim())
+        return sup.get(delivery), refresh
+
+    def test_a_shadow_whose_claim_read_fails_for_good_refreshes_the_merge_check(self):
+        # #1786: the retry limit ends the shadow at its claim; the check stops waiting for it.
+        from diaktoros import run_supervisor
+        row, refresh = self._claim_with_unreadable_pr(run_supervisor.MAX_RETRIES - 1)
+        self.assertEqual(row["state"], "failed", row)
+        refresh.assert_called_once()
+        self.assertEqual(refresh.call_args.args[1], 8)               # only the shadow's own PR
+
+    def test_a_shadow_whose_claim_read_is_backed_off_does_not_refresh_the_merge_check(self):
+        # Still open (waiting to retry): the ledger reads the same, so nothing to refresh.
+        row, refresh = self._claim_with_unreadable_pr(0)
+        self.assertEqual(row["state"], "waiting", row)
+        refresh.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()
