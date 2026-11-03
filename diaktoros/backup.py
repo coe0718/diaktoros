@@ -20,7 +20,6 @@ import io
 import json
 import os
 import pathlib
-import re
 import shlex
 import sqlite3
 import tarfile
@@ -29,10 +28,9 @@ import time
 
 from .ledger import read_only
 from .config import credentials
-from . import (app_ingress, config, conflict_person, conflict_scan, escalate_pending, gate_decisions,
-               gate_failures, gate_shims, main_check, merge_check, observer, onboarding, ready,
-               route_intent, routes, run_supervisor)
-from . import state as state_mod
+from . import (config, conflict_scan, gate_decisions, gate_failures, gate_shims, merge_check,  # noqa: F401
+               observer, onboarding, route_intent, routes, run_supervisor, util)
+from . import state as state_mod  # noqa: F401  (importing a writer registers its locks)
 
 VERSION = 1
 MANIFEST = "manifest.json"
@@ -58,29 +56,13 @@ def default_out() -> pathlib.Path:
     return path
 
 
-# ``tempfile.mkstemp`` names, as ``util.atomic_write`` and the route registry make them:
-# ``.<name>.`` plus eight random characters. A live writer owns them and one may vanish between
-# the listing and the read. ``mkstemp`` draws from lowercase letters, digits and ``_``.
-_TEMP_NAME = re.compile(r"^\..+\.[a-z0-9_]{8}$")
-
-
 # The flock files the plugin's own writers keep directly in a state directory (or the gate-failure
-# directory). Each name comes from the module that creates the file, so a new lock is named once,
-# by its writer, and cannot be missed here. Exact names, not a ``*.lock`` pattern: a user's
+# directory). Each writer registers its lock where it names it (``util.register_lock``), so a new
+# lock is added in one place, by the code that creates it, and a lock name no writer registered
+# fails ``test_backup.LockInventory``. The modules that register one are imported above, so the
+# set is complete once this module is. Exact names, not a ``*.lock`` pattern: a user's
 # ``user.lock`` is state (#1060).
-_LOCK_NAMES = frozenset({
-    state_mod.STATE_LOCK, state_mod.LOG_LOCK, state_mod.BREACH_LOCK, state_mod.TRANSITIONS_LOCK,
-    observer.lock_path(pathlib.Path(state_mod.OBSERVATIONS_FILE)).name, merge_check.LOCK,
-    gate_decisions.LOCK, gate_failures.LOCK, onboarding.LOCK, conflict_scan.LOCK,
-    route_intent.LOCK})
-
-# The files the plugin's own writers replace through ``util.atomic_write`` directly in a state
-# directory, each named by its writer. A ``mkstemp`` temp for one of these is the writer's, whether
-# or not the file it is replacing exists yet (#1651).
-_WRITTEN_NAMES = state_mod.STATE_FILES | frozenset({
-    onboarding.FILE, conflict_scan.FILE, route_intent.INTENT_FILE, gate_failures.LEDGER,
-    gate_decisions.FILE, ready.FILE, main_check.FILE, escalate_pending.FILE, conflict_person.FILE,
-    app_ingress.FILE})
+_LOCK_NAMES = util.LOCK_NAMES
 
 
 def _transient(path: pathlib.Path, root: pathlib.Path) -> bool:
@@ -91,13 +73,12 @@ def _transient(path: pathlib.Path, root: pathlib.Path) -> bool:
     which may legitimately contain any name):
     - an *empty* file with one of the plugin's own lock names (``_LOCK_NAMES``): flock files never
       hold data. Any other ``*.lock`` (``Cargo.lock``, ``user.lock``) is state and is kept;
-    - a name of the ``mkstemp`` shape for a file a writer replaces: either the target ``<name>``
-      exists beside it (a writer's temp file while it replaces an existing file), or ``<name>`` is
-      one the plugin's writers own (``_WRITTEN_NAMES``: a first write, nothing to replace yet).
-      A temp-shaped name for any other ``<name>`` with no target beside it is ambiguous, perhaps
-      a user's file, and is archived, not guessed at.
-    A user file that does match is still left out, but never silently: ``_regular_files`` reports
-    it and the manifest lists it."""
+    - a temp file of ``util.atomic_write`` or the route registry: ``.<name>.<8 chars>.dktmp``
+      (``util.is_temp_name``). The suffix is the plugin's own, so this holds whether or not
+      ``<name>`` exists yet (a first write), and a user's ``.<name>.a1b2c3d4`` has no such suffix
+      and is kept, even beside a ``<name>`` a writer owns (#1651).
+    What is left out is never silent: ``_regular_files`` reports a temp and the manifest lists it.
+    A temp from before the suffix existed is archived like any unknown file: litter, not loss."""
     if path.parent != root:
         return False
     if path.name in _LOCK_NAMES:
@@ -105,10 +86,7 @@ def _transient(path: pathlib.Path, root: pathlib.Path) -> bool:
             return path.stat().st_size == 0
         except OSError:
             return True      # gone between the listing and now: nothing to archive
-    if _TEMP_NAME.match(path.name):
-        target = path.name[1:-9]                      # strip the leading "." and ".XXXXXXXX"
-        return target in _WRITTEN_NAMES or (root / target).is_file()
-    return False
+    return util.is_temp_name(path.name)
 
 
 def _regular_files(root: pathlib.Path, skipped: list[str] | None = None) -> list[pathlib.Path]:
@@ -123,7 +101,7 @@ def _regular_files(root: pathlib.Path, skipped: list[str] | None = None) -> list
         if not path.is_file() or path.is_symlink():
             continue
         if _transient(path, root):
-            if skipped is not None and _TEMP_NAME.match(path.name):
+            if skipped is not None and util.is_temp_name(path.name):
                 skipped.append(str(path))
             continue
         found.append(path)
@@ -215,7 +193,7 @@ def create(out: pathlib.Path | None = None) -> pathlib.Path:
                 try:
                     tar.add(source, arcname=member, recursive=False)
                 except FileNotFoundError as exc:
-                    if kind == "file" and _TEMP_NAME.match(target.name):
+                    if kind == "file" and util.is_temp_name(target.name):
                         manifest["skipped"].append(str(target))   # renamed away since the listing
                         continue
                     raise BackupError(f"cannot read {source}: {exc}") from exc

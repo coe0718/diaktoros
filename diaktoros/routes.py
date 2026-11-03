@@ -27,7 +27,7 @@ from contextlib import contextmanager
 
 from . import config, hostdirs
 from .config import host_guards
-from .util import log
+from .util import TEMP_SUFFIX, log
 from . import envnames
 
 
@@ -173,7 +173,7 @@ def _write_registry(path: pathlib.Path, data: dict, expected=_UNCHECKED) -> None
     visible but their survival across a crash has not been confirmed.
     """
     body = json.dumps(data, indent=2).encode()
-    fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=TEMP_SUFFIX, dir=path.parent)
     try:
         try:
             os.fchmod(fd, 0o600)

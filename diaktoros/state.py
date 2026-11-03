@@ -34,24 +34,15 @@ from collections.abc import Callable
 
 from . import config, hostdirs
 from .config import settings_form
-from .util import atomic_write, log, now_iso
+from .util import atomic_write, log, now_iso, register_lock
 
-# The flock files this module keeps in a loop's state directory, and the state files it writes
-# there. ``backup`` reads these names (never a list of its own) to leave the locks out of an archive
-# and to tell a writer's half-written temp file from a user's file of the same shape.
-STATE_LOCK = "state.lock"
-LOG_LOCK = "watchdog.log.lock"
-BREACH_LOCK = "breach.lock"
-TRANSITIONS_LOCK = "stack-transitions.lock"
+# The flock files this module keeps in a loop's state directory, each registered by its writer
+# (``util.register_lock``): ``backup`` leaves out what was registered, from no list of its own.
+STATE_LOCK = register_lock("state.lock")
+LOG_LOCK = register_lock("watchdog.log.lock")
+BREACH_LOCK = register_lock("breach.lock")
+TRANSITIONS_LOCK = register_lock("stack-transitions.lock")
 OBSERVATIONS_FILE = "observations.json"
-STATE_FILES = frozenset({
-    "locks.json", "pending.json", "inflight.json", "breach.json", OBSERVATIONS_FILE,
-    "watchdog.json", "stack-transitions.json", "review-situations.json", "github-reads.json",
-    "review-only-conflicts.json", "watchdog.log", "human-holds.json", "held-prs.json",
-    "held-scope.json", "held-fixes.json", "held-fixes-said.json", "late-triage.json",
-    "fix-asks.json", "issue-deps.json", "dep-waits.json", "dep-waits-said.json",
-    "findings.json", "override-checked.json", "reconsider.json", "review-only-caps.json",
-    "shadow-findings.json"})
 
 # Per-thread depth of the state lock we already hold, keyed by lock path. ``flock`` is tied to
 # the open file description, so a second ``open`` + ``flock`` in the same thread would deadlock

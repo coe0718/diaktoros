@@ -18,7 +18,7 @@ import os
 import pathlib
 import time
 
-from . import state as state_mod
+from . import state as state_mod, util
 
 # Long enough for a run of merges to settle and for GitHub to start computing mergeability.
 DELAY_S = 45.0
@@ -29,7 +29,7 @@ MAX_LIFETIME_S = 1800.0
 
 
 FILE = "conflict-scan.json"
-LOCK = "conflict-scan.lock"       # the scanner's flock file, beside the request
+LOCK = util.register_lock("conflict-scan.lock")       # the scanner's flock file, beside the request
 
 
 def path(st) -> pathlib.Path:

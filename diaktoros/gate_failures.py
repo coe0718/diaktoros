@@ -56,12 +56,12 @@ import traceback
 from collections.abc import Callable
 
 from . import config, gh
-from .util import iso_at, log
+from .util import iso_at, log, register_lock
 from . import envnames
 
 LEDGER = "gate-failures.json"
 PAYLOADS = "gate-failures"
-LOCK = "gate-failures.lock"       # the ledger's flock file, beside it
+LOCK = register_lock("gate-failures.lock")       # the ledger's flock file, beside it
 DEFAULT_BUDGET_S = 20.0
 BACKSTOP_S = 3.0             # SIGALRM this long after the soft budget; 20 + 3 < the gateway's 30
 MAX_REDRIVES = 3

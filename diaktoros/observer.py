@@ -46,7 +46,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 from . import config, gh, hostdirs, prompts, route_intent, routes, state
-from .util import atomic_write, log, now_iso
+from .util import atomic_write, log, now_iso, register_lock
 
 # The transitions an observer may subscribe to. These names are the loop's vocabulary for what
 # happened; the same strings are what `--observer-events` accepts and what the ledger stores.
@@ -248,6 +248,9 @@ def _target(loop: dict, urgent: bool = False):
 def lock_path(path: pathlib.Path) -> pathlib.Path:
     """The flock file ``_lock`` keeps beside a ledger file."""
     return path.with_name(path.name + ".lock")
+
+
+register_lock(lock_path(pathlib.Path(state.OBSERVATIONS_FILE)).name)   # the loop's ledger's lock
 
 
 @contextlib.contextmanager

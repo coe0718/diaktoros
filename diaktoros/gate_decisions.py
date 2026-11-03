@@ -15,12 +15,12 @@ import os
 import sys
 
 from . import config, util
-from .util import LOG_PREFIX
+from .util import LOG_PREFIX, register_lock
 
 KEEP = 200
 LIMIT = 300
 FILE = "gate-decisions.jsonl"
-LOCK = "gate-decisions.lock"      # its flock file, beside it
+LOCK = register_lock("gate-decisions.lock")      # its flock file, beside it
 
 
 def _clip(value, limit: int = LIMIT) -> str:

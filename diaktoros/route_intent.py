@@ -34,10 +34,10 @@ import os
 import pathlib
 
 from . import config, prompts, routes
-from .util import atomic_write
+from .util import atomic_write, register_lock
 
 INTENT_FILE = "route-intent.json"
-LOCK = INTENT_FILE + ".lock"      # its flock file, beside it
+LOCK = register_lock(INTENT_FILE + ".lock")      # its flock file, beside it
 VERSION = 1
 
 # The fields that decide whether a route still wakes the right seat and still authenticates.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import os
+import re
 from pathlib import Path
 import sys
 import time
@@ -17,6 +18,29 @@ LOG_PREFIX = "[diaktoros]"
 LOG_PREFIXES = (LOG_PREFIX, "[review-loop]")
 
 
+# Every temp file ``atomic_write`` (and the route registry) makes is ``.<name>.<8 chars>`` plus this
+# suffix. The suffix is what marks it the plugin's: ``backup`` leaves out a name that carries it,
+# whether or not its target exists yet, and keeps a user's ``.<name>.a1b2c3d4`` (#1651).
+TEMP_SUFFIX = ".dktmp"
+_TEMP_NAME = re.compile(r"^\..+\.[a-z0-9_]{8}" + re.escape(TEMP_SUFFIX) + "$")
+
+# The flock files the plugin's writers keep in a state directory, each registered by its writer
+# through ``register_lock``. ``backup`` leaves out exactly these; tests/test_backup.py scans the
+# package for lock names that are neither registered here nor listed as living elsewhere.
+LOCK_NAMES: set[str] = set()
+
+
+def register_lock(name: str) -> str:
+    """Record ``name`` as a flock file a plugin writer creates in a state directory; return it."""
+    LOCK_NAMES.add(name)
+    return name
+
+
+def is_temp_name(name: str) -> bool:
+    """Is ``name`` a temp file of ``atomic_write``: the half-written file of a live writer?"""
+    return bool(_TEMP_NAME.match(name))
+
+
 def atomic_write(path, data: str | bytes, *, mode: int = 0o600, before_replace=None) -> None:
     """Publish ``data`` to ``path`` whole or not at all, and durably before returning: a temp file
     beside it (``mode`` from creation, never wider), fsync, ``before_replace()`` (a last check,
@@ -25,7 +49,7 @@ def atomic_write(path, data: str | bytes, *, mode: int = 0o600, before_replace=N
     import tempfile
     path = Path(path)
     view = memoryview(data.encode() if isinstance(data, str) else data)
-    fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=TEMP_SUFFIX, dir=path.parent)
     try:
         try:
             os.fchmod(fd, mode)

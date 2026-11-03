@@ -7,14 +7,18 @@ from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import argparse
+import ast
 import contextlib
+import importlib
 import io
 import json
 import os
+import re
 import sqlite3
 import stat
 import sys
 import tarfile
+import tempfile
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -22,8 +26,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import backup, cli, config, migrate, routes  # noqa: E402
-from diaktoros import (conflict_scan, gate_decisions, gate_failures, merge_check, observer,  # noqa: E402
-                       onboarding, route_intent)
+from diaktoros import conflict_scan, onboarding, util  # noqa: E402
 from diaktoros import state as state_mod  # noqa: E402
 from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
@@ -359,14 +362,14 @@ class Create(Base):
     def test_transient_files_are_not_archived(self):
         (self.state / "state.lock").write_text("")
         (self.state / "breach.lock").write_text("")
-        (self.state / ".queue.json.a1b2c3d4").write_text("half")
+        (self.state / ".queue.json.a1b2c3d4.dktmp").write_text("half")
         (self.state / ".hidden-config").write_text("kept")
         out = self.root / "b.tar.gz"
         backup.create(out)
         names = {Path(f["path"]).name for f in backup.read_manifest(out)["files"]}
         self.assertIn("queue.json", names)
         self.assertIn(".hidden-config", names)      # a real dotfile is state, not a temp file
-        self.assertFalse(names & {"state.lock", "breach.lock", ".queue.json.a1b2c3d4"})
+        self.assertFalse(names & {"state.lock", "breach.lock", ".queue.json.a1b2c3d4.dktmp"})
 
     def test_legitimate_lookalikes_survive_backup_and_restore(self):
         """#1624 review F1: a lockfile with content, and temp-shaped names below the writers' own
@@ -379,13 +382,13 @@ class Create(Base):
         for path, text in keep.items():
             path.write_text(text)
         (self.state / "state.lock").write_text("")
-        (self.state / ".queue.json.a1b2c3d4").write_text("half")
+        (self.state / ".queue.json.a1b2c3d4.dktmp").write_text("half")
         out = self.root / "b.tar.gz"
         backup.create(out)
         archived = {f["path"] for f in backup.read_manifest(out)["files"]}
         self.assertEqual({str(p) for p in keep} - archived, set())
         self.assertFalse(archived & {str(self.state / "state.lock"),
-                                     str(self.state / ".queue.json.a1b2c3d4")})
+                                     str(self.state / ".queue.json.a1b2c3d4.dktmp")})
         for path in keep:
             path.unlink()
         self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
@@ -412,51 +415,79 @@ class Create(Base):
             self.assertEqual(path.read_text(), text, str(path))
 
     def test_locks_made_by_their_writers_and_first_write_temps_are_not_archived(self):
-        """#1651: the locks ``onboarding`` and ``conflict_scan`` really create, and a temp file for
-        a state file that does not exist yet, stay out of the archive; user files of the same
-        shape stay in."""
+        """#1651: the locks ``onboarding`` and ``conflict_scan`` really create, and the temp file a
+        real ``atomic_write`` has open on a file's first write, stay out of the archive; a user's
+        file of the same shape stays in (review F1: even named for a file a writer owns)."""
         loop = config.all_loops()[0]
         with onboarding._locked(loop):
             pass
         conflict_scan.run(state_mod.LoopState(loop), scan=lambda: None)
         for name in (onboarding.LOCK, conflict_scan.LOCK):
             self.assertTrue((self.state / name).is_file(), name)   # the writers made them
-        first_write = [f".{onboarding.FILE}.a1b2c3d4", f".{conflict_scan.FILE}.a1b2c3d4",
-                       f".{state_mod.OBSERVATIONS_FILE}.a1b2c3d4"]
-        for name in first_write:
-            self.assertFalse((self.state / name[1:-9]).exists())    # nothing to replace yet
-            (self.state / name).write_text("half")
-        keep = {"user.lock": "", ".notes.txt.a1b2c3d4": "mine", "Cargo.lock": "x"}
+        keep = {"user.lock": "", ".notes.txt.a1b2c3d4": "mine", "Cargo.lock": "x",
+                f".{onboarding.FILE}.a1b2c3d4": "mine",           # a writer's name, not its suffix
+                f".{conflict_scan.FILE}.a1b2c3d4": "mine"}
         for name, text in keep.items():
             (self.state / name).write_text(text)
         out = self.root / "b.tar.gz"
-        backup.create(out)
+        target = self.state / onboarding.FILE
+        self.assertFalse(target.exists())                           # a first write
+        temps = []
+
+        def archive_mid_write():
+            temps.extend(p.name for p in self.state.iterdir() if util.is_temp_name(p.name))
+            backup.create(out)
+        util.atomic_write(target, "{}", before_replace=archive_mid_write)
+        self.assertEqual(len(temps), 1, temps)                      # the writer's own temp name
         manifest = backup.read_manifest(out)
         archived = {Path(f["path"]).name for f in manifest["files"]}
-        self.assertFalse(archived & {onboarding.LOCK, conflict_scan.LOCK, *first_write})
+        self.assertFalse(archived & {onboarding.LOCK, conflict_scan.LOCK, *temps})
         self.assertEqual(set(keep) - archived, set())
-        self.assertEqual({Path(p).name for p in manifest["skipped"]}, set(first_write))
+        self.assertEqual({Path(p).name for p in manifest["skipped"]}, set(temps))
 
-    def test_every_lock_a_writer_names_is_left_out(self):
-        for name in (state_mod.STATE_LOCK, state_mod.LOG_LOCK, state_mod.BREACH_LOCK,
-                     state_mod.TRANSITIONS_LOCK, merge_check.LOCK, gate_decisions.LOCK,
-                     gate_failures.LOCK, onboarding.LOCK, conflict_scan.LOCK, route_intent.LOCK,
-                     observer.lock_path(self.state / state_mod.OBSERVATIONS_FILE).name):
-            self.assertIn(name, backup._LOCK_NAMES)
+    def test_a_route_registry_temp_is_left_out_too(self):
+        seen = []
+        real = routes.os.replace
+
+        def spy(src, dst, *a, **kw):
+            seen.append(Path(src).name)
+            return real(src, dst, *a, **kw)
+        with mock.patch.object(routes.os, "replace", spy):
+            routes._write_registry(self.state / "routes.json", {})
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(util.is_temp_name(seen[0]), seen)
+
+    def test_a_user_lookalike_beside_its_owned_target_is_kept_and_restored(self):
+        """Review F1: ``.onboarding.json.a1b2c3d4`` next to a real ``onboarding.json`` is a user's
+        file: the writers' temp names carry a suffix it lacks."""
+        keep = {self.state / onboarding.FILE: "{}", self.state / f".{onboarding.FILE}.a1b2c3d4": "mine"}
+        for path, text in keep.items():
+            path.write_text(text)
+        out = self.root / "b.tar.gz"
+        backup.create(out)
+        manifest = backup.read_manifest(out)
+        self.assertEqual({str(p) for p in keep} - {f["path"] for f in manifest["files"]}, set())
+        self.assertEqual(manifest["skipped"], [])
+        for path in keep:
+            path.unlink()
+        self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        for path, text in keep.items():
+            self.assertEqual(path.read_text(), text, str(path))
+
 
     def test_a_temp_name_left_out_is_reported_not_silent(self):
-        (self.state / ".queue.json.a1b2c3d4").write_text("half")
+        (self.state / ".queue.json.a1b2c3d4.dktmp").write_text("half")
         out = self.root / "b.tar.gz"
         code, text = self.run_cmd(cli.cmd_backup, out=str(out))
         self.assertEqual(code, 0)
         self.assertEqual(backup.read_manifest(out)["skipped"],
-                         [str(self.state / ".queue.json.a1b2c3d4")])
-        self.assertIn(".queue.json.a1b2c3d4", text)
+                         [str(self.state / ".queue.json.a1b2c3d4.dktmp")])
+        self.assertIn(".queue.json.a1b2c3d4.dktmp", text)
 
     def test_a_temp_file_renamed_away_before_the_read_does_not_fail_the_backup(self):
         """The window #1060 names: listed, then gone by ``tar.add`` (a first write's temp file has
         no target yet, so it is listed)."""
-        temp = self.state / ".fresh.json.a1b2c3d4"
+        temp = self.state / ".fresh.json.a1b2c3d4.dktmp"
         temp.write_text("half")
         real = backup.tarfile.TarFile.add
 
@@ -529,6 +560,46 @@ class Create(Base):
         with mock.patch.object(migrate, "doctor_step", return_value=[]):
             self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
         self.assertEqual(self.ledger_count(), 298)
+
+
+class LockInventory(unittest.TestCase):
+    """Review F2: the lock names come from the writers' registrations, and a lock a writer names
+    without registering fails here, whatever the writer is (no list in this test to keep up)."""
+
+    # ``*.lock`` strings in the package that are not a state-directory flock file of a writer.
+    ELSEWHERE = {
+        "Cargo.lock": "a dependency lockfile",
+        "auth.lock": "a Hermes profile's own file, copied by seat_model",
+        "fetch.lock": "lives in the deps cache, not a state directory",
+        ".fixer-push-policy.lock": "lives in the config directory (*.json only is archived)",
+        ".lock": "a suffix: the pacing, migrate, routes, seat_model and safe_push locks, none in a "
+                 "state directory; observer's and routes' are named in full or registered",
+    }
+
+    def named(self, root=Path(backup.__file__).parent):
+        found = {}
+        for path in sorted(root.rglob("*.py")):
+            module = ".".join(path.relative_to(root.parent).with_suffix("").parts)
+            for node in ast.walk(ast.parse(path.read_text())):
+                if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                        and re.fullmatch(r"[A-Za-z0-9_.-]*\.lock", node.value)):
+                    found.setdefault(node.value, set()).add(module)
+        return found
+
+    def test_every_lock_name_in_the_package_is_registered_or_accounted_for(self):
+        for name, modules in self.named().items():
+            if name in self.ELSEWHERE:
+                continue
+            for module in modules:
+                importlib.import_module(module.removesuffix(".__init__"))    # registers on import
+            self.assertIn(name, util.LOCK_NAMES, f"{name} in {sorted(modules)} is not registered")
+            self.assertIn(name, backup._LOCK_NAMES)
+
+    def test_the_scan_finds_a_new_writers_unregistered_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "newwriter.py").write_text('LOCK = "brand-new.lock"\n')
+            found = self.named(Path(tmp))
+        self.assertEqual(set(found) - util.LOCK_NAMES - set(self.ELSEWHERE), {"brand-new.lock"})
 
 
 class Restore(Base):

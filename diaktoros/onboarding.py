@@ -74,7 +74,7 @@ _OUTCOME = {"pass": "pass", "verified": "pass", "fail": "fail", "absent": "fail"
             "skipped": "skip"}
 _SUMMARY_MAX = 240
 FILE = "onboarding.json"
-LOCK = ".onboarding.lock"       # its flock file, beside it
+LOCK = util.register_lock(".onboarding.lock")       # its flock file, beside it
 
 
 def path(loop: dict) -> Path:
