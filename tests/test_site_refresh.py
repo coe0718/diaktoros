@@ -36,24 +36,39 @@ function makeEl(v) {
   return { set textContent(x) { t = String(x); }, get textContent() { return t; } };
 }
 for (const [k, v] of Object.entries(HARDCODED)) elements[k] = [makeEl(v)];
+const noteEl = makeEl('');
+const staleBox = { added: [] };
+const staleEl = { classList: { add: (c) => staleBox.added.push(c) } };
 global.document = {
   querySelectorAll: (sel) => {
     const m = /\[data-site="([^"]+)"\]/.exec(sel);
-    return (m && elements[m[1]]) || [];
+    if (m) return (m && elements[m[1]]) || [];
+    if (sel.indexOf('.stats-freshness') !== -1) return [noteEl];
+    if (sel === '.stats, .strip-stats') return [staleEl];
+    return [];
   },
 };
 global.fetch = (url) => {
   if (String(url).startsWith('https://api.github.com')) {
-    if (scenario === 'live-ok' || scenario === 'live-partial') {
+    if (scenario === 'live-ok' || scenario === 'live-partial' || scenario === 'live-mixed' || scenario === 'live-hang') {
       const u = String(url);
       if (u.includes('/stats/commit_activity')) {
         // In the partial scenario this one endpoint fails while the rest
         // succeed, proving one rejection can't abort the live refresh.
         if (scenario === 'live-partial')
           return Promise.resolve({ ok: false, status: 403 });
+        // In the hang scenario the body never finishes: headers arrive,
+        // json() never resolves. The whole-operation deadline must still
+        // let fallback and the note run.
+        if (scenario === 'live-hang')
+          return Promise.resolve({ ok: true, json: () => new Promise(() => {}) });
         return Promise.resolve({ ok: true, json: () => Promise.resolve([{ total: 10 }, { total: 20 }]) });
       }
       if (u.includes('/search/')) {
+        // In the mixed scenario the loop-author query fails while the
+        // rest succeed, so the strip mixes live and snapshot counts.
+        if (scenario === 'live-mixed' && u.includes('author'))
+          return Promise.resolve({ ok: false, status: 403 });
         // The open-PRs query is the only one with is:open; keep its count
         // small so the derived open-issues math stays positive.
         const total = u.includes('is%3Aopen') ? 7 : 4242;
@@ -68,13 +83,23 @@ global.fetch = (url) => {
     return Promise.resolve({ ok: false, status: 403 });
   }
   if (url === 'data.json') {
-    if (scenario === 'live-fail-snapshot-ok') {
+    if (scenario === 'live-fail-snapshot-ok' || scenario === 'live-mixed') {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(
         { version: 'v1.2.3-test', loop_prs_merged: 7, prs_merged: 21,
           issues_closed: 8, prs_open: 3, open_issues_count: 11,
           stars: 5, forks: 2, commits_year: 345,
           pushed_at: new Date(Date.now() - 90 * 60000).toISOString(),
           generated: '2026-01-02' }) });
+    }
+    // Same snapshot with no generated key: the undated state the
+    // builder now creates when the activity fetch never succeeded.
+    // The page must read it as unknown, never as the baked-in date.
+    if (scenario === 'snapshot-undated') {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(
+        { version: 'v1.2.3-test', loop_prs_merged: 7, prs_merged: 21,
+          issues_closed: 8, prs_open: 3, open_issues_count: 11,
+          stars: 5, forks: 2, commits_year: 345,
+          pushed_at: new Date(Date.now() - 90 * 60000).toISOString() }) });
     }
     return Promise.resolve({ ok: false, status: 404 });
   }
@@ -84,8 +109,12 @@ eval(pageScript);
 setTimeout(() => {
   const out = {};
   for (const [k, v] of Object.entries(elements)) out[k] = v[0].textContent;
+  out['__note'] = noteEl.textContent;
+  out['__stale'] = staleBox.added.indexOf('stats-stale') !== -1;
   console.log(JSON.stringify(out));
-}, 200);
+  // The hang scenario's deadline is 10s; every other scenario settles
+  // immediately, so only it waits.
+}, scenario === 'live-hang' ? 11000 : 200);
 """
 
 
@@ -191,6 +220,96 @@ class SiteRefreshTests(unittest.TestCase):
         data = json.loads((SITE / "data.json").read_text())
         missing = keys - set(data)
         self.assertFalse(missing, f"data.json missing keys used by the page: {missing}")
+
+    def test_freshness_note_present(self):
+        """The proof strip's freshness note must exist in the HTML and
+        be written by the refresh script, so a stat the page could not
+        refresh never reads as current."""
+        html = (SITE / "index.html").read_text()
+        self.assertIn("stats-freshness", html)
+        self.assertIn("stats-freshness", extract_refresh_script())
+
+    def _note_today(self):
+        today = datetime.now(timezone.utc).date()
+        return {"Live from GitHub · refreshed " + today.isoformat(),
+                "Live from GitHub · refreshed " + (today - timedelta(days=1)).isoformat()}
+
+    @unittest.skipUnless(shutil.which("node"), "node unavailable")
+    def test_freshness_note_live(self):
+        out = self.run_scenario("live-ok")
+        self.assertIn(out["__note"], self._note_today())
+        self.assertFalse(out["__stale"])
+
+    @unittest.skipUnless(shutil.which("node"), "node unavailable")
+    def test_freshness_note_snapshot(self):
+        out = self.run_scenario("live-fail-snapshot-ok")
+        self.assertEqual(out["__note"], "Snapshot 2026-01-02 · live refresh unavailable")
+        self.assertFalse(out["__stale"])
+
+    @unittest.skipUnless(shutil.which("node"), "node unavailable")
+    def test_freshness_note_snapshot_undated(self):
+        # Vex round 4 + shadow #1775: a snapshot with no generated key
+        # must not render a blank date in the note, and the "Page
+        # updated" stamp must not keep the date baked into the HTML.
+        # Against the eb6a9ef page the note reads "Snapshot  · live
+        # refresh unavailable" and the stamp stays hardcoded.
+        out = self.run_scenario("snapshot-undated")
+        self.assertEqual(out["prs_merged"], "21")
+        self.assertEqual(out["commits_year"], "345")
+        self.assertEqual(out["__note"], "Showing last checked-in values · live refresh unavailable")
+        self.assertEqual(out["generated"], "unknown")
+        self.assertFalse(out["__stale"])
+
+    @unittest.skipUnless(shutil.which("node"), "node unavailable")
+    def test_freshness_note_mixed(self):
+        # Vex's repro, sharpened: every search endpoint answers except
+        # the loop-author query, so the strip mixes live and snapshot
+        # counts. The old any-endpoint-live rule called that "Live" and
+        # stamped today; both assertions fail against it.
+        out = self.run_scenario("live-mixed")
+        self.assertEqual(out["prs_merged"], "4,242")
+        self.assertEqual(out["loop_prs_merged"], "7")
+        self.assertEqual(out["loop_share"], "0%")
+        self.assertEqual(
+            out["__note"],
+            "Mixed sources: some counts are live from GitHub, others are from the 2026-01-02 snapshot")
+        self.assertFalse(out["__stale"])
+        self.assertEqual(out["generated"], "2026-01-02")
+
+    @unittest.skipUnless(shutil.which("node"), "node unavailable")
+    def test_freshness_note_partial_live_is_mixed(self):
+        # Shadow-filed #1756's evidence: commits_year stays hardcoded
+        # while the rest is live, so the page-wide claim is mixed, not
+        # live, and the stamp must not claim today either.
+        out = self.run_scenario("live-partial")
+        self.assertEqual(out["commits_year"], "0-test")
+        self.assertEqual(
+            out["__note"],
+            "Mixed sources: some counts are live from GitHub, others are from last checked-in values")
+        self.assertFalse(out["__stale"])
+        self.assertEqual(out["generated"], "1970-01-01-test")
+
+    @unittest.skipUnless(shutil.which("node"), "node unavailable")
+    def test_freshness_note_total_failure_dims(self):
+        out = self.run_scenario("all-fail")
+        self.assertEqual(out["__note"], "Statistics unavailable — showing last checked-in values")
+        self.assertTrue(out["__stale"])
+
+    @unittest.skipUnless(shutil.which("node"), "node unavailable")
+    def test_freshness_note_hang_falls_back(self):
+        # Vex round 2: a stalled body must not hang the page past
+        # fallback. The commit-activity body never resolves; after the
+        # 10s deadline the rest of the page must still be live, the
+        # stuck figure hardcoded, and the note mixed — not blank.
+        # Against the old header-cleared deadline the note never runs.
+        out = self.run_scenario("live-hang")
+        self.assertEqual(out["prs_merged"], "4,242")
+        self.assertEqual(out["commits_year"], "0-test")
+        self.assertEqual(
+            out["__note"],
+            "Mixed sources: some counts are live from GitHub, others are from last checked-in values")
+        self.assertFalse(out["__stale"])
+        self.assertEqual(out["generated"], "1970-01-01-test")
 
 
 if __name__ == "__main__":

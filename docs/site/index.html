@@ -6,7 +6,28 @@
   <meta name="color-scheme" content="light dark" />
   <meta name="theme-color" content="#071018" />
   <link rel="icon" href="data:," />
-  <title>Diaktoros — Autonomous software maintenance for Hermes</title>
+  <title>Diaktoros — Autonomous PR Review &amp; Repair for Hermes Agent</title>
+  <meta name="description" content="Diaktoros coordinates Hermes agents through issue triage, code fixes, independent PR reviews, CI, and dispute resolution. Autonomous work, deterministic boundaries, human-controlled merges." />
+  <link rel="canonical" href="https://coe0718.github.io/diaktoros/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://coe0718.github.io/diaktoros/" />
+  <meta property="og:title" content="Diaktoros — Autonomous PR Review &amp; Repair for Hermes Agent" />
+  <meta property="og:description" content="Diaktoros coordinates Hermes agents through issue triage, code fixes, independent PR reviews, CI, and dispute resolution. Autonomous work, deterministic boundaries, human-controlled merges." />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="Diaktoros — Autonomous PR Review &amp; Repair for Hermes Agent" />
+  <meta name="twitter:description" content="Diaktoros coordinates Hermes agents through issue triage, code fixes, independent PR reviews, CI, and dispute resolution. Autonomous work, deterministic boundaries, human-controlled merges." />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Diaktoros",
+    "applicationCategory": "DeveloperApplication",
+    "url": "https://coe0718.github.io/diaktoros/",
+    "description": "Diaktoros coordinates Hermes agents through issue triage, code fixes, independent PR reviews, CI, and dispute resolution. Autonomous work, deterministic boundaries, human-controlled merges.",
+    "author": { "@type": "Person", "name": "Jeremy Coe" },
+    "codeRepository": "https://github.com/coe0718/diaktoros"
+  }
+  </script>
   <style>
     :root {
       color-scheme: light dark;
@@ -480,6 +501,169 @@
       padding: 2px 6px;
     }
 
+    .brandline {
+      margin-top: 22px;
+      color: var(--text);
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 19px;
+      font-style: italic;
+    }
+
+    .proof-strip {
+      padding: 30px 0 10px;
+      border-top: 1px solid var(--line);
+    }
+    .strip-stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: clamp(16px, 3vw, 36px);
+    }
+    .strip-stat { border-top: 2px solid var(--red); padding-top: 14px; }
+    .strip-num {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(30px, 4vw, 50px);
+      line-height: 1;
+      letter-spacing: -.02em;
+    }
+    .strip-label {
+      margin-top: 8px;
+      color: var(--muted);
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .strip-note {
+      max-width: 760px;
+      margin: 20px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .strip-note strong { color: var(--text); }
+    .stats-freshness {
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .stats-stale { opacity: .6; }
+
+    .flow { margin-top: 54px; padding-top: 30px; border-top: 1px solid var(--line); }
+    .flow h3 {
+      margin-bottom: 10px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(26px, 3.5vw, 38px);
+      font-weight: 400;
+    }
+    .flow-intro { max-width: 680px; color: var(--muted); }
+    .flow-chain {
+      display: flex;
+      align-items: stretch;
+      gap: 10px;
+      margin: 26px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+    .flow-step {
+      flex: 1;
+      padding: 16px;
+      background: var(--surface);
+      border-top: 3px solid var(--stage-color, var(--red));
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .flow-step strong { display: block; margin-bottom: 4px; color: var(--text); font-size: 15px; }
+    .flow-arrow { align-self: center; color: var(--red); font-weight: 800; }
+    .flow-branch {
+      margin-top: 14px;
+      padding: 16px 18px;
+      background: var(--surface);
+      border-left: 3px solid var(--red);
+      color: var(--muted);
+    }
+    .flow-branch strong { color: var(--text); }
+    .flow-note { margin-top: 16px; color: var(--muted); }
+    .flow-note strong { color: var(--text); }
+
+    .case-timeline {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      border-top: 1px solid var(--strong-line);
+    }
+    .case-timeline li {
+      display: grid;
+      grid-template-columns: 168px minmax(0, 1fr);
+      gap: 24px;
+      padding: 22px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .case-when {
+      color: var(--muted);
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      letter-spacing: .05em;
+    }
+    .case-when strong { display: block; margin-bottom: 4px; color: var(--text); font-size: 13px; }
+    .seat-fixer { color: var(--amber); }
+    .seat-reviewer { color: var(--blue); }
+    .seat-adjudicator { color: var(--red); }
+    .case-timeline p { margin: 0 0 8px; color: var(--muted); }
+    .case-timeline p:last-child { margin-bottom: 0; }
+    .case-timeline a { color: var(--text); font-weight: 700; font-size: 14px; }
+    .case-summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: clamp(16px, 3vw, 36px);
+      margin-top: 30px;
+      padding-top: 20px;
+      border-top: 2px solid var(--red);
+    }
+    .case-summary strong {
+      display: block;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(30px, 4vw, 46px);
+      font-weight: 400;
+      line-height: 1;
+    }
+    .case-summary span {
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .case-note { max-width: 760px; margin-top: 26px; color: var(--muted); }
+
+    .callout {
+      padding: 28px;
+      background: var(--surface);
+      border-top: 3px solid var(--blue);
+    }
+    .callout h3 {
+      margin-bottom: 10px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 26px;
+      font-weight: 400;
+    }
+    .callout p { margin-bottom: 0; color: var(--muted); }
+    .callout p:last-child { margin-top: 14px; }
+    .callout a { color: var(--text); font-weight: 700; font-size: 14px; }
+
+    .answers { margin: 26px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--strong-line); }
+    .answers li { padding: 14px 0; border-bottom: 1px solid var(--line); color: var(--muted); }
+    .answers strong { color: var(--text); }
+    .answers code {
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-size: 13px;
+      background: var(--surface-2);
+      padding: 2px 6px;
+    }
+
     @media (max-width: 820px) {
       .shell { width: min(100% - 28px, 700px); }
       .mast, .section-head, .proof-grid, .closing-inner { grid-template-columns: 1fr; }
@@ -488,6 +672,12 @@
       .poster-wrap { margin-top: 10px; padding: 5px; }
       .poster-caption { align-items: flex-start; flex-direction: column; }
       .handoff { grid-template-columns: 1fr; }
+      .strip-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .strip-stats .strip-stat:nth-child(4) { display: none; }
+      .flow-chain { flex-direction: column; }
+      .flow-arrow { align-self: center; transform: rotate(90deg); }
+      .case-timeline li { grid-template-columns: 1fr; gap: 6px; }
+      .case-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .stats { grid-template-columns: repeat(2, 1fr); }
       .proof-points { grid-template-columns: 1fr; }
       .stage-list {
@@ -534,15 +724,17 @@
   <main>
     <section class="shell mast" aria-labelledby="hero-title">
       <div>
-        <p class="kicker">Autonomous software maintenance for Hermes&nbsp;·&nbsp;<span data-site="version">v0.5.0</span></p>
-        <h1 id="hero-title">Automate the work.<br><em>Preserve control.</em></h1>
-        <p class="lead">Diaktoros guides a pull request from issue triage through implementation, independent review, CI, and dispute resolution—without ever taking the final merge away from a human.</p>
+        <p class="kicker">Built for Hermes Agent&nbsp;·&nbsp;<span data-site="version">v0.5.0</span></p>
+        <h1 id="hero-title">Your agents write the code.<br><em>Diaktoros keeps the work moving.</em></h1>
+        <p class="lead">An autonomous development loop for Hermes that takes issues through implementation, independent code review, fixes, CI checks, and dispute resolution—while keeping the final merge in human hands.</p>
+        <p class="brandline">Automate the work. Preserve control.</p>
         <div class="actions">
-          <a class="button primary" href="https://github.com/coe0718/diaktoros" target="_blank" rel="noopener noreferrer">
-            Explore the source
+          <a class="button primary" href="#case-study">
+            See a real review cycle
             <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h9M8.5 3.5 13 8l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square"/></svg>
           </a>
-          <a class="button" href="#handoff">Trace the handoff</a>
+          <a class="button" href="#install">Get started with Hermes</a>
+          <a class="button" href="https://github.com/coe0718/diaktoros" target="_blank" rel="noopener noreferrer">Explore the source</a>
         </div>
       </div>
       <div class="mast-side" aria-label="Core principles">
@@ -559,6 +751,17 @@
           <div><strong>Human authority</strong><p>Agents can propose, critique, fix, and rule. Only a person merges.</p></div>
         </div>
       </div>
+    </section>
+
+    <section class="shell proof-strip" aria-label="Proof at a glance">
+      <div class="strip-stats">
+        <div class="strip-stat"><div class="strip-num" data-site="loop_prs_merged">379</div><div class="strip-label">Fixer PRs merged</div></div>
+        <div class="strip-stat"><div class="strip-num" data-site="loop_share">52%</div><div class="strip-label">Written by the loop</div></div>
+        <div class="strip-stat"><div class="strip-num" data-site="prs_merged">726</div><div class="strip-label">PRs merged, total</div></div>
+        <div class="strip-stat"><div class="strip-num" data-site="issues_closed">700</div><div class="strip-label">Issues closed</div></div>
+      </div>
+      <p class="strip-note"><strong>Written by the loop</strong> means PRs authored by the fixer seat and merged, as a share of all merged PRs. Counts load live from the GitHub API on every visit; the checked-in snapshot fills any gap. On small screens the three most meaningful figures are shown.</p>
+      <p class="stats-freshness">Counts update live from GitHub on every visit; the checked-in snapshot fills gaps.</p>
     </section>
 
     <figure class="shell poster-wrap">
@@ -629,6 +832,25 @@
           </article>
         </div>
       </div>
+
+      <div class="flow">
+        <h3>How a pull request moves</h3>
+        <p class="flow-intro">The same four seats, as a path. Read it left to right; the two notes underneath are the parts a straight line would hide.</p>
+        <ol class="flow-chain" aria-label="Pull request path through the loop">
+          <li class="flow-step" style="--stage-color: var(--muted)"><strong>Issue</strong>A maintainer-selected issue enters the loop.</li>
+          <li class="flow-arrow" aria-hidden="true">→</li>
+          <li class="flow-step" style="--stage-color: var(--violet)"><strong>Triage</strong>Labels and routes it. Touches no code.</li>
+          <li class="flow-arrow" aria-hidden="true">→</li>
+          <li class="flow-step" style="--stage-color: var(--amber)"><strong>Fixer</strong>Implements, checks, and pushes through the broker.</li>
+          <li class="flow-arrow" aria-hidden="true">→</li>
+          <li class="flow-step" style="--stage-color: var(--blue)"><strong>Reviewer</strong>Approves, or requests changes that wake the fixer.</li>
+          <li class="flow-arrow" aria-hidden="true">→</li>
+          <li class="flow-step" style="--stage-color: var(--red)"><strong>Human merge</strong>Only a person merges. The loop never does.</li>
+        </ol>
+        <p class="flow-branch"><strong>Reviewer requests changes → back to Fixer.</strong> Each round costs a verdict, and the verdict budget caps the rounds — the loop cannot argue forever.</p>
+        <p class="flow-branch"><strong>Budget exhausted → Adjudicator.</strong> It reads the findings and the fixer&rsquo;s answers together and rules accept, reject, or respec. Its ruling reaches the operator; it still cannot merge.</p>
+        <p class="flow-note"><strong>CI routing depends on the PR and the settings.</strong> With <code>fix_ci</code> on <em>and</em> <code>unattended_fixer_push</code> on, red CI on a fixer-authored PR goes to the fixer while CI-fix capacity remains; once the budget is spent, or a CI-fix turn ends without a new head, the head is held — not reviewed, not re-sent — until the checks pass or a new head is pushed. A review-only red head is likewise held with nothing spent. With <code>fix_ci</code> off, or on without <code>unattended_fixer_push</code>, red CI on a fixer PR waits for a review instead. And where the loop posts its <code>diaktoros/review</code> check and the branch requires it (<code>hermes dk protect</code>), that check must be green before a person merges — protection itself is opt-in, not automatic.</p>
+      </div>
     </section>
 
     <section class="shell section" aria-labelledby="trust-title">
@@ -651,43 +873,100 @@
       </div>
     </section>
 
+    <section class="shell section" id="case-study" aria-labelledby="case-title">
+      <div class="section-head">
+        <div>
+          <div class="section-index">03 / Case study</div>
+          <h2 id="case-title">When the agents disagree.</h2>
+        </div>
+        <p class="section-intro">A real review cycle from November 2, 2026. The roles, in one line: the <span class="seat-fixer">fixer</span> writes the change, the <span class="seat-reviewer">reviewer</span> independently checks it, the <span class="seat-adjudicator">adjudicator</span> ends a dispute when the verdict budget runs out, and a human merges. <a href="https://github.com/coe0718/diaktoros/pull/1624" target="_blank" rel="noopener noreferrer">PR #1624</a> fixed a backup bug — and the reviewer nearly stopped it three times.</p>
+      </div>
+      <ol class="case-timeline">
+        <li>
+          <div class="case-when"><strong class="seat-reviewer">Reviewer · round 1</strong>Nov 2, 15:21 UTC</div>
+          <p>Vex requested changes on the first head. Finding F1 (P1, blocks): the name-only filter silently dropped real files — a legitimate <code>artifacts/42/Cargo.lock</code> among them — so a backup could succeed while losing data on restore. Vex proved it with a reproduction script.</p>
+          <p><a href="https://github.com/coe0718/diaktoros/pull/1624#pullrequestreview-5738845181" target="_blank" rel="noopener noreferrer">Read round 1</a></p>
+        </li>
+        <li>
+          <div class="case-when"><strong class="seat-fixer">Fixer · revision 1</strong>Nov 2, 15:31 UTC</div>
+          <p>Drey answered every finding and pushed a fix. The nested-artifact cases were fixed; the root-level ones were not yet.</p>
+          <p><a href="https://github.com/coe0718/diaktoros/pull/1624#issuecomment-6581095535" target="_blank" rel="noopener noreferrer">Read the fixer&rsquo;s answers</a></p>
+        </li>
+        <li>
+          <div class="case-when"><strong class="seat-reviewer">Reviewer · round 2</strong>Nov 2, 15:48 UTC</div>
+          <p>Vex requested changes again. F1 was still open: root-level lookalikes — an empty <code>user.lock</code>, a file named <code>.x.abcd1234</code> — were still silently dropped from a successful backup.</p>
+          <p><a href="https://github.com/coe0718/diaktoros/pull/1624#pullrequestreview-5739231741" target="_blank" rel="noopener noreferrer">Read round 2</a></p>
+        </li>
+        <li>
+          <div class="case-when"><strong class="seat-fixer">Fixer · revision 2</strong>Nov 2, 15:55 UTC</div>
+          <p>Drey answered again and pushed a second fix, with a root-level regression test that failed against the old filter and passed against the new one.</p>
+          <p><a href="https://github.com/coe0718/diaktoros/pull/1624#issuecomment-6581649620" target="_blank" rel="noopener noreferrer">Read the fixer&rsquo;s answers</a></p>
+        </li>
+        <li>
+          <div class="case-when"><strong class="seat-reviewer">Reviewer · round 3</strong>Nov 2, 16:25 UTC</div>
+          <p>F1: fixed. But Vex still requested changes on finding F2 (P2): a first-write temp file still present at archive time was archived as litter, and two real lock files — <code>.onboarding.lock</code> and <code>conflict-scan.lock</code> — were missing from the exclusion list.</p>
+          <p><a href="https://github.com/coe0718/diaktoros/pull/1624#pullrequestreview-5739744857" target="_blank" rel="noopener noreferrer">Read round 3</a></p>
+        </li>
+        <li>
+          <div class="case-when"><strong class="seat-adjudicator">Adjudicator</strong>Nov 2, 16:27 UTC</div>
+          <p>Tuck ruled <strong>ACCEPT</strong>, with all 3 verdicts counted. F2 was correct, but it did not block: the worst case was litter, not data loss or a failed backup. The dispute ended instead of buying another round.</p>
+          <p><a href="https://github.com/coe0718/diaktoros/pull/1624#issuecomment-6582370924" target="_blank" rel="noopener noreferrer">Read the ruling</a></p>
+        </li>
+        <li>
+          <div class="case-when"><strong>Follow-up</strong>Nov 2, 17:33 UTC</div>
+          <p>The remaining concern was not dropped. It became <a href="https://github.com/coe0718/diaktoros/issues/1651" target="_blank" rel="noopener noreferrer">issue #1651</a> — and was since closed by <a href="https://github.com/coe0718/diaktoros/pull/1710" target="_blank" rel="noopener noreferrer">PR #1710</a>. A person merged #1624. The loop never merges.</p>
+        </li>
+      </ol>
+      <div class="case-summary">
+        <div><strong>3</strong><span>Reviewer rounds</span></div>
+        <div><strong>2</strong><span>Fixer revisions</span></div>
+        <div><strong>1</strong><span>Adjudication</span></div>
+        <div><strong>1</strong><span>Follow-up issue</span></div>
+      </div>
+      <p class="case-note">This cycle is written from the PR&rsquo;s public reviews, answers, and ruling — not from a simulation. A proposed <code>hermes dk history --pr N</code> command would rebuild cycles like this one from the loop&rsquo;s ledger automatically; until it exists, case studies like this one are the evidence.</p>
+    </section>
 
     <section class="shell section" aria-labelledby="wild-title">
       <div class="section-head">
         <div>
-          <div class="section-index">03 / In the wild</div>
+          <div class="section-index">04 / In the wild</div>
           <h2 id="wild-title">Proof, not promises.</h2>
         </div>
-        <p class="section-intro">Diaktoros maintains itself the way it maintains your repo. The numbers below are read from the repository every time this page loads — not typed by hand.</p>
+        <p class="section-intro">Diaktoros maintains itself the way it maintains your repo. The numbers below are read live from the repository when the API answers, and fall back to the checked-in snapshot otherwise — the freshness note above says which path supplied them.</p>
       </div>
       <div class="stats" role="list" aria-label="Repository statistics">
-        <div class="stat" role="listitem"><div class="stat-num" data-site="loop_prs_merged">151</div><div class="stat-label">Fixer PRs merged</div></div>
-        <div class="stat" role="listitem"><div class="stat-num" data-site="loop_share">44%</div><div class="stat-label">Written by the loop</div></div>
-        <div class="stat" role="listitem"><div class="stat-num" data-site="prs_merged">342</div><div class="stat-label">PRs merged, total</div></div>
-        <div class="stat" role="listitem"><div class="stat-num" data-site="issues_closed">305</div><div class="stat-label">Issues closed</div></div>
-        <div class="stat" role="listitem"><div class="stat-num" data-site="prs_open">2</div><div class="stat-label">PRs open now</div></div>
-        <div class="stat" role="listitem"><div class="stat-num" data-site="issues_open">63</div><div class="stat-label">Issues open now</div></div>
-        <div class="stat" role="listitem"><div class="stat-num" data-site="commits_year">734</div><div class="stat-label">Commits, last 12 months</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="loop_prs_merged">379</div><div class="stat-label">Fixer PRs merged</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="loop_share">52%</div><div class="stat-label">Written by the loop</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="prs_merged">726</div><div class="stat-label">PRs merged, total</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="issues_closed">700</div><div class="stat-label">Issues closed</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="prs_open">12</div><div class="stat-label">PRs open now</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="issues_open">296</div><div class="stat-label">Issues open now</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="commits_year">1,368</div><div class="stat-label">Commits, last 12 months</div></div>
         <div class="stat" role="listitem"><div class="stat-num stat-date" data-site="last_activity">just now</div><div class="stat-label">Last activity</div></div>
-        <div class="stat" role="listitem"><div class="stat-num" data-site="stars">5</div><div class="stat-label">Stars</div></div>
-        <div class="stat" role="listitem"><div class="stat-num" data-site="forks">0</div><div class="stat-label">Forks</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="stars">10</div><div class="stat-label">Stars</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="forks">2</div><div class="stat-label">Forks</div></div>
         <div class="stat" role="listitem"><div class="stat-num" data-site="version">v0.5.0</div><div class="stat-label">Current release</div></div>
-        <div class="stat" role="listitem"><div class="stat-num stat-date" data-site="generated">2026-10-26</div><div class="stat-label">Page updated</div></div>
+        <div class="stat" role="listitem"><div class="stat-num stat-date" data-site="generated">2026-11-03</div><div class="stat-label">Page updated</div></div>
       </div>
+      <p class="stats-freshness">Counts update live from GitHub on every visit; the checked-in snapshot fills gaps.</p>
       <div class="proof-points">
         <article class="proof-point">
           <h3>Watch a real run.</h3>
-          <p>PR #530: the reviewer blocked on three red CI checks. The fixer traced it to a hand-built test fixture missing a new attribute — a one-line change, production code untouched. The reviewer approved with all six checks green.</p>
+          <p><strong>Problem.</strong> PR #530 drew three red CI checks from the reviewer.</p>
+          <p><strong>What the fixer did.</strong> Traced it to a hand-built test fixture missing a new attribute.</p>
+          <p><strong>Resolution.</strong> A one-line fixture change, production code untouched; the reviewer approved with all six checks green.</p>
           <p><a href="https://github.com/coe0718/diaktoros/pull/530" target="_blank" rel="noopener noreferrer">Read the thread</a></p>
         </article>
         <article class="proof-point">
           <h3>Graded homework.</h3>
-          <p>The reviewer doesn&rsquo;t only grade the fixer. It reviewed the maintainer&rsquo;s own fix in #614 and approved it — the loop grading the hand that built it.</p>
+          <p><strong>Problem.</strong> The maintainer&rsquo;s own fix needed an independent review.</p>
+          <p><strong>What the reviewer did.</strong> Reviewed it on the same terms as any fixer PR — and approved it.</p>
+          <p><strong>Resolution.</strong> The loop grading the hand that built it, with the evidence on the PR.</p>
           <p><a href="https://github.com/coe0718/diaktoros/pull/614" target="_blank" rel="noopener noreferrer">See #614</a></p>
         </article>
         <article class="proof-point">
           <h3>It files issues on itself.</h3>
-          <p>One night&rsquo;s hunt surfaced 11 real bugs in the loop&rsquo;s own code; five were fixed by morning. The loop then filed twelve self-audit issues — and keeps closing them.</p>
+          <p>One night&rsquo;s hunt surfaced 11 real bugs in the loop&rsquo;s own code; five were fixed by morning. The loop then filed twelve self-audit issues — and keeps closing them. Not every run succeeds; the record is public either way.</p>
           <p><a href="https://github.com/coe0718/diaktoros/issues" target="_blank" rel="noopener noreferrer">Browse the issues</a></p>
         </article>
       </div>
@@ -696,7 +975,7 @@
     <section class="shell section" aria-labelledby="apps-title">
       <div class="section-head">
         <div>
-          <div class="section-index">04 / New in v0.5.0</div>
+          <div class="section-index">05 / New in v0.5.0</div>
           <h2 id="apps-title">No personal account.<br>A merge button that waits.</h2>
         </div>
         <p class="section-intro">v0.5.0 lets the loop run on GitHub Apps instead of personal accounts, and gives it a merge check of its own.</p>
@@ -709,15 +988,21 @@
         </article>
         <article class="proof-point">
           <h3>A merge button that waits.</h3>
-          <p>GitHub never counts an App&rsquo;s approval, so the loop posts its own check, <code>diaktoros/review</code>, at every open PR&rsquo;s head: success once the head is approved and nothing holds it, failure when it needs a change or a person. <code>hermes dk protect</code> makes the merge button wait for it. The loop still never merges &mdash; a person does, only after the loop&rsquo;s verdict is green.</p>
+          <p>GitHub never counts an App&rsquo;s approval, so where the loop posts the check &mdash; <code>merge_check</code> on, or auto with an App reviewer &mdash; it posts its own check, <code>diaktoros/review</code>, at every open loop PR&rsquo;s head: success once the head is approved and nothing holds it, failure when it needs a change or a person. <code>hermes dk protect</code> makes the merge button wait for it. The loop still never merges &mdash; a person does, only once that check is green where the branch requires it.</p>
         </article>
       </div>
     </section>
 
-    <section class="shell section" aria-labelledby="install-title">
+    <aside class="shell callout" aria-label="Already using Hermes">
+      <h3>Already using Hermes?</h3>
+      <p>Skip the tour. Installation takes two commands, and the loop runs on GitHub Apps — no personal account, no PAT — or on separate seat accounts if you prefer.</p>
+      <p><a href="#install">Go to installation</a></p>
+    </aside>
+
+    <section class="shell section" id="install" aria-labelledby="install-title">
       <div class="section-head">
         <div>
-          <div class="section-index">05 / Install</div>
+          <div class="section-index">06 / Install</div>
           <h2 id="install-title">Two commands.</h2>
         </div>
         <p class="section-intro">From the Hermes plugin catalog — the reviewed release at its pinned commit.</p>
@@ -725,7 +1010,13 @@
       <pre class="codeblock"><code>hermes plugins install diaktoros
 hermes dk setup --repo "owner/repository"</code></pre>
       <p class="install-note">Prefer the repository? <code>hermes plugins install coe0718/diaktoros</code> tracks <code>main</code> instead.</p>
-      <p class="install-note">Until the catalog re-pin for v0.5.0 lands, install this release directly: <code>hermes plugins install coe0718/diaktoros --ref 062ca6a6692853d8de85e5df91ba790203f0cc1d</code></p>
+      <ul class="answers">
+        <li><strong>Do I need Hermes first?</strong> Yes — Diaktoros is a Hermes plugin, not a standalone app.</li>
+        <li><strong>What GitHub access?</strong> GitHub Apps (recommended, no personal account) or separate reader, reviewer, and fixer accounts.</li>
+        <li><strong>Can I try it on one repo?</strong> Yes — <code>hermes dk setup --repo "owner/repository"</code> wires a single loop.</li>
+        <li><strong>How much control do I keep?</strong> All of the final say: agents propose, review, and rule, but only a person merges.</li>
+        <li><strong>What if a run stalls?</strong> The watchdog reports it, and a dispute at the verdict cap goes to the adjudicator instead of looping forever.</li>
+      </ul>
     </section>
 
     <section class="closing">
@@ -789,25 +1080,43 @@ hermes dk setup --repo "owner/repository"</code></pre>
     // snapshot, then to the hardcoded values.
     var OWNER = 'coe0718', REPO = 'diaktoros';
     var API = 'https://api.github.com';
-    var vals = {}, fresh = {};
+    var vals = {}, fresh = {}, src = {};
+    var snapOk = false, snapDate = '';
+    // Every count the page displays: the freshness note now appears in
+    // both the proof strip and the wild grid, so its claim must cover
+    // every figure, not just the strip's (shadow-filed #1756: a stale
+    // commits_year under a "Live" note is still a stale figure).
+    var DISPLAY_KEYS = ['loop_prs_merged', 'loop_share', 'prs_merged', 'issues_closed',
+                        'prs_open', 'issues_open', 'commits_year', 'last_activity',
+                        'stars', 'forks', 'version'];
     function num(n) {
       return typeof n === 'number' ? n.toLocaleString('en-US') : n;
     }
-    function set(key, val, raw) {
+    function set(key, val, raw, source) {
       if (val === null || val === undefined) return;
       vals[key] = raw !== undefined ? raw : val;
       fresh[key] = true;
+      src[key] = source || 'hardcoded';
       document.querySelectorAll('[data-site="' + key + '"]').forEach(function (el) {
         el.textContent = val;
       });
     }
+    function stalest(a, b) {
+      // A derived value is only as fresh as its stalest input.
+      var rank = { live: 2, snapshot: 1, hardcoded: 0 };
+      var ra = rank[a] === undefined ? 0 : rank[a];
+      var rb = rank[b] === undefined ? 0 : rank[b];
+      return ra <= rb ? (a || 'hardcoded') : (b || 'hardcoded');
+    }
     function derive() {
       // Computed from the raw numbers, whichever path supplied them.
       if (typeof vals.prs_merged === 'number' && typeof vals.loop_prs_merged === 'number' && vals.prs_merged)
-        set('loop_share', Math.round(100 * vals.loop_prs_merged / vals.prs_merged) + '%');
+        set('loop_share', Math.round(100 * vals.loop_prs_merged / vals.prs_merged) + '%', undefined,
+            stalest(src.prs_merged, src.loop_prs_merged));
       if (typeof vals.open_issues_count === 'number' && typeof vals.prs_open === 'number')
-        set('issues_open', num(vals.open_issues_count - vals.prs_open));
-      if (vals.pushed_at) set('last_activity', relTime(vals.pushed_at));
+        set('issues_open', num(vals.open_issues_count - vals.prs_open), undefined,
+            stalest(src.open_issues_count, src.prs_open));
+      if (vals.pushed_at) set('last_activity', relTime(vals.pushed_at), undefined, src.pushed_at);
     }
     function relTime(iso) {
       var ms = Date.now() - new Date(iso).getTime();
@@ -823,9 +1132,37 @@ hermes dk setup --repo "owner/repository"</code></pre>
       if (mo < 12) return mo + 'mo ago';
       return Math.floor(mo / 12) + 'y ago';
     }
+    function timedJson(url, opts) {
+      // One deadline for the whole operation — headers AND body.
+      // Clearing the timer when headers arrived left a stalled body
+      // hanging the page past fallback (Vex, PR #1750 round 2), and the
+      // no-AbortController path had no deadline at all. The race bounds
+      // both: the timer aborts (when a controller exists) and rejects.
+      var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      var timer;
+      var timeout = new Promise(function (_, reject) {
+        timer = setTimeout(function () {
+          if (ctrl) ctrl.abort();
+          reject(new Error('timeout'));
+        }, 10000);
+      });
+      var o = {};
+      for (var k in (opts || {})) o[k] = opts[k];
+      if (ctrl) o.signal = ctrl.signal;
+      var attempt = fetch(url, o).then(function (r) {
+        if (!r.ok) throw new Error('http ' + r.status);
+        return r.json();
+      });
+      return Promise.race([attempt, timeout]).then(function (v) {
+        clearTimeout(timer);
+        return v;
+      }, function (e) {
+        clearTimeout(timer);
+        throw e;
+      });
+    }
     function get(path) {
-      return fetch(API + path, { headers: { 'Accept': 'application/vnd.github+json' } })
-        .then(function (r) { if (!r.ok) throw new Error('api ' + r.status); return r.json(); });
+      return timedJson(API + path, { headers: { 'Accept': 'application/vnd.github+json' } });
     }
     function soft(promise) {
       return promise.catch(function () { return null; });
@@ -835,55 +1172,86 @@ hermes dk setup --repo "owner/repository"</code></pre>
       return Promise.all([
         soft(get('/repos/' + OWNER + '/' + REPO)).then(function (r) {
           if (!r) return;
-          set('stars', num(r.stargazers_count));
-          set('forks', num(r.forks_count));
-          set('open_issues_count', r.open_issues_count);
-          set('pushed_at', r.pushed_at);
+          set('stars', num(r.stargazers_count), undefined, 'live');
+          set('forks', num(r.forks_count), undefined, 'live');
+          set('open_issues_count', r.open_issues_count, undefined, 'live');
+          set('pushed_at', r.pushed_at, undefined, 'live');
         }),
         soft(get('/repos/' + OWNER + '/' + REPO + '/releases/latest')).then(function (r) {
-          if (r) set('version', r.tag_name);
+          if (r) set('version', r.tag_name, undefined, 'live');
         }),
         soft(get('/search/issues?q=' + q('repo:' + OWNER + '/' + REPO + ' type:pr is:merged') + '&per_page=1')).then(function (r) {
-          if (r) set('prs_merged', num(r.total_count), r.total_count);
+          if (r) set('prs_merged', num(r.total_count), r.total_count, 'live');
         }),
         soft(get('/search/issues?q=' + q('repo:' + OWNER + '/' + REPO + ' type:pr is:merged author:drey-coe1') + '&per_page=1')).then(function (r) {
-          if (r) set('loop_prs_merged', num(r.total_count), r.total_count);
+          if (r) set('loop_prs_merged', num(r.total_count), r.total_count, 'live');
         }),
         soft(get('/search/issues?q=' + q('repo:' + OWNER + '/' + REPO + ' type:issue is:closed') + '&per_page=1')).then(function (r) {
-          if (r) set('issues_closed', num(r.total_count));
+          if (r) set('issues_closed', num(r.total_count), undefined, 'live');
         }),
         soft(get('/search/issues?q=' + q('repo:' + OWNER + '/' + REPO + ' type:pr is:open') + '&per_page=1')).then(function (r) {
-          if (r) set('prs_open', num(r.total_count), r.total_count);
+          if (r) set('prs_open', num(r.total_count), r.total_count, 'live');
         }),
         soft(get('/repos/' + OWNER + '/' + REPO + '/stats/commit_activity')).then(function (weeks) {
           if (!Array.isArray(weeks) || !weeks.length) return;
           var total = weeks.reduce(function (a, w) { return a + (w.total || 0); }, 0);
-          set('commits_year', num(total), total);
+          set('commits_year', num(total), total, 'live');
         })
       ]).then(function () {
         derive();
-        if (Object.keys(fresh).length) set('generated', new Date().toISOString().slice(0, 10));
       });
     }
+    function updateFreshness() {
+      // The freshness claim follows every displayed count, not whether
+      // any endpoint at all answered: one live endpoint must not bless
+      // snapshot counts as current, and the "Page updated" stamp must
+      // not claim today for a snapshot either — nor keep the date
+      // baked into the HTML when the snapshot itself is undated.
+      var today = new Date().toISOString().slice(0, 10);
+      var sources = DISPLAY_KEYS.map(function (k) { return src[k] || 'hardcoded'; });
+      var allLive = sources.every(function (s) { return s === 'live'; });
+      var allSnapshot = sources.every(function (s) { return s === 'snapshot'; });
+      var allHardcoded = sources.every(function (s) { return s === 'hardcoded'; });
+      if (allLive) set('generated', today);
+      else if (snapOk && snapDate) set('generated', snapDate);
+      // An undated snapshot must not keep the baked-in date: unknown
+      // is explicit, a stale hardcoded date is a claim (Vex round 4,
+      // shadow #1775).
+      else if (snapOk) set('generated', 'unknown');
+      var notes = document.querySelectorAll('.stats-freshness');
+      if (!notes.length) return;
+      var text;
+      if (allLive) text = 'Live from GitHub · refreshed ' + today;
+      else if (allSnapshot) text = snapDate
+        ? 'Snapshot ' + snapDate + ' · live refresh unavailable'
+        : 'Showing last checked-in values · live refresh unavailable';
+      else if (allHardcoded) text = 'Statistics unavailable — showing last checked-in values';
+      else text = 'Mixed sources: some counts are live from GitHub, others are from ' +
+        (snapDate ? 'the ' + snapDate + ' snapshot' : 'last checked-in values');
+      notes.forEach(function (el) { el.textContent = text; });
+      if (allHardcoded) {
+        document.querySelectorAll('.stats, .strip-stats').forEach(function (el) {
+          el.classList.add('stats-stale');
+        });
+      }
+    }
     function snapshot() {
-      return fetch('data.json', { cache: 'no-store' }).then(function (r) {
-        if (!r.ok) throw new Error('no data');
-        return r.json();
-      }).then(function (d) {
+      return timedJson('data.json', { cache: 'no-store' }).then(function (d) {
         var COUNT_KEYS = ['stars', 'forks', 'prs_merged', 'loop_prs_merged',
                           'issues_closed', 'prs_open', 'issues_open', 'commits_year'];
         Object.keys(d).forEach(function (k) {
           if (fresh[k]) return;
           if (COUNT_KEYS.indexOf(k) !== -1 && typeof d[k] === 'number')
-            set(k, num(d[k]), d[k]);
+            set(k, num(d[k]), d[k], 'snapshot');
           else
-            set(k, d[k]);
+            set(k, d[k], undefined, 'snapshot');
         });
         derive();
-        if (!fresh.generated && d.generated) set('generated', d.generated);
+        snapOk = true;
+        if (d.generated) snapDate = d.generated;
       });
     }
-    live().then(snapshot).catch(function () { /* hardcoded values stand in */ });
+    live().then(snapshot).then(updateFreshness, updateFreshness);
   }());
 </script>
 </body>
