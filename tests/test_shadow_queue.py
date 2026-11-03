@@ -96,12 +96,26 @@ class AfterReviewer(Ledger):
 
     def test_a_turn_in_flight_its_post_or_an_uncertain_record_waits(self):
         for key, state, receipt in (("a", "running", None), ("b", "running", "claimed"),
-                                    ("c", "uncertain", None), ("d", "succeeded", "posted")):
+                                    ("c", "uncertain", None), ("d", "uncertain", "claimed")):
             with self.subTest(state=state, receipt=receipt):
                 run = self.run_row("reviewer", turn_key=key, state=state)
                 if receipt:
                     self.receipt(run, "APPROVE", state=receipt)
                 self.assertEqual(self.decide(key)[0], "wait")
+
+    def test_a_receipt_that_can_never_confirm_skips_it(self):
+        # #1755 / #1771: `posted` is terminal (the PR went ineligible under the posted review);
+        # a `claimed` receipt on a run an operator reconciled to failed is never confirmed.
+        # Waiting on either re-armed the row every poll for ever and held the head pending.
+        for key, state, receipt in (("p", "succeeded", "posted"), ("pr", "running", "posted"),
+                                    ("pf", "failed", "posted"), ("c", "failed", "claimed")):
+            with self.subTest(state=state, receipt=receipt):
+                run = self.run_row("reviewer", turn_key=key, state=state,
+                                   error="operator reconciliation: external writes inspected")
+                self.receipt(run, "APPROVE", state=receipt)
+                what, why = self.decide(key)
+                self.assertEqual(what, "skip")
+                self.assertIn(f"never confirmed (receipt {receipt}, turn {state})", why)
 
     def test_only_its_own_reviewer_turn_counts(self):
         # Review of #1656, F2/F4: an older turn's APPROVE at the same head is not this turn's;
@@ -134,7 +148,7 @@ class AfterReviewer(Ledger):
         # Review of #1656, F11: the shadow's CI wait starts at this time, read with the verdict.
         row = {"repo": REPO, "pr": 7, "head": HEAD, "turn_key": ""}
         self.assertEqual(shadow_queue.decide(self.db, row), ("run", "", None))  # before #1647
-        run = self.run_row("reviewer", state="succeeded")
+        run = self.run_row("reviewer", state="running")
         self.receipt(run, "APPROVE", state="claimed")                   # still being posted
         self.assertEqual(shadow_queue.decide(self.db, row)[::2], ("wait", None))
         with closing(sqlite3.connect(self.db)) as con, con:
