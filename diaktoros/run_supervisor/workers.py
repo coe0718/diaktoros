@@ -99,6 +99,22 @@ class WorkerLifecycle:
         now = time.time()
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
+            # An operator's cancel (#1148) on a run whose worker is gone is never read by a
+            # heartbeat: end it here as the worker would have (#1461). Cancelled before any
+            # write-ahead record; uncertain, naming the cancel, after one. A push intent keeps
+            # the push quarantine below, which complete_uncertain and reconcile key on.
+            for lost in con.execute("SELECT id FROM runs WHERE state IN ('launching','running') "
+                                    "AND lease<? AND cancel_requested IS NOT NULL "
+                                    "AND push_intent IS NULL", (now,)).fetchall():
+                wrote = run_supervisor.write_records(con, lost['id'])
+                if wrote is None:
+                    state, error = 'cancelled', run_supervisor.OPERATOR_CANCEL
+                else:
+                    state = 'uncertain'
+                    error = (f"{run_supervisor.OPERATOR_CANCEL} after it may have written ({wrote}) — "
+                             "never replayed; inspect and reconcile")
+                con.execute("UPDATE runs SET state=?, error=?, lease=NULL, retry_at=NULL, "
+                            "updated=?, finished=? WHERE id=?", (state, error, now, now, lost['id']))
             # Never retry an attempt whose child may have been launched.
             con.execute("UPDATE runs SET state='uncertain', "
                         "error=CASE WHEN push_intent IS NOT NULL THEN "

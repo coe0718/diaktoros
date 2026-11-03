@@ -286,6 +286,59 @@ class Running(Base):
         self.assertEqual(sup.get('d')['state'], 'succeeded')
 
 
+class LostWorker(Base):
+    """#1461: a stop request on a run whose worker is gone is ended by recover()."""
+
+    def lost(self, **extra):
+        sup = self.sup()
+        sup.submit('d', REPO, 1, HEAD, 'reviewer')
+        self.set_state('d', 'running', owner='gone', lease=time.time() - 60, **extra)
+        run_id = sup.get('d')['id']
+        self.assertEqual(sup.cancel(run_id), {'was': 'running', 'state': 'stopping'})
+        return sup, run_id
+
+    def test_recover_cancels_a_lost_run_with_no_write_record(self):
+        sup, run_id = self.lost()
+        sup.recover()
+        row = sup.get('d')
+        self.assertEqual((row['state'], row['error']), ('cancelled', OPERATOR_CANCEL))
+        self.assertIsNotNone(row['finished'])
+        self.assertIn('cancelled by an operator', views.next_step(sup.status(REPO, 1)[0], 'loop'))
+        self.assertEqual(sup.retry(run_id), 'pending')
+
+    def test_recover_names_the_cancel_when_a_lost_run_has_a_write_record(self):
+        sup, run_id = self.lost()
+        with ledger.connect(self.db) as con:
+            con.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,created) "
+                        "VALUES(?,?,?,?,?)", (run_id, 'confirmed', 'g', 1, 0))
+        sup.recover()
+        row = sup.get('d')
+        self.assertEqual(row['state'], 'uncertain')
+        self.assertIn(OPERATOR_CANCEL, row['error'])
+        self.assertIn('review receipt confirmed', row['error'])
+
+    def test_recover_keeps_the_push_quarantine_for_a_lost_run_with_a_push_intent(self):
+        sup, _ = self.lost(push_intent='x')
+        sup.recover()
+        row = sup.get('d')
+        self.assertEqual(row['state'], 'uncertain')
+        self.assertTrue(row['error'].startswith('post-write push quarantine: '))
+
+    def test_recover_still_quarantines_a_lost_run_nobody_cancelled(self):
+        sup = self.sup()
+        sup.submit('d', REPO, 1, HEAD, 'reviewer')
+        self.set_state('d', 'running', owner='gone', lease=time.time() - 60)
+        sup.recover()
+        self.assertEqual((sup.get('d')['state'], sup.get('d')['error']),
+                         ('uncertain', 'worker lost after launch intent'))
+
+    def test_recover_leaves_a_live_cancelled_run_to_its_worker(self):
+        sup, _ = self.lost()
+        self.set_state('d', 'running', lease=time.time() + 60)
+        sup.recover()
+        self.assertEqual(sup.get('d')['state'], 'running')
+
+
 class Selection(Base):
     def test_pr_and_seat_pick_only_that_seats_run(self):
         sup = self.sup()
