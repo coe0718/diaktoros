@@ -46,7 +46,8 @@ DIFFERENT = {
 }
 # The writers that publish through the helper; a writer that stops calling it fails here.
 CALLERS = {
-    "diaktoros/app_manifest.py::save_session", "diaktoros/cli/common.py::_write_config_locked",
+    "diaktoros/app_manifest.py::save_session", "diaktoros/app_tokens.py::save",
+    "diaktoros/cli/common.py::_write_config_locked",
     "diaktoros/cli/common.py::_restore_config_locked", "diaktoros/gate_decisions.py::record",
     "diaktoros/gate_shims.py::_write", "diaktoros/gate_shims.py::heal_watchdog_shim",
     "diaktoros/gh_cache.py::store", "diaktoros/gh_calls.py::flush",

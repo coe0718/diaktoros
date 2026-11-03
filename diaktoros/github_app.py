@@ -11,7 +11,8 @@ installation token for the loop's repository only, and uses that token exactly a
 * an installation token cannot call ``GET /user``, so the principal is the App's bot user, found
   from ``GET /app`` (who signed) and ``GET /users/<slug>[bot]`` (its id);
 * tokens are opaque (390 characters, ``ghs_``) and live an hour: one is reused until ten minutes
-  before it expires, per process;
+  before it expires, by every host process (``app_tokens``, #1780), since GitHub's ETags follow
+  the token and a token per process made every conditional read a counted 200;
 * the JWT is signed by the Hermes runtime's Python with ``cryptography`` (the gateway's own
   interpreter may not have it), else by the ``openssl`` command; neither means App mode is
   unavailable, and every call says so instead of guessing.
@@ -30,7 +31,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import gh, util
+from . import app_tokens, gh, util
 
 JWT_TTL_S = 540                 # GitHub allows at most 10 minutes; the clock may run ahead
 REUSE_MARGIN_S = 600            # a token is replaced ten minutes before it expires
@@ -218,19 +219,48 @@ def installation_token(loop: dict, login: str) -> str:
         cached = _tokens.get(key)
         if cached and cached[1] - time.time() > REUSE_MARGIN_S:
             return cached[0]
-        where = _as_app(loop, login, f"/repos/{repo}/installation")
-        installation = where.data.get("id") if isinstance(where.data, dict) else None
-        if type(installation) is not int:
-            raise AppError(f"App {login} is not installed on {repo} ({where.error or 'no id'})")
-        minted = _as_app(loop, login, f"/app/installations/{installation}/access_tokens",
-                         method="POST", body={"repositories": [repo.split("/", 1)[-1]]})
-        got = minted.data if isinstance(minted.data, dict) else {}
-        token, expires = got.get("token"), _expires(got.get("expires_at"))
-        if not isinstance(token, str) or not token or expires is None:
-            raise AppError(f"App {login} could not mint a token for {repo} "
-                           f"({minted.error or 'no token in the answer'})")
-        _tokens[key] = (token, expires)
-        return token
+        with app_tokens.held():             # one minter at a time across the host (#1780)
+            shared = app_tokens.load(key)
+            if shared and shared[1] - time.time() > REUSE_MARGIN_S:
+                _tokens[key] = shared
+                return shared[0]
+            token, expires = _mint(loop, login, repo)
+            _tokens[key] = (token, expires)
+            app_tokens.save(key, token, expires)
+            return token
+
+
+def _mint(loop: dict, login: str, repo: str) -> tuple[str, float]:
+    """A new installation token for ``repo`` and when it expires. Raises ``AppError``."""
+    where = _as_app(loop, login, f"/repos/{repo}/installation")
+    installation = where.data.get("id") if isinstance(where.data, dict) else None
+    if type(installation) is not int:
+        raise AppError(f"App {login} is not installed on {repo} ({where.error or 'no id'})")
+    minted = _as_app(loop, login, f"/app/installations/{installation}/access_tokens",
+                     method="POST", body={"repositories": [repo.split("/", 1)[-1]]})
+    got = minted.data if isinstance(minted.data, dict) else {}
+    token, expires = got.get("token"), _expires(got.get("expires_at"))
+    if not isinstance(token, str) or not token or expires is None:
+        raise AppError(f"App {login} could not mint a token for {repo} "
+                       f"({minted.error or 'no token in the answer'})")
+    return token, expires
+
+
+def refused(loop: dict, login: str | None) -> None:
+    """GitHub answered 401 to ``login``'s token: if it is an App's, forget it here and for every
+    host process, so the next call mints a new one instead of reusing a dead one (#1780)."""
+    found = entry(loop, login)
+    if not found:
+        return
+    key = (str(login).casefold(), str(loop.get("repo") or ""), found.get("app_id"))
+    with _lock:
+        dead = _tokens.pop(key, None)
+        if dead is None:
+            return
+        with app_tokens.held():             # only that token: another process may have minted
+            stored = app_tokens.load(key)   # its successor already
+            if stored and stored[0] == dead[0]:
+                app_tokens.drop(key)
 
 
 def principal(loop: dict, login: str, fetch=None) -> dict | None:
@@ -276,3 +306,4 @@ def forget() -> None:
         _tokens.clear()
         _principals.clear()
         _signer = None
+        app_tokens.drop()

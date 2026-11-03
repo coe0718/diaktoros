@@ -108,10 +108,14 @@ def _regular_files(root: pathlib.Path, skipped: list[str] | None = None) -> list
         return []
     if root.is_file():
         return [root]
+    from . import app_tokens
+    shared = app_tokens.directory().resolve()
     found = []
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.is_symlink():
             continue
+        if path.resolve().is_relative_to(shared):
+            continue        # live App tokens (#1780), even under a state_dir set to state/ itself
         if _transient(path, root):
             if skipped is not None and util.is_temp_name(path.name):
                 skipped.append(str(path))

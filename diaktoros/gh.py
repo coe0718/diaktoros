@@ -291,6 +291,9 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
         if exc.code == 304 and cached:              # unchanged: the stored body is current, and
             gh_cache.hit(who, path)                 # only this answer's own headers are true now
             return Response(cached["data"], "", 200, headers)
+        if exc.code == 401:                         # a dead App token is shared: drop it (#1780)
+            from . import github_app
+            github_app.refused(loop, who)
         return Response(None, f"HTTP {exc.code}{f' {detail}' if detail else ''}", exc.code, headers)
     except Exception as exc:
         if not answered:                                # no HTTP answer: it may have counted
