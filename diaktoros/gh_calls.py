@@ -62,6 +62,13 @@ def prepare(home: pathlib.Path | None = None) -> None:
         pass
 
 
+# What follows a branch in a protection route (GitHub's REST paths), so a branch name holding
+# "/protection/" is never cut short at it.
+_PROTECTION = (r"/protection(?:/(?:required_status_checks(?:/contexts)?|enforce_admins"
+               r"|required_pull_request_reviews|required_signatures"
+               r"|restrictions(?:/(?:apps|teams|users))?))?")
+
+
 def app_login(login: str) -> str:
     """The login a call made as the App itself is counted under: apart from its installation
     token's, whose rate-limit figure its own headers would otherwise overwrite (#1765)."""
@@ -74,8 +81,10 @@ def shape(path: str) -> str:
     base = re.sub(r"^/repos/[^/]+/[^/]+", "/repos/R", base)
     base = re.sub(r"/git/(refs|ref)/heads/.+$", r"/git/\1/heads/REF", base)
     base = re.sub(r"/compare/.+$", "/compare/X", base)
-    # A branch name may hold "/": it runs up to the route's own suffix, if it has one (#1759).
-    base = re.sub(r"/branches/.+?(/protection(?:/.*)?)?$", r"/branches/REF\1", base)
+    # A branch name may hold "/", even "/protection/": it runs up to one of the route's own
+    # suffixes ending the path, never to the first that appears in it (#1759).
+    base = re.sub(r"/rules/branches/.+$", "/rules/branches/REF", base)
+    base = re.sub(r"/branches/(?!REF$).+?(" + _PROTECTION + r")?$", r"/branches/REF\1", base)
     base = re.sub(r"/commits/(?![0-9a-f]{40}(?:/|$)).+?"
                   r"(/(?:check-runs|check-suites|status|statuses|pulls|comments))?$",
                   r"/commits/REF\1", base)
@@ -137,9 +146,11 @@ def flush() -> None:
     from .util import atomic_write
     try:
         _name = _name or f"{int(time.time())}-{os.getpid()}-{random.getrandbits(32):08x}.json"
+        # This file stays fresh, so prune never takes its old hours: an hour goes once its last
+        # second is past the retention, never while a call in it is still inside it.
         cutoff = time.time() - KEEP_S
-        for key in [key for key in _counts if key[0] < cutoff]:
-            del _counts[key]       # this file stays fresh, so prune never takes its old hours
+        for key in [key for key in _counts if key[0] + 3600 <= cutoff]:
+            del _counts[key]
         rows = [[*key, n] for key, n in _counts.items()]
         directory().mkdir(parents=True, exist_ok=True, mode=0o700)
         atomic_write(directory() / _name, json.dumps({"counts": rows, "limits": _limits}))

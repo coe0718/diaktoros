@@ -216,6 +216,8 @@ class Counted(unittest.TestCase):
         self.assertEqual(gh_calls.prune(time.time() + gh_calls.KEEP_S + 1), 1)
         self.assertEqual(list(gh_calls.directory().iterdir()), [])
 
+    # The clock is moved, and a flush's occasional prune would judge real mtimes by it.
+    @mock.patch.object(gh_calls, "PRUNE_ONE_IN", 1 << 62)
     def test_a_long_lived_writer_drops_its_own_hours_past_the_retention(self):
         # #1760: such a process rewrites its file every FLUSH_EVERY calls, so the file never
         # ages and prune never takes it: its old hours have to go as it flushes.
@@ -234,6 +236,22 @@ class Counted(unittest.TestCase):
             gh_calls.flush()                                  # nothing new: the old hour goes
         self.assertEqual(self.hours(), [int(later // 3600 * 3600)])
         self.assertEqual(gh_calls.summary(0)["reader"]["spent"], 1)
+
+    # The clock is moved, and a flush's occasional prune would judge real mtimes by it.
+    @mock.patch.object(gh_calls, "PRUNE_ONE_IN", 1 << 62)
+    def test_an_hour_is_kept_while_a_call_in_it_is_inside_the_retention(self):
+        # Review of #1779, F2: a bucket is keyed by its hour's start, so judging it by that start
+        # dropped a call made late in the hour before its two days were up.
+        hour = int(time.time() // 3600 * 3600) - 3 * 86400
+        with mock.patch.object(gh_calls.time, "time", return_value=hour + 3500):
+            self.get("/repos/owner/one/pulls/1")
+        with mock.patch.object(gh_calls.time, "time", return_value=hour + gh_calls.KEEP_S + 100):
+            gh_calls.flush()                          # the call is 169,400 s old: kept
+        self.assertEqual(self.hours(), [hour])
+        with mock.patch.object(gh_calls.time, "time",
+                               return_value=hour + 3600 + gh_calls.KEEP_S):
+            gh_calls.flush()                          # the hour's last second is past: gone
+        self.assertEqual(self.hours(), [])
 
     def hours(self):
         [file] = list(gh_calls.directory().glob("*.json"))
@@ -298,6 +316,15 @@ class Shape(unittest.TestCase):
                  "/repos/R/branches/REF/protection/required_status_checks"),
                 ("/repos/o/r/rules/branches/feat/2?per_page=100",
                  "/repos/R/rules/branches/REF?per_page"),
+                # Review of #1779, F1: a name holding "/protection/" is never cut short at it.
+                ("/repos/o/r/branches/feature/protection/private-secret/protection",
+                 "/repos/R/branches/REF/protection"),
+                ("/repos/o/r/branches/feature/protection/private-secret/protection/"
+                 "required_status_checks/contexts",
+                 "/repos/R/branches/REF/protection/required_status_checks/contexts"),
+                ("/repos/o/r/rules/branches/feature/protection/private-secret",
+                 "/repos/R/rules/branches/REF"),
+                ("/repos/o/r/commits/feat/status/x/status", "/repos/R/commits/REF/status"),
                 ("/rate_limit", "/rate_limit")):
             with self.subTest(path=path):
                 self.assertEqual(gh_calls.shape(path), shape)
