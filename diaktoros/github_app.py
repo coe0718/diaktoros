@@ -187,21 +187,32 @@ def _as_app(loop: dict, login: str, path: str, method: str = "GET", body=None) -
                                 "Authorization": f"Bearer {jwt(loop, login)}",
                                 "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "diaktoros"})
     guard_network(req.full_url)
+    from . import gh_calls
+    who = gh_calls.app_login(login)     # counted like every gh call (#1765), in its own bucket
     # Charged to a gate's budget like every gh call (#1187): its timeout is what is left, and a
     # failure past the deadline is an overrun, not an answer.
     timeout = gh._budgeted(method, path)
+    answered = False
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            headers = {k.lower(): v for k, v in resp.headers.items()}
+            answered = True
+            gh_calls.record(who, method, path, gh_calls.outcome(path, resp.status), headers)
             return gh.Response(json.loads(resp.read().decode() or "null"), "", resp.status,
-                               {k.lower(): v for k, v in resp.headers.items()})
+                               headers)
     except urllib.error.HTTPError as exc:
         try:
             detail = gh.one_line(exc.read().decode(errors="replace"), 120)
         finally:
             exc.close()
+        headers = {k.lower(): v for k, v in (exc.headers or {}).items()}
+        gh_calls.record(who, method, path, gh_calls.outcome(path, exc.code, False, headers),
+                        headers)
         return gh._outcome(method, path, gh.Response(
             None, f"HTTP {exc.code}{f' {detail}' if detail else ''}", exc.code, {}))
     except Exception as exc:
+        if not answered:                                # no HTTP answer: it may have counted
+            gh_calls.record(who, method, path, "error")
         return gh._outcome(method, path, gh.Response(None, f"{type(exc).__name__}: {exc}"))
 
 
