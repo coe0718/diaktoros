@@ -601,6 +601,10 @@ def file_shadow_issue(loop: dict, *, repo: str, number: int, head: str, title: s
                                + lineage_note(pr=number, head=head, depth=depth,
                                               by="the Diaktoros host for a shadow review"),
                                "shadow", head)}
+    # Cleared first, so "never sent" is judged on this write alone: the flag is the thread's
+    # latest call's, and a stale one from an earlier call would turn an unknown outcome (a 5xx,
+    # a timeout) into a retry, and a retry into a second copy of the issue.
+    gh._LAST.unsent = False
     result, why = _write(loop, f"/repos/{repo}/issues", method="POST", body=payload, login=login)
     if (not isinstance(result, dict) or type(result.get("number")) is not int
             or result["number"] <= 0 or "pull_request" in result):

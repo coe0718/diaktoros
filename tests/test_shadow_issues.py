@@ -431,6 +431,19 @@ class FilePending(unittest.TestCase):
         self.assertEqual(self.state(run), "uncertain")
         self.assertEqual(self.file()[1], [])
 
+    def test_an_earlier_calls_unsent_flag_never_makes_a_failed_post_a_retry(self):
+        # A missing credential on an earlier call in this thread leaves gh's "never sent" flag
+        # set. This POST went out and failed (a 502): its outcome is unknown, so it is
+        # uncertain and never replayed, whatever the earlier call left behind.
+        run = self.recorded("A finding")
+        gh._LAST.unsent = True
+        self.addCleanup(setattr, gh._LAST, "unsent", False)
+        with mock.patch.object(gh, "reviews", return_value=APPROVED), \
+                mock.patch.object(gh, "pr", return_value={"number": 7, "head": {"ref": "fix-7"}}), \
+                mock.patch.object(broker, "_write", return_value=(None, "HTTP 502")):
+            self.assertEqual(shadow_issues.file_pending(self.loop, db=self.db), [])
+        self.assertEqual(self.state(run), "uncertain")
+
     def test_a_denial_before_the_post_stays_recorded_and_is_filed_once_fixed(self):
         run = self.recorded("A finding")
         self.loop["read_token"] = ""
