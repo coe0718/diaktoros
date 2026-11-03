@@ -232,6 +232,9 @@ def cmd_protect(args) -> int:
         if args.remove:
             print(f"[{lid}] would delete ruleset {protection.RULESET_NAME!r} on {loop['repo']}, "
                   "if it exists; nothing else")
+        elif protection.unpinnable(loop):
+            print(f"[{lid}] {protection.unpinnable(loop)}")
+            return 1
         else:
             print(f"[{lid}] would create or update ruleset {protection.RULESET_NAME!r} on "
                   f"{loop['repo']}:\n{json.dumps(protection.ruleset_body(loop), indent=2)}")

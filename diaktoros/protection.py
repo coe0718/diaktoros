@@ -45,9 +45,17 @@ def reviewer_app_id(loop: dict) -> int | None:
     seat = str(loop.get("reviewer_seat") or "").lower()
     for login, app in (loop.get("apps") or {}).items():
         if str(login).lower() == seat and isinstance(app, dict):
-            app_id = app.get("app_id")
-            return int(app_id) if str(app_id).isascii() and str(app_id).isdigit() else None
+            return config.parse_app_id(app.get("app_id"))
     return None
+
+
+def unpinnable(loop: dict) -> str:
+    """Why an App reviewer's check cannot be pinned (its stored id is not a valid App id), else
+    ``""``. Such a loop must never get an any-source check as if it were a PAT reviewer's."""
+    if config.reviewer_is_app(loop) and reviewer_app_id(loop) is None:
+        return (f"the reviewer App {loop.get('reviewer_seat')} has no valid App id, so "
+                f"{ci.MERGE_CHECK} cannot be pinned to it (fix 'apps' in the loop file)")
+    return ""
 
 
 def _count(value) -> int:
@@ -97,6 +105,9 @@ def ruleset_body(loop: dict) -> dict:
     """The loop's own ruleset: the base requires ``diaktoros/review``, pinned to the reviewer App
     (any source for a PAT reviewer's commit status, which cannot be pinned). No bypass: like
     *include administrators*, no one merges past it; ``remove`` takes it away."""
+    why = unpinnable(loop)
+    if why:
+        raise config.ConfigError(why)       # fail closed: never an any-source check for an App
     check = {"context": ci.MERGE_CHECK}
     app_id = reviewer_app_id(loop)
     if app_id:
@@ -129,7 +140,10 @@ def require(loop: dict, login: str | None) -> tuple[bool, str]:
     ruleset_id, why = _own_ruleset(loop, login)
     if why:
         return False, f"could not read {loop['repo']}'s rulesets: {why}"
-    body = ruleset_body(loop)
+    try:
+        body = ruleset_body(loop)
+    except config.ConfigError as exc:
+        return False, f"will not write the ruleset: {exc}"
     path = f"/repos/{loop['repo']}/rulesets" + (f"/{ruleset_id}" if ruleset_id else "")
     done = gh.request(loop, path, method="PUT" if ruleset_id else "POST", body=body, login=login)
     if done.error or not isinstance(done.data, dict):
@@ -168,6 +182,9 @@ def problems(loop: dict, found: Protection) -> tuple[list[str], list[str], list[
                             "(merge_check is off for it): every PR stays blocked")
         return blocking, warnings, facts
     app_id = reviewer_app_id(loop)
+    if unpinnable(loop):
+        blocking.append(unpinnable(loop))
+        return blocking, warnings, facts
     if not found.required:
         warnings.append(f"{ci.MERGE_CHECK} is posted but {base} does not require it: the merge "
                         "button ignores it")
