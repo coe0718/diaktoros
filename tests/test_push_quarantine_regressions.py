@@ -105,10 +105,83 @@ class PostWriteRegressions(unittest.TestCase):
             before_push(NEW_HEAD)
         with mock.patch.object(config, 'by_repo', return_value=self.loop), \
              mock.patch.object(safe_push, '_git_cas', side_effect=before_attempt):
-            with self.assertRaises(broker.BrokerDenied):
+            with self.assertRaises(safe_push.PreWrite):
                 server._dispatch(json.dumps({'operation': 'push', 'manifest': manifest()}).encode())
         self.assertEqual(self.sup.get('fix')['state'], 'running')
-        self.assertTrue(self.sup.post_write_hold(REPO, 7))
+        # #1763: refused before the attempt began, nothing was written: the intent is withdrawn
+        # (it used to stay, and the turn then ended quarantined, holding the fixer seat).
+        self.assertFalse(self.sup.post_write_hold(REPO, 7))
+
+    def test_a_local_git_failure_then_a_failed_outcome_audit_holds_only_after_the_attempt(self):
+        # Review of #1792, F1: a local Git step fails, and recording the outcome that follows
+        # fails too. (The ref readback itself never raises: ``_read_ref`` reads a failure as
+        # "unknown". The outcome's audit record is the step after it that can.) Before the
+        # attempt nothing was written, so the intent is withdrawn; once the attempt began, the
+        # same two failures are held as a push that may have written.
+        actual_audit = safe_push._audit
+
+        def audit(loop, record):
+            if record["phase"] == "reconciled":
+                raise OSError("audit fsync failed")
+            return actual_audit(loop, record)
+        for attempted in (False, True):
+            with self.subTest(attempted=attempted):
+                self.setUp()
+
+                def git(*args, before_push):
+                    if attempted:
+                        before_push(NEW_HEAD)
+                    raise OSError("local git index locked")
+                scope = broker_ipc.RunScope(REPO, 7, HEAD, "fixer", "fix-7", self.run_id,
+                                            str(self.db))
+                server = broker_ipc.RunBroker(self.loop, scope, self.root)
+                with mock.patch.object(config, "by_repo", return_value=self.loop), \
+                        mock.patch.object(safe_push, "_git_cas", side_effect=git), \
+                        mock.patch.object(safe_push, "_audit", side_effect=audit), \
+                        self.assertRaises(safe_push.PushFailure if attempted
+                                          else safe_push.PreWrite):
+                    server._dispatch(json.dumps({"operation": "push",
+                                                 "manifest": manifest()}).encode())
+                self.assertEqual(self.sup.post_write_hold(REPO, 7), attempted)
+                if attempted:
+                    self.assertEqual(self.sup.get("fix")["state"], "uncertain")
+                    continue
+                self.assertIsNone(self.sup.get("fix")["push_intent"])
+                self.sup.complete_uncertain(self.run_id, "worker", 1)
+                self.assertEqual(self.sup.get("fix")["state"], "failed")
+                with mock.patch.object(config, "by_repo", return_value=self.loop):
+                    self.assertEqual(self.sup.retry(self.run_id), "pending")
+
+    def test_a_read_that_fails_before_the_attempt_withdraws_the_intent(self):
+        # #1763: on 2026-11-02 two fixer pushes failed on reader 403s before any ref update and
+        # were quarantined as "may have written", holding the fixer seat ~45 minutes.
+        def rate_limited(path, method):
+            if path == f"/repos/{REPO}/pulls/7":
+                raise gh.GitHubError("HTTP 403 API rate limit exceeded")
+
+        def unreadable_ref(path, method):
+            self.fake.unreadable_ref = path.endswith("/git/ref/heads/fix-7")
+        for name, on_call in (("the PR read", rate_limited), ("the branch read", unreadable_ref)):
+            with self.subTest(name):
+                self.setUp()
+                self.fake.on_call = on_call
+                scope = broker_ipc.RunScope(REPO, 7, HEAD, "fixer", "fix-7", self.run_id,
+                                            str(self.db))
+                server = broker_ipc.RunBroker(self.loop, scope, self.root)
+                with mock.patch.object(config, "by_repo", return_value=self.loop), \
+                        mock.patch.object(safe_push, "_git_cas", side_effect=self.fail):
+                    with self.assertRaises(safe_push.PreWrite) as refused:
+                        server._dispatch(json.dumps({"operation": "push",
+                                                     "manifest": manifest()}).encode())
+                self.assertNotIn("DUMMY_SECRET", str(refused.exception))
+                row = self.sup.get("fix")
+                self.assertEqual((row["state"], row["push_intent"]), ("running", None))
+                self.assertFalse(self.sup.post_write_hold(REPO, 7))
+                # The turn then ends failed, not uncertain, and `retry` re-arms it.
+                self.sup.complete_uncertain(self.run_id, "worker", 1)
+                self.assertEqual(self.sup.get("fix")["state"], "failed")
+                with mock.patch.object(config, "by_repo", return_value=self.loop):
+                    self.assertEqual(self.sup.retry(self.run_id), "pending")
 
     def test_attempt_audit_failure_quarantines_even_with_unchanged_ref(self):
         actual_audit = safe_push._audit

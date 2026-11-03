@@ -64,7 +64,7 @@ class Settled(tct.Worker):
         return run
 
     def settle(self, merged, generator=lambda d: (d / "docs/commands.md").write_bytes(REGENERATED),
-               sandbox=None, push_error=None):
+               sandbox=None, push_error=None, real_push=False):
         def push(loop, **kw):
             self.pushes.append(kw)
             if push_error:
@@ -74,7 +74,8 @@ class Settled(tct.Worker):
         with mock.patch.object(trusted_turn, "_safe_code_snapshot",
                                side_effect=lambda src, dst: dst.mkdir() or source_skips), \
              mock.patch.object(contained, "run", side_effect=sandbox or self.fake_sandbox(generator)), \
-             mock.patch.object(safe_push, "push", side_effect=push):
+             (mock.patch.object(safe_push, "push", wraps=safe_push.push) if real_push
+              else mock.patch.object(safe_push, "push", side_effect=push)):
             return self.conflict_run(merged=merged)
 
     def test_a_conflict_confined_to_the_generated_file_is_pushed_regenerated_with_no_turn(self):
@@ -175,6 +176,18 @@ class Settled(tct.Worker):
         seen, *_ = self.settle(merged_of({"docs/commands.md": CONFLICT}, ["docs/commands.md"]),
                                push_error=broker.BrokerDenied("PR branch moved"))
         self.assertIn("prompt", seen)
+
+    def test_a_read_that_fails_inside_the_real_push_before_its_attempt_falls_back_to_the_turn(self):
+        # #1763 (review of #1792, F2): the real safe_push, its first read refused by a rate
+        # limit. Nothing was written, so the host withdraws its intent and the normal conflict
+        # turn runs, instead of the run being held as one that may have written.
+        from diaktoros import broker, gh
+        with mock.patch.object(broker, "authorize",
+                               side_effect=gh.GitHubError("HTTP 403 API rate limit exceeded")):
+            seen, row, *_ = self.settle(merged_of({"docs/commands.md": CONFLICT},
+                                                  ["docs/commands.md"]), real_push=True)
+        self.assertIn("prompt", seen)
+        self.assertNotEqual(row[0], "uncertain", row)
 
     def test_a_push_that_may_have_written_is_quarantined_not_retried(self):
         seen, row, *_ = self.settle(merged_of({"docs/commands.md": CONFLICT}, ["docs/commands.md"]),
