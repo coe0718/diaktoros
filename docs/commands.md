@@ -1694,6 +1694,12 @@ hermes dk cancel --loop "<loop-id>" --run "<run-id>"
   breach marker is handed back. The command waits up to 30 seconds and prints how the run ended.
   If the turn had already started writing (a review receipt, a push intent, a ruling), the run
   ends `uncertain` rather than `cancelled`. It's never replayed, so inspect and reconcile it.
+  If the owning worker is already gone (its lease expired), nothing reads the request; the
+  next recovery sweep (`recover()`) ends the run the same way: `cancelled` when nothing was
+  written, `uncertain` (naming the cancel) after a write-ahead record. An expired lease does
+  not prove the turn stopped, so this happens only when the run's recorded process is provably
+  gone (the check `reconcile` uses). A live or unrecorded process, or a fixer run with a push
+  intent, stays `uncertain` in quarantine, holding its PR, until `reconcile`.
 - **Already finished** (succeeded, failed, cancelled, uncertain): refused, with its state.
 
 `--pr` alone cancels every open run at the PR's current head, shadow included, and lists each.
