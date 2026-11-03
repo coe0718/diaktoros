@@ -372,7 +372,9 @@ class WorkerLifecycle:
         while time.time() < deadline:
             with self._connect() as con:
                 due = con.execute("SELECT MIN(retry_at) FROM runs WHERE state='waiting' AND "
-                                  "error LIKE ?", (run_supervisor.CI_HOLD + '%',)).fetchone()[0]
+                                  "(error LIKE ? OR error LIKE ?)",
+                                  (run_supervisor.CI_HOLD + '%',
+                                   run_supervisor.VERDICT_HOLD + '%')).fetchone()[0]
             if due is None:
                 return
             if due <= time.time():

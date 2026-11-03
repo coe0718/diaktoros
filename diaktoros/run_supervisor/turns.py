@@ -742,12 +742,29 @@ class ClaimAndLaunch:
         spent), and past ``run_supervisor.CI_WAIT_MAX_S`` with CI unfinished it gives the head up rather than
         review it. A shadow verdict is a sample of a model, so it is taken only on code CI
         passed. Sets ``turn.error``."""
-        from .. import ci, config, gh
+        from .. import ci, config, gh, shadow_queue
         row, loop = turn.row, turn.loop
         head = row['head']
+        # #1647: only once its own reviewer turn approved the head; from the ledger, no read.
+        # It holds for as long as that turn is unresolved, however long: a time bound would
+        # end it with the head clear, and a late APPROVE would then be green with no shadow.
+        what, why, approved = shadow_queue.decide(self.db, row)
+        if what == "skip":
+            turn.cancel = True
+            turn.error = f"shadow review skipped: {why}"[:600]
+            return
+        if what == "wait":
+            turn.paced_until = time.time() + run_supervisor.CI_POLL_S
+            turn.error = f"{run_supervisor.VERDICT_HOLD} at {head[:7]} — {why}"[:600]
+            self.held_for_ci = True
+            return
+
+        # Review of #1656, F11: the CI wait's clock starts at the approval waited for above, read
+        # with it, not at the queueing, or a slow verdict would spend it before CI is first read.
+        since = max(float(row['created']), approved or 0)
 
         def hold(why: str) -> None:
-            if time.time() - row['created'] >= run_supervisor.CI_WAIT_MAX_S:
+            if time.time() - since >= run_supervisor.CI_WAIT_MAX_S:
                 turn.cancel = True
                 turn.error = (f"shadow review skipped: CI did not finish at {head[:7]} within "
                               f"{run_supervisor.CI_WAIT_MAX_S // 60} min ({why})")[:600]

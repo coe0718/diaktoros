@@ -432,8 +432,22 @@ A shadow review runs a second reviewer model on a head the real reviewer was que
 - Set them with `hermes dk set --loop ID --shadow-profile P [--shadow-every N]` (`--no-shadow` turns it off), with the same flags on `init` and `setup`, or with the settings form's *Shadow review profile* and *Shadow one in N reviews* (`apply` pushes them; `off` as the profile turns it off).
 - `seats.shadow`: the seat's limits, like any seat's: `daily_turns`, `daily_tokens`, `turn_budget_s` (default: the loop's), `concurrency` (default 1, never the loop's) and `max_steps` (default 100, not the reviewer's 60: another model may explore more before it submits). There is no route, login or token: a shadow never writes.
 
-A shadow turn gets the reviewer's prompt and change view at that head, minus any review posted after it was queued (the real one included). It is not part of the loop:
-- it never occupies the PR, so the real reviewer and fixer never wait for it, and it never waits for them;
+A shadow turn gets the reviewer's prompt and change view at that head, minus any review posted after it was queued (the real one included).
+
+**It runs only on a head its reviewer turn approved (#1647).** The shadow's row is queued with its reviewer turn, on a findings snapshot taken before that turn's row exists. When the shadow is claimed, it reads from the run ledger, with no GitHub read, what that same reviewer turn decided (same PR, head and turn key):
+- **A confirmed APPROVE:** it runs.
+- **A change request, or a reviewer turn that succeeded without a verdict:** it is skipped (`cancelled`, "shadow review skipped: …"), with nothing spent. On a head the reviewer sent back, a second opinion decides nothing, because the PR isn't ready either way and the fixer pushes a new head. A week of the ledger had about 46% of the shadow's tokens spent on such heads.
+- **A reviewer turn that failed, or that an operator or the push policy cancelled, without a verdict:** it waits, if that turn never wrote. A redelivered event or `hermes dk retry` can re-arm that same turn, and if the turn then approves, the shadow runs on that approval. A moved head or a closed PR ends the wait, as it does for any shadow.
+- **A reviewer turn that ended and can never be re-armed:** it is skipped. That is a turn cancelled because a review already answers its head ("superseded: reviewed at this head by …"), or one that may have written. `retry` refuses such a turn, and a redelivered event re-arms it only to be cancelled again, so a wait would hold the head for ever.
+- **A newer reviewer turn at the same head:** it is skipped. That newer turn's shadow is the one that counts, so an older approval never runs a shadow on a head since sent back.
+- **Anything still in flight** (the reviewer's turn running, its review being posted or confirmed, an uncertain or unreadable record): it is held ("held: waiting for the reviewer's verdict") and polled again like a CI hold, for as long as that lasts. There is no time bound. A bound would end it with the head clear, and a late APPROVE would then be green with no shadow review.
+- **Then CI, as for any shadow:** it waits while a required check runs, is missing or can't be read, and gives the head up past the CI wait. That wait's clock starts when the reviewer's APPROVE was confirmed, not when the shadow was queued. Otherwise a slow verdict could spend the CI wait before CI is first read, and one unreadable CI answer would then end the shadow with the head clear.
+- **If the findings snapshot can't be taken before the reviewer is queued:** no shadow is queued for that turn. A snapshot taken later could already hold the review's own findings.
+
+Its row is open from the moment the reviewer is queued, so with `shadow.escalate` the head holds the whole time, including while the reviewer's APPROVE is being posted.
+
+It is not part of the loop:
+- it never occupies the PR, so the real reviewer and fixer never wait for it, and it waits for nothing of theirs except its own reviewer turn's verdict (above);
 - it claims no seat and marks no head in flight;
 - it pages nobody when it fails, and a failed one is not retried: it is a lost sample, not stuck work (a closed usage window still waits for its reset, which costs nothing);
 - `stats`, `retry` (unless `--seat shadow`) and `escalate` leave it out.

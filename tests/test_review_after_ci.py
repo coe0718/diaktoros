@@ -225,6 +225,14 @@ class Linger(unittest.TestCase):
         self.assertLessEqual(slept[0], 7)
         self.sup.recover.assert_called_once()
 
+    def test_a_shadow_held_for_its_reviewers_verdict_is_polled_like_a_ci_hold(self):
+        # Review of #1656, S115: the worker lingers for it and schedules it when due.
+        self.hold(0, error=f"{run_supervisor.VERDICT_HOLD} at aaaaaaa — waiting for the "
+                           "reviewer's verdict at aaaaaaa")
+        self.sup.held_for_ci = True
+        self.sup.linger_for_ci(sleep=self.fail)
+        self.sup.recover.assert_called_once()
+
     def test_another_hold_is_not_ours_to_wait_for(self):
         self.hold(0, error="held: reviewer daily turn cap (10) reached — resumes 00:00")
         self.sup.held_for_ci = True
