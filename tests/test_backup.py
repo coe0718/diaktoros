@@ -9,13 +9,14 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import argparse
 import ast
 import contextlib
-import importlib
 import io
 import json
 import os
 import re
 import sqlite3
+import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -38,6 +39,14 @@ JOB = {"id": "j1", "name": "diaktoros watchdog", "schedule": {"kind": "interval"
 
 class Base(fg.Base):
     cron_run = None
+
+    def live_temp(self, path, text="half"):
+        """A temp file as a live writer has it: open, holding the flock ``util.hold_temp`` takes."""
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        self.addCleanup(os.close, fd)
+        os.write(fd, text.encode())
+        util.hold_temp(fd)
+        return path
 
     def setUp(self):
         super().setUp()
@@ -362,7 +371,7 @@ class Create(Base):
     def test_transient_files_are_not_archived(self):
         (self.state / "state.lock").write_text("")
         (self.state / "breach.lock").write_text("")
-        (self.state / ".queue.json.a1b2c3d4.dktmp").write_text("half")
+        self.live_temp(self.state / ".queue.json.a1b2c3d4.dktmp")
         (self.state / ".hidden-config").write_text("kept")
         out = self.root / "b.tar.gz"
         backup.create(out)
@@ -382,7 +391,7 @@ class Create(Base):
         for path, text in keep.items():
             path.write_text(text)
         (self.state / "state.lock").write_text("")
-        (self.state / ".queue.json.a1b2c3d4.dktmp").write_text("half")
+        self.live_temp(self.state / ".queue.json.a1b2c3d4.dktmp")
         out = self.root / "b.tar.gz"
         backup.create(out)
         archived = {f["path"] for f in backup.read_manifest(out)["files"]}
@@ -426,7 +435,9 @@ class Create(Base):
             self.assertTrue((self.state / name).is_file(), name)   # the writers made them
         keep = {"user.lock": "", ".notes.txt.a1b2c3d4": "mine", "Cargo.lock": "x",
                 f".{onboarding.FILE}.a1b2c3d4": "mine",           # a writer's name, not its suffix
-                f".{conflict_scan.FILE}.a1b2c3d4": "mine"}
+                f".{conflict_scan.FILE}.a1b2c3d4": "mine",
+                f".notes.txt.a1b2c3d4{util.TEMP_SUFFIX}": "mine", # the suffix too (review F3)
+                f".{onboarding.FILE}.a1b2c3d4{util.TEMP_SUFFIX}": "mine"}
         for name, text in keep.items():
             (self.state / name).write_text(text)
         out = self.root / "b.tar.gz"
@@ -435,7 +446,8 @@ class Create(Base):
         temps = []
 
         def archive_mid_write():
-            temps.extend(p.name for p in self.state.iterdir() if util.is_temp_name(p.name))
+            temps.extend(p.name for p in self.state.iterdir()
+                         if util.is_temp_name(p.name) and p.name not in keep)
             backup.create(out)
         util.atomic_write(target, "{}", before_replace=archive_mid_write)
         self.assertEqual(len(temps), 1, temps)                      # the writer's own temp name
@@ -475,8 +487,28 @@ class Create(Base):
             self.assertEqual(path.read_text(), text, str(path))
 
 
+    def test_a_user_file_with_the_writers_temp_name_is_kept_and_restored(self):
+        """Review F3: ``.<name>.<8 chars>.dktmp`` that no writer holds open is not a live temp,
+        whatever its name: it is archived and restore brings it back, with or without a
+        target beside it."""
+        keep = {self.state / ".notes.txt.a1b2c3d4.dktmp": "mine",
+                self.state / f".{onboarding.FILE}.b1b2c3d4.dktmp": "mine too",
+                self.state / onboarding.FILE: "{}"}
+        for path, text in keep.items():
+            path.write_text(text)
+        out = self.root / "b.tar.gz"
+        backup.create(out)
+        manifest = backup.read_manifest(out)
+        self.assertEqual({str(p) for p in keep} - {f["path"] for f in manifest["files"]}, set())
+        self.assertEqual(manifest["skipped"], [])
+        for path in keep:
+            path.unlink()
+        self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        for path, text in keep.items():
+            self.assertEqual(path.read_text(), text, str(path))
+
     def test_a_temp_name_left_out_is_reported_not_silent(self):
-        (self.state / ".queue.json.a1b2c3d4.dktmp").write_text("half")
+        self.live_temp(self.state / ".queue.json.a1b2c3d4.dktmp")
         out = self.root / "b.tar.gz"
         code, text = self.run_cmd(cli.cmd_backup, out=str(out))
         self.assertEqual(code, 0)
@@ -485,8 +517,9 @@ class Create(Base):
         self.assertIn(".queue.json.a1b2c3d4.dktmp", text)
 
     def test_a_temp_file_renamed_away_before_the_read_does_not_fail_the_backup(self):
-        """The window #1060 names: listed, then gone by ``tar.add`` (a first write's temp file has
-        no target yet, so it is listed)."""
+        """The window #1060 names: listed, then gone by ``tar.add``. A first write's temp has no
+        target yet; it is listed when it is not yet held (the writer is between ``mkstemp`` and
+        ``hold_temp``)."""
         temp = self.state / ".fresh.json.a1b2c3d4.dktmp"
         temp.write_text("half")
         real = backup.tarfile.TarFile.add
@@ -586,20 +619,46 @@ class LockInventory(unittest.TestCase):
                     found.setdefault(node.value, set()).add(module)
         return found
 
-    def test_every_lock_name_in_the_package_is_registered_or_accounted_for(self):
-        for name, modules in self.named().items():
-            if name in self.ELSEWHERE:
-                continue
-            for module in modules:
-                importlib.import_module(module.removesuffix(".__init__"))    # registers on import
-            self.assertIn(name, util.LOCK_NAMES, f"{name} in {sorted(modules)} is not registered")
-            self.assertIn(name, backup._LOCK_NAMES)
+    def fresh_lock_names(self, package_parent):
+        """``backup._LOCK_NAMES`` as a fresh backup process has them: nothing but ``backup`` is
+        imported by this interpreter, so only what ``backup`` itself loads can register."""
+        code = ("import json, sys; sys.path.insert(0, sys.argv[1]); "
+                "from diaktoros import backup; print(json.dumps(sorted(backup._LOCK_NAMES)))")
+        done = subprocess.run([sys.executable, "-P", "-c", code, str(package_parent)],
+                              capture_output=True, text=True, timeout=120,
+                              env={**os.environ, "PYTHONPATH": ""})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return set(json.loads(done.stdout))
 
-    def test_the_scan_finds_a_new_writers_unregistered_lock(self):
+    def test_every_lock_name_in_the_package_is_registered_or_accounted_for(self):
+        """Judged on the registry a fresh process builds, not on one this test filled by
+        importing the writers itself (review: a module ``backup`` never loads would pass)."""
+        production = self.fresh_lock_names(Path(backup.__file__).parent.parent)
+        for name, modules in self.named().items():
+            if name not in self.ELSEWHERE:
+                self.assertIn(name, production, f"{name} in {sorted(modules)} is not registered")
+
+    def test_a_new_writer_module_is_found_by_a_fresh_backup_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = Path(tmp) / "diaktoros"
+            shutil.copytree(Path(backup.__file__).parent, copy,
+                            ignore=shutil.ignore_patterns("__pycache__"))
+            self.assertNotIn("new-worker.lock", self.fresh_lock_names(tmp))
+            (copy / "new_worker.py").write_text(
+                "from .util import register_lock\nLOCK = register_lock('new-worker.lock')\n")
+            self.assertIn("new-worker.lock", self.fresh_lock_names(tmp))
+            self.assertIn("new-worker.lock", self.named(copy))   # and the scan sees it as a name
+
+    def test_the_scan_still_flags_a_lock_nobody_registered_in_a_fresh_process(self):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "newwriter.py").write_text('LOCK = "brand-new.lock"\n')
             found = self.named(Path(tmp))
-        self.assertEqual(set(found) - util.LOCK_NAMES - set(self.ELSEWHERE), {"brand-new.lock"})
+        production = self.fresh_lock_names(Path(backup.__file__).parent.parent)
+        self.assertEqual(set(found) - production - set(self.ELSEWHERE), {"brand-new.lock"})
+
+    def test_a_lock_name_is_registered_by_the_module_that_names_it(self):
+        self.assertEqual({".onboarding.lock", "conflict-scan.lock"} - backup._LOCK_NAMES, set())
+        self.assertEqual({onboarding.LOCK, conflict_scan.LOCK} - util.LOCK_NAMES, set())
 
 
 class Restore(Base):

@@ -17,6 +17,7 @@ exists yet.
 from __future__ import annotations
 
 import io
+import importlib
 import json
 import os
 import pathlib
@@ -28,9 +29,7 @@ import time
 
 from .ledger import read_only
 from .config import credentials
-from . import (config, conflict_scan, gate_decisions, gate_failures, gate_shims, merge_check,  # noqa: F401
-               observer, onboarding, route_intent, routes, run_supervisor, util)
-from . import state as state_mod  # noqa: F401  (importing a writer registers its locks)
+from . import config, gate_shims, route_intent, routes, run_supervisor, util
 
 VERSION = 1
 MANIFEST = "manifest.json"
@@ -57,12 +56,25 @@ def default_out() -> pathlib.Path:
 
 
 # The flock files the plugin's own writers keep directly in a state directory (or the gate-failure
-# directory). Each writer registers its lock where it names it (``util.register_lock``), so a new
-# lock is added in one place, by the code that creates it, and a lock name no writer registered
-# fails ``test_backup.LockInventory``. The modules that register one are imported above, so the
-# set is complete once this module is. Exact names, not a ``*.lock`` pattern: a user's
-# ``user.lock`` is state (#1060).
-_LOCK_NAMES = util.LOCK_NAMES
+# directory). Each writer registers its lock where it names it (``util.register_lock``). The
+# registrations happen when a writer's module is imported, and a backup process imports few of
+# them, so ``_load_writers`` imports every module of the package whose source calls
+# ``register_lock(``: found by that call, not by a list here, so a new writer needs nothing else.
+# Exact names, not a ``*.lock`` pattern: a user's ``user.lock`` is state (#1060).
+def _load_writers() -> frozenset[str]:
+    root = pathlib.Path(__file__).resolve().parent
+    for path in sorted(root.rglob("*.py")):
+        parts = path.relative_to(root).with_suffix("").parts
+        if parts[-1] == "__main__" or "register_lock(" not in path.read_text(errors="replace"):
+            continue
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        if parts and parts != ("util",) and parts != ("backup",):
+            importlib.import_module("." + ".".join(parts), __package__)
+    return frozenset(util.LOCK_NAMES)
+
+
+_LOCK_NAMES = _load_writers()
 
 
 def _transient(path: pathlib.Path, root: pathlib.Path) -> bool:
@@ -73,12 +85,12 @@ def _transient(path: pathlib.Path, root: pathlib.Path) -> bool:
     which may legitimately contain any name):
     - an *empty* file with one of the plugin's own lock names (``_LOCK_NAMES``): flock files never
       hold data. Any other ``*.lock`` (``Cargo.lock``, ``user.lock``) is state and is kept;
-    - a temp file of ``util.atomic_write`` or the route registry: ``.<name>.<8 chars>.dktmp``
-      (``util.is_temp_name``). The suffix is the plugin's own, so this holds whether or not
-      ``<name>`` exists yet (a first write), and a user's ``.<name>.a1b2c3d4`` has no such suffix
-      and is kept, even beside a ``<name>`` a writer owns (#1651).
-    What is left out is never silent: ``_regular_files`` reports a temp and the manifest lists it.
-    A temp from before the suffix existed is archived like any unknown file: litter, not loss."""
+    - a temp file a writer holds right now: a name of ``util.atomic_write``'s shape
+      (``.<name>.<8 chars>.dktmp``) *and* an ``flock`` held on the file (``util.hold_temp``, taken
+      for as long as the writer has it open). A first write has no target beside it and is still
+      recognised. The name alone proves nothing: a user's file of that name, or a crashed
+      writer's leftover, nobody holds, and it is archived, never dropped (#1651).
+    What is left out is never silent: ``_regular_files`` reports a temp and the manifest lists it."""
     if path.parent != root:
         return False
     if path.name in _LOCK_NAMES:
@@ -86,7 +98,7 @@ def _transient(path: pathlib.Path, root: pathlib.Path) -> bool:
             return path.stat().st_size == 0
         except OSError:
             return True      # gone between the listing and now: nothing to archive
-    return util.is_temp_name(path.name)
+    return util.is_temp_name(path.name) and util.temp_in_use(path)
 
 
 def _regular_files(root: pathlib.Path, skipped: list[str] | None = None) -> list[pathlib.Path]:

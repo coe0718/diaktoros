@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import fcntl
 import os
 import re
 from pathlib import Path
@@ -19,8 +20,9 @@ LOG_PREFIXES = (LOG_PREFIX, "[review-loop]")
 
 
 # Every temp file ``atomic_write`` (and the route registry) makes is ``.<name>.<8 chars>`` plus this
-# suffix. The suffix is what marks it the plugin's: ``backup`` leaves out a name that carries it,
-# whether or not its target exists yet, and keeps a user's ``.<name>.a1b2c3d4`` (#1651).
+# suffix, and holds a ``flock`` while its writer is live (``hold_temp``). The name only narrows
+# which files ``backup`` probes; what it leaves out is a file whose lock a writer holds
+# (``temp_in_use``), never a file by its name, so a user's file of any name is kept (#1651).
 TEMP_SUFFIX = ".dktmp"
 _TEMP_NAME = re.compile(r"^\..+\.[a-z0-9_]{8}" + re.escape(TEMP_SUFFIX) + "$")
 
@@ -41,6 +43,36 @@ def is_temp_name(name: str) -> bool:
     return bool(_TEMP_NAME.match(name))
 
 
+def hold_temp(fd: int) -> None:
+    """Mark the temp file open as ``fd`` as a live writer's: hold an exclusive ``flock`` on it until
+    ``fd`` is closed. The writer calls this right after ``mkstemp`` and closes ``fd`` only once the
+    file is renamed into place (or removed), so a held temp is proof that a writer is mid-write.
+    A filesystem without ``flock`` leaves the temp unmarked (``backup`` then archives it: litter)."""
+    with contextlib.suppress(OSError):
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+
+def temp_in_use(path) -> bool:
+    """Is the temp-shaped file at ``path`` held by a live writer (or already gone)? The proof is
+    the writer's ``flock`` (``hold_temp``), not the name: a file of this shape that nobody holds
+    is a user's file or a crashed writer's leftover, and ``backup`` keeps it (#1651). Never waits."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return True               # renamed away since the listing: nothing to archive
+    except OSError:
+        return False              # cannot be probed: not proven a writer's, so keep it
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(fd)              # also drops a shared lock just taken
+    return False
+
+
 def atomic_write(path, data: str | bytes, *, mode: int = 0o600, before_replace=None) -> None:
     """Publish ``data`` to ``path`` whole or not at all, and durably before returning: a temp file
     beside it (``mode`` from creation, never wider), fsync, ``before_replace()`` (a last check,
@@ -52,6 +84,7 @@ def atomic_write(path, data: str | bytes, *, mode: int = 0o600, before_replace=N
     fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=TEMP_SUFFIX, dir=path.parent)
     try:
         try:
+            hold_temp(fd)         # held until the rename: a backup sees a live writer's temp
             os.fchmod(fd, mode)
             while view:
                 written = os.write(fd, view)
@@ -59,12 +92,12 @@ def atomic_write(path, data: str | bytes, *, mode: int = 0o600, before_replace=N
                     raise OSError(f"short write to {path}")
                 view = view[written:]
             os.fsync(fd)
+            if before_replace is not None:
+                before_replace()
+            os.replace(temp, path)
+            temp = None
         finally:
             os.close(fd)
-        if before_replace is not None:
-            before_replace()
-        os.replace(temp, path)
-        temp = None
         directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
             os.fsync(directory)
