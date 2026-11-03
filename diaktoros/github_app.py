@@ -49,6 +49,7 @@ _SIGN = ("import sys\n"
 
 _lock = threading.Lock()
 _tokens: dict = {}              # (login, repo, app_id) -> (token, expires_at epoch)
+_refused: set = set()           # tokens GitHub answered 401 in this process: never used again
 _principals: dict = {}          # (login, app_id) -> account
 
 
@@ -219,9 +220,9 @@ def installation_token(loop: dict, login: str) -> str:
         cached = _tokens.get(key)
         if cached and cached[1] - time.time() > REUSE_MARGIN_S:
             return cached[0]
-        with app_tokens.held():             # one minter at a time across the host (#1780)
+        with app_tokens.held(key):          # one minter at a time across the host (#1780)
             shared = app_tokens.load(key)
-            if shared and shared[1] - time.time() > REUSE_MARGIN_S:
+            if shared and shared[1] - time.time() > REUSE_MARGIN_S and shared[0] not in _refused:
                 _tokens[key] = shared
                 return shared[0]
             token, expires = _mint(loop, login, repo)
@@ -246,20 +247,25 @@ def _mint(loop: dict, login: str, repo: str) -> tuple[str, float]:
     return token, expires
 
 
-def refused(loop: dict, login: str | None) -> None:
-    """GitHub answered 401 to ``login``'s token: if it is an App's, forget it here and for every
-    host process, so the next call mints a new one instead of reusing a dead one (#1780)."""
+def refused(loop: dict, login: str | None, sent: str) -> None:
+    """GitHub answered 401 to ``sent``, the token a request carried as ``login``: if it is an
+    App's, this process never uses it again, and it is dropped wherever it is still the current
+    one, so the next call mints a new one instead of reusing a dead one (#1780).
+
+    Only ``sent`` (review of #1781, F4): a late 401 for an old token never drops the successor
+    already minted, here or by another process. Remembered even where the shared file cannot be
+    written (F2), so a process that writes nothing stops reloading it."""
     found = entry(loop, login)
-    if not found:
+    if not found or not sent:
         return
     key = (str(login).casefold(), str(loop.get("repo") or ""), found.get("app_id"))
     with _lock:
-        dead = _tokens.pop(key, None)
-        if dead is None:
-            return
-        with app_tokens.held():             # only that token: another process may have minted
-            stored = app_tokens.load(key)   # its successor already
-            if stored and stored[0] == dead[0]:
+        _refused.add(sent)
+        if _tokens.get(key, ("",))[0] == sent:
+            del _tokens[key]
+        with app_tokens.held(key):
+            stored = app_tokens.load(key)
+            if stored and stored[0] == sent:
                 app_tokens.drop(key)
 
 
@@ -304,6 +310,7 @@ def forget() -> None:
     global _signer
     with _lock:
         _tokens.clear()
+        _refused.clear()
         _principals.clear()
         _signer = None
         app_tokens.drop()
