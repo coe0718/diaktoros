@@ -47,6 +47,13 @@ class Counted(unittest.TestCase):
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
+                if self.path.endswith("/garbled"):   # answered, but not with JSON
+                    self.send_response(200)
+                    self.send_header("X-RateLimit-Used", "123")
+                    self.send_header("Content-Length", "4")
+                    self.end_headers()
+                    self.wfile.write(b"<ht>")
+                    return
                 if self.path.endswith("/limited"):
                     self.send_response(403)
                     self.send_header("X-RateLimit-Remaining", "0")
@@ -131,6 +138,13 @@ class Counted(unittest.TestCase):
         reader = self.counted()["reader"]
         self.assertEqual((reader["spent"], reader["error"], reader["limited"]), (3, 0, 0))
         self.assertEqual(reader["limit"]["used"], "104")     # from the last redirect, not storage
+
+    def test_an_answer_whose_body_will_not_parse_is_still_spent_once(self):
+        # Review of #1758, F4: GitHub answered (and counted it) before the body failed to parse.
+        self.assertIsNone(self.get("/repos/owner/one/pulls/7/garbled").data)
+        reader = self.counted()["reader"]
+        self.assertEqual((reader["spent"], reader["error"]), (1, 0))
+        self.assertEqual(reader["limit"]["used"], "123")
 
     def test_logins_are_kept_apart_and_a_missing_credential_is_unsent(self):
         self.get("/repos/owner/one/pulls/7", login="reviewer")

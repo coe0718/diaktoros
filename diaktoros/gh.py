@@ -268,14 +268,16 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
                  **({"If-None-Match": cached["etag"]} if cached else {})})
     from .config.host_guards import guard_network
     guard_network(req.full_url)         # under the test guard: loopback fakes only
+    answered = False
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode() or "null"
             headers = {k.lower(): v for k, v in resp.headers.items()}
-            parsed = json.loads(raw)
+            # Counted on the answer itself: a body that fails to read or parse was still spent.
+            answered = True
+            gh_calls.record(who, method, path, gh_calls.outcome(path, resp.status), headers)
+            parsed = json.loads(resp.read().decode() or "null")
             if method == "GET":
                 gh_cache.store(who, path, parsed, headers)
-            gh_calls.record(who, method, path, gh_calls.outcome(path, resp.status), headers)
             return Response(parsed, "", resp.status, headers)
     except urllib.error.HTTPError as exc:
         try:   # an HTTPError holds the response open: close it, not the collector
@@ -291,7 +293,8 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
             return Response(cached["data"], "", 200, headers)
         return Response(None, f"HTTP {exc.code}{f' {detail}' if detail else ''}", exc.code, headers)
     except Exception as exc:
-        gh_calls.record(who, method, path, "error")     # no HTTP answer: it may have counted
+        if not answered:                                # no HTTP answer: it may have counted
+            gh_calls.record(who, method, path, "error")
         return Response(None, f"{type(exc).__name__}: {exc}")
 
 
