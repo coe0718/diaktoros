@@ -815,6 +815,18 @@ def shadow_issues_daily(loop: dict) -> int:
 
 
 APP_LOGIN = re.compile(r"[a-z0-9][a-z0-9-]{0,33}\[bot\]\Z")
+APP_ID_MAX_DIGITS = 20      # far above any real App id; keeps int() under Python's digit limit
+
+
+def parse_app_id(value) -> int | None:
+    """A GitHub App id as a positive ``int``, or ``None`` when ``value`` is not one: ASCII digits
+    only (``isdigit()`` alone accepts "²"), at most ``APP_ID_MAX_DIGITS`` long (an overlong run of
+    digits makes ``int()`` raise ``ValueError``), and not zero. Every App id reader uses this."""
+    text = str(value) if type(value) is int and 0 < value < 10 ** APP_ID_MAX_DIGITS else value
+    if not (isinstance(text, str) and text.isascii() and text.isdecimal()
+            and len(text) <= APP_ID_MAX_DIGITS):
+        return None
+    return int(text) or None
 
 
 def is_app(loop: dict, login: str) -> bool:

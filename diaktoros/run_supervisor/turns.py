@@ -103,6 +103,37 @@ def _nudged(row, prompt: str) -> str:
     return prompts.before_this_round(prompt, run_supervisor.PUBLISH_NUDGE)
 
 
+def _turn_role(row) -> str:
+    """The prompt a ledger row's turn runs under, for its recorded prompt revision: a fixer row
+    may be a conflict or a CI-fix turn, and a shadow turn is told what the reviewer is (#218)."""
+    from .. import ci_fix
+    if row['seat'] == 'fixer' and str(row['turn_key'] or '').startswith(run_supervisor.CONFLICT_KEY):
+        return 'conflict'
+    if row['seat'] == 'fixer' and ci_fix.is_ci_fix(row['turn_key']):
+        return 'ci_fix'
+    return 'reviewer' if row['seat'] == run_supervisor.SHADOW else row['seat']
+
+
+def _turn_pool(loop: dict, row, review_only: bool) -> tuple[str, int | None]:
+    """The pool a turn is counted in (#772) and that pool's daily cap. The count at launch
+    re-checks the cap in the same locked step (#1378): admission came before staging, and a
+    turn admitted alongside this one may have taken the last slot meanwhile."""
+    from .. import config, pacing
+    if review_only:
+        return pacing.REVIEW_ONLY_SEAT, config.review_only_daily(loop)
+    return row['seat'], config.seat_daily_turns(loop, row['seat'])
+
+
+def _cap_held(turn: _Turn, seat: str, cap: int) -> None:
+    """Hold ``turn`` until midnight: the daily turn pool ``seat`` counts in is at ``cap``. The
+    admission check (``_pacing_hold``) and the count at launch (#1378) both end here."""
+    from .. import pacing
+    turn.paced_until = pacing.next_midnight()
+    label = 'review-only' if seat == pacing.REVIEW_ONLY_SEAT else seat
+    turn.error = (f"held: {label} daily turn cap ({cap}) reached — resumes "
+                  f"{pacing.when(turn.paced_until)}")
+
+
 class ClaimAndLaunch:
     """The claim and turn methods of :class:`~diaktoros.run_supervisor.Supervisor`."""
 
@@ -392,7 +423,7 @@ class ClaimAndLaunch:
 
     def _run_production(self, run_id: str, owner: str) -> None:
         """Worker-only host control plane; never pass credentials to bwrap."""
-        from .. import trusted_turn
+        from .. import pacing, trusted_turn
         turn = _Turn(run_id, owner, int(self.budget_of(run_id)))
         # An operator's stop (#1148: contained.Stopped, TurnCancelled) ends like any failed turn
         # here; complete_uncertain sees the request and makes it cancelled, never retried (or
@@ -401,6 +432,10 @@ class ClaimAndLaunch:
             self._production_turn(turn)
         except trusted_turn.TurnBudgetExceeded as exc:
             turn.error = self._budget_kill_error(turn, exc)
+            turn.retry = False
+        except pacing.CapReached as exc:
+            # Another turn took the last slot while this one staged (#1378): nothing launched.
+            _cap_held(turn, exc.seat, exc.cap)
             turn.retry = False
         except run_supervisor.IssueIneligible as exc:
             # Before launch, no model ran (#723): a cancellation, not a failure; never re-armed.
@@ -423,7 +458,7 @@ class ClaimAndLaunch:
     def _production_turn(self, turn: _Turn) -> None:
         """The turn itself: take the row, gate the launch, build the turn, run it. A step that
         holds the turn sets ``turn.error`` and the turn ends there, nothing launched."""
-        from .. import ci_fix, config, pacing, prompts, seat_model, trusted_turn
+        from .. import config, pacing, prompts, seat_model, trusted_turn
         assert self.production_config is not None
         try:
             settings = seat_model.load_runtime(self.production_config)
@@ -491,20 +526,14 @@ class ClaimAndLaunch:
         launch = self._prepare_launch(turn)
         if launch is None:
             return
-        if row['seat'] == 'fixer' and str(row['turn_key'] or '').startswith(run_supervisor.CONFLICT_KEY):
-            role = 'conflict'
-        elif row['seat'] == 'fixer' and ci_fix.is_ci_fix(row['turn_key']):
-            role = 'ci_fix'
-        else:
-            # A shadow turn is told exactly what the reviewer is told (#218).
-            role = 'reviewer' if row['seat'] == run_supervisor.SHADOW else row['seat']
-        self.record_launch(run_id, owner, prompts.revision(role), inference.model)
+        self.record_launch(run_id, owner, prompts.revision(_turn_role(row)), inference.model)
         prompt = _nudged(row, launch.prompt)
         cancel = self._cancels.get(run_id)
         if cancel is not None and cancel.is_set():
             raise run_supervisor.TurnCancelled(run_supervisor.OPERATOR_STOPPED)  # before any launch
-        # Each turn is counted once, against its own pool (#772).
-        pacing.count_turn(loop['id'], pacing.REVIEW_ONLY_SEAT if ro_turn else row['seat'])
+        # Each turn is counted once, against its own pool (#772), when its sandbox starts: a
+        # turn that fails in staging or prefetch inside run_turn never spends one (#1378).
+        counted_seat, cap = _turn_pool(loop, row, ro_turn)
         change, merged = launch.change, launch.merged
         turn.rc = trusted_turn.run_turn(loop, launch.scope, source=Path(settings["source"]),
               venv=Path(settings["venv"]), runtime=Path(settings["runtime"]),
@@ -526,7 +555,7 @@ class ClaimAndLaunch:
               # as "fetching", not as a silent turn, and its outcome outlives the run.
               progress=lambda text: self.record_dependencies(run_id, owner, text),
               # An operator's cancel (#1148) stops the sandbox the way the budget does.
-              stop=cancel)
+              stop=cancel, on_launch=lambda: pacing.count_turn(loop['id'], counted_seat, cap=cap))
         # A non-zero sandbox exit with nothing on the write-ahead record is the model or
         # provider failing (429/5xx, OAuth refresh, crash): worth a backed-off retry.
         turn.retry = turn.rc != 0
@@ -565,16 +594,12 @@ class ClaimAndLaunch:
             ro_turn = ro_author in config.review_only(loop)
         if ro_turn:
             if pacing.turns_today(loop['id'], pacing.REVIEW_ONLY_SEAT) >= ro_cap:
-                turn.paced_until = pacing.next_midnight()
-                turn.error = (f"held: review-only daily turn cap ({ro_cap}) reached — resumes "
-                              f"{pacing.when(turn.paced_until)}")
+                _cap_held(turn, pacing.REVIEW_ONLY_SEAT, ro_cap)
                 return ro_turn
         else:
             cap = config.seat_daily_turns(loop, row['seat'])
             if cap is not None and pacing.turns_today(loop['id'], row['seat']) >= cap:
-                turn.paced_until = pacing.next_midnight()
-                turn.error = (f"held: {row['seat']} daily turn cap ({cap}) reached — resumes "
-                              f"{pacing.when(turn.paced_until)}")
+                _cap_held(turn, row['seat'], cap)
                 return False
         # A seat's daily token budget (#480): once spent, the next turn waits for midnight.
         # A turn in flight is never killed; this only gates a launch. The fixer's budget

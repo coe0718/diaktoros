@@ -7,14 +7,19 @@ from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import argparse
+import ast
 import contextlib
 import io
 import json
 import os
+import re
 import sqlite3
+import shutil
 import stat
+import subprocess
 import sys
 import tarfile
+import tempfile
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -22,6 +27,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import backup, cli, config, migrate, routes  # noqa: E402
+from diaktoros import conflict_scan, onboarding, util  # noqa: E402
+from diaktoros import state as state_mod  # noqa: E402
 from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
 
@@ -32,6 +39,14 @@ JOB = {"id": "j1", "name": "diaktoros watchdog", "schedule": {"kind": "interval"
 
 class Base(fg.Base):
     cron_run = None
+
+    def live_temp(self, path, text="half"):
+        """A temp file as a live writer has it: open, holding the flock ``util.hold_temp`` takes."""
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        self.addCleanup(os.close, fd)
+        os.write(fd, text.encode())
+        util.hold_temp(fd)
+        return path
 
     def setUp(self):
         super().setUp()
@@ -356,14 +371,14 @@ class Create(Base):
     def test_transient_files_are_not_archived(self):
         (self.state / "state.lock").write_text("")
         (self.state / "breach.lock").write_text("")
-        (self.state / ".queue.json.a1b2c3d4").write_text("half")
+        self.live_temp(self.state / ".queue.json.a1b2c3d4.dktmp")
         (self.state / ".hidden-config").write_text("kept")
         out = self.root / "b.tar.gz"
         backup.create(out)
         names = {Path(f["path"]).name for f in backup.read_manifest(out)["files"]}
         self.assertIn("queue.json", names)
         self.assertIn(".hidden-config", names)      # a real dotfile is state, not a temp file
-        self.assertFalse(names & {"state.lock", "breach.lock", ".queue.json.a1b2c3d4"})
+        self.assertFalse(names & {"state.lock", "breach.lock", ".queue.json.a1b2c3d4.dktmp"})
 
     def test_legitimate_lookalikes_survive_backup_and_restore(self):
         """#1624 review F1: a lockfile with content, and temp-shaped names below the writers' own
@@ -376,13 +391,13 @@ class Create(Base):
         for path, text in keep.items():
             path.write_text(text)
         (self.state / "state.lock").write_text("")
-        (self.state / ".queue.json.a1b2c3d4").write_text("half")
+        self.live_temp(self.state / ".queue.json.a1b2c3d4.dktmp")
         out = self.root / "b.tar.gz"
         backup.create(out)
         archived = {f["path"] for f in backup.read_manifest(out)["files"]}
         self.assertEqual({str(p) for p in keep} - archived, set())
         self.assertFalse(archived & {str(self.state / "state.lock"),
-                                     str(self.state / ".queue.json.a1b2c3d4")})
+                                     str(self.state / ".queue.json.a1b2c3d4.dktmp")})
         for path in keep:
             path.unlink()
         self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
@@ -408,19 +423,104 @@ class Create(Base):
         for path, text in keep.items():
             self.assertEqual(path.read_text(), text, str(path))
 
+    def test_locks_made_by_their_writers_and_first_write_temps_are_not_archived(self):
+        """#1651: the locks ``onboarding`` and ``conflict_scan`` really create, and the temp file a
+        real ``atomic_write`` has open on a file's first write, stay out of the archive; a user's
+        file of the same shape stays in (review F1: even named for a file a writer owns)."""
+        loop = config.all_loops()[0]
+        with onboarding._locked(loop):
+            pass
+        conflict_scan.run(state_mod.LoopState(loop), scan=lambda: None)
+        for name in (onboarding.LOCK, conflict_scan.LOCK):
+            self.assertTrue((self.state / name).is_file(), name)   # the writers made them
+        keep = {"user.lock": "", ".notes.txt.a1b2c3d4": "mine", "Cargo.lock": "x",
+                f".{onboarding.FILE}.a1b2c3d4": "mine",           # a writer's name, not its suffix
+                f".{conflict_scan.FILE}.a1b2c3d4": "mine",
+                f".notes.txt.a1b2c3d4{util.TEMP_SUFFIX}": "mine", # the suffix too (review F3)
+                f".{onboarding.FILE}.a1b2c3d4{util.TEMP_SUFFIX}": "mine"}
+        for name, text in keep.items():
+            (self.state / name).write_text(text)
+        out = self.root / "b.tar.gz"
+        target = self.state / onboarding.FILE
+        self.assertFalse(target.exists())                           # a first write
+        temps = []
+
+        def archive_mid_write():
+            temps.extend(p.name for p in self.state.iterdir()
+                         if util.is_temp_name(p.name) and p.name not in keep)
+            backup.create(out)
+        util.atomic_write(target, "{}", before_replace=archive_mid_write)
+        self.assertEqual(len(temps), 1, temps)                      # the writer's own temp name
+        manifest = backup.read_manifest(out)
+        archived = {Path(f["path"]).name for f in manifest["files"]}
+        self.assertFalse(archived & {onboarding.LOCK, conflict_scan.LOCK, *temps})
+        self.assertEqual(set(keep) - archived, set())
+        self.assertEqual({Path(p).name for p in manifest["skipped"]}, set(temps))
+
+    def test_a_route_registry_temp_is_left_out_too(self):
+        seen = []
+        real = routes.os.replace
+
+        def spy(src, dst, *a, **kw):
+            seen.append(Path(src).name)
+            return real(src, dst, *a, **kw)
+        with mock.patch.object(routes.os, "replace", spy):
+            routes._write_registry(self.state / "routes.json", {})
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(util.is_temp_name(seen[0]), seen)
+
+    def test_a_user_lookalike_beside_its_owned_target_is_kept_and_restored(self):
+        """Review F1: ``.onboarding.json.a1b2c3d4`` next to a real ``onboarding.json`` is a user's
+        file: the writers' temp names carry a suffix it lacks."""
+        keep = {self.state / onboarding.FILE: "{}", self.state / f".{onboarding.FILE}.a1b2c3d4": "mine"}
+        for path, text in keep.items():
+            path.write_text(text)
+        out = self.root / "b.tar.gz"
+        backup.create(out)
+        manifest = backup.read_manifest(out)
+        self.assertEqual({str(p) for p in keep} - {f["path"] for f in manifest["files"]}, set())
+        self.assertEqual(manifest["skipped"], [])
+        for path in keep:
+            path.unlink()
+        self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        for path, text in keep.items():
+            self.assertEqual(path.read_text(), text, str(path))
+
+
+    def test_a_user_file_with_the_writers_temp_name_is_kept_and_restored(self):
+        """Review F3: ``.<name>.<8 chars>.dktmp`` that no writer holds open is not a live temp,
+        whatever its name: it is archived and restore brings it back, with or without a
+        target beside it."""
+        keep = {self.state / ".notes.txt.a1b2c3d4.dktmp": "mine",
+                self.state / f".{onboarding.FILE}.b1b2c3d4.dktmp": "mine too",
+                self.state / onboarding.FILE: "{}"}
+        for path, text in keep.items():
+            path.write_text(text)
+        out = self.root / "b.tar.gz"
+        backup.create(out)
+        manifest = backup.read_manifest(out)
+        self.assertEqual({str(p) for p in keep} - {f["path"] for f in manifest["files"]}, set())
+        self.assertEqual(manifest["skipped"], [])
+        for path in keep:
+            path.unlink()
+        self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        for path, text in keep.items():
+            self.assertEqual(path.read_text(), text, str(path))
+
     def test_a_temp_name_left_out_is_reported_not_silent(self):
-        (self.state / ".queue.json.a1b2c3d4").write_text("half")
+        self.live_temp(self.state / ".queue.json.a1b2c3d4.dktmp")
         out = self.root / "b.tar.gz"
         code, text = self.run_cmd(cli.cmd_backup, out=str(out))
         self.assertEqual(code, 0)
         self.assertEqual(backup.read_manifest(out)["skipped"],
-                         [str(self.state / ".queue.json.a1b2c3d4")])
-        self.assertIn(".queue.json.a1b2c3d4", text)
+                         [str(self.state / ".queue.json.a1b2c3d4.dktmp")])
+        self.assertIn(".queue.json.a1b2c3d4.dktmp", text)
 
     def test_a_temp_file_renamed_away_before_the_read_does_not_fail_the_backup(self):
-        """The window #1060 names: listed, then gone by ``tar.add`` (a first write's temp file has
-        no target yet, so it is listed)."""
-        temp = self.state / ".fresh.json.a1b2c3d4"
+        """The window #1060 names: listed, then gone by ``tar.add``. A first write's temp has no
+        target yet; it is listed when it is not yet held (the writer is between ``mkstemp`` and
+        ``hold_temp``)."""
+        temp = self.state / ".fresh.json.a1b2c3d4.dktmp"
         temp.write_text("half")
         real = backup.tarfile.TarFile.add
 
@@ -493,6 +593,72 @@ class Create(Base):
         with mock.patch.object(migrate, "doctor_step", return_value=[]):
             self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
         self.assertEqual(self.ledger_count(), 298)
+
+
+class LockInventory(unittest.TestCase):
+    """Review F2: the lock names come from the writers' registrations, and a lock a writer names
+    without registering fails here, whatever the writer is (no list in this test to keep up)."""
+
+    # ``*.lock`` strings in the package that are not a state-directory flock file of a writer.
+    ELSEWHERE = {
+        "Cargo.lock": "a dependency lockfile",
+        "auth.lock": "a Hermes profile's own file, copied by seat_model",
+        "fetch.lock": "lives in the deps cache, not a state directory",
+        ".fixer-push-policy.lock": "lives in the config directory (*.json only is archived)",
+        ".lock": "a suffix: the pacing, migrate, routes, seat_model and safe_push locks, none in a "
+                 "state directory; observer's and routes' are named in full or registered",
+    }
+
+    def named(self, root=Path(backup.__file__).parent):
+        found = {}
+        for path in sorted(root.rglob("*.py")):
+            module = ".".join(path.relative_to(root.parent).with_suffix("").parts)
+            for node in ast.walk(ast.parse(path.read_text())):
+                if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                        and re.fullmatch(r"[A-Za-z0-9_.-]*\.lock", node.value)):
+                    found.setdefault(node.value, set()).add(module)
+        return found
+
+    def fresh_lock_names(self, package_parent):
+        """``backup._LOCK_NAMES`` as a fresh backup process has them: nothing but ``backup`` is
+        imported by this interpreter, so only what ``backup`` itself loads can register."""
+        code = ("import json, sys; sys.path.insert(0, sys.argv[1]); "
+                "from diaktoros import backup; print(json.dumps(sorted(backup._LOCK_NAMES)))")
+        done = subprocess.run([sys.executable, "-P", "-c", code, str(package_parent)],
+                              capture_output=True, text=True, timeout=120,
+                              env={**os.environ, "PYTHONPATH": ""})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return set(json.loads(done.stdout))
+
+    def test_every_lock_name_in_the_package_is_registered_or_accounted_for(self):
+        """Judged on the registry a fresh process builds, not on one this test filled by
+        importing the writers itself (review: a module ``backup`` never loads would pass)."""
+        production = self.fresh_lock_names(Path(backup.__file__).parent.parent)
+        for name, modules in self.named().items():
+            if name not in self.ELSEWHERE:
+                self.assertIn(name, production, f"{name} in {sorted(modules)} is not registered")
+
+    def test_a_new_writer_module_is_found_by_a_fresh_backup_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = Path(tmp) / "diaktoros"
+            shutil.copytree(Path(backup.__file__).parent, copy,
+                            ignore=shutil.ignore_patterns("__pycache__"))
+            self.assertNotIn("new-worker.lock", self.fresh_lock_names(tmp))
+            (copy / "new_worker.py").write_text(
+                "from .util import register_lock\nLOCK = register_lock('new-worker.lock')\n")
+            self.assertIn("new-worker.lock", self.fresh_lock_names(tmp))
+            self.assertIn("new-worker.lock", self.named(copy))   # and the scan sees it as a name
+
+    def test_the_scan_still_flags_a_lock_nobody_registered_in_a_fresh_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "newwriter.py").write_text('LOCK = "brand-new.lock"\n')
+            found = self.named(Path(tmp))
+        production = self.fresh_lock_names(Path(backup.__file__).parent.parent)
+        self.assertEqual(set(found) - production - set(self.ELSEWHERE), {"brand-new.lock"})
+
+    def test_a_lock_name_is_registered_by_the_module_that_names_it(self):
+        self.assertEqual({".onboarding.lock", "conflict-scan.lock"} - backup._LOCK_NAMES, set())
+        self.assertEqual({onboarding.LOCK, conflict_scan.LOCK} - util.LOCK_NAMES, set())
 
 
 class Restore(Base):

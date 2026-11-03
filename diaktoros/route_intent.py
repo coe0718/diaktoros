@@ -34,9 +34,10 @@ import os
 import pathlib
 
 from . import config, prompts, routes
-from .util import atomic_write
+from .util import atomic_write, register_lock
 
 INTENT_FILE = "route-intent.json"
+LOCK = register_lock(INTENT_FILE + ".lock")      # its flock file, beside it
 VERSION = 1
 
 # The fields that decide whether a route still wakes the right seat and still authenticates.
@@ -104,7 +105,7 @@ def owned(entry: dict) -> bool:
 def _lock(loop: dict):
     target = path(loop)
     target.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(target.with_name(INTENT_FILE + ".lock"),
+    fd = os.open(target.with_name(LOCK),
                  os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)

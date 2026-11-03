@@ -17,10 +17,10 @@ exists yet.
 from __future__ import annotations
 
 import io
+import importlib
 import json
 import os
 import pathlib
-import re
 import shlex
 import sqlite3
 import tarfile
@@ -29,7 +29,7 @@ import time
 
 from .ledger import read_only
 from .config import credentials
-from . import config, gate_shims, route_intent, routes, run_supervisor
+from . import config, gate_shims, route_intent, routes, run_supervisor, util
 
 VERSION = 1
 MANIFEST = "manifest.json"
@@ -55,18 +55,26 @@ def default_out() -> pathlib.Path:
     return path
 
 
-# ``tempfile.mkstemp`` names, as ``util.atomic_write`` and the route registry make them:
-# ``.<name>.`` plus eight random characters. A live writer owns them and one may vanish between
-# the listing and the read. ``mkstemp`` draws from lowercase letters, digits and ``_``.
-_TEMP_NAME = re.compile(r"^\..+\.[a-z0-9_]{8}$")
-
-
 # The flock files the plugin's own writers keep directly in a state directory (or the gate-failure
-# directory). Exact names, not a ``*.lock`` pattern: a user's ``user.lock`` is state (#1060). The
-# ``<file>.lock`` ones are named by the file they guard (``observer._lock``, ``route_intent._lock``).
-_LOCK_NAMES = frozenset({"state.lock", "breach.lock", "watchdog.log.lock", "gate-failures.lock",
-                         "gate-decisions.lock", "merge-check.lock", "stack-transitions.lock",
-                         "observations.json.lock", f"{route_intent.INTENT_FILE}.lock"})
+# directory). Each writer registers its lock where it names it (``util.register_lock``). The
+# registrations happen when a writer's module is imported, and a backup process imports few of
+# them, so ``_load_writers`` imports every module of the package whose source calls
+# ``register_lock(``: found by that call, not by a list here, so a new writer needs nothing else.
+# Exact names, not a ``*.lock`` pattern: a user's ``user.lock`` is state (#1060).
+def _load_writers() -> frozenset[str]:
+    root = pathlib.Path(__file__).resolve().parent
+    for path in sorted(root.rglob("*.py")):
+        parts = path.relative_to(root).with_suffix("").parts
+        if parts[-1] == "__main__" or "register_lock(" not in path.read_text(errors="replace"):
+            continue
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        if parts and parts != ("util",) and parts != ("backup",):
+            importlib.import_module("." + ".".join(parts), __package__)
+    return frozenset(util.LOCK_NAMES)
+
+
+_LOCK_NAMES = _load_writers()
 
 
 def _transient(path: pathlib.Path, root: pathlib.Path) -> bool:
@@ -77,11 +85,12 @@ def _transient(path: pathlib.Path, root: pathlib.Path) -> bool:
     which may legitimately contain any name):
     - an *empty* file with one of the plugin's own lock names (``_LOCK_NAMES``): flock files never
       hold data. Any other ``*.lock`` (``Cargo.lock``, ``user.lock``) is state and is kept;
-    - a name of the ``mkstemp`` shape whose target ``<name>`` exists beside it: what a writer's
-      temp file looks like while it replaces an existing file. A temp-shaped name with no such
-      target is ambiguous (a first write, or a user's file) and is archived, not guessed at.
-    A user file that does have a target beside it and a temp-shaped name is still left out, but
-    never silently: ``_regular_files`` reports it and the manifest lists it."""
+    - a temp file a writer holds right now: a name of ``util.atomic_write``'s shape
+      (``.<name>.<8 chars>.dktmp``) *and* an ``flock`` held on the file (``util.hold_temp``, taken
+      for as long as the writer has it open). A first write has no target beside it and is still
+      recognised. The name alone proves nothing: a user's file of that name, or a crashed
+      writer's leftover, nobody holds, and it is archived, never dropped (#1651).
+    What is left out is never silent: ``_regular_files`` reports a temp and the manifest lists it."""
     if path.parent != root:
         return False
     if path.name in _LOCK_NAMES:
@@ -89,9 +98,7 @@ def _transient(path: pathlib.Path, root: pathlib.Path) -> bool:
             return path.stat().st_size == 0
         except OSError:
             return True      # gone between the listing and now: nothing to archive
-    if _TEMP_NAME.match(path.name):
-        return (root / path.name[1:-9]).is_file()     # strip the leading "." and ".XXXXXXXX"
-    return False
+    return util.is_temp_name(path.name) and util.temp_in_use(path)
 
 
 def _regular_files(root: pathlib.Path, skipped: list[str] | None = None) -> list[pathlib.Path]:
@@ -106,7 +113,7 @@ def _regular_files(root: pathlib.Path, skipped: list[str] | None = None) -> list
         if not path.is_file() or path.is_symlink():
             continue
         if _transient(path, root):
-            if skipped is not None and _TEMP_NAME.match(path.name):
+            if skipped is not None and util.is_temp_name(path.name):
                 skipped.append(str(path))
             continue
         found.append(path)
@@ -198,7 +205,7 @@ def create(out: pathlib.Path | None = None) -> pathlib.Path:
                 try:
                     tar.add(source, arcname=member, recursive=False)
                 except FileNotFoundError as exc:
-                    if kind == "file" and _TEMP_NAME.match(target.name):
+                    if kind == "file" and util.is_temp_name(target.name):
                         manifest["skipped"].append(str(target))   # renamed away since the listing
                         continue
                     raise BackupError(f"cannot read {source}: {exc}") from exc

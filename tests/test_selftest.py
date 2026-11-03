@@ -132,6 +132,8 @@ class SelftestBase(unittest.TestCase):
             self.addCleanup(patch.stop)
         self.model_status = 200
         self.model_reply = "OK"
+        self.model_message_extra = {}
+        self.model_body_extra = {}
         self.model_keys = []
         self.head_files = {}
 
@@ -148,8 +150,9 @@ class SelftestBase(unittest.TestCase):
         self.model_keys.append(key)
         payload = json.loads(body)
         self.assertEqual(payload["model"], "tiny-model")
+        message = {"content": self.model_reply, **self.model_message_extra}
         return (self.model_status, "application/json",
-                json.dumps({"choices": [{"message": {"content": self.model_reply}}]}).encode())
+                json.dumps({"choices": [{"message": message}], **self.model_body_extra}).encode())
 
     def run_selftest(self, **kwargs):
         out = io.StringIO()
@@ -388,6 +391,29 @@ class ChecklistTests(SelftestBase):
         self.assertRegex(text, r"model:completion .*reply is empty")
         self.assertRegex(text, r"model:completion [^\n]*\n\s+fix: the endpoint answers")
         self.assertIn("16-token limit", text)
+        self.assertNotRegex(text, r"✅ model:completion")
+
+    def test_reasoning_only_reply_passes_the_completion_check(self):
+        self.model_reply = ""
+        for name, message, body in (
+                ("reasoning_content", {"reasoning_content": "The user wants OK"}, {}),
+                ("reasoning", {"reasoning": "The user wants OK"}, {}),
+                ("usage tokens", {}, {"usage": {"completion_tokens": 16, "completion_tokens_details":
+                                                {"reasoning_tokens": 16}}})):
+            with self.subTest(name):
+                self.model_message_extra, self.model_body_extra = message, body
+                rc, text = self.run_selftest()
+                self.assertEqual(rc, 0)
+                self.assertRegex(text, r"✅ model:completion .*reply was reasoning only")
+                self.assertNotIn("reply is empty", text)
+
+    def test_empty_reply_with_blank_reasoning_still_warns(self):
+        self.model_reply = ""
+        self.model_message_extra = {"reasoning_content": "  ", "reasoning": None}
+        self.model_body_extra = {"usage": {"completion_tokens_details": {"reasoning_tokens": 0}}}
+        rc, text = self.run_selftest()
+        self.assertEqual(rc, 0)
+        self.assertRegex(text, r"model:completion .*reply is empty")
         self.assertNotRegex(text, r"✅ model:completion")
 
     def test_empty_reply_reason_names_the_cap_actually_sent(self):
@@ -754,6 +780,166 @@ class RegistrationTests(unittest.TestCase):
         with mock.patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit):
             parser.parse_args(["selftest"])  # --loop is required
 
+
+
+class _FakeProbeInference:
+    host, profile, origin, key = "models.example", "vex", "profile", "k"
+    model, upstream, proxy_model = "m", "https://models.example/v1", "m"
+
+    def __init__(self, mode):
+        self.api_mode = mode
+
+    def describe(self):
+        return f"fake model [{self.api_mode}]"
+
+    def credential_provider(self):
+        return None
+
+
+class ProbeReasoningReply(unittest.TestCase):
+    """``model:completion`` over both wires: reasoning-only passes, truly empty warns."""
+
+    CASES = {
+        "chat_completions": {
+            "reasoning_content": {"choices": [{"message": {"content": "", "reasoning_content": "hm"}}]},
+            "usage": {"choices": [{"message": {"content": None}}],
+                      "usage": {"completion_tokens_details": {"reasoning_tokens": 16}}},
+            "empty": {"choices": [{"message": {"content": ""}}],
+                      "usage": {"completion_tokens": 0}},
+        },
+        "anthropic_messages": {
+            "thinking": {"content": [{"type": "thinking", "thinking": "hm"}]},
+            "usage": {"content": [], "usage": {"output_tokens": 16, "reasoning_tokens": 16}},
+            "empty": {"content": [], "usage": {"output_tokens": 0}},
+        },
+    }
+
+    def probe(self, mode, payload):
+        class Conn:
+            def __init__(self, *a):
+                pass
+
+            def request(self, *a, **kw):
+                pass
+
+            def getresponse(self):
+                return mock.Mock(status=200, read=lambda n: json.dumps(payload).encode(),
+                                 getheader=lambda *a: "application/json")
+
+            def close(self):
+                pass
+
+        capability = mock.MagicMock()
+        capability.__enter__.return_value = mock.Mock(socket_path="/x", contract=mock.Mock(local_path="/p"))
+        out = io.StringIO()
+        report = selftest.Report(out)
+        with mock.patch.object(inference_proxy, "InferenceCapability", return_value=capability), \
+                mock.patch.object(inference_proxy, "_UnixHTTP", Conn):
+            selftest._one_completion(report, "reviewer", _FakeProbeInference(mode))
+        return report.results[-1], out.getvalue()
+
+    def test_reasoning_only_replies_pass_and_empty_ones_warn(self):
+        for mode, cases in self.CASES.items():
+            for kind, payload in cases.items():
+                with self.subTest(mode=mode, kind=kind):
+                    (_, _, status, detail, _), _ = self.probe(mode, payload)
+                    if kind == "empty":
+                        self.assertEqual(status, selftest.WARN)
+                        self.assertIn("reply is empty", detail)
+                    else:
+                        self.assertEqual(status, selftest.PASS)
+                        self.assertIn("reasoning only", detail)
+
+    def test_streamed_reasoning_only_replies_pass(self):
+        chat = ('data: {"choices": [{"delta": {"reasoning_content": "hm"}}]}\n\ndata: [DONE]\n\n')
+        messages = ('event: content_block_start\ndata: {"type": "content_block_start", '
+                    '"content_block": {"type": "thinking"}}\n\n'
+                    'event: message_stop\ndata: {"type": "message_stop"}\n\n')
+        for mode, stream in (("chat_completions", chat), ("anthropic_messages", messages)):
+            with self.subTest(mode):
+                self.assertEqual(selftest.probe_reply(mode, "text/event-stream", stream.encode()),
+                                 ("", True))
+
+    @staticmethod
+    def sse(*events):
+        return "".join(f"event: {e.get('type', 'chunk')}\ndata: {json.dumps(e)}\n\n"
+                       for e in events).encode()
+
+    def test_each_streamed_and_codex_reasoning_form_passes_and_its_empty_twin_does_not(self):
+        stop = {"type": "message_stop"}
+        done = {"type": "response.completed", "response": {"status": "completed"}}
+        chunk = {"choices": [{"delta": {"content": ""}}]}
+        cases = {
+            # name: (mode, content type, body with reasoning, same shape without reasoning)
+            "chat stream usage": (
+                "chat_completions", "text/event-stream",
+                self.sse(chunk, {"choices": [], "usage": {"completion_tokens_details": {"reasoning_tokens": 9}}}),
+                self.sse(chunk, {"choices": [], "usage": {"completion_tokens_details": {"reasoning_tokens": 0}}})),
+            "anthropic stream usage": (
+                "anthropic_messages", "text/event-stream",
+                self.sse({"type": "message_delta", "usage": {"output_tokens_details": {"reasoning_tokens": 9}}}, stop),
+                self.sse({"type": "message_delta", "usage": {"output_tokens": 0}}, stop)),
+            "anthropic thinking_delta": (
+                "anthropic_messages", "text/event-stream",
+                self.sse({"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "hm"}}, stop),
+                self.sse({"type": "content_block_delta", "delta": {"type": "text_delta", "text": ""}}, stop)),
+            "anthropic redacted_thinking block": (
+                "anthropic_messages", "application/json",
+                json.dumps({"content": [{"type": "redacted_thinking", "data": "x"}]}).encode(),
+                json.dumps({"content": [{"type": "tool_use"}]}).encode()),
+            "codex stream reasoning delta": (
+                "codex_responses", "text/event-stream",
+                self.sse({"type": "response.reasoning_summary_text.delta", "delta": "hm"}, done),
+                self.sse({"type": "response.reasoning_summary_text.delta", "delta": " "}, done)),
+            "codex stream usage": (
+                "codex_responses", "text/event-stream",
+                self.sse({"type": "response.completed", "response": {"usage": {
+                    "output_tokens_details": {"reasoning_tokens": 9}}}}),
+                self.sse({"type": "response.completed", "response": {"usage": {
+                    "output_tokens_details": {"reasoning_tokens": 0}}}})),
+            "codex json reasoning item": (
+                "codex_responses", "application/json",
+                json.dumps({"output": [{"type": "reasoning", "summary": []}]}).encode(),
+                json.dumps({"output": []}).encode()),
+        }
+        for name, (mode, label, reasoning, plain) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(selftest.probe_reply(mode, label, reasoning), ("", True))
+                self.assertEqual(selftest.probe_reply(mode, label, plain), ("", False))
+
+    def test_a_streamed_reasoning_only_reply_passes_through_the_completion_check(self):
+        stream = self.sse({"type": "content_block_delta",
+                           "delta": {"type": "thinking_delta", "thinking": "hm"}},
+                          {"type": "message_stop"})
+        plain = self.sse({"type": "message_stop"})
+
+        class Conn:
+            body = stream
+
+            def __init__(self, *a):
+                pass
+
+            def request(self, *a, **kw):
+                pass
+
+            def getresponse(self):
+                return mock.Mock(status=200, read=lambda n: Conn.body,
+                                 getheader=lambda *a: "text/event-stream")
+
+            def close(self):
+                pass
+
+        capability = mock.MagicMock()
+        capability.__enter__.return_value = mock.Mock(socket_path="/x", contract=mock.Mock(local_path="/p"))
+        for body, want, text in ((stream, selftest.PASS, "reasoning only"),
+                                 (plain, selftest.WARN, "reply is empty")):
+            Conn.body = body
+            report = selftest.Report(io.StringIO())
+            with mock.patch.object(inference_proxy, "InferenceCapability", return_value=capability), \
+                    mock.patch.object(inference_proxy, "_UnixHTTP", Conn):
+                selftest._one_completion(report, "reviewer", _FakeProbeInference("anthropic_messages"))
+            self.assertEqual(report.results[-1][2], want)
+            self.assertIn(text, report.results[-1][3])
 
 
 class ProbeAnswer(unittest.TestCase):

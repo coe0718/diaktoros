@@ -88,6 +88,8 @@ class Init(Base):
                           (f"{BOT_REV}=0:{good}", "not a number"),
                           (f"{BOT_REV}=²:{good}", "not a number"),
                           (f"{BOT_REV}=٣:{good}", "not a number"),
+                          (f"{BOT_REV}={'9' * 4301}:{good}", "not a number"),   # #1633
+                          (f"{BOT_REV}={'9' * 21}:{good}", "not a number"),
                           (f"{BOT_REV}=5:{loose}", "group/other"),
                           (f"{BOT_REV}=5:relative.pem", "absolute|relative")):
             with self.subTest(pair=pair):
@@ -157,6 +159,11 @@ class Set(Base):
         self.install()
         self.assert_refused(["set", "--loop", "widgets", "--read-token", BOT_READ,
                              "--app", f"{BOT_READ}=x:{self.key('read')}"], "not a number")
+
+    def test_an_overlong_app_id_is_refused_not_a_crash(self):
+        self.install()
+        self.assert_refused(["set", "--loop", "widgets", "--read-token", BOT_READ,
+                             "--app", f"{BOT_READ}={'9' * 4301}:{self.key('read')}"], "not a number")
 
 
 class SetReview(Base):

@@ -24,7 +24,7 @@ import contextlib
 import fcntl
 import os
 
-from . import ci, ready
+from . import ci, ready, util
 
 NAME = ci.MERGE_CHECK
 SUCCESS, PENDING, FAILURE = "success", "pending", "failure"
@@ -71,7 +71,7 @@ FILE = "merge-check.json"
 STATUS_DESCRIPTION_MAX = 140    # GitHub's commit-status description limit
 
 
-LOCK = "merge-check.lock"
+LOCK = util.register_lock("merge-check.lock")
 
 
 @contextlib.contextmanager

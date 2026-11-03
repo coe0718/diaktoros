@@ -453,15 +453,15 @@ class ProductionTurn(Base):
         self.assertEqual(breach.resumed, [(1, HEAD, 2)])
 
     def test_the_turn_is_not_launched_once_the_stop_is_set(self):
-        # The check sits before the turn is counted and launched, and the launch carries the
-        # stop event into the sandbox's wait (exercised in Sandbox above).
+        # The check sits before the sandbox starts, and the count is made by the launch hook
+        # run_turn calls once the sandbox is about to start (#1378).
         source = Path(run_supervisor.turns.__file__).read_text()
         check = source.index("raise run_supervisor.TurnCancelled(run_supervisor.OPERATOR_STOPPED)")
         launch = source.index("turn.rc = trusted_turn.run_turn(")
-        count = source.index("pacing.count_turn(loop['id']")
-        self.assertLess(check, count)
-        self.assertLess(count, launch)
-        self.assertIn("stop=cancel)", source[launch:launch + 3000])
+        count = source.index("on_launch=lambda: pacing.count_turn(loop['id']")
+        self.assertLess(check, launch)
+        self.assertLess(launch, count)
+        self.assertIn("stop=cancel,", source[launch:launch + 3000])
 
 
 class Desktop(Base):

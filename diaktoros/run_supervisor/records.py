@@ -308,7 +308,9 @@ class LedgerRecords:
                            (repo, number, key)).fetchone():
                 con.execute('ROLLBACK')
                 raise ValueError('an issue with this title was already filed from this PR')
-            seq = con.execute('SELECT COUNT(*) FROM filed_issues WHERE run_id=?',
+            # MAX, not COUNT: release_shadow_filing leaves holes, and a count would reuse a
+            # sequence another sweep of this run already holds.
+            seq = con.execute('SELECT COALESCE(MAX(seq),0) FROM filed_issues WHERE run_id=?',
                               (run_id,)).fetchone()[0] + 1
             now = time.time()
             con.execute('INSERT INTO filed_issues(run_id,seq,repo,pr,head,title,title_key,depth,'
@@ -316,6 +318,13 @@ class LedgerRecords:
                         (run_id, seq, repo, number, head, title, key, depth, 'recorded', now, now))
             con.execute('COMMIT')
             return seq
+
+    def release_shadow_filing(self, run_id: str, seq: int) -> None:
+        """Take back a ``record_shadow_filing`` row whose POST was refused with nothing written, so
+        the shadow issue can be filed again; only a row still ``recorded``, never one posted."""
+        with self._connect() as con:
+            con.execute("DELETE FROM filed_issues WHERE run_id=? AND seq=? AND state='recorded'",
+                        (run_id, seq))
 
     def filed_titles(self, repo: str, number: int) -> list[str]:
         """The normalized titles of the issues the reviewer filed (or is filing) from a PR."""

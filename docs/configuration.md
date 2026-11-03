@@ -176,8 +176,8 @@ The last command removes the reviewer's stored cap. Adjudicator overrides are fi
 | `turn_budget_s` | `900` | One agent turn's wall-clock budget, 60–14400 seconds. Includes reading, building, testing, and submission inside the turn, not host prefetch/drain. |
 | `seats.<seat>.turn_budget_s` | Loop budget | Override for reviewer, fixer, adjudicator, or triage; same 60–14400 range. Missing, `null`, or empty inherits. |
 | `grace_min` | `35` | Quiet-head stall grace in minutes, raised per seat to cover its whole worst-case turn. |
-| `marker_grace_min` | `60` | Grace for a marker awaiting adjudication. For an `adjudicating` marker without a live run, the threshold is at least the adjudicator's whole turn; with a live run it is not a stall. A positive number; `null` means the default; anything else (text, a bool, zero, a negative) is refused when the loop file loads. |
-| `cooldown_h` | `6` | Hours between repeated alerts for the same persistent stall or stuck entry. A cleared condition that returns can alert immediately. A positive number; `null` means the default; anything else is refused when the loop file loads. |
+| `marker_grace_min` | `60` | Grace for a marker awaiting adjudication. For an `adjudicating` marker without a live run, the threshold is at least the adjudicator's whole turn; with a live run it is not a stall. A positive number; `null` or the empty string `""` means the default; anything else (non-empty text, a bool, zero, a negative) is refused when the loop file loads. |
+| `cooldown_h` | `6` | Hours between repeated alerts for the same persistent stall or stuck entry. A cleared condition that returns can alert immediately. A positive number; `null` or the empty string `""` means the default; anything else (non-empty text, a bool, zero, a negative) is refused when the loop file loads. |
 | `ttl_min` | `45` | Seat-claim backstop in minutes, raised to the seat's whole worst-case turn. The watchdog's dead-claim threshold is twice that effective TTL. |
 | `inflight_ttl_min` | `10` | Minutes a same-head in-flight mark suppresses duplicate handling. The run ledger provides additional durable deduplication. |
 
@@ -483,6 +483,13 @@ each one once the real review exists at that head:
   If they still don't land, the issue stays filed (never again), the watchdog log names the
   labels and the missing permission, the broker audit records the gap, and its `shadow_issues`
   row is `unlabelled`, not `posted`.
+- **A refusal with nothing written:** if the broker refuses it before sending anything (no reader
+  identity, a repository mismatch, a reader token file that is missing or unreadable), or GitHub answers the POST with a 4xx other than 408 (a reader App without
+  Issues write gets 403; the status is the response's own, never one named in an error text), no issue exists, so it stays `recorded` with the reason in its `error`,
+  the watchdog log names it, and each later sweep tries again, so fixing the permission is enough.
+  A POST that timed out or failed in transit (whatever the error text says), got a 408, a 5xx or an answer that isn't an issue is `uncertain` and is never
+  replayed, since GitHub may have created it. A refused one is retried every sweep and takes no
+  room under the daily cap.
 - **What's skipped:** an issue the reviewer already filed from that PR, with the same title or one
   close to it, is marked `duplicate` and never filed.
 - **Limits:** at most `shadow.issues_daily` a day per loop, counted over a rolling 24 hours (#1515;
@@ -739,7 +746,7 @@ State is operational data, not additional user configuration. Do not hand-edit l
 | `fix-asks.json` | The issue fixer's one open question or plan per issue (#483): `open`, `count`, `approved`, `handoff`. |
 | `held-fixes.json`, `held-fixes-said.json` | Issue-fix hand-offs waiting for their origin PR to merge (#324), and the one "waiting for PR" comment already posted for an issue. |
 | `issue-deps.json`, `dep-waits.json`, `dep-waits-said.json` | Declared issue dependencies (#671): `{issue: {prerequisite: {by, at}}}`, the issues whose hand-off waits on one, and the one dependency-wait comment already posted. |
-| `*.lock` | Advisory lock files (`state.lock`, `breach.lock`, `stack-transitions.lock`, `watchdog.log.lock`). Never delete one while a process may be running. |
+| `*.lock` | Advisory lock files (`state.lock`, `breach.lock`, `stack-transitions.lock`, `watchdog.log.lock`). Never delete one while a process may be running. `backup` leaves out the empty lock files the plugin's own writers create (each writer registers its lock name with `util.register_lock`, e.g. `.onboarding.lock`, `conflict-scan.lock`) and the half-written temp files of the plugin's atomic writes that a writer is holding open right now (named `.<file>.<8 characters>.dktmp`, with or without the file beside them; the writer holds an `flock` on the temp until it is renamed into place; the manifest `skipped` lists them). Any other `*.lock`, and any file nobody holds open, even one named `.<file>.<8 characters>.dktmp`, is kept. A temp a crashed writer left behind is therefore archived like any unknown file (litter, not loss). On a filesystem without `flock` a live temp is archived too. |
 | `artifacts/<PR>/` | Legacy per-PR workspaces still eligible for cleanup; production isolated turns do not use a shared clone-per-run workspace here. |
 | `isolated-runs/`, `deps/` | Host-created private run work roots and dependency caches for isolated workers. |
 
