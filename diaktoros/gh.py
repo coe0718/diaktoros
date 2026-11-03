@@ -375,6 +375,8 @@ def read_text(loop: dict, path: str, login: str | None = None, limit: int = 2621
             status = exc.code if isinstance(exc, urllib.error.HTTPError) else None
             gh_calls.record(who, "GET", path, gh_calls.outcome(path, status, False, headers),
                             headers)
+        if isinstance(exc, urllib.error.HTTPError):
+            exc.close()      # it holds the response open; its headers were read above
         log(f"gh GET {path} (text) failed: {type(exc).__name__}: {one_line(exc, 120)}")
         return None
 
