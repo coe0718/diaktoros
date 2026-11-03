@@ -59,6 +59,31 @@ class ApplyNestedKeys(Base):
         self.assertEqual(rc, 0, out)
         self.check({"auto_fix_daily": "4"}, "triage", "auto_fix_daily", 4)
 
+    def test_fix_daily_turns_without_a_fix_label(self):
+        # The loader and `triage --fix-daily-turns` keep the cap with issue fixes off (#1218), so
+        # the form's push must not refuse it (#1220).
+        rc, out = self.cli("triage", "--loop", LOOP_ID, "--fix-label", "")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("fix_label", config.load_id(LOOP_ID)["triage"])
+        rc, out = self.cli("apply", "--loop", LOOP_ID, settings={"fix_daily_turns": "9"})
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("already matches", out)
+        self.assertEqual(self.written()["triage"]["fix_daily_turns"], 9)
+        rc, out = self.cli("apply", "--loop", LOOP_ID, settings={"fix_daily_turns": "9"})
+        self.assertIn("already matches", out)
+        self.assertNotIn("fix_label", self.written()["triage"])
+        self.assertEqual(config.load_id(LOOP_ID)["triage"]["fix_daily_turns"], 9)
+
+    def test_fix_daily_turns_needs_the_triage_block(self):
+        rc, out = self.cli("triage", "--loop", LOOP_ID, "--disable")
+        self.assertEqual(rc, 0, out)
+        before = self.written()
+        rc, out = self.cli("apply", "--loop", LOOP_ID, settings={"fix_daily_turns": "9"})
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("needs issue triage on", out)
+        self.assertNotIn("triage.fix_label", out)
+        self.assertEqual(self.written(), before)
+
     def test_observer_weekly_report(self):
         self.check({"observer_weekly_report": "tue 08:00"}, "observer", "weekly_report", "tue 08:00")
 

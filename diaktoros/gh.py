@@ -566,11 +566,21 @@ def _read_pages(loop: dict, path: str, what: str, max_pages: int,
     would otherwise read "the first N items" as "all of them". With ``keep_partial`` a listing
     that is merely past the page bound returns the pages read *and* the reason (an incomplete
     listing the caller must say is incomplete); a failed or malformed page is still unknown.
+
+    A listing of exactly ``max_pages`` full pages is told from a longer one by reading one page
+    past the bound (#1146): empty means whole, any item means past the bound. That probe is one
+    extra request, made only when every page up to the bound was full.
     """
     result: list[dict] = []
-    for page in range(1, max_pages + 1):
+    # One page past the bound is a probe: a full last page does not prove another exists, so a
+    # listing of exactly ``max_pages`` full pages is whole when the next page is empty.
+    for page in range(1, max_pages + 2):
         page_path = path if page == 1 else f"{path}&page={page}"
         items, error = fetch(loop, page_path, login=login) if login else fetch(loop, page_path)
+        if page > max_pages:              # the probe: only an empty page proves the listing whole
+            if not error and isinstance(items, list) and not items:
+                return result, ""
+            break                         # items, or an unreadable probe: not proven whole
         if error:
             return None, f"{what} page {page}: {error}"
         if not isinstance(items, list) or len(items) > REVIEW_PAGE_SIZE or not all(
