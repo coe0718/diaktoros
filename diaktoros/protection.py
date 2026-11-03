@@ -45,8 +45,7 @@ def reviewer_app_id(loop: dict) -> int | None:
     seat = str(loop.get("reviewer_seat") or "").lower()
     for login, app in (loop.get("apps") or {}).items():
         if str(login).lower() == seat and isinstance(app, dict):
-            app_id = app.get("app_id")
-            return int(app_id) if str(app_id).isascii() and str(app_id).isdigit() else None
+            return config.parse_app_id(app.get("app_id"))
     return None
 
 

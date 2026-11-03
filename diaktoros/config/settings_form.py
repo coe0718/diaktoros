@@ -710,9 +710,10 @@ def select_credentials(loop: dict, settings: dict | None) -> tuple[dict, dict, d
         existing_pat = next((v for k, v in tokens.items() if k.lower() == login.lower()), "")
         existing_app = next((v for k, v in apps.items() if k.lower() == login.lower()), None)
         if app_id:
-            if not app_id.isascii() or not app_id.isdecimal() or int(app_id) <= 0:
+            parsed_id = config.parse_app_id(app_id)
+            if parsed_id is None:
                 raise config.ConfigError(f"{role}_app_id must be a positive ASCII decimal App id")
-            requested_app = {"app_id": int(app_id), "key_file": str(config._path(key_file))}
+            requested_app = {"app_id": parsed_id, "key_file": str(config._path(key_file))}
             unchanged_app = existing_app == requested_app
             inherited_pat = existing_pat and config._path(path) == config._path(existing_pat)
             if path and not (inherited_pat or unchanged_app):
@@ -726,7 +727,7 @@ def select_credentials(loop: dict, settings: dict | None) -> tuple[dict, dict, d
             for key in list(apps):
                 if key.lower() == login.lower():
                     del apps[key]
-            apps[login] = {"app_id": int(app_id), "key_file": str(config._path(key_file))}
+            apps[login] = {"app_id": parsed_id, "key_file": str(config._path(key_file))}
             selected[f"{role}_app_key_file"] = key_file
         elif existing_app:
             ignored[token_key] = login

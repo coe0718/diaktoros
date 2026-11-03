@@ -97,7 +97,7 @@ class Read(Fake):
             return protection.reviewer_app_id(loop)
         self.assertEqual(stored("5"), 5)
         self.assertEqual(stored(7), 7)
-        for bad in ("²", "٣", "５", "x"):      # superscript, Arabic-Indic, fullwidth: isdigit() but not int()
+        for bad in ("²", "٣", "５", "x", "9" * 4301, "0"):      # superscript, Arabic-Indic, fullwidth: isdigit() but not int()
             with self.subTest(app_id=bad):
                 self.assertIsNone(stored(bad))
         self.assertIsNone(protection.reviewer_app_id(pat_loop()))
