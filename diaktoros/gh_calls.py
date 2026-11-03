@@ -13,8 +13,9 @@ at exit, so no two processes write one file and no lock is taken. Only a writer 
 count, as for the cache (``gh_cache.writes_enabled``): the watchdog, the gates and the workers,
 which make nearly every call. A command that promises to write nothing (``doctor``, ``explain``,
 ``status``, the Desktop) is not counted, and ``calls`` says so. A worker writes only into a
-directory that already exists. Files older than ``KEEP_S`` are pruned by a later flush. Nothing
-here holds a token, a body or an error text: logins and path shapes only.
+directory that already exists: the host makes it as it starts one (``prepare``). Files older
+than ``KEEP_S`` are pruned by a later flush. Nothing here holds a token, a body or an error
+text: logins and path shapes only.
 """
 from __future__ import annotations
 
@@ -41,9 +42,22 @@ _name = ""
 _registered = False
 
 
-def directory() -> pathlib.Path:
+def directory(home: pathlib.Path | None = None) -> pathlib.Path:
     from . import config
-    return config.home() / "state" / "diaktoros-gh-calls"
+    return (config.home() if home is None else pathlib.Path(home)) / "state" / "diaktoros-gh-calls"
+
+
+def prepare(home: pathlib.Path | None = None) -> None:
+    """Make the count directory, host-side, before a worker is started (``_spawn``): a worker
+    counts only into a directory that exists and never makes one (review of #1758, F1). Does
+    nothing in a worker; best effort."""
+    from . import hostdirs
+    if hostdirs.in_worker():
+        return
+    try:
+        directory(home).mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError:
+        pass
 
 
 def shape(path: str) -> str:

@@ -102,6 +102,17 @@ class Counted(unittest.TestCase):
         self.assertEqual(self.counted()["reader"]["paths"],
                          [["GET", "/repos/R/actions/jobs/N/logs", "spent", 1]])
 
+    def test_a_failed_job_log_read_is_counted_once_with_its_outcome(self):
+        # Review of #1758, F2: a refused, unanswered or unsent log read is counted too.
+        self.assertIsNone(gh.read_text(LOOP, "/repos/owner/one/actions/jobs/5/limited"))
+        with mock.patch.object(gh, "API", "http://127.0.0.1:1"):     # nothing listens there
+            self.assertIsNone(gh.read_text(LOOP, "/repos/owner/one/actions/jobs/6/logs"))
+        with mock.patch.object(gh, "token", side_effect=gh.GitHubError("no token file")):
+            self.assertIsNone(gh.read_text(LOOP, "/repos/owner/one/actions/jobs/7/logs"))
+        reader = self.counted()["reader"]
+        self.assertEqual((reader["limited"], reader["error"], reader["unsent"], reader["spent"]),
+                         (1, 1, 1, 0))
+
     def test_logins_are_kept_apart_and_a_missing_credential_is_unsent(self):
         self.get("/repos/owner/one/pulls/7", login="reviewer")
         with mock.patch.object(gh, "token", side_effect=gh.GitHubError("no token file")):
@@ -127,9 +138,24 @@ class Counted(unittest.TestCase):
         with mock.patch.object(gh_cache, "_WRITES", False), \
                 mock.patch.object(hostdirs, "in_worker", return_value=True):
             self.get("/repos/owner/one/pulls/7")
+            gh_calls.prepare()                   # a worker never makes it, even when asked
             gh_calls.flush()
             self.assertFalse(gh_calls.directory().exists())
-            gh_calls.directory().mkdir(parents=True)
+
+    def test_the_host_makes_the_directory_before_it_starts_a_worker(self):
+        # Review of #1758, F1: on a fresh host no writer has flushed yet, so nothing else has
+        # made the directory. Starting a worker (the real _spawn) makes it, before the worker
+        # runs, and the worker's first call is counted.
+        import tempfile
+        from diaktoros.run_supervisor import Supervisor, workers
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = Supervisor(Path(tmp) / "runs.sqlite", fixture_mode=True)
+            with mock.patch.object(workers.subprocess, "Popen") as popen:
+                sup._spawn()
+            popen.assert_called_once()
+        self.assertTrue(gh_calls.directory().is_dir())
+        with mock.patch.object(gh_cache, "_WRITES", False), \
+                mock.patch.object(hostdirs, "in_worker", return_value=True):
             self.get("/repos/owner/one/pulls/8")
             gh_calls.flush()
         self.assertEqual(gh_calls.summary(time.time() - 3600)["reader"]["spent"], 1)

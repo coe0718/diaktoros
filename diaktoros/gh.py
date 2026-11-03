@@ -342,17 +342,25 @@ def read_text(loop: dict, path: str, login: str | None = None, limit: int = 2621
         data = _stub(path, "GET", None, login or loop.get("read_token") or "").data
         data = data.get("text") if isinstance(data, dict) else data
         return data[-limit:] if isinstance(data, str) else None
+    from . import gh_calls
+    who, counted = str(login or loop.get("read_token") or ""), False
     try:
-        tok = token(loop, login or loop.get("read_token"))
+        try:
+            tok = token(loop, login or loop.get("read_token"))
+            timeout = _budgeted("GET", path)
+        except Exception:
+            counted = True       # no credential, or the gate's budget is spent: nothing was sent
+            gh_calls.record(who, "GET", path, "unsent")
+            raise
         req = urllib.request.Request(
             f"{API}{path}", method="GET",
             headers={"Accept": "application/vnd.github+json", "Authorization": f"token {tok}",
                      "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "diaktoros"})
         from .config.host_guards import guard_network
         guard_network(req.full_url)
-        with _TEXT_OPENER.open(req, timeout=_budgeted("GET", path)) as resp:
-            from . import gh_calls
-            gh_calls.record(str(login or loop.get("read_token") or ""), "GET", path, "spent")
+        with _TEXT_OPENER.open(req, timeout=timeout) as resp:
+            counted = True
+            gh_calls.record(who, "GET", path, "spent")
             # Only the tail matters: keep reading, keep the last ``limit`` bytes.
             kept = b""
             while True:
@@ -362,6 +370,11 @@ def read_text(loop: dict, path: str, login: str | None = None, limit: int = 2621
                 kept = (kept + chunk)[-limit:]
             return kept.decode(errors="replace")
     except Exception as exc:
+        if not counted:      # each read is counted once: a refusal (a limited 403) or no answer
+            headers = {k.lower(): v for k, v in (getattr(exc, "headers", None) or {}).items()}
+            status = exc.code if isinstance(exc, urllib.error.HTTPError) else None
+            gh_calls.record(who, "GET", path, gh_calls.outcome(path, status, False, headers),
+                            headers)
         log(f"gh GET {path} (text) failed: {type(exc).__name__}: {one_line(exc, 120)}")
         return None
 
