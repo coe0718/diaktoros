@@ -899,7 +899,12 @@ def retry(loop: dict, st) -> int:
     except Exception as exc:
         log(f"observer retry scan failed: {type(exc).__name__}: {exc}")
         return 0
+    return _resend(loop, st, pending, now)
 
+
+def _resend(loop: dict, st, pending: list, now: float) -> int:
+    """Send each entry ``retry`` claimed again (``pending``: ``(key, entry)``); how many were
+    delivered."""
     sent = 0
     for key, entry in pending:
         text = _without_next_turn(str(entry.get("message") or ""))
