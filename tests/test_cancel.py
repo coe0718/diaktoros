@@ -289,10 +289,16 @@ class Running(Base):
 class LostWorker(Base):
     """#1461: a stop request on a run whose worker is gone is ended by recover()."""
 
-    def lost(self, **extra):
+    def dead_pid(self):
+        child = subprocess.Popen([sys.executable, '-c', 'pass'])
+        child.wait()
+        return child.pid
+
+    def lost(self, pid=None, **extra):
         sup = self.sup()
         sup.submit('d', REPO, 1, HEAD, 'reviewer')
-        self.set_state('d', 'running', owner='gone', lease=time.time() - 60, **extra)
+        pid = self.dead_pid() if pid is None else pid
+        self.set_state('d', 'running', owner='gone', pid=pid, lease=time.time() - 60, **extra)
         run_id = sup.get('d')['id']
         self.assertEqual(sup.cancel(run_id), {'was': 'running', 'state': 'stopping'})
         return sup, run_id
@@ -327,10 +333,32 @@ class LostWorker(Base):
     def test_recover_still_quarantines_a_lost_run_nobody_cancelled(self):
         sup = self.sup()
         sup.submit('d', REPO, 1, HEAD, 'reviewer')
-        self.set_state('d', 'running', owner='gone', lease=time.time() - 60)
+        self.set_state('d', 'running', owner='gone', pid=self.dead_pid(), lease=time.time() - 60)
         sup.recover()
         self.assertEqual((sup.get('d')['state'], sup.get('d')['error']),
                          ('uncertain', 'worker lost after launch intent'))
+
+    def test_recover_keeps_the_quarantine_while_the_lost_runs_process_is_alive(self):
+        # The heartbeat can fail while the turn runs: an expired lease is not a stopped child.
+        live = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
+                                start_new_session=True)
+        self.addCleanup(live.wait)
+        self.addCleanup(live.kill)
+        sup, run_id = self.lost(pid=live.pid)
+        sup.recover()
+        row = sup.get('d')
+        self.assertEqual((row['state'], row['error']), ('uncertain', 'worker lost after launch intent'))
+        self.assertIsNone(live.poll())
+        with self.assertRaises(ValueError):
+            sup.retry(run_id)
+
+    def test_recover_keeps_the_quarantine_when_no_process_was_recorded(self):
+        sup = self.sup()
+        sup.submit('d', REPO, 1, HEAD, 'reviewer')
+        self.set_state('d', 'launching', owner='gone', lease=time.time() - 60)
+        sup.cancel(sup.get('d')['id'])
+        sup.recover()
+        self.assertEqual(sup.get('d')['state'], 'uncertain')
 
     def test_recover_leaves_a_live_cancelled_run_to_its_worker(self):
         sup, _ = self.lost()
