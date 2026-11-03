@@ -204,6 +204,9 @@ MIGRATIONS = (
     ("tokens_in", "ALTER TABLE runs ADD COLUMN tokens_in INTEGER", ()),
     ("tokens_out", "ALTER TABLE runs ADD COLUMN tokens_out INTEGER", ()),
     ("cost", "ALTER TABLE runs ADD COLUMN cost REAL", ()),
+    # Of tokens_in, those the provider's prompt cache served (#1649), where the provider reported
+    # it. NULL: not reported (unknown, not 0), so the cache hit rate is only over rows that have it.
+    ("cache_read", "ALTER TABLE runs ADD COLUMN cache_read INTEGER", ()),
     # An operator's `hermes dk cancel` of a launching or running turn (#1148): when it was asked.
     # The owning worker's heartbeat reads it and stops the sandbox; NULL: never asked.
     ("cancel_requested", "ALTER TABLE runs ADD COLUMN cancel_requested REAL", ()),

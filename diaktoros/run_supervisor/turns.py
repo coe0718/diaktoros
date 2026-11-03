@@ -93,6 +93,16 @@ def _ci_hold_text(head: str, checks, fixing: bool, red: bool, review_only: bool)
                f"{len(checks.pending)} check(s) still running or not reported"))[:600]
 
 
+def _nudged(row, prompt: str) -> str:
+    """The turn's prompt, with the publish nudge when an earlier turn at this row ended without
+    publishing: placed before "This round", not first, so a retry's prompt keeps the same stable
+    prefix (#1649)."""
+    from .. import prompts
+    if not run_supervisor.unpublished_before(row):
+        return prompt
+    return prompts.before_this_round(prompt, run_supervisor.PUBLISH_NUDGE)
+
+
 def _turn_role(row) -> str:
     """The prompt a ledger row's turn runs under, for its recorded prompt revision: a fixer row
     may be a conflict or a CI-fix turn, and a shadow turn is told what the reviewer is (#218)."""
@@ -517,9 +527,7 @@ class ClaimAndLaunch:
         if launch is None:
             return
         self.record_launch(run_id, owner, prompts.revision(_turn_role(row)), inference.model)
-        prompt = launch.prompt
-        if run_supervisor.unpublished_before(row):
-            prompt = run_supervisor.PUBLISH_NUDGE + prompt
+        prompt = _nudged(row, launch.prompt)
         cancel = self._cancels.get(run_id)
         if cancel is not None and cancel.is_set():
             raise run_supervisor.TurnCancelled(run_supervisor.OPERATOR_STOPPED)  # before any launch
@@ -840,7 +848,7 @@ class ClaimAndLaunch:
         """#1004 part 3: the fixer answers a shadow review the adjudicator upheld. The ruling is
         re-read now (a moved head or a later ruling ends the run), and the push is allowed only
         while it still stands (``RunScope.shadow_fix``, checked by the broker)."""
-        from .. import broker_ipc, gate, gh
+        from .. import broker_ipc, gate, gh, prompts
         row, loop = turn.row, turn.loop
         ruled = gate.upheld_shadow_ruling(loop, row['pr'], row['head'], db=self.db)
         if ruled is None or row['turn_key'] != f"{run_supervisor.SHADOW_FIX_KEY}{int(ruled)}":
@@ -853,8 +861,9 @@ class ClaimAndLaunch:
         try:
             final = (row['retries'] or 0) + 1 >= run_supervisor.MAX_RETRIES
             change = pr_facts.pr_change(loop, row, final=final)
-            prompt = (turn_prompts.isolated_prompt(loop, row, reviews, None, change)
-                      + turn_prompts.upheld_shadow_section(row, ruled))
+            base = turn_prompts.isolated_prompt(loop, row, reviews, None, change)
+            prompt = prompts.Prompt(base + turn_prompts.upheld_shadow_section(row, ruled),
+                                    base.round_at)   # appended last: the offset still holds
         except ValueError as exc:
             if str(exc) == 'PR unreadable' or str(exc).startswith('PR files unreadable'):
                 raise run_supervisor.RetryableError(str(exc)) from None

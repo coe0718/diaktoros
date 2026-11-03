@@ -521,7 +521,7 @@ class Prompts(Base):
                 self.assertIsNone(self.FIELD.search(text))
                 self.assertNotIn("{", text)
                 self.assertNotIn("gh api", text)
-                self.assertIn(HEAD, text)
+                self.assertEqual(HEAD in text, role == "adjudicator")  # #1649: head is in This round
                 self.assertIn("/work", text)
 
     def test_missing_fact_or_unknown_role_refuses(self):
@@ -532,7 +532,7 @@ class Prompts(Base):
         with self.assertRaises(ValueError):
             prompts.render_isolated("observer", **self.FACTS)
         with self.assertRaises(ValueError):
-            prompts.render_isolated("reviewer", **{**self.FACTS, "head": "{head}"})
+            prompts.render_isolated("adjudicator", **{**self.FACTS, "head": "{head}"})
 
     def test_gateway_prompts_are_intact(self):
         for template in (prompts.REVIEWER, prompts.FIXER, prompts.ADJUDICATOR):

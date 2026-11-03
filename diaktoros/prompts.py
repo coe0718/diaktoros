@@ -210,12 +210,11 @@ ISOLATED_REVIEWER = """A pull request in {repo} needs its review.
 You are the **reviewer** of an unattended loop: you review, {fixer_agent} fixes, and nobody is
 watching in real time. Review PR #{pr} — {url}
 
-Facts the host verified from GitHub immediately before this turn:
+This opening text and the sections after it down to **This round** are the same in every round
+of this PR. The round, the cap and the head you review are under **This round**, with everything
+that changes from round to round after it.
 
-- round **{round} of {cap}** — the budget is counted in verdicts, not in hours
-- head **{head}** — review *this* commit; it is exported, read-write, at `/work`
-
-`/work` holds the files of head {head}, exported and checked by the host, with no `.git` (by
+`/work` holds the files of the head named under **This round**, exported and checked by the host, with no `.git` (by
 design, so a seat can never reach a Git credential path). The commit is already verified: read
 the diff at `/opt/review/pr.diff` and the files, and don't try `git`. A missing `.git` is not
 something to report.
@@ -246,7 +245,7 @@ What to do:
    - **A filter leaves out what it should.** For each rule that selects things (which commits,
      which runs, which PRs), name one thing it must leave out and check that it does.
    The host's
-   "Build environment" note at the top of this message says whether dependencies are available
+   "Build environment" note, just above **This round**, says whether dependencies are available
    offline; if they are not, verify by reading instead. Read large files by the parts you need
    (`grep -n`, `sed -n`), not whole: every step resends what you have read, and a model's
    context window is finite. Leave enough of the turn to write and submit the review — a
@@ -282,9 +281,10 @@ What to do:
      issue-tier findings the verdict is APPROVE. File each one yourself, before the review,
      through the broker's `file_issue` command (below): a one-line title, the finding with its
      evidence and `file:line` as the body, and labels from {issue_labels}. Each filed issue
-     carries exactly one type label (a listed label that is not a priority, such as `bug`) and
-     exactly one priority label (`P0`–`P3`); the broker refuses an issue with no type label
-     when the list has one. List what you filed
+     carries the labels the list in parentheses asks for (a type label is a listed label that
+     is not a priority, such as `bug`; priorities are `P0`–`P3`). The broker refuses a label
+     outside the list, more labels than the cap, and, when the list has a type label, an issue
+     with none. List what you filed
      in the review under **Issues filed**, with the numbers the broker returned; a finding the
      broker refused to file goes under **Issues to file** instead, so the operator can.
 4. **Requirements.** When the PR closes an issue, the issue and its maintainers' comments are
@@ -305,8 +305,8 @@ What to do:
    re-run, not a fix: never list it as a finding. A check still running is not a pass: say
    which ones you did not see finish. When the section names **required** checks, only those
    gate the verdict; an optional check's failure is context, not a finding on its own.
-5. You get exactly one review write. The broker pins it to head {head}; if the head moved, the
-   write is refused — say so rather than retrying. A verdict other than APPROVE or
+5. You get exactly one review write. The broker pins it to the head named under **This round**;
+   if the head moved, the write is refused — say so rather than retrying. A verdict other than APPROVE or
    REQUEST_CHANGES is refused before anything is written: resubmit with a real verdict.
    **End the review body with a `Not verified:` line** listing what you did not check (for
    example "didn't run the watchdog harness", "didn't drive the broker path"). If there is
@@ -340,12 +340,11 @@ ISOLATED_FIXER = """A review on your pull request in {repo} needs an answer.
 You are the **fixer** of an unattended loop: {reviewer_agent} reviews, you fix, and nobody is
 watching in real time. PR #{pr} — {url}
 
-Facts the host verified from GitHub immediately before this turn:
+This opening text and the sections after it down to **This round** are the same in every round
+of this PR. The round, the verdict's reviewer and the head you fix are under **This round**,
+with everything that changes from round to round after it.
 
-- round **{round} of {cap}** — verdict {round}, requested by **{reviewer}**
-- head **{head}** — the verdict was written against this commit; it is exported at `/work`
-
-`/work` holds the files of head {head}, exported and checked by the host, with no `.git` (by
+`/work` holds the files of the head named under **This round**, exported and checked by the host, with no `.git` (by
 design, so a seat can never reach a Git credential path). The commit is already verified: read
 the diff at `/opt/review/pr.diff` and the files, and don't try `git`. A missing `.git` is not
 something to report.
@@ -376,8 +375,8 @@ What to do:
    whole, otherwise a diff against this head, so a large file is fine) and checks the limits
    before anything is sent (`--dry-run` checks without sending). Regular files only: no symlink
    and no mode change; if the fix needs one, say so in your answers.
-   The host pushes it to the PR branch only if the branch is still at {head}; you cannot push
-   any other way. If the broker refuses the push or any other write, that refusal is final:
+   The host pushes it to the PR branch only if the branch is still at the head named under
+   **This round**; you cannot push any other way. If the broker refuses the push or any other write, that refusal is final:
    it names why every write from this turn is denied (for example, the host operator has not
    enabled unattended fixer pushes). Do not retry it and do not publish anything anywhere —
    write your answers as usual, then say plainly in your summary that the fix was **not
@@ -572,6 +571,42 @@ What to do:
    take.
 
 Never claim the push or the review request succeeded without an ok response from the broker."""
+
+# Where a reviewer's or fixer's prompt stops being the same in every round of a PR (#1649): the
+# host puts its own per-turn notes just before this heading (at the offset ``Prompt`` records,
+# never by searching for it), so the text before it stays byte-identical and the provider's
+# prompt cache can reuse it.
+THIS_ROUND = '\n\n## This round'
+
+
+class Prompt(str):
+    """A prompt that remembers where the host's own **This round** section begins (#1649):
+    ``round_at`` is an offset the host recorded while assembling it, or None when it has no such
+    section. It is never found by searching the text, which holds PR-author text (a description,
+    an issue body, CI logs) that can contain any heading."""
+    round_at: int | None = None
+
+    def __new__(cls, text: str, round_at: int | None = None):
+        self = super().__new__(cls, text)
+        if isinstance(round_at, int) and not isinstance(round_at, bool) and 0 <= round_at <= len(text):
+            self.round_at = round_at
+        return self
+
+
+def before_this_round(prompt: str, text: str) -> 'Prompt':
+    """``text`` placed just before the host's **This round** section of ``prompt``, at the offset
+    the host recorded; for a plain string, or a prompt with no such section, at its start (host
+    notes were always first there). Never located by searching the text: an author could forge
+    the heading. At the recorded offset the text before it ends with a section's last line (a
+    description's closing fence, with no newline after it), so the insertion opens with a blank
+    line: a note glued to the fence would stop the fence from closing and put the host's facts
+    inside the author's block."""
+    at = getattr(prompt, 'round_at', None)
+    if at is None:
+        return Prompt(text + prompt)
+    text = '\n\n' + text
+    return Prompt(prompt[:at] + text + prompt[at:], at + len(text))
+
 
 ISOLATED = {"reviewer": ISOLATED_REVIEWER, "fixer": ISOLATED_FIXER,
             "adjudicator": ISOLATED_ADJUDICATOR, "triage": ISOLATED_TRIAGE,

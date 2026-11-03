@@ -84,6 +84,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | --- | --- |
 | see my loops | [`list`](#list), [`status`](#status) |
 | see what a loop did this week, and how long turns took | [`stats`](#stats) |
+| see which GitHub calls spend the rate limit | [`calls`](#calls) |
 | get the digest across all loops (reviews, rounds, trends, stuck PR) | [`report`](#report) |
 | install a loop | [`setup`](#setup) (guided), or [`init`](#init) (flag by flag) |
 | make the loop's GitHub Apps, one click each | [`create-apps`](#create-apps) |
@@ -223,6 +224,42 @@ content, so they are safe to publish: see [Publishing stats](operations.md#publi
 | `--github` |  |  | also read the window's PRs and reviews from GitHub, as the reader (one request per PR) |
 | `--json` |  |  | print the data as JSON |
 | `--html` | `FILE` |  | also write one self-contained HTML page to FILE |
+<!-- /flags -->
+
+### calls
+
+Which GitHub calls spend the rate limit. The host counts every REST call it makes, by login,
+method, path shape (`/repos/R/pulls/N/reviews?page&per_page`: numbers, SHAs, branch names and
+query values taken out) and outcome:
+
+- **spent**: an answer GitHub counted;
+- **free**: a `304 Not Modified` from a conditional read (the host keeps each read's ETag and
+  asks whether it changed), and `/rate_limit` itself;
+- **limited**: a `403` or `429` because the limit was already spent;
+- **unsent**: no credential, so nothing left the host;
+- **error**: no HTTP answer, so it may or may not have counted.
+
+Beside each login it shows the newest rate-limit figure GitHub sent it (used, limit, reset). A
+GitHub figure well past the host's **spent** count means the same credential is spending
+somewhere else.
+
+```bash
+hermes dk calls
+hermes dk calls --since 24h --top 30
+```
+
+Counts are kept in whole hours, in one small file per process under
+`$HERMES_HOME/state/diaktoros-gh-calls/`, for two days. Only the processes that keep the read
+cache keep a count: the watchdog, the gates and the turn workers, which make nearly every call.
+Commands that promise to write nothing (`doctor`, `explain`, `status`, the Desktop) are not
+counted. Read-only. The files hold logins and path shapes only: no token, body or error text.
+
+<!-- flags:calls -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--since` | `SINCE` | `1h` | window start: 1h, 24h or a date like 2026-09-28, in whole hours (default 1h) |
+| `--top` | `TOP` | `15` | how many paths to list per login (default 15) |
+| `--json` |  |  | print the data as JSON |
 <!-- /flags -->
 
 ### report
@@ -1694,6 +1731,12 @@ hermes dk cancel --loop "<loop-id>" --run "<run-id>"
   breach marker is handed back. The command waits up to 30 seconds and prints how the run ended.
   If the turn had already started writing (a review receipt, a push intent, a ruling), the run
   ends `uncertain` rather than `cancelled`. It's never replayed, so inspect and reconcile it.
+  If the owning worker is already gone (its lease expired), nothing reads the request; the
+  next recovery sweep (`recover()`) ends the run the same way: `cancelled` when nothing was
+  written, `uncertain` (naming the cancel) after a write-ahead record. An expired lease does
+  not prove the turn stopped, so this happens only when the run's recorded process is provably
+  gone (the check `reconcile` uses). A live or unrecorded process, or a fixer run with a push
+  intent, stays `uncertain` in quarantine, holding its PR, until `reconcile`.
 - **Already finished** (succeeded, failed, cancelled, uncertain): refused, with its state.
 
 `--pr` alone cancels every open run at the PR's current head, shadow included, and lists each.

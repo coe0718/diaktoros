@@ -109,26 +109,74 @@ def usage(db: Path, repo: str, since: float) -> list[dict] | None:
         if not {"tokens_in", "tokens_out", "cost"} <= columns:
             return None
         model = "model" if "model" in columns else "NULL"
+        # #1649: the prompt cache's share of the input. Only turns whose provider reported it
+        # count, and their own input is the denominator, so an unreporting provider reads as
+        # unknown (``cached_of`` 0), never as a 0% hit rate.
+        cache = "cache_read" if "cache_read" in columns else "NULL"
         rows = con.execute(
             f"SELECT seat, COALESCE({model}, 'unknown'), COUNT(*), SUM(tokens_in), "
-            "SUM(tokens_out), SUM(cost), COUNT(cost) FROM runs WHERE repo=? AND created>=? "
+            f"SUM(tokens_out), SUM(cost), COUNT(cost), SUM({cache}), "
+            f"SUM(CASE WHEN {cache} IS NOT NULL THEN tokens_in END) FROM runs "
+            "WHERE repo=? AND created>=? "
             "AND tokens_in IS NOT NULL GROUP BY seat, 2 ORDER BY seat, 2",
             (repo, since)).fetchall()
     finally:
         con.close()
     return [{"seat": seat, "model": model_name, "turns": turns, "tokens_in": t_in or 0,
-             "tokens_out": t_out or 0, "cost": cost or 0.0, "costed": costed}
-            for seat, model_name, turns, t_in, t_out, cost, costed in rows]
+             "tokens_out": t_out or 0, "cost": cost or 0.0, "costed": costed,
+             "cache_read": cached or 0, "cached_of": of or 0}
+            for seat, model_name, turns, t_in, t_out, cost, costed, cached, of in rows]
+
+
+def cache_by_turn(db: Path, repo: str, since: float, limit: int = 60) -> list[dict] | None:
+    """The prompt cache's share of the input of each turn, oldest first (#1649), so the rounds of
+    one PR can be compared: ``cache_read`` is None where the provider did not report it (unknown,
+    never 0). Only turns with recorded tokens; the ``limit`` newest. None: no ledger or column."""
+    db = Path(db)
+    if not db.exists():
+        return None
+    con = read_only(db)
+    try:
+        columns = {row[1] for row in con.execute("PRAGMA table_info(runs)")}
+        if not {"tokens_in", "cache_read"} <= columns:
+            return None
+        rows = con.execute(
+            "SELECT pr, seat, head, tokens_in, cache_read FROM runs WHERE repo=? AND created>=? "
+            "AND tokens_in IS NOT NULL ORDER BY created DESC, id DESC LIMIT ?",
+            (repo, since, limit)).fetchall()
+    finally:
+        con.close()
+    return [{"pr": pr, "seat": seat, "head": head[:7], "tokens_in": t_in, "cache_read": cached}
+            for pr, seat, head, t_in, cached in reversed(rows)]
+
+
+CACHE_HEAD = ["pr", "seat", "head", "tokens in", "cached input (provider-reported)"]
+
+
+def _cache_turn_rows(report: dict) -> list[list[str]]:
+    return [[f"#{r['pr']}", r["seat"], r["head"], f"{r['tokens_in']:,}",
+             cache_share({"cache_read": r["cache_read"], "cached_of": r["tokens_in"]})
+             if r["cache_read"] is not None else "unknown"]
+            for r in report.get("cache_turns") or []]
+
+
+def cache_share(row: dict) -> str:
+    """Cached input as a share of the input of the turns that reported it, or ``unknown``."""
+    of = row.get("cached_of") or 0
+    return f"{row.get('cache_read', 0):,} of {of:,} ({row.get('cache_read', 0) / of:.0%})" \
+        if of else "unknown"
 
 
 def _usage_rows(report: dict) -> list[list[str]]:
     return [[row["seat"], row["model"], str(row["turns"]), f"{row['tokens_in']:,}",
              f"{row['tokens_out']:,}",
+             cache_share(row),
              f"{row['cost']:.4f}" if row["costed"] else "unknown"]
             for row in report.get("usage") or []]
 
 
-USAGE_HEAD = ["seat", "model", "turns", "tokens in", "tokens out", "cost (provider-reported)"]
+USAGE_HEAD = ["seat", "model", "turns", "tokens in", "tokens out", "cached input (provider-reported)",
+              "cost (provider-reported)"]
 
 
 def revisions(db: Path, repo: str, since: float) -> dict | None:
@@ -337,6 +385,9 @@ def collect(loop: dict, db: Path, since: float, with_github: bool,
               "turns": ledger(db, loop["repo"], since),
               "revisions": revisions(db, loop["repo"], since),
               "usage": usage(db, loop["repo"], since)}
+    cache_turns = cache_by_turn(db, loop["repo"], since)
+    if cache_turns is not None:       # a missing ledger keeps the pinned desktop payload as it was
+        report["cache_turns"] = cache_turns
     try:
         from . import findings
         report["findings_missed"] = findings.missed_count(loop, since, now)
@@ -1196,6 +1247,9 @@ def text(report: dict) -> str:
     if report.get("usage"):
         out += ["", "Tokens per seat and model (counted by the inference proxy; cost only where "
                 "the provider reported it)", *_table(USAGE_HEAD, _usage_rows(report))]
+    if report.get("cache_turns"):
+        out += ["", "Prompt cache per turn, oldest first (compare the rounds of one PR)",
+                *_table(CACHE_HEAD, _cache_turn_rows(report))]
     for kind, title in (("prompt_rev", "prompt revision"), ("model", "model"),
                         ("thinking", "thinking")):
         groups = (report.get("revisions") or {}).get(kind)
@@ -1278,6 +1332,9 @@ def as_html(report: dict) -> str:
     if report.get("usage"):
         parts.append("<h2>Tokens per seat and model</h2>")
         parts.append(_html_table(USAGE_HEAD, _usage_rows(report)))
+    if report.get("cache_turns"):
+        parts.append("<h2>Prompt cache per turn</h2>")
+        parts.append(_html_table(CACHE_HEAD, _cache_turn_rows(report)))
     if gh_report:
         notes, tables = _github_parts(gh_report)
         parts.append("<h2>Pull requests and reviews</h2>")
