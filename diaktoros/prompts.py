@@ -596,10 +596,14 @@ def before_this_round(prompt: str, text: str) -> 'Prompt':
     """``text`` placed just before the host's **This round** section of ``prompt``, at the offset
     the host recorded; for a plain string, or a prompt with no such section, at its start (host
     notes were always first there). Never located by searching the text: an author could forge
-    the heading."""
+    the heading. At the recorded offset the text before it ends with a section's last line (a
+    description's closing fence, with no newline after it), so the insertion opens with a blank
+    line: a note glued to the fence would stop the fence from closing and put the host's facts
+    inside the author's block."""
     at = getattr(prompt, 'round_at', None)
     if at is None:
         return Prompt(text + prompt)
+    text = '\n\n' + text
     return Prompt(prompt[:at] + text + prompt[at:], at + len(text))
 
 

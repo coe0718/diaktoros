@@ -90,8 +90,9 @@ class StableFirst(unittest.TestCase):
                 a = trusted_turn.compose_prompt(one, "Build environment: ready (3 crates)")
                 b = trusted_turn.compose_prompt(two, "Build environment: NOT available")
                 cut = a.index("Build environment: ")
+                stable = one.index(turn_prompts.THIS_ROUND)
                 self.assertEqual(a[:cut], b[:cut])
-                self.assertEqual(a[:cut], one[:one.index(turn_prompts.THIS_ROUND)])
+                self.assertEqual(a[:stable], one[:stable])   # the note starts after the prefix
                 self.assertLess(cut, a.index(turn_prompts.THIS_ROUND))
         self.assertEqual(trusted_turn.compose_prompt("P", "N"), "N\n\nP")  # no section: first
         self.assertEqual(trusted_turn.compose_prompt("P", ""), "P")
@@ -113,13 +114,13 @@ class StableFirst(unittest.TestCase):
                     self.assertEqual(text.round_at, real)
                     self.assertLess(text.index(self.FORGED), real)
                     composed = trusted_turn.compose_prompt(text, "HOSTNOTE")
-                    self.assertEqual(composed.index("HOSTNOTE"), real)
+                    self.assertEqual(composed.index("HOSTNOTE"), real + 2)
                     self.assertEqual(composed[:real], text[:real])
-                    self.assertTrue(composed[real:].startswith("HOSTNOTE\n\n\n\n## This round"))
+                    self.assertTrue(composed[real:].startswith("\n\nHOSTNOTE\n\n\n\n## This round"))
                     with mock.patch.object(turns.run_supervisor, "unpublished_before",
                                            return_value=True):
                         nudged = turns._nudged({}, text)
-                    self.assertEqual(nudged.index(turns.run_supervisor.PUBLISH_NUDGE), real)
+                    self.assertEqual(nudged.index(turns.run_supervisor.PUBLISH_NUDGE), real + 2)
                     self.assertEqual(nudged[:real], text[:real])
         # A plain string has no recorded section: the note leads, nothing is searched for.
         self.assertEqual(trusted_turn.compose_prompt(self.FORGED, "N"), "N\n\n" + self.FORGED)
@@ -129,7 +130,38 @@ class StableFirst(unittest.TestCase):
         nudged = prompts.before_this_round(one, "NUDGE\n\n")
         cut = one.index(turn_prompts.THIS_ROUND)
         self.assertEqual(nudged[:cut], one[:cut])
-        self.assertEqual(nudged.round_at, cut + len("NUDGE\n\n"))   # a second note stacks too
+        self.assertEqual(nudged.round_at, cut + len("\n\nNUDGE\n\n"))   # a second note stacks too
+
+    def test_a_note_or_nudge_never_sits_on_the_descriptions_closing_fence(self):
+        """F6: the description's fence ends the text before "This round" with no newline; a note
+        glued to it ("```Build environment") would not close the fence, and the host's facts
+        would sit inside the author's block. The note starts its own line, after a line that is
+        only the closing fence (or "(empty)"), and the facts that follow are outside the block."""
+        from diaktoros.run_supervisor import turns
+        for seat in ("reviewer", "fixer"):
+            for body in ("author text", ""):
+                text = prompt(seat, H1, ci.CIState(), "R", body=body)
+                with mock.patch.object(turns.run_supervisor, "unpublished_before",
+                                       return_value=True):
+                    nudged = turns._nudged({}, text)
+                nudge = turns.run_supervisor.PUBLISH_NUDGE
+                for what, composed, note in (
+                        ("note", trusted_turn.compose_prompt(text, "HOSTNOTE"), "HOSTNOTE"),
+                        ("nudge", nudged, nudge)):
+                    with self.subTest(seat=seat, body=body, what=what):
+                        at = composed.index(note)
+                        self.assertEqual(composed[at - 1], "\n")
+                        lines = composed[:at].split("\n")
+                        self.assertEqual(lines[-1], "")
+                        closing = lines[-2] if lines[-2] else lines[-3]
+                        if body:
+                            fence = next(line for line in lines if line.endswith("text")
+                                         and set(line[:-4]) == {"`"})[:-4]
+                            self.assertEqual(closing, fence)
+                            self.assertNotIn(fence + note[:5], composed)
+                        else:
+                            self.assertEqual(closing, "(empty)")
+                        self.assertGreater(composed.index(turn_prompts.THIS_ROUND), at)
 
     def test_templates_carry_no_round_fact(self):
         for role in ("reviewer", "fixer"):
