@@ -389,6 +389,9 @@ class ClaimAndLaunch:
                 con.execute("UPDATE runs SET state='cancelled', error=?,updated=? WHERE id=?",
                             (read.superseded, now, row['id']))
                 con.execute('COMMIT')
+                # #1786: a shadow retired at its claim (off, moved head, closed PR) never
+                # arrives; the merge check must stop waiting for it.
+                self._refresh_shadow_check(None, row, 'cancelled')
                 return None
             if read.read_error:
                 # Bounded like a failed turn (#53): back off, then fail with the reason and
@@ -405,6 +408,9 @@ class ClaimAndLaunch:
                                 (retries, f'retry limit ({retries} attempts): {reason}'[:600],
                                  now, row['id']))
                 con.execute('COMMIT')
+                # #1786: a read that failed for good ends the shadow; a backed-off one is still open.
+                self._refresh_shadow_check(None, row, 'waiting' if retries < run_supervisor.MAX_RETRIES
+                                           else 'failed')
                 return None
             if read.retry_read:
                 con.execute('COMMIT')
@@ -1067,6 +1073,25 @@ class ClaimAndLaunch:
             turn.breach = (state_mod.state_for(loop), marker['rounds'])
         return _Launch(prompt, scope, change=change)
 
+    def _refresh_shadow_check(self, loop: dict | None, row, state: str | None) -> None:
+        """Refresh the merge check of a shadow run's own PR once the run has ended (#1786).
+
+        The check says "waiting on the shadow review" for as long as the ledger shows the run
+        open, and nothing else refreshes it until the watchdog's next sweep. A run still open
+        (``gate.SHADOW_OPEN``: held for CI, waiting to retry) changes nothing, and ``state`` None
+        means this owner no longer holds the run. A ``loop`` of None is looked up from the row's
+        repo. Best effort, like every refresh after an event."""
+        try:
+            from .. import config, gate, merge_check
+            if (row is None or state is None or state in gate.SHADOW_OPEN
+                    or row['seat'] != run_supervisor.SHADOW):
+                return
+            loop = loop or config.by_repo(row['repo'])
+            if loop is not None:
+                merge_check.refresh_quietly(loop, row['pr'])
+        except Exception:
+            pass    # a lost refresh must not change how the turn ends
+
     def _budget_kill_error(self, turn: _Turn, exc) -> str:
         # Name the clock (#49): an opaque "TimeoutExpired" hides that a setting killed the
         # turn. Never retried automatically: the same budget would most likely run out
@@ -1114,9 +1139,6 @@ class ClaimAndLaunch:
             try:
                 if submissions and self.record_shadow(run_id, owner, submissions[-1]):
                     self._shadow_escalation(turn)
-                    if turn.loop is not None:              # #1163: the shadow's verdict is in
-                        from .. import merge_check
-                        merge_check.refresh_quietly(turn.loop, turn.row['pr'])
             except Exception:
                 pass    # a lost record must not change how the turn ends
         state = self.complete_uncertain(
@@ -1134,6 +1156,11 @@ class ClaimAndLaunch:
             except Exception:
                 pass
         claims.release_seat(turn.claim, state)
+        if shadow:
+            # #1786 (and #1163 for a recorded verdict): the merge check reads the shadow run's
+            # state from the ledger, so it is refreshed once that state is written, whatever the
+            # outcome: a review recorded, a failure, or a cancellation before launch.
+            self._refresh_shadow_check(turn.loop, turn.row, state)
         if not shadow:
             # A shadow turn is no part of the loop (#218): its failure pages nobody.
             self.failure_notice(run_id, state)
