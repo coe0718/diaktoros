@@ -26,6 +26,7 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import os
 import pathlib
 import time
 
@@ -110,13 +111,37 @@ def _wait(lock) -> bool:
 
 
 def load(key: tuple) -> tuple[str, float] | None:
-    """The stored ``(token, expires_at)`` for ``key``, or None (missing, unreadable, malformed)."""
+    """The stored ``(token, expires_at)`` for ``key``, or None (missing, unreadable, malformed,
+    or marked refused by ``refuse``)."""
     try:
         entry = json.loads(_file(key).read_text())
         token, expires = entry["token"], float(entry["expires"])
     except (OSError, ValueError, KeyError, TypeError):
         return None
-    return (token, expires) if isinstance(token, str) and token else None
+    if not isinstance(token, str) or not token or _mark(key, token).exists():
+        return None
+    return token, expires
+
+
+def _mark(key: tuple, token: str) -> pathlib.Path:
+    """Where ``refuse`` marks ``token`` refused: named by a hash of it, never the token itself."""
+    return _file(key).with_name(f"{_file(key).name}.refused-"
+                                f"{hashlib.sha256(token.encode()).hexdigest()[:32]}")
+
+
+def refuse(key: tuple, token: str) -> None:
+    """Mark ``token`` refused for every process without touching the shared file: for a 401
+    whose handler could not take ``held``'s lock, which leaves the file to the lock's holder
+    (review of #1781, F10). An empty file, created whole or not at all, so nothing shared is
+    rewritten unlocked; ``load`` then reads the token as gone, and the next locked ``save``
+    clears the marks. Best effort, never raises."""
+    if not _writable():
+        return
+    try:
+        os.close(os.open(_mark(key, token), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600))
+    except OSError:
+        pass
 
 
 def save(key: tuple, token: str, expires: float) -> None:
@@ -126,6 +151,8 @@ def save(key: tuple, token: str, expires: float) -> None:
     from .util import atomic_write
     try:
         atomic_write(_file(key), json.dumps({"token": token, "expires": expires}))     # 0600
+        for mark in directory().glob(f"{_file(key).name}.refused-*"):
+            mark.unlink(missing_ok=True)    # the tokens they name are gone with the file
     except (OSError, TypeError, ValueError):
         pass
 

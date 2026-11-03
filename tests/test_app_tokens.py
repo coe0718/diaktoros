@@ -244,6 +244,7 @@ class Shared(Fixture):
         # Review of #1781, F5: past the bounded wait, refused() still did load-compare-drop
         # unlocked, so a successor published between the load and the drop was deleted.
         old = gh.token(self.loop, BOT)
+        before = app_tokens._file(KEY).read_bytes()
         held = self.hold_lock(KEY)
         successor = ("ghs_successor_" + "x" * 370, time.time() + 3600)
 
@@ -254,7 +255,8 @@ class Shared(Fixture):
         with mock.patch.object(app_tokens, "LOCK_WAIT_S", 0.2), \
                 mock.patch.object(app_tokens, "load", side_effect=load):
             github_app.refused(self.loop, BOT, old)
-        self.assertIsNotNone(app_tokens.load(KEY))    # nothing dropped without the lock
+        self.assertEqual(app_tokens._file(KEY).read_bytes(), before)   # never rewritten unlocked
+        self.assertIsNone(app_tokens.load(KEY))       # but marked refused for everyone (F10)
         # And a token minted without the lock is this process's alone: never published.
         app_tokens.drop(KEY)
         self.new_process()
@@ -263,6 +265,41 @@ class Shared(Fixture):
         self.assertIsNone(app_tokens.load(KEY))
         held.set()
         self.assertNotEqual(gh.token(self.loop, BOT), old)          # refused: never used again
+
+    def test_a_401_that_misses_the_lock_still_reaches_every_process(self):
+        # Review of #1781, F10: a 401 handler that could not take the lock left the shared file
+        # to the holder, and nothing else told the other processes: after the holder let go, a
+        # new process loaded the dead token. It now leaves a mark beside the file.
+        dead = gh.token(self.loop, BOT)
+        held = self.hold_lock(KEY)
+        with mock.patch.object(app_tokens, "LOCK_WAIT_S", 0.2):
+            github_app.refused(self.loop, BOT, dead)
+        held.set()                                    # the holder lets go, having done nothing
+        self.assertEqual(json.loads(app_tokens._file(KEY).read_text())["token"], dead)
+        marks = list(app_tokens.directory().glob(f"{app_tokens._file(KEY).name}.refused-*"))
+        self.assertEqual(len(marks), 1)
+        self.assertNotIn(dead, marks[0].name)         # a hash names it, never the token
+        self.assertEqual(marks[0].read_bytes(), b"")
+        script = f"""
+import sys
+sys.path.insert(0, {str(ROOT)!r})
+from unittest import mock
+from diaktoros import gh, gh_cache, github_app
+gh_cache.enable_writes()
+def as_app(loop, login, path, method="GET", body=None):
+    if path.endswith("/installation"):
+        return gh.Response({{"id": 9}}, "", 200, {{}})
+    return gh.Response({{"token": "ghs_fresh_" + "x" * 380, "expires_at": {LATER!r}}}, "", 201, {{}})
+loop = {{"repo": {REPO!r}, "read_token": {BOT!r}, "apps": {{{BOT!r}: {{"app_id": {APP_ID}, "key_file": "/k"}}}}}}
+with mock.patch.object(github_app, "_as_app", side_effect=as_app):
+    print(gh.token(loop, {BOT!r})[:16])
+"""
+        from diaktoros import config
+        other = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                               env={**os.environ, "HERMES_HOME": str(config.home())},
+                               stdin=subprocess.DEVNULL, timeout=60)
+        self.assertEqual(other.stdout.strip(), "ghs_fresh_xxxxxx", other.stderr)
+        self.assertEqual(list(app_tokens.directory().glob("*.refused-*")), [])   # its save cleared it
 
     def test_threads_wait_for_a_token_within_their_own_bounds(self):
         # Review of #1781, F6: the bounded flock wait ran under one process-wide lock, so a

@@ -295,7 +295,8 @@ def refused(loop: dict, login: str | None, sent: str) -> None:
         if _tokens.get(key, ("",))[0] == sent:
             del _tokens[key]
     with app_tokens.held(key) as locked:
-        if not locked:                      # load-compare-drop is atomic only under the lock (F5)
+        if not locked:                      # load-compare-drop is atomic only under the lock (F5);
+            app_tokens.refuse(key, sent)    # a mark beside the file tells every process (F10)
             return
         stored = app_tokens.load(key)
         if stored and stored[0] == sent:
