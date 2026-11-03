@@ -604,6 +604,27 @@ def sandbox_config(model: str, api_mode: str = 'chat_completions',
             f'    api_mode: {api_mode}\n' + tail, '', SEAT_PROVIDER)
 
 
+def _write_sandbox_home(home: Path, model: str, api_mode: str, client_identity: str,
+                        reasoning_effort: str) -> str:
+    """Create the sandbox's Hermes home: its ``config.yaml``, the directsdk wire plugin when that
+    client identity is used, and its ``.env``. Returns the provider the turn runs Hermes with."""
+    home.mkdir(mode=0o700)
+    config_text, env_text, provider = sandbox_config(model, api_mode, client_identity,
+                                                     reasoning_effort)
+    (home / 'config.yaml').write_text(config_text)
+    (home / 'config.yaml').chmod(0o600)
+    if client_identity == 'directsdk':
+        wire = home / 'plugins' / 'review-loop-directsdk-wire'
+        wire.mkdir(mode=0o700, parents=True)
+        shutil.copyfile(Path(__file__).with_name('directsdk_wire.py'), wire / '__init__.py')
+        (wire / 'plugin.yaml').write_text(
+            'name: review-loop-directsdk-wire\nkind: model-provider\nversion: 0.1.0\nmanifest_version: 2\n')
+    if env_text:
+        (home / '.env').write_text(env_text)
+        (home / '.env').chmod(0o600)
+    return provider
+
+
 def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path,
              runtime: Path, rust: Path, upstream: str, key: str, model: str,
              prompt: str, timeout: int = 600, work_root: Path | None = None,
@@ -612,7 +633,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
              client_identity: str = '', review_diff: str | None = None,
              prefetch_timeout: int = deps.FETCH_TIMEOUT, progress=None,
              merged: dict | None = None, steps: int | None = None,
-             reasoning_effort: str = '', stop=None) -> int:
+             reasoning_effort: str = '', stop=None, on_launch=None) -> int:
     """Stage a live PR head, start host capabilities, execute Hermes within bwrap.
 
     ``api_mode`` picks the proxy contract and the sandbox's provider config; ``credential`` (a
@@ -639,6 +660,10 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
     ``stop``, when given (the worker's cancel event, #1148), is checked before the sandbox starts
     and polled while it runs: once set, the sandbox's process group is killed exactly as at the
     turn budget and ``contained.Stopped`` is raised, with what it printed in ``observed``.
+
+    ``on_launch``, when given, is called with no arguments once, right before the sandbox starts:
+    after the checkout is staged, the dependencies prefetched and the stop check passed. A turn
+    that fails or is refused earlier never calls it (#1378: the daily turn cap counts from it).
     """
     if scope.repo != loop.get('repo') or scope.role not in TOOLS:
         raise TurnDenied('scope mismatch')
@@ -672,20 +697,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
             turn = client.parent / Path(broker_client.TURN_FILE).name
             turn.write_text(json.dumps({'head': scope.head}) + '\n')
             turn.chmod(0o444)
-        home.mkdir(mode=0o700)
-        config_text, env_text, provider = sandbox_config(model, api_mode, client_identity,
-                                                         reasoning_effort)
-        (home / 'config.yaml').write_text(config_text)
-        (home / 'config.yaml').chmod(0o600)
-        if client_identity == 'directsdk':
-            wire = home / 'plugins' / 'review-loop-directsdk-wire'
-            wire.mkdir(mode=0o700, parents=True)
-            shutil.copyfile(Path(__file__).with_name('directsdk_wire.py'), wire / '__init__.py')
-            (wire / 'plugin.yaml').write_text(
-                'name: review-loop-directsdk-wire\nkind: model-provider\nversion: 0.1.0\nmanifest_version: 2\n')
-        if env_text:
-            (home / '.env').write_text(env_text)
-            (home / '.env').chmod(0o600)
+        provider = _write_sandbox_home(home, model, api_mode, client_identity, reasoning_effort)
         review = None
         if review_diff is not None:
             review = root / 'review'
@@ -786,6 +798,8 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                 grace = KILL_GRACE_S
                 if stop is not None and stop.is_set():
                     raise contained.Stopped()
+                if on_launch is not None:
+                    on_launch()
                 stopping = {"stop": stop} if stop is not None else {}
                 try:
                     result = contained.run(code=code, venv=venv, runtime=runtime,
