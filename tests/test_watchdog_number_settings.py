@@ -57,6 +57,16 @@ class NumberSettingsTest(unittest.TestCase):
                 self.assertEqual(config.normalize(raw_loop(**{key: None}))[key], config.DEFAULTS[key])
                 self.assertEqual(config.normalize(raw_loop())[key], config.DEFAULTS[key])
 
+    def test_empty_string_means_the_default_and_the_docs_say_so(self):
+        # Issue #1628: the empty string is accepted as the default, so the settings table
+        # must list it next to ``null`` instead of saying all text is refused.
+        docs = (pathlib.Path(__file__).resolve().parents[1] / "docs" / "configuration.md").read_text()
+        for key in KEYS:
+            with self.subTest(key=key):
+                self.assertEqual(config.normalize(raw_loop(**{key: ""}))[key], config.DEFAULTS[key])
+                row = next(line for line in docs.splitlines() if line.startswith(f"| `{key}` |"))
+                self.assertIn('the empty string `""`', row)
+
     def test_positive_numbers_are_kept(self):
         loop = config.normalize(raw_loop(cooldown_h=0.5, marker_grace_min=90))
         self.assertEqual(loop["cooldown_h"], 0.5)
