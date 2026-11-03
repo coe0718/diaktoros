@@ -237,11 +237,15 @@ def request(loop: dict, path: str, method: str = "GET", body=None,
     budget, and a call that fails because the budget ran out raises ``GateBudgetExceeded``.
     """
     timeout = _budgeted(method, path)
-    return _outcome(method, path, _request(loop, path, method, body, login, timeout))
+    _LAST.status = None
+    response = _request(loop, path, method, body, login, timeout)
+    _LAST.status = response.status      # the answer's own status, never one read from error text
+    return _outcome(method, path, response)
 
 
 def _request(loop: dict, path: str, method: str, body, login: str | None,
              timeout: float) -> Response:
+    _LAST.unsent = False
     if envnames.get("GH_STUB"):
         # The login travels to the stub (as GH_LOGIN, never a token) so a test can play a read
         # token GitHub refuses a hook write.
@@ -251,7 +255,8 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
     try:
         tok = token(loop, login)
     except GitHubError as exc:
-        gh_calls.record(who, method, path, "unsent")    # no credential: nothing left the host
+        _LAST.unsent = True             # no credential: the request was never built or sent
+        gh_calls.record(who, method, path, "unsent")
         return Response(None, str(exc))
     # #1646: a GET asks whether its stored answer changed; a 304 is free on the rate limit.
     cached = gh_cache.lookup(who, path) if method == "GET" else None
@@ -528,6 +533,21 @@ def last_error() -> str:
     """The error of this thread's latest ``api`` call (empty when it succeeded): lets a writer
     that must refuse on None say why without a second request."""
     return getattr(_LAST, "error", "")
+
+
+def last_status() -> int | None:
+    """The HTTP status of the answer to this thread's latest call, or None when no answer arrived
+    (no credential, a timeout, a dropped connection). It is the response's own status: an error
+    message that happens to contain ``HTTP 403`` does not make one."""
+    status = getattr(_LAST, "status", None)
+    return status if type(status) is int else None
+
+
+def last_unsent() -> bool:
+    """True when this thread's latest call failed before any request was sent (no credential to
+    send it with), so a write that failed this way cannot have taken effect. A timeout, or any
+    failure after the request left, is not this."""
+    return bool(getattr(_LAST, "unsent", False))
 
 
 # -- convenience --------------------------------------------------------------

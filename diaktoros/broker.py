@@ -26,6 +26,13 @@ class BrokerDenied(Exception):
     """Fail closed: the requested operation is not authorized at this PR head."""
 
 
+class BrokerNotSent(BrokerDenied):
+    """Refused with nothing written: locally before any request (a missing credential too), or by
+    GitHub with a definite 4xx
+    rejection. The caller may try again once the cause is fixed, unlike a write whose outcome is
+    unknown (a timeout, a 5xx, an answer that is not an issue)."""
+
+
 class BrokerConflict(BrokerDenied):
     """An APPROVE refused because the live PR conflicts with its base (#1243): no review body can
     cure it, so the caller ends the reviewer's turn rather than asking for a resubmission."""
@@ -582,10 +589,10 @@ def file_shadow_issue(loop: dict, *, repo: str, number: int, head: str, title: s
     #1589). The labels were checked when the shadow asked (the loop's triage list, never the fix
     label); ``shadow-found`` is added here. Host-built header and footer."""
     if repo != loop.get("repo"):
-        raise BrokerDenied("repository mismatch")
+        raise BrokerNotSent("repository mismatch")
     login = str(loop.get("read_token") or "")
     if not login:
-        raise BrokerDenied("no reader identity")
+        raise BrokerNotSent("no reader identity")
     header = (f"Found by a shadow review (`{model}`) of #{number} at `{head[:7]}`. The reviewer "
               "did not file it. A shadow review is a second model that writes nothing; the host "
               "filed this for it.\n\n")
@@ -594,9 +601,21 @@ def file_shadow_issue(loop: dict, *, repo: str, number: int, head: str, title: s
                                + lineage_note(pr=number, head=head, depth=depth,
                                               by="the Diaktoros host for a shadow review"),
                                "shadow", head)}
+    # Cleared first, so "never sent" is judged on this write alone: the flag is the thread's
+    # latest call's, and a stale one from an earlier call would turn an unknown outcome (a 5xx,
+    # a timeout) into a retry, and a retry into a second copy of the issue.
+    gh._LAST.unsent = False
+    gh._LAST.status = None
     result, why = _write(loop, f"/repos/{repo}/issues", method="POST", body=payload, login=login)
     if (not isinstance(result, dict) or type(result.get("number")) is not int
             or result["number"] <= 0 or "pull_request" in result):
+        if result is None and gh.last_unsent():
+            # The reader's credential is missing or unreadable: refused before any request.
+            raise BrokerNotSent(_denied("no credential to send the issue write with", why).args[0])
+        status = gh.last_status()       # the response's own status; None when no answer arrived
+        if result is None and status is not None and 400 <= status < 500 and status != 408:
+            # GitHub rejected the request (no Issues write, a bad label): no issue was created.
+            raise BrokerNotSent(_denied("GitHub refused the issue write", why).args[0])
         raise _denied("GitHub issue write did not return a successful response", why)
     _audit(loop, repo, number, head, "", "reader", "file_shadow_issue", login)
     return result["number"], _shadow_labels(loop, repo, number, head, result, payload["labels"],

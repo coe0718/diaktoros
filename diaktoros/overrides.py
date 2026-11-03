@@ -11,6 +11,15 @@ reverted fixer pushes are not detected yet.
 A merge after an approval writes nothing, and neither does one whose reviews cannot be read or
 ordered: only a verdict proved current counts. Such a merge is read again on each sweep while it is
 inside the 7-day window (``LOOKBACK_S``); one still unreadable or unordered then is never recorded.
+So is a merge with no verdict proved current at the merged head, and one whose reviewer has a
+PENDING review there: GitHub shows a pending review only to its author, so a separate reader sees
+nothing and cannot tell "no review" from "a review not yet submitted". Only a merge with a proved
+verdict (and no visible pending review) is marked checked. (A record is written once per PR and
+head, so reading again never doubles it; the cost is one review read per such PR per sweep, within
+the window and the ``LISTED`` newest.) Not covered: a pending review submitted after a verdict was
+already proved current is not seen, since that PR is marked checked. Merges marked checked by an
+earlier version, which also marked those with no verdict, are not trusted: the checked list lives
+in a new file (``state.OVERRIDE_CHECKED_FILE``), so each is read once more.
 """
 from __future__ import annotations
 
@@ -53,7 +62,11 @@ def scan(loop: dict, st, sup, now: float | None = None) -> list[int]:
         if latest is None and any(gh.review_state(r) not in gate.NOT_VERDICTS
                                   for r in gate.reviews_at_head(reviews, loop, head)):
             continue                       # a verdict whose order is unproved: read again
-        kept[str(number)] = head
+        if latest is not None and not any(gh.review_state(r) == "PENDING"
+                                          for r in gate.reviews_at_head(reviews, loop, head)):
+            # Marked only once a verdict is proved. No verdict may mean a pending review the
+            # reader cannot see (GitHub shows it only to its author), so those are read again.
+            kept[str(number)] = head
         if latest is None or gh.review_state(latest) != "CHANGES_REQUESTED":
             continue
         review_id = int(latest["id"])

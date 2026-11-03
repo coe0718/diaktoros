@@ -96,6 +96,8 @@ class Config(unittest.TestCase):
                           ({BOT: {**good, "app_id": "5"}}, "numeric id"),
                           ({BOT: {**good, "app_id": True}}, "numeric id"),
                           ({BOT: {**good, "app_id": 0}}, "numeric id"),
+                          ({BOT: {**good, "app_id": 10 ** 20}}, "numeric id"),     # #1742: 21 digits
+                          ({BOT: {**good, "app_id": 10 ** 4300}}, "numeric id"),
                           ({BOT: {"app_id": APP_ID}}, "key_file"),
                           ({BOT: {**good, "key_file": "r.pem"}}, "key_file"),
                           ({BOT: {**good, "secret": "x"}}, "must be"),

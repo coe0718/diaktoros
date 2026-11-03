@@ -176,8 +176,8 @@ The last command removes the reviewer's stored cap. Adjudicator overrides are fi
 | `turn_budget_s` | `900` | One agent turn's wall-clock budget, 60–14400 seconds. Includes reading, building, testing, and submission inside the turn, not host prefetch/drain. |
 | `seats.<seat>.turn_budget_s` | Loop budget | Override for reviewer, fixer, adjudicator, or triage; same 60–14400 range. Missing, `null`, or empty inherits. |
 | `grace_min` | `35` | Quiet-head stall grace in minutes, raised per seat to cover its whole worst-case turn. |
-| `marker_grace_min` | `60` | Grace for a marker awaiting adjudication. For an `adjudicating` marker without a live run, the threshold is at least the adjudicator's whole turn; with a live run it is not a stall. A positive number; `null` means the default; anything else (text, a bool, zero, a negative) is refused when the loop file loads. |
-| `cooldown_h` | `6` | Hours between repeated alerts for the same persistent stall or stuck entry. A cleared condition that returns can alert immediately. A positive number; `null` means the default; anything else is refused when the loop file loads. |
+| `marker_grace_min` | `60` | Grace for a marker awaiting adjudication. For an `adjudicating` marker without a live run, the threshold is at least the adjudicator's whole turn; with a live run it is not a stall. A positive number; `null` or the empty string `""` means the default; anything else (non-empty text, a bool, zero, a negative) is refused when the loop file loads. |
+| `cooldown_h` | `6` | Hours between repeated alerts for the same persistent stall or stuck entry. A cleared condition that returns can alert immediately. A positive number; `null` or the empty string `""` means the default; anything else (non-empty text, a bool, zero, a negative) is refused when the loop file loads. |
 | `ttl_min` | `45` | Seat-claim backstop in minutes, raised to the seat's whole worst-case turn. The watchdog's dead-claim threshold is twice that effective TTL. |
 | `inflight_ttl_min` | `10` | Minutes a same-head in-flight mark suppresses duplicate handling. The run ledger provides additional durable deduplication. |
 
@@ -386,7 +386,7 @@ Delivery is durably keyed by transition. Only definite **pre-POST** failures wit
 | `triage.route`, `triage.profile` | Required when enabled | Non-empty route/profile; the profile supplies the model. |
 | `triage.authors` | Required | Non-empty list of non-blank author logins, trimmed/lowercased/deduplicated. Other authors are ignored before a model sees their issue. |
 | `triage.labels` | Required | 1–100 case-insensitively distinct label names, each 1–50 characters without surrounding whitespace, commas, braces, backticks, or control characters matched by the loader. Only these labels may be applied. |
-| `triage.max_labels` | `3` | JSON integer 1–10, not a boolean or string. Maximum labels applied to an issue. |
+| `triage.max_labels` | `3` | JSON integer 1–10, not a boolean or string. Maximum labels applied to an issue, and to an issue the reviewer files: with `1` and a list that has both kinds, a filed issue gets its type label and no priority label (a list of only types or only priorities takes one of them). |
 | `triage.comment` | `false` | Strict JSON boolean; enables one optional comment of at most 1000 characters. |
 | `triage.login` | Reviewer seat login | Identity performing labels/comments; requires its own mapped token with `issues: write`, never the reader. It need not be a separate fourth adjudicator account. |
 | `triage.fix_label` | Unset | Maintainer-applied label that hands an issue to issue-fixing. Same label syntax; must **not** be among `triage.labels`, so triage cannot authorize its own fixes. |
@@ -483,6 +483,13 @@ each one once the real review exists at that head:
   If they still don't land, the issue stays filed (never again), the watchdog log names the
   labels and the missing permission, the broker audit records the gap, and its `shadow_issues`
   row is `unlabelled`, not `posted`.
+- **A refusal with nothing written:** if the broker refuses it before sending anything (no reader
+  identity, a repository mismatch, a reader token file that is missing or unreadable), or GitHub answers the POST with a 4xx other than 408 (a reader App without
+  Issues write gets 403; the status is the response's own, never one named in an error text), no issue exists, so it stays `recorded` with the reason in its `error`,
+  the watchdog log names it, and each later sweep tries again, so fixing the permission is enough.
+  A POST that timed out or failed in transit (whatever the error text says), got a 408, a 5xx or an answer that isn't an issue is `uncertain` and is never
+  replayed, since GitHub may have created it. A refused one is retried every sweep and takes no
+  room under the daily cap.
 - **What's skipped:** an issue the reviewer already filed from that PR, with the same title or one
   close to it, is marked `duplicate` and never filed.
 - **Limits:** at most `shadow.issues_daily` a day per loop, counted over a rolling 24 hours (#1515;

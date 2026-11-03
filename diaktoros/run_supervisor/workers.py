@@ -26,6 +26,22 @@ from ..hostdirs import WORKER_ENV, in_worker
 from . import claims
 
 
+def process_state(pid: int | None, launched: float | None) -> str:
+    """Whether the process recorded for a run is ``gone``, ``alive`` or ``unknown``.
+
+    ``gone`` only on proof: no process holds the PID, or its holder provably started after
+    the run launched. A present holder is ``alive``; no recorded PID, or one this host may
+    not signal, is ``unknown``. An expired lease alone never shows a turn has stopped (#1461).
+    """
+    if pid is None:
+        return 'unknown'
+    try:
+        os.kill(pid, 0)
+    except OSError as exc:
+        return 'gone' if exc.errno == errno.ESRCH else 'unknown'
+    return 'gone' if run_supervisor._pid_reused(pid, launched) else 'alive'
+
+
 class WorkerLifecycle:
     """The worker-lifecycle and recovery methods of :class:`~diaktoros.run_supervisor.Supervisor`."""
 
@@ -101,6 +117,28 @@ class WorkerLifecycle:
         now = time.time()
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
+            # An operator's cancel (#1148) on a run whose worker is gone is never read by a
+            # heartbeat: end it here as the worker would have (#1461). Cancelled before any
+            # write-ahead record; uncertain, naming the cancel, after one. A push intent keeps
+            # the push quarantine below, which complete_uncertain and reconcile key on.
+            # An expired lease is not proof the turn stopped (a heartbeat can fail while the
+            # child runs): only a run whose recorded process is provably gone is ended here.
+            # A live or unprovable one stays quarantined below (uncertain, still holding its
+            # PR and seat, cancel_requested kept) until an operator reconciles it.
+            for lost in con.execute("SELECT id,pid,launch_intent FROM runs WHERE state IN "
+                                    "('launching','running') AND lease<? AND cancel_requested "
+                                    "IS NOT NULL AND push_intent IS NULL", (now,)).fetchall():
+                if process_state(lost['pid'], lost['launch_intent']) != 'gone':
+                    continue
+                wrote = run_supervisor.write_records(con, lost['id'])
+                if wrote is None:
+                    state, error = 'cancelled', run_supervisor.OPERATOR_CANCEL
+                else:
+                    state = 'uncertain'
+                    error = (f"{run_supervisor.OPERATOR_CANCEL} after it may have written ({wrote}) — "
+                             "never replayed; inspect and reconcile")
+                con.execute("UPDATE runs SET state=?, error=?, lease=NULL, retry_at=NULL, "
+                            "updated=?, finished=? WHERE id=?", (state, error, now, now, lost['id']))
             # Never retry an attempt whose child may have been launched.
             con.execute("UPDATE runs SET state='uncertain', "
                         "error=CASE WHEN push_intent IS NOT NULL THEN "
@@ -270,14 +308,11 @@ class WorkerLifecycle:
                 con.execute('COMMIT')
                 return False
             if row['pid'] is not None:
-                try:
-                    os.kill(row['pid'], 0)
-                except OSError as exc:
-                    if exc.errno != errno.ESRCH:
-                        raise ValueError('cannot establish worker is absent') from exc
-                else:
-                    if not run_supervisor._pid_reused(row['pid'], row['launch_intent']):
-                        raise ValueError('worker PID exists; cannot release uncertain run')
+                found = process_state(row['pid'], row['launch_intent'])
+                if found == 'unknown':
+                    raise ValueError('cannot establish worker is absent')
+                if found == 'alive':
+                    raise ValueError('worker PID exists; cannot release uncertain run')
             if row['launch_intent'] is None:
                 raise ValueError('missing launch intent; cannot establish worker identity')
             con.execute("UPDATE runs SET state='failed', error=?, lease=NULL, "

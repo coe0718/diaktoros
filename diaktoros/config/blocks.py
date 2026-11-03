@@ -255,8 +255,9 @@ def check_apps(value, tokens: dict, where: str) -> dict:
             raise config.ConfigError(f"{where}: apps.{name} must be {{\"app_id\": N, \"key_file\": "
                               "\"/abs/path.pem\"}}")
         app_id = spec.get("app_id")
-        if type(app_id) is not int or app_id <= 0:
-            raise config.ConfigError(f"{where}: apps.{name}.app_id must be the App's numeric id")
+        if type(app_id) is not int or config.parse_app_id(app_id) is None:
+            raise config.ConfigError(f"{where}: apps.{name}.app_id must be the App's numeric id "
+                              f"(1 to {config.APP_ID_MAX_DIGITS} digits)")
         key = str(spec.get("key_file") or "")
         problem = config.relative_path_problem(key) if key else "no key_file given"
         if problem:
