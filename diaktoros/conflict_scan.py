@@ -9,8 +9,10 @@ while later (``request``) and starts a detached ``watchdog.py --conflicts``, whi
 A burst of merges is one scan: each merge only pushes the due time later, one scanner holds the
 lock, and a merge during a scan is picked up by another pass after its own delay. A request the
 scanner misses is still found by the next sweep. A scan that raises is logged and not retried
-by this scanner; the next request or sweep scans again. (``gh.GateBudgetExceeded`` is not an
-``Exception``: it still ends the scanner, which the watchdog catches.)
+by this scanner; the next request or sweep scans again. The failure goes to the loop's
+watchdog.log (``st.note``), because the detached scanner's stderr is discarded.
+(``gh.GateBudgetExceeded`` is not an ``Exception``: it still ends the scanner, which the
+watchdog catches.)
 """
 from __future__ import annotations
 
@@ -79,8 +81,12 @@ def run(st, scan, *, clock=time.time, sleep=time.sleep, lifetime: float = MAX_LI
                 except Exception as exc:      # one failed scan must not end the scanner
                     # Not retried here (that would spin on a persistent error): the next
                     # merge's request, or the sweep, scans again.
-                    log(f"conflict scan failed: {type(exc).__name__}: {exc}; the next "
-                        "request or the sweep checks")
+                    # The detached scanner has stderr on /dev/null (gate.schedule_conflict_scan),
+                    # so the durable record is the loop's watchdog.log; stderr is for a hand run.
+                    message = (f"conflict scan failed: {type(exc).__name__}: {exc}; the next "
+                               "request or the sweep checks")
+                    st.note(message)
+                    log(message)
                     continue
                 ran += 1
         finally:
