@@ -988,7 +988,7 @@
         </article>
         <article class="proof-point">
           <h3>A merge button that waits.</h3>
-          <p>GitHub never counts an App&rsquo;s approval, so the loop posts its own check, <code>diaktoros/review</code>, at every open PR&rsquo;s head: success once the head is approved and nothing holds it, failure when it needs a change or a person. <code>hermes dk protect</code> makes the merge button wait for it. The loop still never merges &mdash; a person does, only after the loop&rsquo;s verdict is green.</p>
+          <p>GitHub never counts an App&rsquo;s approval, so where the loop posts the check &mdash; <code>merge_check</code> on, or auto with an App reviewer &mdash; it posts its own check, <code>diaktoros/review</code>, at every open PR&rsquo;s head: success once the head is approved and nothing holds it, failure when it needs a change or a person. <code>hermes dk protect</code> makes the merge button wait for it. The loop still never merges &mdash; a person does, only once that check is green where the branch requires it.</p>
         </article>
       </div>
     </section>
