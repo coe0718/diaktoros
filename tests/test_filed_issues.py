@@ -165,7 +165,8 @@ class Filing(Base):
             with self.subTest(labels=labels):
                 answer = self.send(server, title="no type", body="b", labels=labels)
                 self.assertFalse(answer["ok"], answer)
-                self.assertIn("needs one type label", answer["error"])
+                self.assertIn("needs a type label", answer["error"])
+                self.assertIn("send a type label and a priority label", answer["error"])
                 self.assertIn("nothing was filed", answer["error"])
         self.assertEqual(self.posts, [])
         with Supervisor(self.db)._connect() as con:
@@ -184,10 +185,40 @@ class Filing(Base):
         answer = self.send(server, title="pair", body="b", labels=["bug", "P3"])
         self.assertFalse(answer["ok"], answer)
         self.assertIn("at most 1 labels per issue", answer["error"])
-        self.assertIn("keep the type label", answer["error"])
+        self.assertIn("send the type label alone", answer["error"])
         self.assertEqual(self.posts, [])
+        # A priority alone is refused too, and its advice must not tell the reviewer to add
+        # a priority beside the type (which the cap refuses): the two messages agree.
+        answer = self.send(server, title="pair", body="b", labels=["P3"])
+        self.assertFalse(answer["ok"], answer)
+        self.assertIn("needs a type label", answer["error"])
+        self.assertIn("send the type label alone", answer["error"])
+        self.assertNotIn("as well as a priority", answer["error"])
         self.assertTrue(self.send(server, title="pair", body="b", labels=["bug"])["ok"])
         self.assertEqual(self.posts[0][0]["labels"], ["bug"])
+
+    def test_a_cap_of_one_advice_follows_the_kinds_the_list_has(self):
+        """F1 of #1741: with a cap of 1, a priorities-only list is told to send a priority, a
+        types-only list a type, and no list nothing; the broker accepts exactly what the
+        over-cap refusal asks for, and the prompt's label line says the same."""
+        from diaktoros.run_supervisor import turn_prompts
+        cases = [(["P2", "P3"], ["P2", "P3"], "send a priority label", ["P3"]),
+                 (["bug", "enhancement"], ["bug", "enhancement"], "send a type label", ["bug"]),
+                 (["bug", "P3"], ["bug", "P3"], "send the type label alone", ["bug"])]
+        _, run_id = self.run_row()
+        server = self.broker(run_id)
+        for allowed, pair, advice, good in cases:
+            with self.subTest(labels=allowed):
+                self.loop["triage"] = {**self.loop["triage"], "labels": allowed, "max_labels": 1}
+                answer = self.send(server, title="t" + "-".join(allowed), body="b", labels=pair)
+                self.assertFalse(answer["ok"], answer)
+                self.assertIn(advice, answer["error"])
+                if "type" not in advice:
+                    self.assertNotIn("type label", answer["error"])
+                self.assertIn(advice, turn_prompts.issue_labels_fact(self.loop))
+                self.assertTrue(self.send(server, title="t" + "-".join(allowed), body="b", labels=good)["ok"])
+        self.loop["triage"] = {**self.loop["triage"], "labels": [], "max_labels": 1}
+        self.assertIn("file without labels", turn_prompts.issue_labels_fact(self.loop))
 
     def test_a_list_with_no_type_label_cannot_be_asked_for_one(self):
         self.loop["triage"] = {**self.loop["triage"], "labels": ["P2", "P3"]}
@@ -319,8 +350,7 @@ class Prompt(unittest.TestCase):
         text = prompts.render_isolated("reviewer", issue_labels="this list only: `P3`", **facts)
         self.assertIn("File each one yourself, before the review", text)
         self.assertIn("labels from this list only: `P3`", text)
-        self.assertIn("carries one type label", text)
-        self.assertIn("one priority label", text)
+        self.assertIn("the labels the list in parentheses asks for", text)
         self.assertIn("**Issues filed**", text)
         from diaktoros import trusted_turn
         tools = trusted_turn.tool_instructions("reviewer")
@@ -334,7 +364,7 @@ class Prompt(unittest.TestCase):
         from diaktoros import trusted_turn
         tools = " ".join(trusted_turn.tool_instructions("reviewer").split())
         self.assertNotIn("otherwise one type label and one priority label", tools)
-        self.assertIn("when the list has a type label", tools)
+        self.assertIn("what the list line in your instructions says to send", tools)
 
     def test_the_prompt_the_reviewer_receives_states_the_cap_and_does_not_demand_two(self):
         """The reviewer's real prompt (``isolated_prompt``) names the loop's label cap, and no
@@ -347,8 +377,8 @@ class Prompt(unittest.TestCase):
                 loop["triage"] = {"labels": ["bug", "P3"], "max_labels": most}
                 with mock.patch.object(gh, "api", return_value=None):
                     text = " ".join(tcc.reviewer_prompt(loop, None).split())
-                self.assertIn(f"`bug`, `P3` (at most {most} per issue)", text)
-                self.assertIn("with a cap of 1 send the type label alone", text)
+                self.assertIn(f"`bug`, `P3` (at most {most} per issue; ", text)
+                self.assertIn("send the type label alone" if most == 1 else "send a type label and a priority label", text)
                 self.assertNotIn("exactly one priority label", text)
 
 

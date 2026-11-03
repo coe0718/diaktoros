@@ -386,7 +386,7 @@ Delivery is durably keyed by transition. Only definite **pre-POST** failures wit
 | `triage.route`, `triage.profile` | Required when enabled | Non-empty route/profile; the profile supplies the model. |
 | `triage.authors` | Required | Non-empty list of non-blank author logins, trimmed/lowercased/deduplicated. Other authors are ignored before a model sees their issue. |
 | `triage.labels` | Required | 1–100 case-insensitively distinct label names, each 1–50 characters without surrounding whitespace, commas, braces, backticks, or control characters matched by the loader. Only these labels may be applied. |
-| `triage.max_labels` | `3` | JSON integer 1–10, not a boolean or string. Maximum labels applied to an issue, and to an issue the reviewer files: with `1`, a filed issue gets its type label and no priority label. |
+| `triage.max_labels` | `3` | JSON integer 1–10, not a boolean or string. Maximum labels applied to an issue, and to an issue the reviewer files: with `1` and a list that has both kinds, a filed issue gets its type label and no priority label (a list of only types or only priorities takes one of them). |
 | `triage.comment` | `false` | Strict JSON boolean; enables one optional comment of at most 1000 characters. |
 | `triage.login` | Reviewer seat login | Identity performing labels/comments; requires its own mapped token with `issues: write`, never the reader. It need not be a separate fourth adjudicator account. |
 | `triage.fix_label` | Unset | Maintainer-applied label that hands an issue to issue-fixing. Same label syntax; must **not** be among `triage.labels`, so triage cannot authorize its own fixes. |

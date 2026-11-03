@@ -4,7 +4,7 @@ data. The facts they read are pr_facts's; the core's rules are reached through t
 """
 from __future__ import annotations
 
-from .. import run_supervisor
+from .. import issue_labels, run_supervisor
 from . import issue_inputs, pr_facts, views
 
 _READ = object()      # "read the newest shadow review now", as opposed to one already read
@@ -38,10 +38,11 @@ def reproduction_section(loop: dict, row) -> str:
 def issue_labels_fact(loop: dict) -> str:
     """The labels a filed issue may carry (#247), for the reviewer's prompt: the loop's triage
     list, the same allowlist the broker enforces, and the broker's cap on how many."""
-    allowed = (loop.get('triage') or {}).get('labels') or []
-    most = int((loop.get('triage') or {}).get('max_labels') or 3)    # the broker's cap
+    triage = loop.get('triage') or {}
+    allowed = triage.get('labels') or []
+    most = issue_labels.max_labels(triage)    # the broker's cap
     return (('this list only: ' + ', '.join(f'`{x}`' for x in allowed)
-             + f' (at most {most} per issue)')
+             + f' (at most {most} per issue; {issue_labels.label_rule(allowed, most)})')
             if allowed else 'none (this loop has no label list: file without labels)')
 
 
