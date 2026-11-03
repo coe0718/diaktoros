@@ -34,7 +34,15 @@ from collections.abc import Callable
 
 from . import config, hostdirs
 from .config import settings_form
-from .util import atomic_write, log, now_iso
+from .util import atomic_write, log, now_iso, register_lock
+
+# The flock files this module keeps in a loop's state directory, each registered by its writer
+# (``util.register_lock``): ``backup`` leaves out what was registered, from no list of its own.
+STATE_LOCK = register_lock("state.lock")
+LOG_LOCK = register_lock("watchdog.log.lock")
+BREACH_LOCK = register_lock("breach.lock")
+TRANSITIONS_LOCK = register_lock("stack-transitions.lock")
+OBSERVATIONS_FILE = "observations.json"
 
 # Per-thread depth of the state lock we already hold, keyed by lock path. ``flock`` is tied to
 # the open file description, so a second ``open`` + ``flock`` in the same thread would deadlock
@@ -195,7 +203,7 @@ class LoopState:
         self.pending = self.dir / "pending.json"
         self.inflight_file = self.dir / "inflight.json"
         self.breach = self.dir / "breach.json"
-        self.observations = self.dir / "observations.json"
+        self.observations = self.dir / OBSERVATIONS_FILE
         self.watch_file = self.dir / "watchdog.json"
         self.transitions_file = self.dir / "stack-transitions.json"
         # A review's commit_id identifies a head, not the base it reviewed. This ledger
@@ -236,7 +244,7 @@ class LoopState:
         write the ledger, drop the queue entry) and must be one step to every other process.
         Reentrant within a thread, so a locked caller can use the ordinary methods.
         """
-        path = str(self.dir / "state.lock")
+        path = str(self.dir / STATE_LOCK)
         held = getattr(_HELD, "paths", None)
         if held is None:
             held = _HELD.paths = {}
@@ -278,7 +286,7 @@ class LoopState:
     def _log_lock(self):
         """Serialize ``note`` across processes. A leaf lock of its own, never the state lock:
         ``note`` is called from inside ``locked()`` sections and must not wait on others."""
-        fd = os.open(self.dir / "watchdog.log.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        fd = os.open(self.dir / LOG_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             yield
@@ -689,7 +697,7 @@ class LoopState:
     @contextlib.contextmanager
     def _breach_lock(self):
         hostdirs.ensure(self.dir)
-        fd = os.open(self.dir / "breach.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        fd = os.open(self.dir / BREACH_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             yield
@@ -1271,12 +1279,19 @@ class LoopState:
     # -- merges already read for an override (#220) ---------------------------
 
     def override_checked(self) -> dict:
-        """PR number -> the merged head whose reviews were already read for an override."""
-        raw = self._load(self.dir / "override-checked.json", {})
+        """PR number -> the merged head whose reviews were already read for an override.
+
+        Kept in ``OVERRIDE_CHECKED_FILE``. The first file, ``override-checked.json``, also held
+        merges marked as read with no verdict proved (a review still PENDING and unseen by the
+        reader, #1323); it is no longer read, so those merges are read once more after an
+        upgrade. That is safe: an override record is written once per PR and head."""
+        raw = self._load(self.dir / self.OVERRIDE_CHECKED_FILE, {})
         return raw if isinstance(raw, dict) else {}
 
+    OVERRIDE_CHECKED_FILE = "override-checked-v2.json"
+
     def override_checked_put(self, data: dict) -> None:
-        self._save(self.dir / "override-checked.json", data)
+        self._save(self.dir / self.OVERRIDE_CHECKED_FILE, data)
 
     # The findings ledger as a shadow review was queued (#218): its prompt shows only the
     # reviews posted before then, so the broker judges its review against this, never against
@@ -1346,7 +1361,7 @@ class LoopState:
 
     def _transition_write(self, number: int, change) -> dict:
         hostdirs.ensure(self.dir)
-        with (self.dir / "stack-transitions.lock").open("a+") as lock:
+        with (self.dir / TRANSITIONS_LOCK).open("a+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             data = _mapping(self._load(self.transitions_file, {}))
             prior = data.get(str(number))

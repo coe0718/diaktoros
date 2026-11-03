@@ -40,7 +40,7 @@ class AppSettings(Base):
         for settings in ({"reviewer_app_id": "3"},
                          {"reviewer_app_key_file": str(self.key1)},
                          *({"reviewer_app_id": value, "reviewer_app_key_file": str(self.key1)}
-                           for value in ("0", "-1", "+2", "٢", "2.0"))):
+                           for value in ("0", "-1", "+2", "٢", "2.0", "9" * 4301))):
             with self.subTest(settings=settings):
                 self.assert_refused(["apply", "--loop", "widgets"], "reviewer_app", settings)
 

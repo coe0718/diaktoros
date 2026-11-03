@@ -691,36 +691,77 @@ def empty_reply_reason(api_mode: str) -> str:
             "before any visible text")
 
 
-def probe_answer(api_mode: str, content_type: str, data: bytes) -> str | None:
-    """The reply text of a probe answer in ``api_mode``'s shape, or ``None`` if it is not one."""
+def _reasoning_tokens(usage) -> int:
+    """Reasoning tokens a ``usage`` object reports, in the shapes providers use."""
+    if not isinstance(usage, dict):
+        return 0
+    found = [usage.get("reasoning_tokens")]
+    for key in ("completion_tokens_details", "output_tokens_details"):
+        details = usage.get(key)
+        found.append(details.get("reasoning_tokens") if isinstance(details, dict) else None)
+    return sum(n for n in found if isinstance(n, int) and not isinstance(n, bool))
+
+
+def _message_reasoning(message: dict) -> bool:
+    """Whether a chat_completions message (or stream delta) carries reasoning text."""
+    return any(isinstance(message.get(key), str) and message[key].strip()
+               for key in ("reasoning_content", "reasoning"))
+
+
+def probe_reply(api_mode: str, content_type: str, data: bytes) -> tuple[str, bool] | None:
+    """``(visible text, whether the reply also carries reasoning)``, or ``None`` if not an answer."""
     try:
         # Judged by the body as well as the label: the proxy relays an event stream an upstream
         # labelled JSON as a stream now, but a probe should not depend on that.
         if (content_type.startswith("text/event-stream")
                 or data.lstrip().startswith((b"event:", b"data:", b":"))):
-            text, done = [], False
+            text, done, reasoned = [], False, False
             for line in data.decode("utf-8", "replace").splitlines():
                 if not line.startswith("data:") or line[5:].strip() in ("", "[DONE]"):
                     continue
                 event = json.loads(line[5:])
                 kind = event.get("type", "")
+                usage = event.get("usage") or (event.get("response") or {}).get("usage")
+                reasoned = reasoned or _reasoning_tokens(usage) > 0
                 if kind in ("response.output_text.delta",):
                     text.append(str(event.get("delta") or ""))
+                elif kind.startswith("response.reasoning") and kind.endswith(".delta"):
+                    reasoned = reasoned or bool(str(event.get("delta") or "").strip())
+                elif kind == "content_block_start":
+                    reasoned = reasoned or (event.get("content_block") or {}).get("type") in (
+                        "thinking", "redacted_thinking")
                 elif kind == "content_block_delta":
-                    text.append(str((event.get("delta") or {}).get("text") or ""))
+                    delta = event.get("delta") or {}
+                    text.append(str(delta.get("text") or ""))
+                    reasoned = reasoned or delta.get("type") == "thinking_delta"
                 elif "choices" in event:
-                    text.append(str(((event["choices"] or [{}])[0].get("delta") or {}).get("content") or ""))
+                    delta = (event["choices"] or [{}])[0].get("delta") or {}
+                    text.append(str(delta.get("content") or ""))
+                    reasoned = reasoned or _message_reasoning(delta)
                 done = done or kind in ("response.completed", "message_stop") or "choices" in event
-            return "".join(text) if done else None
+            return ("".join(text), reasoned) if done else None
         answer = json.loads(data)
+        reasoned = _reasoning_tokens(answer.get("usage")) > 0
         if api_mode == "anthropic_messages":
-            return "".join(b.get("text", "") for b in answer["content"] if b.get("type") == "text")
+            blocks = answer["content"]
+            reasoned = reasoned or any(b.get("type") in ("thinking", "redacted_thinking")
+                                       for b in blocks)
+            return "".join(b.get("text", "") for b in blocks if b.get("type") == "text"), reasoned
         if api_mode == "codex_responses":
-            return "".join(c.get("text", "") for item in answer["output"] if item.get("type") == "message"
-                           for c in item.get("content", []))
-        return answer["choices"][0]["message"].get("content") or ""
+            reasoned = reasoned or any(item.get("type") == "reasoning" for item in answer["output"])
+            return ("".join(c.get("text", "") for item in answer["output"]
+                            if item.get("type") == "message" for c in item.get("content", [])),
+                    reasoned)
+        message = answer["choices"][0]["message"]
+        return message.get("content") or "", reasoned or _message_reasoning(message)
     except Exception:
         return None
+
+
+def probe_answer(api_mode: str, content_type: str, data: bytes) -> str | None:
+    """The reply text of a probe answer in ``api_mode``'s shape, or ``None`` if it is not one."""
+    reply = probe_reply(api_mode, content_type, data)
+    return None if reply is None else reply[0]
 
 
 def _one_completion(report: Report, seats: str, inference) -> None:
@@ -774,10 +815,17 @@ def _one_completion(report: Report, seats: str, inference) -> None:
         report.add(step, name, FAIL, f"HTTP {status} for {what}",
                    fixes.get(status, "check the upstream URL, the model name and the key"))
         return
-    answer = probe_answer(mode, content_type, data)
-    if answer is None:
+    reply = probe_reply(mode, content_type, data)
+    if reply is None:
         report.add(step, name, FAIL, f"{seats}: HTTP 200 via {host}, but not a {mode} answer",
                    f"upstream must speak {mode} at {inference.upstream}")
+        return
+    answer, reasoned = reply
+    if not answer.strip() and reasoned:
+        # A reasoning model can spend the probe's small cap thinking; it did answer.
+        report.add(step, name, PASS,
+                   f"HTTP 200 — {what}, reply was reasoning only (no visible text within "
+                   "the probe's output limit)")
         return
     if not answer.strip():
         report.add(step, name, WARN,

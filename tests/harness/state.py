@@ -87,7 +87,7 @@ def group_open_prs() -> None:
           mock.patch.object(gh, "fetch", return_value=(first, "")) as fetch):
         check("an endless full listing is unknown, not truncated",
               gh.open_prs(loop) is None, True)
-        check("  and the read is bounded", fetch.call_count, 3)
+        check("  and the read is bounded (the bound and one probe)", fetch.call_count, 4)
 
 
 def group_reconciliation() -> None:

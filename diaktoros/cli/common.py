@@ -198,8 +198,8 @@ def _split_app_pair(pair: str) -> tuple[str, dict] | None:
         print(f"refused: {usage}: {login!r} is not an App's bot login")
         return None
     app_id = app_id.strip()
-    # ``isdigit()`` alone accepts "²" and other non-decimal digits that ``int()`` cannot parse.
-    if not (app_id.isascii() and app_id.isdigit()) or int(app_id) <= 0:
+    parsed_id = config.parse_app_id(app_id)
+    if parsed_id is None:
         print(f"refused: {usage}: the App id {app_id!r} is not a number")
         return None
     try:
@@ -207,7 +207,7 @@ def _split_app_pair(pair: str) -> tuple[str, dict] | None:
     except config.ConfigError as exc:
         print(f"refused: {exc}")
         return None
-    return login, {"app_id": int(app_id), "key_file": str(pathlib.Path(key.strip()).expanduser())}
+    return login, {"app_id": parsed_id, "key_file": str(pathlib.Path(key.strip()).expanduser())}
 
 
 def _token_ref(loop: dict, login: str) -> str:

@@ -11,7 +11,8 @@ import pathlib
 import shlex
 import sys
 
-from .. import config
+from .. import config, onboarding
+from . import checks as cli_checks
 from . import common as cli_common
 from . import install as cli_install
 from ..config import lists
@@ -338,22 +339,96 @@ def _setup_watchdog(args, loop_id: str, interactive: bool) -> tuple[int | None, 
     return None, scheduled
 
 
+def _resume_rows(loop: dict) -> dict:
+    """``onboarding.inspect``: every stage's status (``stale`` when its inputs changed) and why.
+    A record that cannot be read resumes nothing: ``{}``, so every step runs."""
+    try:
+        return onboarding.inspect(loop)
+    except Exception:          # noqa: BLE001 - an unreadable record only means: run the step
+        return {}
+
+
+def _status(rows: dict, stage: str) -> str:
+    """``stage``'s status in ``rows``; ``passed`` only while its fingerprint still matches."""
+    return (rows.get(stage) or {}).get("status", onboarding.NOT_ATTEMPTED)
+
+
+# Step 4 is covered by the record when each of these stages holds one of these statuses
+# (``stale`` is its own status, so a changed fingerprint never matches). ``selftest --no-model``
+# records ``model`` as skipped, so skipped counts for it.
+_CHECK_STAGES = {"identities": (onboarding.PASSED,), "loop": (onboarding.PASSED,),
+                 "model": (onboarding.PASSED, onboarding.SKIPPED)}
+
+
+def _first_uncovered(rows: dict) -> str:
+    """The first of step 4's stages the record does not cover (not recorded, failed or stale),
+    or ``""`` when it covers them all."""
+    return next((stage for stage, ok in _CHECK_STAGES.items()
+                 if _status(rows, stage) not in ok), "")
+
+
+def _say_checks(rows: dict, first: str) -> None:
+    """Say which of step 4's stages are skipped and why, or where it starts over and why."""
+    if not first:
+        print("   ⏭  skipped doctor and selftest --no-model: " + ", ".join(
+            f"{stage} {_status(rows, stage)}" for stage in _CHECK_STAGES)
+              + " in the onboarding record, and still current")
+        return
+    reason = (rows.get(first) or {}).get("reason")
+    print(f"   starting at the {first} stage ({_status(rows, first)}"
+          + (f": {reason}" if reason else "") + ")")
+
+
 def _setup_checks(repo: str, loop_id: str, scheduled: bool,
                   runtime_ok: bool) -> int | None:
-    """Step 4: ``doctor`` and ``selftest --no-model``; where setup stops on a ❌ (None: go on)."""
+    """Step 4: ``doctor`` and ``selftest --no-model``, unless the onboarding record says they
+    already passed and still hold (#1618); where setup stops on a ❌ (None: go on)."""
     print("\n4. Checks")
-    doctor_rc = _verb("doctor", f"--loop={loop_id}")
-    selftest_rc = _verb("selftest", f"--loop={loop_id}", "--no-model")
+    rows = _resume_rows(config.load_id(loop_id))
+    first = _first_uncovered(rows)
+    if rows:
+        _say_checks(rows, first)
+    doctor_rc = selftest_rc = 0
+    if first:
+        doctor_rc = _verb("doctor", f"--loop={loop_id}")
+        selftest_rc = _verb("selftest", f"--loop={loop_id}", "--no-model")
     if doctor_rc or selftest_rc or not scheduled or not runtime_ok:
         print("\nsetup stopped before arming: fix each ❌ above (its fix line says how), then "
               f"re-run `hermes dk setup --repo {shlex.quote(repo)}` — it keeps what is done")
+        _print_onboarding(loop_id)
         return 1
     return None
 
 
+def _print_onboarding(loop_id: str) -> None:
+    """The ``onboard`` summary, read-only, shared with ``cmd_onboard`` (``print_onboarding``).
+    It never changes setup's result."""
+    try:
+        loop = config.load_id(loop_id)
+        rows = onboarding.inspect(loop)
+        print()
+        cli_checks.print_onboarding(loop, rows)
+    except Exception as exc:       # noqa: BLE001
+        print(f"\n(onboarding summary unavailable: {type(exc).__name__}: {exc})")
+
+
 def _setup_arm(args, loop_id: str, admin: str, interactive: bool) -> int:
-    """Step 6: ``arm``, only when asked."""
+    """Step 6: ``arm``, only when asked and not already recorded as armed and still current;
+    then the ``onboard`` summary."""
     print("\n6. Arm")
+    rc = _arm_step(args, loop_id, admin, interactive)
+    _print_onboarding(loop_id)
+    return rc
+
+
+def _arm_step(args, loop_id: str, admin: str, interactive: bool) -> int:
+    rows = _resume_rows(config.load_id(loop_id))
+    if _status(rows, "armed") == onboarding.PASSED:
+        print("   ⏭  skipped arm: armed in the onboarding record, and the hooks are still "
+              "as recorded")
+        return 0
+    if _status(rows, "armed") == onboarding.STALE:
+        print(f"   starting at the armed stage (stale: {rows['armed']['reason']})")
     if not (args.arm or _agree("Arm the repo hooks now? The loop goes live.", False,
                                interactive, False)):
         print(f"   not armed. When ready: hermes dk arm --loop {loop_id}"
@@ -552,8 +627,9 @@ def _setup_turn_flags(first) -> None:  # noqa: ANN001
                        help="most tokens the fixer (and issue fixes) may spend per day "
                             "(0 = none) (default: the plugin setting)")
     first.add_argument("--fix-daily-turns", type=int, default=None,
-                       help="issue-fix turns per day: refused here, a new loop has no fix "
-                            "label; set it with `triage --fix-daily-turns N` (0 = ignore)")
+                       help="issue-fix turns per day: refused here, a new loop has no "
+                            "triage block; set it with `triage --enable ... --fix-daily-turns N` "
+                            "(0 = ignore)")
     for key in ("source", "venv", "runtime", "rust"):
         first.add_argument(f"--{key}", default="",
                            help=f"runtime file's {key} path (default: detected)")

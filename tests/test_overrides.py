@@ -180,10 +180,75 @@ class Recording(Override):
         self.assertEqual([row[5] for row in self.rows()], [6])
         self.assertEqual(self.st.override_checked(), {"7": HEAD})
 
-    def test_a_merge_with_no_verdict_at_the_head_is_marked_checked(self):
+    def test_a_merge_with_no_verdict_at_the_head_is_read_again_not_marked_checked(self):
         self.reviews = {7: [review(5, "COMMENTED"), review(6, "CHANGES_REQUESTED", head=EARLIER)]}
         self.assertEqual(self.scan(), [])
+        self.assertEqual(self.st.override_checked(), {})
+
+    def test_a_pending_review_the_reader_cannot_see_is_read_again_once_submitted(self):
+        # GitHub shows a pending review only to its author: the separate reader sees nothing.
+        self.reviews = {7: []}
+        self.assertEqual(self.scan(), [])
+        self.assertEqual(self.st.override_checked(), {})        # not marked as read
+        self.reviews = {7: [review(5, "CHANGES_REQUESTED")]}     # submitted afterwards
+        self.assertEqual(self.scan(), [7])
         self.assertEqual(self.st.override_checked(), {"7": HEAD})
+
+    def test_the_sweep_reads_an_unseen_pending_review_again(self):
+        self.reviews = {7: []}
+        self.sweep()
+        self.assertEqual(self.rows(), [])
+        self.reviews = {7: [review(5, "CHANGES_REQUESTED")]}
+        self.sweep()
+        self.assertEqual([(r[0], r[2]) for r in self.rows()], [(7, "merged_over_changes")])
+
+    def test_a_pending_review_at_the_head_is_read_again_until_submitted(self):
+        pending = {**review(5, "PENDING"), "submitted_at": None}
+        self.reviews = {7: [pending]}
+        self.assertEqual(self.scan(), [])
+        self.assertEqual(self.st.override_checked(), {})        # not marked as read
+        self.reviews = {7: [review(5, "CHANGES_REQUESTED")]}     # submitted afterwards
+        self.assertEqual(self.scan(), [7])
+        self.assertEqual(self.st.override_checked(), {"7": HEAD})
+
+    def test_a_pending_review_beside_a_settled_verdict_is_still_read_again(self):
+        self.reviews = {7: [review(5, "APPROVED"), {**review(6, "PENDING"), "submitted_at": None}]}
+        self.assertEqual(self.scan(), [])
+        self.assertEqual(self.st.override_checked(), {})
+        self.reviews = {7: [review(5, "APPROVED"),
+                            review(6, "CHANGES_REQUESTED", at="2026-01-02T00:00:00Z")]}
+        self.assertEqual(self.scan(), [7])
+
+    def test_the_sweep_reads_a_pending_review_again(self):
+        self.reviews = {7: [{**review(5, "PENDING"), "submitted_at": None}]}
+        self.sweep()
+        self.assertEqual(self.rows(), [])
+        self.reviews = {7: [review(5, "CHANGES_REQUESTED")]}
+        self.sweep()
+        self.assertEqual([(r[0], r[2]) for r in self.rows()], [(7, "merged_over_changes")])
+
+    def legacy_checked(self):
+        """The checked list as the version before #1323 left it: the PR marked read with no
+        verdict proved, because its only review was a pending one the reader could not see."""
+        self.st.dir.mkdir(parents=True, exist_ok=True)
+        (self.st.dir / "override-checked.json").write_text(json.dumps({"7": HEAD}))
+
+    def test_a_merge_marked_checked_before_the_upgrade_is_read_again_once(self):
+        self.legacy_checked()
+        self.reviews = {7: [review(5, "CHANGES_REQUESTED")]}     # submitted after it was marked
+        self.assertEqual(self.scan(), [7])
+        self.assertEqual(len(self.rows()), 1)
+        self.assertEqual(self.st.override_checked(), {"7": HEAD})
+        self.assertEqual(self.scan(), [])                        # now trusted: no second record
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_the_sweep_reads_a_merge_marked_checked_before_the_upgrade(self):
+        self.legacy_checked()
+        self.reviews = {7: [review(5, "CHANGES_REQUESTED")]}
+        self.sweep()
+        self.assertEqual([(r[0], r[2]) for r in self.rows()], [(7, "merged_over_changes")])
+        self.sweep()
+        self.assertEqual(len(self.rows()), 1)
 
     def test_a_merge_already_read_is_not_read_again(self):
         self.reviews = {7: [review(5, "APPROVED")]}
