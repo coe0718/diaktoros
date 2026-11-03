@@ -169,19 +169,36 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
     """
     supervisor = isolated_supervisor(loop)
     supervisor.recover()
-    # Before the reviewer's row exists, so its worker can record nothing first (#1647). A shadow
-    # is queued only on that snapshot: one taken later could hold the review's own findings.
-    snapped = seat == "reviewer" and snapshot_shadow(loop, number, head)
-    delivery = f"{loop['repo']}:{number}:{head}:{seat}"
-    # The turn's wall clock rides on the row (#49): whichever worker claims it — possibly one
-    # spawned by another loop's event — runs it for this loop's seat budget, not a worker default.
-    outcome = supervisor.submit(delivery + (f':{turn_key}' if turn_key else ''),
-                                loop["repo"], number, head, seat, turn_key=turn_key,
-                                require_push_admission=seat == "fixer",
-                                budget=config.turn_budget(loop, seat))
-    if snapped and outcome == "enqueued":
-        enqueue_shadow(loop, supervisor, number, head, turn_key=turn_key)
+    with _shadow_snapshot_lock(loop, seat, number, head):
+        # Before the reviewer's row exists, so its worker can record nothing first (#1647). A
+        # shadow is queued only on that snapshot: one taken later could hold the review's own
+        # findings. The lock keeps another enqueue from evicting it before the shadow's row is
+        # visible as open (review of #1656, F6).
+        snapped = seat == "reviewer" and snapshot_shadow(loop, number, head)
+        delivery = f"{loop['repo']}:{number}:{head}:{seat}"
+        # The turn's wall clock rides on the row (#49): whichever worker claims it — possibly
+        # one spawned by another loop's event — runs it for this loop's seat budget.
+        outcome = supervisor.submit(delivery + (f':{turn_key}' if turn_key else ''),
+                                    loop["repo"], number, head, seat, turn_key=turn_key,
+                                    require_push_admission=seat == "fixer",
+                                    budget=config.turn_budget(loop, seat))
+        if snapped and outcome == "enqueued":
+            enqueue_shadow(loop, supervisor, number, head, turn_key=turn_key)
     return outcome
+
+
+def _shadow_snapshot_lock(loop: dict, seat: str, number: int, head: str):
+    """The loop's state lock for a reviewer turn that gets a shadow, held from its snapshot to
+    the shadow's submit: every eviction runs under it and reads the open shadow runs first, so
+    none can drop a snapshot whose row is not in the ledger yet. Otherwise no lock."""
+    from contextlib import nullcontext
+    sampled = config.shadow_profile(loop) and shadow_sampled(loop, number, head)
+    if seat != "reviewer" or not sampled:
+        return nullcontext()
+    try:
+        return state_mod.state_for(loop).locked()
+    except Exception:  # noqa: BLE001 - then the snapshot cannot be kept either: no shadow
+        return nullcontext()
 
 
 def shadow_sampled(loop: dict, number: int, head: str) -> bool:

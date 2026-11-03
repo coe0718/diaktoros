@@ -13,6 +13,7 @@ import pathlib
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import closing
@@ -137,6 +138,35 @@ class SnapshotFirst(Ledger):
             self.assertEqual(gate.enqueue_isolated(loop, "reviewer", 7, HEAD), "enqueued")
         self.assertEqual([c.args[4] for c in sup.submit.call_args_list], ["reviewer"])
         self.assertIsNone(state_mod.state_for(loop).shadow_findings_get(7, HEAD))
+
+    def test_another_enqueue_cannot_evict_the_snapshot_before_the_shadows_row_exists(self):
+        # Review of #1656, F6: a second head's snapshot, taken by another process while the
+        # reviewer is being queued, would evict this one as unused (no open shadow row yet), and
+        # the shadow's own snapshot would then copy the review's findings. It waits instead.
+        loop = {"id": "w", "repo": REPO, "state_dir": str(self.tmp / "state"),
+                "shadow": {"profile": "shadow", "every": 1}}
+        st = state_mod.state_for(loop)
+        sup, other = mock.Mock(), []
+        def submit(delivery, _repo, pr, head, seat, **_k):
+            if seat == "reviewer":
+                other.append(threading.Thread(target=gate.snapshot_shadow, args=(loop, 8, "b" * 40)))
+                other[0].start()
+                other[0].join(0.5)                  # another process's enqueue
+                st.findings_put(7, {"findings": {"F1": {"state": "open"}}})   # the worker ran
+            return "enqueued"
+        sup.submit.side_effect = submit
+        def opened():
+            return {(c.args[2], c.args[3]) for c in sup.submit.call_args_list
+                    if c.args[4] == "shadow"}
+        with mock.patch.object(gate, "isolated_supervisor", return_value=sup), \
+                mock.patch.object(gate, "shadow_open_heads", side_effect=opened), \
+                mock.patch.object(state_mod.LoopState, "SHADOW_FINDINGS_KEPT", 1):
+            self.assertEqual(gate.enqueue_isolated(loop, "reviewer", 7, HEAD), "enqueued")
+            other[0].join(10)
+        self.assertFalse(other[0].is_alive())
+        self.assertEqual(st.shadow_findings_get(7, HEAD), {})
+        self.assertEqual(st.shadow_findings_get(8, "b" * 40), {})
+        self.assertEqual([c.args[4] for c in sup.submit.call_args_list], ["reviewer", "shadow"])
 
 
 class NeverGreenInTheGap(Ledger):

@@ -20,7 +20,8 @@ from contextlib import closing
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from diaktoros import ci, config, gate, gh, run_supervisor, seat_model, stats, trusted_turn  # noqa: E402
+from diaktoros import ci, config, gate, gh, merge_check, ready, run_supervisor, seat_model, stats  # noqa: E402
+from diaktoros import state as state_mod, trusted_turn  # noqa: E402
 from diaktoros.run_supervisor import claims  # noqa: E402
 from diaktoros.run_supervisor import views  # noqa: E402
 from diaktoros.run_supervisor import Supervisor, pr_facts, turn_prompts  # noqa: E402
@@ -371,17 +372,25 @@ class ProductionTurn(unittest.TestCase):
 
     def run_shadow(self, submissions, reviews=(), rc=0, checks=GREEN, pr=None, created=None,
                    reviewer=("confirmed", "APPROVED"), reviewer_state="succeeded"):
+        sup = self.queue_shadow()
+        self.reviewer_is(sup, reviewer, reviewer_state)
+        return self.claim_shadow(sup, submissions, reviews, rc, checks, pr, created)
+
+    def queue_shadow(self):
         with mock.patch.object(Supervisor, "_spawn"), \
                 mock.patch.object(config, "by_repo", return_value=self.loop):
             gate.enqueue_isolated(self.loop, "reviewer", 8, HEAD)
         sup = Supervisor(self.home / "state" / "diaktoros-runs.sqlite",
                          production_config=self.home / "diaktoros-runtime.json",
                          hermes_home=self.home)
-        row = sup.get(f"acme/widgets:8:{HEAD}:shadow")
-        self.assertIsNotNone(row, "the sampled reviewer turn queued a shadow")
+        self.assertIsNotNone(sup.get(f"acme/widgets:8:{HEAD}:shadow"),
+                             "the sampled reviewer turn queued a shadow")
+        return sup
+
+    def reviewer_is(self, sup, reviewer, reviewer_state):
+        """#1647: the shadow runs once its reviewer turn's APPROVE is confirmed (``reviewer``:
+        that turn's receipt, or None for none yet)."""
         with closing(sqlite3.connect(sup.db)) as con, con:
-            # #1647: the shadow runs once its reviewer turn's APPROVE is confirmed (``reviewer``:
-            # that turn's receipt, or None for none yet).
             con.execute("UPDATE runs SET state=? WHERE seat='reviewer'", (reviewer_state,))
             if reviewer is not None:
                 rid = sup.get(f"acme/widgets:8:{HEAD}:reviewer")["id"]
@@ -389,6 +398,11 @@ class ProductionTurn(unittest.TestCase):
                             "principal_id,"
                             "review_id,verdict,created,confirmed) VALUES(?,?,'g',1,9,?,?,?)",
                             (rid, reviewer[0], reviewer[1], time.time(), time.time()))
+
+    def claim_shadow(self, sup, submissions, reviews=(), rc=0, checks=GREEN, pr=None,
+                     created=None):
+        row = sup.get(f"acme/widgets:8:{HEAD}:shadow")
+        with closing(sqlite3.connect(sup.db)) as con, con:
             con.execute("UPDATE runs SET state='launching', owner='w', launch_intent=1 WHERE id=?",
                         (row["id"],))
             if created is not None:
@@ -567,6 +581,37 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual((self.seen, row["state"]), ({}, "waiting"))
         self.assertTrue(row["error"].startswith(f"{run_supervisor.VERDICT_HOLD} at {HEAD[:7]} — "),
                         row["error"])
+
+    def kinds(self):
+        pr = {"number": 8, "draft": False, "user": {"login": "fixer"}, "base": {"ref": "main"},
+              "head": {"sha": HEAD, "ref": "fix-8"}}
+        approval = {"id": 1, "state": "APPROVED", "commit_id": HEAD,
+                    "submitted_at": "2026-01-01T00:00:00Z", "user": {"login": "reviewer", "id": 7}}
+        detail = {"mergeable": True, "mergeable_state": "clean", "number": 8, "state": "open",
+                  "draft": False, "head": {"sha": HEAD}, "base": {"ref": "main"}}
+        with mock.patch.object(ready.gate_failures, "open_for", return_value=[]):
+            return ready.assess_kinds(self.loop, state_mod.state_for(self.loop), pr, [approval],
+                                      GREEN, detail)
+
+    def test_a_shadow_claimed_before_its_reviewer_approves_holds_the_head_until_it_lands(self):
+        # Review of #1656, F7: the whole transition, through the real enqueue, the real claim,
+        # ``ready`` and the merge check. Launched beside its reviewer, as before #1647, the
+        # shadow would run at the first claim, while the reviewer's APPROVE is still posting.
+        self.loop = config.normalize({**RAW, "state_dir": str(self.home / "state"),
+                                      "required_checks": ["tests"],
+                                      "shadow": {"profile": "grok", "every": 1, "escalate": True}})
+        approve = [{"verdict": "APPROVE", "body": "ok", "authorized": True}]
+        sup = self.queue_shadow()
+        self.reviewer_is(sup, ("claimed", "APPROVE"), "running")    # GitHub already shows it
+        sup, row = self.claim_shadow(sup, approve)
+        self.assertEqual((self.seen, row["state"]), ({}, "waiting"), "no shadow launched yet")
+        self.assertEqual(merge_check.decide(self.kinds())[0], merge_check.PENDING)
+        self.reviewer_is(sup, ("confirmed", "APPROVED"), "succeeded")
+        self.assertEqual(merge_check.decide(self.kinds())[0], merge_check.PENDING)
+        self.assertTrue([w for _k, w in self.kinds() if w.startswith("shadow review")])
+        sup, row = self.claim_shadow(sup, approve)
+        self.assertEqual((self.seen["role"], row["state"]), ("reviewer", "succeeded"), row)
+        self.assertEqual([w for _k, w in self.kinds() if w.startswith("shadow review")], [])
 
     def test_the_shadow_takes_its_own_step_budget(self):
         self.run_shadow([{"verdict": "APPROVE", "body": "ok", "authorized": True}])
