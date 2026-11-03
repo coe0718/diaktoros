@@ -68,7 +68,7 @@ class SiteSocialPreviewTests(unittest.TestCase):
         self.assertEqual(parsed.netloc, "coe0718.github.io")
         self.assertEqual(parsed.path, "/diaktoros/docs/banner.jpg")
         self.assertTrue(BANNER.is_file(), "Social preview asset must exist")
-        self.assertEqual(BANNER.read_bytes()[:3], b"\\xff\\xd8\\xff")
+        self.assertEqual(BANNER.read_bytes()[:3], b"\xff\xd8\xff")
 
     def test_featured_teaser_links_to_existing_case_study(self):
         self.assertEqual(self.page.feature_count, 1)
@@ -82,11 +82,11 @@ class SiteSocialPreviewTests(unittest.TestCase):
         # a browser smoke test. Require the mobile breakpoint to stack it.
         self.assertRegex(
             self.html,
-            r"@media\\s*\\(max-width:\\s*600px\\)\\s*\\{"
-            r"[\\s\\S]*?\\.proof-feature\\s*\\{"
-            r"[^}]*flex-direction:\\s*column",
+            r"@media\s*\(max-width:\s*600px\)\s*\{"
+            r"[\s\S]*?\.proof-feature\s*\{"
+            r"[^}]*flex-direction:\s*column",
         )
-        self.assertRegex(self.html, r"\\.proof-feature\\s*\\{[^}]*display:\\s*flex")
+        self.assertRegex(self.html, r"\.proof-feature\s*\{[^}]*display:\s*flex")
 
 
 if __name__ == "__main__":
