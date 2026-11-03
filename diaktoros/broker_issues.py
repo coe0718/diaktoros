@@ -235,14 +235,19 @@ class IssueWrites:
                 raise broker_ipc.ProtocolError("the fix label is a maintainer's hand-off to the "
                                                "fixer; a reviewer never applies it — nothing "
                                                "was filed")
+        most = issue_labels.max_labels(triage)
         if (not isinstance(labels, list) or not all(isinstance(x, str) for x in labels)
-                or len(labels) > int(triage.get("max_labels") or 3)
                 or any(x.casefold() not in allowed for x in labels)):
             raise broker_ipc.ProtocolError("labels must come from the loop's triage list "
                                            f"({', '.join(allowed.values()) or 'none configured'}); "
                                            "nothing was filed")
+        if len(labels) > most:
+            raise broker_ipc.ProtocolError(
+                f"at most {most} labels per issue (triage.max_labels): "
+                f"{issue_labels.label_rule(allowed.values(), most) or 'send no labels'}; "
+                "nothing was filed")
         labels = list(dict.fromkeys(allowed[x.casefold()] for x in labels))
-        if why := issue_labels.missing_type(allowed.values(), labels):    # #967: a type label
+        if why := issue_labels.missing_type(allowed.values(), labels, most):    # #967: a type label
             raise broker_ipc.ProtocolError(why)
         return title.strip(), body, labels, current
 

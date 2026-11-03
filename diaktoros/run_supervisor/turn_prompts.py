@@ -4,7 +4,7 @@ data. The facts they read are pr_facts's; the core's rules are reached through t
 """
 from __future__ import annotations
 
-from .. import prompts, run_supervisor
+from .. import issue_labels, prompts, run_supervisor
 from . import issue_inputs, pr_facts, views
 
 _READ = object()      # "read the newest shadow review now", as opposed to one already read
@@ -50,6 +50,17 @@ def _adjudicator_facts(loop: dict, row, marker, facts: dict) -> list:
     return comments
 
 
+def issue_labels_fact(loop: dict) -> str:
+    """The labels a filed issue may carry (#247), for the reviewer's prompt: the loop's triage
+    list, the same allowlist the broker enforces, and the broker's cap on how many."""
+    triage = loop.get('triage') or {}
+    allowed = triage.get('labels') or []
+    most = issue_labels.max_labels(triage)    # the broker's cap
+    return (('this list only: ' + ', '.join(f'`{x}`' for x in allowed)
+             + f' (at most {most} per issue; {issue_labels.label_rule(allowed, most)})')
+            if allowed else 'none (this loop has no label list: file without labels)')
+
+
 def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, shadow=_READ) -> str:
     """Render the role's isolated prompt from host facts plus the bounded PR record. ``shadow``
     is the shadow review already read for an adjudicator's shadow escalation
@@ -69,12 +80,7 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, shadow=_
         if change is not None and change.author in config.review_only(loop):
             facts['fixer_agent'] = f"the PR's author ({change.author})"
         facts['round'] = len(counted) + 1 if counted is not None else 'unknown (reviews unreadable)'
-        # The labels a filed issue may carry (#247): the loop's triage list, the same allowlist
-        # the broker enforces.
-        allowed = (loop.get('triage') or {}).get('labels') or []
-        facts['issue_labels'] = (('this list only: ' + ', '.join(f'`{x}`' for x in allowed))
-                                 if allowed else 'none (this loop has no label list: file '
-                                 'without labels)')
+        facts['issue_labels'] = issue_labels_fact(loop)
         comments, error = gh.issue_comments_read(loop, row['pr'])
         if comments is None:
             # A review can still be done without them; say so rather than imply there are none.
