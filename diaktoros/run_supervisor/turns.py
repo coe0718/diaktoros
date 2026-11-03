@@ -93,6 +93,17 @@ def _ci_hold_text(head: str, checks, fixing: bool, red: bool, review_only: bool)
                f"{len(checks.pending)} check(s) still running or not reported"))[:600]
 
 
+def _turn_role(row) -> str:
+    """The prompt a ledger row's turn runs under, for its recorded prompt revision: a fixer row
+    may be a conflict or a CI-fix turn, and a shadow turn is told what the reviewer is (#218)."""
+    from .. import ci_fix
+    if row['seat'] == 'fixer' and str(row['turn_key'] or '').startswith(run_supervisor.CONFLICT_KEY):
+        return 'conflict'
+    if row['seat'] == 'fixer' and ci_fix.is_ci_fix(row['turn_key']):
+        return 'ci_fix'
+    return 'reviewer' if row['seat'] == run_supervisor.SHADOW else row['seat']
+
+
 class ClaimAndLaunch:
     """The claim and turn methods of :class:`~diaktoros.run_supervisor.Supervisor`."""
 
@@ -413,7 +424,7 @@ class ClaimAndLaunch:
     def _production_turn(self, turn: _Turn) -> None:
         """The turn itself: take the row, gate the launch, build the turn, run it. A step that
         holds the turn sets ``turn.error`` and the turn ends there, nothing launched."""
-        from .. import ci_fix, config, pacing, prompts, seat_model, trusted_turn
+        from .. import config, pacing, prompts, seat_model, trusted_turn
         assert self.production_config is not None
         try:
             settings = seat_model.load_runtime(self.production_config)
@@ -481,14 +492,7 @@ class ClaimAndLaunch:
         launch = self._prepare_launch(turn)
         if launch is None:
             return
-        if row['seat'] == 'fixer' and str(row['turn_key'] or '').startswith(run_supervisor.CONFLICT_KEY):
-            role = 'conflict'
-        elif row['seat'] == 'fixer' and ci_fix.is_ci_fix(row['turn_key']):
-            role = 'ci_fix'
-        else:
-            # A shadow turn is told exactly what the reviewer is told (#218).
-            role = 'reviewer' if row['seat'] == run_supervisor.SHADOW else row['seat']
-        self.record_launch(run_id, owner, prompts.revision(role), inference.model)
+        self.record_launch(run_id, owner, prompts.revision(_turn_role(row)), inference.model)
         prompt = launch.prompt
         if run_supervisor.unpublished_before(row):
             prompt = run_supervisor.PUBLISH_NUDGE + prompt

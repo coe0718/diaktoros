@@ -604,6 +604,27 @@ def sandbox_config(model: str, api_mode: str = 'chat_completions',
             f'    api_mode: {api_mode}\n' + tail, '', SEAT_PROVIDER)
 
 
+def _write_sandbox_home(home: Path, model: str, api_mode: str, client_identity: str,
+                        reasoning_effort: str) -> str:
+    """Create the sandbox's Hermes home: its ``config.yaml``, the directsdk wire plugin when that
+    client identity is used, and its ``.env``. Returns the provider the turn runs Hermes with."""
+    home.mkdir(mode=0o700)
+    config_text, env_text, provider = sandbox_config(model, api_mode, client_identity,
+                                                     reasoning_effort)
+    (home / 'config.yaml').write_text(config_text)
+    (home / 'config.yaml').chmod(0o600)
+    if client_identity == 'directsdk':
+        wire = home / 'plugins' / 'review-loop-directsdk-wire'
+        wire.mkdir(mode=0o700, parents=True)
+        shutil.copyfile(Path(__file__).with_name('directsdk_wire.py'), wire / '__init__.py')
+        (wire / 'plugin.yaml').write_text(
+            'name: review-loop-directsdk-wire\nkind: model-provider\nversion: 0.1.0\nmanifest_version: 2\n')
+    if env_text:
+        (home / '.env').write_text(env_text)
+        (home / '.env').chmod(0o600)
+    return provider
+
+
 def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path,
              runtime: Path, rust: Path, upstream: str, key: str, model: str,
              prompt: str, timeout: int = 600, work_root: Path | None = None,
@@ -676,20 +697,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
             turn = client.parent / Path(broker_client.TURN_FILE).name
             turn.write_text(json.dumps({'head': scope.head}) + '\n')
             turn.chmod(0o444)
-        home.mkdir(mode=0o700)
-        config_text, env_text, provider = sandbox_config(model, api_mode, client_identity,
-                                                         reasoning_effort)
-        (home / 'config.yaml').write_text(config_text)
-        (home / 'config.yaml').chmod(0o600)
-        if client_identity == 'directsdk':
-            wire = home / 'plugins' / 'review-loop-directsdk-wire'
-            wire.mkdir(mode=0o700, parents=True)
-            shutil.copyfile(Path(__file__).with_name('directsdk_wire.py'), wire / '__init__.py')
-            (wire / 'plugin.yaml').write_text(
-                'name: review-loop-directsdk-wire\nkind: model-provider\nversion: 0.1.0\nmanifest_version: 2\n')
-        if env_text:
-            (home / '.env').write_text(env_text)
-            (home / '.env').chmod(0o600)
+        provider = _write_sandbox_home(home, model, api_mode, client_identity, reasoning_effort)
         review = None
         if review_diff is not None:
             review = root / 'review'
