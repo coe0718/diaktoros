@@ -9,7 +9,8 @@ not the reviewer, labelled ``shadow-found``, and says which model found it. Off 
 unreadable review or ledger files nothing that sweep. A shadow issue whose head never gets a real
 review is dropped after ``WAIT_S``. A POST refused with nothing written (``broker.BrokerNotSent``: no
 reader identity, a repository mismatch, a 4xx from GitHub) leaves the issue ``recorded`` with the
-reason, and the next sweep tries again; any other failure of the POST is ``uncertain``, never replayed.
+reason, and the next sweep tries again, up to ``MAX_ATTEMPTS`` refusals, after which it is
+``denied`` with the reason (#1732); any other failure of the POST is ``uncertain``, never replayed.
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ import time
 from . import broker, config, gate, gh
 
 WAIT_S = 7 * 86400        # a head the real reviewer never reached is not waited on for ever
+MAX_ATTEMPTS = 12         # refused POSTs (nothing written) before the issue is dropped (#1732)
 SIMILAR = 0.85            # titles this alike (normalized) are the same finding
 
 
@@ -111,10 +113,11 @@ def _post(loop: dict, sup, row, filing, depth: int, log) -> tuple[int | None, bo
         # Refused with nothing written (no reader identity, a repository mismatch, GitHub's
         # 4xx): not an unknown outcome. Back to `recorded` with the reason, so a sweep after the
         # operator fixes it files the issue; the filed_issues row is released for that retry.
+        # Each refusal is counted: at MAX_ATTEMPTS the issue is dropped, not retried for ever.
         sup.release_shadow_filing(row["run_id"], filing)
-        sup.shadow_issue_status(row["run_id"], row["seq"], "recorded", expect="posting",
-                                error=f"not sent, retried next sweep: {exc}"[:200])
-        log(f"shadow-found issue for #{number} not filed, retried next sweep: {exc}")
+        state = sup.shadow_issue_refused(row["run_id"], row["seq"], str(exc), MAX_ATTEMPTS)
+        log(f"shadow-found issue for #{number} not filed, "
+            + ("dropped" if state == "denied" else "retried next sweep") + f": {exc}")
         return None, False
     except Exception as exc:
         why = f"POST outcome unknown: {type(exc).__name__}: {exc}"[:200]

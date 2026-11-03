@@ -500,9 +500,9 @@ each one once the real review exists at that head:
 - **A refusal with nothing written:** if the broker refuses it before sending anything (no reader
   identity, a repository mismatch, a reader token file that is missing or unreadable), or GitHub answers the POST with a 4xx other than 408 (a reader App without
   Issues write gets 403; the status is the response's own, never one named in an error text), no issue exists, so it stays `recorded` with the reason in its `error`,
-  the watchdog log names it, and each later sweep tries again, so fixing the permission is enough.
+  the watchdog log names it, and each later sweep tries again, so fixing the permission is enough. The refusals are counted (`shadow_issues.attempts`): after 12 of them (about 3 hours at the default 15-minute watchdog interval) the issue is `denied`, with the last reason in its `error`, and no sweep tries it again. A reader that never gets Issues write therefore loses its waiting findings instead of re-sending them for ever.
   A POST that timed out or failed in transit (whatever the error text says), got a 408, a 5xx or an answer that isn't an issue is `uncertain` and is never
-  replayed, since GitHub may have created it. A refused one is retried every sweep and takes no
+  replayed, since GitHub may have created it. A refused one is retried each sweep, up to that bound, and takes no
   room under the daily cap.
 - **What's skipped:** an issue the reviewer already filed from that PR, with the same title or one
   close to it, is marked `duplicate` and never filed.
