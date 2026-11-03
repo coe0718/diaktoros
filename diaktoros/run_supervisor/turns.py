@@ -465,8 +465,9 @@ class ClaimAndLaunch:
         cancel = self._cancels.get(run_id)
         if cancel is not None and cancel.is_set():
             raise run_supervisor.TurnCancelled(run_supervisor.OPERATOR_STOPPED)  # before any launch
-        # Each turn is counted once, against its own pool (#772).
-        pacing.count_turn(loop['id'], pacing.REVIEW_ONLY_SEAT if ro_turn else row['seat'])
+        # Each turn is counted once, against its own pool (#772), when its sandbox starts: a
+        # turn that fails in staging or prefetch inside run_turn never spends one (#1378).
+        counted_seat = pacing.REVIEW_ONLY_SEAT if ro_turn else row['seat']
         change, merged = launch.change, launch.merged
         turn.rc = trusted_turn.run_turn(loop, launch.scope, source=Path(settings["source"]),
               venv=Path(settings["venv"]), runtime=Path(settings["runtime"]),
@@ -488,7 +489,7 @@ class ClaimAndLaunch:
               # as "fetching", not as a silent turn, and its outcome outlives the run.
               progress=lambda text: self.record_dependencies(run_id, owner, text),
               # An operator's cancel (#1148) stops the sandbox the way the budget does.
-              stop=cancel)
+              stop=cancel, on_launch=lambda: pacing.count_turn(loop['id'], counted_seat))
         # A non-zero sandbox exit with nothing on the write-ahead record is the model or
         # provider failing (429/5xx, OAuth refresh, crash): worth a backed-off retry.
         turn.retry = turn.rc != 0

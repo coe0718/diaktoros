@@ -148,7 +148,8 @@ class ProductionLaunch(Base):
 
     def launch(self, role: str, *, kill: subprocess.TimeoutExpired | None = None,
                activity: str = "", observed: dict | None = None, rc: int = 0,
-               provider_error: str = "", skipped_paths: tuple = ()) -> dict:
+               provider_error: str = "", skipped_paths: tuple = (), on_launch=None,
+               stage_error: Exception | None = None) -> dict:
         """Run ``run_turn`` for ``role`` with the launcher spied; return what it was handed.
 
         ``kill``: the launcher raises it instead, as ``contained.run`` does at the budget; the
@@ -156,6 +157,8 @@ class ProductionLaunch(Base):
         seen = {}
 
         def stage(_loop, **kw):
+            if stage_error is not None:
+                raise stage_error
             kw["sandbox_root"].mkdir()
             if kw.get("not_exported") is not None:
                 kw["not_exported"].extend(skipped_paths)
@@ -204,9 +207,22 @@ class ProductionLaunch(Base):
                                   runtime=self.runtime, rust=self.root / "rust",
                                   upstream="https://model.invalid", key="k", model="m",
                                   prompt="PROMPT", timeout=5, work_root=self.root / "work",
-                                  observed=observed)
-        self.assertIn("argv", seen, "run_turn never reached the launcher")
+                                  observed=observed, on_launch=on_launch)
+        if stage_error is None:     # a staging failure never reaches the launcher
+            self.assertIn("argv", seen, "run_turn never reached the launcher")
         return seen
+
+    def test_on_launch_fires_once_when_the_sandbox_starts(self):
+        """#1378: the worker counts the daily turn from this hook, not before run_turn."""
+        order = []
+        self.launch("fixer", rc=1, on_launch=lambda: order.append("launch"))
+        self.assertEqual(order, ["launch"])
+
+    def test_a_turn_that_fails_staging_never_calls_on_launch(self):
+        calls = []
+        self.launch("fixer", on_launch=lambda: calls.append(1),
+                    stage_error=trusted_turn.TurnDenied("base check failed"))
+        self.assertEqual(calls, [])
 
     def test_a_submodule_the_source_snapshot_left_out_is_logged(self):
         """#800: the turn's run log records the Hermes checkout's skipped gitlinks."""

@@ -213,7 +213,9 @@ class ProductionWorker(unittest.TestCase):
         self.account = pacing.account_key("openai-codex", self.inference.upstream, "fix")
         self.turns = 0
 
-    def run_production(self, run_turn, loop=None, seat="fixer", author="fixer"):
+    def run_production(self, run_turn, loop=None, seat="fixer", author="fixer", launches=True):
+        """``launches=False``: ``run_turn`` fails before it reaches the sandbox (it never calls
+        ``on_launch``), as a staging or prefetch failure does."""
         loop = loop or self.loop
         with mock.patch.object(Supervisor, "_spawn"), \
                 mock.patch.object(config, "by_repo", return_value=loop):
@@ -229,6 +231,8 @@ class ProductionWorker(unittest.TestCase):
 
         def counted(*args, **kwargs):
             self.turns += 1
+            if launches:
+                kwargs["on_launch"]()           # the sandbox starts: the turn is counted
             return run_turn(*args, **kwargs)
         pr = {"number": 8, "head": {"sha": HEAD, "ref": "fix-8"}, "user": {"login": author}}
         with mock.patch.object(config, "by_repo", return_value=loop), \
@@ -400,6 +404,29 @@ class ProductionWorker(unittest.TestCase):
         self.assertAlmostEqual(row["retry_at"] - time.time(), run_supervisor.backoff(1), delta=5)
         self.assertIsNone(pacing.held(self.account))
         self.assertEqual(pacing.turns_today("widgets", "fixer"), 1, "a launched turn is counted")
+
+    def test_a_turn_that_fails_before_its_sandbox_starts_is_not_counted(self):
+        # #1378: staging, the base check and the prefetch run inside run_turn.
+        def staging_fails(*a, **k):
+            raise trusted_turn.TurnDenied("base check failed")
+        row = self.run_production(staging_fails, launches=False)
+        self.assertEqual(self.turns, 1)
+        self.assertEqual(pacing.turns_today("widgets", "fixer"), 0)
+        self.assertNotEqual(row["state"], "done")
+
+    def test_a_review_only_turn_that_fails_before_its_sandbox_starts_is_not_counted(self):
+        def staging_fails(*a, **k):
+            raise trusted_turn.TurnDenied("base check failed")
+        self.run_production(staging_fails, self.review_only_loop(5), seat="reviewer",
+                            author="owner-human", launches=False)
+        self.assertEqual(pacing.turns_today("widgets", pacing.REVIEW_ONLY_SEAT), 0)
+        self.assertEqual(pacing.turns_today("widgets", "reviewer"), 0)
+
+    def test_a_launched_turn_that_fails_is_counted_once_in_its_own_pool(self):
+        self.run_production(lambda *a, **k: 1, self.review_only_loop(5), seat="reviewer",
+                            author="owner-human")
+        self.assertEqual((pacing.turns_today("widgets", pacing.REVIEW_ONLY_SEAT),
+                          pacing.turns_today("widgets", "reviewer")), (1, 0))
 
 
 class SeatView(unittest.TestCase):

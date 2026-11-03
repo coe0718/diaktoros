@@ -612,7 +612,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
              client_identity: str = '', review_diff: str | None = None,
              prefetch_timeout: int = deps.FETCH_TIMEOUT, progress=None,
              merged: dict | None = None, steps: int | None = None,
-             reasoning_effort: str = '', stop=None) -> int:
+             reasoning_effort: str = '', stop=None, on_launch=None) -> int:
     """Stage a live PR head, start host capabilities, execute Hermes within bwrap.
 
     ``api_mode`` picks the proxy contract and the sandbox's provider config; ``credential`` (a
@@ -639,6 +639,10 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
     ``stop``, when given (the worker's cancel event, #1148), is checked before the sandbox starts
     and polled while it runs: once set, the sandbox's process group is killed exactly as at the
     turn budget and ``contained.Stopped`` is raised, with what it printed in ``observed``.
+
+    ``on_launch``, when given, is called with no arguments once, right before the sandbox starts:
+    after the checkout is staged, the dependencies prefetched and the stop check passed. A turn
+    that fails or is refused earlier never calls it (#1378: the daily turn cap counts from it).
     """
     if scope.repo != loop.get('repo') or scope.role not in TOOLS:
         raise TurnDenied('scope mismatch')
@@ -786,6 +790,8 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                 grace = KILL_GRACE_S
                 if stop is not None and stop.is_set():
                     raise contained.Stopped()
+                if on_launch is not None:
+                    on_launch()
                 stopping = {"stop": stop} if stop is not None else {}
                 try:
                     result = contained.run(code=code, venv=venv, runtime=runtime,
