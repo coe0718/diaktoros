@@ -17,7 +17,9 @@ nothing and cannot tell "no review" from "a review not yet submitted". Only a me
 verdict (and no visible pending review) is marked checked. (A record is written once per PR and
 head, so reading again never doubles it; the cost is one review read per such PR per sweep, within
 the window and the ``LISTED`` newest.) Not covered: a pending review submitted after a verdict was
-already proved current is not seen, since that PR is marked checked.
+already proved current is not seen, since that PR is marked checked. Merges marked checked by an
+earlier version, which also marked those with no verdict, are not trusted: the checked list lives
+in a new file (``state.OVERRIDE_CHECKED_FILE``), so each is read once more.
 """
 from __future__ import annotations
 

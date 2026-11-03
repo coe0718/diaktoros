@@ -227,6 +227,29 @@ class Recording(Override):
         self.sweep()
         self.assertEqual([(r[0], r[2]) for r in self.rows()], [(7, "merged_over_changes")])
 
+    def legacy_checked(self):
+        """The checked list as the version before #1323 left it: the PR marked read with no
+        verdict proved, because its only review was a pending one the reader could not see."""
+        self.st.dir.mkdir(parents=True, exist_ok=True)
+        (self.st.dir / "override-checked.json").write_text(json.dumps({"7": HEAD}))
+
+    def test_a_merge_marked_checked_before_the_upgrade_is_read_again_once(self):
+        self.legacy_checked()
+        self.reviews = {7: [review(5, "CHANGES_REQUESTED")]}     # submitted after it was marked
+        self.assertEqual(self.scan(), [7])
+        self.assertEqual(len(self.rows()), 1)
+        self.assertEqual(self.st.override_checked(), {"7": HEAD})
+        self.assertEqual(self.scan(), [])                        # now trusted: no second record
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_the_sweep_reads_a_merge_marked_checked_before_the_upgrade(self):
+        self.legacy_checked()
+        self.reviews = {7: [review(5, "CHANGES_REQUESTED")]}
+        self.sweep()
+        self.assertEqual([(r[0], r[2]) for r in self.rows()], [(7, "merged_over_changes")])
+        self.sweep()
+        self.assertEqual(len(self.rows()), 1)
+
     def test_a_merge_already_read_is_not_read_again(self):
         self.reviews = {7: [review(5, "APPROVED")]}
         self.scan()
