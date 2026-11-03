@@ -617,6 +617,42 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual((self.seen["role"], row["state"]), ("reviewer", "succeeded"), row)
         self.assertEqual([w for _k, w in self.kinds() if w.startswith("shadow review")], [])
 
+    def test_a_reviewer_that_failed_without_a_verdict_keeps_its_shadow_for_its_retry(self):
+        # Review of #1656, F14: the reviewer turn fails with no verdict and is re-armed, by a
+        # redelivered event or by an operator. Cancelled at that first claim, the shadow would be
+        # gone when the retried turn approves, and the head would read green with no second
+        # opinion. Held, it runs on the approval, and the head holds until it lands.
+        approve = [{"verdict": "APPROVE", "body": "ok", "authorized": True}]
+        for how in ("redelivery", "operator retry"):
+            with self.subTest(how):
+                self.setUp()
+                self.loop = config.normalize({**RAW, "state_dir": str(self.home / "state"),
+                                              "required_checks": ["tests"],
+                                              "shadow": {"profile": "grok", "every": 1,
+                                                         "escalate": True}})
+                sup = self.queue_shadow()
+                self.reviewer_is(sup, None, "failed")
+                sup, row = self.claim_shadow(sup, approve)
+                self.assertEqual((self.seen, row["state"]), ({}, "waiting"), row["error"])
+                reviewer = sup.get(f"acme/widgets:8:{HEAD}:reviewer")
+                if how == "redelivery":
+                    with mock.patch.object(Supervisor, "_spawn"), \
+                            mock.patch.object(config, "by_repo", return_value=self.loop):
+                        self.assertEqual(gate.enqueue_isolated(self.loop, "reviewer", 8, HEAD),
+                                         "rearmed")
+                else:
+                    with mock.patch.object(Supervisor, "_spawn"):
+                        sup.retry(reviewer["id"])
+                self.assertEqual(sup.get(f"acme/widgets:8:{HEAD}:reviewer")["state"], "pending")
+                self.reviewer_is(sup, ("confirmed", "APPROVED"), "succeeded")
+                self.assertEqual(merge_check.decide(self.kinds())[0], merge_check.PENDING)
+                self.assertTrue([w for _k, w in self.kinds() if w.startswith("shadow review")])
+                sup, row = self.claim_shadow(sup, approve)
+                self.assertEqual((self.seen.get("role"), row["state"]), ("reviewer", "succeeded"),
+                                 row["error"])
+                self.assertEqual([w for _k, w in self.kinds() if w.startswith("shadow review")],
+                                 [])
+
     def test_a_late_approval_starts_the_ci_wait_so_a_transient_ci_read_holds_the_head(self):
         # Review of #1656, F11: the shadow waited for its reviewer far past the CI wait. Timed
         # from the queueing, the first unreadable CI answer would cancel it and the approved head

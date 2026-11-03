@@ -12,8 +12,11 @@ and it stays blind as before. What changes is when it runs: as it is claimed it 
 ledger alone, with no GitHub read:
 
 * a confirmed APPROVE: it runs;
-* a confirmed change request, or a turn that ended without a verdict: it is skipped (cancelled),
-  nothing spent;
+* a confirmed change request, or a turn that succeeded without a verdict: it is skipped
+  (cancelled), nothing spent;
+* a turn that failed or was cancelled without a verdict: it waits, since a redelivered event or
+  ``hermes dk retry`` can re-arm that same turn, and an APPROVE it then posts needs this shadow
+  (review of #1656, F14). A moved head or a closed PR retires it at its claim, as for any shadow;
 * a newer reviewer turn at the same head: it is skipped, since that turn's shadow is the one
   that counts (an older approval never runs a shadow on a head since sent back);
 * the reviewer's turn still running, its review being posted or confirmed, or an uncertain or
@@ -37,6 +40,7 @@ def decide(db, row) -> tuple[str, str, float | None]:
     row from before #1647). One ledger read for both: the shadow's CI wait starts at that time,
     not at its queueing, since the verdict wait before it has no bound (review of #1656, F11),
     and a second read that could fail on its own would fall back to the queueing."""
+    from . import run_supervisor
     from .run_supervisor import views
     short = str(row["head"])[:7]
     try:
@@ -66,6 +70,9 @@ def decide(db, row) -> tuple[str, str, float | None]:
         return "skip", f"the reviewer requested changes at {short}, so no shadow review", None
     if receipt or reviewer[1] in OPEN:
         return "wait", f"waiting for the reviewer's verdict at {short}", None
+    if reviewer[1] in run_supervisor.REARMABLE:
+        return ("wait", f"the reviewer's turn at {short} ended {reviewer[1]} without a verdict; "
+                "held, since a re-armed turn may yet approve", None)
     return "skip", f"the reviewer's turn at {short} ended {reviewer[1]} without a verdict", None
 
 

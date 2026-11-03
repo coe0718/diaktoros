@@ -3,7 +3,8 @@
 The shadow's row is queued with its reviewer turn, on a findings snapshot taken before that
 turn's row exists, so the head holds for it from the start. As it is claimed it reads, from the
 ledger alone, what that very reviewer turn decided: a confirmed APPROVE runs it, a change request
-or a turn that ended without a verdict skips it, and anything still in flight waits. The ledger is
+or a turn that succeeded without a verdict skips it, and anything still in flight, or a turn that
+failed and may be re-armed, waits. The ledger is
 real; GitHub and the worker launch are mocked.
 """
 from __future__ import annotations
@@ -63,10 +64,19 @@ class AfterReviewer(Ledger):
         self.receipt(self.run_row("reviewer", state="succeeded"), "CHANGES_REQUESTED")
         self.assertEqual(self.decide()[0], "skip")
         self.assertIn("requested changes", self.decide()[1])
-        self.run_row("reviewer", turn_key="r2", state="failed")
+        self.run_row("reviewer", turn_key="r2", state="succeeded")
         what, why = self.decide("r2")
         self.assertEqual(what, "skip")
-        self.assertIn("ended failed without a verdict", why)
+        self.assertIn("ended succeeded without a verdict", why)
+
+    def test_a_turn_that_failed_or_was_cancelled_without_a_verdict_waits_to_be_re_armed(self):
+        # Review of #1656, F14: a redelivery or `hermes dk retry` re-arms that same turn.
+        for key, state in (("f", "failed"), ("c", "cancelled")):
+            with self.subTest(state):
+                self.run_row("reviewer", turn_key=key, state=state)
+                what, why = self.decide(key)
+                self.assertEqual(what, "wait")
+                self.assertIn(f"ended {state} without a verdict; held", why)
 
     def test_a_turn_in_flight_its_post_or_an_uncertain_record_waits(self):
         for key, state, receipt in (("a", "running", None), ("b", "running", "claimed"),
