@@ -35,6 +35,8 @@ class InitTurnKnobsTest(Base):
             rc, out = self.init(*args, settings=form)
             self.assertEqual(rc, 2, out)
             self.assertIn("cannot be set by init", out)
+            self.assertIn("no triage block", out)       # not the old fix-label rule (#1220)
+            self.assertNotIn("no triage.fix_label", out)
             self.assertFalse(LOOP_FILE.exists())
 
     def test_blank_form_leaves_the_defaults(self):

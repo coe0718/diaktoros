@@ -627,8 +627,9 @@ def _setup_turn_flags(first) -> None:  # noqa: ANN001
                        help="most tokens the fixer (and issue fixes) may spend per day "
                             "(0 = none) (default: the plugin setting)")
     first.add_argument("--fix-daily-turns", type=int, default=None,
-                       help="issue-fix turns per day: refused here, a new loop has no fix "
-                            "label; set it with `triage --fix-daily-turns N` (0 = ignore)")
+                       help="issue-fix turns per day: refused here, a new loop has no "
+                            "triage block; set it with `triage --enable ... --fix-daily-turns N` "
+                            "(0 = ignore)")
     for key in ("source", "venv", "runtime", "rust"):
         first.add_argument(f"--{key}", default="",
                            help=f"runtime file's {key} path (default: detected)")

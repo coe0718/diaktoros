@@ -179,9 +179,10 @@ SETTINGS_SCHEMA: dict = {
                                       "Blank = not set here: the loop keeps its own value or "
                                       "the default"},
     "fix_daily_turns": {"label": "Issue-fix daily cap (turns)", "type": "str", "default": "",
-                        "description": "Issue-fix turns per local day, 1-1000. Needs the loop's "
-                                       "triage.fix_label. Blank = not set here: the loop keeps "
-                                       "its own value or the default"},
+                        "description": "Issue-fix turns per local day, 1-1000. Needs issue triage "
+                                       "on for the loop; without triage.fix_label it is kept but "
+                                       "inert. Blank = not set here: the loop keeps its own "
+                                       "value or the default"},
     "review_only": {"label": "Review-only authors (comma-separated)", "type": "str",
                     "default": "",
                     "description": "GitHub logins whose PRs the reviewer reviews but the fixer "
@@ -607,10 +608,13 @@ def _apply_triage_observer(overlaid, loop_raw, settings) -> None:  # noqa: ANN00
     raw_cap = _form_value(settings, "fix_daily_turns")
     if raw_cap is not None:
         triage = dict(loop_raw.get("triage") or {})
-        if not triage.get("fix_label"):
-            raise config.ConfigError("settings: fix_daily_turns needs the loop's triage.fix_label — "
-                              "without it no issue is handed to the fixer, so there is nothing "
-                              "to cap")
+        # The cap stands on its own, as the loader and `triage --fix-daily-turns` have it
+        # (#1218): with issue fixes off it is kept, inert. It does need the triage block
+        # to live in, and a loop without one cannot be given a bare cap.
+        if not triage.get("route"):
+            raise config.ConfigError("settings: fix_daily_turns needs issue triage on for the loop "
+                              "(the triage block it lives in); turn it on with `hermes dk "
+                              "triage --enable` first")
         triage["fix_daily_turns"] = config._check_daily_turns(
             config._form_int(raw_cap), "triage.fix_daily_turns", "settings")
         overlaid["triage"] = triage
