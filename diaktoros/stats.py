@@ -109,26 +109,42 @@ def usage(db: Path, repo: str, since: float) -> list[dict] | None:
         if not {"tokens_in", "tokens_out", "cost"} <= columns:
             return None
         model = "model" if "model" in columns else "NULL"
+        # #1649: the prompt cache's share of the input. Only turns whose provider reported it
+        # count, and their own input is the denominator, so an unreporting provider reads as
+        # unknown (``cached_of`` 0), never as a 0% hit rate.
+        cache = "cache_read" if "cache_read" in columns else "NULL"
         rows = con.execute(
             f"SELECT seat, COALESCE({model}, 'unknown'), COUNT(*), SUM(tokens_in), "
-            "SUM(tokens_out), SUM(cost), COUNT(cost) FROM runs WHERE repo=? AND created>=? "
+            f"SUM(tokens_out), SUM(cost), COUNT(cost), SUM({cache}), "
+            f"SUM(CASE WHEN {cache} IS NOT NULL THEN tokens_in END) FROM runs "
+            "WHERE repo=? AND created>=? "
             "AND tokens_in IS NOT NULL GROUP BY seat, 2 ORDER BY seat, 2",
             (repo, since)).fetchall()
     finally:
         con.close()
     return [{"seat": seat, "model": model_name, "turns": turns, "tokens_in": t_in or 0,
-             "tokens_out": t_out or 0, "cost": cost or 0.0, "costed": costed}
-            for seat, model_name, turns, t_in, t_out, cost, costed in rows]
+             "tokens_out": t_out or 0, "cost": cost or 0.0, "costed": costed,
+             "cache_read": cached or 0, "cached_of": of or 0}
+            for seat, model_name, turns, t_in, t_out, cost, costed, cached, of in rows]
+
+
+def cache_share(row: dict) -> str:
+    """Cached input as a share of the input of the turns that reported it, or ``unknown``."""
+    of = row.get("cached_of") or 0
+    return f"{row.get('cache_read', 0):,} of {of:,} ({row.get('cache_read', 0) / of:.0%})" \
+        if of else "unknown"
 
 
 def _usage_rows(report: dict) -> list[list[str]]:
     return [[row["seat"], row["model"], str(row["turns"]), f"{row['tokens_in']:,}",
              f"{row['tokens_out']:,}",
+             cache_share(row),
              f"{row['cost']:.4f}" if row["costed"] else "unknown"]
             for row in report.get("usage") or []]
 
 
-USAGE_HEAD = ["seat", "model", "turns", "tokens in", "tokens out", "cost (provider-reported)"]
+USAGE_HEAD = ["seat", "model", "turns", "tokens in", "tokens out", "cached input (provider-reported)",
+              "cost (provider-reported)"]
 
 
 def revisions(db: Path, repo: str, since: float) -> dict | None:

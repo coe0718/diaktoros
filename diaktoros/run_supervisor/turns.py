@@ -491,7 +491,8 @@ class ClaimAndLaunch:
         self.record_launch(run_id, owner, prompts.revision(role), inference.model)
         prompt = launch.prompt
         if run_supervisor.unpublished_before(row):
-            prompt = run_supervisor.PUBLISH_NUDGE + prompt
+            # Before "This round", not first: a retry's prompt keeps the same stable prefix (#1649).
+            prompt = prompts.before_this_round(prompt, run_supervisor.PUBLISH_NUDGE)
         cancel = self._cancels.get(run_id)
         if cancel is not None and cancel.is_set():
             raise run_supervisor.TurnCancelled(run_supervisor.OPERATOR_STOPPED)  # before any launch

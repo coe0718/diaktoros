@@ -66,6 +66,23 @@ class Meter(unittest.TestCase):
         meter.finish()
         self.assertEqual(meter.tokens_in, 50)
 
+    def test_cached_input_is_kept_apart_and_unreported_is_unknown(self):
+        """#1649: 12 uncached + 100 cache-read and 112 uncached both total 112 in; the meter
+        tells them apart, and a reply that reports no cache field is None, not 0."""
+        def meter(body):
+            m = UsageMeter()
+            m.feed(body, False)
+            m.finish()
+            return m
+        cached = meter(b'{"usage": {"input_tokens": 12, "cache_read_input_tokens": 100}}')
+        plain = meter(b'{"usage": {"input_tokens": 112}}')
+        self.assertEqual((cached.tokens_in, cached.cache_read), (112, 100))
+        self.assertEqual((plain.tokens_in, plain.cache_read), (112, None))
+        zero = meter(b'{"usage": {"input_tokens": 112, "cache_read_input_tokens": 0}}')
+        self.assertEqual(zero.cache_read, 0)
+        chat = meter(b'{"usage": {"prompt_tokens": 50, "prompt_tokens_details": {"cached_tokens": 40}}}')
+        self.assertEqual((chat.tokens_in, chat.cache_read), (50, 40))
+
     def test_reported_zero_cost_is_known(self):
         for body, stream in ((b'{"usage": {"prompt_tokens": 5, "cost": 0}}', False),
                              (b'data: {"usage": {"output_tokens": 3, "cost": 0.0}}\n', True)):
@@ -125,7 +142,8 @@ class ProxyRecordsTokens(unittest.TestCase):
                 self.assertEqual((cap.tokens_in, cap.tokens_out), (320, 85))
                 self.assertTrue(cap.cost_known)
                 self.assertEqual(trusted_turn.usage_of(cap),
-                                 {"tokens_in": 320, "tokens_out": 85, "cost": 0.5})
+                                 {"tokens_in": 320, "tokens_out": 85, "cache_read": None,
+                                  "cost": 0.5})
         finally:
             upstream.shutdown()
             upstream.server_close()
@@ -135,6 +153,12 @@ class ProxyRecordsTokens(unittest.TestCase):
         class Bare:
             tokens_in, tokens_out, cost, cost_known = 5, 6, 0.0, False
         self.assertIsNone(trusted_turn.usage_of(Bare)["cost"])
+
+
+class CacheShare(unittest.TestCase):
+    def test_share_is_over_reporting_turns_and_unknown_without_any(self):
+        self.assertEqual(stats.cache_share({"cache_read": 100, "cached_of": 400}), "100 of 400 (25%)")
+        self.assertEqual(stats.cache_share({"cache_read": 0, "cached_of": 0}), "unknown")
 
 
 class StatsSumsPerSeatAndModel(unittest.TestCase):

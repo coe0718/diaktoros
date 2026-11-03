@@ -294,6 +294,28 @@ def _usage_in(event) -> tuple[int, int, float | None]:
     return best[0], best[1], best[2]
 
 
+def _cache_read(event) -> int | None:
+    """The input tokens one reply object says the provider's prompt cache served (#1649), or
+    None when it reports no such field: unknown, never 0. A reported 0 stays 0 (a cache miss).
+    Anthropic puts it at ``usage.cache_read_input_tokens``, chat completions at
+    ``usage.prompt_tokens_details.cached_tokens``, the Responses API at
+    ``usage.input_tokens_details.cached_tokens``."""
+    found = None
+    if not isinstance(event, dict):
+        return None
+    for holder in (event, event.get('message'), event.get('response')):
+        usage = holder.get('usage') if isinstance(holder, dict) else None
+        if not isinstance(usage, dict):
+            continue
+        details = [usage.get(name) for name in ('prompt_tokens_details', 'input_tokens_details')]
+        for source in [usage] + [d for d in details if isinstance(d, dict)]:
+            for name in ('cache_read_input_tokens', 'cached_tokens'):
+                value = _count(source.get(name))
+                if value is not None and (found is None or value > found):
+                    found = value
+    return found
+
+
 class UsageMeter:
     """What one upstream reply cost in tokens (#480), read from the bytes as they are relayed.
 
@@ -303,6 +325,7 @@ class UsageMeter:
 
     def __init__(self):
         self.tokens_in = self.tokens_out = 0
+        self.cache_read: int | None = None    # served by the provider's prompt cache; None: not reported
         self.cost = 0.0
         self.cost_known = False
         self._tail = b''
@@ -335,6 +358,9 @@ class UsageMeter:
         t_in, t_out, cost = _usage_in(event)
         self.tokens_in = max(self.tokens_in, t_in)
         self.tokens_out = max(self.tokens_out, t_out)
+        cached = _cache_read(event)
+        if cached is not None:
+            self.cache_read = max(self.cache_read or 0, cached)
         if cost is not None:
             self.cost, self.cost_known = max(self.cost, cost), True
 
@@ -765,6 +791,9 @@ class InferenceCapability:
         # Tokens in and out of every reply this turn (#480), and the cost the provider reported
         # (cost_known False: it reported none, so cost is unknown, not zero).
         self.tokens_in = self.tokens_out = 0
+        # Of those, the input tokens the provider's prompt cache served (#1649); None until a
+        # reply reports the field, so a provider that never does reads as unknown, not 0.
+        self.cache_read: int | None = None
         self.cost = 0.0
         self.cost_known = False
         self.model = model
@@ -836,6 +865,8 @@ class InferenceCapability:
         with self.lock:
             self.tokens_in += meter.tokens_in
             self.tokens_out += meter.tokens_out
+            if meter.cache_read is not None:
+                self.cache_read = (self.cache_read or 0) + meter.cache_read
             self.cost += meter.cost
             self.cost_known = self.cost_known or meter.cost_known
 

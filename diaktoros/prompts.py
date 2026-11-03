@@ -238,7 +238,7 @@ What to do:
    - **A filter leaves out what it should.** For each rule that selects things (which commits,
      which runs, which PRs), name one thing it must leave out and check that it does.
    The host's
-   "Build environment" note at the top of this message says whether dependencies are available
+   "Build environment" note, just above **This round**, says whether dependencies are available
    offline; if they are not, verify by reading instead. Read large files by the parts you need
    (`grep -n`, `sed -n`), not whole: every step resends what you have read, and a model's
    context window is finite. Leave enough of the turn to write and submit the review — a
@@ -563,6 +563,19 @@ What to do:
    take.
 
 Never claim the push or the review request succeeded without an ok response from the broker."""
+
+# Where a reviewer's or fixer's prompt stops being the same in every round of a PR (#1649): the
+# host puts its own per-turn notes just before this heading, so the text before it stays
+# byte-identical and the provider's prompt cache can reuse it.
+THIS_ROUND = '\n\n## This round'
+
+
+def before_this_round(prompt: str, text: str) -> str:
+    """``text`` placed just before the **This round** section of ``prompt``, else at its start
+    (a seat whose prompt has no such section keeps its host notes first, as before)."""
+    at = prompt.find(THIS_ROUND)
+    return text + prompt if at < 0 else prompt[:at] + text + prompt[at:]
+
 
 ISOLATED = {"reviewer": ISOLATED_REVIEWER, "fixer": ISOLATED_FIXER,
             "adjudicator": ISOLATED_ADJUDICATOR, "triage": ISOLATED_TRIAGE,

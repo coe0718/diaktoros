@@ -26,7 +26,7 @@ import tempfile
 import time
 
 from . import (broker, broker_client, broker_ipc, config, contained, deps, gh, hostdirs,
-               inference_proxy, repro_proof, runtime_detect, safe_push, trusted_fetch, util)
+               inference_proxy, prompts, repro_proof, runtime_detect, safe_push, trusted_fetch, util)
 
 
 def dependency_cache(loop: dict) -> Path | None:
@@ -80,11 +80,20 @@ def not_exported_section(paths: list[str], limit: int = 50) -> str:
             + '\n'.join(lines) + '\n\n')
 
 
+def compose_prompt(prompt: str, note: str) -> str:
+    """The prompt with the host's build/export ``note`` in its place (#1649): just above the
+    prompt's **This round** section, or first when it has none."""
+    return prompts.before_this_round(prompt, note + '\n\n') if note else prompt
+
+
 def usage_of(inference) -> dict:
     """The tokens (and provider-reported cost, None when it reported none) the turn's proxy
     counted (#480), for the supervisor to record in the ledger."""
     return {'tokens_in': int(getattr(inference, 'tokens_in', 0) or 0),
             'tokens_out': int(getattr(inference, 'tokens_out', 0) or 0),
+            # Input tokens the provider's prompt cache served (#1649); None: not reported.
+            'cache_read': (cache if isinstance(cache := getattr(inference, 'cache_read', None), int)
+                           else None),
             'cost': (float(getattr(inference, 'cost', 0.0))
                      if getattr(inference, 'cost_known', False) else None)}
 
@@ -739,9 +748,11 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                     f'Not exported: {len(not_exported)} symlink, submodule or .gitmodules path(s) '
                     'are not in your checkout; their names are listed after the PR record.')
             query = root / 'query.txt'
-            # The note leads the message: the prompt ends with PR records (data a PR author can
-            # shape), so a host fact placed after them could be imitated there.
-            query.write_text((note + '\n\n' if note else '') + prompt + '\n\n'
+            # The note goes ahead of every PR record (data a PR author can shape), so a host
+            # fact placed after them could not be imitated there. A reviewer's or fixer's prompt
+            # takes it just above "This round" (#1649): what is before that is the same in every
+            # round, and a note that changes with the prefetch must not sit in front of it.
+            query.write_text(compose_prompt(prompt, note) + '\n\n'
                              + not_exported_section(not_exported)
                              + tool_instructions(scope.role) + '\n')
         except BaseException:

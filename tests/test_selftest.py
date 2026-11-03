@@ -592,8 +592,14 @@ class LiveTurnTests(SelftestBase):
         self.assertEqual(self.caches, {})
         self.assertIn("Rust: dependencies are NOT available in this sandbox", self.query_text)
         self.assertIn("not by itself a reason to request changes", self.query_text)
-        # The host note leads the message, ahead of the PR records a PR author can shape.
-        self.assertTrue(self.query_text.startswith("Build environment (host-checked"))
+        # The host note sits ahead of the PR records a PR author can shape, and just above "This
+        # round" (#1649), so what comes before it stays the same in every round.
+        note, this_round = (self.query_text.index(s) for s in (
+            "Build environment (host-checked", "## This round"))
+        self.assertNotIn("\n## ", self.query_text[note:this_round])   # the note, nothing else
+        self.assertLess(this_round, self.query_text.index("## The change under review"))
+        self.assertNotIn("Build environment (host-checked", self.query_text[:note])
+        self.assertEqual(self.query_text.count("Build environment (host-checked"), 1)
 
     def test_buildable_head_mounts_the_cache(self):
         self.head_files = {"Cargo.toml": "[package]\n", "Cargo.lock": PATH_ONLY_LOCK}
