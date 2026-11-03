@@ -84,9 +84,12 @@ def main():
             weeks = api("/repos/%s/%s/stats/commit_activity" % (OWNER, REPO))
             # The endpoint returns an empty list while it computes; a
             # zero there would overwrite a real snapshot with nothing.
+            activity_ok = False
             if weeks:
                 data["commits_year"] = sum(w["total"] for w in weeks)
+                activity_ok = True
         except Exception:
+            activity_ok = False
             pass  # endpoint computes async; keep the previous value
 
         # Derived, same formulas as the page's derive().
@@ -97,7 +100,12 @@ def main():
             data["issues_open"] = data["open_issues_count"] - data["prs_open"]
         data["last_activity"] = _rel_time(data["pushed_at"])
 
-        data["generated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # The stamp dates the whole snapshot: only advance it when the
+        # commit count was actually refreshed, or a retained count would
+        # wear a newer date than its own (Vex, PR #1750 round 2) — except
+        # a snapshot with no earlier date still needs one.
+        if activity_ok or "generated" not in data:
+            data["generated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         data.pop("error", None)
     except Exception as exc:  # keep the previous snapshot on failure
         data["error"] = "%s: %s" % (type(exc).__name__, exc)

@@ -62,6 +62,17 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(data["commits_year"], 1368)
         self.assertEqual(data["generated"], "2020-01-01")
 
+    def test_empty_activity_without_earlier_date_stamps_today(self):
+        # The exception to the rule above: a snapshot with no earlier
+        # date still needs one, even when the activity read came back
+        # empty.
+        from datetime import datetime, timedelta, timezone
+        data = self.run_main({"commits_year": 1368}, [])
+        self.assertEqual(data["commits_year"], 1368)
+        today = datetime.now(timezone.utc).date()
+        self.assertIn(data["generated"],
+                      {today.isoformat(), (today - timedelta(days=1)).isoformat()})
+
     def test_populated_activity_updates(self):
         data = self.run_main({"commits_year": 1368},
                              [{"total": 10}, {"total": 20}])
