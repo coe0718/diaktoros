@@ -191,6 +191,39 @@ class ObserverSafetyTests(unittest.TestCase):
             self.assertEqual((entry["status"], entry["attempts"]),
                              ("delivered" if ok else "uncertain", 1))
 
+    def stale_claim_with_attempts(self, attempts):
+        key = self.stale_claim()
+        data = observer._read(self.state.observations)
+        if attempts is None:
+            del data["entries"][key]["attempts"]
+        else:
+            data["entries"][key]["attempts"] = attempts
+        self.state.observations.write_text(json.dumps(data))
+        return key
+
+    def test_a_pre_post_claim_without_an_attempts_count_is_still_sent(self):
+        # An entry with no `attempts` reads as 0 at the cap gate; it must not abort the scan.
+        key = self.stale_claim_with_attempts(None)
+        with patch.object(routes, "fire", return_value=True) as fire:
+            self.assertEqual(observer.retry(self.loop, self.state), 1)
+            fire.assert_called_once()
+        entry = observer._read(self.state.observations)["entries"][key]
+        self.assertEqual((entry["status"], entry["attempts"]), ("delivered", 1))
+
+    def test_a_pre_post_claim_is_resent_below_the_cap_and_not_at_it(self):
+        # Same boundary as the failed-retryable branch: resend while attempts < MAX_ATTEMPTS.
+        for attempts, sent, status in (
+                (observer.MAX_ATTEMPTS - 1, 1, "delivered"),
+                (observer.MAX_ATTEMPTS, 0, "failed")):
+            with self.subTest(attempts=attempts):
+                key = self.stale_claim_with_attempts(attempts)
+                with patch.object(routes, "fire", return_value=True) as fire:
+                    self.assertEqual(observer.retry(self.loop, self.state), sent)
+                    self.assertEqual(fire.call_count, sent)
+                entry = observer._read(self.state.observations)["entries"][key]
+                self.assertEqual((entry["status"], entry["attempts"]),
+                                 (status, attempts + sent))
+
     def test_a_claim_that_reached_its_post_stays_uncertain(self):
         key = self.stale_claim(posting_at=time.time() - observer.STALE_CLAIM_S)
         with patch.object(routes, "fire") as fire:
