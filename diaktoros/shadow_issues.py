@@ -7,7 +7,9 @@ the same finding there (the same normalized title, or one close to it). It is fi
 not the reviewer, labelled ``shadow-found``, and says which model found it. Off unless
 ``shadow.file_issues`` is on; at most ``config.shadow_issues_daily(loop)`` a day (0 = no cap). An
 unreadable review or ledger files nothing that sweep. A shadow issue whose head never gets a real
-review is dropped after ``WAIT_S``.
+review is dropped after ``WAIT_S``. A POST refused with nothing written (``broker.BrokerNotSent``: no
+reader identity, a repository mismatch, a 4xx from GitHub) leaves the issue ``recorded`` with the
+reason, and the next sweep tries again; any other failure of the POST is ``uncertain``, never replayed.
 """
 from __future__ import annotations
 
@@ -62,14 +64,9 @@ def file_pending(loop: dict, db=None, now: float | None = None,
             continue
         if room <= 0 and not uncapped:
             break
-        # Lineage as the reviewer's filing has it (#487): one deeper than the issue this PR
-        # fixed, read from its branch. An unreadable PR files nothing this sweep.
-        pr = gh.pr(loop, number)
-        branch = ((pr or {}).get("head") or {}).get("ref") if isinstance(pr, dict) else None
-        if not isinstance(branch, str):
-            continue
-        match = re.fullmatch(config.ISSUE_FIX_BRANCH_RE, branch)
-        depth = (sup.filed_depth(loop["repo"], int(match.group(1))) or 0) + 1 if match else 1
+        depth = _lineage_depth(loop, sup, number)
+        if depth is None:
+            continue                                  # an unreadable PR files nothing this sweep
         # Claimed before the POST: a second sweep never files it twice; a crash after this
         # leaves it `posting`, which is never replayed.
         if not sup.shadow_issue_status(row["run_id"], row["seq"], "posting", expect="recorded"):
@@ -82,23 +79,53 @@ def file_pending(loop: dict, db=None, now: float | None = None,
         except ValueError:
             sup.shadow_issue_status(row["run_id"], row["seq"], "duplicate")
             continue
-        room -= 1
-        try:
-            issue, gap = broker.file_shadow_issue(
-                loop, repo=loop["repo"], number=number, head=head, title=row["title"],
-                body=row["body"], labels=json.loads(row["labels"] or "[]"),
-                model=sup.shadow_model(row["run_id"]) or "unknown", depth=depth)
-        except Exception as exc:
-            why = f"POST outcome unknown: {type(exc).__name__}: {exc}"[:200]
-            sup.shadow_issue_status(row["run_id"], row["seq"], "uncertain", error=why)
-            sup.filed_issue_status(row["run_id"], filing, "uncertain", error=why)
-            continue
-        sup.filed_issue_status(row["run_id"], filing, "posted", issue_number=issue)
-        # Filed either way (the hold and lineage read filed_issues); a shadow row whose labels
-        # did not land is ``unlabelled``, not ``posted`` (#1589).
-        sup.shadow_issue_status(row["run_id"], row["seq"], "unlabelled" if gap else "posted",
-                                issue_number=issue, error=f"labels: {gap}"[:200] if gap else None)
-        if gap:
-            log(f"shadow-found issue #{issue} filed without its labels: {gap}")
-        filed.append(issue)
+        issue, sent = _post(loop, sup, row, filing, depth, log)
+        if sent:
+            room -= 1                                 # a POST that was never sent takes no room
+        if issue is not None:
+            filed.append(issue)
     return filed
+
+
+def _lineage_depth(loop: dict, sup, number: int) -> int | None:
+    """Lineage as the reviewer's filing has it (#487): one deeper than the issue this PR fixed,
+    read from its branch. None when the PR is unreadable."""
+    pr = gh.pr(loop, number)
+    branch = ((pr or {}).get("head") or {}).get("ref") if isinstance(pr, dict) else None
+    if not isinstance(branch, str):
+        return None
+    match = re.fullmatch(config.ISSUE_FIX_BRANCH_RE, branch)
+    return (sup.filed_depth(loop["repo"], int(match.group(1))) or 0) + 1 if match else 1
+
+
+def _post(loop: dict, sup, row, filing, depth: int, log) -> tuple[int | None, bool]:
+    """POST one claimed shadow issue and record how it went: ``(issue, sent)``, the issue number
+    when it was filed (None otherwise), and whether the POST may have reached GitHub."""
+    number, head = int(row["pr"]), str(row["head"])
+    try:
+        issue, gap = broker.file_shadow_issue(
+            loop, repo=loop["repo"], number=number, head=head, title=row["title"],
+            body=row["body"], labels=json.loads(row["labels"] or "[]"),
+            model=sup.shadow_model(row["run_id"]) or "unknown", depth=depth)
+    except broker.BrokerNotSent as exc:
+        # Refused with nothing written (no reader identity, a repository mismatch, GitHub's
+        # 4xx): not an unknown outcome. Back to `recorded` with the reason, so a sweep after the
+        # operator fixes it files the issue; the filed_issues row is released for that retry.
+        sup.release_shadow_filing(row["run_id"], filing)
+        sup.shadow_issue_status(row["run_id"], row["seq"], "recorded", expect="posting",
+                                error=f"not sent, retried next sweep: {exc}"[:200])
+        log(f"shadow-found issue for #{number} not filed, retried next sweep: {exc}")
+        return None, False
+    except Exception as exc:
+        why = f"POST outcome unknown: {type(exc).__name__}: {exc}"[:200]
+        sup.shadow_issue_status(row["run_id"], row["seq"], "uncertain", error=why)
+        sup.filed_issue_status(row["run_id"], filing, "uncertain", error=why)
+        return None, True
+    sup.filed_issue_status(row["run_id"], filing, "posted", issue_number=issue)
+    # Filed either way (the hold and lineage read filed_issues); a shadow row whose labels
+    # did not land is ``unlabelled``, not ``posted`` (#1589).
+    sup.shadow_issue_status(row["run_id"], row["seq"], "unlabelled" if gap else "posted",
+                            issue_number=issue, error=f"labels: {gap}"[:200] if gap else None)
+    if gap:
+        log(f"shadow-found issue #{issue} filed without its labels: {gap}")
+    return issue, True

@@ -66,6 +66,64 @@ class _Launch(NamedTuple):
     merged: dict | None = None
 
 
+def ci_wait_expired(row) -> bool:
+    """Past ``run_supervisor.CI_WAIT_MAX_S`` from when the run was queued (#241): only a red
+    hold remains. The turn's hold and the claim's light poll both ask it here."""
+    return time.time() - row['created'] >= run_supervisor.CI_WAIT_MAX_S
+
+
+def _ci_hold_text(head: str, checks, fixing: bool, red: bool, review_only: bool) -> str:
+    """The hold's one line, from the gated ``checks`` that decided it."""
+    from .. import ci
+    return (f"{run_supervisor.CI_HOLD} on {head[:7]} — "
+            + (f"{len(checks.cancelled)} check(s) cancelled, re-run them on "
+               f"GitHub ({ci._names(checks.cancelled[:5])})"
+               if checks.cancelled and not red else
+               f"{len(checks.failed)} check(s) failed, the fixer is taking them first"
+               if fixing else
+               f"{len(checks.failed)} required check(s) failed — the review starts "
+               "when they pass (re-run them on GitHub) or a new head is pushed "
+               f"({ci._names(checks.failed[:5])}); "
+               + ("no fixer takes a review-only PR" if review_only else
+                  "the fixer's CI fixes are done")
+               if red else
+               f"{len(checks.missing)} required check(s) never reported "
+               f"({ci._names(checks.missing[:5])}); check the name"
+               if checks.missing else
+               f"{len(checks.pending)} check(s) still running or not reported"))[:600]
+
+
+def _turn_role(row) -> str:
+    """The prompt a ledger row's turn runs under, for its recorded prompt revision: a fixer row
+    may be a conflict or a CI-fix turn, and a shadow turn is told what the reviewer is (#218)."""
+    from .. import ci_fix
+    if row['seat'] == 'fixer' and str(row['turn_key'] or '').startswith(run_supervisor.CONFLICT_KEY):
+        return 'conflict'
+    if row['seat'] == 'fixer' and ci_fix.is_ci_fix(row['turn_key']):
+        return 'ci_fix'
+    return 'reviewer' if row['seat'] == run_supervisor.SHADOW else row['seat']
+
+
+def _turn_pool(loop: dict, row, review_only: bool) -> tuple[str, int | None]:
+    """The pool a turn is counted in (#772) and that pool's daily cap. The count at launch
+    re-checks the cap in the same locked step (#1378): admission came before staging, and a
+    turn admitted alongside this one may have taken the last slot meanwhile."""
+    from .. import config, pacing
+    if review_only:
+        return pacing.REVIEW_ONLY_SEAT, config.review_only_daily(loop)
+    return row['seat'], config.seat_daily_turns(loop, row['seat'])
+
+
+def _cap_held(turn: _Turn, seat: str, cap: int) -> None:
+    """Hold ``turn`` until midnight: the daily turn pool ``seat`` counts in is at ``cap``. The
+    admission check (``_pacing_hold``) and the count at launch (#1378) both end here."""
+    from .. import pacing
+    turn.paced_until = pacing.next_midnight()
+    label = 'review-only' if seat == pacing.REVIEW_ONLY_SEAT else seat
+    turn.error = (f"held: {label} daily turn cap ({cap}) reached — resumes "
+                  f"{pacing.when(turn.paced_until)}")
+
+
 class ClaimAndLaunch:
     """The claim and turn methods of :class:`~diaktoros.run_supervisor.Supervisor`."""
 
@@ -81,6 +139,9 @@ class ClaimAndLaunch:
             candidates = con.execute("SELECT * FROM runs WHERE state='pending' "
                                      "ORDER BY created,id").fetchall()
         for row in claims.claim_order(candidates):
+            if (self.production_config and row['seat'] in self.capacity
+                    and self._ci_poll(row)):
+                continue        # still held for CI: the light poll re-timed it (#1648)
             read = _ClaimRead()
             if self.production_config and row['seat'] == 'reviewer':
                 self._claim_read_reviewer(row, read)
@@ -352,7 +413,7 @@ class ClaimAndLaunch:
 
     def _run_production(self, run_id: str, owner: str) -> None:
         """Worker-only host control plane; never pass credentials to bwrap."""
-        from .. import trusted_turn
+        from .. import pacing, trusted_turn
         turn = _Turn(run_id, owner, int(self.budget_of(run_id)))
         # An operator's stop (#1148: contained.Stopped, TurnCancelled) ends like any failed turn
         # here; complete_uncertain sees the request and makes it cancelled, never retried (or
@@ -361,6 +422,10 @@ class ClaimAndLaunch:
             self._production_turn(turn)
         except trusted_turn.TurnBudgetExceeded as exc:
             turn.error = self._budget_kill_error(turn, exc)
+            turn.retry = False
+        except pacing.CapReached as exc:
+            # Another turn took the last slot while this one staged (#1378): nothing launched.
+            _cap_held(turn, exc.seat, exc.cap)
             turn.retry = False
         except run_supervisor.IssueIneligible as exc:
             # Before launch, no model ran (#723): a cancellation, not a failure; never re-armed.
@@ -383,7 +448,7 @@ class ClaimAndLaunch:
     def _production_turn(self, turn: _Turn) -> None:
         """The turn itself: take the row, gate the launch, build the turn, run it. A step that
         holds the turn sets ``turn.error`` and the turn ends there, nothing launched."""
-        from .. import ci_fix, config, pacing, prompts, seat_model, trusted_turn
+        from .. import config, pacing, prompts, seat_model, trusted_turn
         assert self.production_config is not None
         try:
             settings = seat_model.load_runtime(self.production_config)
@@ -441,7 +506,7 @@ class ClaimAndLaunch:
             return
         if row['seat'] == 'reviewer':
             # Past run_supervisor.CI_WAIT_MAX_S only a red head with no fixer still holds (#1110).
-            self._ci_hold(turn, expired=time.time() - row['created'] >= run_supervisor.CI_WAIT_MAX_S)
+            self._ci_hold(turn, expired=ci_wait_expired(row))
             if turn.error:
                 return
         if row['seat'] == run_supervisor.SHADOW:
@@ -451,22 +516,16 @@ class ClaimAndLaunch:
         launch = self._prepare_launch(turn)
         if launch is None:
             return
-        if row['seat'] == 'fixer' and str(row['turn_key'] or '').startswith(run_supervisor.CONFLICT_KEY):
-            role = 'conflict'
-        elif row['seat'] == 'fixer' and ci_fix.is_ci_fix(row['turn_key']):
-            role = 'ci_fix'
-        else:
-            # A shadow turn is told exactly what the reviewer is told (#218).
-            role = 'reviewer' if row['seat'] == run_supervisor.SHADOW else row['seat']
-        self.record_launch(run_id, owner, prompts.revision(role), inference.model)
+        self.record_launch(run_id, owner, prompts.revision(_turn_role(row)), inference.model)
         prompt = launch.prompt
         if run_supervisor.unpublished_before(row):
             prompt = run_supervisor.PUBLISH_NUDGE + prompt
         cancel = self._cancels.get(run_id)
         if cancel is not None and cancel.is_set():
             raise run_supervisor.TurnCancelled(run_supervisor.OPERATOR_STOPPED)  # before any launch
-        # Each turn is counted once, against its own pool (#772).
-        pacing.count_turn(loop['id'], pacing.REVIEW_ONLY_SEAT if ro_turn else row['seat'])
+        # Each turn is counted once, against its own pool (#772), when its sandbox starts: a
+        # turn that fails in staging or prefetch inside run_turn never spends one (#1378).
+        counted_seat, cap = _turn_pool(loop, row, ro_turn)
         change, merged = launch.change, launch.merged
         turn.rc = trusted_turn.run_turn(loop, launch.scope, source=Path(settings["source"]),
               venv=Path(settings["venv"]), runtime=Path(settings["runtime"]),
@@ -488,7 +547,7 @@ class ClaimAndLaunch:
               # as "fetching", not as a silent turn, and its outcome outlives the run.
               progress=lambda text: self.record_dependencies(run_id, owner, text),
               # An operator's cancel (#1148) stops the sandbox the way the budget does.
-              stop=cancel)
+              stop=cancel, on_launch=lambda: pacing.count_turn(loop['id'], counted_seat, cap=cap))
         # A non-zero sandbox exit with nothing on the write-ahead record is the model or
         # provider failing (429/5xx, OAuth refresh, crash): worth a backed-off retry.
         turn.retry = turn.rc != 0
@@ -527,16 +586,12 @@ class ClaimAndLaunch:
             ro_turn = ro_author in config.review_only(loop)
         if ro_turn:
             if pacing.turns_today(loop['id'], pacing.REVIEW_ONLY_SEAT) >= ro_cap:
-                turn.paced_until = pacing.next_midnight()
-                turn.error = (f"held: review-only daily turn cap ({ro_cap}) reached — resumes "
-                              f"{pacing.when(turn.paced_until)}")
+                _cap_held(turn, pacing.REVIEW_ONLY_SEAT, ro_cap)
                 return ro_turn
         else:
             cap = config.seat_daily_turns(loop, row['seat'])
             if cap is not None and pacing.turns_today(loop['id'], row['seat']) >= cap:
-                turn.paced_until = pacing.next_midnight()
-                turn.error = (f"held: {row['seat']} daily turn cap ({cap}) reached — resumes "
-                              f"{pacing.when(turn.paced_until)}")
+                _cap_held(turn, row['seat'], cap)
                 return False
         # A seat's daily token budget (#480): once spent, the next turn waits for midnight.
         # A turn in flight is never killed; this only gates a launch. The fixer's budget
@@ -551,38 +606,49 @@ class ClaimAndLaunch:
         return ro_turn
 
     def _ci_hold(self, turn: _Turn, expired: bool = False) -> None:
-        """A reviewer turn held for CI, nothing spent (sets ``turn.error``). A cancelled check
-        (#363) holds every review: the broker would refuse its APPROVE, so the turn could only
-        spend tokens. Running checks hold it only with review_after_ci (#241), even beside a
-        failed one. A failed check holds while the fixer takes it first (#539); then, and on a
-        review-only PR, which no fixer pushes to, it holds until the checks pass (a rerun) or a
-        new head supersedes it (#1110): a verdict that only says "CI failed" would spend a round
-        and close the head to re-review. Only where CI fixes are off for a fixer's PR does the
-        review run, since it is how the fixer hears of the failure. ``expired``: past
-        ``run_supervisor.CI_WAIT_MAX_S`` only that red hold remains."""
-        from .. import ci, ci_fix, config, gh
+        """A reviewer turn held for CI, nothing spent (sets ``turn.error``). The decision is
+        ``_ci_hold_reason``'s, which the claim's light poll (``_ci_poll``) makes too."""
+        from .. import gh
         row, loop = turn.row, turn.loop
+        queued = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}',
+                        login=loop["read_token"])
+        reason = self._ci_hold_reason(row, loop, queued, expired)
+        if reason:
+            # Nothing spent: no model call, no daily turn, no retry. This worker stays
+            # to re-queue it (linger_for_ci); the watchdog sweep is the backstop.
+            turn.paced_until = time.time() + run_supervisor.CI_POLL_S
+            turn.error = reason
+            self.held_for_ci = True
+
+    def _ci_hold_reason(self, row, loop: dict, queued, expired: bool = False) -> str | None:
+        """Why a reviewer row at ``row['head']`` is held for CI, or None when it is not.
+        ``queued`` is the PR as just read.
+
+        A cancelled check (#363) holds every review: the broker would refuse its APPROVE, so
+        the turn could only spend tokens. Running checks hold it only with review_after_ci
+        (#241), even beside a failed one. A failed check holds while the fixer takes it first
+        (#539); then, and on a review-only PR, which no fixer pushes to, it holds until the
+        checks pass (a rerun) or a new head supersedes it (#1110): a verdict that only says
+        "CI failed" would spend a round and close the head to re-review. Only where CI fixes
+        are off for a fixer's PR does the review run, since it is how the fixer hears of the
+        failure. ``expired``: past ``run_supervisor.CI_WAIT_MAX_S`` only that red hold remains."""
+        from .. import ci, ci_fix, config
         # A PR that conflicts with its base gets no pull_request CI from GitHub, so the
         # required checks could never report: hold, nothing spent. The merge push makes
         # a new head that supersedes this row. unknown/null mergeability is no conflict.
-        queued = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}',
-                        login=loop["read_token"])
-        # A closed or draft PR is left to the eligibility checks below, which supersede it.
+        # A closed or draft PR is left to the eligibility checks, which supersede it.
         if not expired and run_supervisor._conflicts_at_head(queued, row["head"]):
             base = queued.get("base")
             base = str(base.get("ref") or "") if isinstance(base, dict) else ""
-            turn.paced_until = time.time() + run_supervisor.CI_POLL_S
-            turn.error = (f"{run_supervisor.CI_HOLD} on {row['head'][:7]} — conflicts with "
-                          f"{base or 'its base'} — GitHub runs no CI on it")[:600]
-            self.held_for_ci = True
-            return
+            return (f"{run_supervisor.CI_HOLD} on {row['head'][:7]} — conflicts with "
+                    f"{base or 'its base'} — GitHub runs no CI on it")[:600]
         author = (str(((queued.get("user") or {}).get("login")) or "")
                   if isinstance(queued, dict) else "")
         review_only = author.lower() in config.review_only(loop)
         # Red CI no review answers: no fixer pushes here, or the fixer's CI fixes are done.
         holdable = review_only or ci_fix.fixable(loop, author)
         if expired and not holdable:
-            return                      # past the wait, only that red hold remains
+            return None                 # past the wait, only that red hold remains
         after_ci = config.review_after_ci(loop)
         # Only the required checks hold it, when the loop names them (#368).
         checks = ci.gating(ci.read(loop, row['head']), config.required_checks(loop))
@@ -596,7 +662,7 @@ class ClaimAndLaunch:
                                              db=self.db, log=util.log))
         red = bool(checks is not None and checks.failed and holdable and not fixing)
         if expired and not red:
-            return
+            return None
         # #374: a failure releases the cancelled/missing holds only (the review would
         # otherwise go unreported); the pending wait survives it, so one review names
         # every failure once CI finishes.
@@ -604,26 +670,44 @@ class ClaimAndLaunch:
                 fixing or red
                 or (not checks.failed and (checks.cancelled or checks.missing))
                 or (after_ci and checks.pending)):
-            # Nothing spent: no model call, no daily turn, no retry. This worker stays
-            # to re-queue it (linger_for_ci); the watchdog sweep is the backstop.
-            turn.paced_until = time.time() + run_supervisor.CI_POLL_S
-            turn.error = (f"{run_supervisor.CI_HOLD} on {row['head'][:7]} — "
-                          + (f"{len(checks.cancelled)} check(s) cancelled, re-run them on "
-                             f"GitHub ({ci._names(checks.cancelled[:5])})"
-                             if checks.cancelled and not red else
-                             f"{len(checks.failed)} check(s) failed, the fixer is taking them first"
-                             if fixing else
-                             f"{len(checks.failed)} required check(s) failed — the review starts "
-                             "when they pass (re-run them on GitHub) or a new head is pushed "
-                             f"({ci._names(checks.failed[:5])}); "
-                             + ("no fixer takes a review-only PR" if review_only else
-                                "the fixer's CI fixes are done")
-                             if red else
-                             f"{len(checks.missing)} required check(s) never reported "
-                             f"({ci._names(checks.missing[:5])}); check the name"
-                             if checks.missing else
-                             f"{len(checks.pending)} check(s) still running or not reported"))[:600]
+            return _ci_hold_text(row['head'], checks, fixing, red, review_only)
+        return None
+
+    def _ci_poll(self, row) -> bool:
+        """The claim's cheap path for a reviewer row held for CI (#1648): re-read only what
+        decides the hold, the PR (still open, ready and at this head?) and the head's
+        check-runs and statuses, not the whole claim read set every ``CI_POLL_S``.
+
+        True when the row is still held: it waits again and nothing else was read. False sends
+        it through the full claim, once: CI settled, the head moved, the PR closed or went
+        draft, or a read failed. A moved head is then superseded by the claim's own read, as
+        it always was."""
+        if (row['seat'] != 'reviewer'
+                or not str(row['error'] or '').startswith(run_supervisor.CI_HOLD)):
+            return False
+        from .. import config, gh
+        try:
+            loop = config.by_repo(row['repo'])
+            queued = (gh.api(loop, f"/repos/{row['repo']}/pulls/{row['pr']}",
+                             login=loop['read_token']) if loop is not None else None)
+            if (not isinstance(queued, dict) or queued.get('number') != row['pr']
+                    or queued.get('state') != 'open' or queued.get('draft') is not False
+                    or (queued.get('head') or {}).get('sha') != row['head']):
+                return False
+            reason = self._ci_hold_reason(row, loop, queued, ci_wait_expired(row))
+        except Exception:
+            return False                # an unreadable poll is the full claim's to settle
+        if not reason:
+            return False
+        now = time.time()
+        with self._connect() as con:
+            changed = con.execute("UPDATE runs SET state='waiting', retry_at=?, error=?, updated=? "
+                                  "WHERE id=? AND state='pending' AND owner IS NULL",
+                                  (now + run_supervisor.CI_POLL_S, reason, now, row['id'])).rowcount
+        if changed:
             self.held_for_ci = True
+            self.failure_notice(row['id'], 'waiting')   # once per kind, as a held turn's is
+        return True
 
     def _shadow_escalation(self, turn: _Turn) -> None:
         """Right after a shadow review is recorded (#1004 part 2): if it disagrees with the

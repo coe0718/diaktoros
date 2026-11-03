@@ -237,11 +237,15 @@ def request(loop: dict, path: str, method: str = "GET", body=None,
     budget, and a call that fails because the budget ran out raises ``GateBudgetExceeded``.
     """
     timeout = _budgeted(method, path)
-    return _outcome(method, path, _request(loop, path, method, body, login, timeout))
+    _LAST.status = None
+    response = _request(loop, path, method, body, login, timeout)
+    _LAST.status = response.status      # the answer's own status, never one read from error text
+    return _outcome(method, path, response)
 
 
 def _request(loop: dict, path: str, method: str, body, login: str | None,
              timeout: float) -> Response:
+    _LAST.unsent = False
     if envnames.get("GH_STUB"):
         # The login travels to the stub (as GH_LOGIN, never a token) so a test can play a read
         # token GitHub refuses a hook write.
@@ -249,6 +253,7 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
     try:
         tok = token(loop, login)
     except GitHubError as exc:
+        _LAST.unsent = True             # no credential: the request was never built or sent
         return Response(None, str(exc))
     from . import gh_cache
     who = str(login or loop.get("read_token") or "")
@@ -495,6 +500,21 @@ def last_error() -> str:
     return getattr(_LAST, "error", "")
 
 
+def last_status() -> int | None:
+    """The HTTP status of the answer to this thread's latest call, or None when no answer arrived
+    (no credential, a timeout, a dropped connection). It is the response's own status: an error
+    message that happens to contain ``HTTP 403`` does not make one."""
+    status = getattr(_LAST, "status", None)
+    return status if type(status) is int else None
+
+
+def last_unsent() -> bool:
+    """True when this thread's latest call failed before any request was sent (no credential to
+    send it with), so a write that failed this way cannot have taken effect. A timeout, or any
+    failure after the request left, is not this."""
+    return bool(getattr(_LAST, "unsent", False))
+
+
 # -- convenience --------------------------------------------------------------
 #
 # The paths live in one place each: a second copy of "/repos/{repo}/pulls/{n}" is exactly the
@@ -557,11 +577,21 @@ def _read_pages(loop: dict, path: str, what: str, max_pages: int,
     would otherwise read "the first N items" as "all of them". With ``keep_partial`` a listing
     that is merely past the page bound returns the pages read *and* the reason (an incomplete
     listing the caller must say is incomplete); a failed or malformed page is still unknown.
+
+    A listing of exactly ``max_pages`` full pages is told from a longer one by reading one page
+    past the bound (#1146): empty means whole, any item means past the bound. That probe is one
+    extra request, made only when every page up to the bound was full.
     """
     result: list[dict] = []
-    for page in range(1, max_pages + 1):
+    # One page past the bound is a probe: a full last page does not prove another exists, so a
+    # listing of exactly ``max_pages`` full pages is whole when the next page is empty.
+    for page in range(1, max_pages + 2):
         page_path = path if page == 1 else f"{path}&page={page}"
         items, error = fetch(loop, page_path, login=login) if login else fetch(loop, page_path)
+        if page > max_pages:              # the probe: only an empty page proves the listing whole
+            if not error and isinstance(items, list) and not items:
+                return result, ""
+            break                         # items, or an unreadable probe: not proven whole
         if error:
             return None, f"{what} page {page}: {error}"
         if not isinstance(items, list) or len(items) > REVIEW_PAGE_SIZE or not all(

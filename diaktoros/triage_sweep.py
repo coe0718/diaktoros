@@ -54,25 +54,33 @@ def candidates(loop: dict, issues: list, queued: set[int], now: float) -> list[i
     return sorted(found)
 
 
-def resolve_late(loop: dict, st) -> None:
+def resolve_late(loop: dict, st) -> bool:
     """Drop the late-triage entries whose triage run has since succeeded (`status` reads them).
 
     It needs only the ledger and ``late-triage.json``, so :func:`sweep` runs it first: before the
     triage-enabled check (a loop that turned triage off still settles what it noted) and before
-    the open-issues read (a GitHub read error does not delay it).
+    the open-issues read (a GitHub read error does not delay it). Returns True when the run
+    ledger was unavailable: it has logged that cause, so the caller does not log it again (#1316).
     """
     try:
         noted = st.late_triage().keys()
-        if noted:
-            st.late_triage_resolve(noted & gate.isolated_supervisor(loop).seat_numbers(
-                loop["repo"], "triage", "succeeded"))
+        if not noted:
+            return False
+        try:
+            succeeded = gate.isolated_supervisor(loop).seat_numbers(
+                loop["repo"], "triage", "succeeded")
+        except Exception as exc:          # no private runtime / ledger
+            log(f"triage sweep: run ledger unavailable: {type(exc).__name__}: {exc}")
+            return True
+        st.late_triage_resolve(noted & succeeded)
     except Exception as exc:
         log(f"triage sweep: late-triage cleanup failed: {type(exc).__name__}: {exc}")
+    return False
 
 
 def sweep(loop: dict, st, now: float | None = None) -> list[str]:
     """Queue the triage turn of each issue whose delivery was missed; return the alert lines."""
-    resolve_late(loop, st)
+    ledger_down = resolve_late(loop, st)
     if not config.triage_enabled(loop):
         return []
     now = time.time() if now is None else now
@@ -87,6 +95,8 @@ def sweep(loop: dict, st, now: float | None = None) -> list[str]:
         lines.append(f"⚠️ Diaktoros [{loop['id']}] triage recovery sweep read only the newest "
                      f"{len(issues)} open issues/PRs ({gh.one_line(error)}); older issues "
                      "inside the sweep window were not checked")
+    if ledger_down:                       # the cleanup just logged why: one line per cause
+        return lines
     try:
         queued = gate.isolated_supervisor(loop).seat_numbers(loop["repo"], "triage")
     except Exception as exc:              # no private runtime / ledger: the gate cannot enqueue either
