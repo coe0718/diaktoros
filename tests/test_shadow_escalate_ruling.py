@@ -550,5 +550,62 @@ class CallSites(Base):
         refresh.assert_called_once()
         self.assertEqual(refresh.call_args.args[1], 8)               # the shadowed PR
 
+    def test_a_shadow_that_fails_without_a_submission_refreshes_the_merge_check(self):
+        # #1786: a failed shadow (model error, timeout) can no longer arrive, so the check that
+        # says "waiting on the shadow review" is refreshed at once, not at the next sweep.
+        import test_shadow as ts
+        from diaktoros import merge_check
+        turn = ts.ProductionTurn("run")
+        turn.setUp()
+        self.addCleanup(turn.doCleanups)
+        with mock.patch.object(merge_check, "refresh_quietly") as refresh:
+            _, row = turn.run_shadow([], rc=1)
+        self.assertEqual(row["state"], "failed", row)
+        refresh.assert_called_once()
+        self.assertEqual(refresh.call_args.args[1], 8)               # only the shadow's own PR
+
+    def test_a_shadow_held_for_ci_does_not_refresh_the_merge_check(self):
+        # Still open (waiting): the ledger reads the same as before, so nothing to refresh.
+        import test_shadow as ts
+        from diaktoros import ci, merge_check
+        turn = ts.ProductionTurn("run")
+        turn.setUp()
+        self.addCleanup(turn.doCleanups)
+        with mock.patch.object(merge_check, "refresh_quietly") as refresh:
+            _, row = turn.run_shadow([], checks=ci.CIState(pending=["tests"]))
+        self.assertEqual(row["state"], "waiting", row)
+        refresh.assert_not_called()
+
+    def test_a_shadow_cancelled_after_its_launch_step_refreshes_the_merge_check(self):
+        # #1786: red CI retires the shadow in the turn (cancelled, before any launch).
+        import test_shadow as ts
+        from diaktoros import ci, merge_check
+        turn = ts.ProductionTurn("run")
+        turn.setUp()
+        self.addCleanup(turn.doCleanups)
+        with mock.patch.object(merge_check, "refresh_quietly") as refresh:
+            _, row = turn.run_shadow([], checks=ci.CIState(failed=["tests"]))
+        self.assertEqual(row["state"], "cancelled", row)
+        refresh.assert_called_once()
+
+    def test_a_shadow_cancelled_at_its_claim_refreshes_the_merge_check(self):
+        # #1786: the claim retires a shadow whose head moved or whose PR closed.
+        import test_shadow as ts
+        from diaktoros import gh, merge_check
+        turn = ts.ProductionTurn("run")
+        turn.setUp()
+        self.addCleanup(turn.doCleanups)
+        sup = turn.queue_shadow()
+        closed = {"number": 8, "state": "closed", "draft": False,
+                  "head": {"sha": ts.HEAD, "ref": "fix-8"}}
+        with mock.patch.object(ts.config, "by_repo", return_value=turn.loop), \
+                mock.patch.object(gh, "api", return_value=closed), \
+                mock.patch.object(merge_check, "refresh_quietly") as refresh:
+            self.assertIsNone(sup._claim())
+        row = sup.get(f"acme/widgets:8:{ts.HEAD}:shadow")
+        self.assertEqual(row["state"], "cancelled", row)
+        refresh.assert_called_once()
+        self.assertEqual(refresh.call_args.args[1], 8)
+
 if __name__ == "__main__":
     unittest.main()
