@@ -11,6 +11,8 @@ reverted fixer pushes are not detected yet.
 A merge after an approval writes nothing, and neither does one whose reviews cannot be read or
 ordered: only a verdict proved current counts. Such a merge is read again on each sweep while it is
 inside the 7-day window (``LOOKBACK_S``); one still unreadable or unordered then is never recorded.
+So is a merge whose reviewer has a PENDING review at the merged head, which may be submitted later
+as a verdict. (A record is written once per PR and head, so reading again never doubles it.)
 """
 from __future__ import annotations
 
@@ -53,7 +55,9 @@ def scan(loop: dict, st, sup, now: float | None = None) -> list[int]:
         if latest is None and any(gh.review_state(r) not in gate.NOT_VERDICTS
                                   for r in gate.reviews_at_head(reviews, loop, head)):
             continue                       # a verdict whose order is unproved: read again
-        kept[str(number)] = head
+        if not any(gh.review_state(r) == "PENDING"
+                   for r in gate.reviews_at_head(reviews, loop, head)):
+            kept[str(number)] = head       # a pending review may still be submitted: read again
         if latest is None or gh.review_state(latest) != "CHANGES_REQUESTED":
             continue
         review_id = int(latest["id"])

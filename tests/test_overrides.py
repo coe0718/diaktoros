@@ -185,6 +185,31 @@ class Recording(Override):
         self.assertEqual(self.scan(), [])
         self.assertEqual(self.st.override_checked(), {"7": HEAD})
 
+    def test_a_pending_review_at_the_head_is_read_again_until_submitted(self):
+        pending = {**review(5, "PENDING"), "submitted_at": None}
+        self.reviews = {7: [pending]}
+        self.assertEqual(self.scan(), [])
+        self.assertEqual(self.st.override_checked(), {})        # not marked as read
+        self.reviews = {7: [review(5, "CHANGES_REQUESTED")]}     # submitted afterwards
+        self.assertEqual(self.scan(), [7])
+        self.assertEqual(self.st.override_checked(), {"7": HEAD})
+
+    def test_a_pending_review_beside_a_settled_verdict_is_still_read_again(self):
+        self.reviews = {7: [review(5, "APPROVED"), {**review(6, "PENDING"), "submitted_at": None}]}
+        self.assertEqual(self.scan(), [])
+        self.assertEqual(self.st.override_checked(), {})
+        self.reviews = {7: [review(5, "APPROVED"),
+                            review(6, "CHANGES_REQUESTED", at="2026-01-02T00:00:00Z")]}
+        self.assertEqual(self.scan(), [7])
+
+    def test_the_sweep_reads_a_pending_review_again(self):
+        self.reviews = {7: [{**review(5, "PENDING"), "submitted_at": None}]}
+        self.sweep()
+        self.assertEqual(self.rows(), [])
+        self.reviews = {7: [review(5, "CHANGES_REQUESTED")]}
+        self.sweep()
+        self.assertEqual([(r[0], r[2]) for r in self.rows()], [(7, "merged_over_changes")])
+
     def test_a_merge_already_read_is_not_read_again(self):
         self.reviews = {7: [review(5, "APPROVED")]}
         self.scan()
