@@ -152,6 +152,11 @@ def section(loop: dict, state: ci.CIState, names: list[str]) -> str:
 
 TEST_PATH = re.compile(r"(^|/)(tests?|spec)/|(^|/)test_[^/]+$|_test\.[A-Za-z]+$|\.spec\.[A-Za-z]+$")
 HISTORY_MAX = 10
+# A commit's file list never changes, so the test files a CI-fix commit touched are read once per
+# process, keyed by (repo, sha). Only a successful read is kept: an unreadable commit is asked
+# again next time. Bounded, oldest out first.
+_TESTS_SEEN: dict[tuple[str, str], list[str]] = {}
+TESTS_SEEN_MAX = 256
 
 
 def still_red(loop: dict, state: ci.CIState | None, number: int, db=None) -> str:
@@ -168,6 +173,25 @@ def still_red(loop: dict, state: ci.CIState | None, number: int, db=None) -> str
             "head's turn found nothing to push). This review counts as a verdict: find out why "
             "the fixes did not take, and say it in your findings."
             + section(loop, state, names))
+
+
+def _commit_tests(loop: dict, sha: str) -> list[str] | None:
+    """The test files commit ``sha`` changed, as ``name (status, +a -d)``; None when its files
+    could not be read. Read once per process per commit (a commit is immutable)."""
+    key = (str(loop["repo"]), sha)
+    if key in _TESTS_SEEN:
+        return _TESTS_SEEN[key]
+    detail = gh.api(loop, f"/repos/{loop['repo']}/commits/{sha}", login=loop["read_token"])
+    files = detail.get("files") if isinstance(detail, dict) else None
+    if not isinstance(files, list):
+        return None
+    tests = [f"{f.get('filename')} ({f.get('status')}, +{f.get('additions', 0)} "
+             f"-{f.get('deletions', 0)})" for f in files
+             if isinstance(f, dict) and TEST_PATH.search(str(f.get("filename") or ""))]
+    while len(_TESTS_SEEN) >= TESTS_SEEN_MAX:
+        _TESTS_SEEN.pop(next(iter(_TESTS_SEEN)))
+    _TESTS_SEEN[key] = tests
+    return tests
 
 
 def fix_history(loop: dict, number: int, db=None) -> str:
@@ -192,14 +216,10 @@ def fix_history(loop: dict, number: int, db=None) -> str:
             out.append(f"- a CI fix of `{fixed[:7]}`: its commit is not on the PR any more")
             continue
         sha = str(made[0].get("sha") or "")
-        detail = gh.api(loop, f"/repos/{loop['repo']}/commits/{sha}", login=loop["read_token"])
-        files = detail.get("files") if isinstance(detail, dict) else None
-        if not isinstance(files, list):
+        tests = _commit_tests(loop, sha)
+        if tests is None:
             out.append(f"- `{sha[:7]}` (CI fix of `{fixed[:7]}`): files could not be read")
             continue
-        tests = [f"{f.get('filename')} ({f.get('status')}, +{f.get('additions', 0)} "
-                 f"-{f.get('deletions', 0)})" for f in files
-                 if isinstance(f, dict) and TEST_PATH.search(str(f.get("filename") or ""))]
         out.append(f"- `{sha[:7]}` (CI fix of `{fixed[:7]}`): "
                    + ("tests changed: " + "; ".join(tests[:10]) if tests
                       else "no test files changed"))

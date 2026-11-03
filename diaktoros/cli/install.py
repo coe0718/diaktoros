@@ -510,12 +510,13 @@ def cmd_init(args) -> int:
         cap = flag if flag is not None else config._form_int(d["fix_daily_turns"].strip())
         if cap not in (0, ""):
             config._check_daily_turns(cap, "triage.fix_daily_turns", "init")
-            # A new loop has no triage block (so no fix_label) for the cap to live in, and
-            # `apply` refuses it for the same reason: refuse rather than accept and drop it.
+            # A new loop has no triage block for the cap to live in (it needs no fix label,
+            # #1218), and `apply` refuses it for the same reason: refuse rather than drop it.
             print(f"refused: the issue-fix daily cap {cap} cannot be set by init: a new loop "
-                  "has no triage.fix_label for it to live in. Leave --fix-daily-turns (and the "
-                  "fix_daily_turns setting) blank, then set it with `hermes dk triage "
-                  "--fix-label LABEL --maintainer LOGIN --fix-daily-turns N`; nothing written")
+                  "has no triage block for it to live in. Leave --fix-daily-turns (and the "
+                  "fix_daily_turns setting) blank, then turn triage on and set it with "
+                  "`hermes dk triage --enable --triage-profile P --author A --labels L "
+                  "--fix-daily-turns N`; nothing written")
             return 2
     except config.ConfigError as exc:
         print(f"refused: {exc}")
@@ -967,5 +968,6 @@ def _init_turn_flags(init, d) -> None:  # noqa: ANN001
                       help="most tokens the fixer (and issue fixes) may spend per day "
                            "(0 = none) (default: the plugin setting)")
     init.add_argument("--fix-daily-turns", type=int, default=None,
-                      help="issue-fix turns per day: refused here, a new loop has no fix "
-                           "label; set it with `triage --fix-daily-turns N` (0 = ignore)")
+                      help="issue-fix turns per day: refused here, a new loop has no "
+                           "triage block; set it with `triage --enable ... --fix-daily-turns N` "
+                           "(0 = ignore)")

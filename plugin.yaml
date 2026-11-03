@@ -198,7 +198,7 @@ config_schema:
     label: "Issue-fix daily cap (turns)"
     type: str
     default: ""
-    description: "Issue-fix turns per local day, 1-1000. Needs the loop's triage.fix_label. Blank = not set here: the loop keeps its own value or the default"
+    description: "Issue-fix turns per local day, 1-1000. Needs issue triage on for the loop; without triage.fix_label it is kept but inert. Blank = not set here: the loop keeps its own value or the default"
   auto_fix_labels:
     label: "Auto-fix labels (comma-separated)"
     type: str

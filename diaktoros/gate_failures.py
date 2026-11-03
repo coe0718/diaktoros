@@ -56,11 +56,12 @@ import traceback
 from collections.abc import Callable
 
 from . import config, gh
-from .util import iso_at, log
+from .util import iso_at, log, register_lock
 from . import envnames
 
 LEDGER = "gate-failures.json"
 PAYLOADS = "gate-failures"
+LOCK = register_lock("gate-failures.lock")       # the ledger's flock file, beside it
 DEFAULT_BUDGET_S = 20.0
 BACKSTOP_S = 3.0             # SIGALRM this long after the soft budget; 20 + 3 < the gateway's 30
 MAX_REDRIVES = 3
@@ -446,7 +447,7 @@ class Ledger:
         """The ledger's flock. With ``deadline`` (``time.monotonic()``), give up at it with
         :class:`LedgerBusy` rather than wait — the gate's record phase has a hard end."""
         self.dir.mkdir(parents=True, exist_ok=True)
-        with (self.dir / "gate-failures.lock").open("a+") as lock:
+        with (self.dir / LOCK).open("a+") as lock:
             if deadline is None:
                 fcntl.flock(lock, fcntl.LOCK_EX)
             else:
