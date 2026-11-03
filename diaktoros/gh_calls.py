@@ -85,9 +85,10 @@ def shape(path: str) -> str:
     # suffixes ending the path, never to the first that appears in it (#1759).
     base = re.sub(r"/rules/branches/.+$", "/rules/branches/REF", base)
     base = re.sub(r"/branches/(?!REF$).+?(" + _PROTECTION + r")?$", r"/branches/REF\1", base)
-    base = re.sub(r"/commits/(?![0-9a-f]{40}(?:/|$)).+?"
-                  r"(/(?:check-runs|check-suites|status|statuses|pulls|comments))?$",
-                  r"/commits/REF\1", base)
+    # A ref is a SHA only when it is exactly one, never a branch that starts with 40 hex (F3).
+    base = re.sub(r"/commits/(.+?)(/(?:check-runs|check-suites|status|statuses|pulls|comments))?$",
+                  lambda m: "/commits/" + ("SHA" if re.fullmatch(r"[0-9a-f]{40}", m[1]) else "REF")
+                  + (m[2] or ""), base)
     base = re.sub(r"/users/[^/]+", "/users/X", base)
     base = re.sub(r"/[0-9a-f]{40}(?=/|$)", "/SHA", base)
     base = re.sub(r"/\d+(?=/|$)", "/N", base)

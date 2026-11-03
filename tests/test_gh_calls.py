@@ -325,6 +325,11 @@ class Shape(unittest.TestCase):
                 ("/repos/o/r/rules/branches/feature/protection/private-secret",
                  "/repos/R/rules/branches/REF"),
                 ("/repos/o/r/commits/feat/status/x/status", "/repos/R/commits/REF/status"),
+                # Review of #1779, F3: a branch starting with 40 hex is not a SHA.
+                (f"/repos/o/r/commits/{sha}/private-secret", "/repos/R/commits/REF"),
+                (f"/repos/o/r/commits/{sha}/private-secret/status", "/repos/R/commits/REF/status"),
+                (f"/repos/o/r/commits/{sha}", "/repos/R/commits/SHA"),
+                (f"/repos/o/r/commits/{sha}/check-suites", "/repos/R/commits/SHA/check-suites"),
                 ("/rate_limit", "/rate_limit")):
             with self.subTest(path=path):
                 self.assertEqual(gh_calls.shape(path), shape)
