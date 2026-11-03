@@ -235,8 +235,12 @@ class IssueWrites:
                 raise broker_ipc.ProtocolError("the fix label is a maintainer's hand-off to the "
                                                "fixer; a reviewer never applies it — nothing "
                                                "was filed")
+        most = int(triage.get("max_labels") or 3)
+        if isinstance(labels, list) and len(labels) > most:
+            raise broker_ipc.ProtocolError(f"at most {most} labels per issue (triage.max_labels): "
+                                           "keep the type label and drop the rest; "
+                                           "nothing was filed")
         if (not isinstance(labels, list) or not all(isinstance(x, str) for x in labels)
-                or len(labels) > int(triage.get("max_labels") or 3)
                 or any(x.casefold() not in allowed for x in labels)):
             raise broker_ipc.ProtocolError("labels must come from the loop's triage list "
                                            f"({', '.join(allowed.values()) or 'none configured'}); "

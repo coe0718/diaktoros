@@ -241,7 +241,10 @@ files it as an issue itself, before submitting its review, instead of listing it
   list configured, it has no labels. When the list holds a label that is not a priority
   (`P0`, `P1`, … are priorities; `bug`, `enhancement`, … are types), the request needs at
   least one such type label, or the broker refuses it and nothing is filed. A list of
-  priorities only cannot ask for a type, so none is required there;
+  priorities only cannot ask for a type, so none is required there. No priority label is
+  required, and `triage.max_labels` caps the whole request: with `max_labels: 1` a reviewer can
+  file a type label alone (a type plus a priority is refused as over the cap), so such an issue
+  carries no priority. Set `max_labels` to 2 or more for both;
 - ends with a host-written line naming the PR it came from and its **lineage depth**: 1 for a
   finding on a person's PR, one more for a finding on a PR that fixed a filed issue. Past depth 1
   the issue says a person decides whether it goes back to the fixer.

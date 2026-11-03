@@ -57,7 +57,9 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, shadow=_
         # The labels a filed issue may carry (#247): the loop's triage list, the same allowlist
         # the broker enforces.
         allowed = (loop.get('triage') or {}).get('labels') or []
-        facts['issue_labels'] = (('this list only: ' + ', '.join(f'`{x}`' for x in allowed))
+        most = int((loop.get('triage') or {}).get('max_labels') or 3)    # the broker's cap
+        facts['issue_labels'] = (('this list only: ' + ', '.join(f'`{x}`' for x in allowed)
+                                  + f' (at most {most} per issue)')
                                  if allowed else 'none (this loop has no label list: file '
                                  'without labels)')
         comments, error = gh.issue_comments_read(loop, row['pr'])

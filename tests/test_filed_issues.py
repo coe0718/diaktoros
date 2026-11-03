@@ -174,6 +174,21 @@ class Filing(Base):
         self.assertTrue(answer["ok"], answer)         # the same title: the refusals spent nothing
         self.assertEqual(self.posts[0][0]["labels"], ["bug", "P3"])
 
+    def test_a_cap_of_one_refuses_the_pair_and_the_message_says_what_to_drop(self):
+        """The issue: with max_labels 1 the prompt's type-plus-priority pair can't be filed.
+        The cap is the broker's rule, so the type label alone is accepted and the pair is
+        refused with a message that says so, not as a bad label."""
+        self.loop["triage"] = {**self.loop["triage"], "labels": ["bug", "P3"], "max_labels": 1}
+        _, run_id = self.run_row()
+        server = self.broker(run_id)
+        answer = self.send(server, title="pair", body="b", labels=["bug", "P3"])
+        self.assertFalse(answer["ok"], answer)
+        self.assertIn("at most 1 labels per issue", answer["error"])
+        self.assertIn("keep the type label", answer["error"])
+        self.assertEqual(self.posts, [])
+        self.assertTrue(self.send(server, title="pair", body="b", labels=["bug"])["ok"])
+        self.assertEqual(self.posts[0][0]["labels"], ["bug"])
+
     def test_a_list_with_no_type_label_cannot_be_asked_for_one(self):
         self.loop["triage"] = {**self.loop["triage"], "labels": ["P2", "P3"]}
         _, run_id = self.run_row()
@@ -304,8 +319,8 @@ class Prompt(unittest.TestCase):
         text = prompts.render_isolated("reviewer", issue_labels="this list only: `P3`", **facts)
         self.assertIn("File each one yourself, before the review", text)
         self.assertIn("labels from this list only: `P3`", text)
-        self.assertIn("exactly one type label", text)
-        self.assertIn("exactly one priority label", text)
+        self.assertIn("carries one type label", text)
+        self.assertIn("one priority label", text)
         self.assertIn("**Issues filed**", text)
         from diaktoros import trusted_turn
         tools = trusted_turn.tool_instructions("reviewer")
@@ -320,6 +335,21 @@ class Prompt(unittest.TestCase):
         tools = " ".join(trusted_turn.tool_instructions("reviewer").split())
         self.assertNotIn("otherwise one type label and one priority label", tools)
         self.assertIn("when the list has a type label", tools)
+
+    def test_the_prompt_the_reviewer_receives_states_the_cap_and_does_not_demand_two(self):
+        """The reviewer's real prompt (``isolated_prompt``) names the loop's label cap, and no
+        longer says "exactly one priority label", which a cap of 1 can never satisfy."""
+        import test_ci_coverage as tcc
+        import test_required_checks as trc
+        for most in (1, 3):
+            with self.subTest(max_labels=most):
+                loop = config.normalize({**trc.raw(), "id": "w"})
+                loop["triage"] = {"labels": ["bug", "P3"], "max_labels": most}
+                with mock.patch.object(gh, "api", return_value=None):
+                    text = " ".join(tcc.reviewer_prompt(loop, None).split())
+                self.assertIn(f"`bug`, `P3` (at most {most} per issue)", text)
+                self.assertIn("with a cap of 1 send the type label alone", text)
+                self.assertNotIn("exactly one priority label", text)
 
 
 class ClientBounds(unittest.TestCase):

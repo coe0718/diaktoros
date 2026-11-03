@@ -275,9 +275,10 @@ What to do:
      issue-tier findings the verdict is APPROVE. File each one yourself, before the review,
      through the broker's `file_issue` command (below): a one-line title, the finding with its
      evidence and `file:line` as the body, and labels from {issue_labels}. Each filed issue
-     carries exactly one type label (a listed label that is not a priority, such as `bug`) and
-     exactly one priority label (`P0`–`P3`); the broker refuses an issue with no type label
-     when the list has one. List what you filed
+     carries one type label (a listed label that is not a priority, such as `bug`) and, when
+     the cap on labels per issue leaves room for a second, one priority label (`P0`–`P3`);
+     with a cap of 1 send the type label alone. The broker refuses an issue with no type label
+     when the list has one, and one with more labels than the cap. List what you filed
      in the review under **Issues filed**, with the numbers the broker returned; a finding the
      broker refused to file goes under **Issues to file** instead, so the operator can.
 4. **Requirements.** When the PR closes an issue, the issue and its maintainers' comments are
