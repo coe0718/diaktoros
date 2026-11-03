@@ -65,7 +65,16 @@ class ReviewPaginationTest(unittest.TestCase):
             result, reason = gh.reviews_read(LOOP, 7)
         self.assertIsNone(result)
         self.assertIn("exceeds", reason)
-        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(fetch.call_count, 3)       # two pages and the probe past the bound
+
+    def test_exactly_max_full_pages_with_an_empty_next_page_is_whole(self):
+        page = [verdict(i, "COMMENTED") for i in range(100)]
+        with (mock.patch.object(gh, "MAX_REVIEW_PAGES", 2),
+              mock.patch.object(gh, "fetch",
+                                side_effect=[(page, ""), (page, ""), ([], "")]) as fetch):
+            result, reason = gh.reviews_read(LOOP, 7)
+        self.assertEqual((result, reason), (page + page, ""))
+        self.assertEqual(fetch.call_count, 3)
 
 
 if __name__ == "__main__":
