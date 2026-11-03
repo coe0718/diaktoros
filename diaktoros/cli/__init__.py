@@ -101,6 +101,7 @@ from .operations import (
     cmd_status,
 )
 from .reports import (
+    cmd_calls,
     cmd_models,
     cmd_report,
     cmd_stats,
@@ -136,7 +137,8 @@ def _renamed(func):
 # Every ``hermes dk`` command after ``list`` and ``init`` (those two need the settings), in the
 # order help lists them: a new command adds its registrar here, and ``register_cli`` stays as is.
 _COMMANDS = (
-    cli_setup.add_setup, cli_operations.add_status, cli_reports.add_stats, cli_reports.add_report,
+    cli_setup.add_setup, cli_operations.add_status, cli_reports.add_stats, cli_reports.add_calls,
+    cli_reports.add_report,
     cli_operations.add_review, cli_operations.add_escalate, cli_operations.add_depends,
     cli_operations.add_regression, cli_operations.add_explain, cli_operations.add_ready,
     cli_reports.add_trace, cli_lifecycle.add_migrate, cli_lifecycle.add_backup,

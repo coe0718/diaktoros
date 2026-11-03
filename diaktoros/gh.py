@@ -246,12 +246,13 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
         # The login travels to the stub (as GH_LOGIN, never a token) so a test can play a read
         # token GitHub refuses a hook write.
         return _stub(path, method, body, login or loop.get("read_token") or "", timeout)
+    from . import gh_cache, gh_calls
+    who = str(login or loop.get("read_token") or "")
     try:
         tok = token(loop, login)
     except GitHubError as exc:
+        gh_calls.record(who, method, path, "unsent")    # no credential: nothing left the host
         return Response(None, str(exc))
-    from . import gh_cache
-    who = str(login or loop.get("read_token") or "")
     # #1646: a GET asks whether its stored answer changed; a 304 is free on the rate limit.
     cached = gh_cache.lookup(who, path) if method == "GET" else None
     data = json.dumps(body).encode() if body is not None else None
@@ -269,6 +270,7 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
             parsed = json.loads(raw)
             if method == "GET":
                 gh_cache.store(who, path, parsed, headers)
+            gh_calls.record(who, method, path, gh_calls.outcome(path, resp.status), headers)
             return Response(parsed, "", resp.status, headers)
     except urllib.error.HTTPError as exc:
         try:   # an HTTPError holds the response open: close it, not the collector
@@ -277,11 +279,14 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
             exc.close()
         # Safe after close(): HTTPError.headers is a property over .hdrs, which close() leaves.
         headers = {k.lower(): v for k, v in (exc.headers or {}).items()}
+        gh_calls.record(who, method, path,
+                        gh_calls.outcome(path, exc.code, exc.code == 304, headers), headers)
         if exc.code == 304 and cached:              # unchanged: the stored body is current, and
             gh_cache.hit(who, path)                 # only this answer's own headers are true now
             return Response(cached["data"], "", 200, headers)
         return Response(None, f"HTTP {exc.code}{f' {detail}' if detail else ''}", exc.code, headers)
     except Exception as exc:
+        gh_calls.record(who, method, path, "error")     # no HTTP answer: it may have counted
         return Response(None, f"{type(exc).__name__}: {exc}")
 
 
@@ -346,6 +351,8 @@ def read_text(loop: dict, path: str, login: str | None = None, limit: int = 2621
         from .config.host_guards import guard_network
         guard_network(req.full_url)
         with _TEXT_OPENER.open(req, timeout=_budgeted("GET", path)) as resp:
+            from . import gh_calls
+            gh_calls.record(str(login or loop.get("read_token") or ""), "GET", path, "spent")
             # Only the tail matters: keep reading, keep the last ``limit`` bytes.
             kept = b""
             while True:

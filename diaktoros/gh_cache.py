@@ -48,6 +48,11 @@ def enable_writes() -> None:
     _WRITES = True
 
 
+def writes_enabled() -> bool:
+    """Whether ``enable_writes`` was called: this is one of the writer processes."""
+    return _WRITES
+
+
 def _writable() -> bool:
     """Whether this process may write the cache now: a writer that called ``enable_writes``, or
     a worker (always a writer), which writes only into a directory the host already made."""

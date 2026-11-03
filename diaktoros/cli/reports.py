@@ -1,4 +1,4 @@
-"""Read-only reporting commands: ``trace``, ``stats``, ``report`` and ``models`` (#676).
+"""Read-only reporting commands: ``trace``, ``stats``, ``calls``, ``report`` and ``models`` (#676).
 
 Each answers a question from the run ledger, a gate dry run, GitHub reads or Hermes's model
 catalog, and writes nothing to the loop. ``cli`` re-exports every command here, so
@@ -52,6 +52,42 @@ def cmd_trace(args) -> int:
         print(f"cannot trace: {exc}")
         return 2
     return trace.run(loop, payload, event, role)
+
+
+def cmd_calls(args) -> int:
+    """The host's own count of its GitHub calls since ``--since`` (``gh_calls``), by login and
+    path shape, beside the newest rate-limit figure GitHub sent each login. Read-only."""
+    import time
+    from .. import gh_calls, stats
+    try:
+        since = stats.parse_since(args.since)
+    except ValueError as exc:
+        print(str(exc))
+        return 2
+    logins = gh_calls.summary(since)
+    if args.json:
+        print(json.dumps({"since": since, "logins": logins}, indent=2, sort_keys=True))
+        return 0
+    start = time.strftime("%Y-%m-%d %H:00", time.localtime(since // 3600 * 3600))
+    print(f"GitHub calls this host counted since {start} (whole hours, local time)")
+    if not logins:
+        print("  none counted yet")
+    for login, entry in sorted(logins.items(), key=lambda item: -item[1]["spent"]):
+        counts = " · ".join(f"{entry[result]:,} {result}" for result in gh_calls.OUTCOMES
+                            if entry[result])
+        print(f"\n{login}: {counts or 'nothing'}")
+        limit = entry["limit"]
+        if limit:
+            when = time.strftime("%H:%M", time.localtime(float(limit.get("at") or 0)))
+            reset = time.strftime("%H:%M", time.localtime(float(limit.get("reset") or 0)))
+            print(f"  GitHub at {when}: {limit.get('used')} of {limit.get('limit')} used "
+                  f"({limit.get('resource') or 'core'}), resets {reset}")
+        for method, path, result, calls in entry["paths"][:args.top]:
+            print(f"  {calls:>7,}  {method:<6} {path}  ({result})")
+    print("\nNot counted: commands that write nothing (doctor, explain, status, the Desktop), "
+          "and any call made from somewhere else with the same credential. GitHub's used figure "
+          "above that is well past this host's spent count is that.")
+    return 0
 
 
 def cmd_stats(args) -> int:
@@ -212,6 +248,20 @@ def add_stats(sub) -> None:  # noqa: ANN001
     stats_cmd.add_argument("--html", metavar="FILE",
                            help="also write one self-contained HTML page to FILE")
     stats_cmd.set_defaults(func=cmd_stats)
+
+
+def add_calls(sub) -> None:  # noqa: ANN001
+    """The ``calls`` subcommand's parser, registered by ``cli.register_cli``."""
+    calls = sub.add_parser("calls", help="The host's own count of its GitHub calls, by login and "
+                                         "path, beside GitHub's rate-limit figure: which reads "
+                                         "spend the limit")
+    calls.add_argument("--since", default="1h",
+                       help="window start: 1h, 24h or a date like 2026-09-28, in whole hours "
+                            "(default 1h)")
+    calls.add_argument("--top", type=int, default=15,
+                       help="how many paths to list per login (default 15)")
+    calls.add_argument("--json", action="store_true", help="print the data as JSON")
+    calls.set_defaults(func=cmd_calls)
 
 
 def add_report(sub) -> None:  # noqa: ANN001
