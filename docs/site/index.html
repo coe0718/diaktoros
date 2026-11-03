@@ -1205,7 +1205,8 @@ hermes dk setup --repo "owner/repository"</code></pre>
       // The freshness claim follows every displayed count, not whether
       // any endpoint at all answered: one live endpoint must not bless
       // snapshot counts as current, and the "Page updated" stamp must
-      // not claim today for a snapshot either.
+      // not claim today for a snapshot either — nor keep the date
+      // baked into the HTML when the snapshot itself is undated.
       var today = new Date().toISOString().slice(0, 10);
       var sources = DISPLAY_KEYS.map(function (k) { return src[k] || 'hardcoded'; });
       var allLive = sources.every(function (s) { return s === 'live'; });
@@ -1213,11 +1214,17 @@ hermes dk setup --repo "owner/repository"</code></pre>
       var allHardcoded = sources.every(function (s) { return s === 'hardcoded'; });
       if (allLive) set('generated', today);
       else if (snapOk && snapDate) set('generated', snapDate);
+      // An undated snapshot must not keep the baked-in date: unknown
+      // is explicit, a stale hardcoded date is a claim (Vex round 4,
+      // shadow #1775).
+      else if (snapOk) set('generated', 'unknown');
       var notes = document.querySelectorAll('.stats-freshness');
       if (!notes.length) return;
       var text;
       if (allLive) text = 'Live from GitHub · refreshed ' + today;
-      else if (allSnapshot) text = 'Snapshot ' + snapDate + ' · live refresh unavailable';
+      else if (allSnapshot) text = snapDate
+        ? 'Snapshot ' + snapDate + ' · live refresh unavailable'
+        : 'Showing last checked-in values · live refresh unavailable';
       else if (allHardcoded) text = 'Statistics unavailable — showing last checked-in values';
       else text = 'Mixed sources: some counts are live from GitHub, others are from ' +
         (snapDate ? 'the ' + snapDate + ' snapshot' : 'last checked-in values');

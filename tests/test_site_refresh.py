@@ -91,6 +91,16 @@ global.fetch = (url) => {
           pushed_at: new Date(Date.now() - 90 * 60000).toISOString(),
           generated: '2026-01-02' }) });
     }
+    // Same snapshot with no generated key: the undated state the
+    // builder now creates when the activity fetch never succeeded.
+    // The page must read it as unknown, never as the baked-in date.
+    if (scenario === 'snapshot-undated') {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(
+        { version: 'v1.2.3-test', loop_prs_merged: 7, prs_merged: 21,
+          issues_closed: 8, prs_open: 3, open_issues_count: 11,
+          stars: 5, forks: 2, commits_year: 345,
+          pushed_at: new Date(Date.now() - 90 * 60000).toISOString() }) });
+    }
     return Promise.resolve({ ok: false, status: 404 });
   }
   return Promise.reject(new Error('unexpected fetch: ' + url));
@@ -234,6 +244,20 @@ class SiteRefreshTests(unittest.TestCase):
     def test_freshness_note_snapshot(self):
         out = self.run_scenario("live-fail-snapshot-ok")
         self.assertEqual(out["__note"], "Snapshot 2026-01-02 · live refresh unavailable")
+        self.assertFalse(out["__stale"])
+
+    @unittest.skipUnless(shutil.which("node"), "node unavailable")
+    def test_freshness_note_snapshot_undated(self):
+        # Vex round 4 + shadow #1775: a snapshot with no generated key
+        # must not render a blank date in the note, and the "Page
+        # updated" stamp must not keep the date baked into the HTML.
+        # Against the eb6a9ef page the note reads "Snapshot  · live
+        # refresh unavailable" and the stamp stays hardcoded.
+        out = self.run_scenario("snapshot-undated")
+        self.assertEqual(out["prs_merged"], "21")
+        self.assertEqual(out["commits_year"], "345")
+        self.assertEqual(out["__note"], "Showing last checked-in values · live refresh unavailable")
+        self.assertEqual(out["generated"], "unknown")
         self.assertFalse(out["__stale"])
 
     @unittest.skipUnless(shutil.which("node"), "node unavailable")
