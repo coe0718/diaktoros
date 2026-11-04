@@ -34,9 +34,10 @@ def entries(st) -> dict[int, dict]:
     return out
 
 
-# The fix label is still on the issue when a decline is recorded (the gate read it there), and
-# GitHub sends a ``labeled`` event only when a label is added: "apply it again" would send nothing
-# and the decline would stay (#1833).
+# The fix label is usually still on the issue when a decline is recorded (the gate read it there),
+# and GitHub sends a ``labeled`` event only when a label is added: "apply it again" would send
+# nothing and the decline would stay (#1833). When the decline is that the label is already gone,
+# ``next_step`` says to apply it, not to remove it first.
 REAPPLY = "remove the fix label and apply it again"
 
 
@@ -52,6 +53,9 @@ def next_step(loop: dict, reason: str) -> str:
                 f"the list), then {REAPPLY}")
     if "no longer open" in reason:
         return f"reopen the issue, then {REAPPLY}"
+    if "no longer on the issue" in reason or "neither the fix label" in reason:
+        # The label is already off (a delayed delivery found it gone): adding it is the event.
+        return "apply the fix label to the issue"
     return f"once that is fixed, {REAPPLY}"
 
 

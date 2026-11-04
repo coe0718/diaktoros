@@ -229,6 +229,23 @@ class Gate(Base):
             self.assertIn("remove the fix label and apply it again",
                           fix_declined.next_step(self.loop, reason))
 
+    def test_a_decline_for_a_label_already_gone_says_to_apply_it_not_remove_it(self):
+        # Review of #1834, F1: a delayed `labeled` delivery finds the label already off the live
+        # issue. Removing an absent label is impossible, and adding it is itself the new event.
+        from diaktoros import observer
+        said = []
+        self.live = issue(labels=())
+        with mock.patch.object(observer, "notify",
+                               side_effect=lambda *a, **kw: said.append(kw["outcome"])):
+            self.run_gate(self.labeled())
+        self.assertEqual(self.enqueued, [])
+        st = state_mod.state_for(self.loop)
+        (line,) = [x for x in fix_hold.status_lines(self.loop, st) if "#12" in x]
+        self.assertIn("is no longer on the issue", line)
+        for text in (said[0], line):
+            self.assertTrue(text.endswith("apply the fix label to the issue"), text)
+            self.assertNotIn("remove the fix label", text)
+
     def test_an_issue_filed_by_an_app_reader_is_handed_to_the_fixer(self):
         # #1794 (review of #1804, F4): the reader as a GitHub App, filing as its bot.
         bot = "widgets-reader[bot]"
