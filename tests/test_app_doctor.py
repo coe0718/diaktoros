@@ -89,6 +89,18 @@ class Doctor(AppLoop):
             self.assertEqual(checks[f"token-expiry:{login}"].status, doctor.VERIFIED)
             self.assertIn("no PAT expiry", checks[f"token-expiry:{login}"].detail)
 
+    def test_doctor_names_the_loops_own_identities_among_the_fix_authors(self):
+        # #1794 (review of #1804, F1): an App reader's and reviewer's issues are fixable; doctor
+        # says so, by name, beside triage.authors.
+        self.loop["triage"] = {**self.loop.get("triage", {}), "route": "widgets-triage",
+                               "authors": ["fix-acct"], "labels": ["bug"]}
+        got = {c.name: c for c in seat_checks.check_triage(self.loop)}["triage:fix_authors"]
+        self.assertEqual(got.status, doctor.VERIFIED)
+        for login in ("fix-acct", BOT_READ.lower(), BOT_REV.lower()):
+            self.assertIn(login, got.detail)
+        self.assertIn(f"reader {BOT_READ}", got.detail)
+        self.assertIn(f"reviewer {BOT_REV}", got.detail)
+
     def test_an_app_triage_login_and_adjudicator_read_as_verified(self):
         self.loop["triage"] = {**self.loop.get("triage", {}), "route": "widgets-triage",
                                "authors": ["fix-acct"], "labels": ["bug"]}

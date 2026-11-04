@@ -205,6 +205,62 @@ class Gate(Base):
         self.assertEqual(len(self.enqueued), 1)
         self.assertEqual([x for x in fix_hold.status_lines(self.loop, st) if "#12" in x], [])
 
+    def test_an_issue_filed_by_an_app_reader_is_handed_to_the_fixer(self):
+        # #1794 (review of #1804, F4): the reader as a GitHub App, filing as its bot.
+        bot = "widgets-reader[bot]"
+        self.loop = {**self.loop, "read_token": bot,
+                     "apps": {bot: {"app_id": 9, "key_file": str(self.root / "reader.pem")}}}
+        self.assertNotIn(bot, self.loop["triage"]["authors"])
+        self.live = issue(author="Widgets-Reader[bot]")
+        self.run_gate(self.labeled())
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix")])
+
+    def test_declines_reach_the_observer_once_per_reason(self):
+        # #1804, F3 and F4: through the observer's own ledger. A repeat of one reason is not sent
+        # again; a second reason (pushes turned off) is, with its own next step.
+        from diaktoros import observer, routes
+        subs = self.root / "subscriptions.json"
+        self.loop = {**self.loop, "host": "https://owner.example",
+                     "observer": {"route": "widgets-observe", "profile": "default",
+                                  "deliver": "telegram"}}
+        subs.write_text(json.dumps({"widgets-observe": {
+            "host": "https://owner.example", "secret": "s", **observer.route_contract(self.loop)}}))
+        self.live = issue(author="stranger")
+        with mock.patch.dict(os.environ, {"DIAKTOROS_SUBS": str(subs)}), \
+                mock.patch.object(routes, "fire", return_value=True) as fire:
+            self.run_gate(self.labeled())
+            self.run_gate(self.labeled())
+            self.loop = {**self.loop, "unattended_fixer_push": False}
+            self.run_gate(self.labeled())
+        held = [c.args[2]["_observer"] for c in fire.call_args_list
+                if c.args[2]["_observer"]["event"] == "held"]
+        self.assertEqual(len(held), 2, held)
+        text = json.dumps(held)
+        self.assertIn("triage --loop widgets --enable --author", text)
+        self.assertIn("fixer-push", text)
+
+    def test_every_outstanding_decline_is_listed_until_the_issue_closes_or_the_label_goes(self):
+        # #1804, F2: keeping the newest 20 dropped older declines nobody had resolved.
+        st = state_mod.state_for(self.loop)
+        for number in range(1, 26):
+            self.live = issue(number=number, author="stranger")
+            payload = self.labeled()
+            payload["issue"] = issue(number=number)
+            self.run_gate(payload)
+        listed = [x for x in fix_hold.status_lines(self.loop, st) if "fix label was declined" in x]
+        self.assertEqual(len(listed), 25)
+        for action, label in (("closed", None), ("unlabeled", LABEL), ("unlabeled", "bug")):
+            number = {"closed": 3, LABEL: 4, "bug": 5}[label or action]
+            self.run_gate({"action": action, "label": {"name": label} if label else None,
+                           "issue": issue(number=number), "sender": {"login": "jeremy"},
+                           "repository": {"full_name": REPO}})
+        still = {int(x.split("#")[1].split(":")[0]) for x in fix_hold.status_lines(self.loop, st)
+                 if "fix label was declined" in x}
+        self.assertNotIn(3, still)                  # closed
+        self.assertNotIn(4, still)                  # the fix label removed
+        self.assertIn(5, still)                     # another label removed: still declined
+        self.assertEqual(len(still), 23)
+
     def test_an_enqueue_failure_is_held_with_the_base_it_failed_at(self):
         def boom(*a, **k):
             raise OSError("boom")

@@ -54,6 +54,14 @@ def check_triage(loop: dict) -> list[doctor.Check]:
         checks.append(doctor.Check("credential:triage", doctor.VERIFIED,
                                    f"{login} → {identity_checks._token_file_facts(path)} · authors "
                                    f"{', '.join(triage['authors'])} · {len(triage['labels'])} labels"))
+    # #1794: whose issues a maintainer's fix label can hand to the fixer, the loop's own included.
+    from ..run_supervisor import issue_inputs
+    own = [f"{what} {login}" for what, login in (("reader", loop.get("read_token")),
+                                                 ("reviewer", config.seat_login(loop, "reviewer")))
+           if login]
+    checks.append(doctor.Check("triage:fix_authors", doctor.VERIFIED,
+                               f"{', '.join(sorted(issue_inputs.fix_authors(loop)))} (triage.authors, "
+                               f"plus the loop's own filing identities: {', '.join(own) or 'none'})"))
     # #1217: with no maintainers, no comment reaches the seats and no re-request starts a review.
     names = sorted(config.maintainers(loop))
     agents = config.operator_agents(loop)

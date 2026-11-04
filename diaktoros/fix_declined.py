@@ -1,11 +1,12 @@
 """A maintainer's fix label the host declined, said (#1794).
 
 A maintainer who applies ``triage.fix_label`` is asking for a fix. When the issue can't be
-handed to the fixer (its author isn't allowed, it closed, the label went), the gate used to
-record the decline in ``gate-decisions.jsonl`` and nothing else. Now the observer gets one
-``held`` notice per issue and reason, naming the next step, and ``status`` lists the issue under
-``held:`` until a later label is accepted. Kept per loop in ``declined-fixes.json``, the newest
-``KEEP``.
+handed to the fixer (its author isn't allowed, it closed, the label went, unattended fixer pushes
+are off), the gate used to record the decline in ``gate-decisions.jsonl`` and nothing else. Now
+the observer gets one ``held`` notice per issue and reason, naming the next step, and ``status``
+lists the issue under ``held:`` until the request is resolved: a later label accepted, the issue
+closed, or the label removed. Every outstanding decline is kept, in ``declined-fixes.json``: one
+dropped to make room would be the silence this exists to end (review of #1804, F2).
 """
 from __future__ import annotations
 
@@ -15,7 +16,6 @@ import time
 from .util import log
 
 FILE = "declined-fixes.json"
-KEEP = 20
 
 
 def entries(st) -> dict[int, dict]:
@@ -36,6 +36,9 @@ def entries(st) -> dict[int, dict]:
 
 def next_step(loop: dict, reason: str) -> str:
     """What a maintainer does about ``reason``."""
+    if "unattended fixer pushes" in reason:
+        from . import config
+        return f"turn them on with `{config.fixer_push_enable_command(loop)}`, then apply the label again"
     if "triage.authors" in reason:
         return (f"to allow its author, list them with `hermes dk triage --loop {loop['id']} "
                 "--enable --author LOGIN` (repeat --author for every allowed author: it replaces "
@@ -60,8 +63,7 @@ def declined(loop: dict, number: int, reason: str) -> None:
             memory = st._load(st.dir / FILE, {})
             memory = memory if isinstance(memory, dict) else {}
             memory[str(number)] = {"reason": reason, "at": time.time()}
-            newest = sorted(memory, key=lambda k: float((memory[k] or {}).get("at") or 0))
-            st._save(st.dir / FILE, {k: memory[k] for k in newest[-KEEP:]})
+            st._save(st.dir / FILE, memory)
         observer.notify(loop, st, "held", number, identity=f"fix-label:{reason}",
                         outcome=f"fix label declined: {reason}; {next_step(loop, reason)}",
                         issue=True)
@@ -69,8 +71,9 @@ def declined(loop: dict, number: int, reason: str) -> None:
         log(f"declined fix label for #{number} not recorded: {type(exc).__name__}: {exc}")
 
 
-def accepted(st, number: int) -> None:
-    """A later label was handed to the fixer: the issue is no longer declined."""
+def resolved(st, number: int) -> None:
+    """The request is settled (a later label handed to the fixer, the issue closed, or the fix
+    label removed): the issue is no longer listed as declined."""
     if number not in entries(st):
         return
     try:
