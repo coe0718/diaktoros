@@ -3,7 +3,7 @@
 No provider the loop runs reports a cost, so ``cost`` is NULL on every turn. The setting is
 checked by ``normalize``, written by init / setup / set / apply, shown by ``show``; ``stats``
 prices each seat and model's tokens with it, says "unpriced" for a model with no entry (never
-$0), and "at most" where some turns did not report their cache.
+$0), and "at most" or "at least", rounded outward, where some turns did not report their cache.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import os
@@ -189,12 +189,36 @@ class Estimate(unittest.TestCase):
         for cached, bound in ((0.5, "at most"), (2.0, "at least"), (1.0, None)):
             with self.subTest(cached=cached):
                 got = prices.estimate(row, {"m": {"input": 1.0, "cached": cached, "output": 0}})
-                self.assertEqual(got, {"dollars": 1.0, "bound": bound})
+                self.assertEqual((got["dollars"], got["bound"]), (1.0, bound))
         self.assertEqual(prices.estimate_text({"dollars": 1.0, "bound": "at least"}),
                          "at least $1.0000")
         reported = {**row, "cached_of": 1_000_000}               # every turn reported: exact
         self.assertIsNone(prices.estimate(reported, {"m": {"input": 1, "cached": 2,
                                                            "output": 0}})["bound"])
+
+    def test_a_bound_rounds_away_from_what_it_bounds(self):
+        # #1832: 1M tokens whose cache went unreported could all have been uncached, so the
+        # all-uncached cost is what the bound is about. Rounded to nearest, $1.00006 showed as
+        # "at least $1.0001" and $1.00004 as "at most $1.0000": both false.
+        row = {"model": "m", "tokens_in": 1_000_000, "tokens_out": 0, "cache_read": 0,
+               "cached_of": 0}
+        for price, cached, want in ((1.00006, 2.0, "at least $1.0000"),
+                                    (1.00004, 0.5, "at most $1.0001"),
+                                    (1.00006, 1.00006, "$1.0001")):     # exact: to nearest
+            with self.subTest(price=price, cached=cached):
+                table = {"m": {"input": price, "cached": cached, "output": 0}}
+                self.assertEqual(prices.estimate_text(prices.estimate(row, table)), want)
+        # The sum is in decimal, each price as written: in floats 700k at 0.07 plus 300k at 0.01
+        # is $0.052000000000000005, which a ceiling would show as $0.0521.
+        split = {**row, "cache_read": 300_000}
+        table = {"m": {"input": 0.07, "cached": 0.01, "output": 0}}
+        self.assertEqual(prices.estimate_text(prices.estimate(split, table)), "at most $0.0520")
+
+    def test_stats_prints_the_bound_rounded_outward(self):
+        report = self.report([
+            ("shadow", "m", {"tokens_in": 1_000_000, "tokens_out": 0, "cache_read": None})],
+            {"m": {"input": 1.00004, "cached": 0.5, "output": 0}})
+        self.assertIn("at most $1.0001", stats.text(report))
 
 
 if __name__ == "__main__":

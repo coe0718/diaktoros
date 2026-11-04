@@ -15,6 +15,7 @@ never fetches prices. Host-owned: never read from a PR.
 """
 from __future__ import annotations
 
+import decimal
 import math
 
 from .. import config
@@ -106,22 +107,36 @@ def estimate(row: dict, table: dict) -> dict | None:
     priced as uncached. Where some turns did not report their cache (``cached_of`` short of
     ``tokens_in``) the estimate is then a bound, whose side the prices decide (#1826): ``at
     most`` when cached input costs less than uncached, ``at least`` when it costs more, and
-    exact (``bound`` None) when they cost the same or every turn reported."""
+    exact (``bound`` None) when they cost the same or every turn reported. ``exact`` is the
+    sum in decimal, each price as written, so the text can round a bound outward (#1832)."""
     price = table.get(str(row.get("model") or "").lower())
     if price is None:
         return None
     cached = row.get("cache_read") or 0
     uncached = max((row.get("tokens_in") or 0) - cached, 0)
-    dollars = (uncached * price["input"] + cached * price["cached"]
-               + (row.get("tokens_out") or 0) * price["output"]) / 1e6
+    with decimal.localcontext(prec=80):
+        exact = (uncached * _decimal(price["input"]) + cached * _decimal(price["cached"])
+                 + (row.get("tokens_out") or 0) * _decimal(price["output"])) / 10 ** 6
     unreported = (row.get("cached_of") or 0) < (row.get("tokens_in") or 0)
     bound = (None if not unreported or price["cached"] == price["input"]
              else "at most" if price["cached"] < price["input"] else "at least")
-    return {"dollars": dollars, "bound": bound}
+    return {"dollars": float(exact), "bound": bound, "exact": str(exact)}
+
+
+def _decimal(value: float) -> decimal.Decimal:
+    return decimal.Decimal(repr(float(value)))      # the shortest text that reads back as it
+
+
+# A bound's figure rounds away from what it bounds, so "at most" never shows less than the cost
+# and "at least" never more; an exact figure rounds to nearest.
+_ROUNDING = {"at most": decimal.ROUND_CEILING, "at least": decimal.ROUND_FLOOR}
 
 
 def estimate_text(estimate_: dict | None) -> str:
     if estimate_ is None:
         return "unpriced"
     bound = estimate_.get("bound")
-    return (f"{bound} " if bound else "") + f"${estimate_['dollars']:,.4f}"
+    exact = decimal.Decimal(estimate_.get("exact") or repr(float(estimate_["dollars"])))
+    shown = exact.quantize(decimal.Decimal("0.0001"),
+                           rounding=_ROUNDING.get(bound, decimal.ROUND_HALF_EVEN))
+    return (f"{bound} " if bound else "") + f"${shown:,.4f}"
