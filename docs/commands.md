@@ -961,8 +961,9 @@ subsequent enables reuse omitted values. Authors and maintainers are repeatable 
 lists, not append-to-old-list updates. Labels: 1–100 distinct names (case-insensitive), each
 1–50 characters, no comma, braces, backtick or control characters; `--max-labels` is 1–10,
 fresh default 3. The handler treats zero as omitted, not an allowed zero-label limit.
-Triage capacity and budget are file-only settings (`seats.triage.concurrency` and
-`seats.triage.turn_budget_s`); this command offers only `--daily-turns` for seat pacing.
+The triage turn budget (`seats.triage.turn_budget_s`) is a file-only setting; triage concurrency
+(`seats.triage.concurrency`) is set with `--triage-concurrency` on `set`, `init` and `setup`, not here. This
+command offers only `--daily-turns` for seat pacing.
 `--fix-label ""` disables issue handoff; a nonempty fix label must not be a triage label and
 requires maintainers. `--daily-turns 0` removes the triage cap. `--token` maps paths for the
 selected writing/admin identities; it never accepts token values. A first enable's default

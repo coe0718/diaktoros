@@ -151,7 +151,8 @@ Do not paste PATs into JSON, plugin settings, command arguments, issue text, or 
 | `concurrency` | `1` | Whole number at least `1`, with no explicit loader maximum. Default simultaneous runs **per working seat**, not a combined loop-wide total. Effective reviewer/fixer capacity above `1` needs either `clone` or the isolated worker's runtime file (`diaktoros-runtime.json`, written by `setup`). With that file every production turn is launched by the isolated worker into its own exact-head export and sandbox, so no checkout is shared and no `clone` is needed. With neither, the loader refuses (`seats.<seat>.concurrency > 1 requires 'clone'`). The loader checks only that the file exists when the config loads (`doctor` and `selftest` validate its content), so a loop file copied to a host without the file is refused until `clone` is set or `setup` has run. |
 | `seats.reviewer.concurrency`, `seats.fixer.concurrency` | Loop `concurrency` | Whole number at least `1`. An explicit value pins that seat: later loop-wide changes do not override it. Missing, `null`, or empty values inherit. |
 | `seats.adjudicator.concurrency` | `1` | Whole number at least `1`; does not inherit loop capacity. |
-| `seats.triage.concurrency` | `1` | Whole number at least `1`; does not inherit loop capacity. |
+| `seats.shadow.concurrency` | `1` | Whole number at least `1`; does not inherit loop capacity. Takes effect only while the loop has a shadow profile. |
+| `seats.triage.concurrency` | `1` | Whole number at least `1`; does not inherit loop capacity. Takes effect only while the loop has issue triage on. |
 | `seats.<seat>.daily_turns` | No cap | JSON integer 1–1000 for `reviewer`, `fixer`, `adjudicator`, or `triage`. Booleans and numeric strings are refused. Omit to remove the cap; zero is not a valid stored cap. |
 | `seats.<seat>.daily_tokens` | No budget | JSON integer 1–10,000,000,000 for `reviewer`, `fixer`, `adjudicator`, or `triage` (#480). Tokens in + out, counted by the inference proxy from the `usage` the provider reports. Once the day's spend reaches it, the next turn is held until local midnight (`held: … daily token budget`); a turn in flight is never killed, so a day can overshoot by one turn. An issue fix spends and is held by the fixer's budget. Spend is counted when a turn ends, so concurrent turns launched together can all start. A provider that reports no usage (or a turn that never reaches the proxy) adds 0, so the budget cannot fire for it. Set with `set --reviewer-daily-tokens N` / `--fixer-daily-tokens N` (0 removes it), `init`/`setup` flags of the same name, the Desktop form (`reviewer_daily_tokens`, `fixer_daily_tokens`), or the loop file. Per-turn tokens and cost are in the run ledger (`tokens_in`, `tokens_out`, `cost`; cost only where the provider reports one) and summed per seat and model by `stats`. |
 | `seats.<seat>.max_steps` | 60 (reviewer); 40 (adjudicator); 24 (triage); 80 (fixer) | Agent steps one turn may take, JSON integer 8–200, for any of those four seats. An issue fix takes the fixer's value. The turn's model-call quota follows (`steps + max(8, steps/4)`: 24 → 32, 60 → 75, 80 → 100, 200 → 250). A reviewer or fixer turn is nudged to submit, once, on the model request five steps before this cap: the host appends one message to that request only — "submit now through the broker with what you have verified, and put the rest under `Not verified:`" — so a thin review that is published beats a turn that runs out of steps and is retried from scratch (#554). A turn that finishes early never sees it, and an adjudicator or triage turn is not nudged. Set with `set --reviewer-max-steps N` / `--fixer-max-steps N` (0 returns to the default), or in the file for the adjudicator and triage. The turn budget still bounds the wall clock. |
@@ -168,7 +169,7 @@ hermes dk set --loop "<loop-id>" --reviewer-daily-turns 20
 hermes dk set --loop "<loop-id>" --reviewer-daily-turns 0
 ```
 
-The last command removes the reviewer's stored cap. Adjudicator overrides are file-level settings. Triage concurrency and turn budget are also file-only; `triage --enable --daily-turns` changes its daily cap (zero removes it). `issue_fixer` has no independent persisted seat configuration; see [Issue triage and issue fixes](#issue-triage-and-issue-fixes).
+The last command removes the reviewer's stored cap. Adjudicator overrides are file-level settings. Shadow and triage concurrency are set with `--shadow-concurrency` / `--triage-concurrency` on `set`, `init` and `setup`, or with the settings form; the loop's `--concurrency` never reaches them. The triage turn budget (`seats.triage.turn_budget_s`) is file-only; `triage --enable --daily-turns` changes its daily cap (zero removes it). `issue_fixer` has no independent persisted seat configuration; see [Issue triage and issue fixes](#issue-triage-and-issue-fixes).
 
 ## Timers and turn budgets
 
@@ -403,8 +404,9 @@ Delivery is durably keyed by transition. Only definite **pre-POST** failures wit
 | `seats.triage.max_steps` | `24` | Agent step ceiling for a triage turn, 8–200. |
 
 Only the listed keys are allowed in `triage`. `seats.triage` accepts only `concurrency`, `turn_budget_s`, `daily_turns`, `daily_tokens`, and `max_steps`; put its identity in `triage.login` and model profile in `triage.profile`.
-Concurrency and turn budget must be edited in the loop file; the `triage` command exposes
-`--daily-turns` but no capacity or budget flags.
+The turn budget must be edited in the loop file. Concurrency is set with `--triage-concurrency` on `set`, `init`
+and `setup`, or with the settings form's `triage_concurrency`; the `triage` command exposes `--daily-turns` but no
+capacity or budget flags.
 
 ### Issue-fixer inheritance
 
