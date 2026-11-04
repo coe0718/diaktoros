@@ -54,8 +54,9 @@ none is dropped to make room. The next step ends with "remove the fix label and 
 again": the label is normally still on the issue when the decline is recorded, GitHub sends a
 `labeled` event only when a label is added, and nothing else re-checks a decline whose issue
 still carries the label, so applying it "again" without removing it first changes nothing. The
-exception is a decline because the label is already gone (a delayed delivery): the next step
-is then just "apply the fix label to the issue", since adding it is the new event. If
+exception is a label already gone from the live issue (a delayed delivery), whatever else is
+wrong too (pushes off, author not allowed): the gate reads the issue when it records the decline,
+and the next step is then "apply the fix label to the issue", since adding it is the new event. If
 the close or unlabel event is missed, the watchdog sweep reads each declined issue (as the
 reader) and settles it when the issue is closed or the label is gone.
 Changing/reopening an issue or editing its text does not launch triage. A durable
