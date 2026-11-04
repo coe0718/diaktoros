@@ -493,6 +493,12 @@ class ApplyHooksHelp(unittest.TestCase):
         self.assertNotIn("both hooks", doc)
         self.assertIn("triage", doc)
 
+    def test_check_hooks_docstring_names_the_app_webhook_branch(self):
+        from diaktoros.doctor import hook_checks
+        doc = " ".join(hook_checks.check_hooks.__doc__.split())
+        self.assertIn("App's webhook", doc)
+        self.assertIn("leftover repo hooks", doc)
+
 
 if __name__ == "__main__":
     unittest.main()
