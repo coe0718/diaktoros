@@ -205,6 +205,30 @@ class Gate(Base):
         self.assertEqual(len(self.enqueued), 1)
         self.assertEqual([x for x in fix_hold.status_lines(self.loop, st) if "#12" in x], [])
 
+    def test_a_declined_next_step_says_to_remove_the_label_before_applying_it(self):
+        # #1833: the label is still on the issue when the decline is recorded, and GitHub sends a
+        # `labeled` event only when one is added: "apply it again" produced no event.
+        from diaktoros import observer
+        said = []
+        st = state_mod.state_for(self.loop)
+        cases = [("author", {}), ("pushes off", {"unattended_fixer_push": False})]
+        for name, change in cases:
+            with self.subTest(name):
+                self.loop = {**self.loop, **change}
+                self.live = issue(author="stranger")
+                said.clear()
+                with mock.patch.object(observer, "notify",
+                                       side_effect=lambda *a, **kw: said.append(kw["outcome"])):
+                    self.run_gate(self.labeled())
+                (line,) = [x for x in fix_hold.status_lines(self.loop, st) if "#12" in x]
+                for text in (said[0], line):
+                    self.assertIn("remove the fix label and apply it again", text)
+                    self.assertNotIn("apply the label again", text)
+        from diaktoros import fix_declined
+        for reason in ("no longer eligible: the issue is no longer open", "something else"):
+            self.assertIn("remove the fix label and apply it again",
+                          fix_declined.next_step(self.loop, reason))
+
     def test_an_issue_filed_by_an_app_reader_is_handed_to_the_fixer(self):
         # #1794 (review of #1804, F4): the reader as a GitHub App, filing as its bot.
         bot = "widgets-reader[bot]"

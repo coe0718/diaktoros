@@ -34,18 +34,25 @@ def entries(st) -> dict[int, dict]:
     return out
 
 
+# The fix label is still on the issue when a decline is recorded (the gate read it there), and
+# GitHub sends a ``labeled`` event only when a label is added: "apply it again" would send nothing
+# and the decline would stay (#1833).
+REAPPLY = "remove the fix label and apply it again"
+
+
 def next_step(loop: dict, reason: str) -> str:
-    """What a maintainer does about ``reason``."""
+    """What a maintainer does about ``reason``. Every step ends by taking the label off and
+    putting it back, the one act that makes GitHub deliver a new ``labeled`` event."""
     if "unattended fixer pushes" in reason:
         from . import config
-        return f"turn them on with `{config.fixer_push_enable_command(loop)}`, then apply the label again"
+        return f"turn them on with `{config.fixer_push_enable_command(loop)}`, then {REAPPLY}"
     if "triage.authors" in reason:
         return (f"to allow its author, list them with `hermes dk triage --loop {loop['id']} "
                 "--enable --author LOGIN` (repeat --author for every allowed author: it replaces "
-                "the list), then apply the label again")
+                f"the list), then {REAPPLY}")
     if "no longer open" in reason:
-        return "reopen the issue, then apply the label again"
-    return "apply the label again once that is fixed"
+        return f"reopen the issue, then {REAPPLY}"
+    return f"once that is fixed, {REAPPLY}"
 
 
 def line(loop: dict, number: int, entry: dict) -> str:
