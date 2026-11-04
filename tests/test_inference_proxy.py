@@ -118,6 +118,59 @@ class TransportTests(unittest.TestCase):
             upstream.server_close()
             thread.join()
 
+    def test_a_json_schema_format_never_reaches_deepseek(self):
+        """#1789: DeepSeek answers a json_schema response_format with HTTP 400, which ended 25
+        of 38 failed shadow turns. Hermes drops it itself when it can see the provider; behind
+        this proxy it can't, so the proxy drops it, and only for DeepSeek."""
+        seen = []
+
+        class Upstream(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_POST(self):
+                seen.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+                reply = json.dumps({'choices': [{'message': {'content': '{}'}}]}).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(reply)))
+                self.end_headers()
+                self.wfile.write(reply)
+
+        upstream = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
+        thread = threading.Thread(target=upstream.serve_forever)
+        thread.start()
+        schema = {'type': 'json_schema', 'json_schema': {'name': 'summary', 'schema': {}}}
+        try:
+            for deepseek, fmt, kept in ((True, schema, False), (True, {'type': 'json_object'}, True),
+                                        (False, schema, True)):
+                with self.subTest(deepseek=deepseek, fmt=fmt['type']), \
+                        mock.patch.object(inference_proxy, 'is_deepseek', return_value=deepseek), \
+                        tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as d, \
+                        InferenceCapability(Path(d) / 'cap',
+                                            f'http://127.0.0.1:{upstream.server_port}{PATH}',
+                                            'DUMMY_KEY', model='m', quota=1) as cap:
+                    conn = _UnixHTTP(str(cap.socket_path))
+                    conn.request('POST', PATH, body=json.dumps({
+                        'messages': [{'role': 'user', 'content': 'summarize'}],
+                        'response_format': fmt}).encode())
+                    self.assertEqual(conn.getresponse().status, 200)
+                    conn.close()
+                    self.assertEqual('response_format' in seen[-1], kept, seen[-1])
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+            thread.join()
+
+    def test_only_deepseeks_own_api_is_deepseek(self):
+        for upstream, want in (('https://api.deepseek.com/v1', True),
+                               ('https://api.deepseek.com/chat/completions', True),
+                               ('http://api.deepseek.com/v1', False),
+                               ('https://api.deepseek.com.evil.example/v1', False),
+                               ('https://openrouter.ai/api/v1', False)):
+            with self.subTest(upstream):
+                self.assertEqual(inference_proxy.is_deepseek(upstream), want)
+
     def test_a_provider_error_is_kept_with_its_own_message(self):
         """#281: the agent saw only a generic 400; the host keeps the provider's reason."""
         error = json.dumps({'error': {'message': 'maximum context length is 131072 tokens; '

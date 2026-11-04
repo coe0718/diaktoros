@@ -119,8 +119,7 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, shadow=_
             text += prompts.registry_section(change.diff if change is not None else None)
         text += ci_sections(loop, row, seat)
         if seat == 'reviewer':
-            text += reproduction_section(loop, row)
-            text += reconsider_section(loop, row)
+            text += reviewer_sections(loop, row)
         if shown is not None:
             text += '\n\n' + shown.record
     if seat == 'adjudicator' and ((marker or {}).get('escalated') or {}).get('by') == 'shadow':
@@ -181,6 +180,24 @@ def this_round_section(seat: str, facts: dict) -> str:
             + '\n'.join(lines) + f"\n\n`/work` holds the files of head {head}.")
 
 
+def reviewer_sections(loop: dict, row) -> str:
+    """What only a reviewer's prompt carries after the CI: the reproduction proof, a maintainer's
+    reconsider, and the findings answered since the reviewer last stated them (#703)."""
+    return (reproduction_section(loop, row) + reconsider_section(loop, row)
+            + answered_findings_section(loop, row))
+
+
+def answered_findings_section(loop: dict, row) -> str:
+    """The open findings that were answered since the reviewer last stated them, each answer
+    quoted as data (#703); '' when there are none, or no findings recorded for this PR."""
+    from .. import finding_answers, state as state_mod
+    try:
+        entry = state_mod.state_for(loop).findings_get(row['pr'])
+        return finding_answers.section(loop, row['pr'], entry) if entry else ''
+    except Exception:
+        return ''     # a review is never held for the prompt's extra; the broker still checks
+
+
 def reconsider_section(loop: dict, row) -> str:
     """A maintainer's reconsider (#1334): why this already-reviewed head is reviewed again.
     Empty for any other turn, or when the reason is gone (the turn still reviews the head)."""
@@ -229,19 +246,23 @@ def adjudication_situation(marker: dict) -> str:
 
 
 def newest_shadow_review(row):
-    """The newest shadow review at this row's head, from the run ledger, as ``(run_id, model,
-    verdict, body)``, or None when there is none or the ledger cannot be read (#1112). One read
+    """The newest shadow review of this row's head and active reviewer turn (#1683), from the
+    run ledger, as ``(run_id, model, verdict, body)``, or None when there is none or the ledger
+    cannot be read (#1112). One read
     serves both the adjudicator's prompt and the ``RunScope`` that records which review the
     ruling answers, so a review landing in between cannot make them differ."""
     import sqlite3
+    from .. import gate
     try:
         con = views.read_only_connect(run_supervisor.production_ledger())
         if con is None:
             raise sqlite3.OperationalError("no ledger")
         try:
-            found = con.execute("SELECT run_id, model, verdict, body FROM shadow_reviews WHERE "
-                                "repo=? AND pr=? AND head=? ORDER BY created DESC LIMIT 1",
-                                (row['repo'], row['pr'], row['head'])).fetchone()
+            # The review the hold judges (#1683): the active reviewer turn's, so the ruling
+            # answers the review ``gate.shadow_state`` waits on, not an older turn's.
+            newest = gate._latest_shadow_review(con, row['repo'], row['pr'], row['head'])
+            found = newest and con.execute("SELECT run_id, model, verdict, body FROM "
+                                           "shadow_reviews WHERE run_id=?", (newest[2],)).fetchone()
         finally:
             con.close()
     except (sqlite3.Error, OSError):

@@ -413,6 +413,15 @@ not a historical reconstruction. An `issues` delivery replays through the triage
 
 `waiting` may mean provider usage-window/429 hold or daily cap, not failed work. Read
 `retry_at` and the reason. Pacing does not consume the pre-write failure-retry budget.
+A provider that is unavailable without saying 429 (the DirectSDK subscription path answers a
+closed window with empty streams: "didn't answer after N attempts" / "empty stream with no
+finish_reason") holds the **account**, for every seat on it: 15 minutes, doubling on each repeat
+up to 2 hours, and a turn that succeeds on the account clears it. Runs read `held: <seat>
+provider unavailable (…) — resumes HH:MM` in `status`, `explain` and the observer's `held`
+notice, and spend no retry. The signature is matched in the failed turn's own output, so it holds
+only after a turn that ran and failed that way (a turn that wrote is never parked), and the
+window's length is a guess, not the provider's reset time. A bare 429 with no reset time is still
+an ordinary failure.
 Daily caps reset at local midnight; zero removes the cap. An armed scheduling path must
 still resume work. Status shows reviewer/fixer daily counts and every closed usage window held for the reviewer, fixer, adjudicator or triage profile (a triage seat's window is listed too, though triage has no daily counts there); `triage --loop` shows triage settings.
 Issue fixes have concurrency one, their own daily cap (`triage.fix_daily_turns`, default 10, and issue fixes are always capped), and the loop-wide turn budget. Raising
