@@ -68,8 +68,8 @@ def refresh_declined(payload: dict) -> None:
             return
         number = pr.get("number") or payload.get("number")
         head = (pr.get("head") or {}).get("sha") or ""
-        loop = config.loop_for_repo((payload.get("repository") or {}).get("full_name") or "",
-                                    warn=log)
+        # No ``warn``: the gate already named any skipped sibling file when it chose its loop.
+        loop = config.loop_for_repo((payload.get("repository") or {}).get("full_name") or "")
         author = ((pr.get("user") or {}).get("login") or "").lower()
         # A PR outside the loop gets no check: don't spend reads on its events.
         if (loop and number and head and (pr.get("base") or {}).get("ref") == loop["base"]
