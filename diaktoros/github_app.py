@@ -11,7 +11,8 @@ installation token for the loop's repository only, and uses that token exactly a
 * an installation token cannot call ``GET /user``, so the principal is the App's bot user, found
   from ``GET /app`` (who signed) and ``GET /users/<slug>[bot]`` (its id);
 * tokens are opaque (390 characters, ``ghs_``) and live an hour: one is reused until ten minutes
-  before it expires, per process;
+  before it expires, by every host process (``app_tokens``, #1780), since GitHub's ETags follow
+  the token and a token per process made every conditional read a counted 200;
 * the JWT is signed by the Hermes runtime's Python with ``cryptography`` (the gateway's own
   interpreter may not have it), else by the ``openssl`` command; neither means App mode is
   unavailable, and every call says so instead of guessing.
@@ -30,7 +31,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import gh, util
+from . import app_tokens, gh, util
 
 JWT_TTL_S = 540                 # GitHub allows at most 10 minutes; the clock may run ahead
 REUSE_MARGIN_S = 600            # a token is replaced ten minutes before it expires
@@ -48,6 +49,8 @@ _SIGN = ("import sys\n"
 
 _lock = threading.Lock()
 _tokens: dict = {}              # (login, repo, app_id) -> (token, expires_at epoch)
+_refused: set = set()           # tokens GitHub answered 401 in this process: never used again
+_shared: set = set()            # keys whose token in _tokens is the shared one (app_tokens)
 _principals: dict = {}          # (login, app_id) -> account
 
 
@@ -225,23 +228,92 @@ def installation_token(loop: dict, login: str) -> str:
         raise AppError(f"{login!r} is not an App identity on this loop")
     repo = str(loop.get("repo") or "")
     key = (login.casefold(), repo, found.get("app_id"))
+    warm = _reuse(key)
+    if warm:
+        return warm
+    # One minter at a time for this token, across the host (#1780), each caller waiting within
+    # its own bound: another App, or another thread's slower mint, never holds it (review F6).
+    with app_tokens.held(key) as locked:
+        shared = app_tokens.load(key)
+        if shared and _keep(key, shared, shared=True):
+            return shared[0]
+        token, expires = _mint(loop, login, repo)
+        _keep(key, (token, expires), shared=locked)
+        if locked:                          # unlocked, it is this process's alone (F5)
+            app_tokens.save(key, token, expires)
+        return token
+
+
+def _reuse(key: tuple) -> str | None:
+    """This process's token for ``key`` while it is still good: fresh, never refused, and, when
+    it is the shared one, still the token the shared file holds (review of #1781, F9). Another
+    process that got a 401 drops the file, or replaces it, and this process follows at its next
+    call instead of sending the dead token. None sends the caller to the locked path."""
     with _lock:
         cached = _tokens.get(key)
-        if cached and cached[1] - time.time() > REUSE_MARGIN_S:
-            return cached[0]
-        where = _as_app(loop, login, f"/repos/{repo}/installation")
-        installation = where.data.get("id") if isinstance(where.data, dict) else None
-        if type(installation) is not int:
-            raise AppError(f"App {login} is not installed on {repo} ({where.error or 'no id'})")
-        minted = _as_app(loop, login, f"/app/installations/{installation}/access_tokens",
-                         method="POST", body={"repositories": [repo.split("/", 1)[-1]]})
-        got = minted.data if isinstance(minted.data, dict) else {}
-        token, expires = got.get("token"), _expires(got.get("expires_at"))
-        if not isinstance(token, str) or not token or expires is None:
-            raise AppError(f"App {login} could not mint a token for {repo} "
-                           f"({minted.error or 'no token in the answer'})")
-        _tokens[key] = (token, expires)
-        return token
+        shared = key in _shared
+    if not cached or cached[1] - time.time() <= REUSE_MARGIN_S or cached[0] in _refused:
+        return None
+    if shared:
+        stored = app_tokens.load(key)
+        if not stored or stored[0] != cached[0]:
+            return None
+    return cached[0]
+
+
+def _keep(key: tuple, token: tuple, *, shared: bool) -> bool:
+    """Make ``token`` this process's for ``key`` unless it was refused or is not fresh, checked
+    and stored in one step under ``_lock``, so a 401 recorded by another thread meanwhile is
+    never undone (review of #1781, F8). Whether it was kept."""
+    with _lock:
+        if token[1] - time.time() <= REUSE_MARGIN_S or token[0] in _refused:
+            return False
+        _tokens[key] = token
+        (_shared.add if shared else _shared.discard)(key)
+        return True
+
+
+def _mint(loop: dict, login: str, repo: str) -> tuple[str, float]:
+    """A new installation token for ``repo`` and when it expires. Raises ``AppError``."""
+    where = _as_app(loop, login, f"/repos/{repo}/installation")
+    installation = where.data.get("id") if isinstance(where.data, dict) else None
+    if type(installation) is not int:
+        raise AppError(f"App {login} is not installed on {repo} ({where.error or 'no id'})")
+    minted = _as_app(loop, login, f"/app/installations/{installation}/access_tokens",
+                     method="POST", body={"repositories": [repo.split("/", 1)[-1]]})
+    got = minted.data if isinstance(minted.data, dict) else {}
+    token, expires = got.get("token"), _expires(got.get("expires_at"))
+    if not isinstance(token, str) or not token or expires is None:
+        raise AppError(f"App {login} could not mint a token for {repo} "
+                       f"({minted.error or 'no token in the answer'})")
+    return token, expires
+
+
+def refused(loop: dict, login: str | None, sent: str) -> None:
+    """GitHub answered 401 to ``sent``, the token a request carried as ``login``: if it is an
+    App's, this process never uses it again, and it is dropped wherever it is still the current
+    one, so the next call mints a new one instead of reusing a dead one (#1780).
+
+    Only ``sent`` (review of #1781, F4): a late 401 for an old token never drops the successor
+    already minted, here or by another process. Remembered even where the shared file cannot be
+    written (F2), so a process that writes nothing stops reloading it."""
+    found = entry(loop, login)
+    if not found or not sent:
+        return
+    key = (str(login).casefold(), str(loop.get("repo") or ""), found.get("app_id"))
+    with _lock:
+        _refused.add(sent)
+        if _tokens.get(key, ("",))[0] == sent:
+            del _tokens[key]
+    # Marked first, before any wait: every process reads the token as gone even if this one
+    # never gets the lock, or its gate's budget runs out waiting for it (review F10).
+    app_tokens.refuse(key, sent)
+    with app_tokens.held(key) as locked:
+        if not locked:                      # load-compare-drop is atomic only under the lock (F5)
+            return
+        stored = app_tokens.load(key)
+        if stored and stored[0] == sent:
+            app_tokens.drop(key)
 
 
 def principal(loop: dict, login: str, fetch=None) -> dict | None:
@@ -285,5 +357,8 @@ def forget() -> None:
     global _signer
     with _lock:
         _tokens.clear()
+        _refused.clear()
+        _shared.clear()
         _principals.clear()
         _signer = None
+        app_tokens.drop()

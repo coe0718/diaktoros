@@ -291,6 +291,7 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
         if exc.code == 304 and cached:              # unchanged: the stored body is current, and
             gh_cache.hit(who, path)                 # only this answer's own headers are true now
             return Response(cached["data"], "", 200, headers)
+        refusal(loop, who, tok, exc.code)
         return Response(None, f"HTTP {exc.code}{f' {detail}' if detail else ''}", exc.code, headers)
     except Exception as exc:
         if not answered:                                # no HTTP answer: it may have counted
@@ -386,8 +387,19 @@ def read_text(loop: dict, path: str, login: str | None = None, limit: int = 2621
             _count_failed_text(who, path, exc, getattr(req, "answered", None))
         if isinstance(exc, urllib.error.HTTPError):
             exc.close()      # it holds the response open; its headers were read above
+            if getattr(req, "answered", None) is None:      # GitHub's own answer, not storage's
+                refusal(loop, who, tok, exc.code)
         log(f"gh GET {path} (text) failed: {type(exc).__name__}: {one_line(exc, 120)}")
         return None
+
+
+def refusal(loop: dict, login: str | None, sent: str, status: int | None) -> None:
+    """GitHub answered ``status`` to a request carrying ``sent``: a 401 to an App's shared token
+    drops it (#1780). Every path that sends a token calls this, not only ``_request`` (review of
+    #1781, F3); a PAT's 401 changes nothing here."""
+    if status == 401:
+        from . import github_app
+        github_app.refused(loop, login or loop.get("read_token"), sent)
 
 
 def _count_failed_text(who: str, path: str, exc: Exception, answered: dict | None) -> None:

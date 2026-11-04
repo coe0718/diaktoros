@@ -53,6 +53,7 @@ def _request(loop: dict, path: str, login: str, limit: int, accept: str) -> byte
     """Read at most limit+1 bytes, including for chunked and dishonest responses."""
     from .config.host_guards import guard_network
     guard_network(f"{gh.API}{path}")    # under the test guard: loopback fakes only
+    credential = ""
     try:
         credential = gh.token(loop, login)
         req = urllib.request.Request(
@@ -78,6 +79,7 @@ def _request(loop: dict, path: str, login: str, limit: int, accept: str) -> byte
     except (OSError, ValueError, urllib.error.URLError, gh.GitHubError) as exc:
         if isinstance(exc, urllib.error.HTTPError):
             exc.close()   # it holds the response open, and __cause__ would keep it alive
+            gh.refusal(loop, login, credential, exc.code)      # a dead App token (#1780)
         raise FetchDenied("GitHub response unavailable") from exc
 
 
@@ -204,11 +206,13 @@ def _fetch_tarball(loop: dict, repo: str, reader: str, head: str, limit: int) ->
             return None
 
     opener = urllib.request.build_opener(_NoRedirectHandler)
+    credential = ""
     try:
+        credential = gh.token(loop, reader)
         req = urllib.request.Request(
             f"{gh.API}/repos/{repo}/tarball/{head}",
             headers={"Accept": "application/vnd.github+json",
-                     "Authorization": f"Bearer {gh.token(loop, reader)}",
+                     "Authorization": f"Bearer {credential}",
                      "X-GitHub-Api-Version": "2022-11-28",
                      "User-Agent": "diaktoros"})
         with opener.open(req, timeout=30) as response:
@@ -219,6 +223,7 @@ def _fetch_tarball(loop: dict, repo: str, reader: str, head: str, limit: int) ->
         # urllib raises here for a declined redirect; the error IS the open response.
         if exc.code not in (301, 302, 303, 307, 308):
             exc.close()
+            gh.refusal(loop, reader, credential, exc.code)     # a dead App token (#1780)
             raise FetchDenied("GitHub response unavailable") from exc
         location = exc.headers.get("Location")   # safe after close(): a property over .hdrs
         exc.close()
