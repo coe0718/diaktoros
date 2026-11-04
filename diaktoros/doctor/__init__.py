@@ -670,7 +670,8 @@ def check_fix_ci(loop: dict) -> Check:
     cap = config.ci_fix_cap(loop)
     return Check("fix-ci", VERIFIED,
                  f"on — red required CI on a fixer's PR goes to the fixer first, up to {cap} "
-                 "CI-fix turn(s) per PR, spending no review verdict; then the reviewer reviews it "
+                 "CI-fix turn(s) per PR, spending no review verdict; then the review waits for green "
+                 "or a new head "
                  f"(`hermes dk set --loop {lid} --ci-fix-cap N` to change, `--fix-ci off` to stop)")
 
 

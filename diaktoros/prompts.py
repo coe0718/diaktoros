@@ -571,8 +571,8 @@ What to do:
    published: do not retry, and say exactly what the broker said.
 5. Then ask for the next review through the broker. No answers are needed: CI's next result is
    the answer. You get one fix per head, from a budget of CI-fix turns for the whole PR: once it
-   is spent and CI is still red, the reviewer reviews the head and says why the fixes did not
-   take.
+   is spent and CI is still red, the review waits for green (a re-run that passes) or a new
+   head; nobody reviews the red head meanwhile.
 
 Never claim the push or the review request succeeded without an ok response from the broker."""
 

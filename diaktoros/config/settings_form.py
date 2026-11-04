@@ -208,10 +208,11 @@ SETTINGS_SCHEMA: dict = {
                                               "loop's observer feed. 'off' turns it off. Blank = "
                                               "not set here: the loop's own value, else none"},
     "ci_fix_cap": {"label": "CI-fix turns per PR", "type": "str", "default": "",
-                   "description": "CI-fix turns per PR (across its heads) before the reviewer "
-                                  "reviews a red head, a whole number 1-10. Red required CI goes "
-                                  "to the fixer first and spends no review verdict. Blank = not "
-                                  "set here: the loop's own value, else 3"},
+                   "description": "CI-fix turns per PR (across its heads) before a red head's "
+                                  "review waits for green or a new head, a whole number 1-10. Red "
+                                  "required CI goes to the fixer first and spends no review "
+                                  "verdict. With fix_ci off a fixer's PR is still reviewed red. "
+                                  "Blank = not set here: the loop's own value, else 3"},
     "review_only_daily": {"label": "Review-only daily cap (turns)", "type": "str", "default": "",
                           "description": "Reviewer turns per local day on review-only PRs, a whole "
                                          "number 1-1000; once spent they wait until midnight. "
