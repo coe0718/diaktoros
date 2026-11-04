@@ -623,7 +623,10 @@ the PR, yours included, is a new head and clears it.
 `--github` its PRs and reviews. `--html FILE` writes one self-contained page (no scripts or remote
 assets) and `--json` the same data. Both hold totals and timings only, never error text, paths or
 prompt content, so either can be published. The page shows the seat accounts' and PR authors'
-logins, as GitHub does.
+logins, as GitHub does. The request-cache line's "first change" names an item only by a fixed
+vocabulary (`request_trace.KINDS`: message roles and Responses item types); any other type the
+agent sent is shown as `other`, so the agent cannot put text of its choosing on the page. A ledger
+row written before that vocabulary is read the same way.
 
 The plugin never publishes anything itself: putting the page on the web is your step, with your
 own credentials. For GitHub Pages:

@@ -15,8 +15,9 @@ next request does not carry (#1815):
   turn's first request). ``kept == of`` is a request that only appended;
 - ``of``: the previous request's item count;
 - ``changed``: when it did not keep them all, the kind of the first item that differs
-  (``instructions/tools``, a message role or a Responses item type), or ``dropped`` when the
-  request is a shorter copy of the previous one;
+  (``instructions/tools``, a message role or a Responses item type, from the fixed ``KINDS``:
+  any other text is ``other``, as the sandbox chose it), or ``dropped`` when the request is a
+  shorter copy of the previous one;
 - ``in`` and ``cached``: its input tokens and those the provider says its cache served (None:
   not reported).
 
@@ -44,13 +45,37 @@ def _items(payload: dict, mode: str) -> list:
     return [head, *(rest if isinstance(rest, list) else [rest])]
 
 
+OTHER = 'other'
+# The only words a changed item is ever named by. An item's type or role is the sandbox's own
+# text, and ``stats`` is published ("totals and timings only"): anything else is ``other``.
+KINDS = frozenset({
+    FIRST, 'dropped', OTHER, 'unknown', 'item',
+    # message roles
+    'user', 'assistant', 'system', 'developer', 'tool', 'function',
+    # Responses item types
+    'message', 'reasoning', 'function_call', 'function_call_output', 'custom_tool_call',
+    'custom_tool_call_output', 'local_shell_call', 'local_shell_call_output', 'web_search_call',
+    'file_search_call', 'computer_call', 'computer_call_output', 'code_interpreter_call',
+    'image_generation_call', 'mcp_call', 'mcp_list_tools', 'mcp_approval_request',
+    'mcp_approval_response', 'item_reference',
+    # a request item that is not an object: its JSON type
+    'str', 'int', 'float', 'bool', 'list', 'NoneType',
+})
+
+
+def known_kind(kind) -> str:
+    """``kind`` if it is one of ``KINDS``, else ``other``: the one place a kind is made safe to
+    publish, used where the proxy names an item and where ``summary`` reads a recorded one."""
+    return kind if isinstance(kind, str) and kind in KINDS else OTHER
+
+
 def _kind(item, index: int) -> str:
     if index == 0:
         return FIRST
     if isinstance(item, dict):
-        return str(item.get('type') if item.get('type') not in (None, 'message')
-                   else item.get('role') or item.get('type') or 'item')[:40]
-    return type(item).__name__
+        return known_kind(item.get('type') if item.get('type') not in (None, 'message')
+                          else item.get('role') or item.get('type') or 'item')
+    return known_kind(type(item).__name__)
 
 
 class Trace:
@@ -119,7 +144,8 @@ def summary(turns: list[list]) -> dict:
                     out['served'] += min(cached, before)
                     out['servable'] += before
             else:
-                out['changed'][str(entry.get('changed') or 'unknown')] += 1
+                # The ledger may hold a kind written before ``KINDS`` existed: never published as is.
+                out['changed'][known_kind(entry.get('changed') or 'unknown')] += 1
             previous = entry
     return out
 
