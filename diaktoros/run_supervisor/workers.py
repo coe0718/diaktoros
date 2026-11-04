@@ -376,6 +376,7 @@ class WorkerLifecycle:
         deadline = time.time() + max(run_supervisor.CI_POLL_S, run_supervisor.RETRY_BASE) + 30
         polled = (run_supervisor.CI_HOLD, run_supervisor.VERDICT_HOLD,
                   run_supervisor.CLAIM_READ_FAILED)
+        recovered = None
         while time.time() < deadline:
             with self._connect() as con:
                 due = con.execute("SELECT MIN(retry_at) FROM runs WHERE state='waiting' AND ("
@@ -384,6 +385,11 @@ class WorkerLifecycle:
             if due is None or due > deadline:
                 return          # nothing due in this window: the watchdog sweep is the backstop
             if due <= time.time():
+                if due == recovered:
+                    return      # recover() did not release it: do not spin on it
+                # Not a return: the earliest due row may be another worker's, and the row this
+                # worker backed off may fall due later in the window (#1302): keep waiting.
                 self.recover()
-                return
+                recovered = due
+                continue
             sleep(min(due - time.time(), deadline - time.time()) + 1)

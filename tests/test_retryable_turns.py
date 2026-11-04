@@ -14,7 +14,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from diaktoros import ledger, run_supervisor
+from diaktoros import gate, ledger, run_supervisor
 from diaktoros.run_supervisor import views
 from diaktoros.run_supervisor import MAX_REARMS, MAX_RETRIES, Supervisor
 
@@ -283,16 +283,25 @@ class ClaimTimeReads(Base):
             self.s._run_one()
         self.assertEqual(self.s.get('review')['state'], 'succeeded')
 
-    def worker(self, sleeps):
-        """What the production worker does (``main``): one claim, then the linger. ``sleeps``
-        collects each wait; the wait lets the recorded backoff elapse."""
+    def clock(self):
+        """A clock that moves only when a worker sleeps, so the wait is real elapsed time (F2 of
+        #1808): a sleep that ends past the linger's deadline leaves a retry nobody scheduled."""
+        now = [time.time()]
+        clock = patch('time.time', lambda: now[0])
+        clock.start()
+        self.addCleanup(clock.stop)
+        return now
+
+    def worker(self, sleeps, now, read=lambda: None):
+        """What the production worker does (``main``): one claim, then the linger. Each wait in
+        ``sleeps`` advances the clock ``now``; ``read`` is what GitHub answers for the PR."""
         def sleep(seconds):
             sleeps.append(seconds)
-            self.elapse()
+            now[0] += seconds
         spawned = []
         self.s._spawn = lambda: spawned.append(1)
         with patch('diaktoros.config.by_repo', return_value=self.LOOP), \
-             patch('diaktoros.gh.api', return_value=None), \
+             patch('diaktoros.gh.api', side_effect=lambda *a, **k: read()), \
              patch('diaktoros.gh.reviews', return_value=[]):
             self.s._run_one()
             self.s.linger_for_ci(sleep=sleep)
@@ -302,20 +311,61 @@ class ClaimTimeReads(Base):
         # #1302: a kick whose claim-time read failed sat 'waiting' until the next watchdog
         # sweep. The worker that backed it off now stays for the first backoff and re-arms it.
         sleeps = []
-        spawned = self.worker(sleeps)
+        spawned = self.worker(sleeps, self.clock())
         self.assertEqual(len(sleeps), 1, sleeps)
-        self.assertLessEqual(sleeps[0], run_supervisor.backoff(1) + 1)
+        self.assertAlmostEqual(sleeps[0], run_supervisor.backoff(1) + 1, delta=1)
         row = self.s.get('review')
         self.assertEqual((row['state'], row['retries']), ('pending', 1))
         self.assertEqual(len(spawned), 1)          # recover() armed a fresh worker
+
+    def test_the_linger_window_outlasts_the_first_backoff(self):
+        # F2 of #1808: with the old window (CI_POLL_S + 30 = 120 s) the sleep to a retry due at
+        # 120 s ends at 121 s, past the deadline, and the loop left without calling recover().
+        # The clock here moves only by what the worker sleeps, so that case is real.
+        self.assertGreaterEqual(run_supervisor.backoff(1), run_supervisor.CI_POLL_S + 30)
+        now = self.clock()
+        self.worker([], now)
+        self.assertEqual(self.s.get('review')['state'], 'pending')
+
+    def test_a_worker_keeps_its_own_retry_when_another_row_is_due_first(self):
+        # F3 of #1808: a CI hold due in 5 s is released first, but this worker's own retry (due
+        # in 120 s) may have no other worker: it stays for that one instead of leaving for the sweep.
+        now = self.clock()
+        self.s.submit('ci', 'o/r', 2, HEAD, 'reviewer')
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='waiting', retry_at=?, error=? WHERE delivery='ci'",
+                        (now[0] + 5, f'{run_supervisor.CI_HOLD} on aaaaaaa'))
+        sleeps = []
+        self.worker(sleeps, now)
+        self.assertEqual(len(sleeps), 2, sleeps)
+        self.assertEqual({self.s.get(d)['state'] for d in ('ci', 'review')}, {'pending'})
 
     def test_a_worker_does_not_wait_for_a_backoff_past_its_window(self):
         # The third failed read backs off 8 minutes: the watchdog sweep's, not a held process's.
         with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET retries=2")
         sleeps = []
-        self.worker(sleeps)
+        self.worker(sleeps, self.clock())
         self.assertEqual((sleeps, self.s.get('review')['state']), ([], 'waiting'))
+
+    def test_a_kicked_review_is_started_by_its_own_worker_not_the_watchdog_sweep(self):
+        # #1302 at the kick boundary: ``hermes dk review`` queues its reviewer through
+        # ``gate.enqueue_isolated``. The first claim-time read fails; the worker that backed the
+        # row off re-arms it itself (no sweep's ``recover`` runs here), and the next worker runs
+        # the reviewer to its end. This fails without the fix: the row stays 'waiting'.
+        with ledger.connect(self.db) as con:
+            con.execute('DELETE FROM runs')              # the row setUp queued: the kick makes its own
+        with patch.object(gate, 'isolated_supervisor', return_value=self.s):
+            self.assertEqual(gate.enqueue_isolated(self.LOOP, 'reviewer', 1, HEAD), 'enqueued')
+        delivery = f'o/r:1:{HEAD}:reviewer'
+        sleeps = []
+        spawned = self.worker(sleeps, self.clock())
+        self.assertEqual((len(sleeps), len(spawned)), (1, 1), sleeps)
+        with patch('diaktoros.config.by_repo', return_value=self.LOOP), \
+             patch('diaktoros.gh.api', return_value=ClaimTimeReads.pull(self)), \
+             patch('diaktoros.gh.reviews', return_value=[]):
+            self.s._run_one()
+        self.assertEqual(self.s.get(delivery)['state'], 'succeeded')
 
     def test_a_read_github_keeps_refusing_is_bounded_visible_and_noticed(self):
         for attempt in range(1, MAX_RETRIES + 1):
