@@ -634,6 +634,7 @@ class FilePending(unittest.TestCase):
         import sqlite3
         from diaktoros.run_supervisor import ledger_schema
         con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
         con.executescript(ledger_schema.SCHEMA)
         con.execute("ALTER TABLE shadow_issues DROP COLUMN attempts")
         ledger_schema.migrate(con)
