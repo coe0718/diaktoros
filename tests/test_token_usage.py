@@ -83,6 +83,27 @@ class Meter(unittest.TestCase):
         chat = meter(b'{"usage": {"prompt_tokens": 50, "prompt_tokens_details": {"cached_tokens": 40}}}')
         self.assertEqual((chat.tokens_in, chat.cache_read), (50, 40))
 
+    def test_deepseek_reports_its_cache_hits_at_its_own_field(self):
+        """DeepSeek's usage has ``prompt_cache_hit_tokens`` and ``prompt_cache_miss_tokens``,
+        which sum to ``prompt_tokens``, and no ``prompt_tokens_details``: read only the old
+        fields, 254 of 275 shadow turns in a week recorded their cache as unreported, so stats
+        priced all of that input as uncached. Streamed, it arrives in the last chunk."""
+        body = (b'{"usage": {"prompt_tokens": 50, "completion_tokens": 3, '
+                b'"prompt_cache_hit_tokens": 40, "prompt_cache_miss_tokens": 10}}')
+        for stream, data in ((False, body), (True, b'data: {"choices": []}\n\ndata: ' + body
+                                                    + b'\n\ndata: [DONE]\n\n')):
+            with self.subTest(stream=stream):
+                meter = UsageMeter()
+                meter.feed(data, stream)
+                meter.finish()
+                self.assertEqual((meter.tokens_in, meter.tokens_out, meter.cache_read),
+                                 (50, 3, 40))
+        miss = UsageMeter()
+        miss.feed(b'{"usage": {"prompt_tokens": 50, "prompt_cache_hit_tokens": 0, '
+                  b'"prompt_cache_miss_tokens": 50}}', False)
+        miss.finish()
+        self.assertEqual(miss.cache_read, 0)              # a reported miss, not unknown
+
     def test_reported_zero_cost_is_known(self):
         for body, stream in ((b'{"usage": {"prompt_tokens": 5, "cost": 0}}', False),
                              (b'data: {"usage": {"output_tokens": 3, "cost": 0.0}}\n', True)):

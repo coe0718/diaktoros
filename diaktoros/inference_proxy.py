@@ -307,7 +307,8 @@ def _cache_read(event) -> int | None:
     None when it reports no such field: unknown, never 0. A reported 0 stays 0 (a cache miss).
     Anthropic puts it at ``usage.cache_read_input_tokens``, chat completions at
     ``usage.prompt_tokens_details.cached_tokens``, the Responses API at
-    ``usage.input_tokens_details.cached_tokens``."""
+    ``usage.input_tokens_details.cached_tokens``, and DeepSeek at
+    ``usage.prompt_cache_hit_tokens`` (part of its ``prompt_tokens``, so only read here)."""
     found = None
     if not isinstance(event, dict):
         return None
@@ -317,7 +318,7 @@ def _cache_read(event) -> int | None:
             continue
         details = [usage.get(name) for name in ('prompt_tokens_details', 'input_tokens_details')]
         for source in [usage] + [d for d in details if isinstance(d, dict)]:
-            for name in ('cache_read_input_tokens', 'cached_tokens'):
+            for name in ('cache_read_input_tokens', 'cached_tokens', 'prompt_cache_hit_tokens'):
                 value = _count(source.get(name))
                 if value is not None and (found is None or value > found):
                     found = value
