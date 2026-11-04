@@ -132,7 +132,7 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
                          f"({len(gate.verdicts(reviews, loop))} of {loop.get('cap')} verdicts)")
         elif latest is None or gh.review_state(latest) != "APPROVED":
             # No verdict at the head yet is a review still to come.
-            add(PENDING, f"not approved at head {head[:7]}")
+            add(PENDING, _not_approved(loop, st, number, head, reviews, author))
         else:
             approved = True
             if stale_approval.is_stale(st.watch(), number, head):
@@ -193,6 +193,15 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
     if not approved and transition.hold(st, number, head):
         add(PENDING, "same-head base retarget hold")
     return why
+
+
+def _not_approved(loop: dict, st, number: int, head: str, reviews: list, author: str) -> str:
+    """Why a head has no approval yet. A review-only author's PR that has spent its verdict cap
+    (#1797) says so: no review is coming until a maintainer grants another round."""
+    said = f"not approved at head {head[:7]}"
+    if gate.review_cap_hit(loop, st, number, head, len(gate.verdicts(reviews, loop)), author):
+        said += " — review cap reached; a maintainer grants another round"
+    return said
 
 
 def _escalation(loop: dict, number: int, head: str, marker) -> list[tuple[str, str]]:
