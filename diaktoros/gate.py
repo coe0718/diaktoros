@@ -353,10 +353,13 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
     ``hold`` (it is not ready to merge) once the newest shadow review of this head requested
     changes, or while a shadow run started after the newest review (or with none yet) is still
     open; a ledger that exists but cannot be read holds too (unknown is not ready). ``note``
-    only, never a hold, when there is nothing to wait for: no ledger yet, no shadow run queued
-    (sampled out, or queued before escalate was on), or runs that ended without a review, so a
-    failed shadow never parks a PR for good. ``("", "", "")`` with escalate off; ``shadow_hold`` is
-    the ``(hold, note)`` view of it."""
+    only, never a hold, when there is nothing to wait for: no ledger yet, or a head with no
+    earlier reviewer turn's shadow and no shadow run queued (sampled out, or queued before
+    escalate was on) or only runs that ended without a review. Once an earlier turn's shadow
+    exists at the head (after ``review --reconsider``), a newer turn whose shadow was never
+    queued, or ended failed, cancelled or skipped without a review, does hold (``_lost_hold``,
+    #1683); only ``shadow.escalate`` off or a new head clears it. ``("", "", "")`` with escalate
+    off; ``shadow_hold`` is the ``(hold, note)`` view of it."""
     if not config.shadow_escalate(loop):
         return "", "", ""
     import sqlite3
@@ -379,29 +382,7 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
         return "pending", (f"the run ledger is unreadable ({type(exc).__name__}), so the shadow review at "
                 f"{short} is unknown"), ""
     if review is not None and str(review[0]) == "REQUEST_CHANGES":
-        mine = isinstance(marker, dict) and str(marker.get("head") or "") == head and (
-            (marker.get("escalated") or {}).get("by") == SHADOW_ESCALATION)
-        verdict = str(ruling[0]) if ruling else ""
-        if mine and verdict == "ACCEPT":
-            # Part 2 (#1004): the adjudicator overruled it; the reviewer's approval stands.
-            return "", "", f"the adjudicator overruled the shadow review at {short} (ACCEPT)"
-        if mine and verdict == "REJECT":
-            # Part 3 (#1004): upheld. The fixer answers it where queue_shadow_fix can hand it on;
-            # a loop without unattended pushes, or a review-only author's PR, is the operator's.
-            if config.unattended_fixer_push_enabled(loop) and not _review_only_pr(loop, number):
-                return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT): "
-                        "the fixer answers its findings, and the fixed head is reviewed fresh"), ""
-            return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT) — no "
-                    "fixer takes it here, so the decision is yours (`hermes dk explain --pr N` "
-                    "shows the findings)"), ""
-        if mine and verdict:
-            return "failure", (f"the adjudicator ruled {verdict} on the shadow review at {short} — the "
-                    "decision is yours (`hermes dk explain --pr N` shows the findings)"), ""
-        if mine:
-            return "pending", (f"the shadow review requested changes at {short}; escalated to the "
-                    "adjudicator, waiting for its ruling"), ""
-        return "failure", (f"the shadow review requested changes at {short} — it holds the PR until "
-                "you decide (`hermes dk explain --pr N` shows its findings)"), ""
+        return _dissent_state(loop, number, head, short, ruling, marker)
     if pending is not None:
         # A shadow run queued after the newest review (a re-review at the same head, #1097's
         # shadow review) can still change it: wait for it, even past an earlier approval.
@@ -418,6 +399,34 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
 
 
 SHADOW_ESCALATION = "shadow"           # the breach marker's ``escalated.by`` for #1004
+
+
+def _dissent_state(loop: dict, number: int, head: str, short: str, ruling, marker) -> tuple[str, str, str]:
+    """``(kind, hold, note)`` once the newest shadow review of the head requested changes: the
+    adjudicator's ruling on it (#1004 parts 2 and 3), or the operator's decision."""
+    mine = isinstance(marker, dict) and str(marker.get("head") or "") == head and (
+        (marker.get("escalated") or {}).get("by") == SHADOW_ESCALATION)
+    verdict = str(ruling[0]) if ruling else ""
+    if mine and verdict == "ACCEPT":
+        # Part 2 (#1004): the adjudicator overruled it; the reviewer's approval stands.
+        return "", "", f"the adjudicator overruled the shadow review at {short} (ACCEPT)"
+    if mine and verdict == "REJECT":
+        # Part 3 (#1004): upheld. The fixer answers it where queue_shadow_fix can hand it on;
+        # a loop without unattended pushes, or a review-only author's PR, is the operator's.
+        if config.unattended_fixer_push_enabled(loop) and not _review_only_pr(loop, number):
+            return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT): "
+                    "the fixer answers its findings, and the fixed head is reviewed fresh"), ""
+        return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT) — no "
+                "fixer takes it here, so the decision is yours (`hermes dk explain --pr N` "
+                "shows the findings)"), ""
+    if mine and verdict:
+        return "failure", (f"the adjudicator ruled {verdict} on the shadow review at {short} — the "
+                "decision is yours (`hermes dk explain --pr N` shows the findings)"), ""
+    if mine:
+        return "pending", (f"the shadow review requested changes at {short}; escalated to the "
+                "adjudicator, waiting for its ruling"), ""
+    return "failure", (f"the shadow review requested changes at {short} — it holds the PR until "
+            "you decide (`hermes dk explain --pr N` shows its findings)"), ""
 
 
 def _review_only_pr(loop: dict, number: int) -> bool:
