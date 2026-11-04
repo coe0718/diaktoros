@@ -151,8 +151,8 @@ def cache_by_turn(db: Path, repo: str, since: float, limit: int = 60) -> list[di
 
 
 def request_cache(db: Path, repo: str, since: float) -> list[str] | None:
-    """Per seat, what its model requests kept of the one before and what the cache served of
-    what they resent (#1790, ``request_trace``). None: no ledger, no column or nothing traced."""
+    """Per seat, what its model requests kept of the one before and, at most, what the cache
+    served of what they resent (#1790, ``request_trace``). None: no ledger, no column or nothing traced."""
     db = Path(db)
     if not db.exists():
         return None

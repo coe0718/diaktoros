@@ -203,7 +203,8 @@ What one loop did over a window, and how long it took. Two sources:
   usage windows, CI holds). GitHub cannot tell you how long a turn took; this can. It also
   sums tokens per seat and model, with the share the provider's prompt cache served, and
   (#1790) says per seat how many of its model requests kept the previous request's history
-  unchanged and how much of what those resent the cache served. A turn whose requests keep
+  unchanged and, at most, how much of what those resent the cache served (an upper bound: a
+  provider reports how many input tokens its cache served, not which). A turn whose requests keep
   their history but get little from the cache is the provider missing. One whose requests
   rewrite it is the client, and the line names the kind of item that changed first
   (`reasoning`, `instructions/tools`, a message role). Turns from before #1790 have no trace.

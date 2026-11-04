@@ -180,14 +180,15 @@ class Trace(unittest.TestCase):
                     {"tokens_in": 5, "tokens_out": 1, "cache_read": None, "cost": None,
                      "requests": []}
                 sup.record_usage(run_id, "w", observed)
-            # Of the one request that kept the history, the cache served 900 of the 1,000 tokens
-            # it resent; the other two changed it, at a reasoning item and at the instructions.
+            # Of the one request that kept the history, the cache served at most 900 of the 1,000
+            # tokens it resent; the other two changed it, at a reasoning item and at the instructions.
             # The shadow traced nothing (an empty trace is not recorded) and is left out.
             lines = stats.request_cache(db, REPO, 0)
             self.assertEqual(lines, [
-                "reviewer: 4 requests in 1 turns; 1 kept the previous request's history (the "
-                "cache served 900 of the 1,000 tokens they resent, 90%); 2 did not (first "
-                "change: reasoning ×1, instructions/tools ×1)"])
+                "reviewer: 4 requests in 1 turns; 1 kept the previous request's history (of "
+                "the 1,000 tokens they resent, the cache served at most 900, 90%: a provider "
+                "says how many tokens it served, not which); 2 did not (first change: reasoning "
+                "×1, instructions/tools ×1)"])
             report = {"repo": REPO, "loop": "w", "since": 0, "until": 86400, "turns": {},
                       "request_cache": lines}
             self.assertIn(lines[0], stats.text(report))
@@ -196,8 +197,11 @@ class Trace(unittest.TestCase):
         # #1814: a cache can also hold part of what a request appended; 180 of 100 is not a rate.
         turn = [{"kept": None, "of": None, "in": 100},
                 {"kept": 2, "of": 2, "in": 200, "cached": 180}]
-        self.assertIn("served 100 of the 100 tokens they resent, 100%",
-                      request_trace.line("reviewer", request_trace.summary([turn])))
+        # Nor is the capped figure exact (review of #1813, F3): a provider says how many tokens
+        # it served, not which, so 80 resent and 100 appended could make the same 180.
+        line = request_trace.line("reviewer", request_trace.summary([turn]))
+        self.assertIn("of the 100 tokens they resent, the cache served at most 100, 100%: a "
+                      "provider says how many tokens it served, not which", line)
 
     def test_collect_reports_it_in_json_and_the_page_escapes_it(self):
         # Review of #1813, F2: through the ledger and stats.collect, then the JSON and the page.

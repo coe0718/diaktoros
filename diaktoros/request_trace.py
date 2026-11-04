@@ -95,8 +95,10 @@ class Trace:
 def summary(turns: list[list]) -> dict:
     """The requests of ``turns`` (each a turn's entries), split by whether they kept the previous
     request's history. For a request that kept it all, the cache could have served about the
-    previous request's input: ``served`` of ``servable`` is how much of that it did (its cached
-    tokens, up to that input), counted only where both are reported. ``changed`` counts the first changed item's kind of the others."""
+    previous request's input: ``served`` of ``servable`` is at most how much of that it did. A
+    provider reports how many input tokens its cache served, not which, and some may be of what
+    the request appended (#1814), so its cached tokens count up to that input: an upper bound,
+    never an exact share. Counted only where both are reported. ``changed`` counts the first changed item's kind of the others."""
     out = {'requests': 0, 'first': 0, 'kept': 0, 'served': 0, 'servable': 0,
            'changed': Counter()}
     for entries in turns:
@@ -130,8 +132,11 @@ def line(seat: str, s: dict) -> str:
     text = (f"{seat}: {s['requests']} requests in {s['first']} turns; {s['kept']} kept the "
             "previous request's history")
     if s['servable']:
-        text += (f" (the cache served {s['served']:,} of the {s['servable']:,} tokens they "
-                 f"resent, {s['served'] / s['servable']:.0%})")
+        # An upper bound (review of #1813, F3): a provider says how many input tokens its cache
+        # served, not which, and some may be of what the request appended.
+        text += (f" (of the {s['servable']:,} tokens they resent, the cache served at most "
+                 f"{s['served']:,}, {s['served'] / s['servable']:.0%}: a provider says how many "
+                 "tokens it served, not which)")
     if rewrote:
         kinds = ", ".join(f"{kind} ×{n}" for kind, n in s['changed'].most_common(4))
         text += f"; {rewrote} did not" + (f" (first change: {kinds})" if kinds else "")
