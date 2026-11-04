@@ -142,7 +142,8 @@ entry point (`one_shot_action.drain_confirmed`, #1047) binds a confirmed queue s
 seat's live queue is not that queue, nothing is started, dropped or pruned. Each queued run's
 outcome is reported, and a partial or uncertain one is not success. Desktop still refuses drain
 until its confirmed control is wired to that entry point. No route invokes a subprocess CLI or
-monkeypatches the host to make a button work. Unconfirmed drain completion exits 2, not success. The
+monkeypatches the host to make a button work. A CLI drain whose sweep completed exits 0 and prints that queue and run
+outcomes are unconfirmed; 2 stays the refused-input code, and a refused loop file exits 1. The
 selector also refuses corrupt markers and uncertain/quarantined ledger outcomes for escalation.
 Existing retry, pause/resume and seat configuration are unchanged. Diaktoros never merges.
 

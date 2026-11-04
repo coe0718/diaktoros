@@ -898,8 +898,10 @@ would start queued work for a seat and may lead to GitHub writes. Its core entry
 binds the confirmed queue snapshot (#1047: if the seat's queue changed, nothing starts) and
 reports each queued run's outcome; the page's control for it is a follow-up too. These are disclosed refusals, not
 inert buttons or weaker gates. The CLI still calls those core entry points through the shared
-host owner; `review --another-round` remains CLI-only. Drain now exits 2 with an unconfirmed
-outcome instead of claiming success merely because the watchdog returned. Inspect `explain`
+host owner; `review --another-round` remains CLI-only. CLI drain exits 0 after a completed sweep and prints that
+queue and run outcomes are unconfirmed (the sweep ran; it does not wait for a run to finish).
+Exit 2 is reserved for refused input or a sweep that did not finish, and a refused loop file
+exits 1. Inspect `explain`
 and the queue before asking again. Escalation also refuses corrupt marker stores and unknown
 ledger outcomes through either caller. No action grants merge authority.
 

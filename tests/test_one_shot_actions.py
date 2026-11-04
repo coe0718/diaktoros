@@ -317,5 +317,18 @@ class ConfirmedActions(fixtures.Base):
         self.assertEqual(drain.call_args.args, (self.loop, "fixer"))
 
 
+class DrainExitCodeDocs(unittest.TestCase):
+    """The prose must not call a completed, unconfirmed drain sweep a refusal (exit 2)."""
+
+    def test_docs_do_not_say_an_unconfirmed_drain_exits_2(self):
+        import pathlib
+        import re
+        docs = pathlib.Path(__file__).resolve().parent.parent / "docs"
+        for name in ("operations.md", "security.md"):
+            text = re.sub(r"\s+", " ", (docs / name).read_text(encoding="utf-8"))
+            self.assertNotRegex(text, r"(?i)drain now exits 2", name)
+            self.assertNotRegex(text, r"(?i)unconfirmed drain completion exits", name)
+
+
 if __name__ == "__main__":
     unittest.main()
