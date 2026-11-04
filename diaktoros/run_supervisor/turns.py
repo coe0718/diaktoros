@@ -397,8 +397,9 @@ class ClaimAndLaunch:
                 # Bounded like a failed turn (#53): back off, then fail with the reason and
                 # a notice. Pre-write, so `retry` (or a new event) re-arms it.
                 retries = (current['retries'] or 0) + 1
-                reason = f'claim-time read failed: {read.read_error}'
+                reason = f'{run_supervisor.CLAIM_READ_FAILED}: {read.read_error}'
                 if retries < run_supervisor.MAX_RETRIES:
+                    self.held_for_ci = True     # this worker lingers to schedule the retry (#1302)
                     con.execute("UPDATE runs SET state='waiting', retries=?, retry_at=?, "
                                 "error=?, updated=? WHERE id=?",
                                 (retries, now + run_supervisor.backoff(retries), reason, now, row['id']))

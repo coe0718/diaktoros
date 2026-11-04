@@ -55,6 +55,10 @@ MAX_RETRIES = 4
 CI_HOLD = "held: waiting for CI"
 # A shadow held for its reviewer turn's verdict (#1647): polled like a CI hold.
 VERDICT_HOLD = "held: waiting for the reviewer's verdict"
+# A claim whose GitHub read failed is backed off (#53) with an error starting this way. The
+# worker that backed it off stays for the first backoff and schedules it (#1302): otherwise
+# only the next watchdog sweep, up to a sweep interval later, would start it.
+CLAIM_READ_FAILED = "claim-time read failed"
 CI_POLL_S = 90
 CI_WAIT_MAX_S = 60 * 60
 MAX_REARMS = 8
