@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from . import ci, gh
+from . import ci, ci_cache, gh
 
 # Required jobs whose logs are read per review. This repository's own loop requires 12 (#850: the
 # unit suite sharded per Python, plus the harness and four other checks); one log read each.
@@ -108,24 +108,48 @@ def parse(log: str) -> dict[str, str]:
     return out
 
 
-def _job_at_head(loop: dict, job_id: int, head: str, runs: dict | None = None) -> bool:
-    """True only when GitHub says this job ran at ``head`` in a workflow run of this repository.
-    ``runs`` caches each workflow run's verdict: a sharded matrix's jobs share one run."""
+def _job_at_head(loop: dict, job_id: int, head: str, runs: dict | None = None) -> dict | None:
+    """The job's metadata when GitHub says it ran at ``head`` in a workflow run of this
+    repository, else None. ``runs`` caches each workflow run's verdict: a sharded matrix's jobs
+    share one run."""
     job = gh.api(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}", login=loop.get("read_token"))
     if not isinstance(job, dict) or job.get("head_sha") != head:
-        return False
+        return None
     run_id = job.get("run_id")
     if type(run_id) is not int:
-        return False
+        return None
     if runs is not None and run_id in runs:
-        return runs[run_id]
+        return job if runs[run_id] else None
     run = gh.api(loop, f"/repos/{loop['repo']}/actions/runs/{run_id}", login=loop.get("read_token"))
     source = run.get("head_repository") if isinstance(run, dict) else None
     ok = (isinstance(run, dict) and run.get("head_sha") == head and isinstance(source, dict)
           and source.get("full_name") == loop["repo"])
     if runs is not None:
         runs[run_id] = ok
-    return ok
+    return job if ok else None
+
+
+def _job_results(loop: dict, job_id: int, head: str, runs: dict) -> dict[str, str]:
+    """The per-test results of one passed job at ``head``; ``{}`` when it did not run there.
+
+    A completed job's log never changes, so what was parsed from it is kept on disk
+    (``ci_cache``), keyed by the head too: an entry exists only for a job proven to have run at
+    that head, so a hit skips the metadata, run and log reads (#1805). A job not ``completed``,
+    or a log that came back empty (GitHub can publish it a moment late), is never kept.
+    """
+    key = ("test-results", head, job_id, LOG_LIMIT)
+    hit = ci_cache.load(loop, *key)
+    if hit and isinstance(hit.get("tests"), dict):
+        return {str(t): str(r) for t, r in hit["tests"].items()}
+    job = _job_at_head(loop, job_id, head, runs)
+    if job is None:
+        return {}
+    log = gh.read_text(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}/logs",
+                       login=loop.get("read_token"), limit=LOG_LIMIT)
+    tests = parse(log or "")
+    if log and job.get("status") == "completed":
+        ci_cache.save(loop, *key, value={"tests": tests})
+    return tests
 
 
 def read(loop: dict, state: ci.CIState | None, required, head: str) -> dict[str, str]:
@@ -141,11 +165,9 @@ def read(loop: dict, state: ci.CIState | None, required, head: str) -> dict[str,
     gated = ci.gating(state, required)
     for name in (gated.passed if gated else [])[:JOBS_MAX]:
         job_id = state.ids.get(name)
-        if type(job_id) is not int or not _job_at_head(loop, job_id, head, runs):
+        if type(job_id) is not int:
             continue
-        log = gh.read_text(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}/logs",
-                           login=loop.get("read_token"), limit=LOG_LIMIT)
-        for test, outcome in parse(log or "").items():
+        for test, outcome in _job_results(loop, job_id, head, runs).items():
             if results.get(test) != "ok":
                 results[test] = outcome
     return results
