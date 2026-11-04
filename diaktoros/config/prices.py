@@ -83,9 +83,15 @@ def split_prices(text) -> list[str]:
 
 
 def prices_text(prices) -> str:
-    """The inverse of ``split_prices`` (for ``show``)."""
-    return ", ".join(f"{model}={p['input']:g}/{p['cached']:g}/{p['output']:g}"
+    """The inverse of ``split_prices`` (for ``show``): each price as the shortest text that
+    reads back as the same number (#1827), never rounded."""
+    return ", ".join(f"{model}=" + "/".join(_number(p[field]) for field in FIELDS)
                      for model, p in (prices or {}).items())
+
+
+def _number(value: float) -> str:
+    text = repr(float(value))
+    return text[:-2] if text.endswith(".0") else text
 
 
 def prices(loop: dict) -> dict[str, dict[str, float]]:
@@ -97,8 +103,10 @@ def prices(loop: dict) -> dict[str, dict[str, float]]:
 def estimate(row: dict, table: dict) -> dict | None:
     """The cost of one ``stats.usage`` row (a seat and model's summed tokens) at ``table``'s
     prices, or None when its model is unpriced. Input the provider did not say was cached is
-    priced as uncached, so where some turns did not report their cache (``cached_of`` short of
-    ``tokens_in``) the estimate is an upper bound: ``at_most``."""
+    priced as uncached. Where some turns did not report their cache (``cached_of`` short of
+    ``tokens_in``) the estimate is then a bound, whose side the prices decide (#1826): ``at
+    most`` when cached input costs less than uncached, ``at least`` when it costs more, and
+    exact (``bound`` None) when they cost the same or every turn reported."""
     price = table.get(str(row.get("model") or "").lower())
     if price is None:
         return None
@@ -106,10 +114,14 @@ def estimate(row: dict, table: dict) -> dict | None:
     uncached = max((row.get("tokens_in") or 0) - cached, 0)
     dollars = (uncached * price["input"] + cached * price["cached"]
                + (row.get("tokens_out") or 0) * price["output"]) / 1e6
-    return {"dollars": dollars, "at_most": (row.get("cached_of") or 0) < (row.get("tokens_in") or 0)}
+    unreported = (row.get("cached_of") or 0) < (row.get("tokens_in") or 0)
+    bound = (None if not unreported or price["cached"] == price["input"]
+             else "at most" if price["cached"] < price["input"] else "at least")
+    return {"dollars": dollars, "bound": bound}
 
 
 def estimate_text(estimate_: dict | None) -> str:
     if estimate_ is None:
         return "unpriced"
-    return ("at most " if estimate_["at_most"] else "") + f"${estimate_['dollars']:,.4f}"
+    bound = estimate_.get("bound")
+    return (f"{bound} " if bound else "") + f"${estimate_['dollars']:,.4f}"

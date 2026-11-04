@@ -57,6 +57,15 @@ class Setting(unittest.TestCase):
         with self.assertRaisesRegex(config.ConfigError, "twice"):
             prices.parse_prices(["m=1/1/1", "M=2/2/2"], "t")
 
+    def test_what_show_prints_reads_back_as_the_same_table(self):
+        # #1827: six significant digits turned 0.123456789 into 0.123457.
+        table = prices.check_prices({"m": {"input": 0.123456789, "cached": 1.23456789e-08,
+                                           "output": 1.123456789},
+                                     "n": {"input": 3, "cached": 0.3, "output": 15}}, "t")
+        text = prices.prices_text(table)
+        self.assertEqual(prices.parse_prices(prices.split_prices(text), "t"), table)
+        self.assertIn("n=3/0.3/15", text)                       # whole numbers stay plain
+
     def test_the_form_moves_it_only_when_it_names_it(self):
         self.assertNotIn("prices", settings_form.apply_settings(trc.raw(), {}))
         self.assertEqual(settings_form.apply_settings(trc.raw(), {"prices": ENTRY})["prices"], WANT)
@@ -153,7 +162,7 @@ class Estimate(unittest.TestCase):
         rows = {row["seat"]: row for row in report["usage"]}
         # 100k uncached at 0.14, 900k cached at 0.014, 100k out at 0.28: $0.0546.
         self.assertAlmostEqual(rows["shadow"]["estimate"]["dollars"], 0.0546)
-        self.assertFalse(rows["shadow"]["estimate"]["at_most"])
+        self.assertIsNone(rows["shadow"]["estimate"]["bound"])
         self.assertIsNone(rows["reviewer"]["estimate"])
         text = stats.text(report)
         self.assertIn("$0.0546", text)
@@ -169,8 +178,23 @@ class Estimate(unittest.TestCase):
         (row,) = report["usage"]
         # The unreported turn's input is priced uncached: 1M at 0.014 plus 1M at 0.14.
         self.assertAlmostEqual(row["estimate"]["dollars"], 0.154)
-        self.assertTrue(row["estimate"]["at_most"])
+        self.assertEqual(row["estimate"]["bound"], "at most")
         self.assertIn("at most $0.1540", stats.text(report))
+
+    def test_the_bound_is_on_the_side_the_prices_put_it(self):
+        # #1826: with cached input dearer than uncached (1/2/0), pricing an unreported cache as
+        # uncached is a floor: $1 for 1M tokens that could have cost $2 cached.
+        row = {"model": "m", "tokens_in": 1_000_000, "tokens_out": 0, "cache_read": 0,
+               "cached_of": 0}
+        for cached, bound in ((0.5, "at most"), (2.0, "at least"), (1.0, None)):
+            with self.subTest(cached=cached):
+                got = prices.estimate(row, {"m": {"input": 1.0, "cached": cached, "output": 0}})
+                self.assertEqual(got, {"dollars": 1.0, "bound": bound})
+        self.assertEqual(prices.estimate_text({"dollars": 1.0, "bound": "at least"}),
+                         "at least $1.0000")
+        reported = {**row, "cached_of": 1_000_000}               # every turn reported: exact
+        self.assertIsNone(prices.estimate(reported, {"m": {"input": 1, "cached": 2,
+                                                           "output": 0}})["bound"])
 
 
 if __name__ == "__main__":

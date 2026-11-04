@@ -1281,7 +1281,8 @@ def text(report: dict) -> str:
     if report.get("usage"):
         out += ["", "Tokens per seat and model (counted by the inference proxy; cost where the "
                 "provider reported it, and estimated from the loop's prices: uncached input, "
-                "cached input and output; 'at most' where some turns did not report their cache)",
+                "cached input and output; 'at most' or 'at least' where some turns did not "
+                "report their cache)",
                 *_table(USAGE_HEAD, _usage_rows(report))]
     if report.get("cache_turns"):
         out += ["", "Prompt cache per turn, oldest first (compare the rounds of one PR)",

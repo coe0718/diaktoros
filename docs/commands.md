@@ -203,7 +203,8 @@ What one loop did over a window, and how long it took. Two sources:
   usage windows, CI holds). GitHub cannot tell you how long a turn took; this can. It also
   sums tokens per seat and model, with the share the provider's prompt cache served, the cost
   the provider reported (none of today's do), and one estimated from the loop's `prices`
-  (#1790): `unpriced` for a model with no entry, `at most` where some turns did not report their
+  (#1790): `unpriced` for a model with no entry, `at most` (or `at least`, when cached input is priced
+  above uncached) where some turns did not report their
   cache. It says per seat how many of its model requests kept the previous request's history
   unchanged and, at most, how much of what those resent the cache served (an upper bound: a
   provider reports how many input tokens its cache served, not which). A turn whose requests keep
