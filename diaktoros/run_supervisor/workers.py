@@ -11,7 +11,9 @@ test's ``patch.object(Supervisor, ...)`` work as before, with one binding. It us
 """
 from __future__ import annotations
 
+import contextlib
 import errno
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -40,6 +42,101 @@ def process_state(pid: int | None, launched: float | None) -> str:
     except OSError as exc:
         return 'gone' if exc.errno == errno.ESRCH else 'unknown'
     return 'gone' if run_supervisor._pid_reused(pid, launched) else 'alive'
+
+
+LINGER_MARK = '.linger.'
+
+
+def linger_mark(db: Path, pid: int) -> Path:
+    """The file ``<ledger>.linger.<pid>`` that process ``pid`` keeps beside the ledger while it
+    is inside ``linger_for_ci`` (#1811): the mark by which a test's cleanup tells a lingering
+    worker from a stuck process."""
+    db = Path(db)
+    return db.with_name(f'{db.name}{LINGER_MARK}{pid}')
+
+
+def _marks(db: Path) -> dict[int, Path]:
+    """Every mark file beside the ledger ``db``, live process or not, by the PID in its name."""
+    db = Path(db)
+    prefix = db.name + LINGER_MARK
+    try:
+        paths = list(db.parent.iterdir())
+    except OSError:
+        return {}
+    return {int(path.name[len(prefix):]): path for path in paths
+            if path.name.startswith(prefix) and path.name[len(prefix):].isdigit()}
+
+
+def _held(path: Path) -> bool:
+    """True while some process holds the lock the lingerer keeps on its mark. The kernel
+    drops that lock when the holder leaves the wait, exits or is killed, so unlike the file
+    it cannot outlive the wait: a PID reused by a later process, or a mark whose removal
+    failed, never reads as held. Anything unreadable is not held."""
+    try:
+        with open(path, 'rb') as probe:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(probe, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    return False
+
+
+def lingering_pids(db: Path) -> set[int]:
+    """The processes that are inside a ``lingering`` block beside the ledger ``db``: those
+    whose mark file is locked by its holder at this moment."""
+    return {pid for pid, path in _marks(db).items() if _held(path)}
+
+
+def _unlink(path: Path) -> None:
+    """Remove a mark; failing to is not worth stopping a worker for."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _take_mark(mark: Path) -> int | None:
+    """Create ``mark`` and lock it; the open descriptor, whose lock is the mark, or None when
+    that cannot be done. A sweeper may unlink the file between creating and locking it, so the
+    lock only counts if the path still names the file locked."""
+    for _ in range(3):
+        try:
+            fd = os.open(mark, os.O_WRONLY | os.O_CREAT, 0o600)
+        except OSError:
+            return None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            if os.path.samestat(os.fstat(fd), os.stat(mark)):
+                return fd
+        except OSError:
+            pass
+        os.close(fd)
+    return None
+
+
+@contextlib.contextmanager
+def lingering(db: Path):
+    """Mark this process as lingering for the ``with`` block, which must be only a wait that
+    is safe to end by SIGTERM. The mark is ``<ledger>.linger.<pid>`` holding an ``flock`` that
+    this process keeps until it leaves the block, however it leaves (#1811): the lock, not the
+    file, says it lingers, so a mark left by a killed worker, by a PID since reused or by a
+    removal that failed authenticates nobody. Best effort throughout: a worker never creates
+    host state, so a ledger directory that is gone or unwritable leaves it unmarked, and a
+    mark that cannot be removed is left, unlocked. The next worker to linger sweeps those."""
+    for pid, path in _marks(db).items():
+        if pid != os.getpid() and not _held(path):
+            _unlink(path)
+    mark = linger_mark(db, os.getpid())
+    fd = _take_mark(mark)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)                    # releases the lock: the mark stops counting here
+            _unlink(mark)
 
 
 class WorkerLifecycle:
@@ -396,6 +493,16 @@ class WorkerLifecycle:
         backoffs (4 min and up) are the watchdog sweep's, as before."""
         if not self.held_for_ci:
             return
+        def marked_sleep(seconds):
+            # Marked only while asleep (#1811): a worker in its database reads or in recover()
+            # is at work, and a hang there must fail a test's exit check, not be ended.
+            with lingering(self.db):
+                sleep(seconds)
+        self._linger_until_due(marked_sleep)
+
+    def _linger_until_due(self, sleep) -> None:
+        """The wait of ``linger_for_ci``: poll the polled holds, sleep to the earliest due row
+        and ``recover()`` it, until the window closes or nothing falls due in it."""
         deadline = time.time() + max(run_supervisor.CI_POLL_S, run_supervisor.RETRY_BASE) + 30
         polled = (run_supervisor.CI_HOLD, run_supervisor.VERDICT_HOLD,
                   run_supervisor.CLAIM_READ_FAILED)

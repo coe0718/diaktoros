@@ -376,9 +376,6 @@ class RouteSubprocess(unittest.TestCase):
         runtime.chmod(0o600)
         payload = {"repository": {"full_name": "acme/widgets"}, "action": "opened",
                    "number": 7, "pull_request": self.pr, "sender": {"login": "dev"}}
-        # This test sets the run states by hand below, so the ledger no longer says what a worker
-        # asleep in its linger (after its failed claim read) saw: the test vouches for them.
-        self.addCleanup(end_lingering_workers, self.root, vouched=True)
         first = self.route("gate_reviewer.py", payload)
         self.assertIn("reviewer enqueued for isolated worker", first.stderr)
         db = Path(self.env["HERMES_HOME"]) / "state" / "diaktoros-runs.sqlite"

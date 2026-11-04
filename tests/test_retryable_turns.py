@@ -15,7 +15,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import gate, ledger, run_supervisor
-from diaktoros.run_supervisor import views
+from diaktoros.run_supervisor import views, workers
 from diaktoros.run_supervisor import MAX_REARMS, MAX_RETRIES, Supervisor
 
 HEAD = 'a' * 40
@@ -297,8 +297,10 @@ class ClaimTimeReads(Base):
         ``sleeps`` advances the clock ``now``; ``read`` is what GitHub answers for the PR."""
         def sleep(seconds):
             sleeps.append(seconds)
+            self.marked.append(workers.lingering_pids(self.s.db))
             now[0] += seconds
         spawned = []
+        self.marked = []                # who carries the linger mark at each wait (#1811)
         self.s._spawn = lambda: spawned.append(1)
         with patch('diaktoros.config.by_repo', return_value=self.LOOP), \
              patch('diaktoros.gh.api', side_effect=lambda *a, **k: read()), \
@@ -317,6 +319,29 @@ class ClaimTimeReads(Base):
         row = self.s.get('review')
         self.assertEqual((row['state'], row['retries']), ('pending', 1))
         self.assertEqual(len(spawned), 1)          # recover() armed a fresh worker
+
+    def test_the_worker_carries_the_linger_mark_while_it_waits_and_drops_it_after(self):
+        # #1811: the mark is what the test cleanup ends a lingering worker by.
+        sleeps = []
+        self.worker(sleeps, self.clock())
+        self.assertEqual(self.marked, [{os.getpid()}] * len(sleeps))
+        self.assertTrue(sleeps)
+        self.assertEqual(workers.lingering_pids(self.s.db), set())
+
+    def test_the_worker_is_unmarked_while_it_reads_and_recovers(self):
+        # F1 of #1823: only the sleep is a safe wait. A worker hung in recover() (or in its
+        # database reads) is at work; a mark there would let a test end it and pass its exit check.
+        seen = []
+        real = self.s.recover
+
+        def recover():
+            seen.append(workers.lingering_pids(self.s.db))
+            return real()
+        self.s.recover = recover
+        sleeps = []
+        self.worker(sleeps, self.clock())
+        self.assertTrue(sleeps)
+        self.assertEqual(seen, [set()])
 
     def test_the_linger_window_outlasts_the_first_backoff(self):
         # F2 of #1808: with the old window (CI_POLL_S + 30 = 120 s) the sleep to a retry due at
