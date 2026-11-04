@@ -55,6 +55,14 @@ MAX_RETRIES = 4
 CI_HOLD = "held: waiting for CI"
 # A shadow held for its reviewer turn's verdict (#1647): polled like a CI hold.
 VERDICT_HOLD = "held: waiting for the reviewer's verdict"
+# A fixer push held as one that may have written, and the host's proof that one wrote nothing
+# (#1763): settled runs are failed, not reconciled, so `retry` and a redelivery re-arm them.
+PUSH_QUARANTINE = "post-write push quarantine: "
+PUSH_SETTLED = "push quarantine settled: nothing written:"
+# A claim whose GitHub read failed is backed off (#53) with an error starting this way. The
+# worker that backed it off stays for the first backoff and schedules it (#1302): otherwise
+# only the next watchdog sweep, up to a sweep interval later, would start it.
+CLAIM_READ_FAILED = "claim-time read failed"
 CI_POLL_S = 90
 CI_WAIT_MAX_S = 60 * 60
 MAX_REARMS = 8
@@ -661,12 +669,14 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch, notices.OperatorNo
         if not isinstance(t_in, int) or not isinstance(t_out, int):
             return
         cost = observed.get('cost')
+        trace = observed.get('requests')
         with self._connect() as con:
             cached = observed.get('cache_read')
-            con.execute("UPDATE runs SET tokens_in=?, tokens_out=?, cost=?, cache_read=? "
-                        "WHERE id=? AND owner=?",
+            con.execute("UPDATE runs SET tokens_in=?, tokens_out=?, cost=?, cache_read=?, "
+                        "requests=? WHERE id=? AND owner=?",
                         (t_in, t_out, cost if isinstance(cost, (int, float)) else None,
                          cached if isinstance(cached, int) and not isinstance(cached, bool)
+                         else None, json.dumps(trace) if isinstance(trace, list) and trace
                          else None, run_id, owner))
         if loop_id and seat and t_in + t_out > 0:
             from .. import pacing

@@ -331,7 +331,8 @@ class UsageMeter:
     field keeps its largest value across the reply. Cost is only what the provider reports; a
     reply that reports none adds 0 and ``cost_known`` stays False. Never raises."""
 
-    def __init__(self):
+    def __init__(self, entry: dict | None = None):
+        self.entry = entry    # the request's ``request_trace`` entry (#1790), filled at the end
         self.tokens_in = self.tokens_out = 0
         self.cache_read: int | None = None    # served by the provider's prompt cache; None: not reported
         self.cost = 0.0
@@ -813,6 +814,9 @@ class InferenceCapability:
         self.cache_gap = False
         self.cost = 0.0
         self.cost_known = False
+        # What each request kept of the one before it, and what the cache served (#1790).
+        from . import request_trace
+        self.trace = request_trace.Trace(contract.mode)
         self.model = model
         self.quota = quota
         # The seat's step cap when this turn gets the submit-now nudge (#554), else None: only
@@ -858,6 +862,15 @@ class InferenceCapability:
             status, content_type, data = self.endpoint.post(body, self._headers(fresh, sandbox_headers))
         return status, content_type, data
 
+    def saw(self, body: bytes) -> None:
+        """Note one validated request, as the agent sent it: its last step and the turn's
+        thinking level (its first request's)."""
+        self.last_activity = last_activity(body)
+        with self.lock:
+            if not self._thinking_seen:
+                self._thinking_seen = True
+                self.thinking = thinking_level(body, self.contract)
+
     def maybe_nudge(self, body: bytes) -> bytes:
         """``body`` with the submit-now nudge appended when this request is the turn's nudge
         request, else unchanged (#554).
@@ -890,6 +903,7 @@ class InferenceCapability:
                 self.cache_read = (self.cache_read or 0) + meter.cache_read
             self.cost += meter.cost
             self.cost_known = self.cost_known or meter.cost_known
+        self.trace.usage(meter.entry, meter.tokens_in, meter.cache_read)
 
     def note_rate_limit(self, headers: dict, body: bytes) -> None:
         """Record when a 429'd window reopens — only when the provider *says* when. A bare 429
@@ -943,11 +957,7 @@ class InferenceCapability:
                 except ProxyError as exc:
                     self.refuse(str(exc))
                     return
-                capability.last_activity = last_activity(body)
-                with capability.lock:
-                    if not capability._thinking_seen:
-                        capability._thinking_seen = True
-                        capability.thinking = thinking_level(body, capability.contract)
+                capability.saw(body)
                 # Reserve quota before contacting provider, including failed requests. A
                 # refresh-and-retry after a 401 is part of the same call.
                 with capability.lock:
@@ -958,6 +968,7 @@ class InferenceCapability:
                 # #554: the turn's last stretch is spent telling the agent to submit what it has.
                 # After last_activity, which records the agent's own last step, not host text.
                 body = capability.maybe_nudge(body)
+                entry = capability.trace.see(body)    # as sent: past the quota, nudge included
                 try:
                     status, content_type, data = capability.forward(body, self.headers)
                 except (OSError, ProxyError, http.client.HTTPException) as exc:
@@ -979,7 +990,7 @@ class InferenceCapability:
                 if hasattr(data, "set_peer"):
                     data.set_peer(self.connection)
                 seen = bytearray()
-                meter = UsageMeter()
+                meter = UsageMeter(entry)
                 try:
                     _relay(self, status, content_type, data, seen, meter)
                 finally:

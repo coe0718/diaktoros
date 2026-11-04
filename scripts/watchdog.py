@@ -44,6 +44,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from diaktoros import conflict_person  # noqa: E402
 from diaktoros import escalate_pending  # noqa: E402
 from diaktoros import merge_check  # noqa: E402
+from diaktoros import push_settle  # noqa: E402
 from diaktoros import shadow_issues  # noqa: E402
 from diaktoros import review_kick  # noqa: E402
 from diaktoros import (  # noqa: E402
@@ -984,6 +985,11 @@ def retire_stale_runs(loop: dict, prs: list, lines: list[str]) -> None:
         Supervisor(ledger, presence=presence_marker()).retire_stale_waiting(loop["repo"], heads)
     except Exception as exc:
         lines.append(f"⚠️ Diaktoros [{loop['id']}] stale held runs not retired: "
+                     f"{type(exc).__name__}: {exc}")
+    try:                                  # #1763: a held push whose branch never moved
+        lines.extend(push_settle.sweep(loop, prs))
+    except Exception as exc:
+        lines.append(f"⚠️ Diaktoros [{loop['id']}] push quarantines not checked: "
                      f"{type(exc).__name__}: {exc}")
 
 

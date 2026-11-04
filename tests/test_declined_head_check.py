@@ -103,6 +103,12 @@ class DeclinedHead(fg.Base):
         self.event("synchronize", rounds=1, pr={**self.live, "user": {"login": "stranger"}})
         self.assertEqual(self.posts, [])
 
+    def test_a_stacked_childs_push_posts_the_check_the_sweep_would(self):
+        stacked = {**self.live, "base": {"ref": "w-6"}}
+        self.event("synchronize", rounds=1, pr=stacked)
+        [(_path, body)] = self.statuses()
+        self.assertEqual((body["state"], body["context"]), ("pending", "diaktoros/review"))
+
     def test_a_closed_event_posts_nothing(self):
         with mock.patch.object(gate_reviewer.gate, "reclaim"):
             self.event("closed", rounds=1)

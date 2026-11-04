@@ -98,7 +98,9 @@ def usage_of(inference) -> dict:
             'cache_read': (cache if isinstance(cache := getattr(inference, 'cache_read', None), int)
                            else None),
             'cost': (float(getattr(inference, 'cost', 0.0))
-                     if getattr(inference, 'cost_known', False) else None)}
+                     if getattr(inference, 'cost_known', False) else None),
+            # Each request's entry (#1790): what it kept of the one before, what the cache served.
+            'requests': list(getattr(getattr(inference, 'trace', None), 'entries', None) or [])}
 
 
 def _provider_note(inference) -> str:

@@ -108,6 +108,27 @@ The broker enforces these rules before it spends the review write (#475):
   say `missed earlier`).
 - An `APPROVE` is refused while any finding is open (not `fixed`/`withdrawn`) and while the
   review raises a new one. Mark them fixed or withdrawn, or request changes.
+- A finding that was **answered** since the review that last stated it cannot be restated as a
+  bare `F1: open` (#703). An answer is a fixer-answers comment on the PR that names the finding
+  (`F<n>`), or any comment by a loop maintainer (`triage.maintainers`) on the PR or on an issue
+  it closes, posted after that review. The reviewer's prompt lists each answered finding with
+  the answer quoted as data. The line must carry a reason (`F1: open — <why the answer does not
+  hold>`) that is not the finding's previous text again, or the finding is withdrawn
+  (`F1: withdrawn — <reason>`); otherwise the review is refused, naming the finding and the
+  answer, and the seat resubmits in the same turn. An unanswered finding can still be restated
+  bare. The broker cannot judge whether a reason really addresses the answer, only that there is
+  one and that it is new. A finding recorded before the host kept the time
+  of each statement (`stated_at`) is compared from the submission time of the reviewer's
+  newest review on the PR (which stated every open finding); if the reviews cannot be read,
+  from the time it was first raised, which can count an older comment as an answer once but
+  never misses a real one; a finding with neither time is not counted as answered. GitHub
+  stamps comments to the second, so a comment in the same second as the statement counts as
+  later. A reason that holds the previous text (however short) plus a path or fewer
+  than four new words is still a copy. The check cannot see a maintainer comment beyond the
+  newest 20 of a thread. When GitHub's comments cannot be read, a
+  review that keeps a finding open is refused as a read failure (retry shortly); a review
+  that keeps none open reads nothing. The host's clock stamps the statement and GitHub's the
+  comment, so a skew of seconds can place a comment on the wrong side.
 - A state for an id that was never recorded is refused, as is restating a known id as a new
   finding or repeating an id within one review.
 

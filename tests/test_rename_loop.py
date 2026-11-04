@@ -11,6 +11,7 @@ import contextlib
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -105,6 +106,12 @@ class Paused(fg.Base):
         super().setUp()
         migrate.marker_path().parent.mkdir(parents=True, exist_ok=True)
         migrate.marker_path().write_text(json.dumps({"pid": os.getpid(), "started": 1}))
+        # gate_failures.run ends by ignoring SIGTERM (its bookkeeping must not be cut off) and
+        # sets a SIGALRM handler; in-process that outlasts the test, and every child a later
+        # test starts inherits the ignored SIGTERM (test_worker_wait's sleeper then ignores the
+        # SIGTERM it is sent). Put both back.
+        for sig in (signal.SIGTERM, signal.SIGALRM):
+            self.addCleanup(signal.signal, sig, signal.getsignal(sig))
 
     def test_a_gate_defers_its_delivery_with_the_payload(self):
         acted = mock.Mock()

@@ -291,6 +291,15 @@ class WorkerLifecycle:
                 pass
         return self.capacity[seat]
 
+    def push_worker_gone(self, run_id: str) -> bool:
+        """Whether the run's worker is positively gone (#1763, review of #1802 F1 and F2): checked
+        before the host reads any proof, so no worker can write an attempt or push after it. A
+        missing PID is not gone, since the launch is recorded before its PID is."""
+        with self._connect() as con:
+            row = con.execute("SELECT pid,launch_intent FROM runs WHERE id=?",
+                              (run_id,)).fetchone()
+        return row is not None and _worker_gone(row)
+
     def reconcile_uncertain(self, run_id: str, *, reason: str,
                             acknowledge_no_live_worker: bool = False) -> bool:
         """Operator-only release after inspecting the turn's external writes.
@@ -321,21 +330,35 @@ class WorkerLifecycle:
                         "WHERE id=? AND state='uncertain'",
                         ('operator reconciliation: ' + reason, time.time(), run_id))
             con.execute('COMMIT')
-        # The uncertain run kept its seat claim and in-flight mark until now (#98): the
-        # operator's reconciliation is what ends it, so it frees them too. Best effort — the
-        # ledger row above is the decision; a loop that is no longer configured has no claim.
-        try:
-            from .. import config, gate, state as state_mod
-            loop = config.by_repo(row['repo'])
-            if loop is not None:
-                st = state_mod.state_for(loop)
-                # Only the claim this run wrote: the ledger row left `uncertain` above, so a
-                # newer run may already hold this seat/PR/head, and keeps its claim and mark.
-                if (st.release_if(row['seat'], gate.seat_key(loop, row['pr']), row['head'],
-                                  run=run_id) and row['seat'] in claims.INFLIGHT_LABEL):
-                    st.inflight_clear(f"{claims.INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}")
-        except Exception:
-            pass
+        # The operator's reconciliation is what ends it, so it frees its claim too.
+        _release_claim(row, run_id)
+        return True
+
+    def settle_push_quarantine(self, run_id: str, *, evidence: str) -> bool:
+        """End a fixer push quarantine the host proved wrote nothing (#1763): ``failed``, its
+        intent withdrawn, its seat freed, and re-armable, unlike an operator reconciliation.
+
+        The caller (``push_settle``) established the worker gone first (``push_worker_gone``),
+        then proved the GitHub side: the branch and the PR still at the run's head, and no push
+        attempt in the broker audit. This checks the ledger side again under its lock: still a
+        fixer's push quarantine, never one the host saw publish, never confirmed, and its worker
+        still gone. Whether it settled."""
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            row = con.execute("SELECT pid,state,error,launch_intent,push_confirmed,repo,pr,head,"
+                              "seat FROM runs WHERE id=?", (run_id,)).fetchone()
+            error = str(row['error'] or '') if row is not None else ''
+            if (row is None or row['state'] != 'uncertain' or row['seat'] != 'fixer'
+                    or not error.startswith(run_supervisor.PUSH_QUARANTINE)
+                    or error.startswith(run_supervisor.PUSH_QUARANTINE + 'published')
+                    or row['push_confirmed'] is not None or not _worker_gone(row)):
+                con.execute('COMMIT')
+                return False
+            con.execute("UPDATE runs SET state='failed', error=?, lease=NULL, push_intent=NULL, "
+                        "updated=? WHERE id=? AND state='uncertain'",
+                        (f'{run_supervisor.PUSH_SETTLED} {evidence}'[:600], time.time(), run_id))
+            con.execute('COMMIT')
+        _release_claim(row, run_id)
         return True
 
     def retire_stale_waiting(self, repo: str, open_heads: dict) -> int:
@@ -365,20 +388,54 @@ class WorkerLifecycle:
         return cancelled
 
     def linger_for_ci(self, sleep=time.sleep) -> None:
-        """After holding a review for CI, stay (no seat, no turn) until its next CI read is due,
-        then schedule it: GitHub sends this route no event when CI finishes (#241)."""
+        """After holding a review for CI, or backing a claim off after a failed GitHub read,
+        stay (no seat, no turn) until the next read is due, then schedule it: GitHub sends this
+        route no event when CI finishes (#241), and nothing but the watchdog sweep, up to a
+        sweep interval later, would otherwise start a row waiting out a backoff (#1302). Only a
+        row due within this linger's window is waited for: the second and later read-failure
+        backoffs (4 min and up) are the watchdog sweep's, as before."""
         if not self.held_for_ci:
             return
-        deadline = time.time() + run_supervisor.CI_POLL_S + 30
+        deadline = time.time() + max(run_supervisor.CI_POLL_S, run_supervisor.RETRY_BASE) + 30
+        polled = (run_supervisor.CI_HOLD, run_supervisor.VERDICT_HOLD,
+                  run_supervisor.CLAIM_READ_FAILED)
+        recovered = None
         while time.time() < deadline:
             with self._connect() as con:
-                due = con.execute("SELECT MIN(retry_at) FROM runs WHERE state='waiting' AND "
-                                  "(error LIKE ? OR error LIKE ?)",
-                                  (run_supervisor.CI_HOLD + '%',
-                                   run_supervisor.VERDICT_HOLD + '%')).fetchone()[0]
-            if due is None:
-                return
+                due = con.execute("SELECT MIN(retry_at) FROM runs WHERE state='waiting' AND ("
+                                  + " OR ".join("error LIKE ?" for _ in polled) + ")",
+                                  tuple(hold + '%' for hold in polled)).fetchone()[0]
+            if due is None or due > deadline:
+                return          # nothing due in this window: the watchdog sweep is the backstop
             if due <= time.time():
+                if due == recovered:
+                    return      # recover() did not release it: do not spin on it
+                # Not a return: the earliest due row may be another worker's, and the row this
+                # worker backed off may fall due later in the window (#1302): keep waiting.
                 self.recover()
-                return
+                recovered = due
+                continue
             sleep(min(due - time.time(), deadline - time.time()) + 1)
+
+
+def _worker_gone(row) -> bool:
+    """A recorded launch and PID, and that process gone (``process_state``; unknown is not)."""
+    return (row['pid'] is not None and row['launch_intent'] is not None
+            and process_state(row['pid'], row['launch_intent']) == 'gone')
+
+
+def _release_claim(row, run_id: str) -> None:
+    """Free an ended uncertain run's seat claim and in-flight mark, which it kept until now
+    (#98). Best effort: the ledger row is the decision; a loop no longer configured has none."""
+    try:
+        from .. import config, gate, state as state_mod
+        loop = config.by_repo(row['repo'])
+        if loop is not None:
+            st = state_mod.state_for(loop)
+            # Only the claim this run wrote: the ledger row left `uncertain` already, so a
+            # newer run may already hold this seat/PR/head, and keeps its claim and mark.
+            if (st.release_if(row['seat'], gate.seat_key(loop, row['pr']), row['head'],
+                              run=run_id) and row['seat'] in claims.INFLIGHT_LABEL):
+                st.inflight_clear(f"{claims.INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}")
+    except Exception:
+        pass

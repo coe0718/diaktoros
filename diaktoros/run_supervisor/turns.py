@@ -397,8 +397,9 @@ class ClaimAndLaunch:
                 # Bounded like a failed turn (#53): back off, then fail with the reason and
                 # a notice. Pre-write, so `retry` (or a new event) re-arms it.
                 retries = (current['retries'] or 0) + 1
-                reason = f'claim-time read failed: {read.read_error}'
+                reason = f'{run_supervisor.CLAIM_READ_FAILED}: {read.read_error}'
                 if retries < run_supervisor.MAX_RETRIES:
+                    self.held_for_ci = True     # this worker lingers to schedule the retry (#1302)
                     con.execute("UPDATE runs SET state='waiting', retries=?, retry_at=?, "
                                 "error=?, updated=? WHERE id=?",
                                 (retries, now + run_supervisor.backoff(retries), reason, now, row['id']))
@@ -562,17 +563,36 @@ class ClaimAndLaunch:
               progress=lambda text: self.record_dependencies(run_id, owner, text),
               # An operator's cancel (#1148) stops the sandbox the way the budget does.
               stop=cancel, on_launch=lambda: pacing.count_turn(loop['id'], counted_seat, cap=cap))
+        self._account_after_turn(turn, row['seat'], provider, account)
+
+    def _account_after_turn(self, turn: _Turn, seat: str, provider: str, account: str) -> None:
+        """What a finished turn says about its account (#219, #1325). A 429 with a reset time, or
+        a provider-unavailable signature on a failed turn, holds the account, and this run waits
+        for it without spending a retry. A turn that succeeded clears an unavailable hold."""
+        from .. import pacing
         # A non-zero sandbox exit with nothing on the write-ahead record is the model or
         # provider failing (429/5xx, OAuth refresh, crash): worth a backed-off retry.
         turn.retry = turn.rc != 0
+        if turn.rc == 0:
+            pacing.clear_unavailable(account)
+            return
         limited = turn.observed.get('rate_limited_until')
-        if turn.rc != 0 and isinstance(limited, (int, float)) and limited > time.time():
+        if isinstance(limited, (int, float)) and limited > time.time():
             # The provider said its window is closed (#219): hold the account, and this run
             # waits for the reset instead of spending its retries against the 429.
             pacing.hold(account, limited, f"{provider} answered 429")
-            turn.paced_until = limited
-            turn.error = (f"held: {row['seat']} usage window ({provider}) — resumes "
-                          f"{pacing.when(limited)}")
+            until, reason = limited, ""
+        else:
+            # No 429 to say when (#1325): the DirectSDK path answers a closed window with empty
+            # streams. Hold the account, for every seat on it, for a short growing window.
+            detail = pacing.unavailable_signature(turn.observed.get('stdout'),
+                                                  turn.observed.get('stderr'))
+            if detail is None:
+                return
+            until = pacing.hold_unavailable(account, detail)
+            reason = (pacing.held(account) or (0, ""))[1]
+        turn.paced_until = until
+        turn.error = pacing.hold_line(seat, provider, until, reason)
 
     def _pacing_hold(self, turn: _Turn, provider: str, account: str) -> bool:
         """Pacing (#219): an account whose usage window is closed, or a seat past its daily
@@ -583,8 +603,7 @@ class ClaimAndLaunch:
         closed = pacing.held(account)
         if closed is not None:
             turn.paced_until = closed[0]
-            turn.error = (f"held: {row['seat']} usage window ({provider}) — resumes "
-                          f"{pacing.when(closed[0])}")
+            turn.error = pacing.hold_line(row['seat'], provider, closed[0], closed[1])
             return False
         # Two pools (#772, #457): with review_only_daily set, a review-only PR's reviewer turn
         # counts against that cap only, every other turn against daily_turns only. Unset,

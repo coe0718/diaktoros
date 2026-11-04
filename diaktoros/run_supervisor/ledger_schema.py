@@ -213,6 +213,9 @@ MIGRATIONS = (
     # An operator's `hermes dk cancel` of a launching or running turn (#1148): when it was asked.
     # The owning worker's heartbeat reads it and stops the sandbox; NULL: never asked.
     ("cancel_requested", "ALTER TABLE runs ADD COLUMN cancel_requested REAL", ()),
+    # Each model request of the turn (#1790), as JSON: what it kept of the previous request's
+    # conversation and what the provider's cache served (``request_trace``). NULL: not traced.
+    ("requests", "ALTER TABLE runs ADD COLUMN requests TEXT", ()),
 )
 
 

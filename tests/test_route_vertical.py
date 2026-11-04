@@ -20,7 +20,7 @@ from diaktoros.config import host_guards  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 HEAD = "a" * 40
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from worker_wait import wait_for_workers  # noqa: E402
+from worker_wait import end_lingering_workers, wait_for_workers  # noqa: E402
 
 
 class RouteSubprocess(unittest.TestCase):
@@ -31,6 +31,9 @@ class RouteSubprocess(unittest.TestCase):
         # Cleanups run last in, first out: every detached worker a route spawned has exited
         # before the temp dir is removed (a worker still writing made rmtree fail under load).
         self.addCleanup(wait_for_workers, self.root)
+        # A worker whose claim-time read failed lingers ~150s to schedule its retry (#1302);
+        # these tests have read what the ledger says by then, so end it before the wait above.
+        self.addCleanup(end_lingering_workers, self.root)
         home = self.root / "home"
         home.mkdir()
         loops = home / "review-loops.d"
@@ -373,6 +376,9 @@ class RouteSubprocess(unittest.TestCase):
         runtime.chmod(0o600)
         payload = {"repository": {"full_name": "acme/widgets"}, "action": "opened",
                    "number": 7, "pull_request": self.pr, "sender": {"login": "dev"}}
+        # This test sets the run states by hand below, so the ledger no longer says what a worker
+        # asleep in its linger (after its failed claim read) saw: the test vouches for them.
+        self.addCleanup(end_lingering_workers, self.root, vouched=True)
         first = self.route("gate_reviewer.py", payload)
         self.assertIn("reviewer enqueued for isolated worker", first.stderr)
         db = Path(self.env["HERMES_HOME"]) / "state" / "diaktoros-runs.sqlite"

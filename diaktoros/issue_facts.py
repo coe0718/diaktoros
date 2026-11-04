@@ -42,12 +42,10 @@ def closing_numbers(loop: dict, number: int) -> list[int] | None:
     return found[:MAX_ISSUES]
 
 
-def maintainer_comments(loop: dict, number: int) -> tuple[list[tuple[str, str, str]], str]:
-    """``[(login, created_at, body)]`` of maintainers' comments (oldest first), and a note."""
-    from . import config, gh
-    comments, _ = gh.issue_comments_read(loop, number)
-    if comments is None:
-        return [], "(The maintainers' comments could not be read for this turn.)"
+def maintainers_among(loop: dict, comments: list) -> list[tuple[str, str, str]]:
+    """``[(login, created_at, body)]`` of the maintainers' comments among ``comments`` (oldest
+    first, the newest ``COMMENTS_MAX``): the one filter for every reader of them."""
+    from . import config
     allowed = config.maintainers(loop)
     out = []
     for comment in comments:
@@ -55,7 +53,16 @@ def maintainer_comments(loop: dict, number: int) -> tuple[list[tuple[str, str, s
         login = str(user.get("login") or "").lower() if isinstance(user, dict) else ""
         if login and login in allowed:
             out.append((login, str(comment.get("created_at") or ""), str(comment.get("body") or "")))
-    return out[-COMMENTS_MAX:], ""
+    return out[-COMMENTS_MAX:]
+
+
+def maintainer_comments(loop: dict, number: int) -> tuple[list[tuple[str, str, str]], str]:
+    """``[(login, created_at, body)]`` of maintainers' comments (oldest first), and a note."""
+    from . import gh
+    comments, _ = gh.issue_comments_read(loop, number)
+    if comments is None:
+        return [], "(The maintainers' comments could not be read for this turn.)"
+    return maintainers_among(loop, comments), ""
 
 
 def comments_section(loop: dict, number: int, what: str = "issue") -> str:
