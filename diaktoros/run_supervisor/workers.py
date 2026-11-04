@@ -123,12 +123,49 @@ def _gate(mark: Path) -> Path:
     return mark.with_name(mark.name + '.end')
 
 
+def _lock_gate(mark: Path, wait: bool) -> int | None:
+    """Create the gate of ``mark`` and lock it; its descriptor, or None when that cannot be
+    done (or, without ``wait``, when someone else holds the lock). As for the mark itself, the
+    lock only counts if the path still names the file locked: a holder that removes the gate
+    does so under the lock, and whoever was waiting on the removed file tries again."""
+    for _ in range(3):
+        try:
+            gate = os.open(_gate(mark), os.O_WRONLY | os.O_CREAT, 0o600)
+        except OSError:
+            return None
+        try:
+            fcntl.flock(gate, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+            if os.path.samestat(os.fstat(gate), os.stat(_gate(mark))):
+                return gate
+        except BlockingIOError:
+            os.close(gate)
+            return None
+        except OSError:
+            pass
+        os.close(gate)
+    return None
+
+
 def _open_gate(mark: Path) -> int | None:
-    """Create the gate of ``mark`` (unlocked); its descriptor, or None when that cannot be done."""
+    """Create the gate of ``mark`` and take its lock; the descriptor, or None. The lock is kept
+    while the mark is taken, so that ``_sweep`` cannot remove the gate between the two (#1830)."""
+    return _lock_gate(mark, wait=True)
+
+
+def _sweep(mark: Path) -> None:
+    """Remove ``mark`` and its gate unless some process holds the mark (#1830). The check and
+    both removals are made under the gate's lock, which a worker taking the same mark holds
+    until it has it: the sweeper never removes the gate of a worker that is marking itself.
+    A gate that is locked by someone else is in use, and is left."""
+    gate = _lock_gate(mark, wait=False)
+    if gate is None:
+        return
     try:
-        return os.open(_gate(mark), os.O_WRONLY | os.O_CREAT, 0o600)
-    except OSError:
-        return None
+        if not _held(mark):
+            _unlink(mark)
+            _unlink(_gate(mark))
+    finally:
+        os.close(gate)
 
 
 def _leave(mark: Path, fd: int, gate: int | None) -> None:
@@ -189,15 +226,18 @@ def lingering(db: Path):
     next worker to linger sweeps those."""
     for pid, path in _marks(db).items():
         if pid != os.getpid() and not _held(path):
-            _unlink(path)
-            _unlink(_gate(path))
+            _sweep(path)
     mark = linger_mark(db, os.getpid())
     gate = _open_gate(mark)                 # before the mark: a marked worker has its gate
     fd = _take_mark(mark)
-    if fd is None and gate is not None:
-        _unlink(_gate(mark))
-        os.close(gate)
-        gate = None
+    if gate is not None:
+        if fd is None:
+            _unlink(_gate(mark))
+            os.close(gate)
+            gate = None
+        else:
+            with contextlib.suppress(OSError):
+                fcntl.flock(gate, fcntl.LOCK_UN)    # marked: a signaler may take it now
     try:
         yield
     finally:

@@ -6,6 +6,7 @@ the real ``workers.lingering``); the ledger's rows say nothing about which proce
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 from contextlib import closing
+import fcntl
 import os
 from pathlib import Path
 import signal
@@ -14,6 +15,7 @@ import select
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -251,6 +253,44 @@ class EndLingeringWorkers(unittest.TestCase):
         with self.assertRaises(AssertionError):
             worker_wait.wait_for_workers(self.root, timeout=0.3)
 
+    def test_a_signal_waits_for_the_gate_only_for_a_bounded_time(self):
+        # #1830 F4: a signaler that cannot get the gate's lock gives up, without a signal.
+        db = self.root / "runs.sqlite"
+        proc = self.lingerer()
+        gate = os.open(str(workers.linger_mark(db, proc.pid)) + ".end", os.O_RDONLY)
+        self.addCleanup(os.close, gate)
+        fcntl.flock(gate, fcntl.LOCK_EX)                # held by someone else
+        result = []
+        thread = threading.Thread(daemon=True, target=lambda: result.append(
+            workers.signal_lingerer(db, proc.pid, signal.SIGTERM, wait=0.2)))
+        thread.start()
+        thread.join(5)
+        self.assertFalse(thread.is_alive())             # it gave up instead of waiting on
+        self.assertEqual(result, [False])
+        self.assertIsNone(proc.poll())
+        fcntl.flock(gate, fcntl.LOCK_UN)
+        self.assertTrue(workers.signal_lingerer(db, proc.pid, signal.SIGTERM))
+
+    def test_a_signal_is_not_sent_under_a_gate_that_was_replaced_after_it_was_opened(self):
+        # #1830 F4: the signaler holds the old gate while the worker, with its mark still held,
+        # has a new one at the path. Its lock on the old file authorises nothing.
+        db = self.root / "runs.sqlite"
+        proc = self.lingerer()
+        gate_path = Path(str(workers.linger_mark(db, proc.pid)) + ".end")
+        real, replaced = workers.fcntl.flock, []
+
+        def flock_after_gate_replaced(fd, how):
+            if how == fcntl.LOCK_EX | fcntl.LOCK_NB and not replaced:
+                replaced.append(1)
+                gate_path.unlink()
+                gate_path.write_text("")                # a different file at the same path
+            return real(fd, how)
+
+        with patch.object(workers.fcntl, "flock", flock_after_gate_replaced):
+            self.assertFalse(workers.signal_lingerer(db, proc.pid, signal.SIGTERM))
+        self.assertEqual(replaced, [1])
+        self.assertIsNone(proc.poll())
+
 
 class LingerMark(unittest.TestCase):
     def test_the_mark_exists_exactly_while_the_worker_lingers(self):
@@ -291,6 +331,47 @@ class LingerMark(unittest.TestCase):
                 self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()),
                                  [workers.linger_mark(db, os.getpid()).name,
                                   workers.linger_mark(db, os.getpid()).name + ".end"])
+
+    def test_a_sweep_of_a_stale_mark_does_not_remove_the_gate_of_a_worker_taking_that_mark(self):
+        # #1830 F3: the sweeper has removed the stale mark of PID P; a new worker with PID P
+        # now starts to linger. It must not end up marked with its gate removed by the sweeper.
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "runs.sqlite"
+            sweeper, worker_pid = threading.get_ident(), 2 ** 22 + 5
+            stale = workers.linger_mark(db, worker_pid)
+            stale.write_text("")
+            Path(str(stale) + ".end").write_text("")
+            marked, release, started = threading.Event(), threading.Event(), []
+            real_unlink, real_getpid = workers._unlink, os.getpid
+
+            def worker():
+                with workers.lingering(db):
+                    marked.set()
+                    release.wait(10)
+
+            thread = threading.Thread(target=worker, daemon=True)
+
+            def unlink_then_worker_starts(path):
+                real_unlink(path)
+                if path == stale and not started:       # the mark is gone; the gate is not yet
+                    started.append(1)
+                    thread.start()
+                    marked.wait(0.5)                    # unfixed, it is marked by now
+
+            def getpid():
+                return real_getpid() if threading.get_ident() == sweeper else worker_pid
+
+            with patch.object(workers, "_unlink", unlink_then_worker_starts), \
+                    patch.object(workers.os, "getpid", getpid):
+                with workers.lingering(db):
+                    pass
+            try:
+                self.assertTrue(marked.wait(10))
+                self.assertTrue(workers._held(stale))
+                self.assertTrue(Path(str(stale) + ".end").exists())     # its gate is still there
+            finally:
+                release.set()
+                thread.join(10)
 
     def test_a_mark_that_cannot_be_taken_leaves_no_gate_and_no_open_descriptor(self):
         # #1830 F2: the gate is created before the mark; when the mark fails it is undone.
