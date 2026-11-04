@@ -52,7 +52,7 @@
     "diaktoros/doctor/route_checks.py::check_route": 83,
     "diaktoros/doctor/seat_checks.py::check_seat_extras": 111,
     "diaktoros/drain.py::drain": 86,
-    "diaktoros/gate.py::shadow_state": 88,
+    "diaktoros/gate.py::shadow_state": 86,
     "diaktoros/gate_failures.py::gateway_webhook_setting": 117,
     "diaktoros/gate_failures.py::run": 136,
     "diaktoros/gate_shims.py::divergence": 83,

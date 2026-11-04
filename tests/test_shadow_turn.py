@@ -97,9 +97,29 @@ class ActiveTurn(Turns):
         self.turn_shadow("t2", "succeeded", "APPROVE", at=now - 40)
         self.assertEqual(self.state()[:2], ("", ""))
 
-    def test_a_new_turn_whose_shadow_ended_without_a_review_is_a_note_not_a_hold(self):
+    def ended_without_review(self, state):
+        """#1683 round 1 F1: a failed, cancelled or skipped shadow of the new turn is no second
+        opinion on it, so ``ready`` and the merge check still hold."""
         self.two_turns_old_shadow_only()
-        self.turn_shadow("t2", "failed")
+        self.turn_shadow("t2", state)
+        kind, held, _note = self.state()
+        self.assertEqual(kind, "pending")
+        self.assertIn(f"ended {state} without a review", held)
+        self.assertEqual(len(self.shadow_reasons()), 1, self.kinds())
+        self.assertEqual(merge_check.decide(self.kinds())[0], merge_check.PENDING)
+
+    def test_a_new_turn_whose_shadow_failed_without_a_review_still_holds(self):
+        self.ended_without_review("failed")
+
+    def test_a_new_turn_whose_shadow_was_cancelled_without_a_review_still_holds(self):
+        self.ended_without_review("cancelled")
+
+    def test_a_new_turn_whose_shadow_was_skipped_without_a_review_still_holds(self):
+        self.ended_without_review("skipped")
+
+    def test_a_single_turn_whose_shadow_ended_without_a_review_is_a_note_not_a_hold(self):
+        self.reviewer("t1", time.time() - 100)
+        self.turn_shadow("t1", "failed")
         held, note = gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db)
         self.assertEqual(held, "")
         self.assertIn("ended failed without a review", note)

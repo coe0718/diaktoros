@@ -268,8 +268,10 @@ def _shadow_view(con, repo: str, number: int, head: str) -> tuple:
     """What the ledger holds for a head's shadow, for ``shadow_state``: ``(review, run, ruling,
     pending, lost)``. The newest review, the newest shadow run, the ruling that answers the review
     and the open run newer than it, all of the active reviewer turn (#1683). ``lost`` is true when
-    that turn has no shadow run while an earlier turn's shadow exists at the head: the head is
-    sampled, so this turn's shadow is owed and its enqueue was delayed or lost."""
+    that turn has no review while an earlier turn's shadow run exists at the head: the head is
+    sampled, so this turn's shadow is owed, and its enqueue was delayed or lost or its run ended
+    (failed, cancelled, skipped) without one. With no earlier turn's shadow, a run that ended
+    without a review is nothing to wait for, as before."""
     import sqlite3
     turn = _active_turn(con, repo, number, head)
     scope, targs = ("", ()) if turn is None else (" AND turn_key=?", (turn,))
@@ -295,9 +297,17 @@ def _shadow_view(con, repo: str, number: int, head: str) -> tuple:
         "created>? ORDER BY created DESC LIMIT 1",
         (repo, number, head, *targs, *SHADOW_OPEN,
          float(review[1]) if review is not None else -1.0)).fetchone()
-    lost = bool(turn is not None and run is None and con.execute(
-        f"SELECT 1 {base} LIMIT 1", (repo, number, head)).fetchone())
+    lost = bool(turn is not None and review is None and con.execute(
+        f"SELECT 1 {base} AND COALESCE(turn_key,'')<>? LIMIT 1", (repo, number, head, turn)).fetchone())
     return review, run, ruling, pending, lost
+
+
+def _lost_hold(short: str, run) -> str:
+    """The hold text when the active reviewer turn has no shadow review of its own (#1683):
+    ``run`` is that turn's newest shadow run row, or None when none was queued."""
+    ended = f"its shadow run ended {run[0]} without a review" if run else "it has none queued yet"
+    return (f"waiting on the shadow review at {short}: the newest reviewer turn has no review "
+            f"({ended}), and an earlier turn's does not count for it")
 
 
 def ruling_answers(ruling, review_run: str, review_created: float) -> bool:
@@ -399,8 +409,7 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
     if lost:
         # #1683: an earlier turn's shadow at this head never answers the newer reviewer turn; the
         # head holds until that turn's own shadow has a review.
-        return "pending", (f"waiting on the shadow review at {short}: the newest reviewer turn "
-                           "has none queued yet, and an earlier turn's does not count for it"), ""
+        return "pending", _lost_hold(short, run), ""
     if review is not None:
         return "", "", ""
     if run is None:
