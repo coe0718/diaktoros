@@ -112,4 +112,10 @@ def estimate(row: dict, table: dict) -> dict | None:
 def estimate_text(estimate_: dict | None) -> str:
     if estimate_ is None:
         return "unpriced"
-    return ("at most " if estimate_["at_most"] else "") + f"${estimate_['dollars']:,.4f}"
+    dollars = estimate_["dollars"]
+    if not estimate_["at_most"]:
+        return f"${dollars:,.4f}"
+    # An upper bound is rounded up, so the figure shown is never below the bound it asserts
+    # (and never $0.0000 for a nonzero cost). The inner round drops float noise, so an exact
+    # 0.0003 is not bumped to 0.0004.
+    return f"at most ${math.ceil(round(dollars * 1e4, 6)) / 1e4:,.4f}"

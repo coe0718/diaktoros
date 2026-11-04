@@ -172,6 +172,28 @@ class Estimate(unittest.TestCase):
         self.assertTrue(row["estimate"]["at_most"])
         self.assertIn("at most $0.1540", stats.text(report))
 
+    def test_an_upper_bound_is_shown_rounded_up_never_below_the_bound(self):
+        # 100 input tokens of unknown cache at 0.14/M is $0.000014: not "at most $0.0000".
+        report = self.report([
+            ("shadow", "deepseek-flash", {"tokens_in": 100, "tokens_out": 0,
+                                          "cache_read": None})], WANT)
+        (row,) = report["usage"]
+        self.assertTrue(row["estimate"]["at_most"])
+        self.assertGreater(row["estimate"]["dollars"], 0)
+        text = stats.text(report)
+        self.assertIn("at most $0.0001", text)
+        self.assertNotIn("$0.0000", text)
+
+    def test_estimate_text_rounds_only_upper_bounds_up(self):
+        def shown(dollars, at_most):
+            return prices.estimate_text({"dollars": dollars, "at_most": at_most})
+        self.assertEqual(shown(1.4e-05, True), "at most $0.0001")
+        self.assertEqual(shown(0.00012, True), "at most $0.0002")
+        self.assertEqual(shown(0.0003, True), "at most $0.0003")     # exact: not bumped
+        self.assertEqual(shown(0.0, True), "at most $0.0000")
+        self.assertEqual(shown(1234.56781, True), "at most $1,234.5679")
+        self.assertEqual(shown(0.00012, False), "$0.0001")           # an estimate rounds to nearest
+
 
 if __name__ == "__main__":
     unittest.main()
