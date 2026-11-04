@@ -936,12 +936,6 @@ def latest_effective_review_at_head(reviews: list, loop: dict, head: str) -> dic
     return latest[2]
 
 
-def approved_at_head(reviews: list, loop: dict, head: str) -> bool:
-    return any(is_reviewer(r, loop) and gh.review_state(r) == "APPROVED"
-               and r.get("commit_id") == head
-               for r in reviews if isinstance(r, dict))
-
-
 def changes_at_head(reviews: list, loop: dict, head: str) -> list:
     return [r for r in reviews
             if is_reviewer(r, loop) and gh.review_state(r) == "CHANGES_REQUESTED"
