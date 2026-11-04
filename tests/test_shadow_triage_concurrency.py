@@ -248,6 +248,19 @@ class ShadowTriageConcurrency(Base):
             config.check_concurrency(0, "seats.shadow.concurrency", "t")
         self.assertEqual(config.check_concurrency("3", "seats.shadow.concurrency", "t"), 3)
 
+    def test_docs_do_not_call_triage_concurrency_file_only(self):
+        """#1128: the docs name the paths that write it, and the inheritance rule leaves it out."""
+        docs = pathlib.Path(__file__).resolve().parent.parent / "docs"
+        read = lambda name: " ".join((docs / name).read_text().split())  # noqa: E731
+        config_md, commands_md, settings_md = read("configuration.md"), read("commands.md"), read("settings.md")
+        for stale in ("Triage concurrency and turn budget are also file-only",
+                      "Concurrency and turn budget must be edited in the loop file",
+                      "Triage capacity and budget are file-only settings"):
+            self.assertNotIn(stale, config_md + commands_md)
+        self.assertIn("| `seats.shadow.concurrency` |", config_md)
+        self.assertNotIn("both form concurrency fields", settings_md)
+        self.assertIn("`shadow_concurrency` and `triage_concurrency`, are not part of this rule", settings_md)
+
 
 if __name__ == "__main__":
     unittest.main()

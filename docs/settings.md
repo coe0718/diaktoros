@@ -139,13 +139,17 @@ Check the proposed diff and then the named loop's `status`.
 
 Capacity is per seat, not one shared reviewer-plus-fixer pool:
 
-- If **both form concurrency fields are supplied and equal**, apply writes that value as the
+- If **both working-seat fields (`reviewer_concurrency`, `fixer_concurrency`) are supplied and equal**, apply writes that value as the
   loop-level `concurrency` and removes working-seat pins that agree with it.
 - If **both are supplied but differ**, the loop default becomes 1 and each differing seat
   gets its own explicit override.
 - If **only one is supplied**, only that seat gets a pin; the loop default and other seat
   remain unchanged.
 - If **neither is supplied**, loop default and pins remain unchanged.
+
+The other two concurrency fields, `shadow_concurrency` and `triage_concurrency`, are not part of this rule:
+each writes only its own `seats.shadow.concurrency` / `seats.triage.concurrency`, never the loop default, and
+never touches the working-seat pins. Blank keeps the stored value.
 
 `set --concurrency` subsequently affects only unpinned working seats. A form that explicitly
 owns both seat values can reconcile their pins again. Adjudicator/triage do not inherit the
