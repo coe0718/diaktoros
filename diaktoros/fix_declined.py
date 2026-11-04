@@ -71,6 +71,26 @@ def declined(loop: dict, number: int, reason: str) -> None:
         log(f"declined fix label for #{number} not recorded: {type(exc).__name__}: {exc}")
 
 
+def reconcile(loop: dict, st) -> None:
+    """The watchdog's catch-up for a missed ``closed`` or ``unlabeled`` event (review of #1804,
+    F6): a declined issue that is closed, or no longer carries the fix label, is settled. One read
+    per declined issue, as the reader (its ETag makes an unchanged one free); an unreadable one is
+    left for the next sweep. Never raises."""
+    from . import gh
+    fix_label = str((loop.get('triage') or {}).get('fix_label') or '').casefold()
+    for number in entries(st):
+        try:
+            issue = gh.api(loop, f"/repos/{loop['repo']}/issues/{number}", login=loop['read_token'])
+        except Exception:
+            continue
+        if not isinstance(issue, dict) or issue.get('number') != number:
+            continue
+        present = {str((label or {}).get('name') or '').casefold()
+                   for label in issue.get('labels') or [] if isinstance(label, dict)}
+        if issue.get('state') != 'open' or not fix_label or fix_label not in present:
+            resolved(st, number)
+
+
 def resolved(st, number: int) -> None:
     """The request is settled (a later label handed to the fixer, the issue closed, or the fix
     label removed): the issue is no longer listed as declined."""

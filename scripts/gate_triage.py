@@ -56,6 +56,10 @@ def fix(loop: dict, payload: dict) -> None:
         if isinstance(exc, IssueIneligible):        # said, not only recorded (#1794)
             fix_declined.declined(loop, number, str(exc))
         silence(f"issue #{number} not handed to the fixer: {exc}")
+    # Eligible now, so an earlier decline's reason is stale, whether the hand-off below queues
+    # the fix or waits on a PR or a prerequisite (review of #1804, F6).
+    from diaktoros import state as state_mod
+    fix_declined.resolved(state_mod.state_for(loop), number)
     from diaktoros import fix_hold
     try:
         kind, text, base, outcome = fix_hold.hand_off(loop, number, live, auto=False)
@@ -71,8 +75,6 @@ def fix(loop: dict, payload: dict) -> None:
         silence(f"issue #{number}: {text}; not handed to the fixer")
     if outcome in ("enqueued", "rearmed", "pending"):
         _fix_notice(loop, number, base, f"fix turn queued from {loop['base']} at {base[:7]}")
-    from diaktoros import state as state_mod
-    fix_declined.resolved(state_mod.state_for(loop), number)
     # Recorded like the reviewer gate's acceptances (#1244): explain and Desktop show the event
     # that started the fix, not only the ones declined around it.
     silence(f"issue #{number} handed to the fixer at {base[:7]}: {outcome}", "accepted")

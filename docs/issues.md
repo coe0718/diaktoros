@@ -42,12 +42,16 @@ The fix label cannot be a triage label. Only an allowlisted sender's labeling ev
 triggers a fix; the feature does not inspect whether that sender is physically a human.
 Issues the loop files itself can be fixed without listing their author (#1794): shadow-found
 issues are filed as the reader (a GitHub App's bot when the reader is an App), and
-reviewer-filed issues as the reviewer seat; `doctor` names them (`triage:fix_authors`). A
+reviewer-filed issues as the reviewer seat; `doctor` names them (`triage:fix_authors`). Those
+need the fix label itself, live at every check: an auto-offer label never counts for them, so a
+person always applies it. A
 maintainer's fix label that is declined anyway (the author is not allowed, the issue closed, the
 label went, or unattended fixer pushes are off) is said, not only recorded: the observer gets one
 `held` notice per issue and reason with the next step, and `status` lists the issue under
-`held:` until the request is settled: a later label accepted, the issue closed, or the fix label
-removed. Every outstanding decline is listed; none is dropped to make room.
+`held:` until the request is settled: a later label accepted (queued, or waiting on a PR or a
+prerequisite), the issue closed, or the fix label removed. Every outstanding decline is listed;
+none is dropped to make room. If the close or unlabel event is missed, the watchdog sweep reads
+each declined issue (as the reader) and settles it when the issue is closed or the label is gone.
 Changing/reopening an issue or editing its text does not launch triage. A durable
 triage key deduplicates repeat opened deliveries; proven pre-write failures may re-arm,
 but recorded write outcomes are never blindly replayed.

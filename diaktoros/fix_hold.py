@@ -13,7 +13,7 @@ fix the mentioned PR was waiting for.
 
 from __future__ import annotations
 
-from . import config, gate, gh, issue_deps
+from . import config, fix_declined, gate, gh, issue_deps
 from .util import log
 
 
@@ -192,6 +192,7 @@ def _drop_comment(loop: dict, number: int, pr: int, declared: bool = False) -> N
 def sweep(loop: dict, st) -> list[str]:
     """Re-check held hand-offs; queue the fix of those whose PR merged. Best effort."""
     lines: list[str] = []
+    fix_declined.reconcile(loop, st)
     if not config.issue_fixes_enabled(loop):
         return lines
     sweep_asks(loop, st, lines)

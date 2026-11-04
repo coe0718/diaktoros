@@ -261,6 +261,64 @@ class Gate(Base):
         self.assertIn(5, still)                     # another label removed: still declined
         self.assertEqual(len(still), 23)
 
+    def test_an_issue_the_loop_filed_needs_the_live_fix_label_not_an_auto_offer(self):
+        # Review of #1804, F5: an auto-offer label stood in for the fix label on the loop's own
+        # issues too, so a stale label event started a fix after the label came off. A person
+        # applies the fix label to those; an auto-offer still counts for a listed author.
+        self.loop = {**self.loop, "triage": {**self.loop["triage"], "auto_fix_labels": ["bug"]}}
+        for author, labels, fixed in (("read", ("bug",), False),     # label removed before the gate
+                                      ("read", (LABEL, "bug"), True),
+                                      ("owner", ("bug",), True)):
+            with self.subTest(author=author, labels=labels):
+                self.enqueued.clear()
+                self.live = issue(author=author, labels=labels)
+                self.run_gate(self.labeled())
+                self.assertEqual(bool(self.enqueued), fixed)
+        from diaktoros.run_supervisor import issue_inputs
+        self.live = issue(author="read", labels=("bug",))
+        with self.assertRaisesRegex(run_supervisor.IssueIneligible, "auto-offer label does not"):
+            issue_inputs.issue_fix_issue(self.loop, 12)       # the launch and broker recheck too
+
+    def test_a_decline_is_settled_when_a_later_label_waits_on_a_pr(self):
+        # Review of #1804, F6: accepted into a wait, then released by the sweep, the old decline
+        # stayed listed, telling the operator to allow an author already allowed.
+        st = state_mod.state_for(self.loop)
+        self.live = issue(author="stranger")
+        self.run_gate(self.labeled())
+        self.assertTrue([x for x in fix_hold.status_lines(self.loop, st) if "declined" in x])
+        self.loop = {**self.loop, "triage": {**self.loop["triage"],
+                                             "authors": ["owner", "stranger"]}}
+        self.origin = 7                              # waits on open PR #7
+        self.run_gate(self.labeled())
+        self.assertEqual(self.enqueued, [])
+        self.assertEqual(st.fix_holds(), {12: 7})
+        self.assertEqual([x for x in fix_hold.status_lines(self.loop, st) if "declined" in x], [])
+        self.origin_pr = {"number": 7, "state": "closed", "merged": True}
+        fix_hold.sweep(self.loop, st)
+        self.assertEqual(len(self.enqueued), 1)
+        self.assertEqual([x for x in fix_hold.status_lines(self.loop, st) if "declined" in x], [])
+
+    def test_the_sweep_settles_a_decline_whose_close_or_unlabel_event_was_missed(self):
+        # Review of #1804, F6: with the event lost, the decline was listed forever.
+        st = state_mod.state_for(self.loop)
+        for number in (1, 2, 3, 4):
+            self.live = issue(number=number, author="stranger")
+            payload = self.labeled()
+            payload["issue"] = issue(number=number)
+            self.run_gate(payload)
+        live = {1: issue(number=1, author="stranger", state="closed"),
+                2: issue(number=2, author="stranger", labels=("bug",)),
+                3: issue(number=3, author="stranger")}          # 4 is unreadable
+
+        def api(loop, path, method="GET", body=None, login=None):
+            self.assertEqual(login, "read")
+            return live.get(int(path.rsplit("/", 1)[1]))
+        with mock.patch.object(gh, "api", api):
+            fix_hold.sweep(self.loop, st)
+        still = {int(x.split("#")[1].split(":")[0]) for x in fix_hold.status_lines(self.loop, st)
+                 if "fix label was declined" in x}
+        self.assertEqual(still, {3, 4})              # still labelled; unreadable left for later
+
     def test_an_enqueue_failure_is_held_with_the_base_it_failed_at(self):
         def boom(*a, **k):
             raise OSError("boom")
