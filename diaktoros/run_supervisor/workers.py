@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -66,26 +67,27 @@ def _marks(db: Path) -> dict[int, Path]:
             if path.name.startswith(prefix) and path.name[len(prefix):].isdigit()}
 
 
-def _incarnation(pid: int) -> str:
-    """What identifies process ``pid`` for as long as it lives: ``<pid> <start ticks>``. A
-    reused PID starts later, so it differs; ``-`` where /proc cannot say."""
-    ticks = run_supervisor._pid_start_ticks(pid)
-    return f'{pid} {"-" if ticks is None else ticks}'
-
-
-def _mark_is_live(pid: int, path: Path) -> bool:
-    """True when ``path`` was written by the process now holding ``pid``, not by an earlier
-    one that had the number (#1811): a killed lingerer's mark never vouches for its successor."""
+def _held(path: Path) -> bool:
+    """True while some process holds the lock the lingerer keeps on its mark. The kernel
+    drops that lock when the holder leaves the wait, exits or is killed, so unlike the file
+    it cannot outlive the wait: a PID reused by a later process, or a mark whose removal
+    failed, never reads as held. Anything unreadable is not held."""
     try:
-        return path.read_text().strip() == _incarnation(pid)
+        with open(path, 'rb') as probe:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(probe, fcntl.LOCK_UN)
     except OSError:
-        return False
+        pass
+    return False
 
 
 def lingering_pids(db: Path) -> set[int]:
-    """The processes that currently carry a linger mark beside the ledger ``db``: marks whose
-    process is the one that wrote them."""
-    return {pid for pid, path in _marks(db).items() if _mark_is_live(pid, path)}
+    """The processes that are inside a ``lingering`` block beside the ledger ``db``: those
+    whose mark file is locked by its holder at this moment."""
+    return {pid for pid, path in _marks(db).items() if _held(path)}
 
 
 def _unlink(path: Path) -> None:
@@ -96,26 +98,44 @@ def _unlink(path: Path) -> None:
         pass
 
 
+def _take_mark(mark: Path) -> int | None:
+    """Create ``mark`` and lock it; the open descriptor, whose lock is the mark, or None when
+    that cannot be done. A sweeper may unlink the file between creating and locking it, so the
+    lock only counts if the path still names the file locked."""
+    for _ in range(3):
+        try:
+            fd = os.open(mark, os.O_WRONLY | os.O_CREAT, 0o600)
+        except OSError:
+            return None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            if os.path.samestat(os.fstat(fd), os.stat(mark)):
+                return fd
+        except OSError:
+            pass
+        os.close(fd)
+    return None
+
+
 @contextlib.contextmanager
 def lingering(db: Path):
     """Mark this process as lingering for the ``with`` block, which must be only a wait that
-    is safe to end by SIGTERM. Best effort throughout: a worker never creates host state, so a
-    ledger directory that is gone or unwritable leaves it unmarked, and a mark that cannot be
-    removed is left. A worker killed inside the block leaves its mark (SIGTERM does not run
-    ``finally``): the next worker to linger sweeps the marks no live incarnation holds, and a
-    reader ignores them meanwhile."""
+    is safe to end by SIGTERM. The mark is ``<ledger>.linger.<pid>`` holding an ``flock`` that
+    this process keeps until it leaves the block, however it leaves (#1811): the lock, not the
+    file, says it lingers, so a mark left by a killed worker, by a PID since reused or by a
+    removal that failed authenticates nobody. Best effort throughout: a worker never creates
+    host state, so a ledger directory that is gone or unwritable leaves it unmarked, and a
+    mark that cannot be removed is left, unlocked. The next worker to linger sweeps those."""
     for pid, path in _marks(db).items():
-        if not _mark_is_live(pid, path):
+        if pid != os.getpid() and not _held(path):
             _unlink(path)
     mark = linger_mark(db, os.getpid())
-    try:
-        mark.write_text(_incarnation(os.getpid()) + '\n')
-    except OSError:
-        mark = None
+    fd = _take_mark(mark)
     try:
         yield
     finally:
-        if mark is not None:
+        if fd is not None:
+            os.close(fd)                    # releases the lock: the mark stops counting here
             _unlink(mark)
 
 

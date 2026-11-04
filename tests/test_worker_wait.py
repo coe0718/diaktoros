@@ -35,13 +35,16 @@ class EndLingeringWorkers(unittest.TestCase):
         self.root = Path(tmp.name)
         self.db = self.root / "runs.sqlite"
 
-    def start(self, code, *args):
-        # Named by the root on its command line, like a detached worker.
+    def start(self, code, *args, named=True):
+        # Named by the root on its command line, like a detached worker. Unnamed, it runs in the
+        # root and is given the ledger by its relative path, so nothing on its command line says
+        # which root it is under.
         env = {**os.environ, "PYTHONPATH": os.pathsep.join(
             [str(Path(run_supervisor.__file__).resolve().parents[2])]
             + os.environ.get("PYTHONPATH", "").split(os.pathsep))}
-        proc = subprocess.Popen([sys.executable, "-c", code, *args, str(self.root)],
-                                stdout=subprocess.PIPE, text=True, env=env)
+        proc = subprocess.Popen([sys.executable, "-c", code, *args, *([str(self.root)] if named else [])],
+                                stdout=subprocess.PIPE, text=True, env=env,
+                                cwd=None if named else self.root)
         self.addCleanup(proc.stdout.close)
         self.addCleanup(proc.wait)
         self.addCleanup(proc.kill)
@@ -99,17 +102,25 @@ class EndLingeringWorkers(unittest.TestCase):
         with self.assertRaises(AssertionError):
             worker_wait.wait_for_workers(self.root, timeout=0.3)
 
-    def test_a_mark_of_a_process_that_is_gone_or_not_under_the_root_ends_nothing(self):
+    def test_a_marked_process_outside_the_root_is_neither_selected_nor_ended(self):
+        # F5 of #1823: a valid, held mark of a live process that does not name the root. Without
+        # the root intersection in lingering_workers it would be selected and killed.
+        self.polled_waiting_row()
         stuck = self.hung()
-        workers.linger_mark(self.db, 2 ** 22 + 1).write_text("x")      # no such process
-        elsewhere = subprocess.Popen([sys.executable, "-c", HANG])      # does not name the root
-        self.addCleanup(elsewhere.wait)
-        self.addCleanup(elsewhere.kill)
-        workers.linger_mark(self.db, elsewhere.pid).write_text("x")
+        elsewhere = self.start(LINGER, self.db.name, named=False)
+        self.assertEqual(elsewhere.stdout.readline().strip(), "marked")
+        self.assertIn(elsewhere.pid, workers.lingering_pids(self.db))   # the mark itself is valid
+        self.assertEqual(worker_wait.lingering_workers(self.root), set())
+        worker_wait.end_lingering_workers(self.root, settle=0.3)
+        self.assertIsNone(elsewhere.poll())
+        self.assertIsNone(stuck.poll())
+
+    def test_the_mark_of_a_process_that_is_gone_ends_nothing(self):
+        stuck = self.hung()
+        workers.linger_mark(self.db, 2 ** 22 + 1).write_text("4194305 7\n")   # no such process
         self.assertEqual(worker_wait.lingering_workers(self.root), set())
         worker_wait.end_lingering_workers(self.root, settle=0.3)
         self.assertIsNone(stuck.poll())
-        self.assertIsNone(elsewhere.poll())
 
     def test_no_ledger_and_no_mark_is_not_a_linger(self):
         stuck = self.hung()
@@ -122,21 +133,57 @@ class EndLingeringWorkers(unittest.TestCase):
 
     def test_a_stale_mark_does_not_vouch_for_a_process_that_reused_its_pid(self):
         # F2 of #1823: the lingerer was killed and left its mark; a hung process under the same
-        # root now holds that PID. The mark names the old incarnation, so the new one is not ended.
+        # root now holds that PID. Nothing holds the mark's lock, so the new one is not ended,
+        # whatever the file says: "<pid> -" is what the earlier start-time marks wrote where
+        # /proc was unreadable (round 2, F2), and it vouches for nobody now either.
         self.polled_waiting_row()
         stuck = self.hung()
-        workers.linger_mark(self.db, stuck.pid).write_text(f"{stuck.pid} 1\n")  # another start time
-        self.assertEqual(workers.lingering_pids(self.db), set())
-        self.assertEqual(worker_wait.lingering_workers(self.root), set())
+        for text in (f"{stuck.pid} 1\n", f"{stuck.pid} -\n", ""):
+            workers.linger_mark(self.db, stuck.pid).write_text(text)
+            self.assertEqual(workers.lingering_pids(self.db), set())
+            self.assertEqual(worker_wait.lingering_workers(self.root), set())
         worker_wait.end_lingering_workers(self.root, settle=0.3)
         self.assertIsNone(stuck.poll())
         with self.assertRaises(AssertionError):
             worker_wait.wait_for_workers(self.root, timeout=0.3)
 
-    def test_a_mark_with_no_incarnation_in_it_counts_for_nothing(self):
+    def test_a_stale_mark_is_not_vouched_for_when_proc_is_unreadable(self):
+        # Round 2, F2: with no /proc to say who is who the verdict is the same, because the
+        # lock does not use /proc: an unlocked mark vouches for nobody.
+        self.polled_waiting_row()               # the ledger the helper scans for marks
         stuck = self.hung()
-        workers.linger_mark(self.db, stuck.pid).write_text("")
-        self.assertEqual(worker_wait.lingering_workers(self.root), set())
+        workers.linger_mark(self.db, stuck.pid).write_text(f"{stuck.pid} -\n")
+        with patch.object(run_supervisor, "_pid_start_ticks", return_value=None):   # stat unreadable
+            self.assertEqual(worker_wait.lingering_workers(self.root), set())
+            worker_wait.end_lingering_workers(self.root, settle=0.3)
+        self.assertIsNone(stuck.poll())
+
+    def test_a_killed_lingerer_leaves_a_mark_that_counts_for_nothing(self):
+        # The mark file survives SIGKILL; the lock does not.
+        self.polled_waiting_row()
+        gone = self.lingerer()
+        gone.kill()
+        gone.wait()
+        self.assertTrue(workers.linger_mark(self.db, gone.pid).exists())
+        self.assertEqual(workers.lingering_pids(self.db), set())
+
+    def test_a_worker_at_work_after_a_failed_removal_fails_the_exit_check(self):
+        # F4 of #1823 end to end: a process that left its wait but kept the file (unlink
+        # denied) is at work, so it is not ended.
+        code = ("import sys, time; from pathlib import Path\n"
+                "from unittest.mock import patch\n"
+                "from diaktoros.run_supervisor import workers\n"
+                "with patch.object(Path, 'unlink', side_effect=PermissionError('denied')):\n"
+                "    with workers.lingering(Path(sys.argv[1])): pass\n"
+                "print('left', flush=True); time.sleep(60)")
+        self.polled_waiting_row()
+        proc = self.start(code, str(self.db))
+        self.assertEqual(proc.stdout.readline().strip(), "left")
+        self.assertTrue(workers.linger_mark(self.db, proc.pid).exists())
+        worker_wait.end_lingering_workers(self.root, settle=0.3)
+        self.assertIsNone(proc.poll())
+        with self.assertRaises(AssertionError):
+            worker_wait.wait_for_workers(self.root, timeout=0.3)
 
 
 class LingerMark(unittest.TestCase):
@@ -159,7 +206,7 @@ class LingerMark(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "runs.sqlite"
             workers.linger_mark(db, 2 ** 22 + 1).write_text("4194305 7\n")
-            workers.linger_mark(db, 1).write_text("1 -\n")      # pid 1 is live: another incarnation
+            workers.linger_mark(db, 1).write_text("1 -\n")      # pid 1 is live but holds no lock
             with workers.lingering(db):
                 self.assertEqual(workers.lingering_pids(db), {os.getpid()})
                 self.assertEqual(len(list(Path(tmp).iterdir())), 1)
@@ -175,6 +222,17 @@ class LingerMark(unittest.TestCase):
                 with workers.lingering(db):
                     ran.append(workers.lingering_pids(db))
             self.assertEqual(ran, [{os.getpid()}])
+
+    def test_a_mark_that_cannot_be_removed_stops_vouching_when_the_wait_ends(self):
+        # F4 of #1823: the unlink on leaving is denied and the worker goes on to work (reads,
+        # recover()). The leftover file must not make it look like a lingerer.
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "runs.sqlite"
+            with patch.object(Path, "unlink", side_effect=PermissionError("denied")):
+                with workers.lingering(db):
+                    self.assertEqual(workers.lingering_pids(db), {os.getpid()})
+                self.assertTrue(workers.linger_mark(db, os.getpid()).exists())
+                self.assertEqual(workers.lingering_pids(db), set())     # now at work
 
     def test_a_gone_ledger_directory_leaves_the_worker_unmarked_and_running(self):
         with workers.lingering(Path("/nonexistent-dir-1811/runs.sqlite")):
