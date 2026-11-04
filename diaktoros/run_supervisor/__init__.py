@@ -55,6 +55,10 @@ MAX_RETRIES = 4
 CI_HOLD = "held: waiting for CI"
 # A shadow held for its reviewer turn's verdict (#1647): polled like a CI hold.
 VERDICT_HOLD = "held: waiting for the reviewer's verdict"
+# A fixer push held as one that may have written, and the host's proof that one wrote nothing
+# (#1763): settled runs are failed, not reconciled, so `retry` and a redelivery re-arm them.
+PUSH_QUARANTINE = "post-write push quarantine: "
+PUSH_SETTLED = "push quarantine settled: nothing written:"
 # A claim whose GitHub read failed is backed off (#53) with an error starting this way. The
 # worker that backed it off stays for the first backoff and schedules it (#1302): otherwise
 # only the next watchdog sweep, up to a sweep interval later, would start it.
