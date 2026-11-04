@@ -119,23 +119,20 @@ class AnsweredFindings(unittest.TestCase):
         self.st.findings_put(7, entry)
         self.answer_on_issue()
 
-    def test_a_fragment_of_a_tagged_finding_is_refused_through_the_check(self):
-        # #1812: the stored text carries the category and path; the restatement does not.
+    def test_a_fragment_of_a_tagged_finding_is_refused_and_real_reasons_are_not(self):
+        # #1812, all three "Done when" cases in one test, so each accepted case is checked
+        # next to the refusal that fails without the change: the stored text carries the
+        # category and path, the restatement does not.
         self.tagged_finding()
+        tail = "F2: open — the new branch has no coverage at all\n"
         for line in ("missing test", "src/a.py: missing test", "[test] missing test"):
-            self.assertIn("again", self.check(f"F1: open — {line}\nF2: open — the new branch has no coverage at all\n"),
-                          line)
-
-    def test_a_longer_reason_than_a_tagged_finding_is_still_accepted(self):
-        self.tagged_finding()
-        self.assertEqual(self.check("F1: open — missing test for the new branch in the form\n"
-                                    "F2: open — the new branch has no coverage at all\n"), "")
-
-    def test_a_short_reason_not_drawn_from_the_old_text_is_accepted(self):
-        self.tagged_finding()
-        self.assertEqual(self.check("F1: open — config_schema ignores it\n"
-                                    "F2: open — the new branch has no coverage at all\n"), "")
+            self.assertIn("again", self.check(f"F1: open — {line}\n{tail}"), line)
+        # A longer reason that starts from the old words is accepted.
+        self.assertEqual(self.check(f"F1: open — missing test for the new branch in the form\n{tail}"), "")
+        # A short reason not drawn from the old text is accepted.
+        self.assertEqual(self.check(f"F1: open — config_schema ignores it\n{tail}"), "")
         self.assertFalse(finding_answers.repeats("ignores it", "[test]: src/a.py: missing test"))
+        self.assertTrue(finding_answers.repeats("missing test", "[test]: src/a.py: missing test"))
 
     def test_a_short_reason_inside_a_long_old_text_is_not_a_copy(self):
         # The quotation case keeps MIN_CONTAINED: a short real reason may sit in a long text.
