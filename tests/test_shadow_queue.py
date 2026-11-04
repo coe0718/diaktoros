@@ -117,6 +117,29 @@ class AfterReviewer(Ledger):
                 self.assertEqual(what, "skip")
                 self.assertIn(f"never confirmed (receipt {receipt}, turn {state})", why)
 
+    def test_a_run_re_armed_between_the_reads_is_not_skipped_on_its_new_receipt(self):
+        # Review of #1795, F1: the run and its receipt are read from one snapshot. A failed
+        # reviewer re-armed on the same run that reaches running and claims its receipt after
+        # the run was read must not pair its stale `failed` with the new `claimed` receipt.
+        run = self.run_row("reviewer", state="failed")
+        real, writer = shadow_queue._reviewer_run, sqlite3.connect(self.db)
+        self.addCleanup(writer.close)
+        self.assertEqual(writer.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal")
+
+        def racing(con, row):
+            found = real(con, row)                     # the run is read as `failed` ...
+            with writer:                               # ... then it is re-armed and claims
+                writer.execute("UPDATE runs SET state='running' WHERE id=?", (run,))
+                writer.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,"
+                               "review_id,verdict,created,confirmed) VALUES(?,?,?,?,?,?,?,?)",
+                               (run, "claimed", "g", 1, 9, "APPROVE", time.time(), time.time()))
+            return found
+
+        with mock.patch.object(shadow_queue, "_reviewer_run", racing):
+            what, why = self.decide()
+        self.assertNotEqual(what, "skip", why)
+        self.assertEqual(self.decide()[0], "wait")      # settled: running and claimed waits
+
     def test_only_its_own_reviewer_turn_counts(self):
         # Review of #1656, F2/F4: an older turn's APPROVE at the same head is not this turn's;
         # a newer change request after an older approval skips the newer turn's shadow.

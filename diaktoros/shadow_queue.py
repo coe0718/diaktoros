@@ -57,6 +57,10 @@ def decide(db, row) -> tuple[str, str, float | None]:
             return "wait", "the run ledger is unreadable, so the reviewer's verdict is unknown", None
         try:
             con.row_factory = sqlite3.Row              # ``write_evidence`` reads by name
+            # One read transaction: the run, its receipt and the rest come from a single WAL
+            # snapshot. Separate SELECTs could pair a stale ``failed`` run with the ``claimed``
+            # receipt of the same run re-armed and running meanwhile, and skip it for good.
+            con.execute("BEGIN")
             reviewer = _reviewer_run(con, row)
             receipt = reviewer and con.execute(
                 "SELECT state, verdict, COALESCE(confirmed, created) FROM review_receipts "
