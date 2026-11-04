@@ -219,6 +219,11 @@ class UpdateCommand(unittest.TestCase):
                                      commit("Merge pull request #5 from a/b\n\nUndo (#4) thing")])
         self.assertEqual(got, [(5, "Undo thing"), (900, 'Revert "Fix a thing"')])
 
+    def test_docs_say_a_merge_commit_title_comes_from_the_body(self):
+        text = " ".join((ROOT / "docs" / "commands.md").read_text().split())
+        self.assertNotIn("only the subject is read", text)
+        self.assertIn("first nonblank line of the body", text)
+
     def test_registered_on_the_real_parser(self):
         class Ctx:
             def register_cli_command(self, name, summary, setup, **kw):
