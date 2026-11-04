@@ -13,14 +13,18 @@ list set nothing is read: sampling alone, exactly as before. Globs match like ``
 and a path in both lists is an always path.
 
 The changed paths are GitHub's ``pulls/N/files`` listing, read once per PR head as the reader. A
-failed read falls back to sampling; a listing GitHub cut short (3,000 files) is never taken as
-"only low-risk paths". The choice is kept per PR head in ``shadow-choices.json`` (the newest
-``KEEP``), so the gate's several asks, a redelivery and ``explain`` all see the same one.
+failed read shadows the head when the loop has always paths (it may change one, and
+``shadow.escalate`` relies on those being shadowed: review of #1852, F1), else samples; a listing
+GitHub cut short (3,000 files) is never taken as "only low-risk paths". The choice is kept per PR
+head in ``shadow-choices.json`` (the newest ``KEEP``), with the lists and rate it was made under:
+the gate's several asks, a redelivery and ``explain`` all see the same one, and a change to the
+lists or the rate makes it again (F2).
 """
 from __future__ import annotations
 
 import fnmatch
 import hashlib
+import json
 import time
 
 from . import config
@@ -45,6 +49,13 @@ def _sampling(loop: dict, number: int, head: str, why: str = "") -> dict:
     return {"shadow": hit, "why": f"{why}; {said}" if why else said}
 
 
+def policy(loop: dict) -> str:
+    """What a kept choice was made under: the two lists and the rate."""
+    text = json.dumps([config.shadow_always_paths(loop), config.shadow_never_paths(loop),
+                       config.shadow_every(loop)])
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
 def by_risk(loop: dict) -> bool:
     """Whether the loop chooses by paths at all (either list set)."""
     return bool(config.shadow_always_paths(loop) or config.shadow_never_paths(loop))
@@ -60,14 +71,15 @@ def choose(loop: dict, number: int, head: str) -> dict:
     if kept is not None:
         return kept
     choice = _decide(loop, number, head)
+    made_under = policy(loop)
     try:
         from . import state as state_mod
         st = state_mod.state_for(loop)
         with st.locked():
             memory = _memory(st)
-            if key in memory:                       # another ask decided first: it stands
+            if key in memory and memory[key]["policy"] == made_under:   # another ask was first
                 return {"shadow": memory[key]["shadow"], "why": memory[key]["why"]}
-            memory[key] = {**choice, "at": time.time()}
+            memory[key] = {**choice, "at": time.time(), "policy": made_under}
             newest = sorted(memory, key=lambda k: memory[k]["at"], reverse=True)[:KEEP]
             st._save(st.dir / FILE, {k: memory[k] for k in newest})
     except Exception as exc:  # noqa: BLE001 - the choice stands; only its record is lost
@@ -76,13 +88,16 @@ def choose(loop: dict, number: int, head: str) -> dict:
 
 
 def recorded(loop: dict, number: int, head: str) -> dict | None:
-    """The choice kept for this PR head, or None. Read-only (``explain``)."""
+    """The choice kept for this PR head under the loop's current lists and rate, or None.
+    Read-only (``explain``)."""
     try:
         from . import state as state_mod
         entry = _memory(state_mod.state_for(loop)).get(f"{number}:{head}")
     except Exception:  # noqa: BLE001 - unreadable is "none kept"
         return None
-    return None if entry is None else {"shadow": entry["shadow"], "why": entry["why"]}
+    if entry is None or entry["policy"] != policy(loop):
+        return None
+    return {"shadow": entry["shadow"], "why": entry["why"]}
 
 
 def explain_line(loop: dict, number: int, head: str) -> str:
@@ -93,8 +108,8 @@ def explain_line(loop: dict, number: int, head: str) -> str:
     short = head[:7]
     choice = recorded(loop, number, head) if by_risk(loop) else _sampling(loop, number, head)
     if choice is None:
-        return (f"no shadow choice made at {short} yet: it is made when a reviewer turn is "
-                "queued there")
+        return (f"no shadow choice made at {short} under the current shadow paths and rate: one "
+                "is made when a reviewer turn is queued there")
     said = "gets a shadow review" if choice["shadow"] else "gets no shadow review"
     return f"head {short} {said}: {choice['why']}"
 
@@ -103,7 +118,7 @@ def _memory(st) -> dict:
     data = st._load(st.dir / FILE, {})
     return {key: entry for key, entry in (data.items() if isinstance(data, dict) else ())
             if isinstance(entry, dict) and isinstance(entry.get("shadow"), bool)
-            and isinstance(entry.get("why"), str)
+            and isinstance(entry.get("why"), str) and isinstance(entry.get("policy"), str)
             and isinstance(entry.get("at"), (int, float)) and not isinstance(entry["at"], bool)}
 
 
@@ -114,7 +129,11 @@ def _decide(loop: dict, number: int, head: str) -> dict:
     except Exception as exc:  # noqa: BLE001 - unread is sampled, as before
         files, error = None, f"{type(exc).__name__}: {exc}"
     if files is None:
-        return _sampling(loop, number, head, f"its changed files could not be read ({error})")
+        unread = f"its changed files could not be read ({error})"
+        if config.shadow_always_paths(loop):
+            return {"shadow": True, "why": f"{unread}: shadowed, since it may change a "
+                                           "shadow.always_paths path"}
+        return _sampling(loop, number, head, unread)
     paths = changed_paths(files)
     always = hits(paths, config.shadow_always_paths(loop))
     if always:

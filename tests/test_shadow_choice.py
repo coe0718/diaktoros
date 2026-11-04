@@ -91,14 +91,43 @@ class ByRisk(unittest.TestCase):
         self.assertEqual(self.enqueue(self.loop, listing, number=10, head=head)[0],
                          ["reviewer", "shadow"])
 
-    def test_an_unread_or_cut_short_listing_falls_back_to_sampling(self):
+    def test_an_unread_listing_shadows_when_there_are_always_paths(self):
+        # Review of #1852, F1: kept as "not sampled", a failed read would let a broker change
+        # through unshadowed, and so unheld under shadow.escalate, for good.
+        head = an_unsampled_head(self.loop, 11)
+        listings = iter([(None, "HTTP 502"), (files("diaktoros/broker.py"), "")])
+        sup = mock.Mock()
+        sup.submit.return_value = "enqueued"
+        with mock.patch.object(gate, "isolated_supervisor", return_value=sup), \
+                mock.patch.object(gh, "pr_files_read", side_effect=lambda *a: next(listings)):
+            gate.enqueue_isolated(self.loop, "reviewer", 11, head)
+            self.assertTrue(gate.shadow_sampled(self.loop, 11, head))      # kept, not re-read
+        self.assertEqual([c.args[4] for c in sup.submit.call_args_list], ["reviewer", "shadow"])
+        self.assertIn("could not be read (HTTP 502): shadowed, since it may change a "
+                      "shadow.always_paths path", shadow_choice.explain_line(self.loop, 11, head))
+        # With only a never list there is no guarantee to keep: unread samples, as before.
+        never_only = self.make(every=1000, always_paths=None)
+        seats, _ = self.enqueue(never_only, (None, "HTTP 502"), number=12)
+        self.assertEqual(seats, ["reviewer"])
+
+    def test_a_listing_cut_short_is_never_only_never_paths(self):
         loop = self.make(every=1)
-        seats, _ = self.enqueue(loop, (None, "HTTP 502"), number=11)
-        self.assertEqual(seats, ["reviewer", "shadow"])        # not "only docs": unknown
-        line = shadow_choice.explain_line(loop, 11, an_unsampled_head(loop, 11))
-        self.assertIn("its changed files could not be read (HTTP 502)", line)
         cut = files(*[f"docs/{i}.md" for i in range(gh.PR_FILES_LISTING_LIMIT)])
         self.assertEqual(self.enqueue(loop, (cut, ""), number=12)[0], ["reviewer", "shadow"])
+
+    def test_a_change_to_the_lists_or_the_rate_makes_the_choice_again(self):
+        # Review of #1852, F2: a choice kept under the old lists would outlive the new ones.
+        head = an_unsampled_head(self.loop, 16)
+        broker = (files("diaktoros/broker.py"), "")
+        old = self.make(every=1000, always_paths=["x/*"])
+        with mock.patch.object(gh, "pr_files_read", return_value=broker) as read:
+            self.assertFalse(gate.shadow_sampled(old, 16, head))
+            self.assertTrue(gate.shadow_sampled(self.loop, 16, head))      # broker* added
+            self.assertFalse(gate.shadow_sampled(old, 16, head))           # and taken away
+            self.assertFalse(gate.shadow_sampled(old, 16, head))           # kept again
+        self.assertEqual(read.call_count, 3)
+        self.assertIsNone(shadow_choice.recorded(self.loop, 16, head))
+        self.assertIn("no shadow choice made", shadow_choice.explain_line(self.loop, 16, head))
 
     def test_the_choice_is_made_once_per_head(self):
         head = an_unsampled_head(self.loop, 13)
@@ -138,7 +167,7 @@ class ByRisk(unittest.TestCase):
         with mock.patch.object(gh, "pr_files_read") as read:
             line = shadow_choice.explain_line(self.loop, 15, "f" * 40)
         read.assert_not_called()
-        self.assertIn("no shadow choice made at fffffff yet", line)
+        self.assertIn("no shadow choice made at fffffff under the current shadow paths", line)
 
     def test_explain_prints_the_choice_beside_the_hold_note(self):
         import contextlib

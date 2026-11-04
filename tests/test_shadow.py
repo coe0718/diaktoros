@@ -630,6 +630,44 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual((self.seen["role"], row["state"]), ("reviewer", "succeeded"), row)
         self.assertEqual([w for _k, w in self.kinds() if w.startswith("shadow review")], [])
 
+    def test_escalate_with_always_paths_holds_their_heads_and_not_the_others(self):
+        # #1788 (review of #1852, F3): escalate with every > 1 is allowed only beside always
+        # paths. A head sampling alone skips (every 6 skips HEAD) is shadowed, held while the
+        # shadow is pending and after it dissents when the PR changes an always path, and is
+        # neither shadowed nor held when it doesn't.
+        from diaktoros import shadow_choice
+        shadow = {"profile": "grok", "every": 6, "escalate": True, "always_paths": ["src/auth/*"]}
+        self.loop = config.normalize({**RAW, "state_dir": str(self.home / "state"),
+                                      "required_checks": ["tests"], "shadow": shadow})
+        self.assertFalse(shadow_choice.sampled(self.loop, 8, HEAD))
+        with mock.patch.object(gh, "pr_files_read",
+                               return_value=([{"filename": "src/auth/login.py"}], "")):
+            sup = self.queue_shadow()
+        self.reviewer_is(sup, ("confirmed", "APPROVED"), "succeeded")
+        self.assertEqual(merge_check.decide(self.kinds())[0], merge_check.PENDING)
+        self.assertTrue([w for _k, w in self.kinds() if w.startswith("shadow review")])
+        sup, row = self.claim_shadow(sup, [{"verdict": "REQUEST_CHANGES", "body": "F1: a.py:1: x",
+                                            "authorized": True, "denial": ""}])
+        self.assertEqual(row["state"], "succeeded", row["error"])
+        held = [w for _k, w in self.kinds() if w.startswith("shadow review")]
+        self.assertTrue(held and "requested changes" in held[0], held)
+        self.assertNotEqual(merge_check.decide(self.kinds())[0], merge_check.SUCCESS)
+        # The same loop, a PR that changes no always path: sampled out, no shadow, no hold.
+        self.setUp()
+        self.loop = config.normalize({**RAW, "state_dir": str(self.home / "state"),
+                                      "required_checks": ["tests"], "shadow": shadow})
+        with mock.patch.object(Supervisor, "_spawn"), \
+                mock.patch.object(config, "by_repo", return_value=self.loop), \
+                mock.patch.object(gh, "pr_files_read",
+                                  return_value=([{"filename": "lib/util.py"}], "")):
+            gate.enqueue_isolated(self.loop, "reviewer", 8, HEAD)
+        sup = Supervisor(self.home / "state" / "diaktoros-runs.sqlite",
+                         production_config=self.home / "diaktoros-runtime.json",
+                         hermes_home=self.home)
+        self.assertIsNone(sup.get(f"acme/widgets:8:{HEAD}:shadow"))
+        self.reviewer_is(sup, ("confirmed", "APPROVED"), "succeeded")
+        self.assertEqual([w for _k, w in self.kinds() if w.startswith("shadow review")], [])
+
     def test_a_reviewer_that_failed_without_a_verdict_keeps_its_shadow_for_its_retry(self):
         # Review of #1656, F14: the reviewer turn fails with no verdict and is re-armed, by a
         # redelivered event or by an operator. Cancelled at that first claim, the shadow would be
