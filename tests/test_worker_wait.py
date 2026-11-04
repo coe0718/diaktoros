@@ -131,6 +131,44 @@ class EndLingeringWorkers(unittest.TestCase):
         with self.assertRaises(TypeError):
             worker_wait.end_lingering_workers(self.root, settle=0.1, vouched=True)
 
+    def test_a_worker_that_wakes_after_it_was_selected_is_not_ended_and_fails_the_wait(self):
+        # #1830: selected while marked, awake before the signal, then at work (and hung). The
+        # signal must not reach it, or the exit check would pass on work that never finished.
+        self.polled_waiting_row()
+        code = ("import os, sys, time; from pathlib import Path\n"
+                "from diaktoros.run_supervisor import workers\n"
+                "with workers.lingering(Path(sys.argv[1])):\n"
+                "    print('marked', flush=True)\n"
+                "    while not os.path.exists(sys.argv[1] + '.wake'): time.sleep(0.01)\n"
+                "print('working', flush=True); time.sleep(60)")
+        proc = self.start(code, str(self.db))
+        self.assertEqual(proc.stdout.readline().strip(), "marked")
+        real = workers.lingering_pids
+        woken = []
+
+        def selected_then_woken(db):
+            picked = real(db)                           # the worker is picked while marked...
+            if not woken:
+                woken.append(1)
+                Path(str(self.db) + ".wake").touch()    # ...and wakes before the signal
+                self.assertEqual(proc.stdout.readline().strip(), "working")
+            return picked
+
+        with patch.object(workers, "lingering_pids", selected_then_woken):
+            worker_wait.end_lingering_workers(self.root, settle=0)
+        self.assertIsNone(proc.poll())                  # not ended: it was at work
+        with self.assertRaises(AssertionError):
+            worker_wait.wait_for_workers(self.root, timeout=0.3)
+
+    def test_a_signal_is_sent_only_to_a_worker_that_is_still_in_its_wait(self):
+        self.polled_waiting_row()
+        proc = self.lingerer()
+        self.assertTrue(workers.signal_lingerer(self.db, proc.pid, signal.SIGTERM))
+        self.assertEqual(proc.wait(10), -signal.SIGTERM)
+        stuck = self.hung()                             # never marked: no gate, no signal
+        self.assertFalse(workers.signal_lingerer(self.db, stuck.pid, signal.SIGTERM))
+        self.assertIsNone(stuck.poll())
+
     def test_a_stale_mark_does_not_vouch_for_a_process_that_reused_its_pid(self):
         # F2 of #1823: the lingerer was killed and left its mark; a hung process under the same
         # root now holds that PID. Nothing holds the mark's lock, so the new one is not ended,
@@ -209,7 +247,9 @@ class LingerMark(unittest.TestCase):
             workers.linger_mark(db, 1).write_text("1 -\n")      # pid 1 is live but holds no lock
             with workers.lingering(db):
                 self.assertEqual(workers.lingering_pids(db), {os.getpid()})
-                self.assertEqual(len(list(Path(tmp).iterdir())), 1)
+                self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()),    # the mark, its gate
+                                 [workers.linger_mark(db, os.getpid()).name,
+                                  workers.linger_mark(db, os.getpid()).name + ".end"])
             self.assertEqual(list(Path(tmp).iterdir()), [])
 
     def test_a_mark_that_cannot_be_removed_does_not_stop_the_worker(self):

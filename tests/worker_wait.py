@@ -43,17 +43,21 @@ def processes_naming(marker: str) -> dict[int, str]:
     return found
 
 
-def lingering_workers(root: Path) -> set[int]:
-    """The live processes naming ``root`` that carry a linger mark (#1811): the PIDs in the
-    ``<ledger>.linger.<pid>`` files ``Supervisor.linger_for_ci`` keeps beside a ledger while it
-    waits. A mark whose process is gone, or is not one naming ``root`` (a reused PID), counts
-    for nothing. Which process lingers is what the process says of itself, not what a ledger
-    row says of the runs."""
+def lingering_marks(root: Path) -> dict[int, Path]:
+    """The live processes naming ``root`` that carry a linger mark (#1811), each with the ledger
+    beside which it keeps it: the PIDs in the ``<ledger>.linger.<pid>`` files
+    ``Supervisor.linger_for_ci`` keeps beside a ledger while it waits. A mark whose process is
+    gone, or is not one naming ``root`` (a reused PID), counts for nothing. Which process lingers
+    is what the process says of itself, not what a ledger row says of the runs."""
     from diaktoros.run_supervisor import workers    # after the caller's _home_guard import
-    marked = set()
-    for db in root.rglob("*.sqlite"):
-        marked |= workers.lingering_pids(db)
-    return marked & set(processes_naming(str(root)))
+    named = set(processes_naming(str(root)))
+    return {pid: db for db in root.rglob("*.sqlite") for pid in workers.lingering_pids(db)
+            if pid in named}
+
+
+def lingering_workers(root: Path) -> set[int]:
+    """The PIDs of ``lingering_marks``."""
+    return set(lingering_marks(root))
 
 
 def end_lingering_workers(root: Path, settle: float = 5) -> None:
@@ -64,9 +68,12 @@ def end_lingering_workers(root: Path, settle: float = 5) -> None:
     ``Supervisor.linger_for_ci``), far past ``WORKER_EXIT_TIMEOUT``. A test that only checks what
     the ledger says after the first claim has nothing left for it to do. Within ``settle`` seconds
     every process naming ``root`` either exits or carries the linger mark; then the marked ones,
-    and only those, are sent SIGTERM. Any other process (a hung or still working worker) is left
+    and only those, are sent SIGTERM, each through ``workers.signal_lingerer``, which sends it
+    only if the worker is still asleep at that moment (#1830): one that woke after it was picked
+    is at work, and is left alone. Any other process (a hung or still working worker) is left
     alone, so ``wait_for_workers`` fails on it, whatever the ledger or its neighbours say.
     """
+    from diaktoros.run_supervisor import workers    # after the caller's _home_guard import
     marker = str(root)
     until = time.monotonic() + settle
     while time.monotonic() < until:
@@ -74,11 +81,8 @@ def end_lingering_workers(root: Path, settle: float = 5) -> None:
         if live <= lingering_workers(root):         # none left, or each of them lingers
             break
         time.sleep(0.05)
-    for pid in lingering_workers(root):
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
+    for pid, db in lingering_marks(root).items():
+        workers.signal_lingerer(db, pid, signal.SIGTERM)
 
 
 def wait_for_workers(root: Path, timeout: float = WORKER_EXIT_TIMEOUT) -> None:
