@@ -283,6 +283,40 @@ class ClaimTimeReads(Base):
             self.s._run_one()
         self.assertEqual(self.s.get('review')['state'], 'succeeded')
 
+    def worker(self, sleeps):
+        """What the production worker does (``main``): one claim, then the linger. ``sleeps``
+        collects each wait; the wait lets the recorded backoff elapse."""
+        def sleep(seconds):
+            sleeps.append(seconds)
+            self.elapse()
+        spawned = []
+        self.s._spawn = lambda: spawned.append(1)
+        with patch('diaktoros.config.by_repo', return_value=self.LOOP), \
+             patch('diaktoros.gh.api', return_value=None), \
+             patch('diaktoros.gh.reviews', return_value=[]):
+            self.s._run_one()
+            self.s.linger_for_ci(sleep=sleep)
+        return spawned
+
+    def test_a_worker_that_backed_off_a_failed_read_schedules_the_retry_itself(self):
+        # #1302: a kick whose claim-time read failed sat 'waiting' until the next watchdog
+        # sweep. The worker that backed it off now stays for the first backoff and re-arms it.
+        sleeps = []
+        spawned = self.worker(sleeps)
+        self.assertEqual(len(sleeps), 1, sleeps)
+        self.assertLessEqual(sleeps[0], run_supervisor.backoff(1) + 1)
+        row = self.s.get('review')
+        self.assertEqual((row['state'], row['retries']), ('pending', 1))
+        self.assertEqual(len(spawned), 1)          # recover() armed a fresh worker
+
+    def test_a_worker_does_not_wait_for_a_backoff_past_its_window(self):
+        # The third failed read backs off 8 minutes: the watchdog sweep's, not a held process's.
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET retries=2")
+        sleeps = []
+        self.worker(sleeps)
+        self.assertEqual((sleeps, self.s.get('review')['state']), ([], 'waiting'))
+
     def test_a_read_github_keeps_refusing_is_bounded_visible_and_noticed(self):
         for attempt in range(1, MAX_RETRIES + 1):
             self.assertIsNone(self.claim(None))

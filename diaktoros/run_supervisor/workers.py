@@ -365,19 +365,24 @@ class WorkerLifecycle:
         return cancelled
 
     def linger_for_ci(self, sleep=time.sleep) -> None:
-        """After holding a review for CI, stay (no seat, no turn) until its next CI read is due,
-        then schedule it: GitHub sends this route no event when CI finishes (#241)."""
+        """After holding a review for CI, or backing a claim off after a failed GitHub read,
+        stay (no seat, no turn) until the next read is due, then schedule it: GitHub sends this
+        route no event when CI finishes (#241), and nothing but the watchdog sweep, up to a
+        sweep interval later, would otherwise start a row waiting out a backoff (#1302). Only a
+        row due within this linger's window is waited for: the second and later read-failure
+        backoffs (4 min and up) are the watchdog sweep's, as before."""
         if not self.held_for_ci:
             return
-        deadline = time.time() + run_supervisor.CI_POLL_S + 30
+        deadline = time.time() + max(run_supervisor.CI_POLL_S, run_supervisor.RETRY_BASE) + 30
+        polled = (run_supervisor.CI_HOLD, run_supervisor.VERDICT_HOLD,
+                  run_supervisor.CLAIM_READ_FAILED)
         while time.time() < deadline:
             with self._connect() as con:
-                due = con.execute("SELECT MIN(retry_at) FROM runs WHERE state='waiting' AND "
-                                  "(error LIKE ? OR error LIKE ?)",
-                                  (run_supervisor.CI_HOLD + '%',
-                                   run_supervisor.VERDICT_HOLD + '%')).fetchone()[0]
-            if due is None:
-                return
+                due = con.execute("SELECT MIN(retry_at) FROM runs WHERE state='waiting' AND ("
+                                  + " OR ".join("error LIKE ?" for _ in polled) + ")",
+                                  tuple(hold + '%' for hold in polled)).fetchone()[0]
+            if due is None or due > deadline:
+                return          # nothing due in this window: the watchdog sweep is the backstop
             if due <= time.time():
                 self.recover()
                 return
