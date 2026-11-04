@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import decimal
 import math
+import operator
 
 from .. import config
 
@@ -109,7 +110,8 @@ def estimate(row: dict, table: dict) -> dict | None:
     most`` when cached input costs less than uncached, ``at least`` when it costs more, and
     exact (``bound`` None) when they cost the same or every turn reported. ``exact`` is the
     sum in decimal with no rounding at all, each price as written, and ``dollars`` the nearest
-    float on the bound's side of it, so neither the text nor the JSON overstates (#1832)."""
+    float on the bound's side of it, read as binary or as its JSON text, so neither the text
+    nor the JSON overstates (#1832)."""
     price = table.get(str(row.get("model") or "").lower())
     if price is None:
         return None
@@ -135,12 +137,16 @@ def _decimal(value: float) -> decimal.Decimal:
 
 
 def _directed(exact: decimal.Decimal, bound: str | None) -> float:
-    """The float nearest ``exact``, stepped one float outward if it fell on the wrong side."""
+    """The float nearest ``exact``, stepped outward until it is on the bound's side both as the
+    binary value and as the text JSON writes for it (its repr, which a decimal reader takes
+    literally): ``0.1`` is above 0.1 in binary but not as text. Two steps at most: each moves
+    the binary value a whole float, and the text lies within half a float of it."""
     near = float(exact)
-    if bound == "at most" and decimal.Decimal(near) < exact:
-        return math.nextafter(near, math.inf)
-    if bound == "at least" and decimal.Decimal(near) > exact:
-        return math.nextafter(near, -math.inf)
+    if bound is None:
+        return near
+    step, wrong = ((math.inf, operator.lt) if bound == "at most" else (-math.inf, operator.gt))
+    while wrong(decimal.Decimal(near), exact) or wrong(decimal.Decimal(repr(near)), exact):
+        near = math.nextafter(near, step)
     return near
 
 

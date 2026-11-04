@@ -6,7 +6,9 @@ prices each seat and model's tokens with it, says "unpriced" for a model with no
 $0), and "at most" or "at least", rounded outward, where some turns did not report their cache.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import decimal
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -233,25 +235,64 @@ class Estimate(unittest.TestCase):
         self.assertEqual(prices.estimate_text(got), "at most $1.0001")
 
     def test_the_json_dollars_is_on_the_bounds_side(self):
-        # #1832 round 2: the nearest float to 1.0000000000000001 is 1.0, below the cost, so
-        # "dollars" with "at most" was a false bound in stats' JSON. It is now the nearest float
-        # on the bound's side; the second case is the nearest float landing above an "at least".
-        turn = {"tokens_in": 500_000, "tokens_out": 500_000, "cache_read": None}
-        for price, cached, bound in ((1.0000000000000002, 0.5, "at most"),
-                                     (1.0000000000000004, 2.0, "at least")):
-            with self.subTest(bound=bound):
-                report = self.report([("shadow", "m", turn)],
-                                     {"m": {"input": price, "cached": cached, "output": 1.0}})
-                (row,) = json.loads(stats.as_json(report))["usage"]
-                got = row["estimate"]
-                cost = (500_000 * Decimal(repr(price)) + 500_000) / 1_000_000   # all uncached
+        # #1832 rounds 2-3: "dollars" with its "bound" must hold as stats' JSON is read, as a
+        # float (the nearest float to 1.0000000000000001 is 1.0, below it) and as the decimal
+        # text written (the float nearest 0.100...001 is above it, but is written "0.1"). The
+        # cached price only sets the bound's side: the turns' cache went unreported.
+        cases = (("at most", 0.5, 1.0000000000000002, 1.0, 500_000, 500_000),
+                 ("at least", 2.0, 1.0000000000000004, 1.0, 500_000, 500_000),
+                 ("at most", 0.05, 0.1, 0.10000000000000002, 950_000, 50_000),
+                 ("at least", 1.0, 0.3, 0.2999999999999999, 999_999, 1))
+        for bound, cached, price, out_price, tokens_in, tokens_out in cases:
+            with self.subTest(bound=bound, price=price, out_price=out_price):
+                turn = {"tokens_in": tokens_in, "tokens_out": tokens_out, "cache_read": None}
+                table = {"m": {"input": price, "cached": cached, "output": out_price}}
+                text = stats.as_json(self.report([("shadow", "m", turn)], table))
+                cost = (tokens_in * Decimal(repr(price))
+                        + tokens_out * Decimal(repr(out_price))) / 1_000_000   # all uncached
+                got = json.loads(text)["usage"][0]["estimate"]
                 self.assertEqual(got["bound"], bound)
                 self.assertEqual(Decimal(got["exact"]), cost)
-                if bound == "at most":
-                    self.assertGreaterEqual(Decimal(got["dollars"]), cost)
-                else:
-                    self.assertLessEqual(Decimal(got["dollars"]), cost)
+                literal = json.loads(text, parse_float=Decimal)["usage"][0]["estimate"]
+                for read in (Decimal(got["dollars"]), literal["dollars"]):   # binary, then text
+                    if bound == "at most":
+                        self.assertGreaterEqual(read, cost)
+                    else:
+                        self.assertLessEqual(read, cost)
 
+    def test_every_bound_holds_read_either_way(self):
+        # The guarantee itself, over 3,000 seeded random tables and token counts (prices from
+        # the least float to PRICE_MAX, most near round figures): the exact sum is the
+        # all-uncached cost, and "dollars" is on the bound's side read as binary or as JSON text.
+        import random
+        rng = random.Random(1832)
+
+        def a_price():
+            pick = rng.random()
+            if pick < 0.1:
+                return 5e-324
+            base = float(f"{rng.uniform(0, 3):.{rng.randint(1, 4)}f}")
+            for _ in range(rng.randint(0, 3)):
+                base = math.nextafter(base, rng.choice((0, prices.PRICE_MAX)))
+            return min(max(base, 0.0), prices.PRICE_MAX) if pick < 0.9 else prices.PRICE_MAX
+        for _ in range(3000):
+            price, out_price = a_price(), a_price()
+            cached = rng.choice((price / 2, price * 2 + 1))
+            tokens_in, tokens_out = rng.randint(1, 10 ** 9), rng.randint(0, 10 ** 7)
+            row = {"model": "m", "tokens_in": tokens_in, "tokens_out": tokens_out,
+                   "cache_read": 0, "cached_of": 0}
+            got = prices.estimate(row, {"m": {"input": price, "cached": cached,
+                                              "output": out_price}})
+            cost = Decimal(got["exact"])
+            with decimal.localcontext(prec=1000):    # the expected sum, unrounded too
+                self.assertEqual(cost, (tokens_in * Decimal(repr(price))
+                                        + tokens_out * Decimal(repr(out_price))) / 10 ** 6)
+            text = json.loads(json.dumps(got), parse_float=Decimal)["dollars"]
+            for read in (Decimal(got["dollars"]), text):
+                if got["bound"] == "at most":
+                    self.assertGreaterEqual(read, cost, (price, out_price, tokens_in, tokens_out))
+                elif got["bound"] == "at least":
+                    self.assertLessEqual(read, cost, (price, out_price, tokens_in, tokens_out))
 
 if __name__ == "__main__":
     unittest.main()
