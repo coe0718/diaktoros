@@ -245,6 +245,12 @@ def hold(key: str, until: float, reason: str) -> None:
         current = holds.get(key) if isinstance(holds.get(key), dict) else {}
         if not isinstance(current.get("until"), (int, float)) or current["until"] < until:
             holds[key] = {"until": float(until), "reason": str(reason)[:200]}
+        elif str(current.get("reason") or "").startswith(UNAVAILABLE) and until > time.time():
+            # A provider's 429 reset that ends before our own unavailable window (#1325): keep
+            # its deadline beside the entry, so clearing the unavailable hold cannot lose it.
+            later = current.get("limited")
+            if not isinstance(later, (int, float)) or later < until:
+                current["limited"], current["limited_reason"] = float(until), str(reason)[:200]
         _save(file, data)
 
 
@@ -306,7 +312,13 @@ def clear_unavailable(key: str) -> bool:
         holds = data.get("holds") if isinstance(data.get("holds"), dict) else {}
         entry = holds.get(key)
         if isinstance(entry, dict) and str(entry.get("reason") or "").startswith(UNAVAILABLE):
-            del holds[key]
+            limited = entry.get("limited")
+            if isinstance(limited, (int, float)) and limited > time.time():
+                # A 429's own reset, shorter than the window being cleared, still stands.
+                holds[key] = {"until": float(limited),
+                              "reason": str(entry.get("limited_reason") or "")}
+            else:
+                del holds[key]
         _save(file, data)
     return True
 

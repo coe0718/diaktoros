@@ -345,6 +345,31 @@ class ProductionWorker(unittest.TestCase):
         pacing.clear_unavailable(self.account)
         self.assertEqual(pacing.held(self.account)[1], "openai-codex answered 429")
 
+    def test_a_shorter_429_hold_survives_clearing_an_overlapping_unavailable_hold(self):
+        now = time.time()
+        pacing.hold_unavailable(self.account, "x", now=now)                # ends in 15 min
+        pacing.hold(self.account, now + 300, "openai-codex answered 429")  # ends sooner
+        self.assertTrue(pacing.held(self.account)[1].startswith("provider unavailable"))
+        self.assertTrue(pacing.clear_unavailable(self.account))
+        until, reason = pacing.held(self.account)
+        self.assertAlmostEqual(until, now + 300, delta=2)
+        self.assertEqual(reason, "openai-codex answered 429")
+
+    def _only_signature(self, stdout="", stderr=""):
+        def run(_loop, scope, observed=None, **kw):
+            observed.update(stdout=stdout, stderr=stderr)
+            return 1
+        row = self.run_production(run)
+        self.assertEqual((row["state"], row["retries"]), ("waiting", 0), row)
+        self.assertIn("provider unavailable (", row["error"])
+        self.assertIsNotNone(pacing.held(self.account))
+
+    def test_the_empty_stream_signature_alone_holds_the_account(self):
+        self._only_signature(stdout="Provider returned an empty stream with no finish_reason")
+
+    def test_the_wire_didnt_answer_signature_alone_holds_the_account(self):
+        self._only_signature(stderr="DirectSDK wire didn't answer after 3 attempts")
+
     def test_an_ordinary_failure_without_the_signature_is_not_a_hold(self):
         def other(_loop, scope, observed=None, **kw):
             observed.update(stdout="Traceback: boom", stderr="")
