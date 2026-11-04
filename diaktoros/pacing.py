@@ -282,7 +282,9 @@ def hold_unavailable(key: str, detail: str, now: float | None = None) -> float:
     while an unavailable hold is still live comes from a turn that launched before it, so it is
     no new strike: the window stays as it is. A live 429 hold is never shortened: an outage seen
     during a shorter one is still a strike and takes over the hold (the 429's deadline is kept
-    beside it); during a longer one the 429 stands.
+    beside it); during a longer one the 429 stands. The outage window of a strike is kept in the
+    strike itself, so failures of turns already in flight while a longer 429 is displayed
+    coalesce into that one strike too, whichever reason the hold shows.
     """
     now = time.time() if now is None else now
     with _locked() as file:
@@ -294,10 +296,12 @@ def hold_unavailable(key: str, detail: str, now: float | None = None) -> float:
         if live and str(current.get("reason") or "").startswith(UNAVAILABLE):
             return float(current["until"])
         prev = strikes.get(key) if isinstance(strikes.get(key), dict) else {}
+        if live and isinstance(prev.get("window"), (int, float)) and prev["window"] > now:
+            return float(current["until"])      # in flight before this strike's window ended
         recent = isinstance(prev.get("last"), (int, float)) and now - prev["last"] < _UNAVAILABLE_FORGET_S
         count = (int(prev.get("count") or 0) if recent else 0) + 1
         until = now + min(UNAVAILABLE_BASE_S * 2 ** (count - 1), UNAVAILABLE_MAX_S)
-        strikes[key] = {"count": count, "last": now}
+        strikes[key] = {"count": count, "last": now, "window": until}
         if live and current["until"] >= until:
             # A 429 hold already outlasts our window: it stands, the outage is still a strike.
             until = float(current["until"])
