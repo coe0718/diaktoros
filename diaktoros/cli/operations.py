@@ -1045,8 +1045,9 @@ def add_retry(sub) -> None:  # noqa: ANN001
 
 def add_cancel(sub) -> None:  # noqa: ANN001
     """The ``cancel`` subcommand's parser, registered by ``cli.register_cli`` (#1148)."""
-    cancel = sub.add_parser("cancel", help="Stop a queued, blocked, waiting or running isolated run "
-                                           "(only `retry` re-arms it)")
+    summary = ("Stop a queued, blocked (not admitted yet), waiting or running isolated run "
+               "(only `retry` re-arms it)")
+    cancel = sub.add_parser("cancel", help=summary, description=summary)
     cancel.add_argument("--loop", required=True,
                         help="loop id (its config file name; `list` shows them)")
     cancel.add_argument("--run", help="the run id to cancel (`status` lists it)")

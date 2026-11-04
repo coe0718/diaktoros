@@ -192,10 +192,17 @@ class NotStarted(Base):
         root = Path(__file__).resolve().parent.parent
         import argparse
         from diaktoros.cli import operations
-        sub = argparse.ArgumentParser().add_subparsers()
+        import contextlib
+        import io
+        parent = argparse.ArgumentParser(prog='dk')
+        sub = parent.add_subparsers()
         operations.add_cancel(sub)
         helps = {a.dest: a.help for a in sub._choices_actions}
         self.assertIn('blocked', helps['cancel'])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            parent.parse_args(['cancel', '--help'])
+        self.assertIn('blocked', ' '.join(out.getvalue().split()))
         self.assertIn('blocked', ' '.join(operations.cmd_cancel.__doc__.split()).split('(#')[0])
         readme = [l for l in (root / 'README.md').read_text().splitlines() if '`hermes dk cancel`' in l]
         self.assertTrue(readme)
