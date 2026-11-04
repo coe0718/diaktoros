@@ -11,6 +11,7 @@ test's ``patch.object(Supervisor, ...)`` work as before, with one binding. It us
 """
 from __future__ import annotations
 
+import contextlib
 import errno
 import json
 import os
@@ -40,6 +41,55 @@ def process_state(pid: int | None, launched: float | None) -> str:
     except OSError as exc:
         return 'gone' if exc.errno == errno.ESRCH else 'unknown'
     return 'gone' if run_supervisor._pid_reused(pid, launched) else 'alive'
+
+
+LINGER_MARK = '.linger.'
+
+
+def linger_mark(db: Path, pid: int) -> Path:
+    """The file ``<ledger>.linger.<pid>`` that process ``pid`` keeps beside the ledger while it
+    is inside ``linger_for_ci`` (#1811): the mark by which a test's cleanup tells a lingering
+    worker from a stuck process."""
+    db = Path(db)
+    return db.with_name(f'{db.name}{LINGER_MARK}{pid}')
+
+
+def lingering_pids(db: Path) -> set[int]:
+    """The processes that currently carry a linger mark beside the ledger ``db``."""
+    db = Path(db)
+    prefix = db.name + LINGER_MARK
+    try:
+        names = [path.name for path in db.parent.iterdir()]
+    except OSError:
+        return set()
+    return {int(name[len(prefix):]) for name in names
+            if name.startswith(prefix) and name[len(prefix):].isdigit()}
+
+
+@contextlib.contextmanager
+def lingering(db: Path):
+    """Mark this process as lingering for the ``with`` block. Best effort: a worker never
+    creates host state, so a ledger directory that is gone or unwritable leaves it unmarked.
+    A worker killed inside the block leaves its mark (SIGTERM does not run ``finally``): the
+    next worker to linger sweeps marks whose process is gone, and a reader checks the PID
+    against the live process."""
+    for stale in lingering_pids(db):
+        try:
+            os.kill(stale, 0)
+        except ProcessLookupError:
+            linger_mark(db, stale).unlink(missing_ok=True)
+        except OSError:
+            pass
+    mark = linger_mark(db, os.getpid())
+    try:
+        mark.write_text(f'{os.getpid()}\n')
+    except OSError:
+        mark = None
+    try:
+        yield
+    finally:
+        if mark is not None:
+            mark.unlink(missing_ok=True)
 
 
 class WorkerLifecycle:
@@ -373,6 +423,12 @@ class WorkerLifecycle:
         backoffs (4 min and up) are the watchdog sweep's, as before."""
         if not self.held_for_ci:
             return
+        with lingering(self.db):        # marked for exactly as long as it waits (#1811)
+            self._linger_until_due(sleep)
+
+    def _linger_until_due(self, sleep) -> None:
+        """The wait of ``linger_for_ci``: poll the polled holds, sleep to the earliest due row
+        and ``recover()`` it, until the window closes or nothing falls due in it."""
         deadline = time.time() + max(run_supervisor.CI_POLL_S, run_supervisor.RETRY_BASE) + 30
         polled = (run_supervisor.CI_HOLD, run_supervisor.VERDICT_HOLD,
                   run_supervisor.CLAIM_READ_FAILED)
