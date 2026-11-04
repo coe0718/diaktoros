@@ -188,6 +188,33 @@ class BrokerIPCTests(unittest.TestCase):
                          ("fixed", "open"))
         self.assertEqual(got["last_head"], HEAD)
 
+    def test_a_restated_finding_that_was_answered_must_deal_with_the_answer_through_the_broker(self):
+        # #703: the enforcing entry point. Removing the call in findings.check turns this red.
+        import time
+        from diaktoros import ci, finding_answers, findings
+        findings.record(self.loop, 7, "c" * 40, "F1: src/a.py: not in the Desktop form\n")
+        answer = {"at": time.time() + 60, "stamp": "2026-10-14T10:00:00Z", "who": "maintainer boss",
+                  "where": "issue #658", "body": "The form is plugin.yaml:config_schema.",
+                  "fixer": False}
+        server = self.start()
+        files = [{"filename": "src/a.py", "patch": "@@ -1,1 +1,5 @@\n+x"}]
+        block = lambda text: {"operation": "review", "verdict": "REQUEST_CHANGES",
+                              "body": text + "\nNot verified: nothing\n"}
+        with mock.patch.object(finding_answers, "_read_answers", return_value=[answer]), \
+                mock.patch.object(gh, "pr_files_read", return_value=(files, "")), \
+                mock.patch.object(ci, "read", return_value=ci.CIState()):
+            bare = self.send(server, block("F1: open"))
+            self.assertFalse(bare["ok"])
+            self.assertIn("F1", bare["error"])
+            self.assertIn("plugin.yaml:config_schema", bare["error"])
+            self.assertNotIn("POST", [c[1] for c in self.calls])      # nothing written
+            copied = self.send(server, block("F1: open — src/a.py: not in the Desktop form"))
+            self.assertIn("again", copied["error"])
+            self.assertNotIn("POST", [c[1] for c in self.calls])
+            reasoned = block("F1: open — config_schema in plugin.yaml has no entry for it")
+            self.assertTrue(self.send(server, reasoned)["ok"])        # same turn, capability kept
+        self.assertIn("POST", [c[1] for c in self.calls])
+
     def test_a_block_beyond_the_3000_file_listing_is_published_with_or_without_the_marker(self):
         # #1555 / #1580 F1: past GitHub's listing limit the PR's file list is a prefix; the files
         # the host names from the trees are cited by that naming, in the second gate too

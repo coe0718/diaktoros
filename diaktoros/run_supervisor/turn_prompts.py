@@ -119,8 +119,7 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, shadow=_
             text += prompts.registry_section(change.diff if change is not None else None)
         text += ci_sections(loop, row, seat)
         if seat == 'reviewer':
-            text += reproduction_section(loop, row)
-            text += reconsider_section(loop, row)
+            text += reviewer_sections(loop, row)
         if shown is not None:
             text += '\n\n' + shown.record
     if seat == 'adjudicator' and ((marker or {}).get('escalated') or {}).get('by') == 'shadow':
@@ -179,6 +178,24 @@ def this_round_section(seat: str, facts: dict) -> str:
                  "exported at `/work`"]
     return (THIS_ROUND + " (facts the host verified from GitHub immediately before this turn)\n\n"
             + '\n'.join(lines) + f"\n\n`/work` holds the files of head {head}.")
+
+
+def reviewer_sections(loop: dict, row) -> str:
+    """What only a reviewer's prompt carries after the CI: the reproduction proof, a maintainer's
+    reconsider, and the findings answered since the reviewer last stated them (#703)."""
+    return (reproduction_section(loop, row) + reconsider_section(loop, row)
+            + answered_findings_section(loop, row))
+
+
+def answered_findings_section(loop: dict, row) -> str:
+    """The open findings that were answered since the reviewer last stated them, each answer
+    quoted as data (#703); '' when there are none, or no findings recorded for this PR."""
+    from .. import finding_answers, state as state_mod
+    try:
+        entry = state_mod.state_for(loop).findings_get(row['pr'])
+        return finding_answers.section(loop, row['pr'], entry) if entry else ''
+    except Exception:
+        return ''     # a review is never held for the prompt's extra; the broker still checks
 
 
 def reconsider_section(loop: dict, row) -> str:

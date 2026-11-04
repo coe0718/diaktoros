@@ -23,6 +23,10 @@ class Findings(unittest.TestCase):
         self.loop = {"repo": "acme/w", "id": "l", "base": "main", "state_dir": temp.name}
         self.st = state_mod.state_for(self.loop)
         findings.record(self.loop, 7, H1, ROUND1)
+        # No answer on the PR (#703); the answered-finding tests set their own comments.
+        quiet = mock.patch("diaktoros.finding_answers._read_answers", return_value=[])
+        quiet.start()
+        self.addCleanup(quiet.stop)
 
     def check(self, body, changed=("src/a.py",)):
         entry = self.st.findings_get(7)
