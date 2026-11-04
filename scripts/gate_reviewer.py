@@ -71,9 +71,9 @@ def refresh_declined(payload: dict) -> None:
         # No ``warn``: the gate already named any skipped sibling file when it chose its loop.
         loop = config.loop_for_repo((payload.get("repository") or {}).get("full_name") or "")
         author = ((pr.get("user") or {}).get("login") or "").lower()
-        # A PR outside the loop gets no check: don't spend reads on its events.
-        if (loop and number and head and (pr.get("base") or {}).get("ref") == loop["base"]
-                and author in config.reviewed_authors(loop)):
+        # A PR outside the loop gets no check: don't spend reads on its events. The base is not
+        # asked: the sweep judges a stacked child too (ready.py), so its push gets a check now.
+        if loop and number and head and author in config.reviewed_authors(loop):
             merge_check.refresh_new_head(loop, state_mod.state_for(loop), int(number), head)
     except Exception as exc:  # noqa: BLE001 - the gate's answer is already decided
         log(f"merge check not refreshed for a declined event: {type(exc).__name__}: {exc}")
