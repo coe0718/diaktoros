@@ -115,6 +115,9 @@ class Settle(unittest.TestCase):
             "an attempt at NaN": dict(audit_raw=AT.replace("AT", "NaN")),
             "an attempt at -1e999": dict(audit_raw=AT.replace("AT", "-1e999")),
             "an attempt at -Infinity": dict(audit_raw=AT.replace("AT", "-Infinity")),
+            # #1828: a JSON integer stays an int, and float(10**400) raises OverflowError.
+            "an attempt at 10**400": dict(audit_raw=AT.replace("AT", "1" + "0" * 400)),
+            "an attempt at -10**400": dict(audit_raw=AT.replace("AT", "-1" + "0" * 400)),
         }
         for name, case in cases.items():
             with self.subTest(name):
@@ -131,7 +134,10 @@ class Settle(unittest.TestCase):
                     if case.get("listing") is False:
                         watchdog.retire_stale_runs(self.loop, [], [])
                     else:
-                        self.sweep(head=case.get("head", HEAD))
+                        lines = self.sweep(head=case.get("head", HEAD))
+                        # Held quietly: the watchdog catches an exception from the sweep and
+                        # reports it, which is not the same answer (#1828).
+                        self.assertEqual(lines, [])
                 row = self.sup.get("fix")
                 self.assertEqual(row["state"], "uncertain", row["error"])
                 self.assertTrue(self.sup.post_write_hold(REPO, 7))
