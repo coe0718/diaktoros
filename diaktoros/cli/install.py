@@ -238,7 +238,11 @@ def _init_shadow(args, d: dict) -> dict:
     return settings_form.shadow_block(
         {}, given("shadow_profile"), given("shadow_every"), "init",
         escalate=given("shadow_escalate"), file_issues=given("shadow_file_issues"),
-        issues_daily=given("shadow_issues_daily")) or {}
+        issues_daily=given("shadow_issues_daily"),
+        always_paths=(getattr(args, "shadow_always_path", None)
+                      or settings_form._form_value(d, "shadow_always_paths")),
+        never_paths=(getattr(args, "shadow_never_path", None)
+                     or settings_form._form_value(d, "shadow_never_paths"))) or {}
 
 
 def _init_settings(args, d: dict) -> dict:
@@ -929,6 +933,10 @@ def _init_review_flags(init) -> None:  # noqa: ANN001
                       help="on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to --shadow-issues-daily a day (#914) (default: the plugin setting, else off)")
     init.add_argument("--shadow-issues-daily", default=None, metavar="N",
                       help="most shadow-found issues filed per rolling 24 hours, 0-1000; 0 = no cap (#1515) (default: the plugin setting, else 25)")
+    init.add_argument("--shadow-always-path", action="append", default=None, metavar="GLOB",
+                      help="a glob for paths whose change always gets a shadow review, whatever --shadow-every says (#1788; repeat it; '*' also matches '/') (default: the plugin setting)")
+    init.add_argument("--shadow-never-path", action="append", default=None, metavar="GLOB",
+                      help="a glob for paths a PR may change without a shadow review: one that changes only these gets none (#1788; repeat it; an always path wins) (default: the plugin setting)")
     init.add_argument("--human-path", action="append", default=None,
                       help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     init.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",

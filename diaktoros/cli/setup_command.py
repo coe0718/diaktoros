@@ -204,6 +204,8 @@ def _setup_setting_argv(args, d: dict, interactive: bool) -> list[str]:
         argv.append(f"--shadow-profile={str(shadow).strip()}")
     argv += _given(args, ("shadow_every", "shadow_escalate", "shadow_file_issues",
                           "shadow_issues_daily"))
+    for flag in ("shadow_always_path", "shadow_never_path"):     # #1788: else init's plugin setting
+        argv += [f"--{flag.replace('_', '-')}={glob}" for glob in getattr(args, flag, None) or []]
     reviewed = (args.review_only if getattr(args, "review_only", None) is not None else
                 [name for name in _ask("GitHub logins whose PRs the reviewer reviews but the fixer "
                                        "never touches, comma-separated (blank: none)",
@@ -569,6 +571,10 @@ def _setup_review_flags(first) -> None:  # noqa: ANN001
                        help="on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to --shadow-issues-daily a day (#914) (default: the plugin setting, else off)")
     first.add_argument("--shadow-issues-daily", default=None, metavar="N",
                        help="most shadow-found issues filed per rolling 24 hours, 0-1000; 0 = no cap (#1515) (default: the plugin setting, else 25)")
+    first.add_argument("--shadow-always-path", action="append", default=None, metavar="GLOB",
+                       help="a glob for paths whose change always gets a shadow review, whatever --shadow-every says (#1788; repeat it; '*' also matches '/') (default: the plugin setting)")
+    first.add_argument("--shadow-never-path", action="append", default=None, metavar="GLOB",
+                       help="a glob for paths a PR may change without a shadow review: one that changes only these gets none (#1788; repeat it; an always path wins) (default: the plugin setting)")
     first.add_argument("--human-path", action="append", default=None,
                        help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     first.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",

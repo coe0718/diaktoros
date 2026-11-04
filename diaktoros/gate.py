@@ -192,8 +192,8 @@ def _shadow_snapshot_lock(loop: dict, seat: str, number: int, head: str):
     the shadow's submit: every eviction runs under it and reads the open shadow runs first, so
     none can drop a snapshot whose row is not in the ledger yet. Otherwise no lock."""
     from contextlib import nullcontext
-    sampled = config.shadow_profile(loop) and shadow_sampled(loop, number, head)
-    if seat != "reviewer" or not sampled:
+    if seat != "reviewer" or not config.shadow_profile(loop) or not shadow_sampled(loop, number,
+                                                                                    head):
         return nullcontext()
     try:
         return state_mod.state_for(loop).locked()
@@ -202,12 +202,11 @@ def _shadow_snapshot_lock(loop: dict, seat: str, number: int, head: str):
 
 
 def shadow_sampled(loop: dict, number: int, head: str) -> bool:
-    """Whether this reviewer turn also gets a shadow review (#218): one in ``shadow.every``,
-    chosen by the repo, PR and head, so a redelivery or a re-queued turn chooses the same."""
-    import hashlib
-    every = config.shadow_every(loop)
-    digest = hashlib.sha256(f"{loop['repo']}:{number}:{head}".encode()).digest()
-    return int.from_bytes(digest[:8], "big") % every == 0
+    """Whether this reviewer turn also gets a shadow review (#218): by what the PR changes when
+    the loop names paths (#1788), else one in ``shadow.every``; chosen once per repo, PR and head,
+    so a redelivery or a re-queued turn chooses the same (``shadow_choice``)."""
+    from . import shadow_choice
+    return shadow_choice.choose(loop, number, head)["shadow"]
 
 
 # A shadow run in one of these states may still record its review at the head (#1004):

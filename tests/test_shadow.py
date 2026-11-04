@@ -883,6 +883,51 @@ class Cli(unittest.TestCase):
         argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn("--shadow-issues-daily=9", argv)
 
+    def test_shadow_path_globs_in_every_path(self):
+        # #1788: init (flag and form), set (replace and clear), apply, setup and show.
+        form = {"shadow_profile": "grok", "shadow_always_paths": "src/auth/*, deploy/*",
+                "shadow_never_paths": "docs/*"}
+        for extra, settings, want in (
+                ((), form, {"profile": "grok", "always_paths": ["src/auth/*", "deploy/*"],
+                            "never_paths": ["docs/*"]}),
+                (("--shadow-always-path", "lib/*"), form,
+                 {"profile": "grok", "always_paths": ["lib/*"], "never_paths": ["docs/*"]}),
+                (("--shadow-profile", "x", "--shadow-never-path", "*.md",
+                  "--shadow-never-path", "tests/*"), None,
+                 {"profile": "x", "never_paths": ["*.md", "tests/*"]})):
+            with self.subTest(extra=extra, settings=settings):
+                self.file.unlink(missing_ok=True)
+                rc, out = self.init(*extra, settings=settings)
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(self.shadow(), want)
+        self.file.unlink(missing_ok=True)
+        self.assertEqual(self.init()[0], 0)
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-always-path", "a/*")
+        self.assertEqual(rc, 2, out)                      # needs a profile
+        self.assertIn("need a shadow profile", out)
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-profile", "grok",
+                           "--shadow-always-path", "a/*", "--shadow-always-path", "b/*",
+                           "--shadow-never-path", "docs/*")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.shadow(), {"profile": "grok", "always_paths": ["a/*", "b/*"],
+                                         "never_paths": ["docs/*"]})
+        rc, out = self.cli("show", "--loop", LOOP_ID)
+        self.assertIn("b/*", next(line for line in out.splitlines()
+                                  if line.strip().startswith("shadow_always_paths")))
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--no-shadow-always-paths")
+        self.assertEqual((rc, self.shadow()), (0, {"profile": "grok",
+                                                   "never_paths": ["docs/*"]}), out)
+        rc, out = self.cli("apply", "--loop", LOOP_ID,
+                           settings={"shadow_always_paths": "c/*, d/*"})
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.shadow()["always_paths"], ["c/*", "d/*"])
+        from diaktoros.cli import setup_command as cli_setup
+        t = self.t
+        args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--shadow-profile", "x",
+                                            "--shadow-never-path", "docs/*"])
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        self.assertIn("--shadow-never-path=docs/*", argv)
+
     def seat(self) -> dict:
         return json.loads(self.file.read_text()).get("seats", {}).get("shadow", {})
 

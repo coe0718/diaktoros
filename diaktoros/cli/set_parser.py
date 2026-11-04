@@ -119,6 +119,16 @@ def _set_check_flags(change) -> None:  # noqa: ANN001
                         help="on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to --shadow-issues-daily a day (#914); needs a shadow profile")
     change.add_argument("--shadow-issues-daily", default=None, metavar="N",
                         help="most shadow-found issues filed per rolling 24 hours, 0-1000; 0 = no cap (#1515, default 25); needs a shadow profile")
+    always = change.add_mutually_exclusive_group()
+    always.add_argument("--shadow-always-path", action="append", default=None, metavar="GLOB",
+                        help="a glob for paths whose change always gets a shadow review, whatever --shadow-every says (#1788; repeat it; '*' also matches '/'); replaces the list; needs a shadow profile")
+    always.add_argument("--no-shadow-always-paths", action="store_true",
+                        help="clear the list: no path always gets a shadow review")
+    never = change.add_mutually_exclusive_group()
+    never.add_argument("--shadow-never-path", action="append", default=None, metavar="GLOB",
+                       help="a glob for paths a PR may change without a shadow review: one that changes only these gets none (#1788; repeat it; an always path wins); replaces the list; needs a shadow profile")
+    never.add_argument("--no-shadow-never-paths", action="store_true",
+                       help="clear the list: every PR may be sampled for a shadow review")
 
 
 def _set_path_flags(change) -> None:  # noqa: ANN001

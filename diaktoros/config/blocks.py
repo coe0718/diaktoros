@@ -10,6 +10,7 @@ import pathlib
 import re
 
 from .. import config, util
+from ..config import lists
 
 
 def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
@@ -79,6 +80,9 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
     return seat
 
 
+SHADOW_PATHS = ("always_paths", "never_paths")
+
+
 def normalize_shadow(raw, where: str) -> dict:
     """The ``shadow`` block (#218): ``profile`` (required to turn it on), ``every`` and
     ``escalate`` (#1004), ``file_issues`` (#914) and ``issues_daily`` (#1515), or ``{}``.
@@ -91,9 +95,9 @@ def normalize_shadow(raw, where: str) -> dict:
     if raw in (None, {}):
         return {}
     if not isinstance(raw, dict) or not set(raw) <= {"profile", "every", "escalate", "file_issues",
-                                                       "issues_daily"}:
+                                                       "issues_daily", *SHADOW_PATHS}:
         raise config.ConfigError(f"{where}: shadow may only hold 'profile', 'every', 'escalate', "
-                          "'file_issues' and 'issues_daily'")
+                          "'file_issues', 'issues_daily', 'always_paths' and 'never_paths'")
     profile = str(raw.get("profile") or "").strip()
     if not profile:
         raise config.ConfigError(f"{where}: shadow.profile is required (the Hermes profile shadow "
@@ -129,6 +133,10 @@ def normalize_shadow(raw, where: str) -> dict:
             raise config.ConfigError(f"{where}: shadow.issues_daily must be a whole number, "
                               f"{low}-{high} (0 = no cap), got {issues_daily!r}")
         shadow["issues_daily"] = issues_daily
+    for key in SHADOW_PATHS:             # #1788: globs a PR's changed paths are matched against
+        globs = lists.check_globs(raw.get(key), where, f"shadow.{key}")
+        if globs:
+            shadow[key] = globs
     return shadow
 
 
