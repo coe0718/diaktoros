@@ -237,6 +237,12 @@ its response/receipt was lost. Known accepted pushes can still require post-writ
 A fixer push that fails before its attempt begins (a read of the PR, the branch or the
 fixer's identity, or a check just before the push) is not one of these (#1763): nothing was
 written, so the push intent is withdrawn, the run ends `failed`, and `retry` can re-arm it.
+A fixer push already held this way is settled by the watchdog sweep when the host can prove it
+wrote nothing (#1763): the worker is gone, the PR is open and both it and its branch are still at
+the run's head, and the broker audit has no push attempt for that head since the run began. The
+run then ends `failed` with that evidence as its error, its seat is freed, and `retry` or the next
+event re-arms it. Anything the sweep can't read, a push the host saw publish, and a PR that
+closed stay held for you to reconcile.
 **Action:** preserve evidence, inspect exact external state, establish no worker remains,
 then reconcile. Never retry, redeliver repeatedly, delete locks or reset the ledger.
 
