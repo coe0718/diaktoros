@@ -28,7 +28,9 @@ class FixRoundCI(unittest.TestCase):
                 mock.patch.object(issue_facts, "section", return_value=""), \
                 mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
                 mock.patch.object(gh, "pr_url", return_value="https://github.com/acme/w/pull/7"), \
-                mock.patch.object(ci_fix, "failing_step", return_value="Run unit tests"), \
+                mock.patch.object(gh, "api", return_value={
+                    "status": "completed",
+                    "steps": [{"name": "Run unit tests", "conclusion": "failure"}]}), \
                 mock.patch.object(gh, "read_text",
                                   return_value="ok\nFAIL: test_walk (test_reader_identity)\n"), \
                 mock.patch("diaktoros.gate.verdicts", return_value=[{}]), \

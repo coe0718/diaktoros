@@ -59,6 +59,10 @@ VERDICT_HOLD = "held: waiting for the reviewer's verdict"
 # (#1763): settled runs are failed, not reconciled, so `retry` and a redelivery re-arm them.
 PUSH_QUARANTINE = "post-write push quarantine: "
 PUSH_SETTLED = "push quarantine settled: nothing written:"
+# A claim whose GitHub read failed is backed off (#53) with an error starting this way. The
+# worker that backed it off stays for the first backoff and schedules it (#1302): otherwise
+# only the next watchdog sweep, up to a sweep interval later, would start it.
+CLAIM_READ_FAILED = "claim-time read failed"
 CI_POLL_S = 90
 CI_WAIT_MAX_S = 60 * 60
 MAX_REARMS = 8

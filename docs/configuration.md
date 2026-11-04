@@ -340,7 +340,7 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `fixing` | Fix label handed an issue to the fixer, or the handoff was held. Links the issue. |
 | `fixed` | Issue-fix write ended: PR opened/review requested, could-not-fix comment, or uncertain. Links the issue. |
 | `failed` | Any isolated run's first failed attempt and its terminal failed/uncertain state. Links the issue for triage and issue-fix runs. |
-| `held` | A run waiting on its seat's daily cap or its provider's usage window: when it resumes, and how to run it sooner. Once per hold. |
+| `held` | A run waiting on its seat's daily cap, its provider's usage window, or an unavailable provider (#1325): when it resumes, and how to run it sooner. Once per hold. |
 | `conflict` | A loop PR no longer merges into its base (GitHub reports a merge conflict): once per head. Urgent tier. |
 | `ci_failed` | A required check is red at a loop PR's current head: once per head, naming the failed check(s) and linking the run. |
 | `updated` | With `review_only_update` on, the host merged the base into a review-only PR's branch and pushed it (clean merge only). |
@@ -458,10 +458,12 @@ to merge** while the shadow review of its head is still running, or after that r
 changes. `hermes dk ready` and `explain` say which (and `explain` won't recommend merging it);
 the ready-set notice leaves it out of the set. It needs `shadow.every: 1`,
 because a head the sampling skips would have no second review to hold it. A head with no shadow
-review to wait for is never held: one queued before escalate was on, or a shadow run that ended
-without a review, or a loop whose run ledger doesn't exist yet (`explain` notes it). A shadow run
+review to wait for is not held when it has a single reviewer turn: one queued before escalate was
+on, or a shadow run that ended without a review, or a loop whose run ledger doesn't exist yet
+(`explain` notes it). A head with an earlier turn's shadow is different (see the active reviewer
+turn, below). A shadow run
 queued after the newest review of the head, such as a re-review, holds until it lands, even past
-an earlier approval. A run ledger that exists but can't be read holds, because unknown isn't ready. Set it with `set`/`init`/`setup --shadow-escalate on|off`, the settings form's *Shadow
+an earlier approval. The hold judges the **active reviewer turn** (#1683), the newest reviewer run at the head, by its turn key: only a shadow queued with that turn counts. After a same-head re-review (`review --reconsider`), an older turn's finished shadow review never clears the newer turn; the head holds ("the newest reviewer turn has none queued yet") until the newer turn's own shadow has a review. That includes a newer turn whose shadow run ended failed, cancelled or skipped without a review: it is no second opinion, so the head still holds. A head with reviewer runs and an older turn's shadow but no review for the newest turn holds for good if that shadow is never queued or never produces a review. The escapes at that head are turning `shadow.escalate` off (`set --shadow-escalate off`, which clears the hold) or a push that gives the PR a new head. Another `review --reconsider` is refused there (one per head), and a plain `review` at the same head reuses the head's turn key, so it queues no new reviewer turn and no new shadow. A ledger with no reviewer run at the head (from before the shadow rows carried turns) counts every shadow at the head, as before. A run ledger that exists but can't be read holds, because unknown isn't ready. Set it with `set`/`init`/`setup --shadow-escalate on|off`, the settings form's *Shadow
 review holds the PR*, or the loop file.
 
 **The ruling.** With an adjudicator configured, a head where the reviewer **approved** and the
@@ -757,6 +759,7 @@ State is operational data, not additional user configuration. Do not hand-edit l
 | `review-only-conflicts.json` | Per review-only PR, the watchdog's cached dry merge of the base into the branch (#504): `{PR: {head, base, update, facts, tried, retry}}`, valid only for that exact head, base tip and `review_only_update` setting. `tried` is why an update stopped; `retry` is true when that stop is not a fact about the pair (pushes off, a broker refusal, a failed push), so the next sweep reads the cached dry merge but attempts the update again. Nothing is written for a fork, a PR with no branch, a dry merge that could not run or an unreadable base tip. |
 | `review-only-caps.json` | Per review-only PR, a maintainer-granted extra round (`{head, rounds}`) and its one notice state. |
 | `review-situations.json` | Per-PR base situation for counting reviews. It has no webhook writer, so an externally posted review event cannot create an association. |
+| `ci-cache/` | What a CI-fix prompt read about objects that never change (#1074): a *completed* Actions job's failing step and log tail (keyed by repository and job id), and the test files of a CI-fix commit (keyed by sha), so later turns, and the reviewer's and fixer's prompts on the same red head, cost no API call. A job still running is never kept, nor is an empty log or a job whose metadata could not be read; entries never expire. It saves API calls only: every turn is a fresh session and still gets the log in its prompt. Written only when `state_dir` already exists (a worker never creates it). Files are mode 0600 and hold GitHub's text, never a token. Disposable: delete it any time. |
 | `findings.json` | The reviewer's numbered findings (`F1`, `F2`, …) and their latest state (#475). |
 | `fix-asks.json` | The issue fixer's one open question or plan per issue (#483): `open`, `count`, `approved`, `handoff`. |
 | `held-fixes.json`, `held-fixes-said.json` | Issue-fix hand-offs waiting for their origin PR to merge (#324), and the one "waiting for PR" comment already posted for an issue. |

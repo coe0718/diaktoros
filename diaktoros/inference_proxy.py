@@ -136,6 +136,14 @@ def is_codex_backend(upstream: str) -> bool:
             url.path.startswith('/backend-api/codex/'))
 
 
+def is_deepseek(upstream: str) -> bool:
+    """DeepSeek's own API, which implements only ``json_object`` structured output and answers a
+    ``json_schema`` ``response_format`` with HTTP 400 "This response_format type is unavailable
+    now" (#1789)."""
+    url = urlsplit(upstream)
+    return url.scheme == 'https' and url.hostname == 'api.deepseek.com'
+
+
 # -- credentials ------------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -475,7 +483,7 @@ def last_activity(body: bytes) -> str:
 
 
 def bounded_request(body: bytes, model: str, contract: Contract,
-                    codex_backend: bool = False) -> bytes:
+                    codex_backend: bool = False, deepseek: bool = False) -> bytes:
     """Validate one sandbox body for ``contract``; force the model and the output cap."""
     try:
         payload = json.loads(body)
@@ -515,6 +523,11 @@ def bounded_request(body: bytes, model: str, contract: Contract,
         for name in ('max_output_tokens', 'temperature', 'top_p', 'prompt_cache_retention'):
             payload.pop(name, None)
         payload['store'] = False
+    fmt = payload.get('response_format')
+    if deepseek and isinstance(fmt, dict) and fmt.get('type') == 'json_schema':
+        # Hermes drops this for DeepSeek itself (its provider profile's unsupported_response_formats)
+        # when it can see the provider; behind this proxy it can't, and the 400 ends the turn (#1789).
+        del payload['response_format']
     return json.dumps(payload).encode('utf-8')
 
 
@@ -772,6 +785,7 @@ class InferenceCapability:
         else:
             self.endpoint = _NoRedirectConnection(upstream, contract.upstream_suffix)
         self.codex_backend = contract.mode == 'codex_responses' and is_codex_backend(upstream)
+        self.deepseek = contract.mode == 'chat_completions' and is_deepseek(upstream)
         self.credential = credential
         # When the upstream last answered 429, the time its usage window reopens (#219), so the
         # host can hold the seat instead of retrying into a closed window.
@@ -925,7 +939,7 @@ class InferenceCapability:
                     return
                 try:
                     body = bounded_request(body, capability.model, capability.contract,
-                                           capability.codex_backend)
+                                           capability.codex_backend, capability.deepseek)
                 except ProxyError as exc:
                     self.refuse(str(exc))
                     return
