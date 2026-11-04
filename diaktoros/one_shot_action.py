@@ -406,12 +406,15 @@ def _snapshot_shape(expected) -> bool:
 
 
 def _drain(loop, seat):
-    """CLI-only whole-seat request: the sweep ran, which is not proof a run finished.
+    """CLI-only whole-seat request: the watchdog returned, which is not proof a run finished.
 
     ``docs/commands.md`` makes this command propagate its script's exit code and says it does not
-    wait for completion, so a completed sweep is 0 with the caveat printed — reporting 2 for every
-    drain would claim a refusal that did not happen, and 2 is the documented refused-input code.
-    A refused loop file (the script calls ``sys.exit(1)``) and a spent GitHub budget stay
+    wait for completion, so a watchdog that returned is 0 with the caveat printed — reporting 2
+    for every drain would claim a refusal that did not happen, and 2 is the documented
+    refused-input code. 0 does not establish that the sweep covered the queue: the script
+    returns normally when a migration holds the install, when a loop's hooks are paused or
+    unreadable, and when its own budget runs out (it prints that line, then returns). A refused
+    loop file (the script calls ``sys.exit(1)``) and a budget that escapes the script stay
     non-zero. Desktop refuses this operation before launch for the same reason.
     """
     if seat not in ("reviewer", "fixer"):
@@ -436,8 +439,8 @@ def _drain(loop, seat):
     finally:
         gh._GATE.clear()
         gh._GATE.update(budget)
-    print("drain requested; the sweep ran, but queue and run outcomes are unconfirmed — "
-          "inspect status")
+    print("drain requested; the watchdog returned, but it may have stopped early (see any line "
+          "above) and queue and run outcomes are unconfirmed — inspect status")
     return 0
 
 

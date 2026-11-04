@@ -215,6 +215,36 @@ class ConfirmedActions(fixtures.Base):
         self.assertEqual(watchdog.run.call_args.args[0].seat, "fixer")
         self.assertEqual(gh._GATE, before)
 
+    def _real_watchdog(self, **patches):
+        """The real script module with its ``drain`` replaced, so ``run``'s own handling runs."""
+        watchdog = actions._script("watchdog")
+        for name, value in patches.items():
+            setattr(watchdog, name, value)
+        return watchdog
+
+    def test_cli_drain_exit_0_does_not_claim_the_sweep_finished_after_a_budget_stop(self):
+        # F1 (#1846 review): watchdog.run catches GateBudgetExceeded itself and returns, so the
+        # CLI sees a normal return — exit 0 — for a sweep cut short. The output must say so.
+        watchdog = self._real_watchdog(drain=mock.Mock(side_effect=gh.GateBudgetExceeded("slow")))
+        with mock.patch.object(actions, "_script", return_value=watchdog), \
+                mock.patch.object(watchdog.watch_mode, "TEST", True):
+            result = actions.perform_drain(self.loop, "reviewer")
+        text = " ".join(result["lines"])
+        watchdog.drain.assert_called_once()
+        self.assertEqual(result["code"], 0, result)
+        self.assertIn("ran out of its", text)
+        self.assertIn("stopped early", text)
+        self.assertNotIn("the sweep ran, but", text)
+
+    def test_cli_drain_exit_0_when_a_migration_holds_the_install_says_nothing_swept(self):
+        watchdog = self._real_watchdog(drain=mock.Mock())
+        with mock.patch.object(actions, "_script", return_value=watchdog), \
+                mock.patch("diaktoros.migrate.migrating", return_value={"started": 1.0}):
+            result = actions.perform_drain(self.loop, "reviewer")
+        watchdog.drain.assert_not_called()
+        self.assertEqual(result["code"], 0, result)
+        self.assertIn("stopped early", " ".join(result["lines"]))
+
     def test_cli_drain_reports_a_refused_loop_rather_than_success(self):
         watchdog = mock.Mock(WATCHDOG_BUDGET_S=30, WATCHDOG_PER_CALL_S=2,
                              run=mock.Mock(side_effect=SystemExit(1)))
@@ -328,6 +358,8 @@ class DrainExitCodeDocs(unittest.TestCase):
             text = re.sub(r"\s+", " ", (docs / name).read_text(encoding="utf-8"))
             self.assertNotRegex(text, r"(?i)drain now exits 2", name)
             self.assertNotRegex(text, r"(?i)unconfirmed drain completion exits", name)
+            self.assertNotRegex(text, r"(?i)exits 0 after a completed sweep", name)
+            self.assertRegex(text, r"(?i)does not prove the sweep covered the queue", name)
 
 
 if __name__ == "__main__":
