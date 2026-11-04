@@ -43,13 +43,18 @@ def fix(loop: dict, payload: dict) -> None:
     if sender not in config.maintainers(loop):      # triage.maintainers and operator_agents (#757)
         silence(f"issue #{number}: {sender or 'an unknown account'} applied the fix label, and "
                 "is not in triage.maintainers")
+    from diaktoros import fix_declined
     if not config.issue_fixes_enabled(loop):
+        # A maintainer's request too, declined for the loop's policy, not the issue (#1804, F3).
+        fix_declined.declined(loop, number, "issue fixes need unattended fixer pushes on")
         silence(f"issue #{number}: issue fixes need unattended fixer pushes on — "
                 f"{config.fixer_push_enable_command(loop)}")
-    from diaktoros.run_supervisor import issue_inputs
+    from diaktoros.run_supervisor import IssueIneligible, issue_inputs
     try:
         live = issue_inputs.issue_fix_issue(loop, number)
     except Exception as exc:
+        if isinstance(exc, IssueIneligible):        # said, not only recorded (#1794)
+            fix_declined.declined(loop, number, str(exc))
         silence(f"issue #{number} not handed to the fixer: {exc}")
     from diaktoros import fix_hold
     try:
@@ -62,6 +67,11 @@ def fix(loop: dict, payload: dict) -> None:
         if failed_base:
             _fix_notice(loop, number, failed_base, f"held — {reason}")
         silence(f"issue #{number} fix held: {reason}")
+    # Handed off, so an earlier decline's reason is stale: the fix is queued, or a wait the
+    # sweep follows is recorded (review of #1804, F6). Not before: a hand-off that failed
+    # leaves nothing else that says the request is outstanding (F7).
+    from diaktoros import state as state_mod
+    fix_declined.resolved(state_mod.state_for(loop), number)
     if kind != "queued":
         silence(f"issue #{number}: {text}; not handed to the fixer")
     if outcome in ("enqueued", "rearmed", "pending"):
@@ -78,6 +88,18 @@ def _fix_notice(loop: dict, number: int, base: str, outcome: str) -> None:
                     outcome=outcome, issue=True)
 
 
+def _resolve_declined(loop: dict, payload: dict) -> None:
+    """A declined fix label is settled by the issue closing or the label coming off (#1794), as
+    the live issue shows it: the event is only the cue (review of #1804, F8)."""
+    issue, label = payload.get("issue") or {}, (payload.get("label") or {}).get("name")
+    fix_label = str((loop.get("triage") or {}).get("fix_label") or "")
+    if type(issue.get("number")) is int and (
+            payload.get("action") == "closed" or (payload.get("action") == "unlabeled" and fix_label
+                                                  and str(label).casefold() == fix_label.casefold())):
+        from diaktoros import fix_declined, state as state_mod
+        fix_declined.settle(loop, state_mod.state_for(loop), issue["number"])
+
+
 def main() -> None:
     payload = json.load(sys.stdin)
     if "zen" in payload and "action" not in payload:
@@ -88,6 +110,7 @@ def main() -> None:
         silence("issue triage is off for this loop")
     if payload.get("action") == "labeled":
         fix(loop, payload)
+    _resolve_declined(loop, payload)
     if payload.get("action") != "opened":
         silence(f"issues {payload.get('action') or '(no action)'}: only a new issue is triaged")
     issue = payload.get("issue")

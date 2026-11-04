@@ -172,6 +172,206 @@ class Gate(Base):
         self.assertEqual(recorded, [("accepted",
                                      f"issue #12 handed to the fixer at {BASE[:7]}: enqueued")])
 
+    def test_an_issue_the_loop_filed_itself_can_be_fixed_and_a_strangers_cannot(self):
+        # #1794: shadow-found issues are filed as the reader (an App's bot since the reader moved
+        # to one) and reviewer-filed issues as the reviewer; neither is in triage.authors here.
+        self.assertNotIn("read", self.loop["triage"]["authors"])
+        for author, fixed in (("read", True), ("Review", True), ("stranger", False)):
+            with self.subTest(author):
+                self.enqueued.clear()
+                self.live = issue(author=author)
+                self.run_gate(self.labeled())
+                self.assertEqual(bool(self.enqueued), fixed)
+
+    def test_a_declined_fix_label_is_said_once_per_reason_and_listed_until_accepted(self):
+        # #1794: a maintainer's label on an issue that can't be fixed was declined silently.
+        from diaktoros import observer
+        said = []
+        self.live = issue(author="stranger")
+        with mock.patch.object(observer, "notify",
+                               side_effect=lambda *a, **kw: said.append((a[2], a[3], kw))):
+            for _ in range(2):
+                self.run_gate(self.labeled())
+        self.assertEqual(self.enqueued, [])
+        self.assertEqual([(event, number) for event, number, _ in said], [("held", 12)] * 2)
+        identities = {kw["identity"] for _, _, kw in said}
+        self.assertEqual(len(identities), 1)       # one identity: the observer says it once
+        self.assertIn("triage --loop widgets --enable --author", said[0][2]["outcome"])
+        st = state_mod.state_for(self.loop)
+        (line,) = [x for x in fix_hold.status_lines(self.loop, st) if "#12" in x]
+        self.assertIn("the fix label was declined", line)
+        self.live = issue()                         # its author allowed now: accepted
+        self.run_gate(self.labeled())
+        self.assertEqual(len(self.enqueued), 1)
+        self.assertEqual([x for x in fix_hold.status_lines(self.loop, st) if "#12" in x], [])
+
+    def test_an_issue_filed_by_an_app_reader_is_handed_to_the_fixer(self):
+        # #1794 (review of #1804, F4): the reader as a GitHub App, filing as its bot.
+        bot = "widgets-reader[bot]"
+        self.loop = {**self.loop, "read_token": bot,
+                     "apps": {bot: {"app_id": 9, "key_file": str(self.root / "reader.pem")}}}
+        self.assertNotIn(bot, self.loop["triage"]["authors"])
+        self.live = issue(author="Widgets-Reader[bot]")
+        self.run_gate(self.labeled())
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix")])
+
+    def test_declines_reach_the_observer_once_per_reason(self):
+        # #1804, F3 and F4: through the observer's own ledger. A repeat of one reason is not sent
+        # again; a second reason (pushes turned off) is, with its own next step.
+        from diaktoros import observer, routes
+        subs = self.root / "subscriptions.json"
+        self.loop = {**self.loop, "host": "https://owner.example",
+                     "observer": {"route": "widgets-observe", "profile": "default",
+                                  "deliver": "telegram"}}
+        subs.write_text(json.dumps({"widgets-observe": {
+            "host": "https://owner.example", "secret": "s", **observer.route_contract(self.loop)}}))
+        self.live = issue(author="stranger")
+        with mock.patch.dict(os.environ, {"DIAKTOROS_SUBS": str(subs)}), \
+                mock.patch.object(routes, "fire", return_value=True) as fire:
+            self.run_gate(self.labeled())
+            self.run_gate(self.labeled())
+            self.loop = {**self.loop, "unattended_fixer_push": False}
+            self.run_gate(self.labeled())
+        held = [c.args[2]["_observer"] for c in fire.call_args_list
+                if c.args[2]["_observer"]["event"] == "held"]
+        self.assertEqual(len(held), 2, held)
+        text = json.dumps(held)
+        self.assertIn("triage --loop widgets --enable --author", text)
+        self.assertIn("fixer-push", text)
+
+    def test_every_outstanding_decline_is_listed_until_the_issue_closes_or_the_label_goes(self):
+        # #1804, F2: keeping the newest 20 dropped older declines nobody had resolved.
+        st = state_mod.state_for(self.loop)
+        for number in range(1, 26):
+            self.live = issue(number=number, author="stranger")
+            payload = self.labeled()
+            payload["issue"] = issue(number=number)
+            self.run_gate(payload)
+        listed = [x for x in fix_hold.status_lines(self.loop, st) if "fix label was declined" in x]
+        self.assertEqual(len(listed), 25)
+        # The live issues as the events left them: the gate reads them before it settles (F8).
+        live = {3: issue(number=3, author="stranger", state="closed"),
+                4: issue(number=4, author="stranger", labels=()),
+                5: issue(number=5, author="stranger")}
+        with mock.patch.object(gh, "api", lambda loop, path, method="GET", body=None, login=None:
+                               live.get(int(path.rsplit("/", 1)[1]))):
+            for action, label in (("closed", None), ("unlabeled", LABEL), ("unlabeled", "bug")):
+                number = {"closed": 3, LABEL: 4, "bug": 5}[label or action]
+                self.run_gate({"action": action, "label": {"name": label} if label else None,
+                               "issue": issue(number=number), "sender": {"login": "jeremy"},
+                               "repository": {"full_name": REPO}})
+        still = {int(x.split("#")[1].split(":")[0]) for x in fix_hold.status_lines(self.loop, st)
+                 if "fix label was declined" in x}
+        self.assertNotIn(3, still)                  # closed
+        self.assertNotIn(4, still)                  # the fix label removed
+        self.assertIn(5, still)                     # another label removed: still declined
+        self.assertEqual(len(still), 23)
+
+    def test_an_issue_the_loop_filed_needs_the_live_fix_label_not_an_auto_offer(self):
+        # Review of #1804, F5: an auto-offer label stood in for the fix label on the loop's own
+        # issues too, so a stale label event started a fix after the label came off. A person
+        # applies the fix label to those; an auto-offer still counts for a listed author.
+        self.loop = {**self.loop, "triage": {**self.loop["triage"], "auto_fix_labels": ["bug"]}}
+        for author, labels, fixed in (("read", ("bug",), False),     # label removed before the gate
+                                      ("read", (LABEL, "bug"), True),
+                                      ("owner", ("bug",), True)):
+            with self.subTest(author=author, labels=labels):
+                self.enqueued.clear()
+                self.live = issue(author=author, labels=labels)
+                self.run_gate(self.labeled())
+                self.assertEqual(bool(self.enqueued), fixed)
+        from diaktoros.run_supervisor import issue_inputs
+        self.live = issue(author="read", labels=("bug",))
+        with self.assertRaisesRegex(run_supervisor.IssueIneligible, "auto-offer label does not"):
+            issue_inputs.issue_fix_issue(self.loop, 12)       # the launch and broker recheck too
+
+    def test_a_decline_is_settled_when_a_later_label_waits_on_a_pr(self):
+        # Review of #1804, F6: accepted into a wait, then released by the sweep, the old decline
+        # stayed listed, telling the operator to allow an author already allowed.
+        st = state_mod.state_for(self.loop)
+        self.live = issue(author="stranger")
+        self.run_gate(self.labeled())
+        self.assertTrue([x for x in fix_hold.status_lines(self.loop, st) if "declined" in x])
+        self.loop = {**self.loop, "triage": {**self.loop["triage"],
+                                             "authors": ["owner", "stranger"]}}
+        self.origin = 7                              # waits on open PR #7
+        self.run_gate(self.labeled())
+        self.assertEqual(self.enqueued, [])
+        self.assertEqual(st.fix_holds(), {12: 7})
+        self.assertEqual([x for x in fix_hold.status_lines(self.loop, st) if "declined" in x], [])
+        self.origin_pr = {"number": 7, "state": "closed", "merged": True}
+        fix_hold.sweep(self.loop, st)
+        self.assertEqual(len(self.enqueued), 1)
+        self.assertEqual([x for x in fix_hold.status_lines(self.loop, st) if "declined" in x], [])
+
+    def test_a_decline_stays_listed_when_the_later_hand_off_fails(self):
+        # Review of #1804, F7: cleared before the hand-off ran, a failed hand-off (here the open
+        # PR listing unreadable) left neither the decline nor a wait nor a queued fix.
+        st = state_mod.state_for(self.loop)
+        self.live = issue(author="stranger")
+        self.run_gate(self.labeled())
+        self.loop = {**self.loop, "triage": {**self.loop["triage"],
+                                             "authors": ["owner", "stranger"]}}
+        with mock.patch.object(gh, "open_prs_read", lambda loop: (None, "offline")):
+            log = self.run_gate(self.labeled())
+        self.assertIn("open PR listing unreadable", log)
+        self.assertEqual(self.enqueued, [])
+        self.assertTrue([x for x in fix_hold.status_lines(self.loop, st) if "declined" in x])
+        self.run_gate(self.labeled())                # the redelivery hands it off: settled
+        self.assertEqual(len(self.enqueued), 1)
+        self.assertEqual([x for x in fix_hold.status_lines(self.loop, st) if "declined" in x], [])
+
+    def test_a_late_close_or_unlabel_event_does_not_erase_a_newer_decline(self):
+        # Review of #1804, F8: the label removed and applied again, the new label declined, and
+        # then the old unlabeled event (or a redelivered closed one) arrives. The issue is open
+        # and labelled, so the newer request is still outstanding.
+        st = state_mod.state_for(self.loop)
+        self.live = issue(author="stranger")
+        self.run_gate(self.labeled())
+        for action, label in (("unlabeled", LABEL), ("closed", None)):
+            with self.subTest(action):
+                self.run_gate({"action": action, "label": {"name": label} if label else None,
+                               "issue": issue(), "sender": {"login": "jeremy"},
+                               "repository": {"full_name": REPO}})
+                self.assertTrue([x for x in fix_hold.status_lines(self.loop, st)
+                                 if "declined" in x])
+
+    def test_a_decline_recorded_while_the_live_read_ran_is_kept(self):
+        # Review of #1804, F8: the read showed the label gone, and a newer label was declined
+        # before the clear; only the decline seen before the read may go.
+        from diaktoros import fix_declined
+        st = state_mod.state_for(self.loop)
+        self.live = issue(author="stranger")
+        self.run_gate(self.labeled())
+
+        def read_then_relabel(loop, path, method="GET", body=None, login=None):
+            fix_declined.declined(self.loop, 12, "a newer reason")    # lands mid-read
+            return issue(author="stranger", labels=())
+        with mock.patch.object(gh, "api", read_then_relabel):
+            fix_declined.settle(self.loop, st, 12)
+        self.assertEqual(fix_declined.entries(st)[12]["reason"], "a newer reason")
+
+    def test_the_sweep_settles_a_decline_whose_close_or_unlabel_event_was_missed(self):
+        # Review of #1804, F6: with the event lost, the decline was listed forever.
+        st = state_mod.state_for(self.loop)
+        for number in (1, 2, 3, 4):
+            self.live = issue(number=number, author="stranger")
+            payload = self.labeled()
+            payload["issue"] = issue(number=number)
+            self.run_gate(payload)
+        live = {1: issue(number=1, author="stranger", state="closed"),
+                2: issue(number=2, author="stranger", labels=("bug",)),
+                3: issue(number=3, author="stranger")}          # 4 is unreadable
+
+        def api(loop, path, method="GET", body=None, login=None):
+            self.assertEqual(login, "read")
+            return live.get(int(path.rsplit("/", 1)[1]))
+        with mock.patch.object(gh, "api", api):
+            fix_hold.sweep(self.loop, st)
+        still = {int(x.split("#")[1].split(":")[0]) for x in fix_hold.status_lines(self.loop, st)
+                 if "fix label was declined" in x}
+        self.assertEqual(still, {3, 4})              # still labelled; unreadable left for later
+
     def test_an_enqueue_failure_is_held_with_the_base_it_failed_at(self):
         def boom(*a, **k):
             raise OSError("boom")

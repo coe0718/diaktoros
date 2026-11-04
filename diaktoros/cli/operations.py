@@ -213,16 +213,9 @@ def cmd_status(args) -> int:
                 print(f"  running:    {seat} on {key} for {held:.0f}m")
         for line in _dependency_lines(loop):
             print(f"  deps:       {line}")
-        for issue_no, origin in sorted(st.fix_holds().items()):
-            print(f"  held:       issue #{issue_no} fix waits for PR #{origin} to merge")
         from .. import fix_hold
-        for issue_no, ask in sorted(st.fix_ask_open().items()):
-            print(f"  held:       {fix_hold.ask_line(issue_no, ask)}")
-        declared = st.issue_deps()
-        for issue_no in st.dep_waits():
-            names = ", ".join(f"#{a}" for a in sorted(declared.get(issue_no) or {})) or "?"
-            print(f"  held:       issue #{issue_no} fix waits for prerequisite {names} "
-                  f"(`hermes dk depends --loop {loop['id']} --issue {issue_no}` says why)")
+        for line in fix_hold.status_lines(loop, st):
+            print(f"  held:       {line}")
         for issue_no, late in sorted(st.late_triage().items()):
             print(f"  late:       issue #{issue_no} triage queued late "
                   f"({time.strftime('%Y-%m-%d %H:%M', time.gmtime(late['at']))} UTC): the "

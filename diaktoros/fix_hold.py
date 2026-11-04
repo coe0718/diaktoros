@@ -13,7 +13,7 @@ fix the mentioned PR was waiting for.
 
 from __future__ import annotations
 
-from . import config, gate, gh, issue_deps
+from . import config, fix_declined, gate, gh, issue_deps
 from .util import log
 
 
@@ -82,6 +82,23 @@ def ask_line(number: int, ask: dict) -> str:
     what = ("approval of its plan (`/loop approve`)" if ask.get("kind") == "plan"
             else "an answer to its question")
     return f"issue #{number} fix waits for a maintainer: {what}; no fix turn starts until then"
+
+
+def status_lines(loop: dict, st) -> list[str]:
+    """``status``'s ``held:`` lines for issue fixes: waiting on a PR, a maintainer's answer, a
+    prerequisite, or a fix label the host declined (#1794). Moved from ``cmd_status`` (#1794)."""
+    from . import fix_declined
+    lines = [f"issue #{issue_no} fix waits for PR #{origin} to merge"
+             for issue_no, origin in sorted(st.fix_holds().items())]
+    lines += [ask_line(issue_no, ask) for issue_no, ask in sorted(st.fix_ask_open().items())]
+    declared = st.issue_deps()
+    for issue_no in st.dep_waits():
+        names = ", ".join(f"#{a}" for a in sorted(declared.get(issue_no) or {})) or "?"
+        lines.append(f"issue #{issue_no} fix waits for prerequisite {names} "
+                     f"(`hermes dk depends --loop {loop['id']} --issue {issue_no}` says why)")
+    lines += [fix_declined.line(loop, issue_no, entry)
+              for issue_no, entry in sorted(fix_declined.entries(st).items())]
+    return lines
 
 
 def check_ask(st, number: int) -> None:
@@ -175,6 +192,7 @@ def _drop_comment(loop: dict, number: int, pr: int, declared: bool = False) -> N
 def sweep(loop: dict, st) -> list[str]:
     """Re-check held hand-offs; queue the fix of those whose PR merged. Best effort."""
     lines: list[str] = []
+    fix_declined.reconcile(loop, st)
     if not config.issue_fixes_enabled(loop):
         return lines
     sweep_asks(loop, st, lines)

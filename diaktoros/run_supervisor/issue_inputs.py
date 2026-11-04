@@ -58,6 +58,17 @@ def triage_blocker(loop: dict, issue: dict) -> str:
     return ''
 
 
+def fix_authors(loop: dict) -> set[str]:
+    """Whose issues a maintainer's fix label may hand to the fixer: ``triage.authors``, and the
+    identities the loop files issues as itself (#1794), the reader (shadow-found issues, #914)
+    and the reviewer seat (reviewer-filed issues, #247). The host wrote those; the list exists
+    to keep strangers' issues from the fixer, and a person still applies the label."""
+    from .. import config
+    own = (loop.get('read_token'), config.seat_login(loop, 'reviewer'))
+    return ({str(a).lower() for a in (loop.get('triage') or {}).get('authors') or ()}
+            | {str(a).lower() for a in own if a})
+
+
 def issue_fix_issue(loop: dict, number: int) -> dict:
     """The live issue an issue-fix run may act on, or raise (#214).
 
@@ -76,14 +87,22 @@ def issue_fix_issue(loop: dict, number: int) -> dict:
         raise ValueError('not an issue (a pull request)')
     if issue.get('state') != 'open':
         raise run_supervisor.IssueIneligible('no longer eligible: the issue is no longer open')
-    if str((issue.get('user') or {}).get('login') or '').lower() not in triage.get('authors', ()):
+    author = str((issue.get('user') or {}).get('login') or '').lower()
+    if author not in fix_authors(loop):
         raise run_supervisor.IssueIneligible('no longer eligible: the issue author is not in triage.authors')
+    listed = author in {str(a).lower() for a in triage.get('authors') or ()}
     present = {str((label or {}).get('name') or '').casefold()
                for label in issue.get('labels') or [] if isinstance(label, dict)}
     # A maintainer's fix label, or (#232) a triage label the loop auto-offers (never with P0-P2).
+    # An issue the loop filed itself counts only with the fix label: a person must apply it,
+    # and an auto-offer label is not one (review of #1804, F5).
     if (triage['fix_label'].casefold() not in present
-            and not config.auto_fix_eligible(loop, present)):
+            and not (listed and config.auto_fix_eligible(loop, present))):
         offered = [str(x) for x in triage.get('auto_fix_labels') or []]
+        if not listed:
+            raise run_supervisor.IssueIneligible(
+                f"no longer eligible: the {triage['fix_label']!r} label is no longer on the issue "
+                "(an issue the loop filed itself needs it; an auto-offer label does not count)")
         if offered and config.issue_fixes_enabled(loop):
             raise run_supervisor.IssueIneligible(
                 f"no longer eligible: neither the fix label ({triage['fix_label']!r}) nor an "
