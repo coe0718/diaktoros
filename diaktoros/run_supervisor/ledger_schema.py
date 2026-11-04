@@ -100,11 +100,14 @@ CREATE TABLE IF NOT EXISTS filed_issues (
 -- shadow-found. state: recorded → posting → posted (issue_number), duplicate, uncertain or denied.
 -- unlabelled: filed (issue_number), but GitHub did not apply some of its labels; error says
 -- which, and why (#1589). It is never filed again, and counts toward the daily cap.
+-- attempts: POSTs refused with nothing written (#1732); at shadow_issues.MAX_ATTEMPTS the row is
+-- denied, so a reader that can never file does not keep every row in the sweep for ever.
 CREATE TABLE IF NOT EXISTS shadow_issues (
  run_id TEXT NOT NULL REFERENCES runs(id), seq INTEGER NOT NULL, repo TEXT NOT NULL,
  pr INTEGER NOT NULL, head TEXT NOT NULL, title TEXT NOT NULL, title_key TEXT NOT NULL,
  body TEXT NOT NULL, labels TEXT NOT NULL, state TEXT NOT NULL, issue_number INTEGER,
  error TEXT, created REAL NOT NULL, updated REAL NOT NULL,
+ attempts INTEGER NOT NULL DEFAULT 0,
  PRIMARY KEY (run_id, seq), UNIQUE (repo, pr, title_key)
 );
 -- An operator's explicit step on a PR (#678), recorded after it took effect, for the report:
@@ -224,6 +227,8 @@ def migrate(con: sqlite3.Connection) -> None:
         con.execute('ALTER TABLE disputes ADD COLUMN comment_error TEXT')
     if 'shadow_run' not in {r[1] for r in con.execute('PRAGMA table_info(rulings)')}:
         con.execute('ALTER TABLE rulings ADD COLUMN shadow_run TEXT')   # #1112
+    if 'attempts' not in {r[1] for r in con.execute('PRAGMA table_info(shadow_issues)')}:
+        con.execute('ALTER TABLE shadow_issues ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0')  # #1732
     for column, alter, follow in MIGRATIONS:
         if column not in {r[1] for r in con.execute('PRAGMA table_info(runs)')}:
             con.execute(alter)

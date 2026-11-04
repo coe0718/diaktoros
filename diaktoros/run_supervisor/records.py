@@ -355,6 +355,27 @@ class LedgerRecords:
                                *((expect,) if expect else ())))
         return cur.rowcount == 1
 
+    def shadow_issue_refused(self, run_id: str, seq: int, reason: str, limit: int) -> str:
+        """Count one POST refused with nothing written (#1732) against a claimed (``posting``)
+        shadow issue: back to ``recorded`` with ``reason``, or ``denied`` once ``limit`` such
+        attempts are used. The state it moved to, '' when the row was not ``posting``."""
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            row = con.execute("SELECT attempts FROM shadow_issues WHERE run_id=? AND seq=? "
+                              "AND state='posting'", (run_id, seq)).fetchone()
+            if row is None:
+                con.execute('ROLLBACK')
+                return ''
+            attempts = row[0] + 1
+            state = 'denied' if attempts >= limit else 'recorded'
+            note = (f'not sent, dropped after {attempts} refused attempts: {reason}'
+                    if state == 'denied' else f'not sent, retried next sweep: {reason}')
+            con.execute('UPDATE shadow_issues SET state=?,attempts=?,error=?,updated=? '
+                        'WHERE run_id=? AND seq=?',
+                        (state, attempts, note[:200], time.time(), run_id, seq))
+            con.execute('COMMIT')
+            return state
+
     def filed_issue_status(self, run_id: str, seq: int, state: str, *,
                            issue_number: int | None = None, error: str | None = None) -> None:
         with self._connect() as con:

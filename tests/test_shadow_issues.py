@@ -593,6 +593,58 @@ class FilePending(unittest.TestCase):
         self.assertEqual(self.sweep_with(write), [201])
         self.assertEqual((self.state(first), self.state(second)), ("recorded", "posted"))
 
+    def test_a_row_refused_for_ever_is_dropped_after_max_attempts_and_not_re_posted(self):
+        # #1732: the real review is at the head, so the WAIT_S drop never ran for these rows.
+        run = self.recorded("A finding", at=time.time() - 40 * 86400)
+        refused = self.answered(403, "Resource not accessible by integration")
+        posts = []
+
+        def write(*args, **kwargs):
+            posts.append(args)
+            return refused()
+        for sweep in range(shadow_issues.MAX_ATTEMPTS - 1):
+            self.assertEqual(self.sweep_with(write), [])
+            self.assertEqual(self.state(run), "recorded", sweep)
+        self.assertEqual(self.sweep_with(write), [])
+        self.assertEqual(self.state(run), "denied")
+        self.assertIn("dropped after", self.error(run))
+        self.assertIn("Resource not accessible", self.error(run))
+        sent = len(posts)
+        self.assertEqual(sent, shadow_issues.MAX_ATTEMPTS)
+        self.sweep_with(write)
+        self.sweep_with(write)
+        self.assertEqual(len(posts), sent)                    # a denied row is never re-POSTed
+        self.assertEqual(self.sup.shadow_issues_waiting(REPO), [])
+
+    def test_the_attempts_of_one_row_do_not_count_against_another(self):
+        first = self.recorded("First finding")
+        second = self.recorded("Second finding")
+
+        def write(loop, path, method, body, login):
+            if body["title"] == "First finding":
+                return self.answered(403, "no")()
+            return {"number": 301, "labels": [{"name": x} for x in body["labels"]]}, ""
+        self.assertEqual(self.sweep_with(write), [301])
+        self.assertEqual((self.state(first), self.state(second)), ("recorded", "posted"))
+        with ledger.connect(self.db) as con:
+            self.assertEqual([r[0] for r in con.execute(
+                "SELECT attempts FROM shadow_issues ORDER BY run_id")], [1, 0])
+
+    def test_an_older_ledger_gets_the_attempts_column(self):
+        import sqlite3
+        from diaktoros.run_supervisor import ledger_schema
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.executescript(ledger_schema.SCHEMA)
+        ledger_schema.migrate(con)
+        self.assertIsNone(ledger_schema.ledger_problem(con))
+        con.execute("ALTER TABLE shadow_issues DROP COLUMN attempts")
+        # The worker's check refuses a ledger otherwise fully migrated but without the column.
+        self.assertEqual(ledger_schema.ledger_problem(con), "shadow_issues lacks attempts")
+        ledger_schema.migrate(con)
+        self.assertIn("attempts", {r[1] for r in con.execute("PRAGMA table_info(shadow_issues)")})
+        self.assertIsNone(ledger_schema.ledger_problem(con))
+
     def test_a_release_leaves_no_sequence_a_later_filing_collides_with(self):
         # F2: seq 1 released while seq 2 of the same run stands; the next filing must not take 2.
         run = self.recorded("A finding")
