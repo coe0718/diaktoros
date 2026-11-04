@@ -22,6 +22,8 @@ from diaktoros.run_supervisor import Supervisor, workers  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
 REPO, HEAD, MOVED = "acme/widgets", "a" * 40, "b" * 40
+# A matching attempt whose time is written as AT, raw: not every value json reads is JSON's.
+AT = f'{{"repo": "{REPO}", "pr": 7, "old_head": "{HEAD}", "phase": "attempt", "at": AT}}\n'
 
 
 class Settle(unittest.TestCase):
@@ -109,6 +111,10 @@ class Settle(unittest.TestCase):
             # F3: an attempt it cannot date, or a line it cannot read as a record.
             "an attempt has no time": dict(audit={"at": None}),
             "an audit line is not a record": dict(audit_raw="[1]\n"),
+            # F4: json reads NaN and an overflow (-1e999 is -inf) as floats no time compares to.
+            "an attempt at NaN": dict(audit_raw=AT.replace("AT", "NaN")),
+            "an attempt at -1e999": dict(audit_raw=AT.replace("AT", "-1e999")),
+            "an attempt at -Infinity": dict(audit_raw=AT.replace("AT", "-Infinity")),
         }
         for name, case in cases.items():
             with self.subTest(name):

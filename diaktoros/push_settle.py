@@ -25,6 +25,7 @@ event re-arms it, unlike an operator reconciliation, which never is.
 from __future__ import annotations
 
 import json
+import math
 from urllib.parse import quote
 
 from . import config, gh
@@ -106,8 +107,10 @@ def _attempted(loop: dict, run) -> bool | None:
         if (record.get("phase") == "attempt" and record.get("repo") == loop["repo"]
                 and record.get("pr") == run["pr"] and record.get("old_head") == run["head"]):
             at = record.get("at")
-            if isinstance(at, bool) or not isinstance(at, (int, float)):
-                return None                         # an attempt with no time: maybe this run's
+            if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at):
+                # An attempt with no time, or one no comparison can place (NaN, an overflow to
+                # infinity: review of #1802, F4): maybe this run's.
+                return None
             if at >= since:
                 return True
     return False
