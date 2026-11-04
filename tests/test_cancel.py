@@ -188,6 +188,25 @@ class NotStarted(Base):
         doc = ' '.join(cancel_action.__doc__.split())
         self.assertIn(f'has not started ({listing}) is cancelled at once', doc)
 
+    def test_every_summary_sentence_names_the_blocked_state(self):
+        root = Path(__file__).resolve().parent.parent
+        import argparse
+        from diaktoros.cli import operations
+        sub = argparse.ArgumentParser().add_subparsers()
+        operations.add_cancel(sub)
+        helps = {a.dest: a.help for a in sub._choices_actions}
+        self.assertIn('blocked', helps['cancel'])
+        self.assertIn('blocked', ' '.join(operations.cmd_cancel.__doc__.split()).split('(#')[0])
+        readme = [l for l in (root / 'README.md').read_text().splitlines() if '`hermes dk cancel`' in l]
+        self.assertTrue(readme)
+        self.assertTrue(all('blocked' in l for l in readme), readme)
+        text = (root / 'docs' / 'commands.md').read_text()
+        row = [l for l in text.splitlines() if l.endswith('[`cancel`](#cancel) |')]
+        self.assertEqual(len(row), 1)
+        self.assertIn('blocked', row[0])
+        section = text.split('### cancel\n', 1)[1].split('\n\n', 1)[0]
+        self.assertIn('blocked', section)
+
     def test_a_claimed_run_is_cancelled_and_its_worker_never_launches_it(self):
         sup = self.sup()
         sup.submit('d', REPO, 1, HEAD, 'reviewer')
