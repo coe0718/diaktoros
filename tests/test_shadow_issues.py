@@ -636,7 +636,11 @@ class FilePending(unittest.TestCase):
         con = sqlite3.connect(":memory:")
         self.addCleanup(con.close)
         con.executescript(ledger_schema.SCHEMA)
+        ledger_schema.migrate(con)
+        self.assertIsNone(ledger_schema.ledger_problem(con))
         con.execute("ALTER TABLE shadow_issues DROP COLUMN attempts")
+        # The worker's check refuses a ledger otherwise fully migrated but without the column.
+        self.assertEqual(ledger_schema.ledger_problem(con), "shadow_issues lacks attempts")
         ledger_schema.migrate(con)
         self.assertIn("attempts", {r[1] for r in con.execute("PRAGMA table_info(shadow_issues)")})
         self.assertIsNone(ledger_schema.ledger_problem(con))
