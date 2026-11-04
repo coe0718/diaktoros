@@ -200,7 +200,13 @@ What one loop did over a window, and how long it took. Two sources:
 - **The run ledger** (local; always shown): every seat turn in the window, by how it ended
   (succeeded, failed, waiting, cancelled, uncertain), how many needed a retry, how long a
   succeeded turn **ran**, and how long turns **waited** before starting (queues, daily caps,
-  usage windows, CI holds). GitHub cannot tell you how long a turn took; this can.
+  usage windows, CI holds). GitHub cannot tell you how long a turn took; this can. It also
+  sums tokens per seat and model, with the share the provider's prompt cache served, and
+  (#1790) says per seat how many of its model requests kept the previous request's history
+  unchanged and how much of what those resent the cache served. A turn whose requests keep
+  their history but get little from the cache is the provider missing. One whose requests
+  rewrite it is the client, and the line names the kind of item that changed first
+  (`reasoning`, `instructions/tools`, a message role). Turns from before #1790 have no trace.
 - **GitHub**, with `--github`, read as the reader (one request per PR): PRs opened, merged and
   still open, by author; open → merge time; each reviewer's verdicts and time to their first
   review; and how many change-request rounds the loop's reviewer needed per PR.

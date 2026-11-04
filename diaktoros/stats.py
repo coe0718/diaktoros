@@ -150,6 +150,33 @@ def cache_by_turn(db: Path, repo: str, since: float, limit: int = 60) -> list[di
             for pr, seat, head, t_in, cached in reversed(rows)]
 
 
+def request_cache(db: Path, repo: str, since: float) -> list[str] | None:
+    """Per seat, what its model requests kept of the one before and what the cache served of
+    what they resent (#1790, ``request_trace``). None: no ledger, no column or nothing traced."""
+    db = Path(db)
+    if not db.exists():
+        return None
+    con = read_only(db)
+    try:
+        if "requests" not in {row[1] for row in con.execute("PRAGMA table_info(runs)")}:
+            return None
+        rows = con.execute("SELECT seat, requests FROM runs WHERE repo=? AND created>=? AND "
+                           "requests IS NOT NULL ORDER BY seat, created", (repo, since)).fetchall()
+    finally:
+        con.close()
+    from . import request_trace
+    turns: dict[str, list] = defaultdict(list)
+    for seat, raw in rows:
+        try:
+            turns[seat].append(json.loads(raw))
+        except ValueError:
+            continue
+    return [request_trace.line(seat, request_trace.summary(entries))
+            for seat, entries in turns.items()] or None
+
+
+REQUEST_CACHE = ("Prompt cache per model request (did each request keep the previous one's "
+                 "history, and did the cache serve what it resent)")
 CACHE_HEAD = ["pr", "seat", "head", "tokens in", "cached input (provider-reported)"]
 
 
@@ -388,6 +415,8 @@ def collect(loop: dict, db: Path, since: float, with_github: bool,
     cache_turns = cache_by_turn(db, loop["repo"], since)
     if cache_turns is not None:       # a missing ledger keeps the pinned desktop payload as it was
         report["cache_turns"] = cache_turns
+    if (requests := request_cache(db, loop["repo"], since)) is not None:
+        report["request_cache"] = requests
     try:
         from . import findings
         report["findings_missed"] = findings.missed_count(loop, since, now)
@@ -1250,6 +1279,8 @@ def text(report: dict) -> str:
     if report.get("cache_turns"):
         out += ["", "Prompt cache per turn, oldest first (compare the rounds of one PR)",
                 *_table(CACHE_HEAD, _cache_turn_rows(report))]
+    if report.get("request_cache"):
+        out += ["", REQUEST_CACHE, *report["request_cache"]]
     for kind, title in (("prompt_rev", "prompt revision"), ("model", "model"),
                         ("thinking", "thinking")):
         groups = (report.get("revisions") or {}).get(kind)
@@ -1335,6 +1366,9 @@ def as_html(report: dict) -> str:
     if report.get("cache_turns"):
         parts.append("<h2>Prompt cache per turn</h2>")
         parts.append(_html_table(CACHE_HEAD, _cache_turn_rows(report)))
+    if report.get("request_cache"):
+        parts.append(f"<h2>{esc(REQUEST_CACHE)}</h2>")
+        parts += [f'<p class="sub">{esc(line)}</p>' for line in report["request_cache"]]
     if gh_report:
         notes, tables = _github_parts(gh_report)
         parts.append("<h2>Pull requests and reviews</h2>")
