@@ -58,6 +58,17 @@ def triage_blocker(loop: dict, issue: dict) -> str:
     return ''
 
 
+def fix_authors(loop: dict) -> set[str]:
+    """Whose issues a maintainer's fix label may hand to the fixer: ``triage.authors``, and the
+    identities the loop files issues as itself (#1794), the reader (shadow-found issues, #914)
+    and the reviewer seat (reviewer-filed issues, #247). The host wrote those; the list exists
+    to keep strangers' issues from the fixer, and a person still applies the label."""
+    from .. import config
+    own = (loop.get('read_token'), config.seat_login(loop, 'reviewer'))
+    return ({str(a).lower() for a in (loop.get('triage') or {}).get('authors') or ()}
+            | {str(a).lower() for a in own if a})
+
+
 def issue_fix_issue(loop: dict, number: int) -> dict:
     """The live issue an issue-fix run may act on, or raise (#214).
 
@@ -76,7 +87,7 @@ def issue_fix_issue(loop: dict, number: int) -> dict:
         raise ValueError('not an issue (a pull request)')
     if issue.get('state') != 'open':
         raise run_supervisor.IssueIneligible('no longer eligible: the issue is no longer open')
-    if str((issue.get('user') or {}).get('login') or '').lower() not in triage.get('authors', ()):
+    if str((issue.get('user') or {}).get('login') or '').lower() not in fix_authors(loop):
         raise run_supervisor.IssueIneligible('no longer eligible: the issue author is not in triage.authors')
     present = {str((label or {}).get('name') or '').casefold()
                for label in issue.get('labels') or [] if isinstance(label, dict)}

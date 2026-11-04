@@ -172,6 +172,39 @@ class Gate(Base):
         self.assertEqual(recorded, [("accepted",
                                      f"issue #12 handed to the fixer at {BASE[:7]}: enqueued")])
 
+    def test_an_issue_the_loop_filed_itself_can_be_fixed_and_a_strangers_cannot(self):
+        # #1794: shadow-found issues are filed as the reader (an App's bot since the reader moved
+        # to one) and reviewer-filed issues as the reviewer; neither is in triage.authors here.
+        self.assertNotIn("read", self.loop["triage"]["authors"])
+        for author, fixed in (("read", True), ("Review", True), ("stranger", False)):
+            with self.subTest(author):
+                self.enqueued.clear()
+                self.live = issue(author=author)
+                self.run_gate(self.labeled())
+                self.assertEqual(bool(self.enqueued), fixed)
+
+    def test_a_declined_fix_label_is_said_once_per_reason_and_listed_until_accepted(self):
+        # #1794: a maintainer's label on an issue that can't be fixed was declined silently.
+        from diaktoros import observer
+        said = []
+        self.live = issue(author="stranger")
+        with mock.patch.object(observer, "notify",
+                               side_effect=lambda *a, **kw: said.append((a[2], a[3], kw))):
+            for _ in range(2):
+                self.run_gate(self.labeled())
+        self.assertEqual(self.enqueued, [])
+        self.assertEqual([(event, number) for event, number, _ in said], [("held", 12)] * 2)
+        identities = {kw["identity"] for _, _, kw in said}
+        self.assertEqual(len(identities), 1)       # one identity: the observer says it once
+        self.assertIn("triage --loop widgets --enable --author", said[0][2]["outcome"])
+        st = state_mod.state_for(self.loop)
+        (line,) = [x for x in fix_hold.status_lines(self.loop, st) if "#12" in x]
+        self.assertIn("the fix label was declined", line)
+        self.live = issue()                         # its author allowed now: accepted
+        self.run_gate(self.labeled())
+        self.assertEqual(len(self.enqueued), 1)
+        self.assertEqual([x for x in fix_hold.status_lines(self.loop, st) if "#12" in x], [])
+
     def test_an_enqueue_failure_is_held_with_the_base_it_failed_at(self):
         def boom(*a, **k):
             raise OSError("boom")

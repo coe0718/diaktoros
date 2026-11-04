@@ -46,10 +46,13 @@ def fix(loop: dict, payload: dict) -> None:
     if not config.issue_fixes_enabled(loop):
         silence(f"issue #{number}: issue fixes need unattended fixer pushes on — "
                 f"{config.fixer_push_enable_command(loop)}")
-    from diaktoros.run_supervisor import issue_inputs
+    from diaktoros import fix_declined
+    from diaktoros.run_supervisor import IssueIneligible, issue_inputs
     try:
         live = issue_inputs.issue_fix_issue(loop, number)
     except Exception as exc:
+        if isinstance(exc, IssueIneligible):        # said, not only recorded (#1794)
+            fix_declined.declined(loop, number, str(exc))
         silence(f"issue #{number} not handed to the fixer: {exc}")
     from diaktoros import fix_hold
     try:
@@ -66,6 +69,8 @@ def fix(loop: dict, payload: dict) -> None:
         silence(f"issue #{number}: {text}; not handed to the fixer")
     if outcome in ("enqueued", "rearmed", "pending"):
         _fix_notice(loop, number, base, f"fix turn queued from {loop['base']} at {base[:7]}")
+    from diaktoros import state as state_mod
+    fix_declined.accepted(state_mod.state_for(loop), number)
     # Recorded like the reviewer gate's acceptances (#1244): explain and Desktop show the event
     # that started the fix, not only the ones declined around it.
     silence(f"issue #{number} handed to the fixer at {base[:7]}: {outcome}", "accepted")

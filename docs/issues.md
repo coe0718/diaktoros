@@ -26,7 +26,7 @@ not a token value. See [commands](commands.md) for the complete CLI reference.
 | | Triage | Issue fix |
 | --- | --- | --- |
 | Trigger | `issues` webhook action `opened` | Action `labeled` with configured fix label |
-| Authorization | Author in `triage.authors` | Sender in `triage.maintainers`, author in `triage.authors` |
+| Authorization | Author in `triage.authors` | Sender in `triage.maintainers`, author in `triage.authors` or one of the loop's own filing identities (the reader, the reviewer seat) |
 | Live eligibility | Open issue, not PR, no configured triage label already present | Open issue, not PR, fix label still present, pushes enabled |
 | Model environment | Triage profile, empty read-only `/work` | Fixer profile/model/account, base commit checkout |
 | Write | Add allowlisted labels and optionally one short comment | One new-branch PR sequence or one cannot-fix comment |
@@ -40,6 +40,12 @@ already present, it writes nothing—even if an earlier automation, not a human,
 
 The fix label cannot be a triage label. Only an allowlisted sender's labeling event
 triggers a fix; the feature does not inspect whether that sender is physically a human.
+Issues the loop files itself can be fixed without listing their author (#1794): shadow-found
+issues are filed as the reader (a GitHub App's bot when the reader is an App), and
+reviewer-filed issues as the reviewer seat. A fix label that is declined anyway (the author
+is not allowed, the issue closed, the label went) is said, not only recorded: the observer
+gets one `held` notice per issue and reason with the next step, and `status` lists the issue
+under `held:` until a later label is accepted.
 Changing/reopening an issue or editing its text does not launch triage. A durable
 triage key deduplicates repeat opened deliveries; proven pre-write failures may re-arm,
 but recorded write outcomes are never blindly replayed.
