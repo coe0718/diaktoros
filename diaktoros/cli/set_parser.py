@@ -114,7 +114,7 @@ def _set_check_flags(change) -> None:  # noqa: ANN001
     change.add_argument("--shadow-every", type=int, default=None,
                         help="shadow one in this many reviewer turns, 1-1000 (needs a shadow profile)")
     change.add_argument("--shadow-escalate", choices=("on", "off"), default=None,
-                        help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1")
+                        help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 or a --shadow-always-path")
     change.add_argument("--shadow-file-issues", choices=("on", "off"), default=None,
                         help="on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to --shadow-issues-daily a day (#914); needs a shadow profile")
     change.add_argument("--shadow-issues-daily", default=None, metavar="N",

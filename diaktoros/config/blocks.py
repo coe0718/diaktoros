@@ -116,9 +116,13 @@ def normalize_shadow(raw, where: str) -> dict:
         if not isinstance(raw["escalate"], bool):
             raise config.ConfigError(f"{where}: shadow.escalate must be true or false, "
                               f"got {raw['escalate']!r}")
-        if raw["escalate"] and shadow.get("every", config.DEFAULT_SHADOW_EVERY) != 1:
-            raise config.ConfigError(f"{where}: shadow.escalate needs shadow.every 1: a head the "
-                              "sampling skips would have no second review to hold it")
+        # A head blind sampling skips has no second review to hold it. Named always paths are
+        # different (#1788): every head of such a PR is shadowed, and held; the rest are sampled.
+        if (raw["escalate"] and shadow.get("every", config.DEFAULT_SHADOW_EVERY) != 1
+                and not lists.check_globs(raw.get("always_paths"), where, "shadow.always_paths")):
+            raise config.ConfigError(f"{where}: shadow.escalate needs shadow.every 1 or "
+                              "shadow.always_paths: a head blind sampling skips would have no "
+                              "second review to hold it")
         shadow["escalate"] = raw["escalate"]
     if raw.get("file_issues") not in (None, ""):
         if not isinstance(raw["file_issues"], bool):

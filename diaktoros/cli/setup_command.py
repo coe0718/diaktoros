@@ -566,7 +566,7 @@ def _setup_review_flags(first) -> None:  # noqa: ANN001
     first.add_argument("--shadow-every", type=int, default=None,
                       help="shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5)")
     first.add_argument("--shadow-escalate", choices=("on", "off"), default=None,
-                       help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off)")
+                       help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 or a --shadow-always-path (default: the plugin setting, else off)")
     first.add_argument("--shadow-file-issues", choices=("on", "off"), default=None,
                        help="on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to --shadow-issues-daily a day (#914) (default: the plugin setting, else off)")
     first.add_argument("--shadow-issues-daily", default=None, metavar="N",

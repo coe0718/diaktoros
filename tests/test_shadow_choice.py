@@ -170,6 +170,25 @@ class Setting(unittest.TestCase):
                 with self.subTest(key=key, bad=bad), self.assertRaises(config.ConfigError):
                     config.normalize({**RAW, "shadow": {"profile": "g", key: bad}})
 
+    def test_escalate_takes_always_paths_in_place_of_every_1(self):
+        # With always paths, every head of such a PR is shadowed and held; the rest are sampled.
+        # Blind sampling still can't escalate, and a never list alone is no guarantee either.
+        ok = config.normalize({**RAW, "shadow": {"profile": "g", "every": 5, "escalate": True,
+                                                 "always_paths": ["src/auth/*"]}})
+        self.assertTrue(config.shadow_escalate(ok))
+        for shadow in ({"every": 5}, {"every": 5, "never_paths": ["docs/*"]}, {}):
+            with self.subTest(shadow=shadow), self.assertRaisesRegex(
+                    config.ConfigError, "needs shadow.every 1 or shadow.always_paths"):
+                config.normalize({**RAW, "shadow": {"profile": "g", "escalate": True, **shadow}})
+
+    def test_set_keeps_the_escalate_rule_both_ways(self):
+        from diaktoros.config import settings_form
+        current = {"profile": "g", "every": 1, "escalate": True, "always_paths": ["a/*"]}
+        loosened = settings_form.shadow_block(current, None, "5", "set")
+        self.assertEqual(loosened["every"], 5)
+        with self.assertRaises(config.ConfigError):        # the always list was what allowed it
+            settings_form.shadow_block(loosened, None, None, "set", always_paths=[])
+
 
 if __name__ == "__main__":
     unittest.main()

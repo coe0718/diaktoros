@@ -460,7 +460,10 @@ It is not part of the loop:
 to merge** while the shadow review of its head is still running, or after that review requested
 changes. `hermes dk ready` and `explain` say which (and `explain` won't recommend merging it);
 the ready-set notice leaves it out of the set. It needs `shadow.every: 1`,
-because a head the sampling skips would have no second review to hold it. A head with no shadow
+because a head blind sampling skips would have no second review to hold it, or a
+`shadow.always_paths` list (#1788): then every head of a PR that changes an always path is
+shadowed and held, a PR that changes only never paths is not, and any other head is held only
+when `shadow.every` samples it (a later head of the same PR may not be). A head with no shadow
 review to wait for is not held when it has a single reviewer turn: one queued before escalate was
 on, or a shadow run that ended without a review, or a loop whose run ledger doesn't exist yet
 (`explain` notes it). A head with an earlier turn's shadow is different (see the active reviewer

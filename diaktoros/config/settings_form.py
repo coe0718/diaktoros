@@ -248,7 +248,9 @@ SETTINGS_SCHEMA: dict = {
     "shadow_escalate": {"label": "Shadow review holds the PR", "type": "str", "default": "",
                         "description": "on: a PR is not ready to merge while its shadow review "
                                        "is running, or after it requested changes (#1004). "
-                                       "Needs shadow every = 1. Blank = not set here: the loop "
+                                       "Needs shadow every = 1, or always-shadowed paths "
+                                       "(then those PRs are held at every head, the rest only "
+                                       "when sampled). Blank = not set here: the loop "
                                        "keeps its own value (default: off)"},
     "shadow_file_issues": {"label": "File the shadow's issues", "type": "str", "default": "",
                            "description": "on: the issues a shadow review asks to file are filed "
