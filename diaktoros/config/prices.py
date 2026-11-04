@@ -108,23 +108,40 @@ def estimate(row: dict, table: dict) -> dict | None:
     ``tokens_in``) the estimate is then a bound, whose side the prices decide (#1826): ``at
     most`` when cached input costs less than uncached, ``at least`` when it costs more, and
     exact (``bound`` None) when they cost the same or every turn reported. ``exact`` is the
-    sum in decimal, each price as written, so the text can round a bound outward (#1832)."""
+    sum in decimal with no rounding at all, each price as written, and ``dollars`` the nearest
+    float on the bound's side of it, so neither the text nor the JSON overstates (#1832)."""
     price = table.get(str(row.get("model") or "").lower())
     if price is None:
         return None
     cached = row.get("cache_read") or 0
     uncached = max((row.get("tokens_in") or 0) - cached, 0)
-    with decimal.localcontext(prec=80):
+    with decimal.localcontext(_EXACT):
         exact = (uncached * _decimal(price["input"]) + cached * _decimal(price["cached"])
-                 + (row.get("tokens_out") or 0) * _decimal(price["output"])) / 10 ** 6
+                 + (row.get("tokens_out") or 0) * _decimal(price["output"])).scaleb(-6)
     unreported = (row.get("cached_of") or 0) < (row.get("tokens_in") or 0)
     bound = (None if not unreported or price["cached"] == price["input"]
              else "at most" if price["cached"] < price["input"] else "at least")
-    return {"dollars": float(exact), "bound": bound, "exact": str(exact)}
+    return {"dollars": _directed(exact, bound), "bound": bound, "exact": str(exact)}
+
+
+# Precision enough for any sum of accepted prices (5e-324 to 10,000) without rounding; Inexact
+# trapped, so a sum that would round raises rather than shifting a bound.
+_EXACT = decimal.Context(prec=decimal.MAX_PREC, Emax=decimal.MAX_EMAX, Emin=decimal.MIN_EMIN,
+                         traps=[decimal.Inexact, decimal.InvalidOperation, decimal.Overflow])
 
 
 def _decimal(value: float) -> decimal.Decimal:
     return decimal.Decimal(repr(float(value)))      # the shortest text that reads back as it
+
+
+def _directed(exact: decimal.Decimal, bound: str | None) -> float:
+    """The float nearest ``exact``, stepped one float outward if it fell on the wrong side."""
+    near = float(exact)
+    if bound == "at most" and decimal.Decimal(near) < exact:
+        return math.nextafter(near, math.inf)
+    if bound == "at least" and decimal.Decimal(near) > exact:
+        return math.nextafter(near, -math.inf)
+    return near
 
 
 # A bound's figure rounds away from what it bounds, so "at most" never shows less than the cost
@@ -136,7 +153,7 @@ def estimate_text(estimate_: dict | None) -> str:
     if estimate_ is None:
         return "unpriced"
     bound = estimate_.get("bound")
-    exact = decimal.Decimal(estimate_.get("exact") or repr(float(estimate_["dollars"])))
-    shown = exact.quantize(decimal.Decimal("0.0001"),
-                           rounding=_ROUNDING.get(bound, decimal.ROUND_HALF_EVEN))
+    exact = decimal.Decimal(estimate_.get("exact") or estimate_["dollars"])   # exact either way
+    shown = exact.quantize(decimal.Decimal("0.0001"), context=decimal.Context(
+        prec=decimal.MAX_PREC, rounding=_ROUNDING.get(bound, decimal.ROUND_HALF_EVEN)))
     return (f"{bound} " if bound else "") + f"${shown:,.4f}"

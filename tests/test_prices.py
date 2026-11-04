@@ -6,12 +6,14 @@ prices each seat and model's tokens with it, says "unpriced" for a model with no
 $0), and "at most" or "at least", rounded outward, where some turns did not report their cache.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import json
 import os
 import sqlite3
 import sys
 import tempfile
 import unittest
 from contextlib import closing
+from decimal import Decimal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -219,6 +221,36 @@ class Estimate(unittest.TestCase):
             ("shadow", "m", {"tokens_in": 1_000_000, "tokens_out": 0, "cache_read": None})],
             {"m": {"input": 1.00004, "cached": 0.5, "output": 0}})
         self.assertIn("at most $1.0001", stats.text(report))
+
+    def test_no_price_is_too_small_to_move_a_bound(self):
+        # #1832 round 2: summed to 80 digits, 1M tokens (one cached at 5e-324, the least price
+        # accepted) plus one output token lost the 5e-330 and showed "at most $1.0000" for a
+        # cost of $1 and 5e-330. The sum is exact at any accepted price.
+        row = {"model": "m", "tokens_in": 1_000_000, "tokens_out": 1, "cache_read": 1,
+               "cached_of": 0}
+        got = prices.estimate(row, {"m": {"input": 1, "cached": 5e-324, "output": 1}})
+        self.assertGreater(Decimal(got["exact"]), 1)
+        self.assertEqual(prices.estimate_text(got), "at most $1.0001")
+
+    def test_the_json_dollars_is_on_the_bounds_side(self):
+        # #1832 round 2: the nearest float to 1.0000000000000001 is 1.0, below the cost, so
+        # "dollars" with "at most" was a false bound in stats' JSON. It is now the nearest float
+        # on the bound's side; the second case is the nearest float landing above an "at least".
+        turn = {"tokens_in": 500_000, "tokens_out": 500_000, "cache_read": None}
+        for price, cached, bound in ((1.0000000000000002, 0.5, "at most"),
+                                     (1.0000000000000004, 2.0, "at least")):
+            with self.subTest(bound=bound):
+                report = self.report([("shadow", "m", turn)],
+                                     {"m": {"input": price, "cached": cached, "output": 1.0}})
+                (row,) = json.loads(stats.as_json(report))["usage"]
+                got = row["estimate"]
+                cost = (500_000 * Decimal(repr(price)) + 500_000) / 1_000_000   # all uncached
+                self.assertEqual(got["bound"], bound)
+                self.assertEqual(Decimal(got["exact"]), cost)
+                if bound == "at most":
+                    self.assertGreaterEqual(Decimal(got["dollars"]), cost)
+                else:
+                    self.assertLessEqual(Decimal(got["dollars"]), cost)
 
 
 if __name__ == "__main__":

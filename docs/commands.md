@@ -205,7 +205,8 @@ What one loop did over a window, and how long it took. Two sources:
   the provider reported (none of today's do), and one estimated from the loop's `prices`
   (#1790): `unpriced` for a model with no entry, `at most` (or `at least`, when cached input is priced
   above uncached) where some turns did not report their
-  cache, the figure rounded away from what it bounds. It says per seat how many of its model requests kept the previous request's history
+  cache, the figure rounded away from what it bounds (in `--json`, `exact` is the unrounded
+  sum and `dollars` the nearest float on the bound's side). It says per seat how many of its model requests kept the previous request's history
   unchanged and, at most, how much of what those resent the cache served (an upper bound: a
   provider reports how many input tokens its cache served, not which). A turn whose requests keep
   their history but get little from the cache is the provider missing. One whose requests
