@@ -1232,8 +1232,8 @@ It is ignored for ordinary tiny probes. Live turn verdicts never post a review o
 ### onboard
 
 Read-only checklist of the setup stages and the one command to run next. It runs no check, spends
-no tokens and writes nothing (no file, nothing on GitHub); it only reads the onboarding record
-(`onboarding.json` in the loop's state directory) that the checks leave. For each of `identities`,
+no tokens and writes nothing (no file, no repository write on GitHub); it only reads the onboarding
+record (`onboarding.json` in the loop's state directory) that the checks leave. For each of `identities`,
 `loop`, `model`, `live_turn` and `armed` it shows the status (`passed`, `failed`, `skipped`,
 `stale` or `not_attempted`), when it was recorded, the command that recorded it and its one-line
 summary. A `stale` stage also says what changed: which stage's fingerprint (its inputs: the
@@ -1253,7 +1253,10 @@ hermes dk onboard --loop "<loop-id>" --pr 12
   `fixer-push`, and never edits the loop file. Run each yourself, with its own flags. It reports
   only whether unattended fixer pushes are on, and the command that turns them on.
 - To tell whether the `live_turn` and `armed` stages are still current, it reads the PR's head
-  and the repo's hooks from GitHub (GET only), and only for stages that were recorded. If a read
+  and the repo's hooks from GitHub, and only for stages that were recorded. Every request to the
+  repository is a GET. The one POST is authentication: a reader that is a GitHub App first mints
+  an installation token with `POST /app/installations/{id}/access_tokens` (a PAT reader sends no
+  POST). That mints a credential and changes nothing in the repository. If a read
   fails, the stage shows `stale`. The record is kept by `onboarding.py` (#1598) and written by the
   commands themselves (#1617); a loop whose commands have not run since then, or that was verified
   by hand, still shows `not_attempted`.

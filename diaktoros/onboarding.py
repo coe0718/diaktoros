@@ -394,7 +394,8 @@ def inspect(loop: dict, *, runtime_file: Path | None = None, resolver=None, pr_h
     ``summary`` and ``pr`` (empty when never recorded) and ``reason``: for a ``stale`` stage,
     which fingerprint changed (or why it cannot be compared). ``read`` is its statuses.
 
-    Reads the record and, for ``live_turn`` and ``armed`` only, GitHub (GET); writes nothing.
+    Reads the record and, for ``live_turn`` and ``armed`` only, GitHub (repository GETs; an App
+    reader also POSTs once to mint its installation token); writes nothing.
     """
     runtime_file = Path(runtime_file or config.host_path("runtime"))
     stored = _load(loop)
