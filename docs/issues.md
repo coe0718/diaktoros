@@ -50,8 +50,15 @@ label went, or unattended fixer pushes are off) is said, not only recorded: the 
 `held` notice per issue and reason with the next step, and `status` lists the issue under
 `held:` until the request is settled: a later label accepted (queued, or waiting on a PR or a
 prerequisite), the issue closed, or the fix label removed. Every outstanding decline is listed;
-none is dropped to make room. If the close or unlabel event is missed, the watchdog sweep reads
-each declined issue (as the reader) and settles it when the issue is closed or the label is gone.
+none is dropped to make room. The next step ends with "remove the fix label and apply it
+again": the label is normally still on the issue when the decline is recorded, GitHub sends a
+`labeled` event only when a label is added, and nothing else re-checks a decline whose issue
+still carries the label, so applying it "again" without removing it first changes nothing. The
+exception is a label already gone from the live issue (a delayed delivery), whatever else is
+wrong too (pushes off, author not allowed): the gate reads the issue when it records the decline,
+and the next step is then "apply the fix label to the issue", since adding it is the new event. If
+the close or unlabel event is missed, the watchdog sweep reads each declined issue (as the
+reader) and settles it when the issue is closed or the label is gone.
 Changing/reopening an issue or editing its text does not launch triage. A durable
 triage key deduplicates repeat opened deliveries; proven pre-write failures may re-arm,
 but recorded write outcomes are never blindly replayed.
