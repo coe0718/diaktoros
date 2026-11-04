@@ -298,6 +298,23 @@ class Gate(Base):
         self.assertEqual(len(self.enqueued), 1)
         self.assertEqual([x for x in fix_hold.status_lines(self.loop, st) if "declined" in x], [])
 
+    def test_a_decline_stays_listed_when_the_later_hand_off_fails(self):
+        # Review of #1804, F7: cleared before the hand-off ran, a failed hand-off (here the open
+        # PR listing unreadable) left neither the decline nor a wait nor a queued fix.
+        st = state_mod.state_for(self.loop)
+        self.live = issue(author="stranger")
+        self.run_gate(self.labeled())
+        self.loop = {**self.loop, "triage": {**self.loop["triage"],
+                                             "authors": ["owner", "stranger"]}}
+        with mock.patch.object(gh, "open_prs_read", lambda loop: (None, "offline")):
+            log = self.run_gate(self.labeled())
+        self.assertIn("open PR listing unreadable", log)
+        self.assertEqual(self.enqueued, [])
+        self.assertTrue([x for x in fix_hold.status_lines(self.loop, st) if "declined" in x])
+        self.run_gate(self.labeled())                # the redelivery hands it off: settled
+        self.assertEqual(len(self.enqueued), 1)
+        self.assertEqual([x for x in fix_hold.status_lines(self.loop, st) if "declined" in x], [])
+
     def test_the_sweep_settles_a_decline_whose_close_or_unlabel_event_was_missed(self):
         # Review of #1804, F6: with the event lost, the decline was listed forever.
         st = state_mod.state_for(self.loop)
