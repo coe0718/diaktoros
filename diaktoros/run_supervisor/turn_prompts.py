@@ -229,19 +229,23 @@ def adjudication_situation(marker: dict) -> str:
 
 
 def newest_shadow_review(row):
-    """The newest shadow review at this row's head, from the run ledger, as ``(run_id, model,
-    verdict, body)``, or None when there is none or the ledger cannot be read (#1112). One read
+    """The newest shadow review of this row's head and active reviewer turn (#1683), from the
+    run ledger, as ``(run_id, model, verdict, body)``, or None when there is none or the ledger
+    cannot be read (#1112). One read
     serves both the adjudicator's prompt and the ``RunScope`` that records which review the
     ruling answers, so a review landing in between cannot make them differ."""
     import sqlite3
+    from .. import gate
     try:
         con = views.read_only_connect(run_supervisor.production_ledger())
         if con is None:
             raise sqlite3.OperationalError("no ledger")
         try:
-            found = con.execute("SELECT run_id, model, verdict, body FROM shadow_reviews WHERE "
-                                "repo=? AND pr=? AND head=? ORDER BY created DESC LIMIT 1",
-                                (row['repo'], row['pr'], row['head'])).fetchone()
+            # The review the hold judges (#1683): the active reviewer turn's, so the ruling
+            # answers the review ``gate.shadow_state`` waits on, not an older turn's.
+            newest = gate._latest_shadow_review(con, row['repo'], row['pr'], row['head'])
+            found = newest and con.execute("SELECT run_id, model, verdict, body FROM "
+                                           "shadow_reviews WHERE run_id=?", (newest[2],)).fetchone()
         finally:
             con.close()
     except (sqlite3.Error, OSError):
