@@ -117,6 +117,33 @@ class ReadyNotice(unittest.TestCase):
             cli.cmd_ready(args)
         notify.assert_not_called()
 
+    def test_sweep_saves_a_cleared_stale_flag_before_the_ready_queue_reads_it(self):
+        """#1063: the ready sweep and the merge check read the watch file, not the sweep's dict."""
+        from types import SimpleNamespace
+        from diaktoros import stale_approval
+        watch = self.st.watch()
+        watch["stale_approvals"] = {"7": {"head": "a" * 40, "why": "tests is red"}}
+        self.st.watch_save(watch)
+        c = SimpleNamespace(loop=self.loop, st=self.st, prs=[], watch=self.st.watch())
+        seen: list = []
+
+        def clear(_loop, _st, _prs, w, _log=None):
+            w["stale_approvals"] = {}
+
+        def read(*_a, **_k):
+            seen.append(stale_approval.is_stale(self.st.watch(), 7, "a" * 40))
+
+        with mock.patch.object(watchdog.ci_fix, "sweep"), \
+             mock.patch.object(watchdog.stale_approval, "sweep", side_effect=clear), \
+             mock.patch.object(watchdog.ruled_approval, "sweep"), \
+             mock.patch.object(watchdog.main_check, "sweep"), \
+             mock.patch.object(watchdog.ready, "sweep", side_effect=read), \
+             mock.patch.object(watchdog.merge_check, "refresh", side_effect=read), \
+             mock.patch.object(watchdog.conflict_person, "prune"), \
+             mock.patch.object(watchdog.escalate_pending, "prune", return_value=[]):
+            watchdog._best_effort_sweeps(c)
+        self.assertEqual(seen, [False, False])
+
 
 if __name__ == "__main__":
     unittest.main()
