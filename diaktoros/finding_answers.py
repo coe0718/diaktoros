@@ -140,18 +140,29 @@ def _contains(words: list[str], inner: list[str]) -> bool:
     return n > 0 and any(words[i:i + n] == inner for i in range(len(words) - n + 1))
 
 
+def _bare(text: str) -> str:
+    """``_comparable(text)`` with its path tokens (``_PATHISH``) taken out as well."""
+    return _comparable(_PATHISH.sub(" ", _TAG_AT_START.sub("", text or "")))
+
+
 def repeats(reason: str, last: str) -> bool:
     """Whether ``reason`` is the text the finding last carried: the same words, a part of
     them long enough to be a quotation, or the whole of them (however short) with fewer than
-    ``MIN_NEW_WORDS`` words added: a path prefix or a suffix is not a new reason."""
-    a, b = _comparable(reason), _comparable(last)
-    if not a or not b:
-        return False
-    if a == b or (len(a) >= MIN_CONTAINED and a in b):
-        return True
-    old = b.split()
-    bare = _comparable(_PATHISH.sub(" ", reason)).split()
-    return any(_contains(c, old) and len(c) - len(old) < MIN_NEW_WORDS for c in (a.split(), bare))
+    ``MIN_NEW_WORDS`` words added: a path prefix or a suffix is not a new reason.
+
+    Compared twice: as written, and with the category tag and path tokens taken out of both
+    sides, so ``missing test`` is the text ``[test]: src/a.py: missing test`` again, however
+    short. A part of the old text is a copy only from ``MIN_CONTAINED`` characters (in either
+    form), so a short real reason that happens to sit inside a long old text is not refused."""
+    for a, b in ((_comparable(reason), _comparable(last)), (_bare(reason), _bare(last))):
+        if not a or not b:
+            continue
+        old, new = b.split(), a.split()
+        if a == b or (len(a) >= MIN_CONTAINED and a in b):
+            return True
+        if _contains(new, old) and len(new) - len(old) < MIN_NEW_WORDS:
+            return True
+    return False
 
 
 def refusal(loop: dict, number: int, entry: dict, restated: dict[str, str]) -> str:

@@ -71,7 +71,7 @@ class AnsweredFindings(unittest.TestCase):
         self.answer_on_issue()
         reason = self.check("F1: open — still wrong\nF2: open\n")
         self.assertIn("F2", reason)
-        self.assertEqual(self.check("F1: fixed\nF2: open — still no test for the new branch\n"), "")
+        self.assertEqual(self.check("F1: fixed\nF2: open — the new branch has no coverage at all for the new branch\n"), "")
         self.assertEqual(self.check("F1: withdrawn — the form is config_schema\n"
                                     "F2: fixed\n"), "")
 
@@ -112,6 +112,36 @@ class AnsweredFindings(unittest.TestCase):
             self.assertIn("again", self.check(f"F1: open — {line}\nF2: fixed\n"), line)
         self.assertEqual(self.check("F1: open — missing test for the new branch in the form\n"
                                     "F2: fixed\n"), "")
+
+    def tagged_finding(self, text="[test]: src/a.py: missing test"):
+        entry = self.st.findings_get(7)
+        entry["findings"]["F1"].update({"text": text, "last_text": text, "category": "test"})
+        self.st.findings_put(7, entry)
+        self.answer_on_issue()
+
+    def test_a_fragment_of_a_tagged_finding_is_refused_through_the_check(self):
+        # #1812: the stored text carries the category and path; the restatement does not.
+        self.tagged_finding()
+        for line in ("missing test", "src/a.py: missing test", "[test] missing test"):
+            self.assertIn("again", self.check(f"F1: open — {line}\nF2: open — the new branch has no coverage at all\n"),
+                          line)
+
+    def test_a_longer_reason_than_a_tagged_finding_is_still_accepted(self):
+        self.tagged_finding()
+        self.assertEqual(self.check("F1: open — missing test for the new branch in the form\n"
+                                    "F2: open — the new branch has no coverage at all\n"), "")
+
+    def test_a_short_reason_not_drawn_from_the_old_text_is_accepted(self):
+        self.tagged_finding()
+        self.assertEqual(self.check("F1: open — config_schema ignores it\n"
+                                    "F2: open — the new branch has no coverage at all\n"), "")
+        self.assertFalse(finding_answers.repeats("ignores it", "[test]: src/a.py: missing test"))
+
+    def test_a_short_reason_inside_a_long_old_text_is_not_a_copy(self):
+        # The quotation case keeps MIN_CONTAINED: a short real reason may sit in a long text.
+        long_text = "the setting is not in the Desktop settings form"
+        self.assertFalse(finding_answers.repeats("settings form", long_text))
+        self.assertTrue(finding_answers.repeats("not in the Desktop settings form", long_text))
 
     def test_a_comment_in_the_same_second_as_the_statement_counts_as_later(self):
         # Review round 2, F5: GitHub stamps to the second, the host's clock is fractional.
