@@ -373,6 +373,18 @@ class ProductionWorker(unittest.TestCase):
         self.assertEqual(pacing.held(self.account)[1], "openai-codex answered 429")
         self.assertEqual(json.loads(pacing.path().read_text())["unavailable"][self.account]["count"], 1)
 
+    def test_concurrent_outages_behind_a_longer_429_are_one_strike(self):
+        now = time.time()
+        pacing.hold(self.account, now + 7200, "openai-codex answered 429")
+        for offset in range(4):                       # four turns already in flight, a second apart
+            until = pacing.hold_unavailable(self.account, "x", now=now + offset)
+            self.assertAlmostEqual(until, now + 7200, delta=2)
+        self.assertEqual(json.loads(pacing.path().read_text())["unavailable"][self.account]["count"], 1)
+        self.assertEqual(pacing.held(self.account, now=now + 5)[1], "openai-codex answered 429")
+        # Once the outage window has passed, a failure is a new strike (and still no shorter hold).
+        pacing.hold_unavailable(self.account, "x", now=now + pacing.UNAVAILABLE_BASE_S + 1)
+        self.assertEqual(json.loads(pacing.path().read_text())["unavailable"][self.account]["count"], 2)
+
     def test_a_turn_failing_unavailable_during_a_shorter_429_holds_the_account_longer(self):
         def outage_after_a_429(_loop, scope, observed=None, **kw):
             # Launched before the 429 landed: another turn's 429 (reset in a minute) arrives mid-run.
