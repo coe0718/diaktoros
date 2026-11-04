@@ -89,14 +89,15 @@ def _fix_notice(loop: dict, number: int, base: str, outcome: str) -> None:
 
 
 def _resolve_declined(loop: dict, payload: dict) -> None:
-    """A declined fix label is settled by the issue closing or the label coming off (#1794)."""
+    """A declined fix label is settled by the issue closing or the label coming off (#1794), as
+    the live issue shows it: the event is only the cue (review of #1804, F8)."""
     issue, label = payload.get("issue") or {}, (payload.get("label") or {}).get("name")
     fix_label = str((loop.get("triage") or {}).get("fix_label") or "")
     if type(issue.get("number")) is int and (
             payload.get("action") == "closed" or (payload.get("action") == "unlabeled" and fix_label
                                                   and str(label).casefold() == fix_label.casefold())):
         from diaktoros import fix_declined, state as state_mod
-        fix_declined.resolved(state_mod.state_for(loop), issue["number"])
+        fix_declined.settle(loop, state_mod.state_for(loop), issue["number"])
 
 
 def main() -> None:

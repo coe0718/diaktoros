@@ -71,34 +71,51 @@ def declined(loop: dict, number: int, reason: str) -> None:
         log(f"declined fix label for #{number} not recorded: {type(exc).__name__}: {exc}")
 
 
+def settle(loop: dict, st, number: int) -> None:
+    """Settle the decline of ``number`` if its request is withdrawn: the live issue, read as the
+    reader, is closed or no longer carries the fix label. A ``closed`` or ``unlabeled`` event is
+    only the cue (review of #1804, F8): one delayed or redelivered past a newer label would
+    otherwise erase that label's decline, so the live issue decides, and only the decline seen
+    before the read is cleared, never one recorded while it ran. Unreadable: left. Never raises."""
+    from . import gh
+    seen = entries(st).get(number)
+    if seen is None:
+        return
+    fix_label = str((loop.get('triage') or {}).get('fix_label') or '').casefold()
+    try:
+        issue = gh.api(loop, f"/repos/{loop['repo']}/issues/{number}", login=loop['read_token'])
+    except Exception:
+        return
+    if not isinstance(issue, dict) or issue.get('number') != number:
+        return
+    present = {str((label or {}).get('name') or '').casefold()
+               for label in issue.get('labels') or [] if isinstance(label, dict)}
+    if issue.get('state') != 'open' or not fix_label or fix_label not in present:
+        resolved(st, number, only=seen)
+
+
 def reconcile(loop: dict, st) -> None:
     """The watchdog's catch-up for a missed ``closed`` or ``unlabeled`` event (review of #1804,
-    F6): a declined issue that is closed, or no longer carries the fix label, is settled. One read
-    per declined issue, as the reader (its ETag makes an unchanged one free); an unreadable one is
-    left for the next sweep. Never raises."""
-    from . import gh
-    fix_label = str((loop.get('triage') or {}).get('fix_label') or '').casefold()
+    F6): each declined issue is ``settle``d. One read per declined issue, as the reader (its ETag
+    makes an unchanged one free); an unreadable one is left for the next sweep."""
     for number in entries(st):
-        try:
-            issue = gh.api(loop, f"/repos/{loop['repo']}/issues/{number}", login=loop['read_token'])
-        except Exception:
-            continue
-        if not isinstance(issue, dict) or issue.get('number') != number:
-            continue
-        present = {str((label or {}).get('name') or '').casefold()
-                   for label in issue.get('labels') or [] if isinstance(label, dict)}
-        if issue.get('state') != 'open' or not fix_label or fix_label not in present:
-            resolved(st, number)
+        settle(loop, st, number)
 
 
-def resolved(st, number: int) -> None:
+def resolved(st, number: int, only: dict | None = None) -> None:
     """The request is settled (a later label handed to the fixer, the issue closed, or the fix
-    label removed): the issue is no longer listed as declined."""
+    label removed): the issue is no longer listed as declined. With ``only``, just that decline
+    (as ``entries`` read it): a newer one recorded since is kept."""
     if number not in entries(st):
         return
     try:
         with st.locked():
             memory = st._load(st.dir / FILE, {})
+            current = memory.get(str(number)) if isinstance(memory, dict) else None
+            if only is not None and (not isinstance(current, dict)
+                                     or str(current.get('reason'))[:300] != only['reason']
+                                     or float(current.get('at') or 0) != only['at']):
+                return
             if isinstance(memory, dict) and memory.pop(str(number), None) is not None:
                 st._save(st.dir / FILE, memory)
     except Exception as exc:  # noqa: BLE001

@@ -249,11 +249,17 @@ class Gate(Base):
             self.run_gate(payload)
         listed = [x for x in fix_hold.status_lines(self.loop, st) if "fix label was declined" in x]
         self.assertEqual(len(listed), 25)
-        for action, label in (("closed", None), ("unlabeled", LABEL), ("unlabeled", "bug")):
-            number = {"closed": 3, LABEL: 4, "bug": 5}[label or action]
-            self.run_gate({"action": action, "label": {"name": label} if label else None,
-                           "issue": issue(number=number), "sender": {"login": "jeremy"},
-                           "repository": {"full_name": REPO}})
+        # The live issues as the events left them: the gate reads them before it settles (F8).
+        live = {3: issue(number=3, author="stranger", state="closed"),
+                4: issue(number=4, author="stranger", labels=()),
+                5: issue(number=5, author="stranger")}
+        with mock.patch.object(gh, "api", lambda loop, path, method="GET", body=None, login=None:
+                               live.get(int(path.rsplit("/", 1)[1]))):
+            for action, label in (("closed", None), ("unlabeled", LABEL), ("unlabeled", "bug")):
+                number = {"closed": 3, LABEL: 4, "bug": 5}[label or action]
+                self.run_gate({"action": action, "label": {"name": label} if label else None,
+                               "issue": issue(number=number), "sender": {"login": "jeremy"},
+                               "repository": {"full_name": REPO}})
         still = {int(x.split("#")[1].split(":")[0]) for x in fix_hold.status_lines(self.loop, st)
                  if "fix label was declined" in x}
         self.assertNotIn(3, still)                  # closed
@@ -314,6 +320,36 @@ class Gate(Base):
         self.run_gate(self.labeled())                # the redelivery hands it off: settled
         self.assertEqual(len(self.enqueued), 1)
         self.assertEqual([x for x in fix_hold.status_lines(self.loop, st) if "declined" in x], [])
+
+    def test_a_late_close_or_unlabel_event_does_not_erase_a_newer_decline(self):
+        # Review of #1804, F8: the label removed and applied again, the new label declined, and
+        # then the old unlabeled event (or a redelivered closed one) arrives. The issue is open
+        # and labelled, so the newer request is still outstanding.
+        st = state_mod.state_for(self.loop)
+        self.live = issue(author="stranger")
+        self.run_gate(self.labeled())
+        for action, label in (("unlabeled", LABEL), ("closed", None)):
+            with self.subTest(action):
+                self.run_gate({"action": action, "label": {"name": label} if label else None,
+                               "issue": issue(), "sender": {"login": "jeremy"},
+                               "repository": {"full_name": REPO}})
+                self.assertTrue([x for x in fix_hold.status_lines(self.loop, st)
+                                 if "declined" in x])
+
+    def test_a_decline_recorded_while_the_live_read_ran_is_kept(self):
+        # Review of #1804, F8: the read showed the label gone, and a newer label was declined
+        # before the clear; only the decline seen before the read may go.
+        from diaktoros import fix_declined
+        st = state_mod.state_for(self.loop)
+        self.live = issue(author="stranger")
+        self.run_gate(self.labeled())
+
+        def read_then_relabel(loop, path, method="GET", body=None, login=None):
+            fix_declined.declined(self.loop, 12, "a newer reason")    # lands mid-read
+            return issue(author="stranger", labels=())
+        with mock.patch.object(gh, "api", read_then_relabel):
+            fix_declined.settle(self.loop, st, 12)
+        self.assertEqual(fix_declined.entries(st)[12]["reason"], "a newer reason")
 
     def test_the_sweep_settles_a_decline_whose_close_or_unlabel_event_was_missed(self):
         # Review of #1804, F6: with the event lost, the decline was listed forever.
