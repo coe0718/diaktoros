@@ -203,9 +203,33 @@ class Trace(unittest.TestCase):
         self.assertIn("of the 100 tokens they resent, the cache served at most 100, 100%: a "
                       "provider says how many tokens it served, not which", line)
 
+    def test_an_item_type_the_sandbox_chose_is_named_other_not_published(self):
+        # #1829: through a real proxy, where the type is the sandbox's own text.
+        secret = {"type": "worker-prompt-text-snippet", "x": 1}
+        cap = run_turn([responses(ASK, CALL), responses(ASK, secret), responses(ASK, CALL)],
+                       [(10, 0), (10, 0), (10, 0)])
+        self.assertEqual([e.get("changed") for e in cap.trace.entries],
+                         [None, "other", "function_call"])
+        role = {"type": "message", "role": "worker-prompt-text-snippet"}
+        cap = run_turn([responses(ASK, CALL), responses(ASK, role)], [(10, 0), (10, 0)])
+        self.assertEqual(cap.trace.entries[1]["changed"], "other")
+
+    def test_a_kind_recorded_before_the_vocabulary_is_not_published_either(self):
+        # #1829: stats reads what the ledger holds; a request item that is not an object is
+        # named by its JSON type, which is in the vocabulary.
+        turn = [{"kept": None, "of": None},
+                {"kept": 1, "of": 2, "changed": "worker-prompt-text-snippet"},
+                {"kept": 1, "of": 2, "changed": "function_call"}]
+        line = request_trace.line("reviewer", request_trace.summary([turn]))
+        self.assertNotIn("worker-prompt", line)
+        self.assertIn("first change: other ×1, function_call ×1", line)
+        trace = request_trace.Trace("codex_responses")
+        trace.see(responses(ASK, CALL))
+        self.assertEqual(trace.see(responses(ASK, "a string"))["changed"], "str")
+
     def test_collect_reports_it_in_json_and_the_page_escapes_it(self):
         # Review of #1813, F2: through the ledger and stats.collect, then the JSON and the page.
-        # An item's kind comes from the sandbox's request, so the page must escape it.
+        # A recorded kind is never published as text: unknown ones are ``other`` (#1829).
         with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as d:
             db = Path(d) / "runs.sqlite"
             sup = Supervisor(db)
@@ -220,11 +244,12 @@ class Trace(unittest.TestCase):
                      "cached": 10}]})
             report = stats.collect({"repo": REPO, "id": "w"}, db, 0, False, now=86400)
         (line,) = report["request_cache"]
-        self.assertIn("first change: <b>odd</b> ×1", line)
+        self.assertIn("first change: other ×1", line)
+        self.assertNotIn("odd", line)
         self.assertEqual(json.loads(json.dumps(report))["request_cache"], [line])
         page = stats.as_html(report)
-        self.assertIn("first change: &lt;b&gt;odd&lt;/b&gt; ×1", page)
-        self.assertNotIn("<b>odd</b>", page)
+        self.assertIn("first change: other ×1", page)
+        self.assertNotIn("odd", page)
 
     def test_a_ledger_without_traces_reports_none(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as d:
