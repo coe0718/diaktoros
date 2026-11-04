@@ -118,9 +118,12 @@ The broker enforces these rules before it spends the review write (#475):
   answer, and the seat resubmits in the same turn. An unanswered finding can still be restated
   bare. The broker cannot judge whether a reason really addresses the answer, only that there is
   one and that it is new. A finding recorded before the host kept the time
-  of each statement (`stated_at`) is compared from the time it was first raised, so it can
-  count an older comment as an answer once, but never misses a real one; a finding with neither
-  time is not counted as answered. A reason that holds the previous text plus a path or fewer
+  of each statement (`stated_at`) is compared from the submission time of the reviewer's
+  newest review on the PR (which stated every open finding); if the reviews cannot be read,
+  from the time it was first raised, which can count an older comment as an answer once but
+  never misses a real one; a finding with neither time is not counted as answered. GitHub
+  stamps comments to the second, so a comment in the same second as the statement counts as
+  later. A reason that holds the previous text (however short) plus a path or fewer
   than four new words is still a copy. The check cannot see a maintainer comment beyond the
   newest 20 of a thread. When GitHub's comments cannot be read, a
   review that keeps a finding open is refused as a read failure (retry shortly); a review

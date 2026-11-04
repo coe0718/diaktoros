@@ -104,6 +104,54 @@ class AnsweredFindings(unittest.TestCase):
         self.assertEqual(self.check("F1: open — nothing in desktop reads the key, and the form "
                                     "test never sets it\nF2: fixed\n"), "")
 
+    def test_a_short_copied_reason_with_a_path_prefix_is_still_a_copy(self):
+        # Review round 2, F1: the prior reason is under 15 characters.
+        findings.record(self.loop, 7, H2, "F1: open — missing test\nF2: fixed\n")
+        self.comments[5].append(comment("boss", "Still plugin.yaml.", at=time.time() + 120))
+        for line in ("src/a.py: missing test", "missing test", "missing test (still)"):
+            self.assertIn("again", self.check(f"F1: open — {line}\nF2: fixed\n"), line)
+        self.assertEqual(self.check("F1: open — missing test for the new branch in the form\n"
+                                    "F2: fixed\n"), "")
+
+    def test_a_comment_in_the_same_second_as_the_statement_counts_as_later(self):
+        # Review round 2, F5: GitHub stamps to the second, the host's clock is fractional.
+        entry = self.st.findings_get(7)
+        for fid in ("F1", "F2"):
+            entry["findings"][fid]["stated_at"] = 102.25
+        self.st.findings_put(7, entry)
+        self.comments[5].append({"user": {"login": "boss"}, "body": "see config_schema",
+                                 "created_at": util.iso_at(102)})
+        self.assertIn("F1", self.check("F1: open\nF2: open\n"))
+        self.comments[5][0]["created_at"] = util.iso_at(101)      # the second before: older
+        self.assertEqual(self.check("F1: open\nF2: open\n"), "")
+
+    def _legacy(self, review_at, answer_at):
+        """Findings recorded before stated_at, first raised at 100; the reviewer's newest
+        review (submitted ``review_at``) restated them; one answer at ``answer_at``."""
+        entry = self.st.findings_get(7)
+        for fid in ("F1", "F2"):
+            for key in ("stated_at", "last_text"):
+                del entry["findings"][fid][key]
+            entry["findings"][fid]["at"] = 100.0
+        self.st.findings_put(7, entry)
+        self.loop["reviewers"] = ["vex"]
+        self.comments[5].append({"user": {"login": "boss"}, "body": "see config_schema",
+                                 "created_at": util.iso_at(answer_at)})
+        review = {"user": {"login": "vex"}, "state": "CHANGES_REQUESTED",
+                  "submitted_at": util.iso_at(review_at), "id": 1}
+        patch = mock.patch.object(gh, "reviews_read", return_value=([review], ""))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_a_legacy_finding_restated_after_the_comment_is_unanswered(self):
+        # Review round 2, F4: first raised 100, answer 101, last review 102 (it saw the answer).
+        self._legacy(review_at=102, answer_at=101)
+        self.assertEqual(self.check("F1: open\nF2: open\n"), "")
+
+    def test_a_legacy_finding_answered_after_the_last_review_is_answered(self):
+        self._legacy(review_at=101, answer_at=103)
+        self.assertIn("F1", self.check("F1: open\nF2: open\n"))
+
     def test_an_answer_older_than_the_last_statement_does_not_count(self):
         self.comments[5].append(comment("boss", "old answer", at=time.time() - 3600))
         self.assertEqual(self.check("F1: open\nF2: open\n"), "")
