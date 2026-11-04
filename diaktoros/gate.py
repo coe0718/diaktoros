@@ -231,10 +231,83 @@ def _rulings_at(con, repo: str, number: int, head: str, turn_key: str | None = N
                            "ORDER BY created DESC", args).fetchall()
 
 
-def _latest_shadow_review(con, repo: str, number: int, head: str):
-    """The newest shadow review of a head, as ``(verdict, created, run_id)``, or None."""
-    return con.execute("SELECT verdict, created, run_id FROM shadow_reviews WHERE repo=? AND pr=? "
-                       "AND head=? ORDER BY created DESC LIMIT 1", (repo, number, head)).fetchone()
+_ACTIVE = object()      # "the active reviewer turn", read from the ledger
+
+
+def _active_turn(con, repo: str, number: int, head: str) -> str | None:
+    """The turn key of the active reviewer turn at a head: the newest reviewer run there (#1683).
+    None when there is no reviewer run (or the ledger predates ``runs.turn_key``): the head's
+    shadows then count as before, whichever turn queued them."""
+    import sqlite3
+    try:
+        row = con.execute("SELECT turn_key FROM runs WHERE repo=? AND pr=? AND head=? AND "
+                          "seat='reviewer' ORDER BY created DESC, updated DESC LIMIT 1",
+                          (repo, number, head)).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return None if row is None else str(row[0] or "")
+
+
+def _latest_shadow_review(con, repo: str, number: int, head: str, turn=_ACTIVE):
+    """The newest shadow review of a head's active reviewer turn (#1683), as ``(verdict, created,
+    run_id)``, or None. A shadow counts for the turn it was queued with (its run carries the
+    reviewer's turn key): an older turn's review at the same head never answers a newer turn.
+    ``turn`` is that key, read from the ledger when left out; None counts every shadow there."""
+    if turn is _ACTIVE:
+        turn = _active_turn(con, repo, number, head)
+    if turn is None:
+        return con.execute("SELECT verdict, created, run_id FROM shadow_reviews WHERE repo=? AND "
+                           "pr=? AND head=? ORDER BY created DESC LIMIT 1",
+                           (repo, number, head)).fetchone()
+    return con.execute("SELECT s.verdict, s.created, s.run_id FROM shadow_reviews s JOIN runs r "
+                       "ON r.id=s.run_id WHERE s.repo=? AND s.pr=? AND s.head=? AND r.turn_key=? "
+                       "ORDER BY s.created DESC LIMIT 1", (repo, number, head, turn)).fetchone()
+
+
+def _shadow_view(con, repo: str, number: int, head: str) -> tuple:
+    """What the ledger holds for a head's shadow, for ``shadow_state``: ``(review, run, ruling,
+    pending, lost)``. The newest review, the newest shadow run, the ruling that answers the review
+    and the open run newer than it, all of the active reviewer turn (#1683). ``lost`` is true when
+    that turn has no review while an earlier turn's shadow run exists at the head: the head is
+    sampled, so this turn's shadow is owed, and its enqueue was delayed or lost or its run ended
+    (failed, cancelled, skipped) without one. With no earlier turn's shadow, a run that ended
+    without a review is nothing to wait for, as before."""
+    import sqlite3
+    turn = _active_turn(con, repo, number, head)
+    scope, targs = ("", ()) if turn is None else (" AND turn_key=?", (turn,))
+    try:
+        review = _latest_shadow_review(con, repo, number, head, turn)
+    except sqlite3.OperationalError:
+        review = None              # a ledger from before shadow reviews: none recorded
+    base = "FROM runs WHERE repo=? AND pr=? AND head=? AND seat='shadow'"
+    run = con.execute(f"SELECT state, created {base}{scope} ORDER BY created DESC, updated DESC "
+                      "LIMIT 1", (repo, number, head, *targs)).fetchone()
+    try:
+        # A ruling answers the shadow review it was shown (#1112: its run id, not the time it
+        # landed): a later dissent at the same head, even one that landed during the
+        # adjudicator's turn, is not overruled by it (reviews on #1103).
+        ruling = None
+        if review is not None:
+            ruling = next((r for r in _rulings_at(con, repo, number, head)
+                           if ruling_answers(r, review[2], review[1])), None)
+    except sqlite3.OperationalError:
+        ruling = None
+    pending = con.execute(
+        f"SELECT state {base}{scope} AND state IN ({','.join('?' * len(SHADOW_OPEN))}) AND "
+        "created>? ORDER BY created DESC LIMIT 1",
+        (repo, number, head, *targs, *SHADOW_OPEN,
+         float(review[1]) if review is not None else -1.0)).fetchone()
+    lost = bool(turn is not None and review is None and con.execute(
+        f"SELECT 1 {base} AND COALESCE(turn_key,'')<>? LIMIT 1", (repo, number, head, turn)).fetchone())
+    return review, run, ruling, pending, lost
+
+
+def _lost_hold(short: str, run) -> str:
+    """The hold text when the active reviewer turn has no shadow review of its own (#1683):
+    ``run`` is that turn's newest shadow run row, or None when none was queued."""
+    ended = f"its shadow run ended {run[0]} without a review" if run else "it has none queued yet"
+    return (f"waiting on the shadow review at {short}: the newest reviewer turn has no review "
+            f"({ended}), and an earlier turn's does not count for it")
 
 
 def ruling_answers(ruling, review_run: str, review_created: float) -> bool:
@@ -299,29 +372,7 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
         if con is None:
             return "pending", f"the run ledger is unreadable, so the shadow review at {short} is unknown", ""
         try:
-            try:
-                review = _latest_shadow_review(con, loop["repo"], number, head)
-            except sqlite3.OperationalError:
-                review = None              # a ledger from before shadow reviews: none recorded
-            run = con.execute("SELECT state, created FROM runs WHERE repo=? AND pr=? AND head=? "
-                              "AND seat='shadow' ORDER BY created DESC, updated DESC LIMIT 1",
-                              (loop["repo"], number, head)).fetchone()
-            try:
-                # A ruling answers the shadow review it was shown (#1112: its run id, not the
-                # time it landed): a later dissent at the same head, even one that landed during
-                # the adjudicator's turn, is not overruled by it (reviews on #1103).
-                ruling = None
-                if review is not None:
-                    ruling = next((r for r in _rulings_at(con, loop["repo"], number, head)
-                                   if ruling_answers(r, review[2], review[1])), None)
-            except sqlite3.OperationalError:
-                ruling = None
-            pending = con.execute(
-                f"SELECT state FROM runs WHERE repo=? AND pr=? AND head=? AND seat='shadow' AND "
-                f"state IN ({','.join('?' * len(SHADOW_OPEN))}) AND created>? "
-                "ORDER BY created DESC LIMIT 1",
-                (loop["repo"], number, head, *SHADOW_OPEN,
-                 float(review[1]) if review is not None else -1.0)).fetchone()
+            review, run, ruling, pending, lost = _shadow_view(con, loop["repo"], number, head)
         finally:
             con.close()
     except Exception as exc:
@@ -355,6 +406,10 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
         # A shadow run queued after the newest review (a re-review at the same head, #1097's
         # shadow review) can still change it: wait for it, even past an earlier approval.
         return "pending", f"waiting on the shadow review at {short} ({pending[0]})", ""
+    if lost:
+        # #1683: an earlier turn's shadow at this head never answers the newer reviewer turn; the
+        # head holds until that turn's own shadow has a review.
+        return "pending", _lost_hold(short, run), ""
     if review is not None:
         return "", "", ""
     if run is None:
