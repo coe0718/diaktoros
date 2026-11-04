@@ -669,12 +669,14 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch, notices.OperatorNo
         if not isinstance(t_in, int) or not isinstance(t_out, int):
             return
         cost = observed.get('cost')
+        trace = observed.get('requests')
         with self._connect() as con:
             cached = observed.get('cache_read')
-            con.execute("UPDATE runs SET tokens_in=?, tokens_out=?, cost=?, cache_read=? "
-                        "WHERE id=? AND owner=?",
+            con.execute("UPDATE runs SET tokens_in=?, tokens_out=?, cost=?, cache_read=?, "
+                        "requests=? WHERE id=? AND owner=?",
                         (t_in, t_out, cost if isinstance(cost, (int, float)) else None,
                          cached if isinstance(cached, int) and not isinstance(cached, bool)
+                         else None, json.dumps(trace) if isinstance(trace, list) and trace
                          else None, run_id, owner))
         if loop_id and seat and t_in + t_out > 0:
             from .. import pacing

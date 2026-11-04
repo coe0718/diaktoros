@@ -15,7 +15,7 @@ from contextlib import closing
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from diaktoros import config, show, stats, trusted_turn  # noqa: E402
+from diaktoros import config, request_trace, show, stats, trusted_turn  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.inference_proxy import PATH, InferenceCapability, UsageMeter, _UnixHTTP  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
@@ -143,7 +143,11 @@ class ProxyRecordsTokens(unittest.TestCase):
                 self.assertTrue(cap.cost_known)
                 self.assertEqual(trusted_turn.usage_of(cap),
                                  {"tokens_in": 320, "tokens_out": 85, "cache_read": None,
-                                  "cost": 0.5})
+                                  "cost": 0.5, "requests": [
+                                      {"items": 1, "kept": None, "of": None, "in": 120,
+                                       "cached": None},
+                                      {"items": 1, "kept": 1, "of": 1, "in": 200,
+                                       "cached": None}]})
         finally:
             upstream.shutdown()
             upstream.server_close()
@@ -267,6 +271,7 @@ class CachePerRound(unittest.TestCase):
                 self.tokens_in = self.tokens_out = 0
                 self.cache_read, self.cache_gap = None, False
                 self.cost, self.cost_known = 0.0, False
+                self.trace = request_trace.Trace("chat_completions")
 
         def meter(body):
             m = UsageMeter()

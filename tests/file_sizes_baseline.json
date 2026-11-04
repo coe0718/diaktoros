@@ -55,7 +55,6 @@
     "diaktoros/gate_failures.py::gateway_webhook_setting": 117,
     "diaktoros/gate_failures.py::run": 136,
     "diaktoros/gate_shims.py::divergence": 83,
-    "diaktoros/inference_proxy.py::InferenceCapability.__enter__": 82,
     "diaktoros/one_shot_action.py::_escalate": 94,
     "diaktoros/one_shot_action.py::_escalation_decision": 84,
     "diaktoros/one_shot_action.py::_review": 111,

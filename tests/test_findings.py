@@ -175,7 +175,8 @@ class Findings(unittest.TestCase):
         with mock.patch.object(stats, "ledger", return_value={}), \
                 mock.patch.object(stats, "revisions", return_value={}), \
                 mock.patch.object(stats, "usage", return_value=None), \
-                mock.patch.object(stats, "cache_by_turn", return_value=None):
+                mock.patch.object(stats, "cache_by_turn", return_value=None), \
+                mock.patch.object(stats, "request_cache", return_value=None):
             self.assertEqual(stats.collect(self.loop, None, 2000.0, False, now=6000.0)
                              ["findings_missed"], 1)
             self.assertEqual(stats.collect(self.loop, None, 6001.0, False, now=7000.0)
