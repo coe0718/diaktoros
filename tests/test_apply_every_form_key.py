@@ -76,6 +76,7 @@ PUSHES = {
     "human_paths": ".github/**, scripts/release*",
     "generated": "docs/commands.md=python3 tests/commands_doc.py --write",
     "ci_coverage": "tests (3.14)=full unit suite and harness",
+    "prices": "deepseek-flash=0.14/0.014/0.28",
     "fixer_check": "python3 tests/run_tests.py",
     "review_after_ci": True,
     "merge_check": "on",

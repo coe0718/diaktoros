@@ -19,6 +19,7 @@ from . import set_adjudication
 from . import triage_command
 from ..config import credentials
 from ..config import lists
+from ..config import prices
 from .common import BRANCH_PUSH_REFUSAL
 
 
@@ -85,6 +86,18 @@ def _flag_changes(args, loop: dict, host: str | None) -> dict:
     changes = {k: v for k, v in wanted.items()
                if v is not None and v != "" and v != loop.get(k)}
     return changes
+
+
+def _price_changes(args, loop: dict, changes: dict) -> None:
+    """``--price`` / ``--no-prices`` (#1790): the table, replaced or cleared."""
+    if getattr(args, "price", None) is not None or getattr(args, "no_prices", False):
+        try:
+            priced = prices.parse_prices([] if args.no_prices else args.price, "--price")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            raise _Refused
+        if priced != prices.prices(loop):
+            changes["prices"] = priced
 
 
 def _list_changes(args, loop: dict, changes: dict) -> None:
@@ -707,6 +720,7 @@ def _set(args) -> int:
     host = _host_arg(args)
     changes = _flag_changes(args, loop, host)
     _list_changes(args, loop, changes)
+    _price_changes(args, loop, changes)
     _limit_changes(args, loop, changes)
     seats = {seat: dict(cfg) for seat, cfg in loop["seats"].items()}
     seat_changes = {}

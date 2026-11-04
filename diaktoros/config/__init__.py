@@ -250,6 +250,7 @@ DEFAULTS: dict = {
     "human_paths": [],        # globs whose changes only a human may approve (#478)
     "generated": [],          # generated files the host regenerates on a conflict (#551); [] = off
     "ci_coverage": {},        # what each required check covers, for the reviewer (#756); {} = off
+    "prices": {},             # model -> $/M tokens, for stats' cost estimate (#1790); {} = none
     "review_only": [],        # authors reviewed but never fixed (#191); [] = fixers only
     "operator_agents": [],    # agents that post as the operator's account (#757); [] = none named
     "review_only_update": False,  # push a clean merge of the base into a review-only PR (opt-in)

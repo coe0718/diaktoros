@@ -8,7 +8,7 @@ from __future__ import annotations
 
 
 from .. import config
-from ..config import blocks, credentials, lists
+from ..config import blocks, credentials, lists, prices
 
 
 def _check_lists_and_modes(loop: dict, where: str) -> None:
@@ -18,6 +18,7 @@ def _check_lists_and_modes(loop: dict, where: str) -> None:
     loop["human_paths"] = lists.check_human_paths(loop["human_paths"], where)
     loop["generated"] = lists.check_generated(loop["generated"], where)
     loop["ci_coverage"] = lists.check_ci_coverage(loop["ci_coverage"], where)
+    loop["prices"] = prices.check_prices(loop["prices"], where)
     if loop.get("ingress") not in config.INGRESS_MODES:
         raise config.ConfigError(f"{where}: 'ingress' must be one of {', '.join(config.INGRESS_MODES)}")
     loop["ingress_app"] = str(loop.get("ingress_app") or "").strip()

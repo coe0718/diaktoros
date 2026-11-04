@@ -22,6 +22,7 @@ import json
 from . import config, observer, util
 from .config import settings_form
 from .config import lists
+from .config import prices
 
 # Every key `show` covers. The tests compare these against SETTINGS_SCHEMA, DEFAULTS, TRIAGE_KEYS
 # and the observer keys, so a key added to the loop without a row here turns a test red.
@@ -223,6 +224,8 @@ def _rows_settings(schema, rows, enable, loop) -> None:  # noqa: ANN001
            on=bool(loop.get("generated")), off="a conflict in a generated file gets a fixer turn")
     schema("ci_coverage", ("ci_coverage",), lists.ci_coverage_text(loop.get("ci_coverage")) or _UNSET,
            on=bool(loop.get("ci_coverage")), off="the reviewer is not told what a green check covers")
+    schema("prices", ("prices",), prices.prices_text(loop.get("prices")) or _UNSET,
+           on=bool(loop.get("prices")), off="every model is unpriced in stats")
     schema("fixer_check", ("fixer_check",), loop.get("fixer_check") or _UNSET,
            on=bool(loop.get("fixer_check")), off="the fixer runs no always-run check")
 

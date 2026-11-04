@@ -16,6 +16,7 @@ from . import checks as cli_checks
 from . import common as cli_common
 from . import install as cli_install
 from ..config import lists
+from ..config import prices
 from ..config import settings_form
 
 
@@ -240,6 +241,9 @@ def _setup_check_argv(args, d: dict, interactive: bool) -> list[str]:
     covers = (args.ci_covers if getattr(args, "ci_covers", None) is not None else
               lists.split_ci_coverage(d["ci_coverage"]))
     argv += [f"--ci-covers={entry}" for entry in covers]
+    priced = (args.price if getattr(args, "price", None) is not None else
+              prices.split_prices(d["prices"]))
+    argv += [f"--price={entry}" for entry in priced]
     return argv
 
 
@@ -571,6 +575,8 @@ def _setup_review_flags(first) -> None:  # noqa: ANN001
                        help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting)")
     first.add_argument("--ci-covers", action="append", default=None, metavar="CHECK=COVERS",
                        help="what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting)")
+    first.add_argument("--price", action="append", default=None, metavar="MODEL=IN/CACHED/OUT",
+                       help=prices.HELP + " (default: the plugin setting)")
 
 
 def _setup_switch_flags(first) -> None:  # noqa: ANN001
