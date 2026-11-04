@@ -117,9 +117,12 @@ The broker enforces these rules before it spends the review write (#475):
   (`F1: withdrawn — <reason>`); otherwise the review is refused, naming the finding and the
   answer, and the seat resubmits in the same turn. An unanswered finding can still be restated
   bare. The broker cannot judge whether a reason really addresses the answer, only that there is
-  one and that it is new. It cannot fire for a finding recorded before the host kept the time
-  of each statement (`stated_at`; such a finding is never counted as answered), nor for a
-  maintainer comment beyond the newest 20 of a thread. When GitHub's comments cannot be read, a
+  one and that it is new. A finding recorded before the host kept the time
+  of each statement (`stated_at`) is compared from the time it was first raised, so it can
+  count an older comment as an answer once, but never misses a real one; a finding with neither
+  time is not counted as answered. A reason that holds the previous text plus a path or fewer
+  than four new words is still a copy. The check cannot see a maintainer comment beyond the
+  newest 20 of a thread. When GitHub's comments cannot be read, a
   review that keeps a finding open is refused as a read failure (retry shortly); a review
   that keeps none open reads nothing. The host's clock stamps the statement and GitHub's the
   comment, so a skew of seconds can place a comment on the wrong side.

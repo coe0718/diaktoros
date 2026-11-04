@@ -14,8 +14,8 @@ broker refuses a bare ``F<n>: open`` for one, and a reason that is the previous 
 again (``refusal``, called from ``findings.check``). Only a change of state or a reason that is
 new is accepted; whether the reason really addresses the answer is the reviewer's to say.
 
-Where it cannot fire: a finding recorded before ``stated_at`` existed has no time to compare
-with, so it is never counted as answered; a maintainer comment that GitHub does not list, or
+Where it cannot fire: a finding recorded before ``stated_at`` existed is compared from the time
+it was first raised (``at``); one with neither time is never counted as answered; a maintainer comment that GitHub does not list, or
 one beyond the newest ``issue_facts.COMMENTS_MAX`` of a thread, is not seen.
 """
 from __future__ import annotations
@@ -29,13 +29,23 @@ PER_FINDING = 3              # the newest answers shown for one finding
 SECTION_CHARS = 8000
 _TAG_AT_START = re.compile(r"^\s*\[[A-Za-z-]+\][\s:]*")
 MIN_CONTAINED = 15           # a reason this short inside the last text is not a copy of it
+_PATHISH = re.compile(r"\S*/\S*|\b[\w-]+\.[A-Za-z]{1,5}\b:?")
+MIN_NEW_WORDS = 4            # words a reason must add to a quotation of the last text
 
 
 def stated_at(entry: dict, fid: str) -> float | None:
-    """When the last review stating ``fid`` was recorded, or None (recorded before this)."""
+    """When the last review stating ``fid`` was recorded. A finding recorded before
+    ``stated_at`` existed falls back to the time it was first raised (``at``): that can only
+    count an older answer as new (the reviewer then gives a reason once), and never lets a
+    real answer pass as unanswered. None only when neither time exists."""
     item = (entry.get("findings") or {}).get(fid) if isinstance(entry, dict) else None
-    at = item.get("stated_at") if isinstance(item, dict) else None
-    return float(at) if isinstance(at, (int, float)) and not isinstance(at, bool) else None
+    if not isinstance(item, dict):
+        return None
+    for key in ("stated_at", "at"):
+        at = item.get(key)
+        if isinstance(at, (int, float)) and not isinstance(at, bool):
+            return float(at)
+    return None
 
 
 def _read_answers(loop: dict, number: int) -> list[dict] | None:
@@ -97,10 +107,19 @@ def _comparable(text: str) -> str:
 
 
 def repeats(reason: str, last: str) -> bool:
-    """Whether ``reason`` is the text the finding last carried: the same words, or a part of
-    them long enough to be a quotation."""
+    """Whether ``reason`` is the text the finding last carried: the same words, a part of
+    them long enough to be a quotation, or the whole of them with fewer than ``MIN_NEW_WORDS``
+    words added (a path prefix is not a new reason)."""
     a, b = _comparable(reason), _comparable(last)
-    return bool(a) and (a == b or (len(a) >= MIN_CONTAINED and a in b))
+    if not a:
+        return False
+    if a == b or (len(a) >= MIN_CONTAINED and a in b):
+        return True
+    # A file path in front of the old words is not new content, however many segments it has.
+    if len(b) < MIN_CONTAINED:
+        return False
+    bare = _comparable(_PATHISH.sub(" ", reason))
+    return any(b in c and len(c.replace(b, " ").split()) < MIN_NEW_WORDS for c in (a, bare))
 
 
 def refusal(loop: dict, number: int, entry: dict, restated: dict[str, str]) -> str:

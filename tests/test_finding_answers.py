@@ -94,6 +94,16 @@ class AnsweredFindings(unittest.TestCase):
         self.assertEqual(self.check("F1: open — the form test only covers three keys\n"
                                     "F2: fixed\n"), "")
 
+    def test_a_copied_reason_with_words_added_is_still_a_copy(self):
+        # The old text inside a longer line (a path prefix) is not a new reason (review F1).
+        findings.record(self.loop, 7, H2, "F1: open — nothing in desktop reads the key\nF2: fixed\n")
+        self.comments[5].append(comment("boss", "Still plugin.yaml.", at=time.time() + 120))
+        for line in ("src/a.py: nothing in desktop reads the key",
+                     "nothing in desktop reads the key (still)"):
+            self.assertIn("again", self.check(f"F1: open — {line}\nF2: fixed\n"), line)
+        self.assertEqual(self.check("F1: open — nothing in desktop reads the key, and the form "
+                                    "test never sets it\nF2: fixed\n"), "")
+
     def test_an_answer_older_than_the_last_statement_does_not_count(self):
         self.comments[5].append(comment("boss", "old answer", at=time.time() - 3600))
         self.assertEqual(self.check("F1: open\nF2: open\n"), "")
@@ -114,10 +124,25 @@ class AnsweredFindings(unittest.TestCase):
         self.assertIn("F2", self.check("F1: open\nF2: open\n"))
         self.assertIn("added the test", self.check("F1: open\nF2: open\n"))
 
-    def test_a_finding_without_a_recorded_time_is_never_answered(self):
+    def test_a_finding_recorded_before_stated_at_is_still_answerable(self):
+        # Review F2: the first review after the upgrade must not accept a bare open. The time
+        # the finding was first raised stands in for the missing stated_at.
         entry = self.st.findings_get(7)
-        del entry["findings"]["F1"]["stated_at"]
-        del entry["findings"]["F2"]["stated_at"]
+        for fid in ("F1", "F2"):
+            del entry["findings"][fid]["stated_at"]
+            del entry["findings"][fid]["last_text"]
+        self.st.findings_put(7, entry)
+        self.answer_on_issue()
+        self.assertIn("F1", self.check("F1: open\nF2: open\n"))
+        self.assertIn("again", self.check("F1: open — src/a.py: the setting is not in the Desktop "
+                                          "settings form\nF2: fixed\n"))
+        self.assertEqual(self.check("F1: open — config_schema lacks the key\nF2: fixed\n"), "")
+
+    def test_a_finding_with_no_time_at_all_is_never_answered(self):
+        entry = self.st.findings_get(7)
+        for fid in ("F1", "F2"):
+            del entry["findings"][fid]["stated_at"]
+            del entry["findings"][fid]["at"]
         self.st.findings_put(7, entry)
         self.answer_on_issue()
         self.assertEqual(self.check("F1: open\nF2: open\n"), "")
@@ -146,6 +171,34 @@ class AnsweredFindings(unittest.TestCase):
                                                           "turn_key": "x"})
         self.assertIn("Findings answered since you last stated them", text)
         self.assertIn("plugin.yaml:config_schema", text)
+
+    def test_the_whole_reviewer_prompt_carries_the_section(self):
+        # Review F3: through isolated_prompt, so dropping the call there turns this red.
+        from diaktoros import ci, issue_facts
+        from diaktoros.run_supervisor import pr_facts, turn_prompts
+        self.answer_on_issue()
+        self.loop.update({"cap": 3, "fixers": ["fix"], "reviewers": ["review"],
+                          "reviewer_seat": "review"})
+        self.loop["seats"]["reviewer"] = {"login": "review", "agent": "Rex"}
+        row = {"seat": "reviewer", "repo": "acme/w", "pr": 7, "head": H2}
+        change = pr_facts.PRChange("## The change under review", "", description="")
+
+        def prompt(seat):
+            with mock.patch.object(ci, "read", return_value=ci.CIState()), \
+                    mock.patch.object(issue_facts, "section", return_value=""), \
+                    mock.patch.object(turn_prompts, "reproduction_section", return_value=""), \
+                    mock.patch.object(turn_prompts, "reconsider_section", return_value=""), \
+                    mock.patch("diaktoros.ci_tests.read", return_value=None), \
+                    mock.patch("diaktoros.ci_tests.section", return_value=""), \
+                    mock.patch("diaktoros.ci_fix.fix_history", return_value=""), \
+                    mock.patch("diaktoros.ci_fix.still_red", return_value=""), \
+                    mock.patch.object(turn_prompts.pr_facts, "pr_record", return_value="REC"):
+                return turn_prompts.isolated_prompt(self.loop, {**row, "seat": seat}, [],
+                                                    change=change)
+        text = prompt("reviewer")
+        self.assertIn("Findings answered since you last stated them", text)
+        self.assertIn("plugin.yaml:config_schema", text)
+        self.assertNotIn("Findings answered since you last stated them", prompt("fixer"))
 
     def test_state_reason(self):
         self.assertEqual(findings.state_reason(": open"), "")
