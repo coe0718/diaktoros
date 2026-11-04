@@ -1,9 +1,10 @@
 """#1004 part 1: with ``shadow.escalate`` on, a shadow review holds the PR.
 
 A PR is not ready to merge while the shadow review of its head is still running, or after that
-review requested changes; ``ready``, the ready notice and ``explain`` say which. A head with no
-shadow review to wait for (none queued, or a run that ended without one) is never held, so a
-failed shadow never parks a PR for good; an unreadable ledger holds (unknown is not ready).
+review requested changes; ``ready``, the ready notice and ``explain`` say which. A head with a
+single reviewer turn and no shadow review to wait for (none queued, or a run that ended without
+one) is not held; with an earlier turn's shadow at the head the newer turn holds (#1683,
+test_shadow_turn); an unreadable ledger holds (unknown is not ready).
 Escalation to the adjudicator (part 2) and upheld findings to the fixer (part 3) come later.
 """
 from __future__ import annotations
