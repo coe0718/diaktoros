@@ -279,8 +279,10 @@ def hold_unavailable(key: str, detail: str, now: float | None = None) -> float:
 
     The window is ``UNAVAILABLE_BASE_S``, doubled for each earlier strike (to
     ``UNAVAILABLE_MAX_S``); strikes older than ``_UNAVAILABLE_FORGET_S`` are forgotten. A failure
-    while a hold is still live comes from a turn that launched before it, so it is no new
-    strike: the window stays as it is (a 429 hold is never shortened either).
+    while an unavailable hold is still live comes from a turn that launched before it, so it is
+    no new strike: the window stays as it is. A live 429 hold is never shortened: an outage seen
+    during a shorter one is still a strike and takes over the hold (the 429's deadline is kept
+    beside it); during a longer one the 429 stands.
     """
     now = time.time() if now is None else now
     with _locked() as file:
@@ -288,14 +290,23 @@ def hold_unavailable(key: str, detail: str, now: float | None = None) -> float:
         holds = data.setdefault("holds", {})
         strikes = data.setdefault("unavailable", {})
         current = holds.get(key) if isinstance(holds.get(key), dict) else {}
-        if isinstance(current.get("until"), (int, float)) and current["until"] > now:
+        live = isinstance(current.get("until"), (int, float)) and current["until"] > now
+        if live and str(current.get("reason") or "").startswith(UNAVAILABLE):
             return float(current["until"])
         prev = strikes.get(key) if isinstance(strikes.get(key), dict) else {}
         recent = isinstance(prev.get("last"), (int, float)) and now - prev["last"] < _UNAVAILABLE_FORGET_S
         count = (int(prev.get("count") or 0) if recent else 0) + 1
         until = now + min(UNAVAILABLE_BASE_S * 2 ** (count - 1), UNAVAILABLE_MAX_S)
         strikes[key] = {"count": count, "last": now}
-        holds[key] = {"until": until, "reason": f"{UNAVAILABLE} ({detail})"[:200]}
+        if live and current["until"] >= until:
+            # A 429 hold already outlasts our window: it stands, the outage is still a strike.
+            until = float(current["until"])
+        else:
+            holds[key] = {"until": until, "reason": f"{UNAVAILABLE} ({detail})"[:200]}
+            if live:
+                # A shorter 429 deadline is kept beside the entry, so it survives a clear.
+                holds[key]["limited"] = float(current["until"])
+                holds[key]["limited_reason"] = str(current.get("reason") or "")[:200]
         _save(file, data)
     return until
 

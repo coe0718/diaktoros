@@ -355,6 +355,35 @@ class ProductionWorker(unittest.TestCase):
         self.assertAlmostEqual(until, now + 300, delta=2)
         self.assertEqual(reason, "openai-codex answered 429")
 
+    def test_an_outage_during_a_shorter_429_hold_is_its_own_strike_and_hold(self):
+        now = time.time()
+        pacing.hold(self.account, now + 60, "openai-codex answered 429")
+        until = pacing.hold_unavailable(self.account, "x", now=now)
+        self.assertAlmostEqual(until, now + pacing.UNAVAILABLE_BASE_S, delta=2)
+        self.assertTrue(pacing.held(self.account, now=now + 61)[1].startswith("provider unavailable"))
+        self.assertEqual(json.loads(pacing.path().read_text())["unavailable"][self.account]["count"], 1)
+        # The 429's own deadline is not lost when a success clears the outage.
+        self.assertTrue(pacing.clear_unavailable(self.account))
+        self.assertEqual(pacing.held(self.account)[1], "openai-codex answered 429")
+
+    def test_an_outage_during_a_longer_429_hold_keeps_the_429_and_counts_a_strike(self):
+        now = time.time()
+        pacing.hold(self.account, now + 7200, "openai-codex answered 429")
+        self.assertAlmostEqual(pacing.hold_unavailable(self.account, "x", now=now), now + 7200, delta=2)
+        self.assertEqual(pacing.held(self.account)[1], "openai-codex answered 429")
+        self.assertEqual(json.loads(pacing.path().read_text())["unavailable"][self.account]["count"], 1)
+
+    def test_a_turn_failing_unavailable_during_a_shorter_429_holds_the_account_longer(self):
+        def outage_after_a_429(_loop, scope, observed=None, **kw):
+            # Launched before the 429 landed: another turn's 429 (reset in a minute) arrives mid-run.
+            pacing.hold(self.account, time.time() + 60, "openai-codex answered 429")
+            return self.unavailable(_loop, scope, observed=observed, **kw)
+        row = self.run_production(outage_after_a_429)
+        self.assertEqual((row["state"], row["retries"]), ("waiting", 0))
+        self.assertAlmostEqual(row["retry_at"] - time.time(), pacing.UNAVAILABLE_BASE_S, delta=5)
+        self.assertTrue(row["error"].startswith("held: fixer provider unavailable ("), row["error"])
+        self.assertTrue(pacing.held(self.account, now=time.time() + 120)[1].startswith("provider unavailable"))
+
     def _only_signature(self, stdout="", stderr=""):
         def run(_loop, scope, observed=None, **kw):
             observed.update(stdout=stdout, stderr=stderr)
