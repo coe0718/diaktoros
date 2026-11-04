@@ -104,11 +104,17 @@ class Settle(unittest.TestCase):
             "the worker cannot be checked": dict(process="unknown"),
             "the host saw it publish": dict(error="post-write push quarantine: published"),
             "it is not a push quarantine": dict(error="lease expired"),
+            # Review of #1802, F2: the launch is recorded before its PID; none is not gone.
+            "no worker PID was recorded": dict(pid=None),
+            # F3: an attempt it cannot date, or a line it cannot read as a record.
+            "an attempt has no time": dict(audit={"at": None}),
+            "an audit line is not a record": dict(audit_raw="[1]\n"),
         }
         for name, case in cases.items():
             with self.subTest(name):
                 self.setUp()
-                self.held(error=case.get("error", "post-write push quarantine: unknown"))
+                self.held(error=case.get("error", "post-write push quarantine: unknown"),
+                          pid=case.get("pid", 4242))
                 self.ref = case.get("ref", HEAD)
                 if "audit" in case:
                     self.audit(**case["audit"])
@@ -123,6 +129,21 @@ class Settle(unittest.TestCase):
                 row = self.sup.get("fix")
                 self.assertEqual(row["state"], "uncertain", row["error"])
                 self.assertTrue(self.sup.post_write_hold(REPO, 7))
+
+    def test_a_worker_is_gone_before_any_proof_is_read(self):
+        # Review of #1802, F1: the audit and the ref were read first, and the worker checked
+        # after. A late worker writes its attempt while the host checks it, and dies: read
+        # first, that attempt was missed and the push settled as nothing written.
+        self.held()
+
+        def late_worker(pid, launched):
+            if not (self.root / "broker-audit.jsonl").exists():
+                self.audit()                          # its attempt, then it is gone
+            return "gone"
+        with mock.patch.object(workers, "process_state", side_effect=late_worker):
+            self.sweep()
+        self.assertEqual(self.sup.get("fix")["state"], "uncertain")
+        self.assertTrue(self.sup.post_write_hold(REPO, 7))
 
     def test_a_ledger_with_no_held_push_reads_nothing_from_github(self):
         self.sup.enqueue("fix", REPO, 7, HEAD, "fixer")

@@ -8,8 +8,10 @@ between its write-ahead intent and its attempt ("unresolved push intent").
 The watchdog sweep, with a complete open-PR listing, settles such a run when every one of these
 holds, and leaves it to the operator otherwise:
 
+* its worker is positively gone, checked before anything else is read, so it cannot write
+  after (a missing PID is not gone), and again when the run is settled;
 * the run is still an ``uncertain`` fixer push quarantine the host never saw publish
-  (``Supervisor.settle_push_quarantine`` checks the ledger side, and that no worker is alive);
+  (``Supervisor.settle_push_quarantine`` checks the ledger side under its lock);
 * its PR is open and still at the run's head (the listing);
 * its branch ref, read now, is still at the run's head;
 * the broker audit has no push attempt for that PR and head since the run began. The audit is
@@ -50,6 +52,10 @@ def sweep(loop: dict, prs: list) -> list[str]:
     open_prs = {pr.get("number"): pr for pr in prs if isinstance(pr, dict)}
     lines = []
     for run in held:
+        # The worker first, before any proof is read: a worker still running could write its
+        # attempt and push after the reads (review of #1802, F1). The settle checks it again.
+        if not sup.push_worker_gone(run["id"]):
+            continue
         evidence = _nothing_written(loop, open_prs.get(run["pr"]), run)
         if evidence and sup.settle_push_quarantine(run["id"], evidence=evidence):
             lines.append(f"Diaktoros [{loop['id']}] #{run['pr']}: a fixer push held as "
@@ -93,11 +99,15 @@ def _attempted(loop: dict, run) -> bool | None:
             continue
         try:
             record = json.loads(line)
-            if (isinstance(record, dict) and record.get("phase") == "attempt"
-                    and record.get("repo") == loop["repo"] and record.get("pr") == run["pr"]
-                    and record.get("old_head") == run["head"]
-                    and float(record.get("at") or 0) >= since):
-                return True
-        except (ValueError, TypeError):
+        except ValueError:
             return None                             # a line it cannot read may be the attempt
+        if not isinstance(record, dict):
+            return None                             # nor one it cannot read as a record (F3)
+        if (record.get("phase") == "attempt" and record.get("repo") == loop["repo"]
+                and record.get("pr") == run["pr"] and record.get("old_head") == run["head"]):
+            at = record.get("at")
+            if isinstance(at, bool) or not isinstance(at, (int, float)):
+                return None                         # an attempt with no time: maybe this run's
+            if at >= since:
+                return True
     return False

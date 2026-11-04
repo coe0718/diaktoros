@@ -291,6 +291,15 @@ class WorkerLifecycle:
                 pass
         return self.capacity[seat]
 
+    def push_worker_gone(self, run_id: str) -> bool:
+        """Whether the run's worker is positively gone (#1763, review of #1802 F1 and F2): checked
+        before the host reads any proof, so no worker can write an attempt or push after it. A
+        missing PID is not gone, since the launch is recorded before its PID is."""
+        with self._connect() as con:
+            row = con.execute("SELECT pid,launch_intent FROM runs WHERE id=?",
+                              (run_id,)).fetchone()
+        return row is not None and _worker_gone(row)
+
     def reconcile_uncertain(self, run_id: str, *, reason: str,
                             acknowledge_no_live_worker: bool = False) -> bool:
         """Operator-only release after inspecting the turn's external writes.
@@ -329,11 +338,11 @@ class WorkerLifecycle:
         """End a fixer push quarantine the host proved wrote nothing (#1763): ``failed``, its
         intent withdrawn, its seat freed, and re-armable, unlike an operator reconciliation.
 
-        The caller (``push_settle``) proved the GitHub side: the branch and the PR still at the
-        run's head, and no push attempt in the broker audit. This checks the ledger side under
-        its lock: still a fixer's push quarantine, never one the host saw publish, never
-        confirmed, and no worker that could still push (a gone PID; unknown is not gone).
-        Whether it settled."""
+        The caller (``push_settle``) established the worker gone first (``push_worker_gone``),
+        then proved the GitHub side: the branch and the PR still at the run's head, and no push
+        attempt in the broker audit. This checks the ledger side again under its lock: still a
+        fixer's push quarantine, never one the host saw publish, never confirmed, and its worker
+        still gone. Whether it settled."""
         with self._connect() as con:
             con.execute('BEGIN IMMEDIATE')
             row = con.execute("SELECT pid,state,error,launch_intent,push_confirmed,repo,pr,head,"
@@ -342,9 +351,7 @@ class WorkerLifecycle:
             if (row is None or row['state'] != 'uncertain' or row['seat'] != 'fixer'
                     or not error.startswith(run_supervisor.PUSH_QUARANTINE)
                     or error.startswith(run_supervisor.PUSH_QUARANTINE + 'published')
-                    or row['push_confirmed'] is not None or row['launch_intent'] is None
-                    or (row['pid'] is not None
-                        and process_state(row['pid'], row['launch_intent']) != 'gone')):
+                    or row['push_confirmed'] is not None or not _worker_gone(row)):
                 con.execute('COMMIT')
                 return False
             con.execute("UPDATE runs SET state='failed', error=?, lease=NULL, push_intent=NULL, "
@@ -398,6 +405,12 @@ class WorkerLifecycle:
                 self.recover()
                 return
             sleep(min(due - time.time(), deadline - time.time()) + 1)
+
+
+def _worker_gone(row) -> bool:
+    """A recorded launch and PID, and that process gone (``process_state``; unknown is not)."""
+    return (row['pid'] is not None and row['launch_intent'] is not None
+            and process_state(row['pid'], row['launch_intent']) == 'gone')
 
 
 def _release_claim(row, run_id: str) -> None:
