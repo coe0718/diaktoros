@@ -506,6 +506,17 @@ def policy_hold(error: object) -> bool:
 ISSUE_SEATS = ('triage', 'issue_fixer')
 
 
+def _pid_start_ticks(pid: int) -> int | None:
+    """The start time of process ``pid`` in clock ticks since boot (field 22 of its
+    ``/proc/<pid>/stat``), or None when it cannot be read (no such process, no /proc)."""
+    try:
+        stat = Path(f'/proc/{int(pid)}/stat').read_text()
+        # starttime is field 22; the comm field may contain spaces, so split after its ')'.
+        return int(stat.rsplit(')', 1)[1].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def _pid_reused(pid: int, launched: float | None) -> bool:
     """True only when the process now holding ``pid`` provably started after the run launched.
 
@@ -513,10 +524,10 @@ def _pid_reused(pid: int, launched: float | None) -> bool:
     """
     if launched is None:
         return False
+    ticks = _pid_start_ticks(pid)
+    if ticks is None:
+        return False
     try:
-        stat = Path(f'/proc/{int(pid)}/stat').read_text()
-        # starttime is field 22; the comm field may contain spaces, so split after its ')'.
-        ticks = int(stat.rsplit(')', 1)[1].split()[19])
         btime = next(float(line.split()[1]) for line in Path('/proc/stat').read_text().splitlines()
                      if line.startswith('btime '))
         started = btime + ticks / os.sysconf('SC_CLK_TCK')

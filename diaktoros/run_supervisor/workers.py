@@ -54,42 +54,69 @@ def linger_mark(db: Path, pid: int) -> Path:
     return db.with_name(f'{db.name}{LINGER_MARK}{pid}')
 
 
-def lingering_pids(db: Path) -> set[int]:
-    """The processes that currently carry a linger mark beside the ledger ``db``."""
+def _marks(db: Path) -> dict[int, Path]:
+    """Every mark file beside the ledger ``db``, live process or not, by the PID in its name."""
     db = Path(db)
     prefix = db.name + LINGER_MARK
     try:
-        names = [path.name for path in db.parent.iterdir()]
+        paths = list(db.parent.iterdir())
     except OSError:
-        return set()
-    return {int(name[len(prefix):]) for name in names
-            if name.startswith(prefix) and name[len(prefix):].isdigit()}
+        return {}
+    return {int(path.name[len(prefix):]): path for path in paths
+            if path.name.startswith(prefix) and path.name[len(prefix):].isdigit()}
+
+
+def _incarnation(pid: int) -> str:
+    """What identifies process ``pid`` for as long as it lives: ``<pid> <start ticks>``. A
+    reused PID starts later, so it differs; ``-`` where /proc cannot say."""
+    ticks = run_supervisor._pid_start_ticks(pid)
+    return f'{pid} {"-" if ticks is None else ticks}'
+
+
+def _mark_is_live(pid: int, path: Path) -> bool:
+    """True when ``path`` was written by the process now holding ``pid``, not by an earlier
+    one that had the number (#1811): a killed lingerer's mark never vouches for its successor."""
+    try:
+        return path.read_text().strip() == _incarnation(pid)
+    except OSError:
+        return False
+
+
+def lingering_pids(db: Path) -> set[int]:
+    """The processes that currently carry a linger mark beside the ledger ``db``: marks whose
+    process is the one that wrote them."""
+    return {pid for pid, path in _marks(db).items() if _mark_is_live(pid, path)}
+
+
+def _unlink(path: Path) -> None:
+    """Remove a mark; failing to is not worth stopping a worker for."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 @contextlib.contextmanager
 def lingering(db: Path):
-    """Mark this process as lingering for the ``with`` block. Best effort: a worker never
-    creates host state, so a ledger directory that is gone or unwritable leaves it unmarked.
-    A worker killed inside the block leaves its mark (SIGTERM does not run ``finally``): the
-    next worker to linger sweeps marks whose process is gone, and a reader checks the PID
-    against the live process."""
-    for stale in lingering_pids(db):
-        try:
-            os.kill(stale, 0)
-        except ProcessLookupError:
-            linger_mark(db, stale).unlink(missing_ok=True)
-        except OSError:
-            pass
+    """Mark this process as lingering for the ``with`` block, which must be only a wait that
+    is safe to end by SIGTERM. Best effort throughout: a worker never creates host state, so a
+    ledger directory that is gone or unwritable leaves it unmarked, and a mark that cannot be
+    removed is left. A worker killed inside the block leaves its mark (SIGTERM does not run
+    ``finally``): the next worker to linger sweeps the marks no live incarnation holds, and a
+    reader ignores them meanwhile."""
+    for pid, path in _marks(db).items():
+        if not _mark_is_live(pid, path):
+            _unlink(path)
     mark = linger_mark(db, os.getpid())
     try:
-        mark.write_text(f'{os.getpid()}\n')
+        mark.write_text(_incarnation(os.getpid()) + '\n')
     except OSError:
         mark = None
     try:
         yield
     finally:
         if mark is not None:
-            mark.unlink(missing_ok=True)
+            _unlink(mark)
 
 
 class WorkerLifecycle:
@@ -423,8 +450,12 @@ class WorkerLifecycle:
         backoffs (4 min and up) are the watchdog sweep's, as before."""
         if not self.held_for_ci:
             return
-        with lingering(self.db):        # marked for exactly as long as it waits (#1811)
-            self._linger_until_due(sleep)
+        def marked_sleep(seconds):
+            # Marked only while asleep (#1811): a worker in its database reads or in recover()
+            # is at work, and a hang there must fail a test's exit check, not be ended.
+            with lingering(self.db):
+                sleep(seconds)
+        self._linger_until_due(marked_sleep)
 
     def _linger_until_due(self, sleep) -> None:
         """The wait of ``linger_for_ci``: poll the polled holds, sleep to the earliest due row

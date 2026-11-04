@@ -328,6 +328,21 @@ class ClaimTimeReads(Base):
         self.assertTrue(sleeps)
         self.assertEqual(workers.lingering_pids(self.s.db), set())
 
+    def test_the_worker_is_unmarked_while_it_reads_and_recovers(self):
+        # F1 of #1823: only the sleep is a safe wait. A worker hung in recover() (or in its
+        # database reads) is at work; a mark there would let a test end it and pass its exit check.
+        seen = []
+        real = self.s.recover
+
+        def recover():
+            seen.append(workers.lingering_pids(self.s.db))
+            return real()
+        self.s.recover = recover
+        sleeps = []
+        self.worker(sleeps, self.clock())
+        self.assertTrue(sleeps)
+        self.assertEqual(seen, [set()])
+
     def test_the_linger_window_outlasts_the_first_backoff(self):
         # F2 of #1808: with the old window (CI_POLL_S + 30 = 120 s) the sleep to a retry due at
         # 120 s ends at 121 s, past the deadline, and the loop left without calling recover().

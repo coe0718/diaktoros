@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from diaktoros import run_supervisor
 from diaktoros.run_supervisor import workers
@@ -119,6 +120,24 @@ class EndLingeringWorkers(unittest.TestCase):
         with self.assertRaises(TypeError):
             worker_wait.end_lingering_workers(self.root, settle=0.1, vouched=True)
 
+    def test_a_stale_mark_does_not_vouch_for_a_process_that_reused_its_pid(self):
+        # F2 of #1823: the lingerer was killed and left its mark; a hung process under the same
+        # root now holds that PID. The mark names the old incarnation, so the new one is not ended.
+        self.polled_waiting_row()
+        stuck = self.hung()
+        workers.linger_mark(self.db, stuck.pid).write_text(f"{stuck.pid} 1\n")  # another start time
+        self.assertEqual(workers.lingering_pids(self.db), set())
+        self.assertEqual(worker_wait.lingering_workers(self.root), set())
+        worker_wait.end_lingering_workers(self.root, settle=0.3)
+        self.assertIsNone(stuck.poll())
+        with self.assertRaises(AssertionError):
+            worker_wait.wait_for_workers(self.root, timeout=0.3)
+
+    def test_a_mark_with_no_incarnation_in_it_counts_for_nothing(self):
+        stuck = self.hung()
+        workers.linger_mark(self.db, stuck.pid).write_text("")
+        self.assertEqual(worker_wait.lingering_workers(self.root), set())
+
 
 class LingerMark(unittest.TestCase):
     def test_the_mark_exists_exactly_while_the_worker_lingers(self):
@@ -135,6 +154,27 @@ class LingerMark(unittest.TestCase):
             with self.assertRaises(RuntimeError), workers.lingering(db):
                 raise RuntimeError("boom")
             self.assertEqual(workers.lingering_pids(db), set())
+
+    def test_a_stale_mark_is_swept_by_the_next_lingerer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "runs.sqlite"
+            workers.linger_mark(db, 2 ** 22 + 1).write_text("4194305 7\n")
+            workers.linger_mark(db, 1).write_text("1 -\n")      # pid 1 is live: another incarnation
+            with workers.lingering(db):
+                self.assertEqual(workers.lingering_pids(db), {os.getpid()})
+                self.assertEqual(len(list(Path(tmp).iterdir())), 1)
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_a_mark_that_cannot_be_removed_does_not_stop_the_worker(self):
+        # F3 of #1823: unlink denied at the sweep on entry and at the removal on exit.
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "runs.sqlite"
+            workers.linger_mark(db, 2 ** 22 + 1).write_text("4194305 7\n")
+            ran = []
+            with patch.object(Path, "unlink", side_effect=PermissionError("denied")):
+                with workers.lingering(db):
+                    ran.append(workers.lingering_pids(db))
+            self.assertEqual(ran, [{os.getpid()}])
 
     def test_a_gone_ledger_directory_leaves_the_worker_unmarked_and_running(self):
         with workers.lingering(Path("/nonexistent-dir-1811/runs.sqlite")):
