@@ -41,7 +41,7 @@ def load(loop: dict, *parts) -> dict | None:
         return None
     try:
         entry = json.loads(_file(root, loop, parts).read_text())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):   # deeply nested JSON raises RecursionError
         return None
     return entry if isinstance(entry, dict) else None
 

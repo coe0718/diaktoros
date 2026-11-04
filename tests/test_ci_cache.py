@@ -84,6 +84,14 @@ class JobLogs(Base):
         _, api, read = self.fixer_prompt(job())
         self.assertEqual((api, read), (1, 1))
 
+    def test_a_deeply_nested_entry_is_a_miss(self):
+        self.fixer_prompt(job())
+        for path in (self.state / ci_cache.DIRNAME).iterdir():
+            path.write_text("[" * 1100 + "0" + "]" * 1100)   # json.loads raises RecursionError
+        out, api, read = self.fixer_prompt(job())
+        self.assertEqual((api, read), (1, 1))
+        self.assertIn("| FAIL: test_walk", out)
+
     def test_a_missing_state_dir_is_never_created(self):
         gone = self.state / "gone"
         self.loop["state_dir"] = str(gone)
@@ -111,6 +119,17 @@ class CommitFiles(Base):
         self.assertEqual(calls, 0)
         self.assertEqual(first, second)
         self.assertIn("tests/test_x.py (modified, +1 -9)", second)
+
+    def test_a_deeply_nested_commit_entry_is_a_miss(self):
+        detail = {"files": [{"filename": "tests/test_x.py", "status": "modified",
+                             "additions": 1, "deletions": 9}]}
+        first, _ = self.read(detail)
+        ci_fix._TESTS_SEEN.clear()
+        for path in (self.state / ci_cache.DIRNAME).iterdir():
+            path.write_text("[" * 1100 + "0" + "]" * 1100)
+        second, calls = self.read(detail)
+        self.assertEqual(calls, 1)
+        self.assertEqual(first, second)
 
     def test_an_unreadable_commit_is_not_kept(self):
         self.read(None)
