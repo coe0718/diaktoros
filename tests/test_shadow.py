@@ -571,6 +571,19 @@ class ProductionTurn(unittest.TestCase):
                 self.assertIn("waiting for the reviewer's verdict", row["error"])
                 self.assertEqual(row["retries"], 0)
 
+    def test_a_receipt_that_can_never_confirm_ends_the_shadow_instead_of_waiting(self):
+        # #1755 / #1771: a `posted` receipt (the PR went ineligible under the posted review) or
+        # a `claimed` one on a reconciled (failed) reviewer is terminal. The claimed shadow row
+        # is cancelled, not re-armed every poll for ever, and nothing is launched.
+        for name, receipt, state in (("posted", "posted", "succeeded"),
+                                     ("reconciled", "claimed", "failed")):
+            with self.subTest(name):
+                self.setUp()
+                sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok"}],
+                                           reviewer=(receipt, "APPROVE"), reviewer_state=state)
+                self.assertEqual((self.seen, row["state"]), ({}, "cancelled"))
+                self.assertIn("never confirmed", row["error"])
+
     def test_a_reviewer_turn_that_ended_without_a_verdict_gets_no_shadow(self):
         sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok"}], reviewer=None)
         self.assertEqual((self.seen, row["state"]), ({}, "cancelled"))

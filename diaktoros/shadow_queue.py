@@ -22,7 +22,11 @@ ledger alone, with no GitHub read:
   shadow is skipped: a wait would hold the head for ever (F15);
 * a newer reviewer turn at the same head: it is skipped, since that turn's shadow is the one
   that counts (an older approval never runs a shadow on a head since sent back);
-* the reviewer's turn still running, its review being posted or confirmed, or an uncertain or
+* a review receipt that can never confirm (#1755, #1771): one left ``posted`` (the review is on
+  GitHub but its PR became closed, draft or retargeted under it), or one still ``claimed`` on a
+  turn that has ended (an uncertain turn an operator reconciled). The shadow is skipped, since
+  a wait would hold the head for ever;
+* the reviewer's turn still running, its review being claimed or confirmed, or an uncertain or
   unreadable record: it waits and is polled again, for as long as that lasts. No time bound: a
   bound would end it with the head clear, and a late APPROVE would then be green with no shadow.
 """
@@ -53,6 +57,10 @@ def decide(db, row) -> tuple[str, str, float | None]:
             return "wait", "the run ledger is unreadable, so the reviewer's verdict is unknown", None
         try:
             con.row_factory = sqlite3.Row              # ``write_evidence`` reads by name
+            # One read transaction: the run, its receipt and the rest come from a single WAL
+            # snapshot. Separate SELECTs could pair a stale ``failed`` run with the ``claimed``
+            # receipt of the same run re-armed and running meanwhile, and skip it for good.
+            con.execute("BEGIN")
             reviewer = _reviewer_run(con, row)
             receipt = reviewer and con.execute(
                 "SELECT state, verdict, COALESCE(confirmed, created) FROM review_receipts "
@@ -74,6 +82,13 @@ def decide(db, row) -> tuple[str, str, float | None]:
         if str(receipt[1]) in APPROVED:
             return "run", "", float(receipt[2] or 0) or None
         return "skip", f"the reviewer requested changes at {short}, so no shadow review", None
+    if receipt and (receipt[0] == "posted" or reviewer[1] not in OPEN):
+        # #1755: a receipt that can never confirm. ``posted`` is terminal (the review is on
+        # GitHub but its PR became ineligible under it), and a ``claimed`` one on a turn that
+        # has ended (an uncertain turn an operator reconciled) is never confirmed either.
+        # A wait would hold the head for ever.
+        return ("skip", f"the reviewer's review at {short} was never confirmed (receipt "
+                f"{receipt[0]}, turn {reviewer[1]})", None)
     if receipt or reviewer[1] in OPEN:
         return "wait", f"waiting for the reviewer's verdict at {short}", None
     if rearm:
