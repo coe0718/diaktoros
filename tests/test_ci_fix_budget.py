@@ -1,5 +1,5 @@
 """#539: failed CI gets its own budget — the fixer takes a red head first, up to ``ci_fix_cap``
-CI-fix turns per PR, spending no review verdict; then the reviewer reviews it.
+CI-fix turns per PR, spending no review verdict; then the review waits for green or a new head.
 
 The first review after CI-fix commits is shown them, so it checks none weakened a test.
 """
@@ -226,7 +226,8 @@ class CIFixPrompt(unittest.TestCase):
         text = " ".join(prompts.ISOLATED_CI_FIX.split())
         self.assertNotIn("a person is called", text)
         self.assertIn("a budget of CI-fix turns for the whole PR", text)
-        self.assertIn("the reviewer reviews the head", text)
+        self.assertIn("the review waits for green", text)
+        self.assertNotIn("the reviewer reviews the head", text)
 
 
 class StillRed(unittest.TestCase):
@@ -344,6 +345,21 @@ class Setting(rac.Cli):
         from diaktoros import doctor
         on = config.normalize(rac.raw(fix_ci=True, unattended_fixer_push=True, ci_fix_cap=4))
         self.assertIn("up to 4 CI-fix turn(s) per PR", doctor.check_fix_ci(on).detail)
+
+    def test_operator_surfaces_say_the_red_head_review_waits(self):
+        # The hold (#1110): after the budget the review waits for green or a new head; the
+        # settings text keeps the fix_ci-off exception (a fixer's PR is still reviewed red).
+        from diaktoros import doctor
+        on = config.normalize(rac.raw(fix_ci=True, unattended_fixer_push=True, ci_fix_cap=4))
+        detail = doctor.check_fix_ci(on).detail
+        self.assertIn("the review waits for green or a new head", detail)
+        self.assertNotIn("the reviewer reviews it", detail)
+        form = settings_form.SETTINGS_SCHEMA["ci_fix_cap"]["description"]
+        plugin = (Path(__file__).resolve().parents[1] / "plugin.yaml").read_text()
+        for text in (form, plugin):
+            self.assertIn("review waits for green or a new head", text)
+            self.assertIn("With fix_ci off a fixer's PR is still reviewed red", text)
+            self.assertNotIn("before the reviewer reviews a red head", text)
 
 
 if __name__ == "__main__":
