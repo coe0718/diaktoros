@@ -116,6 +116,17 @@ def estimate_text(estimate_: dict | None) -> str:
     if not estimate_["at_most"]:
         return f"${dollars:,.4f}"
     # An upper bound is rounded up, so the figure shown is never below the bound it asserts
-    # (and never $0.0000 for a nonzero cost). The inner round drops float noise, so an exact
-    # 0.0003 is not bumped to 0.0004.
-    return f"at most ${math.ceil(round(dollars * 1e4, 6)) / 1e4:,.4f}"
+    # (and never $0.0000 for a nonzero cost).
+    return f"at most ${_round_up(dollars):,.4f}"
+
+
+def _round_up(dollars: float) -> float:
+    """``dollars`` rounded up to $0.0001, never below it. Only float noise is forgiven: a scaled
+    value within a relative 1e-14 of a whole number is that number (so 0.0003, stored as
+    0.00029999999999999997, stays 0.0003). Any real fraction above a boundary, however small
+    (1e-11, 0.00010000001), rounds up to the next step."""
+    scaled = dollars * 1e4
+    nearest = round(scaled)
+    if nearest >= 1 and math.isclose(scaled, nearest, rel_tol=1e-14, abs_tol=0.0):
+        return nearest / 1e4
+    return math.ceil(scaled) / 1e4

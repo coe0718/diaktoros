@@ -194,6 +194,33 @@ class Estimate(unittest.TestCase):
         self.assertEqual(shown(1234.56781, True), "at most $1,234.5679")
         self.assertEqual(shown(0.00012, False), "$0.0001")           # an estimate rounds to nearest
 
+    def test_an_upper_bound_keeps_a_real_fraction_above_a_boundary(self):
+        # Rounding the scaled value to 6 places before ceil dropped these (#1831 review F1).
+        def shown(row, table):
+            return prices.estimate_text(prices.estimate(row, table))
+        unknown = {"model": "m", "cached_of": 0, "cache_read": 0}
+        over = {"m": {"input": 0.1, "cached": 0.01, "output": 0.00001}}
+        tiny = {"m": {"input": 0.00001, "cached": 0.000001, "output": 0.0}}
+        row = {**unknown, "tokens_in": 1000, "tokens_out": 1}
+        self.assertGreater(prices.estimate(row, over)["dollars"], 0.0001)
+        self.assertEqual(shown(row, over), "at most $0.0002")
+        row = {**unknown, "tokens_in": 1, "tokens_out": 0}
+        self.assertGreater(prices.estimate(row, tiny)["dollars"], 0)
+        self.assertEqual(shown(row, tiny), "at most $0.0001")
+        # And through stats.text, the one caller.
+        report = self.report([("shadow", "deepseek-flash", {"tokens_in": 1, "tokens_out": 0,
+                                                            "cache_read": None})],
+                             {"deepseek-flash": tiny["m"]})
+        self.assertIn("at most $0.0001", stats.text(report))
+        self.assertNotIn("$0.0000", stats.text(report))
+
+    def test_estimate_text_forgives_only_float_noise_at_a_boundary(self):
+        def shown(dollars):
+            return prices.estimate_text({"dollars": dollars, "at_most": True})
+        self.assertEqual(shown(0.0001 * 3), "at most $0.0003")
+        self.assertEqual(shown(0.00010000001), "at most $0.0002")
+        self.assertEqual(shown(1e-11), "at most $0.0001")
+
 
 if __name__ == "__main__":
     unittest.main()
