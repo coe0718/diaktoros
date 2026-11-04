@@ -214,12 +214,33 @@ class Estimate(unittest.TestCase):
         self.assertIn("at most $0.0001", stats.text(report))
         self.assertNotIn("$0.0000", stats.text(report))
 
-    def test_estimate_text_forgives_only_float_noise_at_a_boundary(self):
+    def test_a_bare_float_bound_is_rounded_up_from_its_repr(self):
         def shown(dollars):
             return prices.estimate_text({"dollars": dollars, "at_most": True})
-        self.assertEqual(shown(0.0001 * 3), "at most $0.0003")
+        # A bare float (no exact ``upper``) is rounded up from its repr: never below it.
+        self.assertEqual(shown(0.0003), "at most $0.0003")
+        self.assertEqual(shown(0.0001 * 3), "at most $0.0004")   # the float is above 0.0003
         self.assertEqual(shown(0.00010000001), "at most $0.0002")
         self.assertEqual(shown(1e-11), "at most $0.0001")
+
+    def test_an_upper_bound_is_not_lost_to_float_rounding_just_above_a_boundary(self):
+        # #1835 review F2: 1000 unknown-cache tokens at 0.1/M plus one output token at 1e-12/M is
+        # $0.000100000000000001 -- real, not float noise -- so the bound must read $0.0002.
+        table = {"deepseek-flash": {"input": 0.1, "cached": 0.01, "output": 1e-12}}
+        self.assertEqual(prices.check_prices(table, "t"), table)
+        row = {"model": "deepseek-flash", "cached_of": 0, "cache_read": 0,
+               "tokens_in": 1000, "tokens_out": 1}
+        self.assertEqual(prices.estimate_text(prices.estimate(row, table)), "at most $0.0002")
+        report = self.report([("shadow", "deepseek-flash", {"tokens_in": 1000, "tokens_out": 1,
+                                                            "cache_read": None})], table)
+        self.assertIn("at most $0.0002", stats.text(report))
+        self.assertNotIn("at most $0.0001", stats.text(report))
+
+    def test_an_exact_boundary_from_the_prices_is_not_bumped(self):
+        # 3000 tokens at 0.1/M is exactly $0.0003 though the float sum is not exactly 0.0003.
+        table = {"m": {"input": 0.1, "cached": 0.01, "output": 0.0}}
+        row = {"model": "m", "cached_of": 0, "cache_read": 0, "tokens_in": 3000, "tokens_out": 0}
+        self.assertEqual(prices.estimate_text(prices.estimate(row, table)), "at most $0.0003")
 
 
 if __name__ == "__main__":

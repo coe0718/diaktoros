@@ -16,6 +16,7 @@ never fetches prices. Host-owned: never read from a PR.
 from __future__ import annotations
 
 import math
+from decimal import ROUND_CEILING, Decimal
 
 from .. import config
 
@@ -98,15 +99,31 @@ def estimate(row: dict, table: dict) -> dict | None:
     """The cost of one ``stats.usage`` row (a seat and model's summed tokens) at ``table``'s
     prices, or None when its model is unpriced. Input the provider did not say was cached is
     priced as uncached, so where some turns did not report their cache (``cached_of`` short of
-    ``tokens_in``) the estimate is an upper bound: ``at_most``."""
+    ``tokens_in``) the estimate is an upper bound: ``at_most``. ``upper`` is that cost rounded up
+    to $0.0001, summed in decimal from the prices as written, so it is never below the true cost
+    however small the margin over a boundary (the float ``dollars`` can lose such a margin)."""
     price = table.get(str(row.get("model") or "").lower())
     if price is None:
         return None
     cached = row.get("cache_read") or 0
+    tokens_out = row.get("tokens_out") or 0
     uncached = max((row.get("tokens_in") or 0) - cached, 0)
     dollars = (uncached * price["input"] + cached * price["cached"]
-               + (row.get("tokens_out") or 0) * price["output"]) / 1e6
-    return {"dollars": dollars, "at_most": (row.get("cached_of") or 0) < (row.get("tokens_in") or 0)}
+               + tokens_out * price["output"]) / 1e6
+    exact = (_exact(uncached) * _exact(price["input"]) + _exact(cached) * _exact(price["cached"])
+             + _exact(tokens_out) * _exact(price["output"])) / Decimal(10) ** 6
+    return {"dollars": dollars, "upper": _ceil_4(exact),
+            "at_most": (row.get("cached_of") or 0) < (row.get("tokens_in") or 0)}
+
+
+def _exact(value) -> Decimal:
+    """``value`` as the decimal its shortest repr spells (0.1 is 0.1, not 0.1000000000000000055...)."""
+    return Decimal(repr(value))
+
+
+def _ceil_4(dollars: Decimal) -> float:
+    """``dollars`` rounded up to $0.0001: never below it, and an exact multiple is unchanged."""
+    return float(dollars.quantize(Decimal("0.0001"), rounding=ROUND_CEILING))
 
 
 def estimate_text(estimate_: dict | None) -> str:
@@ -115,18 +132,10 @@ def estimate_text(estimate_: dict | None) -> str:
     dollars = estimate_["dollars"]
     if not estimate_["at_most"]:
         return f"${dollars:,.4f}"
-    # An upper bound is rounded up, so the figure shown is never below the bound it asserts
-    # (and never $0.0000 for a nonzero cost).
-    return f"at most ${_round_up(dollars):,.4f}"
-
-
-def _round_up(dollars: float) -> float:
-    """``dollars`` rounded up to $0.0001, never below it. Only float noise is forgiven: a scaled
-    value within a relative 1e-14 of a whole number is that number (so 0.0003, stored as
-    0.00029999999999999997, stays 0.0003). Any real fraction above a boundary, however small
-    (1e-11, 0.00010000001), rounds up to the next step."""
-    scaled = dollars * 1e4
-    nearest = round(scaled)
-    if nearest >= 1 and math.isclose(scaled, nearest, rel_tol=1e-14, abs_tol=0.0):
-        return nearest / 1e4
-    return math.ceil(scaled) / 1e4
+    # An upper bound is rounded up, so the figure shown is never below the bound it asserts (and
+    # never $0.0000 for a nonzero cost). ``estimate`` supplies it exactly; a bare dollars figure
+    # is rounded up from its repr.
+    upper = estimate_.get("upper")
+    if upper is None:
+        upper = _ceil_4(_exact(float(dollars)))
+    return f"at most ${upper:,.4f}"
