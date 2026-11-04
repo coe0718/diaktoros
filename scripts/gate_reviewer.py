@@ -19,6 +19,7 @@ stdout: ``[SILENT]`` (eligible runs queue; whole-agent isolation not available)
 
 from __future__ import annotations
 
+import functools
 import json
 import pathlib
 import sys
@@ -29,12 +30,53 @@ from diaktoros import (  # noqa: E402
     config,
     gate,
     gh,
+    merge_check,
     observer,
+    state as state_mod,
     transition,
 )
 from diaktoros.util import log, silence  # noqa: E402
 
 ACTIONS = {"opened", "ready_for_review", "reopened", "review_requested"}
+
+
+def refreshes_declined_head(decide_fn):
+    """Wrap the gate so a decline leaves the merge check posted for the event's head (#1797).
+
+    Whatever way ``decide`` ends the event (``silence``), a ``pull_request`` event at a head the
+    merge check has not been decided for gets ``diaktoros/review`` now, naming why the head is not
+    ready (a review-only author's push, a kick declined at the cap or by another hold), instead
+    of at the next sweep. A head ``merge-check.json`` already holds spends nothing. Never changes
+    the gate's answer.
+    """
+    @functools.wraps(decide_fn)
+    def wrapper(payload: dict, *args, **kwargs):
+        try:
+            return decide_fn(payload, *args, **kwargs)
+        except SystemExit as exc:
+            if exc.code in (None, 0):
+                refresh_declined(payload)
+            raise
+    return wrapper
+
+
+def refresh_declined(payload: dict) -> None:
+    """Best-effort ``merge_check.refresh_new_head`` for the PR and head this event names."""
+    try:
+        pr = payload.get("pull_request")
+        if not isinstance(pr, dict) or payload.get("action") == "closed":
+            return
+        number = pr.get("number") or payload.get("number")
+        head = (pr.get("head") or {}).get("sha") or ""
+        # No ``warn``: the gate already named any skipped sibling file when it chose its loop.
+        loop = config.loop_for_repo((payload.get("repository") or {}).get("full_name") or "")
+        author = ((pr.get("user") or {}).get("login") or "").lower()
+        # A PR outside the loop gets no check: don't spend reads on its events.
+        if (loop and number and head and (pr.get("base") or {}).get("ref") == loop["base"]
+                and author in config.reviewed_authors(loop)):
+            merge_check.refresh_new_head(loop, state_mod.state_for(loop), int(number), head)
+    except Exception as exc:  # noqa: BLE001 - the gate's answer is already decided
+        log(f"merge check not refreshed for a declined event: {type(exc).__name__}: {exc}")
 
 
 def loop_worked_on(loop: dict, st, number: int, pr: dict) -> bool:
@@ -59,6 +101,7 @@ def main() -> None:
     decide(json.load(sys.stdin))
 
 
+@refreshes_declined_head
 def decide(payload: dict, reconsider: str | None = None) -> None:
     """The gate itself, on one payload: queue the review, or ``silence`` with the reason.
 

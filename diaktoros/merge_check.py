@@ -190,6 +190,15 @@ def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None)
     return written
 
 
+def has_head(st, number: int, head: str) -> bool:
+    """Whether ``merge-check.json`` already holds ``head`` for this PR: the check was decided
+    (or marked pending) for it, so nothing new has to be posted on its account."""
+    with st.locked():
+        memory = st._load(st.dir / FILE, {})
+    last = memory.get(str(number)) if isinstance(memory, dict) else None
+    return isinstance(last, dict) and last.get("head") == head
+
+
 def mark_pending(loop: dict, st, number: int, head: str, why: str) -> bool:
     """Post ``pending`` for a head nothing has been posted for yet (#1242): a PR entering the loop
     shows the check at once, not after the first refresh. One write, no PR listing, so it is cheap
@@ -204,11 +213,7 @@ def mark_pending(loop: dict, st, number: int, head: str, why: str) -> bool:
         with _writer(st, wait=False) as mine:
             if not mine:
                 return False                # a refresh is posting now: it writes the real state
-            with st.locked():
-                memory = st._load(path, {})
-                memory = memory if isinstance(memory, dict) else {}
-                last = memory.get(str(number))
-            if isinstance(last, dict) and last.get("head") == head:
+            if has_head(st, number, head):
                 return False                           # already posted for this head
             # Only what is known without reading the PR: the next refresh gives the real reasons.
             # A bullet, so a commit status reads "Waiting: review queued; …" (#1258), not twice.
@@ -229,6 +234,20 @@ def mark_pending(loop: dict, st, number: int, head: str, why: str) -> bool:
         # Never changes what the gate decided (shadow review of #1249): the turn is already armed,
         # so a gate budget spent on this extra write must not end the gate as a failure.
         return False
+
+
+def refresh_new_head(loop: dict, st, number: int, head: str) -> None:
+    """A gate declined an event at ``head`` (#1797): post the check for it now, with the reason
+    the loop gives, instead of leaving the head without one until the next sweep. Best effort,
+    like ``refresh_quietly``; nothing is read or written when the check is off or already holds
+    this head, so a redelivered event costs nothing."""
+    from . import config, gh
+    try:
+        if not config.merge_check_on(loop) or has_head(st, number, head):
+            return
+        refresh_quietly(loop, number)
+    except (Exception, gh.GateBudgetExceeded):
+        pass                   # a gate's spent budget must not turn its decision into a failure
 
 
 def refresh_quietly(loop: dict, number: int | None = None) -> None:

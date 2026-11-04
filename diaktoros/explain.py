@@ -829,8 +829,8 @@ def _next_person(c) -> tuple[str, str] | None:
         c.held = c.st.human_hold(c.number, c.head)
         action = (f"a person must review and approve head {c.short}: the loop would approve, but "
                   f"{c.held.get('why') or 'it touches human_paths'}")
-    elif (c.review_only and c.spent is not None and c.spent >= config.review_only_cap(c.loop)
-          and not c.st.review_cap_granted(c.number, c.head, c.spent)):
+    elif (c.review_only and c.spent is not None
+          and gate.review_cap_hit(c.loop, c.st, c.number, c.head, c.spent, c.author)):
         kind = "operator"
         push_first = ("the author pushes a new head first (this head already has a verdict, so a "
                       "grant now would be wasted), then " if c.reviewed else "")

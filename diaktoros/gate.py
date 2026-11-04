@@ -740,6 +740,13 @@ def verdicts(reviews: list, loop: dict, exclude_id=None) -> list:
             and (exclude_id is None or r.get("id") != exclude_id)]
 
 
+def review_cap_hit(loop: dict, st, number: int, head: str, rounds: int, author: str) -> bool:
+    """Whether a review-only author's PR (#191) has spent its verdict cap with no maintainer
+    grant for this head: the one rule the reviewer gate, ``explain`` and the merge check share."""
+    return (author in config.review_only(loop) and rounds >= config.review_only_cap(loop)
+            and not st.review_cap_granted(number, head, rounds))
+
+
 def reviewed_at_head(reviews: list, loop: dict, head: str) -> bool:
     """A submitted verdict at this head, not a comment, draft, or dismissed review. The
     adjudicator's approval on its ACCEPT is one (#905): dismissing the change request it
