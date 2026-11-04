@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import signal
 import sqlite3
+import select
 import subprocess
 import sys
 import tempfile
@@ -169,6 +170,33 @@ class EndLingeringWorkers(unittest.TestCase):
         self.assertFalse(workers.signal_lingerer(self.db, stuck.pid, signal.SIGTERM))
         self.assertIsNone(stuck.poll())
 
+    def test_a_worker_leaving_its_wait_cannot_work_until_an_authorised_signal_lands(self):
+        # #1830 F1: the signaler has checked the held mark; the worker now tries to leave. It
+        # must stay in _leave (on the gate's lock) until the signal is sent, never reach work.
+        code = ("import os, sys, time; from pathlib import Path\n"
+                "from diaktoros.run_supervisor import workers\n"
+                "with workers.lingering(Path(sys.argv[1])):\n"
+                "    print('marked', flush=True)\n"
+                "    while not os.path.exists(sys.argv[1] + '.wake'): time.sleep(0.01)\n"
+                "    print('leaving', flush=True)\n"
+                "print('working', flush=True); time.sleep(60)")
+        proc = self.start(code, str(self.db))
+        self.assertEqual(proc.stdout.readline().strip(), "marked")
+        real, early = workers._held, []
+
+        def held_then_worker_tries_to_leave(mark):
+            held = real(mark)                           # the signaler has seen the mark held...
+            Path(str(self.db) + ".wake").touch()        # ...and the worker now tries to leave
+            self.assertEqual(proc.stdout.readline().strip(), "leaving")
+            early.extend(select.select([proc.stdout], [], [], 1.0)[0])   # it must not get to work
+            return held
+
+        with patch.object(workers, "_held", held_then_worker_tries_to_leave):
+            self.assertTrue(workers.signal_lingerer(self.db, proc.pid, signal.SIGTERM))
+        self.assertEqual(early, [], "the worker reached work before the signal was delivered")
+        self.assertEqual(proc.wait(10), -signal.SIGTERM)
+        self.assertEqual(proc.stdout.read(), "")        # and it never printed 'working'
+
     def test_a_stale_mark_does_not_vouch_for_a_process_that_reused_its_pid(self):
         # F2 of #1823: the lingerer was killed and left its mark; a hung process under the same
         # root now holds that PID. Nothing holds the mark's lock, so the new one is not ended,
@@ -251,6 +279,37 @@ class LingerMark(unittest.TestCase):
                                  [workers.linger_mark(db, os.getpid()).name,
                                   workers.linger_mark(db, os.getpid()).name + ".end"])
             self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_a_stale_gate_is_swept_with_its_stale_mark(self):
+        # #1830 F2: a killed lingerer leaves its mark and its gate; the next lingerer sweeps both.
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "runs.sqlite"
+            stale = workers.linger_mark(db, 2 ** 22 + 1)
+            stale.write_text("")
+            (stale.parent / (stale.name + ".end")).write_text("")
+            with workers.lingering(db):
+                self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()),
+                                 [workers.linger_mark(db, os.getpid()).name,
+                                  workers.linger_mark(db, os.getpid()).name + ".end"])
+
+    def test_a_mark_that_cannot_be_taken_leaves_no_gate_and_no_open_descriptor(self):
+        # #1830 F2: the gate is created before the mark; when the mark fails it is undone.
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "runs.sqlite"
+            opened = []
+            real = workers._open_gate
+
+            def recording(mark):
+                opened.append(real(mark))
+                return opened[-1]
+
+            with patch.object(workers, "_take_mark", return_value=None), \
+                    patch.object(workers, "_open_gate", recording):
+                with workers.lingering(db):
+                    self.assertEqual(list(Path(tmp).iterdir()), [])
+            self.assertEqual(len(opened), 1)
+            with self.assertRaises(OSError):            # EBADF: the descriptor was closed
+                os.fstat(opened[0])
 
     def test_a_mark_that_cannot_be_removed_does_not_stop_the_worker(self):
         # F3 of #1823: unlink denied at the sweep on entry and at the removal on exit.
