@@ -50,6 +50,16 @@ def parse(body: str, known=()) -> list[tuple[str, str, str]]:
     return out
 
 
+_REASON_LEAD = re.compile(r"^[\s:*\-–—]*" + _TAG + r"(?:fixed|open|withdrawn)\b(?:\*\*)?[\s:;,.(\-–—]*",
+                          re.IGNORECASE)
+
+
+def state_reason(rest: str) -> str:
+    """The reason after a state word: ``open — still no test`` gives ``still no test``; a bare
+    state gives ''."""
+    return _REASON_LEAD.sub("", rest or "", count=1).strip()
+
+
 def category_of(rest: str) -> str:
     """The category a finding line's text is tagged with, or ``other``."""
     found = _CATEGORY.match(rest or "")
@@ -135,6 +145,13 @@ def check(loop: dict, entry: dict, number: int, head: str, body: str, verdict: s
             return (f"open finding(s) {', '.join(omitted)} left out: mark each one "
                     f"{', '.join(STATES)} (e.g. '{omitted[0]}: fixed'); nothing was written, "
                     "resubmit")
+        # #703: a finding kept open after it was answered must deal with the answer.
+        kept = {fid: rest for fid, kind, rest in lines if kind == "open" and fid in known}
+        if kept:
+            from . import finding_answers
+            reason = finding_answers.refusal(loop, number, entry, kept)
+            if reason:
+                return reason
         needs = [(fid, rest) for fid, rest in new if MISSED not in rest.lower()]
         if needs:
             changed = changed_files(loop, number, entry["last_head"], head)
@@ -252,14 +269,21 @@ def apply(entry: dict, head: str, body: str, at: float | None = None) -> dict:
     """The entry after this review: new findings open, states updated, ``last_head`` moved."""
     entry = {**entry, "findings": {k: dict(v) for k, v in (entry.get("findings") or {}).items()}}
     later = bool(entry.get("last_head"))
+    now = time.time() if at is None else at
     for fid, kind, rest in parse(body, entry["findings"]):
         if kind == "new":
             entry["findings"][fid] = {
                 "state": "open", "text": rest[:300], "head": head, "category": category_of(rest),
-                "missed": later and MISSED in rest.lower(),
-                "at": time.time() if at is None else at}
+                "missed": later and MISSED in rest.lower(), "at": now,
+                "stated_at": now, "last_text": rest[:300]}
         elif fid in entry["findings"]:
-            entry["findings"][fid]["state"] = kind
+            item = entry["findings"][fid]
+            item["state"] = kind
+            # What the answers check (finding_answers) compares with: when this review stated
+            # the finding, and the last text it carried (a bare restatement adds none).
+            item["stated_at"] = now
+            if kind == "open" and state_reason(rest):
+                item["last_text"] = state_reason(rest)[:300]
     entry["last_head"] = head
     return entry
 

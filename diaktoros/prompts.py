@@ -270,7 +270,11 @@ What to do:
      or maintainer requirement not met), `docs` (a doc or message that says something untrue),
      `security`, or `other`.
      On a later round, give every finding still open its state on its own line — `F1: fixed`,
-     `F2: open` or `F3: withdrawn` — or the broker refuses the review. A new finding must name a
+     `F2: open` or `F3: withdrawn` — or the broker refuses the review. A finding answered since
+     you last stated it (the fixer's answers naming it, or a maintainer's comment on the PR or
+     its closing issue, listed in the prompt under "Findings answered since you last stated
+     them") cannot be restated as a bare `F2: open`: write `F2: open — <why the answer does not
+     hold>` with a reason new to this round, or `F2: withdrawn — <reason>`. A new finding must name a
      file changed in that round, or say `missed earlier` (the stats count those against you).
      GitHub cuts a compare's file list at 300 files without saying so: when a round's list
      reaches 300, any file in the whole PR counts as changed that round, so do not label a
