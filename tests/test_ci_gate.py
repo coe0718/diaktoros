@@ -289,6 +289,7 @@ class CITestsBroker(pv.Broker):
     job_head = HEAD
     run_repo = pv.REPO
     job_status = "completed"
+    job_run_id = 5
 
     def setUp(self):
         super().setUp()
@@ -311,7 +312,7 @@ class CITestsBroker(pv.Broker):
         if path.split("?")[0].endswith("/status"):
             return {"state": "success", "statuses": []}
         if path.endswith("/actions/jobs/11"):
-            return {"head_sha": self.job_head, "run_id": 5, "status": self.job_status}
+            return {"head_sha": self.job_head, "run_id": self.job_run_id, "status": self.job_status}
         if path.endswith("/actions/runs/5"):
             return {"head_sha": self.job_head, "head_repository": {"full_name": self.run_repo}}
         return super().api(loop, path, method, body, login)
@@ -382,6 +383,24 @@ class CITestsBroker(pv.Broker):
         self.job_status = "in_progress"
         _, _, reads = self.log_reads()
         self.assertEqual(reads, 2)
+
+    def test_an_empty_log_is_not_kept_for_the_next_read(self):
+        logs = iter(["", LOG_OK])           # GitHub can publish a completed job's log late
+        state = ci.CIState(passed=["tests (3.14)"], ids={"tests (3.14)": 11})
+        with mock.patch.object(gh, "read_text", side_effect=lambda *a, **k: next(logs)):
+            first = ci_tests.read(self.loop, state, ["tests (3.14)"], HEAD)
+            second = ci_tests.read(self.loop, state, ["tests (3.14)"], HEAD)
+        self.assertEqual(first, {})
+        self.assertEqual(second["test_desktop.Surface.test_it_parses_as_an_es_module"], "ok")
+
+    def test_a_job_with_no_valid_run_id_is_not_read(self):
+        state = ci.CIState(passed=["tests (3.14)"], ids={"tests (3.14)": 11})
+        for bad in (None, "5", True):
+            self.job_run_id = bad
+            with mock.patch.object(gh, "read_text", side_effect=lambda *a, **k: LOG_OK) as reads:
+                got = ci_tests.read(self.loop, state, ["tests (3.14)"], HEAD)
+            self.assertEqual(got, {}, bad)
+            self.assertEqual(reads.call_count, 0, bad)
 
     def test_the_cache_does_not_carry_a_job_to_another_head(self):
         self.log_reads()                    # job 11 is cached for HEAD
