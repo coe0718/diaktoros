@@ -236,6 +236,17 @@ class Onboard(_Loop):
         self.assertRegex(out, r"armed\s+passed")
         self.assertIn("next: nothing", self.next_line(out))
 
+    def test_the_docs_name_the_app_token_post_and_claim_no_repository_write(self):
+        """The onboard docs must not say "GET only" / "nothing on GitHub": an App reader's token
+        POST (asserted above) is authentication, so the claim is no repository write."""
+        text = (Path(__file__).resolve().parent.parent / "docs" / "commands.md").read_text()
+        section = text.split("### onboard\n", 1)[1].split("<!-- flags:onboard -->", 1)[0]
+        flat = " ".join(section.split())
+        self.assertIn("POST /app/installations/{id}/access_tokens", flat)
+        self.assertIn("no repository write", flat)
+        self.assertNotIn("GET only", flat)
+        self.assertNotIn("nothing on GitHub", flat)
+
     def test_the_transport_test_catches_a_repository_write(self):
         """F5: the recorder is not vacuous: an onboard that wrote to /repos/... would turn it red."""
         def writes(loop, number):

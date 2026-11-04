@@ -87,9 +87,10 @@ def cmd_onboard(args) -> int:
     """Read-only checklist of the setup stages (#677): what the onboarding record holds and the
     one command to run next.
 
-    It runs no check, writes nothing and makes no GitHub write: it reads the record
+    It runs no check, writes nothing and makes no repository write: it reads the record
     (``onboarding.inspect``, which GETs the PR head and the hooks only for the stages that were
-    recorded against them) and the loop's unattended-push setting. Every action stays behind its
+    recorded against them; an App reader's installation-token POST is authentication, not a
+    write) and the loop's unattended-push setting. Every action stays behind its
     own command and that command's flags; this never runs ``arm`` or ``fixer-push``.
     """
     try:
