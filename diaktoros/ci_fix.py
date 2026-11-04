@@ -14,7 +14,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-from . import ci, config, gh, ledger
+from . import ci, ci_cache, config, gh, ledger
 
 # The ledger turn key of a CI-fix turn. One head, one key, so one turn per head.
 KEY = "cifix:"
@@ -115,14 +115,38 @@ def _quote(text: str) -> str:
     return "\n".join("| " + line[:LINE_MAX] for line in text.splitlines())
 
 
-def failing_step(loop: dict, job_id: int) -> str:
-    job = gh.api(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}", login=loop["read_token"])
+def failing_step(job) -> str:
+    """The name of the first failed step in a job's metadata ('' when none, or unreadable)."""
     if not isinstance(job, dict):
         return ""
     for step in job.get("steps") or []:
         if isinstance(step, dict) and step.get("conclusion") in ci.FAILED_CONCLUSIONS:
             return str(step.get("name") or "")[:STEP_MAX]
     return ""
+
+
+def _job_view(loop: dict, job_id: int) -> tuple[str, str | None]:
+    """``(failing step, log tail)`` of one job; the tail is None when its log could not be read.
+
+    A completed job's log never changes, so a pair read from a completed job is kept on disk
+    (``ci_cache``) and the next turn costs no API call (#1074). A job still running is never
+    kept, nor is a pair whose log came back empty (GitHub can publish a log a moment after the
+    job ends), nor one whose metadata could not be read (completion is unproven).
+    """
+    key = ("job-log", job_id, TAIL_LINES, LOG_MAX)
+    hit = ci_cache.load(loop, *key)
+    if hit and isinstance(hit.get("step"), str) and isinstance(hit.get("tail"), str):
+        return hit["step"], hit["tail"]
+    job = gh.api(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}", login=loop["read_token"])
+    step = failing_step(job)
+    log = gh.read_text(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}/logs",
+                       login=loop["read_token"])
+    if log is None:
+        return step, None
+    tail = "\n".join(_clean(log).splitlines()[-TAIL_LINES:])[-LOG_MAX:]
+    if tail.strip() and isinstance(job, dict) and job.get("status") == "completed":
+        ci_cache.save(loop, *key, value={"step": step, "tail": tail})
+    return step, tail
 
 
 def section(loop: dict, state: ci.CIState, names: list[str]) -> str:
@@ -136,14 +160,11 @@ def section(loop: dict, state: ci.CIState, names: list[str]) -> str:
         if not job_id:
             out.append("(no job log: this check is not an Actions job, or its id is unknown)\n")
             continue
-        step = failing_step(loop, job_id)
-        log = gh.read_text(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}/logs",
-                           login=loop["read_token"])
+        step, tail = _job_view(loop, job_id)
         out.append(f"Failing step: {step!r}" if step else "Failing step: unknown")
-        if log is None:
+        if tail is None:
             out.append("(the log could not be read)\n")
             continue
-        tail = "\n".join(_clean(log).splitlines()[-TAIL_LINES:])[-LOG_MAX:]
         out.append(f"Last {TAIL_LINES} lines of the log:\n" + (_quote(tail) or "| (empty)") + "\n")
     if len(names) > JOBS_MAX:
         out.append(f"({len(names) - JOBS_MAX} more failing check(s): {ci._names(names[JOBS_MAX:])})")
@@ -153,8 +174,9 @@ def section(loop: dict, state: ci.CIState, names: list[str]) -> str:
 TEST_PATH = re.compile(r"(^|/)(tests?|spec)/|(^|/)test_[^/]+$|_test\.[A-Za-z]+$|\.spec\.[A-Za-z]+$")
 HISTORY_MAX = 10
 # A commit's file list never changes, so the test files a CI-fix commit touched are read once per
-# process, keyed by (repo, sha). Only a successful read is kept: an unreadable commit is asked
-# again next time. Bounded, oldest out first.
+# process, keyed by (repo, sha), and kept on disk (``ci_cache``) for the next process (#1074).
+# Only a successful read is kept: an unreadable commit is asked again next time. The in-process
+# map is bounded, oldest out first.
 _TESTS_SEEN: dict[tuple[str, str], list[str]] = {}
 TESTS_SEEN_MAX = 256
 
@@ -181,6 +203,10 @@ def _commit_tests(loop: dict, sha: str) -> list[str] | None:
     key = (str(loop["repo"]), sha)
     if key in _TESTS_SEEN:
         return _TESTS_SEEN[key]
+    stored = ci_cache.load(loop, "commit-tests", sha)
+    if stored and isinstance(stored.get("tests"), list) \
+            and all(isinstance(t, str) for t in stored["tests"]):
+        return _remember(key, stored["tests"])
     detail = gh.api(loop, f"/repos/{loop['repo']}/commits/{sha}", login=loop["read_token"])
     files = detail.get("files") if isinstance(detail, dict) else None
     if not isinstance(files, list):
@@ -188,6 +214,12 @@ def _commit_tests(loop: dict, sha: str) -> list[str] | None:
     tests = [f"{f.get('filename')} ({f.get('status')}, +{f.get('additions', 0)} "
              f"-{f.get('deletions', 0)})" for f in files
              if isinstance(f, dict) and TEST_PATH.search(str(f.get("filename") or ""))]
+    ci_cache.save(loop, "commit-tests", sha, value={"tests": tests})
+    return _remember(key, tests)
+
+
+def _remember(key: tuple[str, str], tests: list[str]) -> list[str]:
+    """Keep ``tests`` for ``key`` in this process (bounded, oldest out first); returns it."""
     while len(_TESTS_SEEN) >= TESTS_SEEN_MAX:
         _TESTS_SEEN.pop(next(iter(_TESTS_SEEN)))
     _TESTS_SEEN[key] = tests
