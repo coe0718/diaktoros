@@ -71,7 +71,7 @@
     "diaktoros/run_supervisor/pr_facts.py::pr_change": 193,
     "diaktoros/run_supervisor/turn_prompts.py::isolated_prompt": 81,
     "diaktoros/run_supervisor/turns.py::ClaimAndLaunch._prepare_verdict_launch": 93,
-    "diaktoros/run_supervisor/turns.py::ClaimAndLaunch._production_turn": 143,
+    "diaktoros/run_supervisor/turns.py::ClaimAndLaunch._production_turn": 130,
     "diaktoros/run_supervisor/workers.py::WorkerLifecycle.complete_uncertain": 100,
     "diaktoros/safe_push.py::_git_cas": 149,
     "diaktoros/safe_push.py::open_branch": 86,

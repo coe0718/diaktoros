@@ -11,6 +11,13 @@ One small host file, ``$HERMES_HOME/state/diaktoros-pacing.json``, under a lock.
 an account key (provider, endpoint and profile, never a credential), a time and a short reason,
 plus per-day turn counts. A hold or count that cannot be read is treated as absent: pacing never
 stops a turn on a guess.
+
+A provider that is *unavailable* without ever saying 429 (the DirectSDK subscription path
+answers a closed window with empty streams: no status, no ``Retry-After``) is held the same way
+(``hold_unavailable``): a short window that doubles on each repeat, cleared by the next turn that
+succeeds on the account (``clear_unavailable``). The signature is read from the failed turn's
+own output, so it is only as trustworthy as that output: a turn that prints it and exits
+non-zero holds its account for one window, never longer than ``UNAVAILABLE_MAX_S``.
 """
 
 from __future__ import annotations
@@ -31,6 +38,15 @@ _DURATION = re.compile(r"(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m(?!s))?(?:(\d+(
 _KEEP_DAYS = 3
 # The counter key for reviewer turns on review-only PRs (``review_only_daily``), beside the seats'.
 REVIEW_ONLY_SEAT = "review_only"
+# A provider-unavailable hold: the first window, its cap, and how long a strike is remembered.
+UNAVAILABLE = "provider unavailable"
+UNAVAILABLE_BASE_S = 15 * 60
+UNAVAILABLE_MAX_S = 2 * 3600
+_UNAVAILABLE_FORGET_S = 6 * 3600
+_UNAVAILABLE_SIGNS = (
+    (re.compile(r"empty stream with no finish_reason", re.I), "empty stream with no finish_reason"),
+    (re.compile(r"didn.t answer after \d+ attempts", re.I), "wire didn't answer"),
+)
 
 
 def path():
@@ -239,6 +255,67 @@ def held(key: str, now: float | None = None) -> tuple[float, str] | None:
     if not isinstance(entry, dict) or not isinstance(entry.get("until"), (int, float)):
         return None
     return (float(entry["until"]), str(entry.get("reason") or "")) if entry["until"] > now else None
+
+
+def unavailable_signature(*outputs: object) -> str | None:
+    """What a failed turn's output says about an unavailable provider (the DirectSDK "didn't
+    answer after N attempts" or "empty stream with no finish_reason"), or None."""
+    text = "\n".join(str(out or "") for out in outputs)
+    for pattern, detail in _UNAVAILABLE_SIGNS:
+        if pattern.search(text):
+            return detail
+    return None
+
+
+def hold_unavailable(key: str, detail: str, now: float | None = None) -> float:
+    """Hold ``key`` because its provider is unavailable with no 429 to say when it is back;
+    returns when the hold ends.
+
+    The window is ``UNAVAILABLE_BASE_S``, doubled for each earlier strike (to
+    ``UNAVAILABLE_MAX_S``); strikes older than ``_UNAVAILABLE_FORGET_S`` are forgotten. A failure
+    while a hold is still live comes from a turn that launched before it, so it is no new
+    strike: the window stays as it is (a 429 hold is never shortened either).
+    """
+    now = time.time() if now is None else now
+    with _locked() as file:
+        data = _load(file)
+        holds = data.setdefault("holds", {})
+        strikes = data.setdefault("unavailable", {})
+        current = holds.get(key) if isinstance(holds.get(key), dict) else {}
+        if isinstance(current.get("until"), (int, float)) and current["until"] > now:
+            return float(current["until"])
+        prev = strikes.get(key) if isinstance(strikes.get(key), dict) else {}
+        recent = isinstance(prev.get("last"), (int, float)) and now - prev["last"] < _UNAVAILABLE_FORGET_S
+        count = (int(prev.get("count") or 0) if recent else 0) + 1
+        until = now + min(UNAVAILABLE_BASE_S * 2 ** (count - 1), UNAVAILABLE_MAX_S)
+        strikes[key] = {"count": count, "last": now}
+        holds[key] = {"until": until, "reason": f"{UNAVAILABLE} ({detail})"[:200]}
+        _save(file, data)
+    return until
+
+
+def clear_unavailable(key: str) -> bool:
+    """A turn succeeded on ``key``: its provider answers. Drop a provider-unavailable hold and
+    the strikes behind it (a 429 hold is the provider's own word and stays); True if any went."""
+    data = _load(path())
+    if key not in (data.get("unavailable") or {}):
+        return False                        # the usual case: no lock, no write
+    with _locked() as file:
+        data = _load(file)
+        data.get("unavailable", {}).pop(key, None)
+        holds = data.get("holds") if isinstance(data.get("holds"), dict) else {}
+        entry = holds.get(key)
+        if isinstance(entry, dict) and str(entry.get("reason") or "").startswith(UNAVAILABLE):
+            del holds[key]
+        _save(file, data)
+    return True
+
+
+def hold_line(seat: str, provider: str, until: float, reason: str = "") -> str:
+    """A held run's ``held:`` line for a closed account: "provider unavailable (…)" when that is
+    why, else the usage window. Every path that holds an account for a run words it here."""
+    what = reason if reason.startswith(UNAVAILABLE) else f"usage window ({provider})"
+    return f"held: {seat} {what} — resumes {when(until)}"
 
 
 def _today(now: float) -> str:
