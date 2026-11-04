@@ -20,7 +20,7 @@ from diaktoros.config import host_guards  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 HEAD = "a" * 40
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from worker_wait import wait_for_workers  # noqa: E402
+from worker_wait import end_lingering_workers, wait_for_workers  # noqa: E402
 
 
 class RouteSubprocess(unittest.TestCase):
@@ -31,6 +31,9 @@ class RouteSubprocess(unittest.TestCase):
         # Cleanups run last in, first out: every detached worker a route spawned has exited
         # before the temp dir is removed (a worker still writing made rmtree fail under load).
         self.addCleanup(wait_for_workers, self.root)
+        # A worker whose claim-time read failed lingers ~150s to schedule its retry (#1302);
+        # these tests have read what the ledger says by then, so end it before the wait above.
+        self.addCleanup(end_lingering_workers, self.root)
         home = self.root / "home"
         home.mkdir()
         loops = home / "review-loops.d"

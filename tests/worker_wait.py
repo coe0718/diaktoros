@@ -43,6 +43,27 @@ def processes_naming(marker: str) -> dict[int, str]:
     return found
 
 
+def end_lingering_workers(root: Path, settle: float = 5) -> None:
+    """Stop workers that are only waiting out a backoff; call it before ``wait_for_workers``.
+
+    A worker whose claim-time read failed (or whose review is held for CI) stays idle for up to
+    ``max(CI_POLL_S, RETRY_BASE) + 30`` seconds to schedule the retry itself (#1302,
+    ``Supervisor.linger_for_ci``), far past ``WORKER_EXIT_TIMEOUT``. A test that only checks what
+    the ledger says after that first claim has nothing left for such a worker to do. A worker that
+    is still doing real work gets ``settle`` seconds to finish; whatever is left is only waiting
+    (it holds no seat and no turn then), and SIGTERM ends it.
+    """
+    marker = str(root)
+    until = time.monotonic() + settle
+    while processes_naming(marker) and time.monotonic() < until:
+        time.sleep(0.05)
+    for pid in processes_naming(marker):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+
 def wait_for_workers(root: Path, timeout: float = WORKER_EXIT_TIMEOUT) -> None:
     """Block until no process naming ``root`` is left; kill and fail past ``timeout``."""
     marker = str(root)
