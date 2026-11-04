@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
+from .config import prices
 from .ledger import read_only
 
 SEATS = ("reviewer", "fixer", "issue_fixer", "triage", "adjudicator")
@@ -171,12 +172,13 @@ def _usage_rows(report: dict) -> list[list[str]]:
     return [[row["seat"], row["model"], str(row["turns"]), f"{row['tokens_in']:,}",
              f"{row['tokens_out']:,}",
              cache_share(row),
-             f"{row['cost']:.4f}" if row["costed"] else "unknown"]
+             f"{row['cost']:.4f}" if row["costed"] else "unknown",
+             prices.estimate_text(row.get("estimate"))]
             for row in report.get("usage") or []]
 
 
 USAGE_HEAD = ["seat", "model", "turns", "tokens in", "tokens out", "cached input (provider-reported)",
-              "cost (provider-reported)"]
+              "cost (provider-reported)", "cost (estimated from prices)"]
 
 
 def revisions(db: Path, repo: str, since: float) -> dict | None:
@@ -385,6 +387,9 @@ def collect(loop: dict, db: Path, since: float, with_github: bool,
               "turns": ledger(db, loop["repo"], since),
               "revisions": revisions(db, loop["repo"], since),
               "usage": usage(db, loop["repo"], since)}
+    table = prices.prices(loop)
+    for row in report["usage"] or []:    # #1790: no provider reports a cost; the operator's prices
+        row["estimate"] = prices.estimate(row, table)
     cache_turns = cache_by_turn(db, loop["repo"], since)
     if cache_turns is not None:       # a missing ledger keeps the pinned desktop payload as it was
         report["cache_turns"] = cache_turns
@@ -1245,8 +1250,10 @@ def text(report: dict) -> str:
         out += ["Turns (run ledger: 'ran' is a succeeded turn's own time, 'waited' is queued "
                 "until it started)", *_table(TURN_HEAD, _turn_rows(report))]
     if report.get("usage"):
-        out += ["", "Tokens per seat and model (counted by the inference proxy; cost only where "
-                "the provider reported it)", *_table(USAGE_HEAD, _usage_rows(report))]
+        out += ["", "Tokens per seat and model (counted by the inference proxy; cost where the "
+                "provider reported it, and estimated from the loop's prices: uncached input, "
+                "cached input and output; 'at most' where some turns did not report their cache)",
+                *_table(USAGE_HEAD, _usage_rows(report))]
     if report.get("cache_turns"):
         out += ["", "Prompt cache per turn, oldest first (compare the rounds of one PR)",
                 *_table(CACHE_HEAD, _cache_turn_rows(report))]

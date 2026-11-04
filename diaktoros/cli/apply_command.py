@@ -346,7 +346,7 @@ def _form_changes(loop: dict, updated: dict) -> list:
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci", "merge_check",
                 "ingress", "ingress_app",
                 "fix_ci", "fixer_scope_lock", "adjudicator_approves", "ci_fix_cap", "review_only_update", "required_checks", "human_paths",
-                "generated", "ci_coverage", "review_only", "operator_agents", "review_only_cap",
+                "generated", "ci_coverage", "prices", "review_only", "operator_agents", "review_only_cap",
                 "review_only_daily", "shadow"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))

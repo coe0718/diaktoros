@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from . import set_command
+from ..config import prices
 
 
 def add_set(sub) -> None:  # noqa: ANN001
@@ -132,6 +133,12 @@ def _set_path_flags(change) -> None:  # noqa: ANN001
                         help="what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it); replaces the map")
     covers.add_argument("--no-ci-coverage", action="store_true",
                         help="clear the map: the reviewer is told nothing about what a check covers")
+    priced = change.add_mutually_exclusive_group()
+    priced.add_argument("--price", action="append", default=None, metavar="MODEL=IN/CACHED/OUT",
+                        help=prices.HELP.replace("(repeat it; none = every model unpriced)",
+                                                 "(repeat it); replaces the table"))
+    priced.add_argument("--no-prices", action="store_true",
+                        help="clear the table: every model unpriced")
     generated = change.add_mutually_exclusive_group()
     generated.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
                            help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox (repeat it); replaces the list")

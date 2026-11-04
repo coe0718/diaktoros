@@ -200,7 +200,10 @@ What one loop did over a window, and how long it took. Two sources:
 - **The run ledger** (local; always shown): every seat turn in the window, by how it ended
   (succeeded, failed, waiting, cancelled, uncertain), how many needed a retry, how long a
   succeeded turn **ran**, and how long turns **waited** before starting (queues, daily caps,
-  usage windows, CI holds). GitHub cannot tell you how long a turn took; this can.
+  usage windows, CI holds). GitHub cannot tell you how long a turn took; this can. Tokens are
+  summed per seat and model, with the cost the provider reported (none of today's do) and one
+  estimated from the loop's `prices` (#1790): `unpriced` for a model with no entry, `at most`
+  where some turns did not report their cache.
 - **GitHub**, with `--github`, read as the reader (one request per PR): PRs opened, merged and
   still open, by author; open → merge time; each reviewer's verdicts and time to their first
   review; and how many change-request rounds the loop's reviewer needed per PR.
@@ -492,6 +495,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
 | `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting) |
+| `--price` | `MODEL=IN/CACHED/OUT` (repeatable) |  | what a model costs, for stats' cost estimate (#1790): MODEL=INPUT/CACHED/OUTPUT in US dollars per million tokens, the model as stats names it, e.g. 'deepseek-flash=0.14/0.014/0.28' (repeat it; none = every model unpriced) (default: the plugin setting) |
 | `--ingress` | `repo-hooks` \| `app-webhook` |  | where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks) |
 | `--ingress-app` | `INGRESS_APP` |  | with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app) |
 | `--merge-check` | `auto` \| `on` \| `off` |  | post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off |
@@ -630,6 +634,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
 | `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting) |
+| `--price` | `MODEL=IN/CACHED/OUT` (repeatable) |  | what a model costs, for stats' cost estimate (#1790): MODEL=INPUT/CACHED/OUTPUT in US dollars per million tokens, the model as stats names it, e.g. 'deepseek-flash=0.14/0.014/0.28' (repeat it; none = every model unpriced) (default: the plugin setting) |
 | `--ingress` | `repo-hooks` \| `app-webhook` |  | where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks) |
 | `--ingress-app` | `INGRESS_APP` |  | with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app) |
 | `--merge-check` | `auto` \| `on` \| `off` |  | post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off |
@@ -737,6 +742,8 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--no-human-paths` |  |  | clear the list: no path is reserved for a human (one of `--human-path`, `--no-human-paths`) |
 | `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it); replaces the map (one of `--ci-covers`, `--no-ci-coverage`) |
 | `--no-ci-coverage` |  |  | clear the map: the reviewer is told nothing about what a check covers (one of `--ci-covers`, `--no-ci-coverage`) |
+| `--price` | `MODEL=IN/CACHED/OUT` (repeatable) |  | what a model costs, for stats' cost estimate (#1790): MODEL=INPUT/CACHED/OUTPUT in US dollars per million tokens, the model as stats names it, e.g. 'deepseek-flash=0.14/0.014/0.28' (repeat it); replaces the table (one of `--price`, `--no-prices`) |
+| `--no-prices` |  |  | clear the table: every model unpriced (one of `--price`, `--no-prices`) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox (repeat it); replaces the list (one of `--generated`, `--no-generated`) |
 | `--no-generated` |  |  | clear the list: the conflict shortcut is off (one of `--generated`, `--no-generated`) |
 | `--ingress` | `repo-hooks` \| `app-webhook` |  | where events arrive: repo-hooks (the default: per-loop repo hooks) or app-webhook (a GitHub App's own webhook, --ingress-app; the loop then needs no repo hooks) |

@@ -21,6 +21,7 @@ from .. import (
 from . import common as cli_common
 from ..config import credentials
 from ..config import lists
+from ..config import prices
 from ..config import settings_form
 from .common import BRANCH_PUSH_REFUSAL, SHARED_JOB_NAMES, _hook_route_name
 
@@ -274,6 +275,10 @@ def _init_settings(args, d: dict) -> dict:
         "ci_coverage": lists.parse_ci_coverage(
             lists.split_ci_coverage(d["ci_coverage"]) if getattr(args, "ci_covers", None) is None
             else args.ci_covers, "--ci-covers"),
+        # What each model costs, for stats' estimate (#1790).
+        "prices": prices.parse_prices(
+            prices.split_prices(d["prices"]) if getattr(args, "price", None) is None
+            else args.price, "--price"),
         # Authors reviewed but never fixed (#191).
         "review_only": ([name.strip() for name in str(d["review_only"]).split(",") if name.strip()]
                         if getattr(args, "review_only", None) is None
@@ -930,6 +935,8 @@ def _init_review_flags(init) -> None:  # noqa: ANN001
                       help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting)")
     init.add_argument("--ci-covers", action="append", default=None, metavar="CHECK=COVERS",
                       help="what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting)")
+    init.add_argument("--price", action="append", default=None, metavar="MODEL=IN/CACHED/OUT",
+                      help=prices.HELP + " (default: the plugin setting)")
 
 
 def _init_ingress_flags(init) -> None:  # noqa: ANN001

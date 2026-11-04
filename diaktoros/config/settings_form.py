@@ -10,6 +10,7 @@ from __future__ import annotations
 from .. import config
 from ..config import blocks
 from ..config import lists
+from ..config import prices
 
 
 # Plugin-level settings. The desktop's Capabilities → Plugins form renders `config_schema` from
@@ -279,6 +280,16 @@ SETTINGS_SCHEMA: dict = {
                                    "or missing one does not. Only a check that gates (named in "
                                    "required checks, when that is set) can be cited. Blank = not "
                                    "set here (an unset map means the reviewer is told nothing)"},
+    "prices": {"label": "Model prices (MODEL=INPUT/CACHED/OUTPUT, $ per million tokens, commas "
+                        "between)",
+               "type": "str", "default": "",
+               "description": "What each model costs, for the cost estimate in stats (#1790): "
+                              "MODEL=INPUT/CACHED/OUTPUT in US dollars per million tokens, the "
+                              "model as stats names it, e.g. 'deepseek-flash=0.14/0.014/0.28'. A "
+                              "model with no entry is shown as unpriced, never $0; a subscription "
+                              "model has no per-token price to enter. The loop never fetches "
+                              "prices. Blank = not set here (an unset table means every model is "
+                              "unpriced)"},
     "generated": {"label": "Generated files (PATH[,PATH]=COMMAND, ';;' between entries)",
                   "type": "str", "default": "",
                   "description": "Generated files the host regenerates when a PR's only merge "
@@ -553,6 +564,8 @@ def _apply_checks(overlaid, d, settings) -> None:  # noqa: ANN001
     if _form_value(settings, "ci_coverage") is not None:
         overlaid["ci_coverage"] = lists.parse_ci_coverage(
             lists.split_ci_coverage(d["ci_coverage"]), "settings")
+    if _form_value(settings, "prices") is not None:
+        overlaid["prices"] = prices.parse_prices(prices.split_prices(d["prices"]), "settings")
     if _form_value(settings, "generated") is not None:
         overlaid["generated"] = lists.parse_generated(
             lists.split_generated(d["generated"]), "settings")
