@@ -41,9 +41,28 @@ TURN = [responses(ASK),
 USAGE = [(1000, 0), (1500, 900), (1600, 1000), (1700, None)]
 
 
-def run_turn(bodies, replies):
+def anthropic(*messages, system="be careful"):
+    return json.dumps({"model": "m", "system": system, "tools": TOOLS, "max_tokens": 100,
+                       "messages": list(messages)}).encode()
+
+
+# The modes' paths (the proxy's own, then the upstream's) and how each reports its usage.
+MODES = {
+    "codex_responses": ("/v1/responses", "/v1/responses", lambda t_in, cached: {
+        "input_tokens": t_in, "output_tokens": 5,
+        **({"input_tokens_details": {"cached_tokens": cached}} if cached is not None else {})}),
+    # Anthropic's input_tokens leaves its cache out; the proxy adds it back (#1336).
+    "anthropic_messages": ("/anthropic/v1/messages", "/v1/messages", lambda t_in, cached: {
+        "input_tokens": t_in - (cached or 0), "output_tokens": 5,
+        **({"cache_read_input_tokens": cached} if cached is not None else {})}),
+}
+
+
+def run_turn(bodies, replies, mode="codex_responses", **options):
     """Send ``bodies`` through a real proxy whose upstream answers with ``replies``
-    (input tokens, cached tokens or None: not reported); the capability, once all are read."""
+    (input tokens, cached tokens or None: not reported); the capability, once all are read.
+    ``options`` go to the capability (``quota``, ``nudge_steps``)."""
+    local, remote, usage_of = MODES[mode]
     served = []
 
     class Upstream(http.server.BaseHTTPRequestHandler):
@@ -54,10 +73,7 @@ def run_turn(bodies, replies):
             self.rfile.read(int(self.headers["Content-Length"]))
             t_in, cached = replies[len(served)]
             served.append(1)
-            usage = {"input_tokens": t_in, "output_tokens": 5}
-            if cached is not None:
-                usage["input_tokens_details"] = {"cached_tokens": cached}
-            data = json.dumps({"output": [], "usage": usage}).encode()
+            data = json.dumps({"output": [], "usage": usage_of(t_in, cached)}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
@@ -70,16 +86,17 @@ def run_turn(bodies, replies):
     try:
         with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as d, \
                 InferenceCapability(Path(d) / "cap",
-                                    f"http://127.0.0.1:{upstream.server_port}/v1/responses",
-                                    "DUMMY_KEY", model="m", quota=len(bodies),
-                                    api_mode="codex_responses") as cap:
+                                    f"http://127.0.0.1:{upstream.server_port}{remote}",
+                                    "DUMMY_KEY", model="m",
+                                    **{"quota": len(bodies), **options}, api_mode=mode) as cap:
             for body in bodies:
                 conn = _UnixHTTP(str(cap.socket_path))
-                conn.request("POST", "/v1/responses", body=body)
+                conn.request("POST", local, body=body)
                 conn.getresponse().read()
                 conn.close()
             for _ in range(100):                          # the handler records after relaying
-                if len(cap.trace.entries) == len(bodies) and "in" in cap.trace.entries[-1]:
+                if len(served) == len(cap.trace.entries) and all(
+                        "in" in entry for entry in cap.trace.entries):
                     break
                 threading.Event().wait(0.02)
             return cap
@@ -98,6 +115,33 @@ class Trace(unittest.TestCase):
             {"items": 6, "kept": 2, "of": 5, "changed": "reasoning", "in": 1600, "cached": 1000},
             {"items": 2, "kept": 0, "of": 6, "changed": "instructions/tools", "in": 1700,
              "cached": None}])
+
+    def test_an_anthropic_turn_counts_its_system_and_tools_and_its_messages(self):
+        # Review of #1813, F1: the system prompt is the request's first item there, not a message.
+        user = {"role": "user", "content": "review"}
+        said = {"role": "assistant", "content": [{"type": "tool_use", "id": "t1",
+                                                   "name": "read_file", "input": {}}]}
+        got = {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
+                                             "content": "text"}]}
+        cap = run_turn([anthropic(user), anthropic(user, said, got),
+                        anthropic(user, said, got, system="be quick")],
+                       [(1000, 0), (1500, 900), (1600, None)], mode="anthropic_messages")
+        self.assertEqual(cap.trace.entries, [
+            {"items": 2, "kept": None, "of": None, "in": 1000, "cached": 0},
+            {"items": 4, "kept": 2, "of": 2, "in": 1500, "cached": 900},
+            {"items": 4, "kept": 0, "of": 4, "changed": "instructions/tools", "in": 1600,
+             "cached": None}])
+
+    def test_the_nudged_request_is_traced_as_sent_and_a_refused_one_not_at_all(self):
+        # Review of #1813 (#1815): the host's nudge is in what the provider saw, and the next
+        # request does not carry it, so that request changed the history it was sent. A request
+        # past the turn's quota is never sent and gets no entry.
+        cap = run_turn([responses(ASK), responses(ASK, CALL), responses(ASK, CALL, RESULT)],
+                       [(10, 0), (20, 10)], quota=2, nudge_steps=6)   # nudged: the first request
+        self.assertEqual(len(cap.trace.entries), 2)
+        nudged, after = cap.trace.entries
+        self.assertEqual(nudged["items"], 3)                 # the instructions, ASK, the nudge
+        self.assertEqual((after["kept"], after["of"], after["changed"]), (2, 3, "function_call"))
 
     def test_a_shorter_copy_of_the_previous_request_is_a_drop(self):
         cap = run_turn([responses(ASK, CALL), responses(ASK)], [(10, 0), (10, 0)])
@@ -147,6 +191,36 @@ class Trace(unittest.TestCase):
             report = {"repo": REPO, "loop": "w", "since": 0, "until": 86400, "turns": {},
                       "request_cache": lines}
             self.assertIn(lines[0], stats.text(report))
+
+    def test_the_cache_is_never_said_to_serve_more_than_was_resent(self):
+        # #1814: a cache can also hold part of what a request appended; 180 of 100 is not a rate.
+        turn = [{"kept": None, "of": None, "in": 100},
+                {"kept": 2, "of": 2, "in": 200, "cached": 180}]
+        self.assertIn("served 100 of the 100 tokens they resent, 100%",
+                      request_trace.line("reviewer", request_trace.summary([turn])))
+
+    def test_collect_reports_it_in_json_and_the_page_escapes_it(self):
+        # Review of #1813, F2: through the ledger and stats.collect, then the JSON and the page.
+        # An item's kind comes from the sandbox's request, so the page must escape it.
+        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as d:
+            db = Path(d) / "runs.sqlite"
+            sup = Supervisor(db)
+            sup.enqueue("d", REPO, 7, "a" * 40, "reviewer")
+            with closing(sqlite3.connect(db)) as con, con:
+                con.execute("UPDATE runs SET owner='w', created=1000 WHERE delivery='d'")
+                run_id = con.execute("SELECT id FROM runs WHERE delivery='d'").fetchone()[0]
+            sup.record_usage(run_id, "w", {
+                "tokens_in": 30, "tokens_out": 2, "cache_read": 10, "cost": None, "requests": [
+                    {"items": 2, "kept": None, "of": None, "in": 10, "cached": 0},
+                    {"items": 2, "kept": 1, "of": 2, "changed": "<b>odd</b>", "in": 20,
+                     "cached": 10}]})
+            report = stats.collect({"repo": REPO, "id": "w"}, db, 0, False, now=86400)
+        (line,) = report["request_cache"]
+        self.assertIn("first change: <b>odd</b> ×1", line)
+        self.assertEqual(json.loads(json.dumps(report))["request_cache"], [line])
+        page = stats.as_html(report)
+        self.assertIn("first change: &lt;b&gt;odd&lt;/b&gt; ×1", page)
+        self.assertNotIn("<b>odd</b>", page)
 
     def test_a_ledger_without_traces_reports_none(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as d:

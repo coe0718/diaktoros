@@ -862,15 +862,14 @@ class InferenceCapability:
             status, content_type, data = self.endpoint.post(body, self._headers(fresh, sandbox_headers))
         return status, content_type, data
 
-    def saw(self, body: bytes) -> dict | None:
-        """Note one validated request before it is sent: the agent's last step, the turn's
-        thinking level (its first request's), and its ``request_trace`` entry, returned."""
+    def saw(self, body: bytes) -> None:
+        """Note one validated request, as the agent sent it: its last step and the turn's
+        thinking level (its first request's)."""
         self.last_activity = last_activity(body)
         with self.lock:
             if not self._thinking_seen:
                 self._thinking_seen = True
                 self.thinking = thinking_level(body, self.contract)
-        return self.trace.see(body)
 
     def maybe_nudge(self, body: bytes) -> bytes:
         """``body`` with the submit-now nudge appended when this request is the turn's nudge
@@ -958,7 +957,7 @@ class InferenceCapability:
                 except ProxyError as exc:
                     self.refuse(str(exc))
                     return
-                entry = capability.saw(body)
+                capability.saw(body)
                 # Reserve quota before contacting provider, including failed requests. A
                 # refresh-and-retry after a 401 is part of the same call.
                 with capability.lock:
@@ -969,6 +968,7 @@ class InferenceCapability:
                 # #554: the turn's last stretch is spent telling the agent to submit what it has.
                 # After last_activity, which records the agent's own last step, not host text.
                 body = capability.maybe_nudge(body)
+                entry = capability.trace.see(body)    # as sent: past the quota, nudge included
                 try:
                     status, content_type, data = capability.forward(body, self.headers)
                 except (OSError, ProxyError, http.client.HTTPException) as exc:

@@ -6,7 +6,9 @@ cache can serve only what a request shares with an earlier one. The reviewer's c
 them: the client rewrote earlier history (a changed item ends the shared prefix there), or the
 history was kept and the provider still did not serve it from its cache.
 
-The inference proxy records one entry per request, in order:
+The inference proxy records one entry per request it sends upstream, in order, as sent: past
+the turn's quota (a refused request has none) and with the host's submit-now nudge, which the
+next request does not carry (#1815):
 
 - ``items``: the conversation's items (the instructions and tools count as the first);
 - ``kept``: how many of the previous request's items this one starts with, unchanged (None on the
@@ -93,8 +95,8 @@ class Trace:
 def summary(turns: list[list]) -> dict:
     """The requests of ``turns`` (each a turn's entries), split by whether they kept the previous
     request's history. For a request that kept it all, the cache could have served about the
-    previous request's input: ``served`` of ``servable`` is how much of that it did, counted only
-    where both are reported. ``changed`` counts the first changed item's kind of the others."""
+    previous request's input: ``served`` of ``servable`` is how much of that it did (its cached
+    tokens, up to that input), counted only where both are reported. ``changed`` counts the first changed item's kind of the others."""
     out = {'requests': 0, 'first': 0, 'kept': 0, 'served': 0, 'servable': 0,
            'changed': Counter()}
     for entries in turns:
@@ -110,7 +112,9 @@ def summary(turns: list[list]) -> dict:
                 out['kept'] += 1
                 cached, before = entry.get('cached'), (previous or {}).get('in')
                 if isinstance(cached, int) and isinstance(before, int):
-                    out['served'] += cached
+                    # A cache may also hold part of what this request appended (#1814), which is
+                    # not the resent part: counted up to what was resent, never past 100%.
+                    out['served'] += min(cached, before)
                     out['servable'] += before
             else:
                 out['changed'][str(entry.get('changed') or 'unknown')] += 1
