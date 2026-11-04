@@ -130,11 +130,11 @@ def _mark(key: tuple, token: str) -> pathlib.Path:
 
 
 def refuse(key: tuple, token: str) -> None:
-    """Mark ``token`` refused for every process without touching the shared file: for a 401
-    whose handler could not take ``held``'s lock, which leaves the file to the lock's holder
-    (review of #1781, F10). An empty file, created whole or not at all, so nothing shared is
-    rewritten unlocked; ``load`` then reads the token as gone, and the next locked ``save``
-    clears the marks. Best effort, never raises."""
+    """Mark ``token`` refused for every process without touching the shared file, before the
+    401 handler waits for ``held``'s lock, which it may not get, or may run out of budget
+    waiting for (review of #1781, F10). An empty file, created whole or not at all, so nothing
+    shared is rewritten unlocked; ``load`` then reads the token as gone, and the next locked
+    ``save`` of another token clears it. Best effort, never raises."""
     if not _writable():
         return
     try:
@@ -151,8 +151,11 @@ def save(key: tuple, token: str, expires: float) -> None:
     from .util import atomic_write
     try:
         atomic_write(_file(key), json.dumps({"token": token, "expires": expires}))     # 0600
+        # The tokens other marks name are gone with the file. A mark for this token may be
+        # new: another process sent it, got a 401 and marked it meanwhile (review F11).
         for mark in directory().glob(f"{_file(key).name}.refused-*"):
-            mark.unlink(missing_ok=True)    # the tokens they name are gone with the file
+            if mark != _mark(key, token):
+                mark.unlink(missing_ok=True)
     except (OSError, TypeError, ValueError):
         pass
 

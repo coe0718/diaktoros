@@ -280,6 +280,11 @@ class Shared(Fixture):
         self.assertEqual(len(marks), 1)
         self.assertNotIn(dead, marks[0].name)         # a hash names it, never the token
         self.assertEqual(marks[0].read_bytes(), b"")
+        self.assertEqual(self.other_process_token(), "ghs_fresh_xxxxxx")
+        self.assertEqual(list(app_tokens.directory().glob("*.refused-*")), [])   # its save cleared it
+
+    def other_process_token(self) -> str:
+        """The token a separate process, with nothing in memory, gets (its mints are fresh)."""
         script = f"""
 import sys
 sys.path.insert(0, {str(ROOT)!r})
@@ -298,8 +303,42 @@ with mock.patch.object(github_app, "_as_app", side_effect=as_app):
         other = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
                                env={**os.environ, "HERMES_HOME": str(config.home())},
                                stdin=subprocess.DEVNULL, timeout=60)
-        self.assertEqual(other.stdout.strip(), "ghs_fresh_xxxxxx", other.stderr)
-        self.assertEqual(list(app_tokens.directory().glob("*.refused-*")), [])   # its save cleared it
+        self.assertEqual(other.returncode, 0, other.stderr)
+        return other.stdout.strip()
+
+    def test_a_401_whose_gate_runs_out_waiting_for_the_lock_still_reaches_every_process(self):
+        # Review of #1781, F10 (round 2): the gate's budget ran out while the 401 handler
+        # waited, GateBudgetExceeded came out of held() before the mark was written, and the
+        # other processes kept loading the dead token. The mark comes first now.
+        dead = gh.token(self.loop, BOT)
+        held = self.hold_lock(KEY)
+        with gh.gate_scope(time.monotonic() + 0.2), \
+                mock.patch.object(app_tokens, "LOCK_WAIT_S", 60), \
+                self.assertRaises(gh.GateBudgetExceeded):
+            github_app.refused(self.loop, BOT, dead)
+        held.set()
+        self.assertIsNone(app_tokens.load(KEY))
+        self.assertEqual(self.other_process_token(), "ghs_fresh_xxxxxx")
+
+    def test_a_save_never_clears_a_mark_for_the_token_it_published(self):
+        # Review of #1781, F11: a holder published its token, then cleared every mark; another
+        # process had meanwhile sent that token, got a 401 and marked it, and the cleanup
+        # revived the dead token for everyone.
+        from diaktoros import util
+        real = util.atomic_write
+        stale = ("ghs_stale_" + "x" * 380, time.time() + 3600)
+        app_tokens.save(KEY, *stale)
+        app_tokens.refuse(KEY, stale[0])              # an older token's mark: goes with the file
+
+        def publish_then_refused(path, data, **kw):
+            real(path, data, **kw)
+            app_tokens.refuse(KEY, json.loads(data)["token"])      # the other process's 401
+        with mock.patch.object(util, "atomic_write", side_effect=publish_then_refused):
+            gh.token(self.loop, BOT)
+        self.assertIsNone(app_tokens.load(KEY))       # still marked: nobody loads it
+        marks = list(app_tokens.directory().glob(f"{app_tokens._file(KEY).name}.refused-*"))
+        self.assertEqual(marks, [app_tokens._mark(KEY, json.loads(
+            app_tokens._file(KEY).read_text())["token"])])         # the stale one is gone
 
     def test_threads_wait_for_a_token_within_their_own_bounds(self):
         # Review of #1781, F6: the bounded flock wait ran under one process-wide lock, so a
