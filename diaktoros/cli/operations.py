@@ -550,6 +550,11 @@ def _pacing_lines(loop: dict) -> list[str]:
     if any(entry["tokens_cap"] for _, entry in seats):
         lines.append(" · ".join(f"{seat} " + tokens_text(entry) for seat, entry in seats))
     for hold in data["holds"]:
+        if hold["reason"].startswith(pacing.UNAVAILABLE):
+            # #1325: no 429 said when; the hold is the loop's own short window.
+            lines.append(f"held: {hold['reason']} — {hold['provider']} as profile "
+                         f"{hold['profile']}, resumes {pacing.when(hold['until'])}")
+            continue
         lines.append(f"held: {hold['provider']} as profile {hold['profile']} until "
                      f"{pacing.when(hold['until'])} ({hold['reason']})")
     return lines

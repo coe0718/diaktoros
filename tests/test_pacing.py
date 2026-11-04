@@ -287,6 +287,135 @@ class ProductionWorker(unittest.TestCase):
         self.assertIsNone(row["retry_at"])
         self.assertEqual(row["state"], "failed")
 
+    EMPTY = ("Review loop bounded DirectSDK wire didn't answer after 3 attempts — it looks "
+             "temporarily unavailable\nProvider said: Provider returned an empty stream with no "
+             "finish_reason")
+
+    def unavailable(self, _loop, scope, observed=None, **kw):
+        observed.update(stdout=self.EMPTY, stderr="")
+        return 1
+
+    def test_a_provider_unavailable_turn_holds_the_account_without_spending_a_retry(self):
+        row = self.run_production(self.unavailable)
+        self.assertEqual((row["state"], row["retries"]), ("waiting", 0))
+        self.assertAlmostEqual(row["retry_at"] - time.time(), pacing.UNAVAILABLE_BASE_S, delta=5)
+        self.assertTrue(row["error"].startswith("held: fixer provider unavailable ("), row["error"])
+        self.assertIn("resumes", row["error"])
+        self.assertIn("no retry spent", views.next_step(row))
+        until, reason = pacing.held(self.account)
+        self.assertAlmostEqual(until, row["retry_at"], delta=2)
+        self.assertTrue(reason.startswith("provider unavailable ("))
+
+    def test_other_queued_turns_on_that_account_wait_without_launching_or_spending(self):
+        self.run_production(self.unavailable)
+        row = self.run_production(lambda *a, **k: self.fail("launched into an unavailable provider"),
+                                  seat="reviewer", author="reviewer")
+        self.assertEqual((row["state"], row["retries"]), ("waiting", 0))
+        self.assertTrue(row["error"].startswith("held: reviewer provider unavailable ("), row["error"])
+        self.assertEqual(self.turns, 1, "only the first turn ever reached the sandbox")
+
+    def test_a_repeat_after_the_hold_lapses_holds_longer_and_is_capped(self):
+        at, windows = time.time(), []
+        for _ in range(5):
+            until = pacing.hold_unavailable(self.account, "x", now=at)
+            windows.append(until - at)
+            at = until + 1                                        # the next strike: it lapsed
+        self.assertEqual(windows, [900, 1800, 3600, pacing.UNAVAILABLE_MAX_S, pacing.UNAVAILABLE_MAX_S])
+        # A failure while the hold is live (a turn launched before it) is no new strike.
+        self.assertEqual(pacing.hold_unavailable(self.account, "x", now=at + 5),
+                         pacing.hold_unavailable(self.account, "x", now=at + 6))
+
+    def test_a_turn_that_succeeds_clears_the_unavailable_hold_and_its_strikes(self):
+        pacing.hold_unavailable(self.account, "x", now=time.time() - 3600)     # lapsed, strike kept
+        pacing.hold_unavailable(self.account, "x", now=time.time() - 3000)     # lapsed too
+        self.assertIsNone(pacing.held(self.account))
+        row = self.run_production(lambda *a, **k: 0)
+        self.assertEqual(self.turns, 1)
+        self.assertNotEqual(row["state"], "waiting")
+        self.assertNotIn(self.account, json.loads(pacing.path().read_text()).get("unavailable", {}))
+        self.assertAlmostEqual(pacing.hold_unavailable(self.account, "x") - time.time(),
+                               pacing.UNAVAILABLE_BASE_S, delta=5)       # back to the first window
+
+    def test_a_success_clears_a_live_unavailable_hold_but_not_a_429s(self):
+        pacing.hold_unavailable(self.account, "x")
+        self.assertTrue(pacing.clear_unavailable(self.account))
+        self.assertIsNone(pacing.held(self.account))
+        pacing.hold_unavailable(self.account, "x", now=time.time() - 3600)
+        pacing.hold(self.account, time.time() + 3600, "openai-codex answered 429")
+        pacing.clear_unavailable(self.account)
+        self.assertEqual(pacing.held(self.account)[1], "openai-codex answered 429")
+
+    def test_a_shorter_429_hold_survives_clearing_an_overlapping_unavailable_hold(self):
+        now = time.time()
+        pacing.hold_unavailable(self.account, "x", now=now)                # ends in 15 min
+        pacing.hold(self.account, now + 300, "openai-codex answered 429")  # ends sooner
+        self.assertTrue(pacing.held(self.account)[1].startswith("provider unavailable"))
+        self.assertTrue(pacing.clear_unavailable(self.account))
+        until, reason = pacing.held(self.account)
+        self.assertAlmostEqual(until, now + 300, delta=2)
+        self.assertEqual(reason, "openai-codex answered 429")
+
+    def test_an_outage_during_a_shorter_429_hold_is_its_own_strike_and_hold(self):
+        now = time.time()
+        pacing.hold(self.account, now + 60, "openai-codex answered 429")
+        until = pacing.hold_unavailable(self.account, "x", now=now)
+        self.assertAlmostEqual(until, now + pacing.UNAVAILABLE_BASE_S, delta=2)
+        self.assertTrue(pacing.held(self.account, now=now + 61)[1].startswith("provider unavailable"))
+        self.assertEqual(json.loads(pacing.path().read_text())["unavailable"][self.account]["count"], 1)
+        # The 429's own deadline is not lost when a success clears the outage.
+        self.assertTrue(pacing.clear_unavailable(self.account))
+        self.assertEqual(pacing.held(self.account)[1], "openai-codex answered 429")
+
+    def test_an_outage_during_a_longer_429_hold_keeps_the_429_and_counts_a_strike(self):
+        now = time.time()
+        pacing.hold(self.account, now + 7200, "openai-codex answered 429")
+        self.assertAlmostEqual(pacing.hold_unavailable(self.account, "x", now=now), now + 7200, delta=2)
+        self.assertEqual(pacing.held(self.account)[1], "openai-codex answered 429")
+        self.assertEqual(json.loads(pacing.path().read_text())["unavailable"][self.account]["count"], 1)
+
+    def test_a_turn_failing_unavailable_during_a_shorter_429_holds_the_account_longer(self):
+        def outage_after_a_429(_loop, scope, observed=None, **kw):
+            # Launched before the 429 landed: another turn's 429 (reset in a minute) arrives mid-run.
+            pacing.hold(self.account, time.time() + 60, "openai-codex answered 429")
+            return self.unavailable(_loop, scope, observed=observed, **kw)
+        row = self.run_production(outage_after_a_429)
+        self.assertEqual((row["state"], row["retries"]), ("waiting", 0))
+        self.assertAlmostEqual(row["retry_at"] - time.time(), pacing.UNAVAILABLE_BASE_S, delta=5)
+        self.assertTrue(row["error"].startswith("held: fixer provider unavailable ("), row["error"])
+        self.assertTrue(pacing.held(self.account, now=time.time() + 120)[1].startswith("provider unavailable"))
+
+    def _only_signature(self, stdout="", stderr=""):
+        def run(_loop, scope, observed=None, **kw):
+            observed.update(stdout=stdout, stderr=stderr)
+            return 1
+        row = self.run_production(run)
+        self.assertEqual((row["state"], row["retries"]), ("waiting", 0), row)
+        self.assertIn("provider unavailable (", row["error"])
+        self.assertIsNotNone(pacing.held(self.account))
+
+    def test_the_empty_stream_signature_alone_holds_the_account(self):
+        self._only_signature(stdout="Provider returned an empty stream with no finish_reason")
+
+    def test_the_wire_didnt_answer_signature_alone_holds_the_account(self):
+        self._only_signature(stderr="DirectSDK wire didn't answer after 3 attempts")
+
+    def test_an_ordinary_failure_without_the_signature_is_not_a_hold(self):
+        def other(_loop, scope, observed=None, **kw):
+            observed.update(stdout="Traceback: boom", stderr="")
+            return 1
+        row = self.run_production(other)
+        self.assertEqual((row["state"], row["retries"]), ("waiting", 1))
+        self.assertIsNone(pacing.held(self.account))
+
+    def test_status_says_provider_unavailable_and_when_it_resumes(self):
+        from diaktoros.cli import operations
+        until = pacing.hold_unavailable(self.account, "empty stream with no finish_reason")
+        loop = config.normalize({**self.raw, "seats": {"reviewer": {"profile": "rev", "route": "r"},
+                                                        "fixer": {"profile": "fix", "route": "f"}}})
+        line = [l for l in operations._pacing_lines(loop) if l.startswith("held:")][0]
+        self.assertIn("provider unavailable (empty stream with no finish_reason)", line)
+        self.assertIn(f"resumes {pacing.when(until)}", line)
+
     def test_a_closed_window_is_not_launched_into(self):
         pacing.hold(self.account, time.time() + 1800, "earlier 429")
         row = self.run_production(lambda *a, **k: self.fail("launched into a closed window"))
