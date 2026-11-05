@@ -32,7 +32,7 @@ class LoginKey(unittest.TestCase):
         tokens, apps, _selected, _ignored = settings_form.select_credentials(
             loop, {"fixer_token_file": "/new.pat"})
         self.assertEqual(list(tokens), [ASKED])
-        self.assertEqual(tokens[ASKED], str(config._path("/new.pat")))
+        self.assertEqual(tokens[ASKED], str(config.expand_path("/new.pat")))
         self.assertEqual(apps, {})
 
     def test_status_lines_list_one_login_once(self):
