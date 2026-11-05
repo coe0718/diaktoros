@@ -386,15 +386,17 @@ minute) can therefore lose triage turns. Two things cover it:
   with no label from `triage.labels` (or `triage.fix_label`) and **no triage row in the run
   ledger**. It skips an issue newer than 5 minutes (the delivery may still come) or older than 3
   days (a backlog from before the loop is not triaged in bulk), and queues at most 10 per sweep,
-  oldest first. The listing is read newest first and is bounded to 5 pages of 100 (open pull
-  requests share it); past that the sweep still queues from the newest ones it read and raises
-  an alert that older issues in the window were not checked. `status` lists them as `late: issue #N triage queued late: the webhook delivery
-  was missed`, until that issue's triage run has succeeded (the next sweep then drops the line;
-  a failed, cancelled or still-running one stays listed). That cleanup runs first in every sweep,
-  so it also happens when `triage` is turned off or the open-issues read fails; it needs only the
-  run ledger. The sweep needs the same private runtime the gate does (without it the line stays and the
-  sweep logs `run ledger unavailable` once),
-  and for a loop without `triage` it queues nothing and reads no issues.
+  oldest first. The listing is read newest first, page by page, until a page reaches issues
+  older than 3 days, so a busy window (more than 500 open issues and pull requests) is still read
+  whole. It is bounded to 30 pages of 100 (open pull requests share it); only a window with more
+  than that is incomplete: the sweep still queues from the newest ones it read and raises an
+  alert that older issues in the window were not checked. `status` lists them as `late: issue #N
+  triage queued late: the webhook delivery was missed`, until that issue's triage run has succeeded
+  (the next sweep then drops the line; a failed, cancelled or still-running one stays listed). That
+  cleanup runs first in every sweep, so it also happens when `triage` is turned off or the
+  open-issues read fails; it needs only the run ledger. The sweep needs the same private runtime the
+  gate does (without it the line stays and the sweep logs `run ledger unavailable` once), and for a
+  loop without `triage` it queues nothing and reads no issues.
 - **Doctor.** `gate:rate_limit` reads the gateway's `rate_limit` and warns below 60. Raise it in
   the gateway's `config.yaml` (`platforms.webhook.extra.rate_limit: 120`) and restart that
   gateway. It is a gateway-wide setting: a `rate_limit` key on a route entry is never read, so

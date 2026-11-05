@@ -10,6 +10,7 @@ import pathlib
 import re
 
 from .. import config, util
+from ..config import lists
 
 
 def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
@@ -79,6 +80,9 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
     return seat
 
 
+SHADOW_PATHS = ("always_paths", "never_paths")
+
+
 def normalize_shadow(raw, where: str) -> dict:
     """The ``shadow`` block (#218): ``profile`` (required to turn it on), ``every`` and
     ``escalate`` (#1004), ``file_issues`` (#914) and ``issues_daily`` (#1515), or ``{}``.
@@ -91,9 +95,9 @@ def normalize_shadow(raw, where: str) -> dict:
     if raw in (None, {}):
         return {}
     if not isinstance(raw, dict) or not set(raw) <= {"profile", "every", "escalate", "file_issues",
-                                                       "issues_daily"}:
+                                                       "issues_daily", *SHADOW_PATHS}:
         raise config.ConfigError(f"{where}: shadow may only hold 'profile', 'every', 'escalate', "
-                          "'file_issues' and 'issues_daily'")
+                          "'file_issues', 'issues_daily', 'always_paths' and 'never_paths'")
     profile = str(raw.get("profile") or "").strip()
     if not profile:
         raise config.ConfigError(f"{where}: shadow.profile is required (the Hermes profile shadow "
@@ -112,9 +116,13 @@ def normalize_shadow(raw, where: str) -> dict:
         if not isinstance(raw["escalate"], bool):
             raise config.ConfigError(f"{where}: shadow.escalate must be true or false, "
                               f"got {raw['escalate']!r}")
-        if raw["escalate"] and shadow.get("every", config.DEFAULT_SHADOW_EVERY) != 1:
-            raise config.ConfigError(f"{where}: shadow.escalate needs shadow.every 1: a head the "
-                              "sampling skips would have no second review to hold it")
+        # A head blind sampling skips has no second review to hold it. Named always paths are
+        # different (#1788): every head of such a PR is shadowed, and held; the rest are sampled.
+        if (raw["escalate"] and shadow.get("every", config.DEFAULT_SHADOW_EVERY) != 1
+                and not lists.check_globs(raw.get("always_paths"), where, "shadow.always_paths")):
+            raise config.ConfigError(f"{where}: shadow.escalate needs shadow.every 1 or "
+                              "shadow.always_paths: a head blind sampling skips would have no "
+                              "second review to hold it")
         shadow["escalate"] = raw["escalate"]
     if raw.get("file_issues") not in (None, ""):
         if not isinstance(raw["file_issues"], bool):
@@ -129,6 +137,10 @@ def normalize_shadow(raw, where: str) -> dict:
             raise config.ConfigError(f"{where}: shadow.issues_daily must be a whole number, "
                               f"{low}-{high} (0 = no cap), got {issues_daily!r}")
         shadow["issues_daily"] = issues_daily
+    for key in SHADOW_PATHS:             # #1788: globs a PR's changed paths are matched against
+        globs = lists.check_globs(raw.get(key), where, f"shadow.{key}")
+        if globs:
+            shadow[key] = globs
     return shadow
 
 

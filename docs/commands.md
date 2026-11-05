@@ -142,8 +142,9 @@ No flags.
 
 Shows a loop's configuration and its live state: who serves each seat, the routes as they are
 actually installed, the token files (paths, never contents), the observer feed, pacing (daily
-caps, and any seat waiting for its usage window), queued and running turns, and when the
-watchdog last ran. Read-only.
+caps, and any seat waiting for its usage window), queued and running turns, how shadow reviews
+are chosen (with the newest choices made by path, #1788), and when the watchdog last ran.
+Read-only.
 
 ```bash
 hermes dk status --loop "<loop-id>"
@@ -498,9 +499,11 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting) |
 | `--shadow-profile` | `SHADOW_PROFILE` |  | the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted (default: the plugin setting, else none) |
 | `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5) |
-| `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
+| `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 or a --shadow-always-path (default: the plugin setting, else off) |
 | `--shadow-file-issues` | `on` \| `off` |  | on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to --shadow-issues-daily a day (#914) (default: the plugin setting, else off) |
 | `--shadow-issues-daily` | `N` |  | most shadow-found issues filed per rolling 24 hours, 0-1000; 0 = no cap (#1515) (default: the plugin setting, else 25) |
+| `--shadow-always-path` | `GLOB` (repeatable) |  | a glob for paths whose change always gets a shadow review, whatever --shadow-every says (#1788; repeat it; '*' also matches '/') (default: the plugin setting) |
+| `--shadow-never-path` | `GLOB` (repeatable) |  | a glob for paths a PR may change without a shadow review: one that changes only these gets none (#1788; repeat it; an always path wins) (default: the plugin setting) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
 | `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting) |
@@ -637,9 +640,11 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting) |
 | `--shadow-profile` | `SHADOW_PROFILE` |  | the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted (default: the plugin setting, else none) |
 | `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5) |
-| `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
+| `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 or a --shadow-always-path (default: the plugin setting, else off) |
 | `--shadow-file-issues` | `on` \| `off` |  | on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to --shadow-issues-daily a day (#914) (default: the plugin setting, else off) |
 | `--shadow-issues-daily` | `N` |  | most shadow-found issues filed per rolling 24 hours, 0-1000; 0 = no cap (#1515) (default: the plugin setting, else 25) |
+| `--shadow-always-path` | `GLOB` (repeatable) |  | a glob for paths whose change always gets a shadow review, whatever --shadow-every says (#1788; repeat it; '*' also matches '/') (default: the plugin setting) |
+| `--shadow-never-path` | `GLOB` (repeatable) |  | a glob for paths a PR may change without a shadow review: one that changes only these gets none (#1788; repeat it; an always path wins) (default: the plugin setting) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
 | `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting) |
@@ -744,9 +749,13 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--shadow-profile` | `SHADOW_PROFILE` |  | the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted; 'off' turns them off (one of `--shadow-profile`, `--no-shadow`) |
 | `--no-shadow` |  |  | turn shadow reviews off (one of `--shadow-profile`, `--no-shadow`) |
 | `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (needs a shadow profile) |
-| `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 |
+| `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 or a --shadow-always-path |
 | `--shadow-file-issues` | `on` \| `off` |  | on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to --shadow-issues-daily a day (#914); needs a shadow profile |
 | `--shadow-issues-daily` | `N` |  | most shadow-found issues filed per rolling 24 hours, 0-1000; 0 = no cap (#1515, default 25); needs a shadow profile |
+| `--shadow-always-path` | `GLOB` (repeatable) |  | a glob for paths whose change always gets a shadow review, whatever --shadow-every says (#1788; repeat it; '*' also matches '/'); replaces the list; needs a shadow profile (one of `--shadow-always-path`, `--no-shadow-always-paths`) |
+| `--no-shadow-always-paths` |  |  | clear the list: no path always gets a shadow review (one of `--shadow-always-path`, `--no-shadow-always-paths`) |
+| `--shadow-never-path` | `GLOB` (repeatable) |  | a glob for paths a PR may change without a shadow review: one that changes only these gets none (#1788; repeat it; an always path wins); replaces the list; needs a shadow profile (one of `--shadow-never-path`, `--no-shadow-never-paths`) |
+| `--no-shadow-never-paths` |  |  | clear the list: every PR may be sampled for a shadow review (one of `--shadow-never-path`, `--no-shadow-never-paths`) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve (repeat it); replaces the list (one of `--human-path`, `--no-human-paths`) |
 | `--no-human-paths` |  |  | clear the list: no path is reserved for a human (one of `--human-path`, `--no-human-paths`) |
 | `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it); replaces the map (one of `--ci-covers`, `--no-ci-coverage`) |
@@ -1137,19 +1146,45 @@ moves anything and prints the path.
 
 The archive holds the routes' HMAC secrets, so restored hooks keep working. It is created mode
 `0600`, the command warns about it, and the secrets are never printed. It leaves out GitHub
-tokens (PATs), Hermes profiles and model logins. It never overwrites a file. There is no
-output-directory or retention setting yet; when one is added it must be settable from the
-Desktop form, `init`, `setup`, `set` and the loop file. Until then `doctor`'s `backup:fresh` check
-looks only in `$HERMES_HOME/backups/`, for an archive from the last 30 days.
+tokens (PATs), Hermes profiles and model logins. It never overwrites a file.
+
+Retention (#1079): a backup written to the default place (`$HERMES_HOME/backups`, no `--out`)
+is followed by deleting the oldest archives written there (`diaktoros-backup-<stamp>[-n].tar.gz`,
+regular files only) beyond the newest `--keep N` (default 10; `0` keeps every archive). Such an
+archive carries a `default-place` first member; only archives that carry it are counted or
+deleted. So an archive written with `--out` (even one with a default-shaped name inside
+`$HERMES_HOME/backups`), an archive written by an earlier version (no mark: delete those by
+hand once), and any other file in that directory are never counted or deleted. An archive that
+another run still holds open is skipped too: a run holds its archive from before its first byte
+until its command is done with it (for `backup`, until it has printed; for `migrate`, until the
+migration ends, since the archive is its only undo). A held archive is not pruned by a newer run
+and is not counted, so it is pruned by a later backup once its run is over. The hold is a `flock`
+on the file, which a filesystem without `flock` does not give. `migrate`'s automatic backup
+prunes with the default of 10. `--keep` is a per-run flag, not a plugin setting, so a scheduled
+backup must pass it to use another count; there is no output-directory setting. `doctor`'s
+`backup:fresh` check looks only in `$HERMES_HOME/backups/`, for an archive from the last 30 days.
 
 ```bash
 hermes dk backup --out "<archive-file>"
+hermes dk backup --verify "<archive-file>"
 ```
+
+`--verify` writes nothing: it re-reads the manifest, reads every member the manifest names to its
+end, reads the whole gzip stream to its end (so a cut or damaged gzip trailer is caught even when
+every member reads), and opens the ledger snapshot with SQLite's `PRAGMA integrity_check` on a
+temporary copy (deleted afterwards). Exit `0` if the archive reads back, `2` with each problem
+named if not (corrupt gzip, truncated tar or trailer, a missing member, a ledger that is not
+SQLite). It checks that the
+bytes are restorable, not that restoring is safe here (paths, routes, secrets): `restore
+--dry-run` does both. It cannot check that the token files exist, since they are not in the
+archive; `restore` lists those.
 
 <!-- flags:backup -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--out` | `FILE` |  | where to write it (default: $HERMES_HOME/backups/…); never overwrites a file |
+| `--keep` | `N` |  | after a backup to the default place, keep the newest N archives written there and delete older ones; 0 keeps all (default: 10). Archives written with --out, before this existed, or by hand are never counted or deleted (#1079) |
+| `--verify` | `FILE` |  | write nothing: read this archive back (manifest, every member, the ledger snapshot's SQLite integrity check) and report whether it is restorable (exit 2 if not) |
 <!-- /flags -->
 
 ### restore
@@ -1159,7 +1194,8 @@ claims nothing), refuses to overwrite existing files, routes or the watchdog job
 `--force`, rewrites the shims, recreates the watchdog job through `hermes cron` and reads it
 back, then runs `doctor`. It checks that the token files the loops name exist and lists any that
 are missing; the tokens themselves are not in the archive. `--dry-run` lists what it would
-restore and overwrite and writes nothing. Exit `1` means a step is not finished or `doctor`
+restore and overwrite, reads the archive back like `backup --verify` (exit `2`, `NOT RESTORABLE`,
+if it cannot) and writes nothing. Exit `1` means a step is not finished or `doctor`
 listed a check that is not verified.
 
 An archive is treated as outside input. `restore` refuses it (exit `2`, nothing written) when:
@@ -1194,7 +1230,7 @@ hermes dk restore "<archive-file>"
 <!-- flags:restore -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
-| `--dry-run` |  |  | report what would be restored and overwritten; write nothing |
+| `--dry-run` |  |  | report what would be restored and overwritten, and read the archive back (every member, the ledger's integrity); write nothing |
 | `--force` |  |  | overwrite existing state (refused without it) |
 | `--allow-state-dir` | `DIR` (repeatable) |  | write this loop state directory, which the archive declares outside the Hermes home (the dry run lists them; repeat per directory) |
 <!-- /flags -->
@@ -1453,7 +1489,10 @@ GitHub and the loop's state and shows:
 - with [shadow reviews](configuration.md#shadow-reviews) on, a `shadow:` line per shadow review
   of the PR (model, head, the verdict it would have given, the real reviewer's verdict there and
   whether they agree, its first findings). These are data for comparing models: a shadow is never
-  a turn the PR waits for, so a queued or failed one is not listed among the PR's turns.
+  a turn the PR waits for, so a queued or failed one is not listed among the PR's turns. Another
+  `shadow:` line says whether the current head gets a shadow review and why: sampled by
+  `shadow.every`, or chosen by the paths it changes (`shadow.always_paths`, `shadow.never_paths`,
+  #1788).
 
 Read-only.
 

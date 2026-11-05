@@ -7,6 +7,7 @@ every command here; the install plumbing they share with ``init`` and ``set`` is
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import pathlib
@@ -449,6 +450,14 @@ def cmd_migrate(args) -> int:
 
 
 def _migrate(args) -> int:
+    """Run the migration steps. The backup ``migrate`` takes first is its undo, so it stays locked
+    (``backup.create(using=...)``) until the migration ends: a backup another process runs in the
+    meantime cannot prune it away (#1079)."""
+    with contextlib.ExitStack() as using:
+        return _migrate_steps(args, using)
+
+
+def _migrate_steps(args, using: contextlib.ExitStack) -> int:
     from .. import backup, migrate, run_supervisor
     try:
         loops = config.all_loops()
@@ -459,13 +468,17 @@ def _migrate(args) -> int:
         print(f"backup: would write {backup.default_out()} before anything moves")
     else:
         # Before the first move (#496): migrate has no undo, the archive is the undo.
+        pruned: list[pathlib.Path] = []
         try:
-            archive = backup.create()
+            archive = backup.create(pruned=pruned, using=using)
         except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
             print(f"cannot migrate: the backup before it failed ({exc}); nothing was moved")
             return 2
         print(f"backup: {archive} (restore with `hermes dk restore {shlex.quote(str(archive))}`)")
         print(f"backup: {backup.WARNING}")
+        if pruned:
+            print(f"backup: removed {len(pruned)} older default-named archive(s) beyond the "
+                  f"newest {backup.DEFAULT_KEEP}: " + ", ".join(p.name for p in pruned))
     lines = migrate.settings_step(cli_common._CTX, dry_run=args.dry_run)
     watchdog = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "watchdog.py"
     if not args.dry_run:
@@ -500,21 +513,53 @@ def _migrate(args) -> int:
                     for word in ("REFUSED", "NOT rewritten", "NOT FINISHED")) else 0
 
 
-def cmd_backup(args) -> int:
-    """``backup`` (#496): one 0600 archive of everything the plugin owns; see ``backup``."""
+def _verify_backup(args) -> int:
+    """``backup --verify FILE`` (#1078): read an archive back and report; writes nothing."""
     from .. import backup
+    archive = pathlib.Path(args.verify).expanduser()
     try:
-        archive = backup.create(pathlib.Path(args.out) if args.out else None)
-    except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
-        print(f"cannot back up: {exc}")
+        read, problems = backup.verify(archive)
+    except (backup.BackupError, OSError) as exc:
+        print(f"backup verify: FAILED — {exc}")
         return 2
-    print(f"backup written: {archive}")
-    left_out = backup.read_manifest(archive).get("skipped") or []
-    if left_out:
-        print(f"left out ({len(left_out)} temp-named file(s), assumed a writer's scratch): "
-              + ", ".join(left_out[:5]) + (" ..." if len(left_out) > 5 else ""))
-    print(f"warning: {backup.WARNING}")
+    if problems:
+        print("\n".join([f"backup verify: FAILED — {p}" for p in problems[:20]]
+                        + [f"backup verify: {archive} is not restorable as it is"]))
+        return 2
+    print(f"backup verify: ok — {read} member(s) read back and the ledger snapshot (if any) "
+          "passed SQLite's integrity check; nothing was written")
     return 0
+
+
+def cmd_backup(args) -> int:
+    """``backup`` (#496): one 0600 archive of everything the plugin owns; see ``backup``.
+    With ``--verify FILE`` it writes nothing and reads an existing archive back (#1078)."""
+    from .. import backup
+    if getattr(args, "verify", None):
+        if args.out:
+            print("cannot back up: --verify reads an existing archive and takes no --out")
+            return 2
+        return _verify_backup(args)
+    keep = getattr(args, "keep", None)
+    keep = backup.DEFAULT_KEEP if keep is None else keep
+    pruned: list[pathlib.Path] = []
+    with contextlib.ExitStack() as using:       # the archive stays locked until this command is done
+        try:
+            archive = backup.create(pathlib.Path(args.out) if args.out else None,
+                                    keep=keep, pruned=pruned, using=using)
+        except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
+            print(f"cannot back up: {exc}")
+            return 2
+        print(f"backup written: {archive}")
+        if pruned:
+            print(f"removed {len(pruned)} older default-named archive(s) beyond the newest "
+                  f"{keep}: " + ", ".join(p.name for p in pruned))
+        left_out = backup.read_manifest(archive).get("skipped") or []
+        if left_out:
+            print(f"left out ({len(left_out)} temp-named file(s), assumed a writer's scratch): "
+                  + ", ".join(left_out[:5]) + (" ..." if len(left_out) > 5 else ""))
+        print(f"warning: {backup.WARNING}")
+        return 0
 
 
 def _restore_cron(job: dict | None) -> list[str]:
@@ -557,7 +602,14 @@ def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
                          + ["nothing was written"]))
         return 2
     if args.dry_run:
-        print("\n".join(lines + ["dry run: nothing was written"]))
+        read, broken = backup.verify(archive)    # the same read-back as `backup --verify` (#1078)
+        if broken:
+            print("\n".join(lines + [f"restore: NOT RESTORABLE — {p}" for p in broken[:20]]
+                             + ["dry run: nothing was written"]))
+            return 2
+        print("\n".join(lines + [f"restore: {read} member(s) read back; any ledger snapshot "
+                                 "passed SQLite's integrity check",
+                                 "dry run: nothing was written"]))
         return 0
     backup.put_files(archive, manifest)
     lines.append(f"restore: {len(manifest['files'])} file(s) put back")
@@ -995,6 +1047,15 @@ def add_backup(sub) -> None:  # noqa: ANN001
     bak.add_argument("--out", metavar="FILE", default=None,
                      help="where to write it (default: $HERMES_HOME/backups/…); never "
                           "overwrites a file")
+    bak.add_argument("--keep", metavar="N", type=int, default=None,
+                     help="after a backup to the default place, keep the newest N archives "
+                          "written there and delete older ones; 0 keeps all (default: 10). "
+                          "Archives written with --out, before this existed, or by hand are "
+                          "never counted or deleted (#1079)")
+    bak.add_argument("--verify", metavar="FILE", default=None,
+                     help="write nothing: read this archive back (manifest, every member, the "
+                          "ledger snapshot's SQLite integrity check) and report whether it is "
+                          "restorable (exit 2 if not)")
     bak.set_defaults(func=cmd_backup)
 
 
@@ -1004,7 +1065,8 @@ def add_restore(sub) -> None:  # noqa: ANN001
                                           "watchdog job; ends with doctor (#496)")
     rest.add_argument("file", metavar="FILE", help="an archive `backup` wrote")
     rest.add_argument("--dry-run", action="store_true",
-                      help="report what would be restored and overwritten; write nothing")
+                      help="report what would be restored and overwritten, and read the archive "
+                           "back (every member, the ledger's integrity); write nothing")
     rest.add_argument("--force", action="store_true",
                       help="overwrite existing state (refused without it)")
     rest.add_argument("--allow-state-dir", action="append", default=None, metavar="DIR",

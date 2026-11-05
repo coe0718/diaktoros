@@ -169,12 +169,12 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
     """
     supervisor = isolated_supervisor(loop)
     supervisor.recover()
-    with _shadow_snapshot_lock(loop, seat, number, head):
+    with _shadow_snapshot_lock(loop, seat, number, head, turn_key):
         # Before the reviewer's row exists, so its worker can record nothing first (#1647). A
         # shadow is queued only on that snapshot: one taken later could hold the review's own
         # findings. The lock keeps another enqueue from evicting it before the shadow's row is
         # visible as open (review of #1656, F6).
-        snapped = seat == "reviewer" and snapshot_shadow(loop, number, head)
+        snapped = seat == "reviewer" and snapshot_shadow(loop, number, head, turn_key)
         delivery = f"{loop['repo']}:{number}:{head}:{seat}"
         # The turn's wall clock rides on the row (#49): whichever worker claims it — possibly
         # one spawned by another loop's event — runs it for this loop's seat budget.
@@ -187,13 +187,13 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
     return outcome
 
 
-def _shadow_snapshot_lock(loop: dict, seat: str, number: int, head: str):
+def _shadow_snapshot_lock(loop: dict, seat: str, number: int, head: str, turn_key: str = ""):
     """The loop's state lock for a reviewer turn that gets a shadow, held from its snapshot to
     the shadow's submit: every eviction runs under it and reads the open shadow runs first, so
     none can drop a snapshot whose row is not in the ledger yet. Otherwise no lock."""
     from contextlib import nullcontext
-    sampled = config.shadow_profile(loop) and shadow_sampled(loop, number, head)
-    if seat != "reviewer" or not sampled:
+    if seat != "reviewer" or not config.shadow_profile(loop) or not shadow_sampled(
+            loop, number, head, turn_key):
         return nullcontext()
     try:
         return state_mod.state_for(loop).locked()
@@ -201,13 +201,13 @@ def _shadow_snapshot_lock(loop: dict, seat: str, number: int, head: str):
         return nullcontext()
 
 
-def shadow_sampled(loop: dict, number: int, head: str) -> bool:
-    """Whether this reviewer turn also gets a shadow review (#218): one in ``shadow.every``,
-    chosen by the repo, PR and head, so a redelivery or a re-queued turn chooses the same."""
-    import hashlib
-    every = config.shadow_every(loop)
-    digest = hashlib.sha256(f"{loop['repo']}:{number}:{head}".encode()).digest()
-    return int.from_bytes(digest[:8], "big") % every == 0
+def shadow_sampled(loop: dict, number: int, head: str, turn_key: str = "") -> bool:
+    """Whether this reviewer turn also gets a shadow review (#218): by what the PR changes when
+    the loop names paths (#1788), else one in ``shadow.every``; chosen once per PR, head and
+    reviewer turn, so a redelivery or a re-queued turn chooses the same, and a new turn at the
+    same head (a retarget's fresh review) chooses again from its own diff (``shadow_choice``)."""
+    from . import shadow_choice
+    return shadow_choice.choose(loop, number, head, turn_key)["shadow"]
 
 
 # A shadow run in one of these states may still record its review at the head (#1004):
@@ -320,20 +320,28 @@ def ruling_answers(ruling, review_run: str, review_created: float) -> bool:
     return str(shown) == str(review_run)
 
 
-def shadow_open_heads(db=None) -> set[tuple[int, str]]:
-    """``(pr, head)`` of every shadow run still open (``SHADOW_OPEN``), whose findings snapshot
-    must outlive it (#1013). Empty when the ledger does not exist yet; raises when it exists
-    but cannot be read, so the caller never evicts on a guess."""
+def shadow_open_heads(repo: str, db=None) -> set[tuple[int, str]]:
+    """``(pr, head)`` of every shadow run of ``repo`` still open (``SHADOW_OPEN``), whose
+    findings snapshot must outlive it (#1013). Scoped to the loop's repo (#1133): the snapshot
+    file is per loop and keyed by ``pr:head`` alone, so another repo's open run at the same PR
+    number and head would otherwise keep this loop's snapshot past the cap. Empty when the
+    ledger does not exist yet; raises when it exists but cannot be read — a corrupt file, or a
+    path that is not a regular file (a directory) — so the caller never evicts on a guess, and
+    ``shadow_state`` holds on the same ledger."""
     from . import run_supervisor
     path = pathlib.Path(db or run_supervisor.production_ledger())
     if not path.exists():
         return set()
     con = run_supervisor.views.read_only_connect(path)
     if con is None:
-        return set()
+        # ``read_only_connect`` answers None for anything that is not a file, and this path
+        # exists: that is not an absent ledger, so not "no open runs" (an empty set would let
+        # the eviction run).
+        raise OSError(f"the run ledger {path} exists but is not a readable file")
     try:
-        rows = con.execute(f"SELECT pr, head FROM runs WHERE seat='shadow' AND "
-                           f"state IN ({','.join('?' * len(SHADOW_OPEN))})", SHADOW_OPEN).fetchall()
+        rows = con.execute(f"SELECT pr, head FROM runs WHERE repo=? AND seat='shadow' AND "
+                           f"state IN ({','.join('?' * len(SHADOW_OPEN))})",
+                           (repo, *SHADOW_OPEN)).fetchall()
     finally:
         con.close()
     return {(int(r[0]), str(r[1])) for r in rows}
@@ -551,17 +559,17 @@ def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) 
                   escalated={"by": SHADOW_ESCALATION, "at": now_iso(), "reason": reason})
 
 
-def snapshot_shadow(loop: dict, number: int, head: str) -> bool:
+def snapshot_shadow(loop: dict, number: int, head: str, turn_key: str = "") -> bool:
     """Keep the findings ledger for a sampled head's shadow review (#218): the broker judges the
     shadow against it, never against what the real review records. Taken before the reviewer's
     row exists (#1647); the first snapshot wins. Whether one is kept; never raises."""
-    if not config.shadow_profile(loop) or not shadow_sampled(loop, number, head):
+    if not config.shadow_profile(loop) or not shadow_sampled(loop, number, head, turn_key):
         return False
     try:
         st = state_mod.state_for(loop)
         with st.locked():
             try:
-                keep = shadow_open_heads()
+                keep = shadow_open_heads(loop["repo"])
             except Exception as exc:
                 keep = None                  # unknown open runs: evict nothing
                 log(f"#{number}: shadow runs unreadable, no snapshot evicted: "
@@ -582,7 +590,7 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
     try:
         if not config.shadow_profile(loop):
             return "off"
-        if not shadow_sampled(loop, number, head):
+        if not shadow_sampled(loop, number, head, turn_key):
             return "not sampled"
         delivery = f"{loop['repo']}:{number}:{head}:shadow" + (f":{turn_key}" if turn_key else "")
         # No durable snapshot, no shadow: the broker would judge it on the live ledger, which
@@ -597,7 +605,7 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
         # enqueue cannot sample the ledger before this run is visible in it and then evict this
         # snapshot as unused (#1013). The lock is reentrant.
         with st.locked():
-            if not snapshot_shadow(loop, number, head):
+            if not snapshot_shadow(loop, number, head, turn_key):
                 log(f"#{number}: no shadow findings snapshot, shadow not queued")
                 return "no snapshot"
             return supervisor.submit(delivery, loop["repo"], number, head, "shadow",

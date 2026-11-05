@@ -27,8 +27,8 @@ sys.path.insert(0, str(ROOT))
 from diaktoros import ledger  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros import state as state_mod  # noqa: E402
-from diaktoros import (broker, broker_ipc, config, fix_hold, gate, gh, run_supervisor, seat_model,  # noqa: E402
-                         safe_push, trusted_turn)
+from diaktoros import (broker, broker_ipc, config, fix_hold, gate, gh, observer, run_supervisor,  # noqa: E402
+                         seat_model, safe_push, trusted_turn)
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 REPO = "acme/widgets"
@@ -462,11 +462,41 @@ class Gate(Base):
         notices = []
         with mock.patch.object(gate, "enqueue_isolated", boom), \
                 mock.patch.object(self.module, "_fix_notice",
-                                  lambda loop, n, base, outcome: notices.append((n, base, outcome))):
+                                  lambda loop, n, base, outcome, kind: notices.append(
+                                      (n, base, outcome, kind))):
             log = self.run_gate(self.labeled(label="Agent-Fix"))
         self.assertIn("fix held: isolated worker unavailable: OSError: boom", log)
         self.assertNotIn("UnboundLocalError", log)
-        self.assertEqual(notices, [(12, BASE, "held — isolated worker unavailable: OSError: boom")])
+        self.assertEqual(notices, [(12, BASE, "held — isolated worker unavailable: OSError: boom",
+                                    "held")])
+
+    def feed(self):
+        """Switch the loop's observer feed on and capture what would be POSTed: the messages."""
+        self.loop = {**self.loop, "observer": {"route": "widgets-observe", "profile": "default",
+                                               "deliver": "telegram"}}
+        sent = []
+
+        def post(loop, block, tag, delivery="", urgent=False):
+            sent.append(block["message"])
+            return True, "", False
+        patch = mock.patch.object(observer, "_post", post)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return sent
+
+    def test_a_held_hand_off_does_not_swallow_the_queued_one_at_the_same_base(self):
+        # #1080 / #1057: both notices were keyed (loop, issue, base, "fixing", base), so the
+        # "queued" notice after a "held" one at the same base was reported as already recorded.
+        sent = self.feed()
+
+        def boom(*a, **k):
+            raise OSError("boom")
+        with mock.patch.object(gate, "enqueue_isolated", boom):
+            self.run_gate(self.labeled())                   # the worker is down: held at BASE
+        self.run_gate(self.labeled())                       # it is back: queued at the same BASE
+        self.assertEqual(len(sent), 2, sent)
+        self.assertIn("held — isolated worker unavailable: OSError: boom", sent[0])
+        self.assertIn(f"fix turn queued from main at {BASE[:7]}", sent[1])
 
     def test_nobody_else_and_nothing_else_starts_a_fix(self):
         log = self.run_gate(self.labeled(sender="owner"))       # the author is not a maintainer
@@ -557,6 +587,32 @@ class Gate(Base):
         self.assertEqual(fix_hold.sweep(self.loop, st), [])
         self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix")])
         self.assertEqual(st.fix_holds(), {})
+
+    def test_the_sweep_release_notice_reaches_the_observer_with_its_queued_kind(self):
+        # Review of #1873, F1: ``_release`` sends a ``fixing`` notice, and ``key_for`` refuses one
+        # without its kind, which ``notify`` catches and logs: the notice vanishes without a
+        # sound. Only a configured feed and a captured POST can see that.
+        sent = self.feed()
+        self.origin = 7
+        self.run_gate(self.labeled())                   # held behind PR #7: the "held" notice
+        st = state_mod.state_for(self.loop)
+        self.origin_pr = {"number": 7, "state": "closed", "merged": True}
+        fix_hold.sweep(self.loop, st)                   # merged: the release queues the fix
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix")])
+        queued = [m for m in sent if "fix turn queued" in m]
+        self.assertEqual(len(queued), 1, sent)
+        self.assertIn(f"PR #7 merged; fix turn queued from main at {BASE[:7]}", queued[0])
+
+    def test_a_release_that_scheduled_nothing_sends_no_queued_notice(self):
+        sent = self.feed()
+        self.origin = 7
+        self.run_gate(self.labeled())
+        st = state_mod.state_for(self.loop)
+        self.origin_pr = {"number": 7, "state": "closed", "merged": True}
+        with mock.patch.object(gate, "enqueue_isolated", lambda *a, **k: "duplicate running"):
+            fix_hold.sweep(self.loop, st)               # a turn is already running: no new one
+        self.assertEqual(st.fix_holds(), {})
+        self.assertEqual([m for m in sent if "fix turn queued" in m], [], sent)
 
     def test_a_still_open_origin_stays_held_in_the_sweep(self):
         self.origin = 7

@@ -146,6 +146,43 @@ class Sweep(fg.Base):
         with mock.patch.object(gh, "fetch", side_effect=fetch):
             return self.sweep(None, read=gh.open_issues_read, **kwargs), seen
 
+    def deep_sweep(self, recent_pages):
+        """The real ``gh.open_issues_read`` over ``recent_pages`` full pages of recent PRs, then a
+        full page whose first item is an eligible issue 2 days old (#8) and whose last is past the
+        horizon; a page after that fails the test. Returns (lines, paths)."""
+        seen = []
+
+        def fetch(loop, path, *args, **kw):
+            seen.append(path)
+            page = int(path.rsplit("&page=", 1)[1]) if "&page=" in path else 1
+            if page <= recent_pages:
+                return [issue(5000 + n, pr=True) for n in range(gh.REVIEW_PAGE_SIZE)], None
+            if page == recent_pages + 1:
+                return ([issue(8, age=2 * 86400.0)]
+                        + [issue(6000 + n, pr=True, age=2 * 86400.0)
+                           for n in range(gh.REVIEW_PAGE_SIZE - 2)]
+                        + [issue(9, age=triage_sweep.HORIZON_S + 3600.0)]), None
+            return [], None
+
+        with mock.patch.object(gh, "fetch", side_effect=fetch):
+            return self.sweep(None, read=gh.open_issues_read), seen
+
+    def test_an_eligible_issue_older_than_the_newest_500_is_read_and_queued(self):
+        # #1147: five full pages of recent items used to hide #8 (and alert on every sweep). The
+        # listing now goes on until a page reaches issues past the horizon. Driven through
+        # watchdog.sweep_loop with the real gh.open_issues_read.
+        lines, seen = self.deep_sweep(gh.MAX_ISSUE_PAGES - 20)
+        self.assertGreater(len(seen), 5)
+        self.assertEqual(len(seen), gh.MAX_ISSUE_PAGES - 19)      # stopped at the horizon page
+        self.assertEqual([e[1] for e in self.enqueued], [8])      # #9 is past the horizon
+        self.assertEqual([line for line in lines if "not checked" in line], [])
+
+    def test_a_window_past_the_page_bound_still_alerts(self):
+        # The page bound still holds: a window longer than MAX_ISSUE_PAGES pages is incomplete.
+        lines, seen = self.saturated_sweep()
+        self.assertEqual(len(seen), gh.MAX_ISSUE_PAGES + 1)
+        self.assertTrue(any("not checked" in line for line in lines), lines)
+
     def test_an_exact_five_page_listing_with_nothing_older_raises_no_alert(self):
         # #1146: a full fifth page does not prove a sixth exists; the sweep probes it.
         lines, seen = self.saturated_sweep(exactly=True)
@@ -261,6 +298,29 @@ class Sweep(fg.Base):
         self.assertEqual(rc, 0, out.getvalue())
         self.assertIn("issue #7 triage queued late", out.getvalue())
         self.assertIn("the webhook delivery was missed", out.getvalue())
+
+
+class Wrap(unittest.TestCase):
+    """#1137: the module docstring and the docs section on this sweep keep the 100-column wrap
+    the text around them uses, and no docstring line breaks after a lone "A"."""
+
+    WIDTH = 100
+    ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+    def burst_section(self):
+        text = (self.ROOT / "docs" / "issues.md").read_text()
+        head = "## A burst of issues over the gateway's rate limit"
+        return text.split(head, 1)[1].split("\n## ", 1)[0].splitlines()
+
+    def test_the_docstring_is_wrapped_to_the_width_without_a_dangling_article(self):
+        lines = triage_sweep.__doc__.splitlines()
+        self.assertEqual([line for line in lines if len(line) > self.WIDTH], [])
+        self.assertEqual([line for line in lines if line.endswith(" A")], [])
+
+    def test_the_docs_section_is_wrapped_to_the_width(self):
+        lines = self.burst_section()
+        self.assertIn("**Recovery sweep.**", "\n".join(lines))
+        self.assertEqual([line for line in lines if len(line) > self.WIDTH], [])
 
 
 if __name__ == "__main__":

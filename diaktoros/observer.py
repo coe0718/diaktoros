@@ -57,6 +57,11 @@ EVENTS = ("opened", "handoff", "verdict", "approved", "escalation", "ruling", "s
 # head. ``failed`` (any isolated run's first failed attempt, and its final state) names whichever
 # the run was about.
 ISSUE_EVENTS = frozenset({"triaged", "fixing", "fixed"})
+# The events whose one fact (the same issue at the same base) can end more than one way, and the
+# outcome kinds each may carry. The kind is part of the idempotency key (:func:`key_for`), not
+# something a caller's identity has to remember: a ``fixing`` notice that says the fix was held
+# must not swallow the one that later says it was queued.
+OUTCOME_KINDS = {"fixing": ("queued", "held")}
 
 # Two tiers. Urgent notices are the ones an operator acts on: they always go out at once, even
 # with a digest set, and to ``urgent_route`` when one is configured. Everything else is
@@ -383,16 +388,29 @@ def settle(st, key: str, delivered: bool, now: float | None = None) -> str:
 # -- the notice ----------------------------------------------------------------
 
 
-def key_for(loop: dict, number, head: str, event: str, identity: object = "") -> str:
+def key_for(loop: dict, number, head: str, event: str, identity: object = "",
+            outcome: str = "") -> str:
     """The idempotency key: what fact is this?
 
     Loop + PR + head + event + an identity for the fact itself. The identity is what makes the
     key honest rather than merely unique: a review id for a verdict, the action for a handoff,
     the stall kind for a stall — so the *same* fact redelivered is one entry, and a genuinely new
     fact at the same head is a new one.
+
+    For an event in ``OUTCOME_KINDS`` the identity alone cannot say it: the same issue at the
+    same base is handed to the fixer *or* held, and both are facts. ``outcome`` is that kind and
+    is a component of the key — required for those events and one of their listed kinds, so two
+    outcomes cannot share a key, whatever identity the caller chose. Any other event takes no
+    outcome kind (its key is unchanged), because the registry is the only list of what the key
+    treats as structural.
     """
-    return ":".join([str(loop.get("id") or loop.get("repo") or "loop"), str(number),
-                     head or "nohead", event, str(identity or "-")])
+    kinds = OUTCOME_KINDS.get(event)
+    if (outcome or "") not in (kinds or ("",)):
+        raise ValueError(f"{event} notice: outcome kind {outcome!r} is not one of "
+                         f"{kinds}" if kinds else f"{event} notice takes no outcome kind")
+    parts = [str(loop.get("id") or loop.get("repo") or "loop"), str(number),
+             head or "nohead", event, str(identity or "-")]
+    return ":".join(parts + [f"outcome={outcome}"] if outcome else parts)
 
 
 def claimed_seat(claim: str) -> str:
@@ -670,8 +688,12 @@ def _receipt(st, key: str, delivered: bool, error: str = "", uncertain: bool = F
 
 def notify(loop: dict, st, event: str, number, head: str = "", *, identity: object = "",
            outcome: str = "", next_turn: str = "", round_no=None, actor: str = "",
-           base_sha: str = "", issue: bool | None = None) -> bool:
+           base_sha: str = "", issue: bool | None = None, outcome_kind: str = "") -> bool:
     """Send one notice about one transition. Best effort, never fatal, never a gate.
+
+    ``outcome`` is the text the notice shows; ``outcome_kind`` is the word the idempotency key
+    carries for an event in ``OUTCOME_KINDS`` (see :func:`key_for`). An event that needs one and
+    gets none, or a kind it does not list, sends nothing and logs why.
 
     Returns ``True`` only when *this* call got a receipt. Every other outcome — no destination,
     muted, filtered out, already recorded, batched for a digest, or a POST that failed — logs
@@ -695,7 +717,7 @@ def notify(loop: dict, st, event: str, number, head: str = "", *, identity: obje
                             round_no=round_no, actor=actor, issue=issue)
         url = link(loop, number, issue)
         text = f"{summary}\n{url}"
-        key = key_for(loop, number, head, event, identity)
+        key = key_for(loop, number, head, event, identity, outcome_kind)
         urgent = is_urgent(event, outcome)
         queued = bool((loop.get("observer") or {}).get("digest_min")) and not urgent
         tag = f"{event}-{number}"

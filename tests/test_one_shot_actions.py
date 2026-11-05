@@ -361,6 +361,72 @@ class DrainExitCodeDocs(unittest.TestCase):
             self.assertNotRegex(text, r"(?i)exits 0 after a completed sweep", name)
             self.assertRegex(text, r"(?i)does not prove the sweep covered the queue", name)
 
+    def test_docs_do_not_say_a_refused_loop_file_exits_1_for_the_cli(self):
+        """`hermes dk drain --loop bad` exits 2 (``_one_loop`` refuses it); the docs must agree."""
+        import pathlib
+        import re
+        docs = pathlib.Path(__file__).resolve().parent.parent / "docs"
+        for name in ("operations.md", "security.md"):
+            text = re.sub(r"\s+", " ", (docs / name).read_text(encoding="utf-8"))
+            self.assertNotRegex(text, r"(?i)and a refused loop file exits 1", name)
+            self.assertRegex(text, r"(?i)loop file `--loop` cannot load", name)
+
+    def test_cmd_drain_exits_2_for_a_loop_file_that_will_not_load(self):
+        import os
+        import tempfile
+        from types import SimpleNamespace
+        from diaktoros.cli import operations
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "bad.json"), "w") as handle:
+                handle.write("{not json")
+            with mock.patch.dict(os.environ, {"DIAKTOROS_CONFIG_DIR": root}), \
+                    mock.patch.object(actions, "perform_drain") as drain, \
+                    mock.patch("builtins.print"):
+                code = operations.cmd_drain(SimpleNamespace(loop="bad", seat="reviewer"))
+        self.assertEqual(code, 2)
+        drain.assert_not_called()
+
+    def _run_script_drain(self, loop):
+        """Run the real ``watchdog.run`` for ``--drain`` over a config dir holding a bad file."""
+        import argparse
+        import contextlib
+        import io
+        import os
+        import tempfile
+        watchdog = actions._script("watchdog")
+        args = argparse.Namespace(drain=True, loop=loop, seat="reviewer", conflicts=False)
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "bad.json"), "w") as handle:
+                handle.write("{not json")
+            with mock.patch.dict(os.environ, {"DIAKTOROS_CONFIG_DIR": root}), \
+                    mock.patch("diaktoros.migrate.migrating", return_value=None), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                try:
+                    watchdog.run(args, 30)
+                except SystemExit as exit_:
+                    return exit_.code, err.getvalue()
+        return 0, err.getvalue()
+
+    def test_script_drain_exits_1_only_with_an_explicit_loop(self):
+        code, _ = self._run_script_drain("bad")
+        self.assertEqual(code, 1)
+
+    def test_script_drain_without_loop_names_the_refused_file_and_exits_0(self):
+        code, err = self._run_script_drain(None)
+        self.assertEqual(code, 0)
+        self.assertIn("not drained: ConfigError", err)
+
+    def test_docs_qualify_the_direct_script_exit_1_with_loop(self):
+        import pathlib
+        import re
+        docs = pathlib.Path(__file__).resolve().parent.parent / "docs"
+        for name in ("operations.md", "security.md"):
+            text = re.sub(r"\s+", " ", (docs / name).read_text(encoding="utf-8"))
+            self.assertNotRegex(text, r"(?i)--drain` directly exits 1 on a refused loop file", name)
+            self.assertRegex(text, r"(?i)without `--loop`", name)
+            self.assertRegex(text, r"(?i)exits? (is )?0", name)
+
 
 if __name__ == "__main__":
     unittest.main()

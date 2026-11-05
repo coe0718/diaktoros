@@ -129,7 +129,10 @@ hand-edit the registry or receipts to bypass a destination mismatch.
 
 Receipts live in `<state_dir>/observations.json`. Logical keys include loop, PR, head,
 event and event identity (review/round where applicable); repeated gates/deliveries do
-not create another notice for the same transition. Delivery IDs are retained for safe
+not create another notice for the same transition. A `fixing` notice's key also carries its
+outcome kind (`queued` or `held`), so a hand-off held at a base and later queued at the same
+base sends two notices; the kind is checked in `observer.key_for`, and an event needs one only if
+it is listed in `observer.OUTCOME_KINDS`. Delivery IDs are retained for safe
 retry so the gateway can also deduplicate a logical send.
 
 | Receipt | Meaning | Action |
