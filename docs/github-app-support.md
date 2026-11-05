@@ -172,7 +172,10 @@ loop depends on for safety:
 
 - **Reviewer requests (3):** never sent for an App reviewer; the host delivers the fixer's
   request to the reviewer gate itself (#1203), the watchdog's sweep backstops it, and
-  `hermes dk review` asks by hand.
+  `hermes dk review` asks by hand. `explain` reads that handoff as the pending request (#1213):
+  the fixer's `request_review` the broker audited at the head, or the sweep's delivery of it,
+  until a verdict lands at that head. A `hermes dk review` or an issue fix's first handoff
+  writes no such record, so `explain` does not show those as a pending request.
 - **Branch protection (4):** GitHub neither counts nor enforces the App's reviews, but it does
   enforce a required check pinned to the reviewer App (9). App mode posts `diaktoros/review`
   from the loop's merge gate (#1163 M2b, the `merge_check` setting); `hermes dk protect` (or

@@ -11,7 +11,9 @@ a real delivery. The watchdog's drain sends the same event for a queued review.
 """
 from __future__ import annotations
 
-from . import routes
+import json
+
+from . import config, routes
 
 
 def review_requested(loop: dict, pr: dict, head: str, sender: str) -> dict:
@@ -37,6 +39,38 @@ def already_requested(loop: dict, pr: object) -> bool:
     return bool(seat) and isinstance(pending, list) and any(
         isinstance(user, dict) and str(user.get("login") or "").lower() == seat
         for user in pending)
+
+
+def app_handoff_delivered(loop: dict, watch: dict, number: int, head: str) -> bool:
+    """Whether the host handed ``head`` of PR ``number`` to an App reviewer's gate (#1213).
+
+    GitHub never lists an App reviewer in ``requested_reviewers`` (#1163), so for an App seat this
+    is what a pending request is: the fixer's ``request_review`` the broker audited at this head
+    (``broker.perform`` writes that line before the host delivers it to the gate), or the
+    watchdog sweep's delivery of it (``review_kicks`` in the loop's watch state). It says the
+    handoff was made, not that the gate's route accepted it; the caller ends it at a verdict, as
+    GitHub ends a request. Always False for a PAT reviewer, and for an unreadable audit.
+    An issue fix's PR is not covered: its request is audited with no head (its ``opened`` wakes
+    the gate), and ``hermes dk review`` writes no audit line either."""
+    if not config.reviewer_is_app(loop) or not head:
+        return False
+    kicks = watch.get("review_kicks") if isinstance(watch, dict) else None
+    if isinstance(kicks, dict) and kicks.get(str(number)) == head:
+        return True
+    try:
+        text = (config.state_dir(loop) / "broker-audit.jsonl").read_text()
+    except (OSError, UnicodeDecodeError):
+        return False
+    for line in text.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue                    # a torn line is no handoff
+        if (isinstance(record, dict) and record.get("operation") == "request_review"
+                and record.get("repo") == loop.get("repo") and record.get("pr") == number
+                and record.get("head") == head):
+            return True
+    return False
 
 
 def kick(loop: dict, pr: dict, head: str, sender: str, tag: str) -> bool:

@@ -130,6 +130,68 @@ class ExplainReviewOnly(AppSeat):
         self.assertNotIn("re-requests review", report["next"]["action"])
 
 
+class ExplainPendingHandoff(AppSeat):
+    """#1213: an App reviewer is never in ``requested_reviewers``, so the host's handoff at the
+    head is the pending request ``explain`` reasons from (blockers, state line, next step)."""
+
+    def report(self, reviews=None):
+        st = state_mod.state_for(self.loop)
+        live = self.fake.api(self.loop, f"/repos/{fa.REPO}/pulls/7")
+        facts = {"pr": live, "reviews": self.fake.reviews if reviews is None else reviews,
+                 "armed": True, "read_at": 0, "shadow_hold": ("", "")}
+        return explain.explain(self.loop, st, 7, facts)
+
+    def hand_off(self):
+        """The fixer's push and request through the real run broker (the host's delivery)."""
+        with mock.patch.object(review_kick, "kick", return_value=True):
+            with self.serving() as server:
+                self.assertTrue(self.send(server, {"operation": "push",
+                                                   "manifest": fa.manifest()})["ok"])
+                self.assertTrue(self.send(server, {"operation": "request_review"})["ok"])
+
+    def test_a_delivered_handoff_reads_as_a_pending_request(self):
+        self.hand_off()
+        report = self.report()
+        self.assertTrue(report["request_pending"], report)
+        self.assertIn("review requested from review", report["state_line"])
+        self.assertFalse([b for b in report["blockers"] if "no review request exists" in b],
+                         report["blockers"])
+        self.assertTrue([b for b in report["blockers"]
+                         if "review request for review is pending" in b], report["blockers"])
+        self.assertEqual(report["next"]["kind"], "retry", report["next"])
+        self.assertIn("the pending request for review started none", report["next"]["action"])
+
+    def test_the_sweeps_delivery_counts_too(self):
+        self.fake.pr_head = fa.NEW_HEAD
+        st = state_mod.state_for(self.loop)
+        st.watch_save({"review_kicks": {"7": fa.NEW_HEAD}})
+        self.assertTrue(self.report()["request_pending"])
+
+    def test_no_handoff_at_this_head_is_no_request(self):
+        self.fake.pr_head = fa.NEW_HEAD
+        report = self.report()
+        self.assertFalse(report["request_pending"])
+        self.assertTrue([b for b in report["blockers"] if "no review request exists" in b],
+                        report["blockers"])
+
+    def test_a_verdict_at_the_head_ends_it(self):
+        self.hand_off()
+        verdict = {"id": 42, "state": "APPROVED", "commit_id": fa.NEW_HEAD,
+                   "submitted_at": "2026-01-02T00:00:00Z", "user": {"login": "review", "id": 2}}
+        self.assertFalse(self.report(self.fake.reviews + [verdict])["request_pending"])
+
+    def test_a_pat_reviewer_is_still_read_from_github(self):
+        self.loop["tokens"]["review"] = self.loop["apps"].pop("review")["key_file"]
+        self.fake.pr_head = fa.NEW_HEAD
+        (Path(self.loop["state_dir"])).mkdir(parents=True, exist_ok=True)
+        (Path(self.loop["state_dir"]) / "broker-audit.jsonl").write_text(
+            '{"operation": "request_review", "repo": "%s", "pr": 7, "head": "%s"}\n'
+            % (fa.REPO, fa.NEW_HEAD))
+        self.assertFalse(self.report()["request_pending"])
+        self.fake.requested = ["review"]
+        self.assertTrue(self.report()["request_pending"])
+
+
 class WatchdogBackstop(__import__("test_fixer_gating").Base):
     """The sweep delivers a quiet head's review to the gate in App mode: an App reviewer never
     shows as a pending requested reviewer, so #532's condition alone would never fire."""
