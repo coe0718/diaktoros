@@ -336,9 +336,17 @@ def _isolated(loop: dict, login: str, identity: dict, remote: str | None):
             token_file = root / "token"
             fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
-                os.write(fd, gh.token(loop, login).encode())
-            except gh.GitHubError as exc:
-                raise broker.BrokerDenied(f"fixer credential unavailable: {exc}") from None
+                try:
+                    minted = gh.token(loop, login).encode()
+                except gh.GitHubError as exc:
+                    raise broker.BrokerDenied(f"fixer credential unavailable: {exc}") from None
+                try:
+                    util.write_all(fd, minted)
+                except OSError:
+                    # A write that stops short leaves a partial token in the file: name it here
+                    # rather than let git fail later with an opaque authentication error.
+                    raise broker.BrokerDenied("fixer credential unavailable: "
+                                              "the minted token could not be written") from None
             finally:
                 os.close(fd)
         env = {"PATH": "/usr/bin:/bin", "HOME": temp, "XDG_CONFIG_HOME": temp,
