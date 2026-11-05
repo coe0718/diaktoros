@@ -270,7 +270,8 @@ class LedgerRecords:
         ``limit`` in the run, or a title already recorded here. For an adjudicator, an earlier
         request for the title blocks it only while that one is or may be filed: one that never
         will be (denied; a shadow's while ``shadow_files`` is off; an ended adjudicator run's that
-        never ruled) gives way to it (review of #1874, F1)."""
+        never ruled) gives way to it (review of #1874, F1): it is kept, denied, under a title key
+        of its own, so its run's sequence and cap stand (F3)."""
         key = " ".join(title.casefold().split())
         with self._connect() as con:
             con.execute('BEGIN IMMEDIATE')
@@ -292,8 +293,13 @@ class LedgerRecords:
                         and earlier['run_state'] not in run_supervisor.NOT_ENDED)))
                 if seat != 'adjudicator' or not never:
                     raise ValueError('an issue with this title was already asked for from this PR')
-                con.execute('DELETE FROM shadow_issues WHERE run_id=? AND seq=?',
-                            (earlier['run_id'], earlier['seq']))
+                # Kept, not deleted (review of #1874, F3): its run's sequence and per-run cap
+                # stand, so a live shadow's next request takes a fresh sequence. Only its title
+                # key steps aside, and it can never be filed.
+                con.execute("UPDATE shadow_issues SET state='denied', title_key=?, error=?, "
+                            "updated=? WHERE run_id=? AND seq=?",
+                            (f"{key}#gave-way:{run_id}", f"gave way to adjudicator run {run_id}",
+                             time.time(), earlier['run_id'], earlier['seq']))
             count = con.execute('SELECT COUNT(*) FROM shadow_issues WHERE run_id=?',
                                 (run_id,)).fetchone()[0]
             if count >= limit:

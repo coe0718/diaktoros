@@ -202,6 +202,24 @@ class EarlierRequests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "already asked for"):
                     self.ask(shadow_files)
 
+    def test_a_live_shadow_keeps_its_sequence_and_cap_after_giving_way(self):
+        # Review of #1874, F3: deleted, the shadow's first request left a hole its next one fell
+        # into (COUNT + 1 reused sequence 2: an IntegrityError, nothing recorded).
+        shadow = self.run_of("shadow")
+        for title in ("Retry never ends", "Lock leaks"):
+            self.sup.record_shadow_issue(shadow, REPO, 7, HEAD, title, "b", ["bug"], 3)
+        self.ask(shadow_files=False)                           # takes the first one's title
+        self.assertEqual(self.sup.record_shadow_issue(shadow, REPO, 7, HEAD, "Docs gap", "b",
+                                                      ["bug"], 3), 3)
+        with self.assertRaisesRegex(ValueError, "at most 3"):  # its cap still counts the first
+            self.sup.record_shadow_issue(shadow, REPO, 7, HEAD, "Cache drops case", "b",
+                                         ["bug"], 3)
+        with ledger.connect(self.sup.db) as con:
+            gave = con.execute("SELECT state, error FROM shadow_issues WHERE run_id=? AND seq=1",
+                               (shadow,)).fetchone()
+        self.assertEqual(gave[0], "denied")
+        self.assertIn("gave way to adjudicator run", gave[1])
+
     def test_a_shadow_still_cannot_reask_a_denied_title(self):
         self.earlier("shadow", "denied")
         with self.assertRaisesRegex(ValueError, "already asked for"):
