@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from . import ci, config, gh
+from . import ci, config, gh, util
 
 RULESET_NAME = ci.MERGE_CHECK
 
@@ -42,11 +42,8 @@ def reviewer_app_id(loop: dict) -> int | None:
     """The reviewer App's id, the check's pin; ``None`` for a PAT reviewer."""
     if not config.reviewer_is_app(loop):
         return None
-    seat = str(loop.get("reviewer_seat") or "").lower()
-    for login, app in (loop.get("apps") or {}).items():
-        if str(login).lower() == seat and isinstance(app, dict):
-            return config.parse_app_id(app.get("app_id"))
-    return None
+    app = util.login_entry(loop.get("apps"), str(loop.get("reviewer_seat") or ""))
+    return config.parse_app_id(app.get("app_id")) if isinstance(app, dict) else None
 
 
 def unpinnable(loop: dict) -> str:

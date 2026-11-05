@@ -278,7 +278,7 @@ class QuarantineAtomic(unittest.TestCase):
 
     def test_state_lock_is_held_while_the_breach_marker_is_cleared(self):
         st = self.st
-        real = st._breach_lock
+        real = st.breach_lock
         probes = []
 
         def probe():
@@ -292,7 +292,7 @@ class QuarantineAtomic(unittest.TestCase):
                 os.close(fd)
             return real()
 
-        with mock.patch.object(st, "_breach_lock", probe):
+        with mock.patch.object(st, "breach_lock", probe):
             st.quarantine(7, HEAD)
         self.assertEqual(probes, ["held"])
         self.assertEqual(st.breach_get(7), {})

@@ -132,7 +132,7 @@ def isolated_supervisor(loop: dict):
     # crate cache root and the seat-lock dir, but never creates a host directory (#108), so the
     # host makes sure each exists before any worker is spawned — for enqueue_isolated and
     # resume_isolated alike, since both build their supervisor here.
-    state_dir = config._path(loop["state_dir"])
+    state_dir = config.expand_path(loop["state_dir"])
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "isolated-runs").mkdir(mode=0o700, exist_ok=True)
     (state_dir / "deps").mkdir(mode=0o700, exist_ok=True)  # the worker's crate cache root

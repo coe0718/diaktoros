@@ -27,7 +27,7 @@ def token_file_problem(value) -> str:
     problem = config.relative_path_problem(raw)
     if problem:
         return problem
-    path = config._path(raw)
+    path = config.expand_path(raw)
     try:
         info = path.stat()
     except FileNotFoundError:
@@ -82,7 +82,7 @@ def _shared_token_file(first, second) -> str:
     """How two token-file references may be one file, or ``""`` when they are provably two.
     Metadata only; the PAT is never read. A file that cannot be compared (missing, unstatable)
     is never taken as distinct: a missing one used to read as "not the same file" (#1475)."""
-    mine, theirs = config._path(first), config._path(second)
+    mine, theirs = config.expand_path(first), config.expand_path(second)
     same = "read the same token file — one account wearing two hats"
     if os.path.realpath(mine) == os.path.realpath(theirs):
         return same
@@ -100,7 +100,7 @@ def case_clash(loop: dict) -> str:
     seen = {}
     for table in ("tokens", "apps"):
         for key in loop.get(table) or {}:
-            first = seen.setdefault(str(key).casefold(), f"{table}.{key}")
+            first = seen.setdefault(util.login_key(key), f"{table}.{key}")
             if first != f"{table}.{key}":
                 return (f"{first} and {table}.{key} are one login in two spellings — GitHub logins "
                         "ignore case; keep one")
@@ -174,7 +174,7 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
     for login, raw_path in sorted(tokens.items()):
         if not raw_path:
             raise config.ConfigError(f"{where}: tokens.{login} names no file")
-        path = config._path(raw_path)
+        path = config.expand_path(raw_path)
         if path.is_dir():
             raise config.ConfigError(f"{where}: token for {login!r} points at a directory ({path}), "
                               "not the file holding the PAT")
@@ -194,7 +194,7 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
     for login, spec in sorted((loop.get("apps") or {}).items()):
         raw_path = str((spec or {}).get("key_file") or "") if isinstance(spec, dict) else ""
         problem = token_file_problem(raw_path) if raw_path else "no key_file given"
-        if not problem and config._path(raw_path).stat().st_size == 0:
+        if not problem and config.expand_path(raw_path).stat().st_size == 0:
             problem = "it is empty"
         if problem:
             raise config.ConfigError(f"{where}: App key for {login!r}: {problem}")
@@ -229,7 +229,7 @@ def _distinct_seat_files(where: str, reviewer_file, fixer_file) -> None:
     """Refuse a reviewer and a fixer reading one token file. A file that cannot be compared now
     (gone since it was checked, or unstatable) is refused too, never taken as distinct (#1475)."""
     try:
-        same_file = config._path(reviewer_file).samefile(config._path(fixer_file))
+        same_file = config.expand_path(reviewer_file).samefile(config.expand_path(fixer_file))
     except OSError as exc:
         raise config.ConfigError(f"{where}: cannot verify reviewer/fixer token file identity: "
                                  f"{exc}") from exc

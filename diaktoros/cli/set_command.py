@@ -13,6 +13,7 @@ from .. import (
     route_intent,
     routes,
     state as state_mod,
+    util,
 )
 from . import common as cli_common
 from . import set_adjudication
@@ -234,6 +235,29 @@ def _limit_changes(args, loop: dict, changes: dict) -> None:
         changes["ingress_app"] = args.ingress_app.strip()
 
 
+def _map_app_pairs(args, loop: dict, tokens: dict, apps: dict, owners: tuple) -> None:
+    """Apply ``set --app`` (#1163) to ``tokens`` and ``apps`` in place: the same owners as
+    ``--token`` (the logins in ``owners``), a GitHub App identity instead of a PAT."""
+    for pair in getattr(args, "app", None) or []:
+        split = cli_common._split_app_pair(pair)
+        if split is None:
+            raise _Refused
+        login, spec = split
+        owner = next((name for name in owners
+                      if name and util.login_key(login) == util.login_key(name)), "")
+        if not owner and triage_command._is_seat_or_reader_login(loop, login):
+            print(f"refused: `set --app` maps the App of the login named by --read-token or "
+                  f"--adjudicator-login; {login!r} is a seat or the current reader — a seat's "
+                  "credential moves through the plugin settings and `apply` (or `init --app`), "
+                  "and a reader moves with --read-token")
+            raise _Refused
+        for key in [k for k in apps if util.login_key(k) == util.login_key(login)]:
+            del apps[key]
+        for key in [k for k in tokens if util.login_key(k) == util.login_key(login)]:
+            del tokens[key]             # an App replaces a PAT
+        apps[owner or login] = spec
+
+
 def _credentials(args, loop: dict) -> tuple:
     """The reader's and adjudicator's logins and the token/App maps ``set`` leaves.
 
@@ -259,7 +283,7 @@ def _credentials(args, loop: dict) -> tuple:
             raise _Refused
         login, path = split
         owner = next((name for name in (adj_after, read_after if read_wanted is not None else "")
-                      if name and login.lower() == name.lower()), "")
+                      if name and util.login_key(login) == util.login_key(name)), "")
         if not owner and triage_command._is_seat_or_reader_login(loop, login):
             print(f"refused: `set --token` maps the token file of the login named by --read-token "
                   f"or --adjudicator-login, or of an extra login such as a hook admin "
@@ -272,33 +296,16 @@ def _credentials(args, loop: dict) -> tuple:
         except config.ConfigError as exc:
             print(f"refused: {exc}")
             raise _Refused
-        for key in [k for k in tokens if str(k).lower() == login.lower()]:
+        for key in [k for k in tokens if util.login_key(k) == util.login_key(login)]:
             del tokens[key]
-        for key in [k for k in apps if str(k).lower() == login.lower()]:
+        for key in [k for k in apps if util.login_key(k) == util.login_key(login)]:
             del apps[key]               # one identity, one credential: a PAT replaces an App
         tokens[owner or login] = str(pathlib.Path(path.strip()).expanduser())
-    # --app (#1163): the same owners as --token, a GitHub App identity instead of a PAT.
-    for pair in getattr(args, "app", None) or []:
-        split = cli_common._split_app_pair(pair)
-        if split is None:
-            raise _Refused
-        login, spec = split
-        owner = next((name for name in (adj_after, read_after if read_wanted is not None else "")
-                      if name and login.lower() == name.lower()), "")
-        if not owner and triage_command._is_seat_or_reader_login(loop, login):
-            print(f"refused: `set --app` maps the App of the login named by --read-token or "
-                  f"--adjudicator-login; {login!r} is a seat or the current reader — a seat's "
-                  "credential moves through the plugin settings and `apply` (or `init --app`), "
-                  "and a reader moves with --read-token")
-            raise _Refused
-        for key in [k for k in apps if str(k).lower() == login.lower()]:
-            del apps[key]
-        for key in [k for k in tokens if str(k).lower() == login.lower()]:
-            del tokens[key]             # an App replaces a PAT
-        apps[owner or login] = spec
+    _map_app_pairs(args, loop, tokens, apps,
+                   (adj_after, read_after if read_wanted is not None else ""))
     # Preserve the mapping's spelling for consistent display; login lookup is case-insensitive.
-    read_after = next((str(k) for k in (*tokens, *apps) if str(k).lower() == read_after.lower()),
-                      read_after)
+    read_after = next((str(k) for k in (*tokens, *apps)
+                       if util.login_key(k) == util.login_key(read_after)), read_after)
     tokens_changed = (tokens != (loop.get("tokens") or {})
                       or apps != (loop.get("apps") or {}))
     adj_changed = adj_after != adj_before or tokens_changed

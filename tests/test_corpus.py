@@ -161,7 +161,7 @@ class LiveReview(unittest.TestCase):
                 mock.patch.object(ci_fix, "fix_history", return_value=""), \
                 mock.patch.object(ci_fix, "still_red", return_value=""), \
                 mock.patch.object(issue_facts, "section", return_value=""), \
-                mock.patch.object(selftest, "_work_root", return_value="/w"), \
+                mock.patch.object(selftest, "work_root", return_value="/w"), \
                 mock.patch.object(trusted_turn, "run_turn", side_effect=fake_turn):
             review = corpus.live_review(LOOP, settings, reviewer, 60)
             return review(case), seen

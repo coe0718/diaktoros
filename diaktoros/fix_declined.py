@@ -92,10 +92,10 @@ def declined(loop: dict, number: int, reason: str) -> None:
         st = state_mod.state_for(loop)
         gone = label_gone_from(loop, number)
         with st.locked():
-            memory = st._load(st.dir / FILE, {})
+            memory = st.kv_get(st.dir / FILE, {})
             memory = memory if isinstance(memory, dict) else {}
             memory[str(number)] = {"reason": reason, "at": time.time(), "label_gone": gone}
-            st._save(st.dir / FILE, memory)
+            st.kv_set(st.dir / FILE, memory)
         observer.notify(loop, st, "held", number, identity=f"fix-label:{reason}",
                         outcome=f"fix label declined: {reason}; {next_step(loop, reason, gone)}",
                         issue=True)
@@ -142,13 +142,13 @@ def resolved(st, number: int, only: dict | None = None) -> None:
         return
     try:
         with st.locked():
-            memory = st._load(st.dir / FILE, {})
+            memory = st.kv_get(st.dir / FILE, {})
             current = memory.get(str(number)) if isinstance(memory, dict) else None
             if only is not None and (not isinstance(current, dict)
                                      or str(current.get('reason'))[:300] != only['reason']
                                      or float(current.get('at') or 0) != only['at']):
                 return
             if isinstance(memory, dict) and memory.pop(str(number), None) is not None:
-                st._save(st.dir / FILE, memory)
+                st.kv_set(st.dir / FILE, memory)
     except Exception as exc:  # noqa: BLE001
         log(f"declined fix label for #{number} not cleared: {type(exc).__name__}: {exc}")

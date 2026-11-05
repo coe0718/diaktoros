@@ -27,16 +27,16 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
                           "'turn_budget_s', 'daily_turns', 'daily_tokens' and 'max_steps'")
     seat: dict = {}
     if raw.get("max_steps") not in (None, ""):
-        seat["max_steps"] = config._check_max_steps(raw["max_steps"], "seats.adjudicator.max_steps",
+        seat["max_steps"] = config.validate_max_steps(raw["max_steps"], "seats.adjudicator.max_steps",
                                              where)
     if raw.get("daily_turns") not in (None, ""):
-        seat["daily_turns"] = config._check_daily_turns(raw["daily_turns"],
+        seat["daily_turns"] = config.validate_daily_turns(raw["daily_turns"],
                                                  "seats.adjudicator.daily_turns", where)
     if raw.get("daily_tokens") not in (None, ""):
-        seat["daily_tokens"] = config._check_daily_tokens(raw["daily_tokens"],
+        seat["daily_tokens"] = config.validate_daily_tokens(raw["daily_tokens"],
                                                    "seats.adjudicator.daily_tokens", where)
     if raw.get("turn_budget_s") not in (None, ""):
-        seat["turn_budget_s"] = config._check_budget(raw["turn_budget_s"],
+        seat["turn_budget_s"] = config.validate_budget(raw["turn_budget_s"],
                                               "seats.adjudicator.turn_budget_s", where)
     if raw.get("concurrency") not in (None, ""):
         seat["concurrency"] = config._as_int(raw["concurrency"], "seats.adjudicator.concurrency",
@@ -61,11 +61,11 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
         raise config.ConfigError(f"{where}: seats.adjudicator.login {login!r} has no entry in 'tokens' "
                           "or 'apps' — an adjudicator identity without its own credential cannot "
                           "comment")
-    mine = config._path(util.login_entry(tokens, login))
+    mine = config.expand_path(util.login_entry(tokens, login))
     for other, raw_path in tokens.items():
         if str(other).casefold() == login.casefold() or not raw_path:
             continue
-        theirs = config._path(raw_path)
+        theirs = config.expand_path(raw_path)
         same = os.path.realpath(mine) == os.path.realpath(theirs)
         if not same and mine.exists() and theirs.exists():
             try:
@@ -197,7 +197,7 @@ def normalize_triage(raw, loop: dict, where: str) -> dict:
             raise config.ConfigError(f"{where}: triage.maintainers must be a list of GitHub logins")
         out["maintainers"] = sorted({m.strip().lower() for m in maintainers})
     if raw.get("fix_daily_turns") not in (None, ""):
-        out["fix_daily_turns"] = config._check_daily_turns(raw["fix_daily_turns"],
+        out["fix_daily_turns"] = config.validate_daily_turns(raw["fix_daily_turns"],
                                                     "triage.fix_daily_turns", where)
     fix_label = raw.get("fix_label")
     if fix_label not in (None, ""):
@@ -226,7 +226,7 @@ def normalize_triage(raw, loop: dict, where: str) -> dict:
         if raw.get("auto_fix_daily") not in (None, ""):
             if not out.get("auto_fix_labels"):
                 raise config.ConfigError(f"{where}: triage.auto_fix_daily needs triage.auto_fix_labels")
-            out["auto_fix_daily"] = config._check_daily_turns(raw["auto_fix_daily"],
+            out["auto_fix_daily"] = config.validate_daily_turns(raw["auto_fix_daily"],
                                                        "triage.auto_fix_daily", where)
     elif (raw.get("auto_fix_labels") not in (None, [])
           or raw.get("auto_fix_daily") not in (None, "")):
@@ -289,15 +289,15 @@ def _triage_seat(raw, where: str, name: str = "triage") -> dict:
                           "'daily_turns', 'daily_tokens' and 'max_steps'")
     seat: dict = {}
     if raw.get("max_steps") not in (None, ""):
-        seat["max_steps"] = config._check_max_steps(raw["max_steps"], f"seats.{name}.max_steps", where)
+        seat["max_steps"] = config.validate_max_steps(raw["max_steps"], f"seats.{name}.max_steps", where)
     if raw.get("daily_turns") not in (None, ""):
-        seat["daily_turns"] = config._check_daily_turns(raw["daily_turns"], f"seats.{name}.daily_turns",
+        seat["daily_turns"] = config.validate_daily_turns(raw["daily_turns"], f"seats.{name}.daily_turns",
                                                  where)
     if raw.get("daily_tokens") not in (None, ""):
-        seat["daily_tokens"] = config._check_daily_tokens(raw["daily_tokens"],
+        seat["daily_tokens"] = config.validate_daily_tokens(raw["daily_tokens"],
                                                    f"seats.{name}.daily_tokens", where)
     if raw.get("turn_budget_s") not in (None, ""):
-        seat["turn_budget_s"] = config._check_budget(raw["turn_budget_s"], f"seats.{name}.turn_budget_s",
+        seat["turn_budget_s"] = config.validate_budget(raw["turn_budget_s"], f"seats.{name}.turn_budget_s",
                                               where)
     if raw.get("concurrency") not in (None, ""):
         seat["concurrency"] = config.check_concurrency(raw["concurrency"], f"seats.{name}.concurrency",
@@ -370,7 +370,7 @@ def dangerous_root(value: str) -> str:
     above it hold the operator's own projects and dotfiles, which are never a loop's to delete,
     however they happen to be named.
     """
-    path = config._path(value).resolve()
+    path = config.expand_path(value).resolve()
     home_dir = pathlib.Path.home().resolve()
     if path == pathlib.Path(path.anchor):
         return "the filesystem root"

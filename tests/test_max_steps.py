@@ -41,7 +41,7 @@ class Resolution(unittest.TestCase):
     def test_the_loop_file_is_checked(self):
         for bad in (0, 7, 201, True, "40", 1.5):
             with self.subTest(value=bad), self.assertRaisesRegex(config.ConfigError, "max_steps"):
-                config._check_max_steps(bad, "seats.fixer.max_steps", "f")
+                config.validate_max_steps(bad, "seats.fixer.max_steps", "f")
         self.assertEqual(blocks._triage_seat({"max_steps": 12}, "f"), {"max_steps": 12})
         with self.assertRaisesRegex(config.ConfigError, "max_steps"):
             blocks._triage_seat({"max_steps": 300}, "f")

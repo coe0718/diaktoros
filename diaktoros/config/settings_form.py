@@ -7,7 +7,7 @@ the package so a test that patches one reaches this module too.
 """
 from __future__ import annotations
 
-from .. import config
+from .. import config, util
 from ..config import blocks
 from ..config import lists
 from ..config import prices
@@ -465,7 +465,7 @@ def shadow_block(current, profile, every, where: str, escalate=None,
         if not shadow.get("profile"):
             raise config.ConfigError(f"{where}: a shadow review rate needs a shadow profile "
                                      "(name one with it)")
-        shadow["every"] = config._form_int(every)
+        shadow["every"] = config.form_int(every)
     if escalate is not None:
         if escalate and not shadow.get("profile"):
             raise config.ConfigError(f"{where}: shadow escalate needs a shadow profile "
@@ -486,7 +486,7 @@ def shadow_block(current, profile, every, where: str, escalate=None,
         if not shadow.get("profile"):
             raise config.ConfigError(f"{where}: shadow issues a day needs a shadow profile "
                                      "(name one with it)")
-        shadow["issues_daily"] = config._form_int(issues_daily)
+        shadow["issues_daily"] = config.form_int(issues_daily)
     for key, value in (("always_paths", always_paths), ("never_paths", never_paths)):
         if value is None:
             continue
@@ -588,10 +588,10 @@ def _apply_switches(overlaid, d, settings) -> None:  # noqa: ANN001
         overlaid["operator_agents"] = [name.strip() for name in str(d["operator_agents"]).split(",")
                                        if name.strip()]
     if _form_value(settings, "ci_fix_cap") is not None:
-        overlaid["ci_fix_cap"] = lists.check_ci_fix_cap(config._form_int(d["ci_fix_cap"].strip()), "settings")
+        overlaid["ci_fix_cap"] = lists.check_ci_fix_cap(config.form_int(d["ci_fix_cap"].strip()), "settings")
     for key in ("review_only_cap", "review_only_daily"):
         if _form_value(settings, key) is not None:
-            overlaid[key] = lists._check_review_only_limit(config._form_int(d[key].strip()), key, "settings")
+            overlaid[key] = lists._check_review_only_limit(config.form_int(d[key].strip()), key, "settings")
 
 
 def _apply_checks(overlaid, d, settings) -> None:  # noqa: ANN001
@@ -629,20 +629,20 @@ def _apply_seat_knobs(seats, settings) -> None:  # noqa: ANN001
     for seat in ("reviewer", "fixer"):
         raw_steps = _form_value(settings, f"{seat}_max_steps")
         if raw_steps is not None:
-            seats.setdefault(seat, {})["max_steps"] = config._check_max_steps(
-                config._form_int(raw_steps), f"seats.{seat}.max_steps", "settings")
+            seats.setdefault(seat, {})["max_steps"] = config.validate_max_steps(
+                config.form_int(raw_steps), f"seats.{seat}.max_steps", "settings")
     for seat in ("reviewer", "fixer", "shadow"):
         raw_tokens = _form_value(settings, f"{seat}_daily_tokens")
         if raw_tokens is not None:
-            seats.setdefault(seat, {})["daily_tokens"] = config._check_daily_tokens(
-                config._form_int(raw_tokens), f"seats.{seat}.daily_tokens", "settings")
+            seats.setdefault(seat, {})["daily_tokens"] = config.validate_daily_tokens(
+                config.form_int(raw_tokens), f"seats.{seat}.daily_tokens", "settings")
     # The shadow and triage seats' own capacity: no loop default reaches them, so the form's value
     # is written as the seat's own, with the loader's rule (>= 1).
     for seat in ("shadow", "triage"):
         raw_capacity = _form_value(settings, f"{seat}_concurrency")
         if raw_capacity is not None:
             seats.setdefault(seat, {})["concurrency"] = config.check_concurrency(
-                config._form_int(raw_capacity), f"seats.{seat}.concurrency", "settings")
+                config.form_int(raw_capacity), f"seats.{seat}.concurrency", "settings")
 
 
 def _apply_triage_observer(overlaid, loop_raw, settings) -> None:  # noqa: ANN001
@@ -671,8 +671,8 @@ def _apply_triage_observer(overlaid, loop_raw, settings) -> None:  # noqa: ANN00
             raise config.ConfigError("settings: fix_daily_turns needs issue triage on for the loop "
                               "(the triage block it lives in); turn it on with `hermes dk "
                               "triage --enable` first")
-        triage["fix_daily_turns"] = config._check_daily_turns(
-            config._form_int(raw_cap), "triage.fix_daily_turns", "settings")
+        triage["fix_daily_turns"] = config.validate_daily_turns(
+            config.form_int(raw_cap), "triage.fix_daily_turns", "settings")
         overlaid["triage"] = triage
     raw_auto = _form_value(settings, "auto_fix_labels")
     raw_auto_cap = _form_value(settings, "auto_fix_daily")
@@ -685,8 +685,8 @@ def _apply_triage_observer(overlaid, loop_raw, settings) -> None:  # noqa: ANN00
             triage["auto_fix_labels"] = [x.strip() for x in str(raw_auto).split(",")
                                          if x.strip()]
         if raw_auto_cap is not None:
-            triage["auto_fix_daily"] = config._check_daily_turns(
-                config._form_int(raw_auto_cap), "triage.auto_fix_daily", "settings")
+            triage["auto_fix_daily"] = config.validate_daily_turns(
+                config.form_int(raw_auto_cap), "triage.auto_fix_daily", "settings")
         overlaid["triage"] = triage
 
 
@@ -767,27 +767,29 @@ def select_credentials(loop: dict, settings: dict | None) -> tuple[dict, dict, d
             raise config.ConfigError(f"{token_key} or {role}_app_id is set but no {role} login is "
                                      "available — set its login first (no adjudicator login "
                                      "means the ruling has no comment identity)")
-        existing_pat = next((v for k, v in tokens.items() if k.lower() == login.lower()), "")
-        existing_app = next((v for k, v in apps.items() if k.lower() == login.lower()), None)
+        existing_pat = next((v for k, v in tokens.items()
+                             if util.login_key(k) == util.login_key(login)), "")
+        existing_app = next((v for k, v in apps.items()
+                             if util.login_key(k) == util.login_key(login)), None)
         if app_id:
             parsed_id = config.parse_app_id(app_id)
             if parsed_id is None:
                 raise config.ConfigError(f"{role}_app_id must be a positive ASCII decimal App id")
-            requested_app = {"app_id": parsed_id, "key_file": str(config._path(key_file))}
+            requested_app = {"app_id": parsed_id, "key_file": str(config.expand_path(key_file))}
             unchanged_app = existing_app == requested_app
-            inherited_pat = existing_pat and config._path(path) == config._path(existing_pat)
+            inherited_pat = existing_pat and config.expand_path(path) == config.expand_path(existing_pat)
             if path and not (inherited_pat or unchanged_app):
                 raise config.ConfigError(f"{token_key} conflicts with {role}_app_id / "
                                          f"{role}_app_key_file — choose PAT or App, not both")
             if path:
                 ignored[token_key] = login
             for key in list(tokens):
-                if key.lower() == login.lower():
+                if util.login_key(key) == util.login_key(login):
                     del tokens[key]
             for key in list(apps):
-                if key.lower() == login.lower():
+                if util.login_key(key) == util.login_key(login):
                     del apps[key]
-            apps[login] = {"app_id": parsed_id, "key_file": str(config._path(key_file))}
+            apps[login] = {"app_id": parsed_id, "key_file": str(config.expand_path(key_file))}
             selected[f"{role}_app_key_file"] = key_file
         elif existing_app:
             ignored[token_key] = login
@@ -799,6 +801,6 @@ def select_credentials(loop: dict, settings: dict | None) -> tuple[dict, dict, d
 
 def _map_token(tokens: dict, login: str, path: str) -> None:
     """Point ``login`` at ``path``, dropping any case-variant key that would shadow it."""
-    for key in [k for k in tokens if str(k).lower() == login.lower() and k != login]:
+    for key in [k for k in tokens if util.login_key(k) == util.login_key(login) and k != login]:
         del tokens[key]
-    tokens[login] = str(config._path(path))
+    tokens[login] = str(config.expand_path(path))

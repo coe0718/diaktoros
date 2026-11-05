@@ -63,11 +63,11 @@ def record(st, number: int, *, reason: str, head: str, by=_OMITTED) -> dict:
     entry = {"reason": reason, "head": head,
              "by": gate.OPERATOR_ESCALATION if by is _OMITTED else by, "at": time.time()}
     with st.locked():
-        memory = st._load(_path(st), {})
+        memory = st.kv_get(_path(st), {})
         memory = memory if isinstance(memory, dict) else {}
         memory[str(number)] = entry
         # Strict (#1262): the CLI says "pending" only once it is on disk; a failed write raises.
-        st._save_strict(_path(st), memory)
+        st.kv_set_strict(_path(st), memory)
     return entry
 
 
@@ -76,11 +76,11 @@ def take(st, number: int) -> dict | None:
     if str(number) not in _read(st):
         return None                     # nothing recorded for it: no lock, no write
     with st.locked():
-        memory = st._load(_path(st), {})
+        memory = st.kv_get(_path(st), {})
         memory = memory if isinstance(memory, dict) else {}
         entry = memory.pop(str(number), None)
         if entry is not None:
-            st._save_strict(_path(st), memory)     # a record that will not go must not act twice
+            st.kv_set_strict(_path(st), memory)     # a record that will not go must not act twice
     return entry if _live(entry, time.time()) else None
 
 
@@ -91,10 +91,10 @@ def prune(st, open_numbers) -> list[int]:
     if not _read(st):
         return []
     with st.locked():
-        memory = st._load(_path(st), {})
+        memory = st.kv_get(_path(st), {})
         if not isinstance(memory, dict) or not memory:
             return []
         dropped = [k for k, v in memory.items() if k not in keep or not _live(v, now)]
         if dropped:
-            st._save(_path(st), {k: v for k, v in memory.items() if k not in dropped})
+            st.kv_set(_path(st), {k: v for k, v in memory.items() if k not in dropped})
     return [int(k) for k in dropped if k.isdigit()]

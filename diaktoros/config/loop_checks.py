@@ -187,21 +187,21 @@ def _check_run_concurrency(loop: dict, seats: dict, where: str) -> None:
 
 def _check_turn_limits(loop: dict, seats: dict, where: str) -> None:
     """``turn_budget_s``, and each seat's budget, daily turns and tokens, and step limit."""
-    loop["turn_budget_s"] = config._check_budget(
+    loop["turn_budget_s"] = config.validate_budget(
         config.DEFAULT_TURN_BUDGET_S if loop.get("turn_budget_s") in (None, "") else loop["turn_budget_s"],
         "'turn_budget_s'", where)
     for seat in config.SEAT_KEYS:
         if seats[seat].get("turn_budget_s") not in (None, ""):
-            seats[seat]["turn_budget_s"] = config._check_budget(
+            seats[seat]["turn_budget_s"] = config.validate_budget(
                 seats[seat]["turn_budget_s"], f"seats.{seat}.turn_budget_s", where)
         if seats[seat].get("daily_turns") not in (None, ""):
-            seats[seat]["daily_turns"] = config._check_daily_turns(
+            seats[seat]["daily_turns"] = config.validate_daily_turns(
                 seats[seat]["daily_turns"], f"seats.{seat}.daily_turns", where)
         if seats[seat].get("daily_tokens") not in (None, ""):
-            seats[seat]["daily_tokens"] = config._check_daily_tokens(
+            seats[seat]["daily_tokens"] = config.validate_daily_tokens(
                 seats[seat]["daily_tokens"], f"seats.{seat}.daily_tokens", where)
         if seats[seat].get("max_steps") not in (None, ""):
-            seats[seat]["max_steps"] = config._check_max_steps(
+            seats[seat]["max_steps"] = config.validate_max_steps(
                 seats[seat]["max_steps"], f"seats.{seat}.max_steps", where)
 
 
