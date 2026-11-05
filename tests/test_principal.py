@@ -30,24 +30,27 @@ _UNKNOWN = "\0"                       # a part of a string only known at run tim
 _USER_PATH = re.compile(r"/user(?=$|[/?#\0])")    # ``/user``, ``/user/emails``, ``/user?x``; not ``/users``
 
 
+_NOT_STATIC = object()                # an interpolated expression that is not a constant or a spelled string
+_CONVERT = {-1: lambda value: value, ord("s"): str, ord("r"): repr, ord("a"): ascii}
+
+
 def _text(node: ast.AST) -> str | None:
     """The text a string expression spells, ``_UNKNOWN`` standing for what is only known at run
-    time; ``None`` when ``node`` is not a string expression. Reads a literal, an f-string (and a
-    literal interpolated into one), a ``+`` and a ``"/".join([...])``, so a path built in pieces
-    reads as the path it makes."""
+    time; ``None`` when ``node`` is not a string expression. Reads a literal, an f-string (with
+    its ``!s``/``!r``/``!a`` conversions and ``:spec`` applied to what is a constant), a ``+`` and
+    a ``"/".join([...])``, so a path built in pieces reads as the path it makes."""
     if isinstance(node, ast.Constant):
         return node.value if isinstance(node.value, str) else None
     if isinstance(node, ast.FormattedValue):
-        plain = node.conversion == -1 and node.format_spec is None
-        return _text(node.value) if plain else None
+        return _formatted(node)
     if isinstance(node, ast.JoinedStr):
         return "".join(_piece(part) for part in node.values)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         left, right = _text(node.left), _text(node.right)
-        return None if left is None and right is None else _piece(node.left) + _piece(node.right)
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
-            and node.func.attr == "join" and len(node.args) == 1 \
-            and isinstance(node.args[0], ast.List | ast.Tuple):
+        if left is None and right is None:
+            return None
+        return (_UNKNOWN if left is None else left) + (_UNKNOWN if right is None else right)
+    if _is_join(node):
         separator = _text(node.func.value)
         if separator is not None:
             return separator.join(_piece(part) for part in node.args[0].elts)
@@ -60,18 +63,71 @@ def _piece(node: ast.AST) -> str:
     return _UNKNOWN if text is None else text
 
 
+def _is_join(node: ast.AST) -> bool:
+    """``sep.join([...])`` or ``sep.join((...))``: a join of a list or tuple written in place."""
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "join" and len(node.args) == 1
+            and isinstance(node.args[0], ast.List | ast.Tuple))
+
+
+def _static(node: ast.AST):
+    """The value of an interpolated expression when a constant or a spelled string, else ``_NOT_STATIC``."""
+    if isinstance(node, ast.Constant):
+        return node.value
+    text = _text(node)
+    return _NOT_STATIC if text is None else text
+
+
+def _formatted(node: ast.FormattedValue) -> str | None:
+    """What one ``{value!conversion:spec}`` of an f-string spells: the value after its conversion
+    and format spec, so ``{'us'!s}`` is ``us`` and ``{'user':s}`` is ``user``. ``None`` when the value
+    or the spec is only known at run time; a part-known string is kept only when nothing would change it."""
+    value = _static(node.value)
+    spec = "" if node.format_spec is None else _text(node.format_spec)
+    if value is _NOT_STATIC or spec is None or _UNKNOWN in spec:
+        return None
+    if isinstance(value, str) and _UNKNOWN in value:
+        return value if node.conversion in (-1, ord("s")) and not spec else None
+    try:
+        return format(_CONVERT[node.conversion](value), spec)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _parts(node: ast.AST) -> list[ast.AST]:
+    """The nodes ``_text`` reads into ``node``'s text, so a fragment of a spelled path is not
+    read again as a path of its own (``f"/user{'s'}/alice"`` spells ``/users/alice``, not ``/user``)."""
+    if isinstance(node, ast.JoinedStr):
+        return list(node.values)
+    if isinstance(node, ast.FormattedValue):
+        return [node.value] + ([node.format_spec] if node.format_spec is not None else [])
+    if isinstance(node, ast.BinOp):
+        return [node.left, node.right]
+    if _is_join(node):
+        return [node.func, node.func.value, node.args[0], *node.args[0].elts]
+    return []
+
+
 def user_reads(source: str) -> list[int]:
     """The lines of ``source`` that spell a ``/user`` path: a literal, or one built in an f-string,
-    a concatenation or a join. A bare string statement (a docstring) is prose, not a call. A path
-    assembled from a variable or a call's result is out of its reach."""
+    a concatenation or a join. The whole expression is read, never its fragments on their own; an
+    interpolation or operand that is not a string (a call) is searched for its own paths. A bare
+    string statement (a docstring) is prose, not a call. A path assembled from a variable or a
+    call's result is out of its reach."""
     tree = ast.parse(source)
     prose = {id(node.value) for node in ast.walk(tree)
              if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)}
-    lines = set()
-    for node in ast.walk(tree):
-        text = None if id(node) in prose else _text(node)
-        if text and _USER_PATH.search(text):
-            lines.add(node.lineno)
+    lines, fragments, pending = set(), set(), [tree]
+    while pending:                    # a parent is read before its children, so it claims its fragments
+        node = pending.pop()
+        if id(node) in prose:
+            continue
+        text = _text(node)
+        if text is not None:
+            if id(node) not in fragments and _USER_PATH.search(text):
+                lines.add(node.lineno)
+            fragments.update(id(part) for part in _parts(node))
+        pending.extend(ast.iter_child_nodes(node))
     return sorted(lines)
 
 
@@ -131,6 +187,13 @@ class UserScan(unittest.TestCase):
         "a concatenation split inside the segment": 'api(loop, "/us" + "er")',
         "a join": 'api(loop, "/".join([base, "user"]))',
         "a join of a tuple": 'api(loop, "/".join((base, "user")))',
+        "a conversion on a literal in an f-string": "api(loop, f\"/{'us'!s}er\")",
+        "a format spec on a literal": "api(loop, f\"/{'user':s}\")",
+        "a padding spec on a literal": "api(loop, f\"/{'use':r<4}\")",
+        "a conversion and a spec on a literal": "api(loop, f\"/{'user'!s:>4}\")",
+        "a concatenation interpolated into an f-string": "api(loop, f\"/{'us' + 'er'}\")",
+        "a call inside the interpolation of a users path": "api(loop, f\"/users/{get('/user')}\")",
+        "a call among the operands of a concatenation": 'api(loop, "/users/" + get("/user"))',
     }
     CLEAN = {
         "the users endpoint": 'api(loop, "/users/someone")',
@@ -141,6 +204,14 @@ class UserScan(unittest.TestCase):
         "a comment naming it": "x = 1  # GET /user",
         "a message naming it": 'say(f"{login}: GET /user failed")',
         "a filesystem join": 'os.path.join(home, "user")',
+        "a users path whose s is interpolated": "api(loop, f\"/user{'s'}/alice\")",
+        "a users path split by a concatenation": 'api(loop, "/user" + "s/alice")',
+        "a users path split by a join": 'api(loop, "".join(["/user", "s", "/alice"]))',
+        "a users path built from a literal conversion": "api(loop, f\"/{'users'!s}/alice\")",
+        "a literal quoted by an ascii conversion": "api(loop, f\"/{'user'!a}\")",
+        "a literal quoted by its conversion": "api(loop, f\"/{'user'!r}\")",
+        "a number after it": 'api(loop, f"/user{1}")',
+        "a spec that pads it": "api(loop, f\"/{'user':_<6}\")",
     }
 
     def test_every_form_of_a_user_read_is_caught(self):
