@@ -125,7 +125,9 @@ def check_leftover_hooks(loop: dict, offline: bool) -> doctor.Check:
 
 def check_hooks(loop: dict, offline: bool) -> list[doctor.Check]:
     """The repo hooks GitHub posts to, one per role in ``config.hook_roles`` (reviewer, fixer, and
-    triage when it is on), matched by the URL each route resolves to.
+    triage when it is on), matched by the URL each route resolves to. A loop whose events arrive
+    through its App's webhook has none of these (``config.hook_roles`` is empty): it is checked as
+    its App webhook plus any leftover repo hooks.
 
     A read the token is not allowed to make is ``unknown``: the repo may have all its hooks and
     none at all, and this call cannot tell those apart. Saying "absent" here would be the exact
