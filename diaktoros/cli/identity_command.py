@@ -7,6 +7,7 @@ import pathlib
 
 from .. import (
     config,
+    util,
 )
 from . import common as cli_common
 from ..config import settings_form
@@ -110,6 +111,26 @@ def _identity_runs(loop: dict, seat: str) -> tuple[str, ...] | None:
     return seats
 
 
+def _runs_in_flight(loop: dict, seat: str) -> tuple[int, int]:
+    """``(busy, uncertain)``: the runs of ``loop`` acting as ``seat``'s identity that are in
+    flight, and how many of them are uncertain. ``(0, 0)`` while no run ledger exists yet."""
+    from .. import ledger, run_supervisor
+    db = run_supervisor.production_ledger()
+    if not db.exists():
+        return 0, 0
+    seats = _identity_runs(loop, seat)
+    which = "" if seats is None else f" AND seat IN ({','.join('?' * len(seats))})"
+    con = ledger.read_only(db)
+    try:
+        rows = con.execute(
+            f"SELECT state FROM runs WHERE repo=?{which}"
+            f" AND state IN ({','.join('?' * len(run_supervisor.ACTIVE))})",
+            (loop["repo"], *(seats or ()), *run_supervisor.ACTIVE)).fetchall()
+    finally:
+        con.close()
+    return len(rows), sum(1 for (state,) in rows if state == "uncertain")
+
+
 def cmd_identity(args) -> int:
     """Move one identity of a loop to a GitHub App, or back to a PAT (#1163 step 6).
 
@@ -118,7 +139,7 @@ def cmd_identity(args) -> int:
     The old login stays on the allowlist, so open PRs keep the verdicts and authorship it earned,
     and its PAT mapping stays until the operator removes it. Refused while that identity has a
     run in flight. A seat's login is not part of its route, so no route or hook changes."""
-    from .. import gh, run_supervisor
+    from .. import gh
     from ..config import credentials
     try:
         loop = config.load_id(args.loop)
@@ -154,22 +175,7 @@ def cmd_identity(args) -> int:
            config.adjudicator_login(loop) if seat == "adjudicator" else config.seat_login(loop, seat))
     # Refuse while this identity is acting: a run would finish as the old login on a new mapping.
     try:
-        db = run_supervisor.production_ledger()
-        busy = uncertain = 0
-        if db.exists():
-            seats = _identity_runs(loop, seat)
-            which = "" if seats is None else f" AND seat IN ({','.join('?' * len(seats))})"
-            from .. import ledger
-            con = ledger.read_only(db)
-            try:
-                rows = con.execute(
-                    f"SELECT state FROM runs WHERE repo=?{which}"
-                    f" AND state IN ({','.join('?' * len(run_supervisor.ACTIVE))})",
-                    (loop["repo"], *(seats or ()), *run_supervisor.ACTIVE)).fetchall()
-            finally:
-                con.close()
-            busy = len(rows)
-            uncertain = sum(1 for (state,) in rows if state == "uncertain")
+        busy, uncertain = _runs_in_flight(loop, seat)
     except Exception as exc:
         print(f"refused: the run ledger cannot be read, so a run in flight cannot be ruled out "
               f"({type(exc).__name__}: {exc})")
@@ -182,8 +188,10 @@ def cmd_identity(args) -> int:
               f"switch once they finish{settle}")
         return 2
     raw = json.loads(json.dumps(loop))
-    tokens = {k: v for k, v in (raw.get("tokens") or {}).items() if k.lower() != login.lower()}
-    apps = {k: v for k, v in (raw.get("apps") or {}).items() if k.lower() != login.lower()}
+    tokens = {k: v for k, v in (raw.get("tokens") or {}).items()
+              if util.login_key(k) != util.login_key(login)}
+    apps = {k: v for k, v in (raw.get("apps") or {}).items()
+            if util.login_key(k) != util.login_key(login)}
     if args.app:
         apps[login] = spec
     else:

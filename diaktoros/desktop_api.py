@@ -1026,7 +1026,7 @@ def _seat_credential(loop: dict, login: str) -> dict:
     result = {"credential_kind": "none", "app_id": None, "key_file": "", "token_file": ""}
     mapped = config.credentials_map(loop)
     actual = login if login in mapped else next(
-        (name for name in mapped if name.casefold() == login.casefold()), "")
+        (name for name in mapped if util.login_key(name) == util.login_key(login)), "")
     if not login or not actual:
         return result
     path = gh.credential_path(loop, actual)

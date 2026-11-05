@@ -100,7 +100,7 @@ def case_clash(loop: dict) -> str:
     seen = {}
     for table in ("tokens", "apps"):
         for key in loop.get(table) or {}:
-            first = seen.setdefault(str(key).casefold(), f"{table}.{key}")
+            first = seen.setdefault(util.login_key(key), f"{table}.{key}")
             if first != f"{table}.{key}":
                 return (f"{first} and {table}.{key} are one login in two spellings — GitHub logins "
                         "ignore case; keep one")
