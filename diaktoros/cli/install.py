@@ -309,6 +309,44 @@ def _init_hooks_preview(loop: dict, args) -> list[str]:
             _hook_editor_line(loop, args.admin_token, armed, True)]
 
 
+def _init_seat_knobs(args, d, seats) -> None:
+    """Write each seat's turn knobs into ``seats`` (#323, #875): a flag wins over the form, and 0
+    or blank is the role default, so nothing is written for it.
+
+    Covers the reviewer's and fixer's step caps and daily token budgets, the shadow seat's token
+    budget, and the shadow and triage seats' own capacity. A bad value raises
+    ``config.ConfigError``, which ``cmd_init`` reports as a refusal.
+    """
+    for seat in ("reviewer", "fixer"):
+        flag = getattr(args, f"{seat}_max_steps", None)
+        steps = flag if flag is not None else config._form_int(d[f"{seat}_max_steps"].strip())
+        if steps not in (0, ""):
+            seats[seat]["max_steps"] = config._check_max_steps(
+                steps, f"seats.{seat}.max_steps", "init")
+    for seat in ("reviewer", "fixer"):
+        flag = getattr(args, f"{seat}_daily_tokens", None)
+        budget = flag if flag is not None else config._form_int(
+            d[f"{seat}_daily_tokens"].strip())
+        if budget not in (0, ""):
+            seats[seat]["daily_tokens"] = config._check_daily_tokens(
+                budget, f"seats.{seat}.daily_tokens", "init")
+    # The shadow seat's token budget (#875): the flag, else the form.
+    flag = getattr(args, "shadow_daily_tokens", None)
+    budget = flag if flag is not None else config._form_int(
+        str(d.get("shadow_daily_tokens") or "").strip())
+    if budget not in (0, "", None):
+        seats.setdefault("shadow", {})["daily_tokens"] = config._check_daily_tokens(
+            budget, "seats.shadow.daily_tokens", "init")
+    # The shadow and triage seats' own capacity: the flag, else the form; blank = unset.
+    for seat in ("shadow", "triage"):
+        flag = getattr(args, f"{seat}_concurrency", None)
+        capacity = flag if flag is not None else config._form_int(
+            str(d.get(f"{seat}_concurrency") or "").strip())
+        if capacity not in ("", None):
+            seats.setdefault(seat, {})["concurrency"] = config.check_concurrency(
+                capacity, f"seats.{seat}.concurrency", "init")
+
+
 def cmd_init(args) -> int:
     """Install a loop: write its config, its routes, and (on request) its hooks and cron job.
 
@@ -487,34 +525,7 @@ def cmd_init(args) -> int:
             raw["seats"][seat]["turn_budget_s"] = value
     # Turn knobs (#323): a flag wins over the form; 0 or blank is the role default (nothing written).
     try:
-        for seat in ("reviewer", "fixer"):
-            flag = getattr(args, f"{seat}_max_steps", None)
-            steps = flag if flag is not None else config._form_int(d[f"{seat}_max_steps"].strip())
-            if steps not in (0, ""):
-                raw["seats"][seat]["max_steps"] = config._check_max_steps(
-                    steps, f"seats.{seat}.max_steps", "init")
-        for seat in ("reviewer", "fixer"):
-            flag = getattr(args, f"{seat}_daily_tokens", None)
-            budget = flag if flag is not None else config._form_int(
-                d[f"{seat}_daily_tokens"].strip())
-            if budget not in (0, ""):
-                raw["seats"][seat]["daily_tokens"] = config._check_daily_tokens(
-                    budget, f"seats.{seat}.daily_tokens", "init")
-        # The shadow seat's token budget (#875): the flag, else the form.
-        flag = getattr(args, "shadow_daily_tokens", None)
-        budget = flag if flag is not None else config._form_int(
-            str(d.get("shadow_daily_tokens") or "").strip())
-        if budget not in (0, "", None):
-            raw["seats"].setdefault("shadow", {})["daily_tokens"] = config._check_daily_tokens(
-                budget, "seats.shadow.daily_tokens", "init")
-        # The shadow and triage seats' own capacity: the flag, else the form; blank = unset.
-        for seat in ("shadow", "triage"):
-            flag = getattr(args, f"{seat}_concurrency", None)
-            capacity = flag if flag is not None else config._form_int(
-                str(d.get(f"{seat}_concurrency") or "").strip())
-            if capacity not in ("", None):
-                raw["seats"].setdefault(seat, {})["concurrency"] = config.check_concurrency(
-                    capacity, f"seats.{seat}.concurrency", "init")
+        _init_seat_knobs(args, d, raw["seats"])
         flag = getattr(args, "fix_daily_turns", None)
         cap = flag if flag is not None else config._form_int(d["fix_daily_turns"].strip())
         if cap not in (0, ""):
