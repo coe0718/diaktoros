@@ -1134,9 +1134,11 @@ hermes dk backup --verify "<archive-file>"
 ```
 
 `--verify` writes nothing: it re-reads the manifest, reads every member the manifest names to its
-end, and opens the ledger snapshot with SQLite's `PRAGMA integrity_check` on a temporary copy
-(deleted afterwards). Exit `0` if the archive reads back, `2` with each problem named if not
-(corrupt gzip, truncated tar, a missing member, a ledger that is not SQLite). It checks that the
+end, reads the whole gzip stream to its end (so a cut or damaged gzip trailer is caught even when
+every member reads), and opens the ledger snapshot with SQLite's `PRAGMA integrity_check` on a
+temporary copy (deleted afterwards). Exit `0` if the archive reads back, `2` with each problem
+named if not (corrupt gzip, truncated tar or trailer, a missing member, a ledger that is not
+SQLite). It checks that the
 bytes are restorable, not that restoring is safe here (paths, routes, secrets): `restore
 --dry-run` does both. It cannot check that the token files exist, since they are not in the
 archive; `restore` lists those.

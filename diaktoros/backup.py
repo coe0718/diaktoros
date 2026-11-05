@@ -16,6 +16,7 @@ exists yet.
 """
 from __future__ import annotations
 
+import gzip
 import io
 import importlib
 import json
@@ -267,15 +268,29 @@ def _ledger_problem(path: pathlib.Path) -> str | None:
     return "the ledger snapshot fails SQLite's integrity check: " + "; ".join(rows[:3])
 
 
+def _read_stream_to_end(archive: pathlib.Path) -> None:
+    """Decompress the whole gzip stream of ``archive`` and throw the bytes away.
+
+    ``tarfile`` stops at the tar's own end-of-archive blocks, so the gzip trailer (CRC32 and
+    length) is never read by it: an archive cut or damaged after its last member still lists and
+    extracts. Reading to the end is what makes ``gzip`` check that trailer. Raises ``EOFError``
+    (stream cut short), ``gzip.BadGzipFile`` (an ``OSError``: bad CRC, length or header) or
+    ``zlib.error`` (corrupt deflate data)."""
+    with gzip.open(archive, "rb") as stream:
+        while stream.read(1 << 20):
+            pass
+
+
 def verify(archive: pathlib.Path) -> tuple[int, list[str]]:
     """Read a backup back as a restore would, writing nothing outside a temp directory (#1078).
 
-    Re-reads the manifest (``read_manifest``), reads every member the manifest names to its end
-    (a corrupt gzip or a truncated tar fails here) and opens each ledger snapshot with SQLite's
-    integrity check. Returns ``(members read, problems)``; no problems means the archive is
-    restorable as far as its bytes go. Whether it is *safe* to restore here is ``unsafe``'s
-    question, which ``restore --dry-run`` asks too. A manifest that does not read raises
-    ``BackupError``."""
+    Re-reads the manifest (``read_manifest``), reads every member the manifest names to its end,
+    reads the whole gzip stream to its end so the trailer is checked too (``_read_stream_to_end``:
+    a cut or damaged tail fails here even when every member reads) and opens each ledger snapshot
+    with SQLite's integrity check. Returns ``(members read, problems)``; no problems means the
+    archive is restorable as far as its bytes go. Whether it is *safe* to restore here is
+    ``unsafe``'s question, which ``restore --dry-run`` asks too. A manifest that does not read
+    raises ``BackupError``."""
     manifest = read_manifest(archive)
     problems: list[str] = []
     read = 0
@@ -300,6 +315,7 @@ def verify(archive: pathlib.Path) -> tuple[int, list[str]]:
                     why = _ledger_problem(copy)
                     if why:
                         problems.append(f"{entry['path']}: {why}")
+        _read_stream_to_end(archive)
     except (OSError, EOFError, tarfile.TarError, zlib.error) as exc:
         problems.append(f"the archive cannot be read to its end ({type(exc).__name__}: {exc})")
     return read, problems

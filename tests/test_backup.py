@@ -948,6 +948,53 @@ class Verify(Base):
         self.assertEqual(code, 2, text)
         self.assertIn("FAILED", text)
 
+    def damaged_trailer(self, cut=0, flip=None):
+        """A good archive with the last ``cut`` bytes removed, or the byte ``flip`` from the end
+        changed. Every member is intact: only the gzip end-of-stream trailer (CRC32 and length)
+        is wrong, so the tar reader finds nothing to complain about on its own."""
+        good = self.root / "good.tar.gz"
+        self.run_cmd(cli.cmd_backup, out=str(good))
+        raw = bytearray(good.read_bytes())
+        if cut:
+            del raw[-cut:]
+        if flip:
+            raw[-flip] ^= 0xFF
+        damaged = self.root / "damaged.tar.gz"
+        damaged.write_bytes(bytes(raw))
+        return damaged
+
+    def test_a_cut_gzip_trailer_fails_verify(self):
+        for cut in (1, 8, 20, 50):
+            with self.subTest(cut=cut):
+                code, text = self.verify(self.damaged_trailer(cut=cut))
+                self.assertEqual(code, 2, text)
+                self.assertIn("FAILED", text)
+                self.assertIn("cannot be read to its end", text)
+
+    def test_a_corrupt_gzip_trailer_fails_verify(self):
+        for flip in (8, 4, 1):          # the CRC32, then the length field
+            with self.subTest(flip=flip):
+                code, text = self.verify(self.damaged_trailer(flip=flip))
+                self.assertEqual(code, 2, text)
+                self.assertIn("FAILED", text)
+
+    def test_a_cut_or_corrupt_gzip_trailer_fails_restore_dry_run(self):
+        for kind, damage in (("cut 1", {"cut": 1}), ("cut 8", {"cut": 8}), ("cut 50", {"cut": 50}),
+                             ("crc", {"flip": 8}), ("length", {"flip": 1})):
+            with self.subTest(kind):
+                bad = self.damaged_trailer(**damage)
+                code, text = self.run_cmd(cli.cmd_restore, file=str(bad), dry_run=True, force=False)
+                self.assertEqual(code, 2, text)
+                self.assertIn("NOT RESTORABLE", text)
+
+    def test_the_same_archive_undamaged_still_verifies(self):
+        # the trailer check must not turn a good archive red
+        good = self.root / "good.tar.gz"
+        self.run_cmd(cli.cmd_backup, out=str(good))
+        self.assertEqual(self.verify(good)[0], 0)
+        code, text = self.run_cmd(cli.cmd_restore, file=str(good), dry_run=True, force=False)
+        self.assertEqual(code, 0, text)
+
     def test_a_corrupt_member_stream_fails_verify_even_when_the_manifest_reads(self):
         archive = self.root / "good.tar.gz"
         self.run_cmd(cli.cmd_backup, out=str(archive))
