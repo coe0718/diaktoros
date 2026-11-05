@@ -146,6 +146,43 @@ class Sweep(fg.Base):
         with mock.patch.object(gh, "fetch", side_effect=fetch):
             return self.sweep(None, read=gh.open_issues_read, **kwargs), seen
 
+    def deep_sweep(self, recent_pages):
+        """The real ``gh.open_issues_read`` over ``recent_pages`` full pages of recent PRs, then a
+        full page whose first item is an eligible issue 2 days old (#8) and whose last is past the
+        horizon; a page after that fails the test. Returns (lines, paths)."""
+        seen = []
+
+        def fetch(loop, path, *args, **kw):
+            seen.append(path)
+            page = int(path.rsplit("&page=", 1)[1]) if "&page=" in path else 1
+            if page <= recent_pages:
+                return [issue(5000 + n, pr=True) for n in range(gh.REVIEW_PAGE_SIZE)], None
+            if page == recent_pages + 1:
+                return ([issue(8, age=2 * 86400.0)]
+                        + [issue(6000 + n, pr=True, age=2 * 86400.0)
+                           for n in range(gh.REVIEW_PAGE_SIZE - 2)]
+                        + [issue(9, age=triage_sweep.HORIZON_S + 3600.0)]), None
+            return [], None
+
+        with mock.patch.object(gh, "fetch", side_effect=fetch):
+            return self.sweep(None, read=gh.open_issues_read), seen
+
+    def test_an_eligible_issue_older_than_the_newest_500_is_read_and_queued(self):
+        # #1147: five full pages of recent items used to hide #8 (and alert on every sweep). The
+        # listing now goes on until a page reaches issues past the horizon. Driven through
+        # watchdog.sweep_loop with the real gh.open_issues_read.
+        lines, seen = self.deep_sweep(gh.MAX_ISSUE_PAGES - 20)
+        self.assertGreater(len(seen), 5)
+        self.assertEqual(len(seen), gh.MAX_ISSUE_PAGES - 19)      # stopped at the horizon page
+        self.assertEqual([e[1] for e in self.enqueued], [8])      # #9 is past the horizon
+        self.assertEqual([line for line in lines if "not checked" in line], [])
+
+    def test_a_window_past_the_page_bound_still_alerts(self):
+        # The page bound still holds: a window longer than MAX_ISSUE_PAGES pages is incomplete.
+        lines, seen = self.saturated_sweep()
+        self.assertEqual(len(seen), gh.MAX_ISSUE_PAGES + 1)
+        self.assertTrue(any("not checked" in line for line in lines), lines)
+
     def test_an_exact_five_page_listing_with_nothing_older_raises_no_alert(self):
         # #1146: a full fifth page does not prove a sixth exists; the sweep probes it.
         lines, seen = self.saturated_sweep(exactly=True)
