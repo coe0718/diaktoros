@@ -48,6 +48,15 @@ def redelivery_refusal(con, prior, *, admitted: bool, production: bool, seat: st
                 "`hermes dk retry` re-arms it")
     return None
 
+
+# Why a shadow run is not re-armed once its findings snapshot is gone (#1013, #1139). One text
+# for ``retry`` and for ``gate.enqueue_shadow``, the two ways a shadow row can be re-armed.
+SHADOW_SNAPSHOT_GONE = (
+    "the findings snapshot this shadow was queued with is gone (evicted, or never taken), so it "
+    "would be judged on the live findings ledger, which the real review may have changed "
+    "(#1013); a new head gets a fresh shadow")
+
+
 class RunIntake:
     """The intake, retry and cancel methods of :class:`~diaktoros.run_supervisor.Supervisor`."""
 
@@ -196,10 +205,7 @@ class RunIntake:
             admitted, policy_off = None, ''
             if shadow and (st is None
                            or st.shadow_findings_get(first['pr'], first['head']) is None):
-                policy_off = ("refused: the findings snapshot this shadow was queued with is "
-                              "gone (evicted, or never taken), so it would be judged on the live "
-                              "findings ledger, which the real review may have changed (#1013); "
-                              "a new head gets a fresh shadow")
+                policy_off = f"refused: {SHADOW_SNAPSHOT_GONE}"
             if issue_fix:
                 try:
                     loop = config.by_repo(first['repo'])

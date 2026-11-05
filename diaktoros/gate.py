@@ -343,6 +343,26 @@ def shadow_open_heads(repo: str, db=None) -> set[tuple[int, str]]:
     return {(int(r[0]), str(r[1])) for r in rows}
 
 
+def shadow_row_exists(repo: str, number: int, head: str, turn_key: str = "", db=None) -> bool:
+    """Whether the run ledger already holds the shadow row of this PR, head and reviewer turn
+    key (the identity ``Supervisor.submit`` deduplicates on). False when the ledger does not
+    exist yet; raises when it exists but cannot be read, so the caller never decides on a
+    guess."""
+    from . import run_supervisor
+    path = pathlib.Path(db or run_supervisor.production_ledger())
+    if not path.exists():
+        return False
+    con = run_supervisor.views.read_only_connect(path)
+    if con is None:
+        return False
+    try:
+        return con.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? AND head=? AND "
+                           "seat='shadow' AND turn_key=? LIMIT 1",
+                           (repo, number, head, turn_key)).fetchone() is not None
+    finally:
+        con.close()
+
+
 def shadow_hold(loop: dict, number: int, head: str, db=None,
                 marker: dict | None = None) -> tuple[str, str]:
     """``(hold, note)``: why the shadow review holds this head (``""`` when it does not), and a
@@ -582,7 +602,9 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
     shadow profile and this head is sampled. It runs only once that reviewer turn's APPROVE is
     confirmed (#1647, ``shadow_queue.after_reviewer``). Best effort and silent: a shadow is never
     part of the loop, so nothing here can change what the reviewer's enqueue answers. Returns
-    what happened, for logs and tests."""
+    what happened, for logs and tests. A shadow row already in the ledger whose findings
+    snapshot is gone is neither re-armed nor given a new snapshot (``snapshot gone``, #1139):
+    ``retry`` refuses the same, and a snapshot taken now would be the live ledger's."""
     try:
         if not config.shadow_profile(loop):
             return "off"
@@ -601,6 +623,14 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
         # enqueue cannot sample the ledger before this run is visible in it and then evict this
         # snapshot as unused (#1013). The lock is reentrant.
         with st.locked():
+            # A row that is already queued keeps the snapshot it was queued with (#1139): one
+            # evicted since would be taken again from the live ledger, and ``submit`` would
+            # re-arm the row on it. ``retry`` refuses the same (the same lock, then the ledger).
+            if (st.shadow_findings_get(number, head) is None
+                    and shadow_row_exists(loop["repo"], number, head, turn_key)):
+                from .run_supervisor import intake
+                log(f"#{number}: shadow not queued again: {intake.SHADOW_SNAPSHOT_GONE}")
+                return "snapshot gone"
             if not snapshot_shadow(loop, number, head, turn_key):
                 log(f"#{number}: no shadow findings snapshot, shadow not queued")
                 return "no snapshot"

@@ -179,6 +179,52 @@ class Retention(unittest.TestCase):
             self.assertEqual(gate.enqueue_shadow(loop, supervisor, 7, ts.HEAD), "no snapshot")
         supervisor.submit.assert_not_called()
 
+    def queued_failed_shadow(self, loop, turn_key=""):
+        """A failed shadow row with no findings snapshot on file (evicted), and a real supervisor
+        over its ledger; ``production_ledger`` is patched to that ledger as the gate reads it."""
+        import sqlite3
+        from contextlib import closing
+        from diaktoros.run_supervisor import Supervisor
+        db = self.ledger((7, "failed"))
+        if turn_key:
+            with closing(sqlite3.connect(db)) as con, con:
+                con.execute("UPDATE runs SET turn_key=?, delivery=delivery||?",
+                            (turn_key, ":" + turn_key))
+        sup = Supervisor(db, fixture_mode=True)
+        sup._spawn = lambda: None
+        patcher = mock.patch("diaktoros.run_supervisor.production_ledger", return_value=db)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.assertIsNone(state_mod.state_for(loop).shadow_findings_get(7, ts.HEAD))
+        return sup
+
+    def test_an_existing_shadow_whose_snapshot_is_gone_is_not_rearmed_or_given_a_new_one(self):
+        # #1139: the row's snapshot was evicted. A second enqueue must not take a fresh one from
+        # the live findings ledger and re-arm the row on it (the isolation loss #1013 fixed).
+        loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
+        st = state_mod.state_for(loop)
+        sup = self.queued_failed_shadow(loop)
+        st.findings_put(7, VEX_SAME_ROUND)             # what the real review recorded since
+        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD), "snapshot gone")
+        self.assertEqual(sup.get(f"acme/widgets:7:{ts.HEAD}:shadow")["state"], "failed")
+        self.assertIsNone(st.shadow_findings_get(7, ts.HEAD))       # no fresh snapshot
+
+    def test_an_existing_shadow_whose_snapshot_is_kept_is_still_rearmed(self):
+        loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
+        st = state_mod.state_for(loop)
+        sup = self.queued_failed_shadow(loop)
+        st.shadow_findings_put(7, ts.HEAD, {}, set())
+        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD), "rearmed")
+        self.assertEqual(sup.get(f"acme/widgets:7:{ts.HEAD}:shadow")["state"], "pending")
+
+    def test_a_new_reviewer_turn_at_the_head_still_gets_a_snapshot_for_its_own_shadow(self):
+        # The refusal is for the row that exists: another turn key at the same head is a new
+        # row (a retarget's fresh review), taken on a fresh snapshot as before.
+        loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
+        sup = self.queued_failed_shadow(loop, turn_key="old")
+        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="new"), "enqueued")
+        self.assertEqual(state_mod.state_for(loop).shadow_findings_get(7, ts.HEAD), {})
+
 
 if __name__ == "__main__":
     unittest.main()
