@@ -1818,6 +1818,15 @@ review. It **never pushes**, so nothing is pushed twice. If the records and GitH
 branch at another head, two PRs, a closed PR, an unreadable read) the run stays quarantined and
 the command prints what it found. `--dry-run` only inspects.
 
+A review counts as given only when the reviewer has a verdict (approval or change request) at the
+PR's **current head**, the gate's own rule: a verdict at an older head does not hide a head nobody
+has reviewed. With a **GitHub App reviewer** GitHub cannot be asked for a review (it answers 201
+and records nothing, so `requested_reviewers` stays empty), and the stage is named
+`deliver_review`, not `request_review`: the host delivers the review to the reviewer gate itself
+(the watchdog's sweep backstops it), and `continue` says "delivered" or "not delivered", never
+"requested". Only a verdict at the current head shows an App's handoff happened; without one the
+stage always runs.
+
 ```bash
 hermes dk continue --loop "<loop-id>" --run "<run-id>" --dry-run
 hermes dk continue --loop "<loop-id>" --run "<run-id>"
