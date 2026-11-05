@@ -163,15 +163,40 @@ class Ledger(unittest.TestCase):
                     "other/repo#10": {"head": a, "rounds": 3, "escalated": {"by": "op"}}}
         data = stats.report(loop, self.db, since, NOW, breaches=breaches)
         self.assertEqual(data["escalations"], {"total": 7, "ruled": 1, "awaiting": 6,
-                                               "by": {"cap": 4, "operator": 1, "unknown": 2}})
+                                               "by": {"cap": 4, "dispute": 0, "shadow": 0,
+                                                      "operator": 1, "unknown": 2}})
         self.assertEqual(data["escalations_before"]["total"], 2)    # PR 11's turn, PR 13's marker
         later = stats.escalations(self.db, REPO, NOW, NOW + DAY, breaches)
         self.assertEqual(later["total"], 2)                         # PR 15's turn, PR 17's marker
         self.assertEqual(data["reviews"]["rulings"], {"fixer-wins": 1})
         out = stats.report_text(data)
         self.assertIn("escalations: 7 (+5 vs previous) · ruled 1, awaiting 6 · by cap 4, "
-                      "by operator 1, unknown 2", out)
+                      "by dispute 0, by shadow 0, by operator 1, unknown 2", out)
         self.assertEqual(json.loads(json.dumps(data))["escalations"]["total"], 7)
+
+    def test_escalations_name_who_asked(self):
+        """#1116: a shadow or dispute marker is its own bucket, not the operator's."""
+        since, loop = NOW - 7 * DAY, {"repo": REPO, "id": "w"}
+        heads = {pr: f"{pr:040x}" for pr in (21, 22, 23, 24, 25)}
+        for pr in (21, 22, 23, 24):
+            self.escalate(pr, heads[pr], 1, NOW - 100 * pr)       # each has an adjudicator turn
+        breaches = {
+            f"{REPO}#21": {"head": heads[21], "rounds": 1,
+                           "escalated": {"by": "shadow", "reason": "x"}},
+            f"{REPO}#22": {"head": heads[22], "rounds": 1,
+                           "escalated": {"by": "dispute", "reason": "x"}},
+            f"{REPO}#23": {"head": heads[23], "rounds": 1,
+                           "escalated": {"by": "operator", "reason": "x"}},
+            f"{REPO}#24": {"head": heads[24], "rounds": 1, "escalated": {"reason": "no by"}},
+            # a shadow escalation with no adjudicator turn counts from its marker, as itself
+            f"{REPO}#25": {"head": heads[25], "rounds": 1, "at": iso(NOW - 50),
+                           "escalated": {"by": "shadow", "reason": "x"}}}
+        data = stats.report(loop, self.db, since, NOW, breaches=breaches)
+        self.assertEqual(data["escalations"]["by"], {"cap": 0, "dispute": 1, "shadow": 2,
+                                                     "operator": 2, "unknown": 0})
+        self.assertEqual(data["escalations"]["total"], 5)
+        self.assertIn("by cap 0, by dispute 1, by shadow 2, by operator 2, unknown 0",
+                      stats.report_text(data))
 
     def turn(self, pr, seat, created, launched=True, repo=REPO):
         """One run on ``pr``; its run id."""
