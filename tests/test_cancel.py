@@ -1,4 +1,4 @@
-"""Issue #1148: `hermes dk cancel` stops a queued, waiting or running isolated run.
+"""Issue #1148: `hermes dk cancel` stops a queued, blocked, waiting or running isolated run.
 
 Real SQLite ledger and real fixture child processes; the worker runs in-process (a thread for
 a running turn) so the test controls time. Nothing here launches Hermes, a sandbox or a
@@ -213,6 +213,10 @@ class NotStarted(Base):
         self.assertIn('blocked', row[0])
         section = text.split('### cancel\n', 1)[1].split('\n\n', 1)[0]
         self.assertIn('blocked', section)
+
+    def test_module_docstring_names_the_blocked_state(self):
+        first = ' '.join(sys.modules[__name__].__doc__.split()).split(' isolated run')[0]
+        self.assertIn('blocked', first)
 
     def test_a_claimed_run_is_cancelled_and_its_worker_never_launches_it(self):
         sup = self.sup()
