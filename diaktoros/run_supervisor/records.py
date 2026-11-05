@@ -468,6 +468,23 @@ class LedgerRecords:
             return None
         return (proof, row[1] or '') if isinstance(proof, dict) else None
 
+    def record_change_proof(self, repo: str, number: int, head: str, proof: str) -> None:
+        """Keep the host's change proof for a PR head (#1782); the first one stands."""
+        with self._connect() as con:
+            con.execute('INSERT OR IGNORE INTO change_proofs(repo,number,head,proof,created) '
+                        'VALUES(?,?,?,?,?)', (repo, number, head, proof, time.time()))
+
+    def change_proof_at(self, repo: str, number: int, head: str) -> dict | None:
+        """The change proof kept for this PR head, else None (none, or unreadable JSON)."""
+        with self._connect() as con:
+            row = con.execute('SELECT proof FROM change_proofs WHERE repo=? AND number=? AND '
+                              'head=?', (repo, number, head)).fetchone()
+        try:
+            proof = json.loads(row[0]) if row else None
+        except ValueError:
+            return None
+        return proof if isinstance(proof, dict) else None
+
     def issue_fix_status(self, run_id: str, state: str, *, error: str | None = None,
                          new_head: str | None = None, pr_number: int | None = None,
                          comment_id: int | None = None) -> None:

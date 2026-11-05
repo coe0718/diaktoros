@@ -76,7 +76,8 @@ def _switches(loop: dict, schema, rows: list, enable: str) -> None:
             ("fix_ci", "red CI on fixer PRs waits for a review", pushes),
             ("fixer_scope_lock", "a fix round may change any file", pushes),
             ("adjudicator_approves", "an ACCEPT ruling is left to you", login),
-            ("adjudicator_file_issues", "a ruling's follow-ups stay in its comment", "")):
+            ("adjudicator_file_issues", "a ruling's follow-ups stay in its comment", ""),
+            ("change_proof", "the reviewer proves the changed tests by hand", "")):
         schema(key, (key,), bool(loop[key]), on=bool(loop[key]), off=off)
         if loop[key] and needs:
             rows[-1].note = f"on, but inert: needs {needs}"
@@ -193,6 +194,7 @@ def _rows_review_only(schema, triage, loop) -> None:  # noqa: ANN001
     schema("review_only_cap", ("review_only_cap",), config.review_only_cap(loop),
            derived=f"cap ({loop['cap']})")
     schema("ci_fix_cap", ("ci_fix_cap",), config.ci_fix_cap(loop))
+    schema("change_proof_max", ("change_proof_max",), config.change_proof_max(loop))
     schema("review_only_daily", ("review_only_daily",), loop.get("review_only_daily") or "no cap",
            note=(f"separate pool: review-only turns count here, not against seats.reviewer."
                  f"daily_turns ({config.seat_daily_turns(loop, 'reviewer') or 'no cap'}), "

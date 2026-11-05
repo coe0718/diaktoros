@@ -81,6 +81,7 @@ def _flag_changes(args, loop: dict, host: str | None) -> dict:
               "adjudicator_approves": cli_common._on_off(args, "adjudicator_approves", None),
               "adjudicator_file_issues": cli_common._on_off(args, "adjudicator_file_issues",
                                                             None),
+              "change_proof": cli_common._on_off(args, "change_proof", None),
               "review_only_update": cli_common._on_off(args, "review_only_update", None)}
     if (wanted["review_only_update"] and not loop.get("review_only_update")
             and not getattr(args, "acknowledge_branch_push", False)):
@@ -196,15 +197,19 @@ def _list_changes(args, loop: dict, changes: dict) -> None:
 
 def _limit_changes(args, loop: dict, changes: dict) -> None:
     """The caps and the check names; ``0`` or blank removes a cap."""
-    if getattr(args, "ci_fix_cap", None) is not None:
+    for key, check in (("ci_fix_cap", lists.check_ci_fix_cap),
+                       ("change_proof_max", lists.check_change_proof_max)):
+        wanted = getattr(args, key, None)
+        if wanted is None:
+            continue
         try:
-            value = (None if str(args.ci_fix_cap).strip() in ("0", "")
-                     else lists.check_ci_fix_cap(args.ci_fix_cap, "--ci-fix-cap"))
+            value = (None if str(wanted).strip() in ("0", "")
+                     else check(wanted, "--" + key.replace("_", "-")))
         except config.ConfigError as exc:
             print(f"refused: {exc}")
             raise _Refused
-        if value != loop.get("ci_fix_cap"):
-            changes["ci_fix_cap"] = value
+        if value != loop.get(key):
+            changes[key] = value
     for key in ("review_only_cap", "review_only_daily"):
         wanted = getattr(args, key, None)
         if wanted is None:

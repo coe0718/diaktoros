@@ -247,9 +247,11 @@ def _init_shadow(args, d: dict) -> dict:
 
 
 def _init_limits(args, d: dict) -> dict:
-    """``cmd_init``: CI-fix turns per PR (#539) and the review-only verdict and daily caps. A flag
-    wins over the form; empty = the default. Raises ``config.ConfigError`` for a bad value."""
+    """``cmd_init``: CI-fix turns per PR (#539), changed tests proved per head (#1782) and the
+    review-only verdict and daily caps. A flag wins over the form; empty = the default. Raises
+    ``config.ConfigError`` for a bad value."""
     checks = (("ci_fix_cap", lists.check_ci_fix_cap),
+              ("change_proof_max", lists.check_change_proof_max),
               *((key, lambda value, where, key=key: lists._check_review_only_limit(value, key, where))
                 for key in ("review_only_cap", "review_only_daily")))
     limits = {}
@@ -268,7 +270,7 @@ def _init_settings(args, d: dict) -> dict:
         # author's branch) is also refused below unless acknowledged.
         **{key: cli_common._on_off(args, key, d[key]) for key in (
             "review_after_ci", "fix_ci", "fixer_scope_lock", "adjudicator_approves",
-            "adjudicator_file_issues", "review_only_update")},
+            "adjudicator_file_issues", "change_proof", "review_only_update")},
         # The checks CI always runs, which a fixer running only its touched tests would miss.
         "fixer_check": (d["fixer_check"] if getattr(args, "fixer_check", None) is None
                         else args.fixer_check),
@@ -909,6 +911,7 @@ def _init_switch_flags(init, d) -> None:  # noqa: ANN001
                                        "adjudicator login and dismiss the change request it "
                                        "overruled"),
             ("--adjudicator-file-issues", "file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found"),
+            ("--change-proof", "run each reviewed head's changed tests on its merge base and at the head, and show the reviewer"),
             ("--attribution", "sign what the loop posts with 'Automated by Diaktoros'")):
         on = d[flag[2:].replace("-", "_")]
         init.add_argument(flag, choices=("on", "off"), default=None,
@@ -924,6 +927,8 @@ def _init_review_only_flags(init) -> None:  # noqa: ANN001
     init.add_argument("--ci-fix-cap", default=None, metavar="N",
                       help="CI-fix turns per PR before a red head waits for you, 1-10 "
                            "(default: the plugin setting, else 3)")
+    init.add_argument("--change-proof-max", default=None, metavar="N",
+                      help="changed tests the change proof runs per head, 1-50 (default: the plugin setting, else 20)")
     init.add_argument("--review-only-daily", default=None, metavar="N",
                       help="reviewer turns a day on review-only PRs, 1-1000 (default: the "
                            "plugin setting, else no cap)")

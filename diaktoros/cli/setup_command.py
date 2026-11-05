@@ -223,13 +223,13 @@ def _setup_setting_argv(args, d: dict, interactive: bool) -> list[str]:
               [name for name in str(d["operator_agents"]).split(",") if name.strip()])
     argv += [f"--operator-agent={name.strip()}" for name in agents]
     argv += _given(args, ("review_only_update", "fixer_scope_lock", "adjudicator_approves",
-                          "adjudicator_file_issues"))
+                          "adjudicator_file_issues", "change_proof"))
     if getattr(args, "acknowledge_branch_push", False):
         argv.append("--acknowledge-branch-push")
     argv += _given(args, ("reviewer_max_steps", "fixer_max_steps", "reviewer_daily_tokens",
                           "fixer_daily_tokens", "shadow_daily_tokens", "fix_daily_turns",
                           "shadow_concurrency", "triage_concurrency",
-                          "review_only_cap", "review_only_daily", "ci_fix_cap"))
+                          "review_only_cap", "review_only_daily", "ci_fix_cap", "change_proof_max"))
     return argv
 
 def _setup_check_argv(args, d: dict, interactive: bool) -> list[str]:
@@ -557,6 +557,8 @@ def _setup_review_only_flags(first) -> None:  # noqa: ANN001
     first.add_argument("--ci-fix-cap", default=None, metavar="N",
                        help="CI-fix turns per PR before a red head waits for you, 1-10 "
                             "(default: the plugin setting, else 3)")
+    first.add_argument("--change-proof-max", default=None, metavar="N",
+                       help="changed tests the change proof runs per head, 1-50 (default: the plugin setting, else 20)")
     first.add_argument("--review-only-daily", default=None, metavar="N",
                        help="reviewer turns a day on review-only PRs, 1-1000 (default: the "
                             "plugin setting, else no cap)")
@@ -620,6 +622,7 @@ def _setup_switch_flags(first) -> None:  # noqa: ANN001
                                        "adjudicator login and dismiss the change request it "
                                        "overruled", "off"),
             ("--adjudicator-file-issues", "file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found", "off"),
+            ("--change-proof", "run each reviewed head's changed tests on its merge base and at the head, and show the reviewer", "off"),
             ("--attribution", "sign what the loop posts with 'Automated by Diaktoros'", "on")):
         first.add_argument(flag, choices=("on", "off"), default=None,
                            help=f"{text} (default: the plugin setting, {default})")

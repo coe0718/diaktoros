@@ -78,6 +78,12 @@ CREATE TABLE IF NOT EXISTS repro_proofs (
  run_id TEXT PRIMARY KEY REFERENCES runs(id), repo TEXT NOT NULL, number INTEGER NOT NULL,
  base TEXT NOT NULL, proof TEXT NOT NULL, created REAL NOT NULL
 );
+-- The host's proof of a PR head's changed tests (#1782): run on the merge base (with the PR's
+-- test files) and at the head before a reviewer turn, once per head. proof is JSON (change_proof).
+CREATE TABLE IF NOT EXISTS change_proofs (
+ repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, proof TEXT NOT NULL,
+ created REAL NOT NULL, PRIMARY KEY (repo, number, head)
+);
 CREATE TABLE IF NOT EXISTS review_receipts (
  run_id TEXT PRIMARY KEY REFERENCES runs(id), state TEXT NOT NULL,
  generation TEXT NOT NULL, principal_id INTEGER NOT NULL,

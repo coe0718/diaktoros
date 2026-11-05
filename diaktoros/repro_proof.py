@@ -209,13 +209,17 @@ def summarize(ids: list[str], old_out: str, new_out: str,
         if ran is not None and ran != wanted:
             row["ran_as"] = ran
         rows.append(row)
-    verdicts = {r["verdict"] for r in rows}
-    overall = (PROVEN if verdicts == {"fail_then_pass"}
-               else WEAK if "passes_on_old_head" in verdicts
-               else UNRESOLVED if verdicts <= {"fail_then_pass", "id_not_found"}
-               else UNPROVEN)
-    return {"overall": overall, "ids": rows,
+    return {"overall": overall(rows), "ids": rows,
             "old_tail": old_out.strip()[-OUTPUT_SHOWN:], "new_tail": new_out.strip()[-OUTPUT_SHOWN:]}
+
+
+def overall(rows: list[dict]) -> str:
+    """The proof's verdict from its rows' (``judge``)."""
+    verdicts = {r["verdict"] for r in rows}
+    return (PROVEN if verdicts == {"fail_then_pass"}
+            else WEAK if "passes_on_old_head" in verdicts
+            else UNRESOLVED if verdicts <= {"fail_then_pass", "id_not_found"}
+            else UNPROVEN)
 
 
 def none_named() -> dict:
