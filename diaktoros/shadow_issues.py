@@ -100,15 +100,21 @@ def _lineage_depth(loop: dict, sup, number: int) -> int | None:
     return (sup.filed_depth(loop["repo"], int(match.group(1))) or 0) + 1 if match else 1
 
 
-def _post(loop: dict, sup, row, filing, depth: int, log) -> tuple[int | None, bool]:
-    """POST one claimed shadow issue and record how it went: ``(issue, sent)``, the issue number
-    when it was filed (None otherwise), and whether the POST may have reached GitHub."""
-    number, head = int(row["pr"]), str(row["head"])
+def _send_shadow(loop: dict, sup, row, depth: int) -> tuple[int, str]:
+    return broker.file_shadow_issue(
+        loop, repo=loop["repo"], number=int(row["pr"]), head=str(row["head"]),
+        title=row["title"], body=row["body"], labels=json.loads(row["labels"] or "[]"),
+        model=sup.shadow_model(row["run_id"]) or "unknown", depth=depth)
+
+
+def _post(loop: dict, sup, row, filing, depth: int, log, send=_send_shadow,
+          what: str = "shadow-found") -> tuple[int | None, bool]:
+    """POST one claimed issue with ``send`` (a shadow's, or an adjudicator's: #1864) and record
+    how it went: ``(issue, sent)``, the issue number when it was filed (None otherwise), and
+    whether the POST may have reached GitHub."""
+    number = int(row["pr"])
     try:
-        issue, gap = broker.file_shadow_issue(
-            loop, repo=loop["repo"], number=number, head=head, title=row["title"],
-            body=row["body"], labels=json.loads(row["labels"] or "[]"),
-            model=sup.shadow_model(row["run_id"]) or "unknown", depth=depth)
+        issue, gap = send(loop, sup, row, depth)
     except broker.BrokerNotSent as exc:
         # Refused with nothing written (no reader identity, a repository mismatch, GitHub's
         # 4xx): not an unknown outcome. Back to `recorded` with the reason, so a sweep after the
@@ -116,7 +122,7 @@ def _post(loop: dict, sup, row, filing, depth: int, log) -> tuple[int | None, bo
         # Each refusal is counted: at MAX_ATTEMPTS the issue is dropped, not retried for ever.
         sup.release_shadow_filing(row["run_id"], filing)
         state = sup.shadow_issue_refused(row["run_id"], row["seq"], str(exc), MAX_ATTEMPTS)
-        log(f"shadow-found issue for #{number} not filed, "
+        log(f"{what} issue for #{number} not filed, "
             + ("dropped" if state == "denied" else "retried next sweep") + f": {exc}")
         return None, False
     except Exception as exc:
@@ -130,5 +136,5 @@ def _post(loop: dict, sup, row, filing, depth: int, log) -> tuple[int | None, bo
     sup.shadow_issue_status(row["run_id"], row["seq"], "unlabelled" if gap else "posted",
                             issue_number=issue, error=f"labels: {gap}"[:200] if gap else None)
     if gap:
-        log(f"shadow-found issue #{issue} filed without its labels: {gap}")
+        log(f"{what} issue #{issue} filed without its labels: {gap}")
     return issue, True

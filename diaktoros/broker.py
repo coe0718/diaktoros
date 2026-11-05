@@ -588,19 +588,48 @@ def file_shadow_issue(loop: dict, *, repo: str, number: int, head: str, title: s
     it. ``(number, gap)``, or raise: gap says which labels it could not carry ('' when all do,
     #1589). The labels were checked when the shadow asked (the loop's triage list, never the fix
     label); ``shadow-found`` is added here. Host-built header and footer."""
+    header = (f"Found by a shadow review (`{model}`) of #{number} at `{head[:7]}`. The reviewer "
+              "did not file it. A shadow review is a second model that writes nothing; the host "
+              "filed this for it.\n\n")
+    return _file_as_reader(loop, repo=repo, number=number, head=head, title=title,
+                           labels=[*labels, SHADOW_FOUND_LABEL], seat="shadow",
+                           operation="file_shadow_issue",
+                           text=header + body.strip() + lineage_note(
+                               pr=number, head=head, depth=depth,
+                               by="the Diaktoros host for a shadow review"))
+
+
+ADJUDICATOR_FOUND_LABEL = "adjudicator-found"   # every issue a ruling's follow-up became (#1864)
+
+
+def file_ruling_issue(loop: dict, *, repo: str, number: int, head: str, title: str, body: str,
+                      labels: list[str], verdict: str, depth: int) -> tuple[int, str]:
+    """POST one follow-up an adjudicator ruled valid but not blocking (#1864), as the
+    **reader**, like a shadow's: ``(number, gap)``, or raise. ``adjudicator-found`` is added; the
+    header names the PR it follows up and the ruling, so a person (and ``fix_hold``, from its
+    ``filed_issues`` row) knows it waits on that PR."""
+    header = (f"Follow-up to #{number}: a finding the adjudicator ruled valid but not blocking, "
+              f"in its {verdict} ruling at `{head[:7]}`. The host filed it for the adjudicator, "
+              "which writes nothing but its ruling.\n\n")
+    return _file_as_reader(loop, repo=repo, number=number, head=head, title=title,
+                           labels=[*labels, ADJUDICATOR_FOUND_LABEL], seat="adjudicator",
+                           operation="file_ruling_issue",
+                           text=header + body.strip() + lineage_note(
+                               pr=number, head=head, depth=depth,
+                               by="the Diaktoros host for an adjudicator ruling"))
+
+
+def _file_as_reader(loop: dict, *, repo: str, number: int, head: str, title: str,
+                    labels: list[str], text: str, seat: str, operation: str) -> tuple[int, str]:
+    """POST one host-built issue as the reader (#914, #1864): ``(number, gap)``, or raise
+    ``BrokerNotSent`` when nothing was written, ``BrokerDenied`` when the outcome is unknown."""
     if repo != loop.get("repo"):
         raise BrokerNotSent("repository mismatch")
     login = str(loop.get("read_token") or "")
     if not login:
         raise BrokerNotSent("no reader identity")
-    header = (f"Found by a shadow review (`{model}`) of #{number} at `{head[:7]}`. The reviewer "
-              "did not file it. A shadow review is a second model that writes nothing; the host "
-              "filed this for it.\n\n")
-    payload = {"title": title, "labels": list(dict.fromkeys([*labels, SHADOW_FOUND_LABEL])),
-               "body": _signed(loop, header + body.strip()
-                               + lineage_note(pr=number, head=head, depth=depth,
-                                              by="the Diaktoros host for a shadow review"),
-                               "shadow", head)}
+    payload = {"title": title, "labels": list(dict.fromkeys(labels)),
+               "body": _signed(loop, text, seat, head)}
     # Cleared first, so "never sent" is judged on this write alone: the flag is the thread's
     # latest call's, and a stale one from an earlier call would turn an unknown outcome (a 5xx,
     # a timeout) into a retry, and a retry into a second copy of the issue.
@@ -617,13 +646,13 @@ def file_shadow_issue(loop: dict, *, repo: str, number: int, head: str, title: s
             # GitHub rejected the request (no Issues write, a bad label): no issue was created.
             raise BrokerNotSent(_denied("GitHub refused the issue write", why).args[0])
         raise _denied("GitHub issue write did not return a successful response", why)
-    _audit(loop, repo, number, head, "", "reader", "file_shadow_issue", login)
+    _audit(loop, repo, number, head, "", "reader", operation, login)
     return result["number"], _shadow_labels(loop, repo, number, head, result, payload["labels"],
-                                            login)
+                                            login, operation.removeprefix("file_"))
 
 
 def _shadow_labels(loop: dict, repo: str, number: int, head: str, issue: dict,
-                   wanted: list[str], login: str) -> str:
+                   wanted: list[str], login: str, kind: str = "shadow_issue") -> str:
     """Add the labels GitHub dropped from a new shadow issue (#1589); '' when it carries them
     all, else why not. GitHub drops create-time labels, silently, for a token that can't set them
     on a new issue (push access), so they are added with the labels endpoint after the POST. The
@@ -641,11 +670,11 @@ def _shadow_labels(loop: dict, repo: str, number: int, head: str, issue: dict,
     except Exception as exc:  # noqa: BLE001 - the issue is filed: report, never raise
         added, why = None, f"{type(exc).__name__}: {exc}"
     if isinstance(added, list):
-        _audit_confirmed(loop, repo, number, head, "shadow_issue_labels", login)
+        _audit_confirmed(loop, repo, number, head, f"{kind}_labels", login)
         missing = [x for x in missing if x.casefold() not in names(added)]
     if not missing:
         return ""
-    _audit_confirmed(loop, repo, number, head, "shadow_issue_labels_missing", login)
+    _audit_confirmed(loop, repo, number, head, f"{kind}_labels_missing", login)
     return (f"GitHub did not apply {', '.join(missing)} ({why or 'the label write left them off'})"
             f": the reader {login} needs permission to label issues in {repo}")
 

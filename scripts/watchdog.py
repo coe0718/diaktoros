@@ -45,6 +45,7 @@ from diaktoros import conflict_person  # noqa: E402
 from diaktoros import escalate_pending  # noqa: E402
 from diaktoros import merge_check  # noqa: E402
 from diaktoros import push_settle  # noqa: E402
+from diaktoros import ruling_issues  # noqa: E402
 from diaktoros import shadow_issues  # noqa: E402
 from diaktoros import review_kick  # noqa: E402
 from diaktoros import (  # noqa: E402
@@ -864,6 +865,13 @@ def _finish(c: _Sweep) -> None:
             log(f"shadow-found issue #{issue} filed")
     except Exception as exc:
         log(f"shadow issue filing failed: {type(exc).__name__}: {exc}")
+    try:
+        # #1864: the follow-ups an adjudicator ruled valid but not blocking, once it has ruled
+        # (off unless adjudicator_file_issues; bounded per day).
+        for issue in ruling_issues.file_pending(loop, log=log):
+            log(f"adjudicator-found issue #{issue} filed")
+    except Exception as exc:
+        log(f"adjudicator issue filing failed: {type(exc).__name__}: {exc}")
     if observer.retry(loop, st):
         log("observer: retried an undelivered notice")
     observer.flush(loop, st, wait_s=0 if watch_mode.TEST else observer.digest_wait(loop))
