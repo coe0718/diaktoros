@@ -11,6 +11,7 @@ _BOOLEANS = {
     "adjudicator_approves": " (true lets an ACCEPT ruling approve as the adjudicator and "
                             "dismiss the change request it overruled)",
     "adjudicator_file_issues": " (true files the findings a ruling lets through as issues)",
+    "change_proof": " (true runs a reviewed head's changed tests on its merge base and at the head)",
     "fix_ci": " (true hands a failed required check on a fixer's PR to the fixer)",
     "attribution": " (true signs what the loop posts; false turns it off)",
 }

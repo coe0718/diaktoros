@@ -88,6 +88,7 @@ PUSHES = {
     "fixer_scope_lock": True,
     "adjudicator_approves": True,
     "adjudicator_file_issues": True,
+    "change_proof": True,
     "attribution": False,
 }
 

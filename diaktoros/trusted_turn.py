@@ -48,12 +48,11 @@ def dependency_cache(loop: dict) -> Path | None:
 KILL_GRACE_S = 30
 
 
-def sandbox_prover(*, checkout: Path, code: Path, venv: Path, runtime: Path, home: Path,
-                   rust: Path, query: Path, timeout: int = 300):
-    """The host's reproduction prover (#484) for an issue-fix turn: ``prover(manifest, ids)``
-    copies the staged original head twice, applies the fix's test files to one and the whole fix
-    to the other, and runs only the named ``unittest`` ids in the same network-less sandbox a
-    seat uses. Only a Python ``unittest`` id is understood (what ``ci_tests`` parses)."""
+def unittest_runner(*, code: Path, venv: Path, runtime: Path, home: Path, rust: Path,
+                    query: Path, timeout: int = 300):
+    """``run(tree, ids, pythonpath)``: ``python -m unittest -v`` of exactly ``ids`` in ``tree``, in
+    the same network-less sandbox a seat uses; the runner's combined output. The reproduction
+    proof (#484) and the change proof (#1782) both run their tests through it."""
     def run(tree: Path, ids: list[str], pythonpath: str = ".") -> str:
         # The test directory on the path (#893): a suite whose modules import their helpers
         # absolutely (``import _home_guard``) only imports with its tests/ there.
@@ -63,10 +62,56 @@ def sandbox_prover(*, checkout: Path, code: Path, venv: Path, runtime: Path, hom
             entry=['/bin/sh', '-c', 'p="$1"; shift; PYTHONPATH="$p" exec /opt/venv/bin/python '
                    '-m unittest -v "$@" 2>&1', 'sh', pythonpath, *ids])
         return result.stdout + result.stderr
+    return run
+
+
+def sandbox_prover(*, checkout: Path, code: Path, venv: Path, runtime: Path, home: Path,
+                   rust: Path, query: Path, timeout: int = 300):
+    """The host's reproduction prover (#484) for an issue-fix turn: ``prover(manifest, ids)``
+    copies the staged original head twice, applies the fix's test files to one and the whole fix
+    to the other, and runs only the named ``unittest`` ids in the same network-less sandbox a
+    seat uses. Only a Python ``unittest`` id is understood (what ``ci_tests`` parses)."""
+    run = unittest_runner(code=code, venv=venv, runtime=runtime, home=home, rust=rust,
+                          query=query, timeout=timeout)
 
     def prover(manifest: dict, ids: list[str]) -> dict:
         return repro_proof.prove(Path(checkout), manifest, ids, run)
     return prover
+
+
+def query_text(prompt: str, role: str, prefetched, not_exported: list[str],
+               proof: tuple[str, str]) -> str:
+    """The seat's query. The host's note goes ahead of every PR record (``compose_prompt`` says
+    why): the prefetch, how many paths were not exported, and the change proof's verdict
+    (#1782). The PR's own names come after the record, quoted and bounded: the unexported paths
+    and the proof's test ids. Then the seat's tool instructions."""
+    note = deps.seat_note(prefetched, role)
+    if not_exported:
+        # The host fact is the count; the names are the PR author's, so they go with the
+        # PR data at the end, quoted and bounded — never into this leading host note.
+        note = ((note + '\n\n') if note else '') + (
+            f'Not exported: {len(not_exported)} symlink, submodule or .gitmodules path(s) '
+            'are not in your checkout; their names are listed after the PR record.')
+    proved, rows = proof
+    if proved:
+        note = ((note + '\n\n') if note else '') + proved
+    return (compose_prompt(prompt, note) + '\n\n' + not_exported_section(not_exported) + rows
+            + tool_instructions(role) + '\n')
+
+
+def change_proof_parts(loop: dict, scope, checkout: Path, root: Path, progress, **sandbox) -> tuple[str, str]:
+    """A reviewer turn's change proof (#1782), when the loop has it on: ``(note, rows)`` from
+    ``change_proof.for_head``, run before the turn budget starts, like the prefetch. ``("", "")``
+    for any other seat or with it off. Its runs mount an empty query: they run tests, not a seat."""
+    if scope.role != 'reviewer' or not config.change_proof(loop):
+        return '', ''
+    from . import change_proof
+    _report(progress, time.strftime('proving the changed tests — started %H:%M:%SZ',
+                                    time.gmtime()))
+    blank = root / 'proof-query.txt'
+    blank.write_text('')
+    run = unittest_runner(query=blank, timeout=change_proof.RUN_TIMEOUT_S, **sandbox)
+    return change_proof.for_head(loop, scope, checkout, root / 'merge-base', run, log=util.log)
 
 
 def not_exported_section(paths: list[str], limit: int = 50) -> str:
@@ -758,18 +803,10 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                 _report(progress, "nothing to prefetch (no supported dependency manifest)")
             if observed is not None:
                 observed['dependencies'] = [(r.ecosystem, r.status, r.reason) for r in prefetched]
-            note = deps.seat_note(prefetched, scope.role)
-            if not_exported:
-                # The host fact is the count; the names are the PR author's, so they go with the
-                # PR data at the end, quoted and bounded — never into this leading host note.
-                note = ((note + '\n\n') if note else '') + (
-                    f'Not exported: {len(not_exported)} symlink, submodule or .gitmodules path(s) '
-                    'are not in your checkout; their names are listed after the PR record.')
+            proof = change_proof_parts(loop, scope, checkout, root, progress, code=code,
+                                       venv=venv, runtime=runtime, home=home, rust=rust)
             query = root / 'query.txt'
-            # compose_prompt puts the note ahead of every PR record (its docstring says why).
-            query.write_text(compose_prompt(prompt, note) + '\n\n'
-                             + not_exported_section(not_exported)
-                             + tool_instructions(scope.role) + '\n')
+            query.write_text(query_text(prompt, scope.role, prefetched, not_exported, proof))
         except BaseException:
             deps.release(prefetched)
             raise

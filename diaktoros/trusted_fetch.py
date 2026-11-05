@@ -374,8 +374,12 @@ def _base_head(loop: dict, repo: str, head: str, reader: str) -> None:
 
 def _stage(loop: dict, *, repo: str, number: int, head: str, ref: str,
            role: str, sandbox_root: pathlib.Path,
-           not_exported: list | None = None) -> pathlib.Path:
-    reader = _identity(loop, repo, number, head, ref, role)
+           not_exported: list | None = None, commit: str | None = None,
+           reader: str | None = None) -> pathlib.Path:
+    """``commit``: export that commit's tree in place of the head's (the PR's merge base, #1782),
+    with every check on the PR head kept: a commit's tree is fixed by its SHA, so only the PR's
+    being at ``head`` can go stale. ``reader``: ``_identity``'s answer when the caller has it."""
+    reader = reader or _identity(loop, repo, number, head, ref, role)
     if role == "issue_fixer":
         def live(*_args) -> None:
             _base_head(loop, repo, head, reader)
@@ -389,10 +393,11 @@ def _stage(loop: dict, *, repo: str, number: int, head: str, ref: str,
             or any(root == token or root in token.parents for token in token_paths)):
         raise FetchDenied("sandbox root exists, follows a symlink or overlaps credential")
     live(loop, repo, number, head, ref, reader)
-    commit = _json(loop, f"/repos/{repo}/git/commits/{head}", reader)
-    if not isinstance(commit, dict) or commit.get("sha") != head:
+    staged = commit or head
+    found = _json(loop, f"/repos/{repo}/git/commits/{staged}", reader)
+    if not isinstance(found, dict) or found.get("sha") != staged:
         raise FetchDenied("commit SHA mismatch")
-    commit_tree = commit.get("tree")
+    commit_tree = found.get("tree")
     if not isinstance(commit_tree, dict):
         raise FetchDenied("invalid commit tree")
     tree_sha = commit_tree.get("sha")
@@ -415,7 +420,7 @@ def _stage(loop: dict, *, repo: str, number: int, head: str, ref: str,
         # it errs toward refusing (a repo just under the cap with poorly-compressing files, plus tar's ~1 KiB
         # per-entry headers/padding, may be refused here although its tree fits). Do not "fix" this into an
         # uncompressed-only check: that would let an unbounded download through.
-        archive = _fetch_tarball(loop, repo, reader, head, _MAX_BYTES)
+        archive = _fetch_tarball(loop, repo, reader, staged, _MAX_BYTES)
         directory = private / "repo"
         directory.mkdir(mode=0o700)
         _extract(archive, directory, entries, frozenset(skipped))
@@ -424,6 +429,20 @@ def _stage(loop: dict, *, repo: str, number: int, head: str, ref: str,
             raise FetchDenied("sandbox root appeared during staging")
         _publish_exclusive(private, root)
     return root / "repo"
+
+
+def stage_merge_base(loop: dict, *, repo: str, number: int, head: str, ref: str,
+                     role: str, sandbox_root: pathlib.Path) -> tuple[pathlib.Path, str]:
+    """Stage the merge base of an exact PR head and the loop's base branch (#1782): the tree the
+    PR's diff is against. Returns ``(checkout, merge_base_sha)``; refuses as ``stage`` does."""
+    reader = _identity(loop, repo, number, head, ref, role)
+    compare = _json(loop, f"/repos/{repo}/compare/{loop.get('base')}...{head}?per_page=1", reader)
+    base = ((compare.get("merge_base_commit") or {}).get("sha")
+            if isinstance(compare, dict) else None)
+    if not isinstance(base, str) or not _SHA.fullmatch(base):
+        raise FetchDenied("merge base unreadable")
+    return _stage(loop, repo=repo, number=number, head=head, ref=ref, role=role,
+                  sandbox_root=sandbox_root, commit=base, reader=reader), base
 
 
 def stage(loop: dict, *, repo: str, number: int, head: str, ref: str,

@@ -260,6 +260,7 @@ DEFAULTS: dict = {
     "fixer_scope_lock": False,  # hold a fix round that changes files its findings do not name (#482)
     "adjudicator_approves": False,  # an ACCEPT ruling approves as the adjudicator (#905)
     "adjudicator_file_issues": False,  # a ruling's non-blocking findings become issues (#1864)
+    "change_proof": False,    # the host proves each reviewed head's changed tests (#1782)
 }
 
 def unattended_fixer_push_enabled(loop: dict) -> bool:
@@ -1318,6 +1319,12 @@ def fixer_scope_lock(loop: dict) -> bool:
     """Whether a fix round's push is held when it changes files outside its findings (#482).
     Off unless set. It acts only where the broker pushes, so it needs unattended fixer pushes."""
     return loop.get("fixer_scope_lock") is True
+
+
+def change_proof(loop: dict) -> bool:
+    """Whether the host runs a reviewed head's changed tests on the merge base and at the head
+    before the reviewer's turn (#1782, ``change_proof``). Off unless set."""
+    return loop.get("change_proof") is True
 
 
 def adjudicator_file_issues(loop: dict) -> bool:

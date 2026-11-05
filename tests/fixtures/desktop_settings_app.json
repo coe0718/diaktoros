@@ -381,6 +381,12 @@
         "default": false,
         "description": "On: the findings the adjudicator rules valid but not blocking (every one it lets through on an ACCEPT; on a REJECT or RESPEC, those apart from what the next round must fix) are filed as issues (#1864): asked for in its ruling turn, filed after the ruling by the reader, labelled adjudicator-found, at most 3 a ruling and 25 a day. Off: its follow-ups stay in the ruling comment."
       },
+      "change_proof": {
+        "label": "Prove the changed tests",
+        "type": "bool",
+        "default": false,
+        "description": "On: before each reviewer turn the host runs the test methods the PR adds or changes against its merge base (with the PR's test files applied) and at the head, in the sandbox, and shows the reviewer whether they fail without the change and pass with it (#1782): at most 20 tests, kept per head, so the shadow review reads the same. Informs, never blocks. Off: the reviewer proves it by hand."
+      },
       "attribution": {
         "label": "Sign what the loop posts",
         "type": "bool",
@@ -452,6 +458,7 @@
       "fixer_scope_lock": false,
       "adjudicator_approves": false,
       "adjudicator_file_issues": false,
+      "change_proof": false,
       "attribution": true
     },
     "sources": {
@@ -518,6 +525,7 @@
       "fixer_scope_lock": "default",
       "adjudicator_approves": "default",
       "adjudicator_file_issues": "default",
+      "change_proof": "default",
       "attribution": "default"
     },
     "seats": {

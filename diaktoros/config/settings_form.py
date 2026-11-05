@@ -368,6 +368,15 @@ SETTINGS_SCHEMA: dict = {
                                                "labelled adjudicator-found, at most 3 a ruling "
                                                "and 25 a day. Off: its follow-ups stay in the "
                                                "ruling comment."},
+    "change_proof": {"label": "Prove the changed tests", "type": "bool", "default": False,
+                     "description": "On: before each reviewer turn the host runs the test "
+                                    "methods the PR adds or changes against its merge base "
+                                    "(with the PR's test files applied) and at the head, in "
+                                    "the sandbox, and shows the reviewer whether they fail "
+                                    "without the change and pass with it (#1782): at most 20 "
+                                    "tests, kept per head, so the shadow review reads the "
+                                    "same. Informs, never blocks. Off: the reviewer proves it "
+                                    "by hand."},
     "attribution": {"label": "Sign what the loop posts", "type": "bool", "default": True,
                     "description": "On: every review, comment and commit the loop itself "
                                    "posts ends with 'Automated by Diaktoros' and "
@@ -572,7 +581,8 @@ def _apply_switches(overlaid, d, settings) -> None:  # noqa: ANN001
     """``apply_settings``: the on/off and named settings, and the review-only and CI-fix limits."""
     # The on/off knobs, attribution (#197) among them, move only when the form names them.
     for key in ("attribution", "review_after_ci", "fix_ci", "fixer_scope_lock",
-                "adjudicator_approves", "adjudicator_file_issues", "review_only_update"):
+                "adjudicator_approves", "adjudicator_file_issues", "change_proof",
+                "review_only_update"):
         if _form_value(settings, key) is not None:
             overlaid[key] = d[key]
     if str(d.get("merge_check") or "").strip():
