@@ -492,6 +492,39 @@ class ReaderIdentityTests(_Loop):
                       "--token ghost-account=", out)
         self.assertEqual(self.loop_file().read_bytes(), before)
 
+    def test_every_reader_fix_line_names_the_app_alternative(self):
+        """A reader with no credential can be given a PAT or a GitHub App: each place that prints
+        the reader fix names both (#1194), so none sends an App operator to a PAT only."""
+        app = "--app {0}=APP_ID:/abs/key.pem"
+        # apply's refusal of a reader with no 'tokens' or 'apps' entry (the enforcing entry point)
+        rc, out = self.run_cli(self.init_argv())
+        self.assertEqual(rc, 0, out)
+        data = json.loads(self.loop_file().read_text())
+        data["read_token"] = "ghost-account"
+        self.loop_file().write_text(json.dumps(data))
+        rc, out = self.run_cli(["apply", "--loop", "widgets"], self.settings_matching())
+        self.assertEqual(rc, 2, out)
+        fix = [line for line in out.splitlines() if line.startswith("fix:")]
+        self.assertEqual(len(fix), 1, out)
+        self.assertIn("--token ghost-account=/path/to/pat", fix[0])
+        self.assertIn(app.format("ghost-account"), fix[0])
+        # apply's four-identity refusal, `status`, and doctor all print credentials.reader_fix
+        data["read_token"] = REV
+        self.loop_file().write_text(json.dumps(data))
+        rc, out = self.run_cli(["apply", "--loop", "widgets"], self.settings_matching(cap=5))
+        self.assertEqual(rc, 2, out)
+        self.assertIn(app.format("<that login>"), out)
+        rc, out = self.run_cli(["status", "--loop", "widgets"])
+        self.assertIn(app.format("<that login>"), out)
+        check = identity_checks.check_read_token(config.load_id("widgets"))
+        self.assertIn(app.format("<that login>"), check.fix)
+        self.assertIn("--token <that login>=/path/to/pat", check.fix)
+        # a loop file with no reader named at all: doctor's line says the same
+        loop = dict(config.load_id("widgets"), read_token="")
+        absent = identity_checks.check_read_token(loop)
+        self.assertEqual(absent.status, doctor.ABSENT)
+        self.assertIn(app.format("<that login>"), absent.fix)
+
     def test_set_read_token_refusals(self):
         rc, out = self.run_cli(self.init_argv())
         self.assertEqual(rc, 0, out)
