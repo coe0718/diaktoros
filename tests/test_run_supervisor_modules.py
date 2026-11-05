@@ -27,10 +27,23 @@ ROOT = PACKAGE.parents[1]
 SUBMODULES = ("pr_facts", "turn_prompts", "records", "views", "notices", "intake", "workers", "claims",
               "issue_inputs", "ledger_schema")
 # Every real submodule, for the shadow rules. ``turns`` is not in SUBMODULES: the package
-# deliberately re-exports its state classes (_ClaimRead, _Turn, _Launch), which the one-home
-# tests would refuse, but a local named ``turns`` shadows the module like any other (#1528).
+# deliberately re-exports its state classes (_ClaimRead, _Turn, _Launch), so the one-home rules
+# check it through ONE_HOME_SUBMODULES with those three exempt (#1332), and a local named
+# ``turns`` shadows the module like any other (#1528).
 ALL_SUBMODULES = tuple(sorted(
     p.stem for p in PACKAGE.glob("*.py") if p.stem not in ("__init__", "__main__")))
+# The package's deliberate re-exports (#758): the only names of a submodule that may also resolve
+# as ``run_supervisor.<name>``. The one-home rules check every other name of every submodule,
+# ``turns`` included (#1332).
+RE_EXPORTS = {"turns": frozenset({"_ClaimRead", "_Turn", "_Launch"})}
+ONE_HOME_SUBMODULES = SUBMODULES + ("turns",)
+
+
+def _one_home_names() -> set[tuple[str, str]]:
+    """(submodule, name) for each top-level name that must have that submodule as its only home:
+    every name of every ONE_HOME_SUBMODULES module, minus the package's RE_EXPORTS."""
+    return {(sub, name) for sub in ONE_HOME_SUBMODULES
+            for name in _top_level_names(PACKAGE / f"{sub}.py") - RE_EXPORTS.get(sub, frozenset())}
 
 
 def _top_level_names(path: pathlib.Path) -> set[str]:
@@ -46,10 +59,10 @@ def _top_level_names(path: pathlib.Path) -> set[str]:
 
 
 def _moved_names() -> set[str]:
-    """Names that no longer resolve as ``run_supervisor.<name>``: the module-level names of the
-    SUBMODULES, plus the methods of every class in any submodule (``turns`` included), minus
+    """Names that no longer resolve as ``run_supervisor.<name>``: the one-home names of the
+    submodules (``turns`` included), plus the methods of every class in any submodule, minus
     what the package itself still binds (the re-exported state classes, ``Supervisor``)."""
-    moved = {n for sub in SUBMODULES for n in _top_level_names(PACKAGE / f"{sub}.py")}
+    moved = {name for _, name in _one_home_names()}
     for path in PACKAGE.glob("*.py"):
         if path.stem in ("__init__", "__main__"):
             continue
@@ -99,13 +112,24 @@ def _shadowed_submodules(source: str) -> list[tuple[int, str]]:
 class Split(unittest.TestCase):
     def test_a_moved_name_has_one_home(self):
         core = _top_level_names(PACKAGE / "__init__.py")
-        for name in SUBMODULES:
+        for name, moved in sorted(_one_home_names()):
             module = importlib.import_module(f"diaktoros.run_supervisor.{name}")
-            for moved in _top_level_names(PACKAGE / f"{name}.py"):
-                with self.subTest(module=name, name=moved):
-                    self.assertNotIn(moved, core)
-                    self.assertFalse(hasattr(run_supervisor, moved), f"call {name}.{moved}")
-                    self.assertTrue(hasattr(module, moved))
+            with self.subTest(module=name, name=moved):
+                self.assertNotIn(moved, core)
+                self.assertFalse(hasattr(run_supervisor, moved), f"call {name}.{moved}")
+                self.assertTrue(hasattr(module, moved))
+
+    def test_the_one_home_rules_cover_the_turns_submodule(self):
+        # turns' own names have one home like any submodule's (#1332); only the package's
+        # deliberate re-exports of its state classes (#758) are exempt.
+        names = _one_home_names()
+        for name in ("ClaimAndLaunch", "_turn_pool", "_turn_role", "ci_wait_expired"):
+            self.assertIn(("turns", name), names)
+        for name in ("_ClaimRead", "_Turn", "_Launch"):
+            self.assertNotIn(("turns", name), names)
+            self.assertIs(getattr(run_supervisor, name), getattr(run_supervisor.turns, name))
+        self.assertEqual(set(ONE_HOME_SUBMODULES), set(ALL_SUBMODULES))
+        self.assertEqual(set(RE_EXPORTS), {"turns"})
 
     def test_the_record_methods_live_only_in_the_mixin(self):
         # Supervisor inherits records.LedgerRecords: a method defined again in Supervisor's own
@@ -153,7 +177,7 @@ class Split(unittest.TestCase):
         self.assertIn("recover", own[workers.WorkerLifecycle])
 
     def test_nothing_imports_a_moved_name_from_the_package(self):
-        moved = {n for sub in SUBMODULES for n in _top_level_names(PACKAGE / f"{sub}.py")}
+        moved = {name for _, name in _one_home_names()}
         files = [*(ROOT / "diaktoros").rglob("*.py"), *(ROOT / "scripts").glob("*.py"),
                  *(ROOT / "tests").rglob("*.py")]
         for path in files:
