@@ -31,7 +31,7 @@ import subprocess
 import sys
 import time
 
-from . import config, gh, isolation, observer, state as state_mod
+from . import config, gh, isolation, observer, stale_approval, state as state_mod
 from .util import log, now_iso, silence
 from . import envnames
 
@@ -169,12 +169,12 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
     """
     supervisor = isolated_supervisor(loop)
     supervisor.recover()
-    with _shadow_snapshot_lock(loop, seat, number, head):
+    with _shadow_snapshot_lock(loop, seat, number, head, turn_key):
         # Before the reviewer's row exists, so its worker can record nothing first (#1647). A
         # shadow is queued only on that snapshot: one taken later could hold the review's own
         # findings. The lock keeps another enqueue from evicting it before the shadow's row is
         # visible as open (review of #1656, F6).
-        snapped = seat == "reviewer" and snapshot_shadow(loop, number, head)
+        snapped = seat == "reviewer" and snapshot_shadow(loop, number, head, turn_key)
         delivery = f"{loop['repo']}:{number}:{head}:{seat}"
         # The turn's wall clock rides on the row (#49): whichever worker claims it — possibly
         # one spawned by another loop's event — runs it for this loop's seat budget.
@@ -187,13 +187,13 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
     return outcome
 
 
-def _shadow_snapshot_lock(loop: dict, seat: str, number: int, head: str):
+def _shadow_snapshot_lock(loop: dict, seat: str, number: int, head: str, turn_key: str = ""):
     """The loop's state lock for a reviewer turn that gets a shadow, held from its snapshot to
     the shadow's submit: every eviction runs under it and reads the open shadow runs first, so
     none can drop a snapshot whose row is not in the ledger yet. Otherwise no lock."""
     from contextlib import nullcontext
-    sampled = config.shadow_profile(loop) and shadow_sampled(loop, number, head)
-    if seat != "reviewer" or not sampled:
+    if seat != "reviewer" or not config.shadow_profile(loop) or not shadow_sampled(
+            loop, number, head, turn_key):
         return nullcontext()
     try:
         return state_mod.state_for(loop).locked()
@@ -201,13 +201,13 @@ def _shadow_snapshot_lock(loop: dict, seat: str, number: int, head: str):
         return nullcontext()
 
 
-def shadow_sampled(loop: dict, number: int, head: str) -> bool:
-    """Whether this reviewer turn also gets a shadow review (#218): one in ``shadow.every``,
-    chosen by the repo, PR and head, so a redelivery or a re-queued turn chooses the same."""
-    import hashlib
-    every = config.shadow_every(loop)
-    digest = hashlib.sha256(f"{loop['repo']}:{number}:{head}".encode()).digest()
-    return int.from_bytes(digest[:8], "big") % every == 0
+def shadow_sampled(loop: dict, number: int, head: str, turn_key: str = "") -> bool:
+    """Whether this reviewer turn also gets a shadow review (#218): by what the PR changes when
+    the loop names paths (#1788), else one in ``shadow.every``; chosen once per PR, head and
+    reviewer turn, so a redelivery or a re-queued turn chooses the same, and a new turn at the
+    same head (a retarget's fresh review) chooses again from its own diff (``shadow_choice``)."""
+    from . import shadow_choice
+    return shadow_choice.choose(loop, number, head, turn_key)["shadow"]
 
 
 # A shadow run in one of these states may still record its review at the head (#1004):
@@ -325,15 +325,19 @@ def shadow_open_heads(repo: str, db=None) -> set[tuple[int, str]]:
     findings snapshot must outlive it (#1013). Scoped to the loop's repo (#1133): the snapshot
     file is per loop and keyed by ``pr:head`` alone, so another repo's open run at the same PR
     number and head would otherwise keep this loop's snapshot past the cap. Empty when the
-    ledger does not exist yet; raises when it exists but cannot be read, so the caller never
-    evicts on a guess."""
+    ledger does not exist yet; raises when it exists but cannot be read — a corrupt file, or a
+    path that is not a regular file (a directory) — so the caller never evicts on a guess, and
+    ``shadow_state`` holds on the same ledger."""
     from . import run_supervisor
     path = pathlib.Path(db or run_supervisor.production_ledger())
     if not path.exists():
         return set()
     con = run_supervisor.views.read_only_connect(path)
     if con is None:
-        return set()
+        # ``read_only_connect`` answers None for anything that is not a file, and this path
+        # exists: that is not an absent ledger, so not "no open runs" (an empty set would let
+        # the eviction run).
+        raise OSError(f"the run ledger {path} exists but is not a readable file")
     try:
         rows = con.execute(f"SELECT pr, head FROM runs WHERE repo=? AND seat='shadow' AND "
                            f"state IN ({','.join('?' * len(SHADOW_OPEN))})",
@@ -403,6 +407,7 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
 
 
 SHADOW_ESCALATION = "shadow"           # the breach marker's ``escalated.by`` for #1004
+OPERATOR_ESCALATION = "operator"       # ... and for ``hermes dk escalate`` (#459, #1246)
 
 
 def _dissent_state(loop: dict, number: int, head: str, short: str, ruling, marker) -> tuple[str, str, str]:
@@ -493,12 +498,39 @@ def shadow_overruled(loop: dict, marker, head: str, db=None) -> bool:
     return not held and "overruled the shadow review" in _note
 
 
+def _shadow_review_and_ruling(loop: dict, number: int, head: str, marker, db=None):
+    """``(newest shadow review row, ruling on the marker's round)`` at a head, from the run
+    ledger; the ruling is None unless the marker is this head's shadow escalation, or none is in
+    yet. None when the ledger cannot be read."""
+    import sqlite3
+    from . import run_supervisor
+    mine = (isinstance(marker, dict) and marker.get("head") == head
+            and (marker.get("escalated") or {}).get("by") == SHADOW_ESCALATION)
+    try:
+        con = run_supervisor.views.read_only_connect(db or run_supervisor.production_ledger())
+        if con is None:
+            return None
+        try:
+            row = _latest_shadow_review(con, loop["repo"], number, head)
+            # The ruling on this marker's round, if it is in.
+            ruled = next(iter(_rulings_at(con, loop["repo"], number, head,
+                                          f"breach:{marker.get('rounds')}")), None) if mine else None
+        finally:
+            con.close()
+    except (sqlite3.Error, OSError):
+        return None
+    return row, ruled
+
+
 def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) -> str:
     """Send a head for a ruling when the shadow review disagrees with the reviewer's approval
     (#1004 part 2): ``shadow.escalate`` on, the reviewer's effective verdict at the head
-    APPROVED, and the newest shadow review there REQUEST_CHANGES. Once per shadow review: the
-    breach marker dedups, and a dissent newer than the head's ruling goes as the next round
-    (#1111). ``gate.breach``'s outcome, or why nothing was sent."""
+    APPROVED and that approval not stale (#473: a required check at the head has since gone
+    red, cancelled or missing, the finding ``ready`` and ``explain`` deny the approval by), and
+    the newest shadow review there REQUEST_CHANGES. A stale approval is "not approved": the
+    ruling prompt says the reviewer approved the head, which it no longer vouches for. Once per
+    shadow review: the breach marker dedups, and a dissent newer than the head's ruling goes as
+    the next round (#1111). ``gate.breach``'s outcome, or why nothing was sent."""
     if not config.shadow_escalate(loop):
         return "off"
     if not loop.get("adjudicator", {}).get("route"):
@@ -508,24 +540,13 @@ def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) 
     latest = latest_effective_review_at_head(reviews, loop, head)
     if latest is None or gh.review_state(latest) != "APPROVED":
         return "not approved"
-    import sqlite3
-    from . import run_supervisor
+    if stale_approval.is_stale(st.watch(), number, head):
+        return "not approved"             # the one test ``ready`` and ``explain`` apply
     marker = st.breach_get(number)
-    mine = (isinstance(marker, dict) and marker.get("head") == head
-            and (marker.get("escalated") or {}).get("by") == SHADOW_ESCALATION)
-    try:
-        con = run_supervisor.views.read_only_connect(db or run_supervisor.production_ledger())
-        if con is None:
-            return "ledger unreadable"
-        try:
-            row = _latest_shadow_review(con, loop["repo"], number, head)
-            # The ruling on this marker's round, if it is in.
-            ruled = next(iter(_rulings_at(con, loop["repo"], number, head,
-                                          f"breach:{marker.get('rounds')}")), None) if mine else None
-        finally:
-            con.close()
-    except (sqlite3.Error, OSError):
+    read = _shadow_review_and_ruling(loop, number, head, marker, db)
+    if read is None:
         return "ledger unreadable"
+    row, ruled = read
     if row is None or str(row[0]) != "REQUEST_CHANGES":
         return "shadow agrees"
     if ruled is not None and not ruling_answers(ruled, row[2], row[1]):
@@ -555,11 +576,11 @@ def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) 
                   escalated={"by": SHADOW_ESCALATION, "at": now_iso(), "reason": reason})
 
 
-def snapshot_shadow(loop: dict, number: int, head: str) -> bool:
+def snapshot_shadow(loop: dict, number: int, head: str, turn_key: str = "") -> bool:
     """Keep the findings ledger for a sampled head's shadow review (#218): the broker judges the
     shadow against it, never against what the real review records. Taken before the reviewer's
     row exists (#1647); the first snapshot wins. Whether one is kept; never raises."""
-    if not config.shadow_profile(loop) or not shadow_sampled(loop, number, head):
+    if not config.shadow_profile(loop) or not shadow_sampled(loop, number, head, turn_key):
         return False
     try:
         st = state_mod.state_for(loop)
@@ -586,7 +607,7 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
     try:
         if not config.shadow_profile(loop):
             return "off"
-        if not shadow_sampled(loop, number, head):
+        if not shadow_sampled(loop, number, head, turn_key):
             return "not sampled"
         delivery = f"{loop['repo']}:{number}:{head}:shadow" + (f":{turn_key}" if turn_key else "")
         # No durable snapshot, no shadow: the broker would judge it on the live ledger, which
@@ -601,7 +622,7 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
         # enqueue cannot sample the ledger before this run is visible in it and then evict this
         # snapshot as unused (#1013). The lock is reentrant.
         with st.locked():
-            if not snapshot_shadow(loop, number, head):
+            if not snapshot_shadow(loop, number, head, turn_key):
                 log(f"#{number}: no shadow findings snapshot, shadow not queued")
                 return "no snapshot"
             return supervisor.submit(delivery, loop["repo"], number, head, "shadow",
@@ -1122,6 +1143,17 @@ def wake_adjudicator(loop: dict, number: int, head: str, rounds: int, reason: st
     return True
 
 
+def breach_authors(loop: dict, escalated: dict | None) -> set[str]:
+    """The PR authors ``breach`` parks for a ruling, given the marker's ``escalated`` record.
+
+    Shadow rulings and explicit operator requests may concern any reviewed PR; automatic
+    cap/dispute rulings remain fixer-only. Review-only authors are never fixed here. The
+    watchdog's retry of a pending delivery calls this too, so the two cannot disagree."""
+    return (config.reviewed_authors(loop)
+            if (escalated or {}).get("by") in {SHADOW_ESCALATION, OPERATOR_ESCALATION}
+            else set(loop["fixers"]))
+
+
 def breach(loop: dict, st: state_mod.LoopState, number: int, head: str, rounds: int,
            reason: str, *, escalated: dict | None = None) -> str:
     """Park the PR at ``head`` for a ruling and wake the adjudicator; the marker's outcome.
@@ -1144,15 +1176,11 @@ def breach(loop: dict, st: state_mod.LoopState, number: int, head: str, rounds: 
                 and ((current.get("user") or {}).get("login") or "").lower() in authors
                 and (current.get("head") or {}).get("sha") == head)
 
-    # Shadow rulings and explicit operator requests may concern any reviewed PR; automatic
-    # cap/dispute rulings remain fixer-only. Review-only authors are never fixed here.
-    authors = (config.reviewed_authors(loop)
-               if (escalated or {}).get("by") in {SHADOW_ESCALATION, "operator"}
-               else set(loop["fixers"]))
+    authors = breach_authors(loop, escalated)
 
     route = loop.get("adjudicator", {}).get("route")
     def observe_reserved(marker: dict) -> None:
-        by = str((marker.get("escalated") or {}).get("by") or "operator")
+        by = str((marker.get("escalated") or {}).get("by") or OPERATOR_ESCALATION)
         outcome = ((f"the fixer disputed the review at {marker['rounds']}/{loop['cap']} verdicts"
                     if by == "dispute" else
                     "the shadow review requested changes at an approved head"

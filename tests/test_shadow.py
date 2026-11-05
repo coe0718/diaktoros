@@ -272,7 +272,11 @@ class Compare(Ledger):
         text = stats.report_text(stats.report({"repo": "acme/widgets", "id": "w"}, self.db, 0,
                                               time.time() + 10, breaches={},
                                               pr_state=lambda n: None, tracked={}))
-        self.assertNotIn("shadow", text)
+        # No shadow-review section or case lines. The escalations line always names its
+        # `by shadow` bucket (#1116), so that one line may carry the word, and no other.
+        self.assertEqual([line for line in text.splitlines()
+                          if "shadow" in line and not line.startswith("escalations: ")], [])
+        self.assertEqual(text.count("shadow"), 1)
         self.assertIsNone(stats.shadow_outcomes(self.db.parent / "none.sqlite", "acme/widgets",
                                                 0, 1, {}))
 
@@ -630,6 +634,44 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual((self.seen["role"], row["state"]), ("reviewer", "succeeded"), row)
         self.assertEqual([w for _k, w in self.kinds() if w.startswith("shadow review")], [])
 
+    def test_escalate_with_always_paths_holds_their_heads_and_not_the_others(self):
+        # #1788 (review of #1852, F3): escalate with every > 1 is allowed only beside always
+        # paths. A head sampling alone skips (every 6 skips HEAD) is shadowed, held while the
+        # shadow is pending and after it dissents when the PR changes an always path, and is
+        # neither shadowed nor held when it doesn't.
+        from diaktoros import shadow_choice
+        shadow = {"profile": "grok", "every": 6, "escalate": True, "always_paths": ["src/auth/*"]}
+        self.loop = config.normalize({**RAW, "state_dir": str(self.home / "state"),
+                                      "required_checks": ["tests"], "shadow": shadow})
+        self.assertFalse(shadow_choice.sampled(self.loop, 8, HEAD))
+        with mock.patch.object(gh, "pr_files_read",
+                               return_value=([{"filename": "src/auth/login.py"}], "")):
+            sup = self.queue_shadow()
+        self.reviewer_is(sup, ("confirmed", "APPROVED"), "succeeded")
+        self.assertEqual(merge_check.decide(self.kinds())[0], merge_check.PENDING)
+        self.assertTrue([w for _k, w in self.kinds() if w.startswith("shadow review")])
+        sup, row = self.claim_shadow(sup, [{"verdict": "REQUEST_CHANGES", "body": "F1: a.py:1: x",
+                                            "authorized": True, "denial": ""}])
+        self.assertEqual(row["state"], "succeeded", row["error"])
+        held = [w for _k, w in self.kinds() if w.startswith("shadow review")]
+        self.assertTrue(held and "requested changes" in held[0], held)
+        self.assertNotEqual(merge_check.decide(self.kinds())[0], merge_check.SUCCESS)
+        # The same loop, a PR that changes no always path: sampled out, no shadow, no hold.
+        self.setUp()
+        self.loop = config.normalize({**RAW, "state_dir": str(self.home / "state"),
+                                      "required_checks": ["tests"], "shadow": shadow})
+        with mock.patch.object(Supervisor, "_spawn"), \
+                mock.patch.object(config, "by_repo", return_value=self.loop), \
+                mock.patch.object(gh, "pr_files_read",
+                                  return_value=([{"filename": "lib/util.py"}], "")):
+            gate.enqueue_isolated(self.loop, "reviewer", 8, HEAD)
+        sup = Supervisor(self.home / "state" / "diaktoros-runs.sqlite",
+                         production_config=self.home / "diaktoros-runtime.json",
+                         hermes_home=self.home)
+        self.assertIsNone(sup.get(f"acme/widgets:8:{HEAD}:shadow"))
+        self.reviewer_is(sup, ("confirmed", "APPROVED"), "succeeded")
+        self.assertEqual([w for _k, w in self.kinds() if w.startswith("shadow review")], [])
+
     def test_a_reviewer_that_failed_without_a_verdict_keeps_its_shadow_for_its_retry(self):
         # Review of #1656, F14: the reviewer turn fails with no verdict and is re-armed, by a
         # redelivered event or by an operator. Cancelled at that first claim, the shadow would be
@@ -882,6 +924,51 @@ class Cli(unittest.TestCase):
                                             "--shadow-issues-daily", "9"])
         argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn("--shadow-issues-daily=9", argv)
+
+    def test_shadow_path_globs_in_every_path(self):
+        # #1788: init (flag and form), set (replace and clear), apply, setup and show.
+        form = {"shadow_profile": "grok", "shadow_always_paths": "src/auth/*, deploy/*",
+                "shadow_never_paths": "docs/*"}
+        for extra, settings, want in (
+                ((), form, {"profile": "grok", "always_paths": ["src/auth/*", "deploy/*"],
+                            "never_paths": ["docs/*"]}),
+                (("--shadow-always-path", "lib/*"), form,
+                 {"profile": "grok", "always_paths": ["lib/*"], "never_paths": ["docs/*"]}),
+                (("--shadow-profile", "x", "--shadow-never-path", "*.md",
+                  "--shadow-never-path", "tests/*"), None,
+                 {"profile": "x", "never_paths": ["*.md", "tests/*"]})):
+            with self.subTest(extra=extra, settings=settings):
+                self.file.unlink(missing_ok=True)
+                rc, out = self.init(*extra, settings=settings)
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(self.shadow(), want)
+        self.file.unlink(missing_ok=True)
+        self.assertEqual(self.init()[0], 0)
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-always-path", "a/*")
+        self.assertEqual(rc, 2, out)                      # needs a profile
+        self.assertIn("need a shadow profile", out)
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-profile", "grok",
+                           "--shadow-always-path", "a/*", "--shadow-always-path", "b/*",
+                           "--shadow-never-path", "docs/*")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.shadow(), {"profile": "grok", "always_paths": ["a/*", "b/*"],
+                                         "never_paths": ["docs/*"]})
+        rc, out = self.cli("show", "--loop", LOOP_ID)
+        self.assertIn("b/*", next(line for line in out.splitlines()
+                                  if line.strip().startswith("shadow_always_paths")))
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--no-shadow-always-paths")
+        self.assertEqual((rc, self.shadow()), (0, {"profile": "grok",
+                                                   "never_paths": ["docs/*"]}), out)
+        rc, out = self.cli("apply", "--loop", LOOP_ID,
+                           settings={"shadow_always_paths": "c/*, d/*"})
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.shadow()["always_paths"], ["c/*", "d/*"])
+        from diaktoros.cli import setup_command as cli_setup
+        t = self.t
+        args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--shadow-profile", "x",
+                                            "--shadow-never-path", "docs/*"])
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        self.assertIn("--shadow-never-path=docs/*", argv)
 
     def seat(self) -> dict:
         return json.loads(self.file.read_text()).get("seats", {}).get("shadow", {})

@@ -115,14 +115,20 @@ HUMAN_PATH_MAX = 200
 def check_human_paths(value, where: str) -> list[str]:
     """Glob patterns (#478) for paths only a human may approve: unique, printable, one line each.
     [] reserves nothing. Host-owned: never read from a PR."""
+    return check_globs(value, where, "human_paths")
+
+
+def check_globs(value, where: str, key: str) -> list[str]:
+    """A list of path globs under ``key`` (``human_paths``, ``shadow.always_paths``, ...):
+    unique, printable, one line each, at most ``HUMAN_PATHS_MAX``. None = []."""
     if value is None:
         return []
     if not isinstance(value, list) or not all(isinstance(name, str) for name in value):
-        raise config.ConfigError(f"{where}: 'human_paths' must be a list of glob patterns")
+        raise config.ConfigError(f"{where}: '{key}' must be a list of glob patterns")
     names = [name.strip() for name in value]
     if (len(names) > HUMAN_PATHS_MAX or len(set(names)) != len(names)
             or not all(0 < len(name) <= HUMAN_PATH_MAX and name.isprintable() for name in names)):
-        raise config.ConfigError(f"{where}: 'human_paths' must be at most {HUMAN_PATHS_MAX} unique "
+        raise config.ConfigError(f"{where}: '{key}' must be at most {HUMAN_PATHS_MAX} unique "
                           f"patterns, each one printable line of 1-{HUMAN_PATH_MAX} characters")
     return names
 

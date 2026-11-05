@@ -38,6 +38,9 @@ SILENT = "[SILENT]"
 WORKER_LOG_MAX = 256 * 1024
 REVIEWED_PR_INELIGIBLE = 'reviewed_pr_ineligible:'
 ACTIVE = ("claimed", "launching", "running", "uncertain")
+# A run that may still record (or rule): not yet ended. An adjudicator run past these that never
+# ruled files none of the follow-ups it asked for (#1864).
+NOT_ENDED = ("pending", "waiting", "claimed", "launching", "running")
 MAX_ATTEMPTS = 3
 # Issue #53: a turn that failed before any external write is not dead. It waits
 # (``waiting``, ``retry_at``) with exponential backoff and is relaunched up to MAX_RETRIES

@@ -163,7 +163,7 @@ PR that closes no issue is unaffected.
 
 `cap` defaults to 3 and must be at least 2. The gate counts **CHANGES_REQUESTED** reviews by allowlisted reviewers from GitHub history. Approvals end the relevant situation; a comment neither counts nor wakes the fixer. With cap 3, the ordinary path permits three changes-requested verdicts and at most two intervening fixes. The third escalates instead of buying a third fix. A new commit does not erase the accumulated review budget.
 
-Reviewer findings are graded P0–P3 and classified as blocking or issue-tier. Blocking findings request changes; an approval may list nonblocking issues to file. This does not automatically file those issues. An adjudicator ruling is not a GitHub approval or a merge instruction enforced by the plugin.
+Reviewer findings are graded P0–P3 and classified as blocking or issue-tier. Blocking findings request changes; the reviewer files nonblocking ones as issues itself (#247), and with `adjudicator_file_issues` the adjudicator's ruling does too (#1864). An adjudicator ruling is not a GitHub approval or a merge instruction enforced by the plugin.
 
 ## The switches
 

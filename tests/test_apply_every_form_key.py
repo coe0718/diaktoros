@@ -73,6 +73,8 @@ PUSHES = {
     "shadow_escalate": "on",
     "shadow_file_issues": "on",
     "shadow_issues_daily": "40",
+    "shadow_always_paths": "src/auth/*, deploy/*",
+    "shadow_never_paths": "docs/*, *.md",
     "human_paths": ".github/**, scripts/release*",
     "generated": "docs/commands.md=python3 tests/commands_doc.py --write",
     "ci_coverage": "tests (3.14)=full unit suite and harness",
@@ -85,6 +87,7 @@ PUSHES = {
     "fix_ci": True,
     "fixer_scope_lock": True,
     "adjudicator_approves": True,
+    "adjudicator_file_issues": True,
     "attribution": False,
 }
 

@@ -249,7 +249,9 @@ SETTINGS_SCHEMA: dict = {
     "shadow_escalate": {"label": "Shadow review holds the PR", "type": "str", "default": "",
                         "description": "on: a PR is not ready to merge while its shadow review "
                                        "is running, or after it requested changes (#1004). "
-                                       "Needs shadow every = 1. Blank = not set here: the loop "
+                                       "Needs shadow every = 1, or always-shadowed paths "
+                                       "(then those PRs are held at every head, the rest only "
+                                       "when sampled). Blank = not set here: the loop "
                                        "keeps its own value (default: off)"},
     "shadow_file_issues": {"label": "File the shadow's issues", "type": "str", "default": "",
                            "description": "on: the issues a shadow review asks to file are filed "
@@ -264,6 +266,20 @@ SETTINGS_SCHEMA: dict = {
                                            "Needs a shadow profile, and only takes effect with "
                                            "shadow_file_issues on. Blank = not set here: the loop "
                                            "keeps its own value (default 25)"},
+    "shadow_always_paths": {"label": "Always shadow these paths (comma-separated globs)",
+                            "type": "str", "default": "",
+                            "description": "Globs, e.g. 'src/auth/*, deploy/*' (#1788). A PR "
+                                           "that changes one gets a shadow review at every "
+                                           "head, whatever shadow every says. '*' also matches "
+                                           "'/'. Needs a shadow profile. Blank = not set here "
+                                           "(an unset list: sampling alone)"},
+    "shadow_never_paths": {"label": "No shadow when only these change (comma-separated globs)",
+                           "type": "str", "default": "",
+                           "description": "Globs, e.g. 'docs/*, *.md, tests/*' (#1788). A PR "
+                                          "that changes only these gets no shadow review; an "
+                                          "always path wins. '*' also matches '/'. Needs a "
+                                          "shadow profile. Blank = not set here (an unset list: "
+                                          "sampling alone)"},
     "human_paths": {"label": "Human-only paths (comma-separated globs)", "type": "str",
                     "default": "",
                     "description": "Glob patterns, e.g. '.github/**, scripts/release*'. If a "
@@ -341,6 +357,17 @@ SETTINGS_SCHEMA: dict = {
                                             "merge. Never for a human_paths diff or a held PR. "
                                             "Needs the adjudicator comment login. Off: the "
                                             "ruling is left to you."},
+    "adjudicator_file_issues": {"label": "File the adjudicator's follow-ups", "type": "bool",
+                                "default": False,
+                                "description": "On: the findings the adjudicator rules valid "
+                                               "but not blocking (every one it lets through on "
+                                               "an ACCEPT; on a REJECT or RESPEC, those apart "
+                                               "from what the next round must fix) are filed "
+                                               "as issues (#1864): asked for in its ruling "
+                                               "turn, filed after the ruling by the reader, "
+                                               "labelled adjudicator-found, at most 3 a ruling "
+                                               "and 25 a day. Off: its follow-ups stay in the "
+                                               "ruling comment."},
     "attribution": {"label": "Sign what the loop posts", "type": "bool", "default": True,
                     "description": "On: every review, comment and commit the loop itself "
                                    "posts ends with 'Automated by Diaktoros' and "
@@ -416,17 +443,19 @@ def _on_off_value(value, where: str, name: str):
 
 
 def shadow_block(current, profile, every, where: str, escalate=None,
-                 file_issues=None, issues_daily=None) -> dict | None:
+                 file_issues=None, issues_daily=None, always_paths=None,
+                 never_paths=None) -> dict | None:
     """The ``shadow`` block (#218) after a form, ``init``/``setup`` or ``set`` names a profile,
-    ``every``, ``escalate`` (#1004), ``file_issues`` (#914) and/or ``issues_daily`` (#1515; needs
-    a profile like ``every``, bounds checked by ``normalize_shadow``); None when none was named.
-    ``off`` as the profile turns shadow reviews off. ``every`` and ``escalate on`` or
-    ``file_issues on`` need a profile, already set or named with it; ``off`` without one
-    changes nothing."""
+    ``every``, ``escalate`` (#1004), ``file_issues`` (#914), ``issues_daily`` (#1515; needs
+    a profile like ``every``, bounds checked by ``normalize_shadow``) and/or the ``always_paths``
+    and ``never_paths`` globs (#1788: a list, or the form's comma-separated line; each replaces
+    its list, [] clears it); None when none was named. ``off`` as the profile turns shadow
+    reviews off. ``every``, ``escalate on``, ``file_issues on`` and a glob need a profile,
+    already set or named with it; ``off`` without one changes nothing."""
     escalate = _on_off_value(escalate, where, "shadow escalate")
     file_issues = _on_off_value(file_issues, where, "shadow file issues")
     if (profile is None and every is None and escalate is None and file_issues is None
-            and issues_daily is None):
+            and issues_daily is None and always_paths is None and never_paths is None):
         return None
     shadow = dict(current or {})
     if profile is not None:
@@ -458,6 +487,17 @@ def shadow_block(current, profile, every, where: str, escalate=None,
             raise config.ConfigError(f"{where}: shadow issues a day needs a shadow profile "
                                      "(name one with it)")
         shadow["issues_daily"] = config._form_int(issues_daily)
+    for key, value in (("always_paths", always_paths), ("never_paths", never_paths)):
+        if value is None:
+            continue
+        globs = lists.split_human_paths(value) if isinstance(value, str) else list(value)
+        if globs and not shadow.get("profile"):
+            raise config.ConfigError(f"{where}: shadow {key.replace('_', ' ')} need a shadow "
+                                     "profile (name one with them)")
+        if globs:
+            shadow[key] = globs
+        else:
+            shadow.pop(key, None)
     return blocks.normalize_shadow(shadow, where)
 
 
@@ -532,7 +572,7 @@ def _apply_switches(overlaid, d, settings) -> None:  # noqa: ANN001
     """``apply_settings``: the on/off and named settings, and the review-only and CI-fix limits."""
     # The on/off knobs, attribution (#197) among them, move only when the form names them.
     for key in ("attribution", "review_after_ci", "fix_ci", "fixer_scope_lock",
-                "adjudicator_approves", "review_only_update"):
+                "adjudicator_approves", "adjudicator_file_issues", "review_only_update"):
         if _form_value(settings, key) is not None:
             overlaid[key] = d[key]
     if str(d.get("merge_check") or "").strip():
@@ -576,7 +616,9 @@ def _apply_checks(overlaid, d, settings) -> None:  # noqa: ANN001
                           _form_value(settings, "shadow_every"), "settings",
                           escalate=_form_value(settings, "shadow_escalate"),
                           file_issues=_form_value(settings, "shadow_file_issues"),
-                          issues_daily=_form_value(settings, "shadow_issues_daily"))
+                          issues_daily=_form_value(settings, "shadow_issues_daily"),
+                          always_paths=_form_value(settings, "shadow_always_paths"),
+                          never_paths=_form_value(settings, "shadow_never_paths"))
     if shadow is not None:
         overlaid["shadow"] = shadow
 

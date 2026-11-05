@@ -114,6 +114,23 @@ class Cache(fg.Base):
         self.assertEqual((merge.call_count, pushed.call_count), (1, 1))
         self.assertEqual(self.notify.call_count, 0)     # behind, not conflicting: no notice
 
+    def test_a_behind_pr_whose_dry_merge_conflicts_runs_the_dry_merge_once(self):
+        """#1152: behind (so no notice) but the dry merge found a conflict: its facts are
+        cached for the pair like a dirty PR's, not fetched again on every sweep."""
+        self.set_push(True, update=True)
+        self.sweep(CLEAN)
+        with mock.patch.object(safe_push, "dry_merge", return_value=dry()) as merge, \
+             mock.patch.object(safe_push, "update_branch") as pushed:
+            for _ in range(3):
+                self.sweep(BEHIND)
+        self.assertEqual(merge.call_count, 1)
+        pushed.assert_not_called()                      # a real conflict is never pushed
+        self.assertEqual(self.notify.call_count, 0)     # behind, not conflicting: no notice
+        cached = self.st.review_only_conflict(
+            BEHIND["number"], fg.HEAD, self.tip, True)
+        self.assertEqual(cached[0]["conflicted"], ["a.py"])
+        self.assertEqual(cached[1], "a real conflict: a person resolves it")
+
     def test_a_stop_that_is_not_about_the_pair_is_tried_again(self):
         # Shadow on #1151: pushes off, then on, at the same head and base tip.
         self.set_push(False, update=True)

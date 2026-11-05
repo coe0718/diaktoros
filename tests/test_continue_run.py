@@ -104,16 +104,27 @@ class Continue(Base):
         self.assertTrue(ok)
         self.assertEqual(self.writes, ["request_review"])
 
+    def as_app_reviewer(self):
+        # The reviewer seat is a GitHub App identity (#1163): no PAT, and GitHub cannot request it.
+        seat = self.loop["reviewer_seat"]
+        self.loop = {**self.loop, "apps": {seat: {"app_id": 1, "key_file": "/k"}},
+                     "tokens": {k: v for k, v in (self.loop.get("tokens") or {}).items()
+                                if k.lower() != seat.lower()}}
+
+    def open_pr_row(self, **over):
+        self.prs = [self.pr(5, **over)]
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE issue_fixes SET state='opened',pr_number=5")
+
+    def verdict(self, head, state="APPROVED"):
+        return {"id": 1, "user": {"login": "review"}, "state": state, "commit_id": head}
+
     def test_an_app_reviewers_open_pr_gets_its_review_delivered_to_the_gate(self):
         # #1211: the PR is already open, so its `opened` will not come again, and GitHub cannot
         # request an App reviewer: continue delivers the review to the gate (review_kick).
         from diaktoros import review_kick
-        self.loop = {**self.loop, "apps": {self.loop["reviewer_seat"]: {"app_id": 1, "key_file": "/k"}},
-                     "tokens": {k: v for k, v in (self.loop.get("tokens") or {}).items()
-                                if k.lower() != self.loop["reviewer_seat"].lower()}}
-        self.prs = [self.pr(5)]
-        with ledger.connect(self.db) as con:
-            con.execute("UPDATE issue_fixes SET state='opened',pr_number=5")
+        self.as_app_reviewer()
+        self.open_pr_row()
         with mock.patch.object(gh, "api", return_value=self.pr(5)), \
                 mock.patch.object(review_kick, "kick", return_value=True) as kick:
             ok, lines = continue_run.run(self.loop, self.sup, self.run_id)
@@ -128,12 +139,8 @@ class Continue(Base):
     def undelivered(self, api, kick, why):
         # A failure path of the delivery: the PR cannot be read, or the delivery fails.
         from diaktoros import review_kick
-        self.loop = {**self.loop, "apps": {self.loop["reviewer_seat"]: {"app_id": 1, "key_file": "/k"}},
-                     "tokens": {k: v for k, v in (self.loop.get("tokens") or {}).items()
-                                if k.lower() != self.loop["reviewer_seat"].lower()}}
-        self.prs = [self.pr(5)]
-        with ledger.connect(self.db) as con:
-            con.execute("UPDATE issue_fixes SET state='opened',pr_number=5")
+        self.as_app_reviewer()
+        self.open_pr_row()
         effect = {"side_effect": kick} if isinstance(kick, Exception) else {"return_value": kick}
         with mock.patch.object(gh, "api", return_value=api), \
                 mock.patch.object(review_kick, "kick", **effect):
@@ -141,6 +148,107 @@ class Continue(Base):
         self.assertTrue(ok, lines)
         self.assertTrue(any(why in line and "the watchdog sweep will" in line
                             for line in lines if "PR #5" in line), lines)
+
+    def test_an_app_reviewer_is_planned_as_a_delivery_not_a_request(self):
+        # #1209: GitHub never records a request for an App, so the plan must not claim one.
+        self.as_app_reviewer()
+        self.open_pr_row()
+        plan = continue_run.inspect(self.loop, self.sup, self.run_id)
+        self.assertEqual((plan["stages"], plan["conflicts"]), (["deliver_review"], []))
+        self.assertFalse(any("already requested" in fact for fact in plan["facts"]), plan)
+        text = continue_run.offer(plan, "widgets", self.run_id)
+        self.assertIn("complete deliver_review", text)
+        self.assertIn("GitHub App", text)
+        self.assertNotIn("request_review", text)
+
+    def test_an_app_reviewer_with_no_pr_yet_plans_open_then_deliver(self):
+        self.as_app_reviewer()
+        plan = continue_run.inspect(self.loop, self.sup, self.run_id)
+        self.assertEqual(plan["stages"], ["open_pr", "deliver_review"])
+
+    def test_a_pat_reviewers_plan_is_still_a_request(self):
+        self.open_pr_row()
+        plan = continue_run.inspect(self.loop, self.sup, self.run_id)
+        self.assertEqual(plan["stages"], ["request_review"])
+        self.assertNotIn("GitHub App", continue_run.offer(plan, "widgets", self.run_id))
+
+    def test_an_app_verdict_at_an_older_head_does_not_hide_the_unreviewed_head(self):
+        # #1209: a verdict at a previous head is not a review of this one; the gate counts
+        # verdicts per head (gate.reviewed_at_head), and so must continue.
+        from diaktoros import review_kick
+        self.as_app_reviewer()
+        self.open_pr_row()
+        self.reviews = [self.verdict("e" * 40)]
+        with mock.patch.object(gh, "api", return_value=self.pr(5)), \
+                mock.patch.object(review_kick, "kick", return_value=True) as kick:
+            ok, lines = continue_run.run(self.loop, self.sup, self.run_id)
+        self.assertTrue(ok, lines)
+        kick.assert_called_once()
+        self.assertFalse(any("already given" in line for line in lines), lines)
+
+    def test_a_pat_verdict_at_an_older_head_still_gets_a_request(self):
+        self.open_pr_row()
+        self.reviews = [self.verdict("e" * 40, state="CHANGES_REQUESTED")]
+        ok, lines = continue_run.run(self.loop, self.sup, self.run_id)
+        self.assertTrue(ok, lines)
+        self.assertEqual(self.writes, ["request_review"])
+
+    def test_a_verdict_at_the_current_head_is_already_given_for_either_reviewer(self):
+        from diaktoros import review_kick
+        for app in (False, True):
+            with self.subTest(app=app):
+                if app:
+                    self.as_app_reviewer()
+                self.open_pr_row()
+                self.reviews = [self.verdict(self.branch_sha)]
+                self.writes = []
+                with mock.patch.object(review_kick, "kick") as kick:
+                    ok, lines = continue_run.run(self.loop, self.sup, self.run_id)
+                self.assertTrue(ok, lines)
+                self.assertEqual(self.writes, [])
+                kick.assert_not_called()
+                self.assertTrue(any("already given at" in line for line in lines), lines)
+                with ledger.connect(self.db) as con:
+                    con.execute("UPDATE issue_fixes SET state='opened'")
+
+    def test_a_non_verdict_at_the_current_head_does_not_count_as_given(self):
+        # Only an approval or change request is a review (gate.reviewed_at_head). The old check
+        # counted any review by the reviewer, so a comment, a dismissed or a pending review at
+        # the current head hid a head nobody had judged: continue must still hand it over.
+        from diaktoros import review_kick
+        for app in (False, True):
+            for state in ("COMMENTED", "DISMISSED", "PENDING"):
+                with self.subTest(app=app, state=state):
+                    if app:
+                        self.as_app_reviewer()
+                    self.open_pr_row()
+                    self.reviews = [self.verdict(self.branch_sha, state=state)]
+                    self.writes = []
+                    plan = continue_run.inspect(self.loop, self.sup, self.run_id)
+                    self.assertEqual(plan["stages"], ["deliver_review" if app else "request_review"])
+                    self.assertFalse(any("already" in fact for fact in plan["facts"]), plan)
+                    with mock.patch.object(gh, "api", return_value=self.pr(5)), \
+                            mock.patch.object(review_kick, "kick", return_value=True) as kick:
+                        ok, lines = continue_run.run(self.loop, self.sup, self.run_id)
+                    self.assertTrue(ok, lines)
+                    self.assertFalse(any("already given" in line for line in lines), lines)
+                    # The broker call is the audited no-op for an App; the kick is its delivery.
+                    self.assertEqual(self.writes, ["request_review"])
+                    self.assertEqual(kick.call_count, 1 if app else 0)
+                    with ledger.connect(self.db) as con:
+                        con.execute("UPDATE issue_fixes SET state='opened'")
+
+    def test_the_cli_dry_run_names_the_app_handoff(self):
+        self.as_app_reviewer()
+        self.open_pr_row()
+        args = argparse.Namespace(loop="widgets", run=self.run_id, dry_run=True)
+        with mock.patch.object(config, "load_id", return_value=self.loop), \
+                mock.patch.object(operations, "_ledger_path", return_value=self.db), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(operations.cmd_continue(args), 0)
+        self.assertIn("deliver_review", out.getvalue())
+        self.assertIn("delivers the review to the reviewer gate", out.getvalue())
+        self.assertEqual(self.writes, [])
 
     def test_an_unreadable_pr_says_the_watchdog_will_deliver_its_review(self):
         self.undelivered(None, None, "could not read it")

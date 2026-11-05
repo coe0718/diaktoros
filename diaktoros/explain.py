@@ -279,6 +279,8 @@ def explain_facts(loop: dict, number: int) -> dict:
         breach_marker = None               # no marker read: an unruled hold, never an error
     shadow = (gate.shadow_hold(loop, number, head, marker=breach_marker)
               if isinstance(head, str) and head else ("", ""))
+    from . import shadow_choice
+    choice = shadow_choice.explain_line(loop, number, head) if isinstance(head, str) else ""
     # #757: commits that show as a seat's but no seat turn pushed. Report-only, never a blocker.
     stray, stray_error = [], ""
     if isinstance(pr, dict):
@@ -289,7 +291,7 @@ def explain_facts(loop: dict, number: int) -> dict:
             stray_error = f"{type(exc).__name__}: {exc}"
     return {"review_only_conflict": ro_conflict, "hold": hold, "hold_error": hold_error,
             "misattributed": stray, "misattributed_error": stray_error,
-            "shadow_hold": shadow,
+            "shadow_hold": shadow, "shadow_choice": choice,
             "pr": pr, "pr_error": pr_error, "reviews": reviews, "reviews_error": reviews_error,
             "armed": armed, "armed_error": armed_error, "read_at": time.time(),
             "chain": chain, "parent_readiness": readiness,
@@ -367,6 +369,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
 def _read(c) -> None:
     """Read ``facts`` into ``c``: the PR, its head, base and chain, its author, the review request."""
     c.shadow_held, c.shadow_note = c.facts.get("shadow_hold") or ("", "")      # #1004
+    c.shadow_choice = str(c.facts.get("shadow_choice") or "")                  # #1788
     c.now = float(c.facts.get("read_at") or time.time())
     c.pr = c.facts.get("pr") if isinstance(c.facts.get("pr"), dict) else None
     c.reviews = c.facts.get("reviews") if isinstance(c.facts.get("reviews"), list) else None
@@ -720,7 +723,8 @@ def _next_step(c) -> tuple[str, str]:
     c.fix_push = f"the fixer pushes a fix and re-requests review of head {c.short} — "
     c.verdict_at = f"the reviewer's verdict at head {c.short} (round {(c.spent or 0) + 1} of {c.cap}) — "
     return (_next_unread(c) or _next_approval(c) or _next_person(c) or _next_ruling(c)
-            or _next_push_off(c) or _next_escalation(c) or _next_lock(c) or _next_run(c))
+            or _next_review_only(c) or _next_push_off(c) or _next_escalation(c)
+            or _next_lock(c) or _next_run(c))
 
 
 def _next_unread(c) -> tuple[str, str] | None:
@@ -823,14 +827,21 @@ def _next_approval(c) -> tuple[str, str] | None:
 
 
 def _next_person(c) -> tuple[str, str] | None:
-    """Next event for a human hold, a review-only cap, or a review-only verdict."""
+    """Next event for a human hold: a person must approve the head."""
     if c.head and isinstance(c.st.human_hold(c.number, c.head), dict):
-        kind = "operator"
         c.held = c.st.human_hold(c.number, c.head)
-        action = (f"a person must review and approve head {c.short}: the loop would approve, but "
-                  f"{c.held.get('why') or 'it touches human_paths'}")
-    elif (c.review_only and c.spent is not None
-          and gate.review_cap_hit(c.loop, c.st, c.number, c.head, c.spent, c.author)):
+        return "operator", (f"a person must review and approve head {c.short}: the loop would "
+                            f"approve, but {c.held.get('why') or 'it touches human_paths'}")
+    return None
+
+
+def _next_review_only(c) -> tuple[str, str] | None:
+    """Next event for a review-only PR (#191) that is not waiting on a ruling: its verdict cap, or
+    the author's answer to a verdict. Read after ``_next_ruling``: a head parked for adjudication
+    (by the cap, or by a person's ``escalate`` below it, #1156), pending delivery, or ruled waits
+    on that, as ``blockers`` says, and the author's push is not the next event."""
+    if (c.review_only and c.spent is not None
+            and gate.review_cap_hit(c.loop, c.st, c.number, c.head, c.spent, c.author)):
         kind = "operator"
         push_first = ("the author pushes a new head first (this head already has a verdict, so a "
                       "grant now would be wasted), then " if c.reviewed else "")
@@ -1182,7 +1193,7 @@ def _report(c, kind: str, action: str) -> dict:
         "github": c.local.get("github", "no failed GitHub call recorded"),
         "gate_decisions": [gate_decisions.line(e) for e in gate_decisions.for_pr(c.loop, c.number)],
         "gate_failures": c.gate_failed, "blockers": c.blockers, "next": {"kind": kind, "action": action},
-        "shadow": {"hold": c.shadow_held, "note": c.shadow_note},
+        "shadow": {"hold": c.shadow_held, "note": c.shadow_note, "choice": c.shadow_choice},
         "authorship": authorship_lines(c.facts),
         "operator_agents": sorted(config.operator_agents(c.loop)),
     }

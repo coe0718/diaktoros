@@ -78,6 +78,8 @@ def _flag_changes(args, loop: dict, host: str | None) -> dict:
               "fix_ci": cli_common._on_off(args, "fix_ci", None),
               "fixer_scope_lock": cli_common._on_off(args, "fixer_scope_lock", None),
               "adjudicator_approves": cli_common._on_off(args, "adjudicator_approves", None),
+              "adjudicator_file_issues": cli_common._on_off(args, "adjudicator_file_issues",
+                                                            None),
               "review_only_update": cli_common._on_off(args, "review_only_update", None)}
     if (wanted["review_only_update"] and not loop.get("review_only_update")
             and not getattr(args, "acknowledge_branch_push", False)):
@@ -98,6 +100,37 @@ def _price_changes(args, loop: dict, changes: dict) -> None:
             raise _Refused
         if priced != prices.prices(loop):
             changes["prices"] = priced
+
+
+def _shadow_changes(args, loop: dict, changes: dict) -> None:
+    """The shadow block's flags (#218): the profile, its rate, escalate, issues, and the
+    always/never path globs (#1788), each list replaced by its flags or cleared by its --no-."""
+    def paths(flag: str, clear: str):
+        return [] if getattr(args, clear, False) else getattr(args, flag, None)
+    always = paths("shadow_always_path", "no_shadow_always_paths")
+    never = paths("shadow_never_path", "no_shadow_never_paths")
+    if getattr(args, "no_shadow", False) or getattr(args, "shadow_profile", None) is not None \
+            or getattr(args, "shadow_every", None) is not None \
+            or getattr(args, "shadow_escalate", None) is not None \
+            or getattr(args, "shadow_file_issues", None) is not None \
+            or getattr(args, "shadow_issues_daily", None) is not None \
+            or always is not None or never is not None:
+        from ..config import settings_form
+        try:
+            shadow = settings_form.shadow_block(
+                loop.get("shadow"), "off" if args.no_shadow else args.shadow_profile,
+                args.shadow_every,
+                "--shadow-profile/--shadow-every/--shadow-escalate/--shadow-file-issues/"
+                "--shadow-issues-daily/--shadow-always-path/--shadow-never-path",
+                escalate=getattr(args, "shadow_escalate", None),   # "on" with --no-shadow: refused
+                file_issues=getattr(args, "shadow_file_issues", None),
+                issues_daily=getattr(args, "shadow_issues_daily", None),
+                always_paths=always, never_paths=never)
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            raise _Refused
+        if shadow is not None and shadow != (loop.get("shadow") or {}):
+            changes["shadow"] = shadow
 
 
 def _list_changes(args, loop: dict, changes: dict) -> None:
@@ -139,26 +172,7 @@ def _list_changes(args, loop: dict, changes: dict) -> None:
             raise _Refused
         if names != (loop.get("generated") or []):
             changes["generated"] = names
-    if getattr(args, "no_shadow", False) or getattr(args, "shadow_profile", None) is not None \
-            or getattr(args, "shadow_every", None) is not None \
-            or getattr(args, "shadow_escalate", None) is not None \
-            or getattr(args, "shadow_file_issues", None) is not None \
-            or getattr(args, "shadow_issues_daily", None) is not None:
-        from ..config import settings_form
-        try:
-            shadow = settings_form.shadow_block(
-                loop.get("shadow"), "off" if args.no_shadow else args.shadow_profile,
-                args.shadow_every,
-                "--shadow-profile/--shadow-every/--shadow-escalate/--shadow-file-issues/"
-                "--shadow-issues-daily",
-                escalate=getattr(args, "shadow_escalate", None),   # "on" with --no-shadow: refused
-                file_issues=getattr(args, "shadow_file_issues", None),
-                issues_daily=getattr(args, "shadow_issues_daily", None))
-        except config.ConfigError as exc:
-            print(f"refused: {exc}")
-            raise _Refused
-        if shadow is not None and shadow != (loop.get("shadow") or {}):
-            changes["shadow"] = shadow
+    _shadow_changes(args, loop, changes)
     if getattr(args, "review_only", None) is not None or getattr(args, "no_review_only", False):
         try:
             names = lists.check_review_only([] if args.no_review_only else args.review_only,

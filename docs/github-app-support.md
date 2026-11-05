@@ -33,6 +33,20 @@ To set a loop up with Apps, see [Getting started with GitHub Apps](github-apps.m
     printed after the fixer's own `git push` (`git_push`). After a push it waits 6 seconds and
     asks again while GitHub still answers `UNKNOWN` (at most 5 asks); if it is still unsettled
     the printed value says so.
+  - A request the run cannot go on without (an App's identity, the `main` ref, creating a branch,
+    reading or committing `app.py`, opening a PR, reading a commit) that is refused or answers
+    without the field the next step needs ends the run: the last JSON line is
+    `{"step": ..., "status": ..., "error": ...}` (the step is `identity`, `branch`, `put_file`,
+    `open_pr`, `fixer_pr`, `git_push` or `reviewer_permissions`) and the exit code is 1. The error
+    is GitHub's `message` (or a text answer) and nothing else of the body, cut to 240 characters.
+    Before it is printed, anything shaped like a credential (a `ghp_`/`ghs_`/`github_pat_` token,
+    an `Authorization` header value or a `Bearer` value of any length, a `token` value that has a
+    digit or is 20 or more characters, an App JWT, a private key) and every token this run holds, the
+    person's included, is replaced by `[REDACTED]`. A credential GitHub echoes in some other shape
+    that this run does not hold would not be recognised: the log is still a spike's, read before
+    it is shared. The review, reviewer-request and check-run steps are
+    not covered by this: they still print the status they got, and a refused review or check run
+    can still end the run with a traceback.
   - Row 3 is repeated only for the App bot (both login forms, `request_reviewer`). The human
     reviewer request, and the remove and re-request of it, are **not** repeated: by hand only.
   - Rows 9a, 9b, 9c, 9e, 9f and 9g run only with `--check-branch BRANCH`, naming a branch

@@ -238,7 +238,11 @@ def _init_shadow(args, d: dict) -> dict:
     return settings_form.shadow_block(
         {}, given("shadow_profile"), given("shadow_every"), "init",
         escalate=given("shadow_escalate"), file_issues=given("shadow_file_issues"),
-        issues_daily=given("shadow_issues_daily")) or {}
+        issues_daily=given("shadow_issues_daily"),
+        always_paths=(getattr(args, "shadow_always_path", None)
+                      or settings_form._form_value(d, "shadow_always_paths")),
+        never_paths=(getattr(args, "shadow_never_path", None)
+                     or settings_form._form_value(d, "shadow_never_paths"))) or {}
 
 
 def _init_settings(args, d: dict) -> dict:
@@ -250,7 +254,7 @@ def _init_settings(args, d: dict) -> dict:
         # author's branch) is also refused below unless acknowledged.
         **{key: cli_common._on_off(args, key, d[key]) for key in (
             "review_after_ci", "fix_ci", "fixer_scope_lock", "adjudicator_approves",
-            "review_only_update")},
+            "adjudicator_file_issues", "review_only_update")},
         # The checks CI always runs, which a fixer running only its touched tests would miss.
         "fixer_check": (d["fixer_check"] if getattr(args, "fixer_check", None) is None
                         else args.fixer_check),
@@ -891,6 +895,7 @@ def _init_switch_flags(init, d) -> None:  # noqa: ANN001
             ("--adjudicator-approves", "on an ACCEPT ruling with green checks, approve as the "
                                        "adjudicator login and dismiss the change request it "
                                        "overruled"),
+            ("--adjudicator-file-issues", "file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found"),
             ("--attribution", "sign what the loop posts with 'Automated by Diaktoros'")):
         on = d[flag[2:].replace("-", "_")]
         init.add_argument(flag, choices=("on", "off"), default=None,
@@ -924,11 +929,15 @@ def _init_review_flags(init) -> None:  # noqa: ANN001
     init.add_argument("--shadow-every", type=int, default=None,
                      help="shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5)")
     init.add_argument("--shadow-escalate", choices=("on", "off"), default=None,
-                      help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off)")
+                      help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 or a --shadow-always-path (default: the plugin setting, else off)")
     init.add_argument("--shadow-file-issues", choices=("on", "off"), default=None,
                       help="on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to --shadow-issues-daily a day (#914) (default: the plugin setting, else off)")
     init.add_argument("--shadow-issues-daily", default=None, metavar="N",
                       help="most shadow-found issues filed per rolling 24 hours, 0-1000; 0 = no cap (#1515) (default: the plugin setting, else 25)")
+    init.add_argument("--shadow-always-path", action="append", default=None, metavar="GLOB",
+                      help="a glob for paths whose change always gets a shadow review, whatever --shadow-every says (#1788; repeat it; '*' also matches '/') (default: the plugin setting)")
+    init.add_argument("--shadow-never-path", action="append", default=None, metavar="GLOB",
+                      help="a glob for paths a PR may change without a shadow review: one that changes only these gets none (#1788; repeat it; an always path wins) (default: the plugin setting)")
     init.add_argument("--human-path", action="append", default=None,
                       help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     init.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
