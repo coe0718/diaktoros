@@ -17,12 +17,15 @@ import re
 import time
 from urllib.parse import quote
 
-from . import broker, config, gh
+from . import broker, config, gate, gh, review_kick
 from .util import log
 
 # What the ledger may say when a continue is meaningful (the row's state, not the run's).
 RESUMABLE = ("pushed", "opened", "uncertain")
 CLAIM = "continuing"
+# The review stage for an App reviewer (#1209): GitHub cannot request one (#1163), so the host
+# delivers the review to the reviewer gate instead of asking for it.
+DELIVER_REVIEW = "deliver_review"
 REPLY = re.compile(r"\s*continue\s+([A-Za-z0-9_.:-]{1,64})\s*", re.IGNORECASE)
 
 
@@ -115,23 +118,40 @@ def inspect(loop: dict, sup, run_id: str) -> dict:
         facts.append("the push never landed; continue never pushes")
         return plan
     if pr is None:
-        plan["stages"] = ["open_pr", "request_review"]
-        return plan
-    reviewer = config.seat_login(loop, "reviewer").casefold()
-    asked = {str(r.get("login") or "").casefold() for r in pr.get("requested_reviewers") or []
-             if isinstance(r, dict)}
-    reviews, err = gh.reviews_read(loop, pr["number"])
-    if reviews is None:
-        conflicts.append(f"could not read reviews of PR #{pr['number']}: {err}")
-        return plan
-    reviewed = any(str((r.get("user") or {}).get("login") or "").casefold() == reviewer
-                   for r in reviews if isinstance(r, dict))
-    if reviewer in asked or reviewed:
-        facts.append(f"review of PR #{pr['number']} is already {'given' if reviewed else 'requested'}")
+        plan["stages"] = ["open_pr", review_stage(loop)]
     else:
-        plan["stages"] = ["request_review"]
-    plan["pr"] = pr["number"]
+        _review_stage(loop, plan, pr)
     return plan
+
+
+def review_stage(loop: dict) -> str:
+    """The stage that hands a PR to the reviewer: ``deliver_review`` for an App reviewer, which
+    GitHub cannot be asked to review (#1163) so the host delivers it to the reviewer gate;
+    ``request_review`` for a PAT reviewer."""
+    return DELIVER_REVIEW if config.reviewer_is_app(loop) else "request_review"
+
+
+def _review_stage(loop: dict, plan: dict, pr: dict) -> None:
+    """Say in ``plan`` what the open ``pr`` still needs of the reviewer's handoff.
+
+    A verdict counts only at the PR's current head, as the gate counts it
+    (``gate.reviewed_at_head``): one at an older head says nothing about this one. A PAT
+    reviewer's pending request is read from ``requested_reviewers``. An App reviewer never shows
+    there (GitHub records no request for it, #1163), so only a verdict proves its handoff.
+    """
+    number = pr["number"]
+    reviews, err = gh.reviews_read(loop, number)
+    if reviews is None:
+        plan["conflicts"].append(f"could not read reviews of PR #{number}: {err}")
+        return
+    plan["pr"] = number
+    head = (pr.get("head") or {}).get("sha")
+    if gate.reviewed_at_head(reviews, loop, head):
+        plan["facts"].append(f"review of PR #{number} is already given at {str(head)[:7]}")
+    elif not config.reviewer_is_app(loop) and review_kick.already_requested(loop, pr):
+        plan["facts"].append(f"review of PR #{number} is already requested")
+    else:
+        plan["stages"] = [review_stage(loop)]
 
 
 def offer(plan: dict, loop_id: str, run_id: str) -> str:
@@ -139,8 +159,12 @@ def offer(plan: dict, loop_id: str, run_id: str) -> str:
     if plan["conflicts"]:
         return "stays quarantined: " + "; ".join(plan["conflicts"])
     if plan["stages"]:
+        app = ("; the reviewer is a GitHub App, which GitHub cannot request, so the host "
+               "delivers the review to the reviewer gate" if DELIVER_REVIEW in plan["stages"]
+               else "")
         return (f"safe next step: complete {' and '.join(plan['stages'])} "
-                f"(hermes dk continue --loop {loop_id} --run {run_id}; chat: continue {run_id})")
+                f"(hermes dk continue --loop {loop_id} --run {run_id}; chat: continue {run_id})"
+                + app)
     return (f"nothing is missing: continue only records it and releases the run "
             f"(hermes dk continue --loop {loop_id} --run {run_id})")
 
@@ -155,7 +179,6 @@ def _claim(sup, run_id: str) -> bool:
 def _deliver_review(loop: dict, pr: int, sender: str) -> str:
     """Hand the reviewer gate the review GitHub cannot be asked for (an App reviewer, #1163);
     the line to report. Best effort: the watchdog's sweep delivers a quiet head's review too."""
-    from . import review_kick
     live = gh.api(loop, gh.pr_path(loop, pr), login=loop["read_token"])
     head = ((live or {}).get("head") or {}).get("sha") if isinstance(live, dict) else None
     if not head:
@@ -209,7 +232,7 @@ def run(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
                 sup.issue_fix_status(run_id, "opened", pr_number=pr,
                                      error=f"continue: review request not confirmed: {exc}"[:300])
                 return False, lines + [f"review request not confirmed ({exc}); PR #{pr} is open"]
-            if config.reviewer_is_app(loop):
+            if stage == DELIVER_REVIEW:
                 # GitHub cannot request an App reviewer (#1163), and this PR is already open, so
                 # its `opened` will not come again: deliver the review to the gate, as the broker
                 # does after a push (review_kick, #532).

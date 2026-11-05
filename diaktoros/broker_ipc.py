@@ -446,8 +446,8 @@ class RunBroker(broker_issues.IssueWrites):
             # A no-write broker serves one reviewer verdict and nothing else, before any branch
             # that could reach a push, a ruling, or a GitHub write.
             raise ProtocolError("operation out of scope")
-        # The adjudicator has exactly one operation, and only the adjudicator has it. Decide
-        # that before any other branch so neither side can reach the other's write paths.
+        # The adjudicator has exactly one write, and only the adjudicator has it. Decide that
+        # before any other branch so neither side can reach the other's write paths.
         if self.scope.role == "adjudicator" or (isinstance(request, dict)
                                                 and request.get("operation") == "ruling"):
             return self._ruling(raw, request)
@@ -907,6 +907,11 @@ class RunBroker(broker_issues.IssueWrites):
         and the comment are host deliveries of an already recorded fact, so their failures are
         recorded there too and never turned into a sandbox-visible error or retry.
         """
+        if (self.scope.role == "adjudicator" and isinstance(request, dict)
+                and request.get("operation") == "file_issue"):
+            # #1864: a follow-up is recorded, never posted by the seat, and never spends the
+            # ruling; the host files it after the ruling, as the reader.
+            return self._record_ruling_issue(raw, request)
         if (self.scope.role != "adjudicator" or not isinstance(request, dict)
                 or set(request) != {"operation", "verdict", "body"}
                 or request["operation"] != "ruling"):

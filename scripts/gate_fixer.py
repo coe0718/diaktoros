@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import pathlib
 import sys
+from typing import NoReturn
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -37,6 +38,29 @@ from diaktoros.util import log, silence  # noqa: E402
 
 # The breach outcomes that leave the head parked for a ruling (``stale`` parks nothing).
 PARKED = ("new", "retry", "already")
+
+
+def _take_pending_escalation(loop: dict, st, number: int, pr_head: str, prior: int,
+                             pending: dict) -> NoReturn:
+    """Act on a pending escalation (#1246) at this changes-requested verdict: the operator asked
+    for a ruling while a run was in flight, so the adjudicator rules on this head instead of the
+    fixer. Always ends the gate with ``silence`` (no fix turn), whatever the breach returned."""
+    import secrets
+    from diaktoros.util import now_iso
+    why = str(pending.get("reason") or "the operator asked for a ruling")
+    outcome = gate.breach(loop, st, number, pr_head, prior + 1, f"escalated: {why}",
+                          escalated={"by": str(pending.get("by") or gate.OPERATOR_ESCALATION),
+                                     "at": now_iso(), "reason": why,
+                                     "operation_id": secrets.token_hex(16),
+                                     "pending_since": pending.get("at")})
+    if outcome not in PARKED:
+        # #1264: nothing was parked (the head moved under the breach lock), so the request
+        # stands for the next changes-requested verdict, and the log says what happened.
+        silence(f"#{number} @ {pr_head[:7]} pending escalation not taken: the breach was "
+                f"{outcome}; it stays pending for the next verdict")
+    escalate_pending.take(st, number)
+    silence(f"#{number} @ {pr_head[:7]} pending escalation taken at verdict {prior + 1} — "
+            "handed to adjudication instead of a fix", "accepted")
 
 
 def main() -> None:
@@ -261,24 +285,7 @@ def main() -> None:
         silence(f"cap reached on #{number} — handed to adjudication instead of a fix")
     pending = escalate_pending.get(st, number)
     if pending:
-        # #1246: the operator asked for a ruling while a run was in flight. This is the next
-        # changes-requested verdict, so the adjudicator rules on this head instead of the fixer.
-        import secrets
-        from diaktoros.util import now_iso
-        why = str(pending.get("reason") or "the operator asked for a ruling")
-        outcome = gate.breach(loop, st, number, pr_head, prior + 1, f"escalated: {why}",
-                              escalated={"by": str(pending.get("by") or "operator"),
-                                         "at": now_iso(), "reason": why,
-                                         "operation_id": secrets.token_hex(16),
-                                         "pending_since": pending.get("at")})
-        if outcome not in PARKED:
-            # #1264: nothing was parked (the head moved under the breach lock), so the request
-            # stands for the next changes-requested verdict, and the log says what happened.
-            silence(f"#{number} @ {pr_head[:7]} pending escalation not taken: the breach was "
-                    f"{outcome}; it stays pending for the next verdict")
-        escalate_pending.take(st, number)
-        silence(f"#{number} @ {pr_head[:7]} pending escalation taken at verdict {prior + 1} — "
-                "handed to adjudication instead of a fix", "accepted")
+        _take_pending_escalation(loop, st, number, pr_head, prior, pending)
 
     # A loop that has not opted in to unattended fixer pushes gets no fixer turn: it could not
     # publish, so it would spend a model conversation and fail. block_pr_agent holds the verdict

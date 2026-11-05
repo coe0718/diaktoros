@@ -18,12 +18,15 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config
+from . import config, gate
 from .config import prices
 from .ledger import read_only
 
 SEATS = ("reviewer", "fixer", "issue_fixer", "triage", "adjudicator")
 STATES = ("succeeded", "failed", "waiting", "cancelled", "uncertain")
+# Who a marker's ``escalated.by`` names besides the spent cap (a marker with no ``escalated``):
+# the fixer's dispute (#894), the shadow review (#1004) and the operator (#659).
+ESCALATION_KINDS = ("dispute", gate.SHADOW_ESCALATION, "operator")
 GITHUB_PAGES_MAX = 10
 _SINCE = re.compile(r"^(\d{1,4})([hd])$")
 
@@ -502,7 +505,9 @@ def escalations(db: Path, repo: str, since: float, until: float,
     is a new one. ``ruled`` is those with a ruling, at any time; ``awaiting`` the rest. Who asked
     comes from the loop's breach markers (``breaches``, keyed ``repo#pr``), which keep only each
     PR's latest head: an older escalation, or one whose marker is gone, is ``unknown``, never
-    guessed. A marker in the window with no turn (no adjudicator configured) counts as well.
+    guessed. A marker with ``escalated`` names who asked in its ``by``: ``dispute`` (the fixer),
+    ``shadow`` (the shadow review) or ``operator``; no ``escalated`` is the spent ``cap``. A marker
+    in the window with no turn (no adjudicator configured) counts as well.
     None when there is no ledger."""
     db = Path(db)
     if not db.exists():
@@ -530,7 +535,14 @@ def escalations(db: Path, repo: str, since: float, until: float,
         marker = markers.get(pr) or {}
         if marker.get("head") != head:
             return "unknown"
-        return "operator" if marker.get("escalated") else "cap"
+        escalated = marker.get("escalated")
+        if not escalated:
+            return "cap"
+        # The marker names who asked (``escalated.by``): the fixer's dispute (#894), the shadow
+        # review (#1004) or the operator. A marker with no recognised ``by`` reads as the
+        # operator's, as ``gate.breach`` and ``adjudication_situation`` read it.
+        kind = escalated.get("by") if isinstance(escalated, dict) else None
+        return kind if kind in ESCALATION_KINDS else "operator"
 
     counts = Counter()
     seen = set()
@@ -545,7 +557,7 @@ def escalations(db: Path, repo: str, since: float, until: float,
             counts[by(pr, marker.get("head"))] += 1
     return {"total": counts["ruled"] + counts["awaiting"], "ruled": counts["ruled"],
             "awaiting": counts["awaiting"],
-            "by": {kind: counts[kind] for kind in ("cap", "operator", "unknown")}}
+            "by": {kind: counts[kind] for kind in ("cap", *ESCALATION_KINDS, "unknown")}}
 
 
 FINDING_OUTCOMES = ("fixed", "withdrawn", "overruled", "upheld", "respecified", "disputed", "open")
@@ -1068,6 +1080,16 @@ def _trend(value: int, before: int) -> str:
     return f"{value} ({value - before:+d} vs previous)"
 
 
+def _escalations_line(escalated: dict, was_escalated: dict) -> str:
+    """The digest's escalations line: the total against the window before, how many have a
+    ruling, and who asked (``escalations()``'s ``by`` buckets, in the order it lists them)."""
+    by = escalated["by"]
+    return (f"escalations: {_trend(escalated['total'], was_escalated.get('total', 0))}"
+            f" · ruled {escalated['ruled']}, awaiting {escalated['awaiting']}"
+            f" · by cap {by['cap']}, by dispute {by['dispute']}, by shadow {by['shadow']},"
+            f" by operator {by['operator']}, unknown {by['unknown']}")
+
+
 def report_text(data: dict) -> str:
     days = (data["until"] - data["since"]) / 86400
     out = [f"{data['repo']} (loop {data['loop']}) · {_day(data['since'])} → "
@@ -1092,10 +1114,7 @@ def report_text(data: dict) -> str:
     rulings = reviews["rulings"]
     escalated, was_escalated = data.get("escalations"), data.get("escalations_before") or {}
     if escalated is not None:
-        by = escalated["by"]
-        out.append(f"escalations: {_trend(escalated['total'], was_escalated.get('total', 0))}"
-                   f" · ruled {escalated['ruled']}, awaiting {escalated['awaiting']}"
-                   f" · by cap {by['cap']}, by operator {by['operator']}, unknown {by['unknown']}")
+        out.append(_escalations_line(escalated, was_escalated))
     out.append("rulings: " + (", ".join(f"{n} {v}" for v, n in sorted(rulings.items()))
                               if rulings else "none"))
     found = data.get("findings")

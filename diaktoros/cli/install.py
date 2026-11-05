@@ -254,7 +254,7 @@ def _init_settings(args, d: dict) -> dict:
         # author's branch) is also refused below unless acknowledged.
         **{key: cli_common._on_off(args, key, d[key]) for key in (
             "review_after_ci", "fix_ci", "fixer_scope_lock", "adjudicator_approves",
-            "review_only_update")},
+            "adjudicator_file_issues", "review_only_update")},
         # The checks CI always runs, which a fixer running only its touched tests would miss.
         "fixer_check": (d["fixer_check"] if getattr(args, "fixer_check", None) is None
                         else args.fixer_check),
@@ -895,6 +895,7 @@ def _init_switch_flags(init, d) -> None:  # noqa: ANN001
             ("--adjudicator-approves", "on an ACCEPT ruling with green checks, approve as the "
                                        "adjudicator login and dismiss the change request it "
                                        "overruled"),
+            ("--adjudicator-file-issues", "file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found"),
             ("--attribution", "sign what the loop posts with 'Automated by Diaktoros'")):
         on = d[flag[2:].replace("-", "_")]
         init.add_argument(flag, choices=("on", "off"), default=None,

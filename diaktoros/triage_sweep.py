@@ -5,22 +5,21 @@ minute (30 unless set) and GitHub does not redeliver. A burst of ``issues.opened
 filed in a minute) therefore loses triage turns silently. The watchdog calls :func:`sweep`: it lists
 the open issues and queues the triage turn of each one the gate would have queued, through the same
 ``gate.enqueue_isolated`` call ``gate_triage.py`` makes, so the ledger's unique key still stops a
-second turn. A
-noted issue whose triage run later ``succeeded`` is dropped from the ``late-triage.json`` list
-that ``status`` prints; a failed, cancelled or still-active run stays noted. That cleanup runs
-first in every sweep, so it also happens when triage is turned off and when the open-issues read
-fails (#1136); it still needs the private runtime's run ledger.
+second turn. A noted issue whose triage run later ``succeeded`` is dropped from the
+``late-triage.json`` list that ``status`` prints; a failed, cancelled or still-active run stays
+noted. That cleanup runs first in every sweep, so it also happens when triage is turned off and when
+the open-issues read fails (#1136); it still needs the private runtime's run ledger.
 
 An issue is queued when ``issue_inputs.triage_blocker`` has nothing against it (open, not a pull
 request, author in ``triage.authors``, no label from ``triage.labels``), it has no triage row in the
 run ledger in any state, it is no newer than ``GRACE_S`` (the gate may still be on its way) and no
 older than ``HORIZON_S`` (a backlog from before the loop was armed is not triaged in bulk). An
 issue a maintainer already sent to the fixer (``triage.fix_label``) is left alone as well. At most
-``PER_SWEEP`` are queued per sweep, oldest first; the rest wait for the next one. The listing is newest first and bounded
-(``gh.MAX_ISSUE_PAGES`` pages of 100, pull requests included). It is read until a page reaches
-issues older than ``HORIZON_S``, so a window of more than 500 items is still read whole (#1147);
-only past the page bound does the sweep work on the newest issues it read and return an alert
-line saying the older ones were not checked (#1037).
+``PER_SWEEP`` are queued per sweep, oldest first; the rest wait for the next one. The listing is
+newest first and bounded (``gh.MAX_ISSUE_PAGES`` pages of 100, pull requests included). It is read
+until a page reaches issues older than ``HORIZON_S``, so a window of more than 500 items is still
+read whole (#1147); only past the page bound does the sweep work on the newest issues it read and
+return an alert line saying the older ones were not checked (#1037).
 """
 from __future__ import annotations
 

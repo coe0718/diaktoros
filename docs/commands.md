@@ -294,8 +294,11 @@ Escalations are counted apart from rulings. One escalation is one adjudicator tu
 spent cap or `escalate` started it, dated when it was committed; a redelivered breach is the same
 turn, and a re-breach at a new head is a new one. `ruled` means it has a ruling (at any time),
 `awaiting` that it has none yet. A breach with no adjudicator configured has no turn and counts
-from its marker. Who asked (`by cap`, `by operator`) comes from the breach marker, which keeps
-only each PR's latest head: an older escalation, or one whose marker is gone, reads `unknown`.
+from its marker. Who asked (`by cap`, `by dispute`, `by shadow`, `by operator`) comes from the
+breach marker, which keeps only each PR's latest head: an older escalation, or one whose marker is
+gone, reads `unknown`. A marker with no `escalated` record is the spent cap; otherwise
+`escalated.by` names it: the fixer's dispute (`dispute`), the shadow review requesting changes at an
+approved head (`shadow`) or `escalate` (`operator`, which is also what an unrecognised `by` reads).
 
 ```bash
 hermes dk report --since 7d
@@ -518,6 +521,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer (default: the plugin setting, off) |
 | `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name for a maintainer (default: the plugin setting, off) |
 | `--adjudicator-approves` | `on` \| `off` |  | on an ACCEPT ruling with green checks, approve as the adjudicator login and dismiss the change request it overruled (default: the plugin setting, off) |
+| `--adjudicator-file-issues` | `on` \| `off` |  | file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found (default: the plugin setting, off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default: the plugin setting, on) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
@@ -631,6 +635,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer, one turn per head; needs unattended fixer pushes (default off) |
 | `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name for a maintainer; needs unattended fixer pushes (default off) |
 | `--adjudicator-approves` | `on` \| `off` |  | on an ACCEPT ruling with green checks, approve as the adjudicator login and dismiss the change request it overruled (default off) |
+| `--adjudicator-file-issues` | `on` \| `off` |  | file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found (default off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default on) |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000 (default: the plugin setting, else the review cap) |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10 (default: the plugin setting, else 3) |
@@ -736,6 +741,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer (needs unattended fixer pushes), or stop |
 | `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name (other than their tests and docs) for a maintainer, or stop; needs unattended fixer pushes |
 | `--adjudicator-approves` | `on` \| `off` |  | on an ACCEPT ruling with green checks, approve as the adjudicator login and dismiss the change request it overruled, or stop; needs the adjudicator comment login |
+| `--adjudicator-file-issues` | `on` \| `off` |  | file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found, or stop |
 | `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000; 0 = the review cap |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10; 0 = the default (3) |
@@ -1133,9 +1139,22 @@ moves anything and prints the path.
 
 The archive holds the routes' HMAC secrets, so restored hooks keep working. It is created mode
 `0600`, the command warns about it, and the secrets are never printed. It leaves out GitHub
-tokens (PATs), Hermes profiles and model logins. It never overwrites a file. There is no
-output-directory or retention setting yet; when one is added it must be settable from the
-Desktop form, `init`, `setup`, `set` and the loop file.
+tokens (PATs), Hermes profiles and model logins. It never overwrites a file.
+
+Retention (#1079): a backup written to the default place (`$HERMES_HOME/backups`, no `--out`)
+is followed by deleting the oldest archives written there (`diaktoros-backup-<stamp>[-n].tar.gz`,
+regular files only) beyond the newest `--keep N` (default 10; `0` keeps every archive). Such an
+archive carries a `default-place` first member; only archives that carry it are counted or
+deleted. So an archive written with `--out` (even one with a default-shaped name inside
+`$HERMES_HOME/backups`), an archive written by an earlier version (no mark: delete those by
+hand once), and any other file in that directory are never counted or deleted. An archive that
+another run still holds open is skipped too: a run holds its archive from before its first byte
+until its command is done with it (for `backup`, until it has printed; for `migrate`, until the
+migration ends, since the archive is its only undo). A held archive is not pruned by a newer run
+and is not counted, so it is pruned by a later backup once its run is over. The hold is a `flock`
+on the file, which a filesystem without `flock` does not give. `migrate`'s automatic backup
+prunes with the default of 10. `--keep` is a per-run flag, not a plugin setting, so a scheduled
+backup must pass it to use another count; there is no output-directory setting.
 
 ```bash
 hermes dk backup --out "<archive-file>"
@@ -1156,6 +1175,7 @@ archive; `restore` lists those.
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--out` | `FILE` |  | where to write it (default: $HERMES_HOME/backups/…); never overwrites a file |
+| `--keep` | `N` |  | after a backup to the default place, keep the newest N archives written there and delete older ones; 0 keeps all (default: 10). Archives written with --out, before this existed, or by hand are never counted or deleted (#1079) |
 | `--verify` | `FILE` |  | write nothing: read this archive back (manifest, every member, the ledger snapshot's SQLite integrity check) and report whether it is restorable (exit 2 if not) |
 <!-- /flags -->
 
@@ -1817,6 +1837,15 @@ requested reviewers and reviews), then does only the missing stage: open the PR,
 review. It **never pushes**, so nothing is pushed twice. If the records and GitHub disagree (a
 branch at another head, two PRs, a closed PR, an unreadable read) the run stays quarantined and
 the command prints what it found. `--dry-run` only inspects.
+
+A review counts as given only when the reviewer has a verdict (approval or change request) at the
+PR's **current head**, the gate's own rule: a verdict at an older head does not hide a head nobody
+has reviewed. With a **GitHub App reviewer** GitHub cannot be asked for a review (it answers 201
+and records nothing, so `requested_reviewers` stays empty), and the stage is named
+`deliver_review`, not `request_review`: the host delivers the review to the reviewer gate itself
+(the watchdog's sweep backstops it), and `continue` says "delivered" or "not delivered", never
+"requested". Only a verdict at the current head shows an App's handoff happened; without one the
+stage always runs.
 
 ```bash
 hermes dk continue --loop "<loop-id>" --run "<run-id>" --dry-run

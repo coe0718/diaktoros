@@ -10,6 +10,7 @@ _BOOLEANS = {
     "fixer_scope_lock": " (true holds a fix round that changes files its findings do not name)",
     "adjudicator_approves": " (true lets an ACCEPT ruling approve as the adjudicator and "
                             "dismiss the change request it overruled)",
+    "adjudicator_file_issues": " (true files the findings a ruling lets through as issues)",
     "fix_ci": " (true hands a failed required check on a fixer's PR to the fixer)",
     "attribution": " (true signs what the loop posts; false turns it off)",
 }

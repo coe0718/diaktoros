@@ -300,5 +300,28 @@ class Sweep(fg.Base):
         self.assertIn("the webhook delivery was missed", out.getvalue())
 
 
+class Wrap(unittest.TestCase):
+    """#1137: the module docstring and the docs section on this sweep keep the 100-column wrap
+    the text around them uses, and no docstring line breaks after a lone "A"."""
+
+    WIDTH = 100
+    ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+    def burst_section(self):
+        text = (self.ROOT / "docs" / "issues.md").read_text()
+        head = "## A burst of issues over the gateway's rate limit"
+        return text.split(head, 1)[1].split("\n## ", 1)[0].splitlines()
+
+    def test_the_docstring_is_wrapped_to_the_width_without_a_dangling_article(self):
+        lines = triage_sweep.__doc__.splitlines()
+        self.assertEqual([line for line in lines if len(line) > self.WIDTH], [])
+        self.assertEqual([line for line in lines if line.endswith(" A")], [])
+
+    def test_the_docs_section_is_wrapped_to_the_width(self):
+        lines = self.burst_section()
+        self.assertIn("**Recovery sweep.**", "\n".join(lines))
+        self.assertEqual([line for line in lines if len(line) > self.WIDTH], [])
+
+
 if __name__ == "__main__":
     unittest.main()

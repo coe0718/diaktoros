@@ -69,7 +69,8 @@ def _set_switch_flags(change) -> None:  # noqa: ANN001
                                    "needs unattended fixer pushes"),
             ("--adjudicator-approves", "on an ACCEPT ruling with green checks, approve as the "
                                        "adjudicator login and dismiss the change request it "
-                                       "overruled, or stop; needs the adjudicator comment login")):
+                                       "overruled, or stop; needs the adjudicator comment login"),
+            ("--adjudicator-file-issues", "file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found, or stop")):
         change.add_argument(flag, choices=("on", "off"), default=None, help=text)
 
 

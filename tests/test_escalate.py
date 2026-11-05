@@ -124,6 +124,45 @@ class Command(Base):
         from diaktoros.run_supervisor.turn_prompts import adjudication_situation
         self.assertIn("operator asked for a ruling", adjudication_situation(marker))
 
+    def test_the_operator_kind_is_one_constant_at_every_site(self):
+        # #1158: "operator" was a literal in the writer (one_shot_action), the breach's author set
+        # (gate.breach) and the worker's check (pr_facts); a typo in one would drop an
+        # escalated review-only PR with no error. Renaming the constant must move all of them
+        # together: written by `escalate`, accepted by gate.breach, accepted by the worker.
+        path = config.config_dir() / "one.json"
+        data = json.loads(path.read_text())
+        data["review_only"] = ["owner-human"]
+        path.write_text(json.dumps(data))
+        self.loop = config.load_id("one")
+        self.live = {**fg.LIVE, "user": {"login": "Owner-Human"}}
+        self.assertEqual(gate.OPERATOR_ESCALATION, "operator")      # the stored kind is unchanged
+        with mock.patch.object(gate, "OPERATOR_ESCALATION", "operator-renamed"):
+            rc, out, wake = self.escalate("person asks for ruling")
+            self.assertEqual(rc, 0, out)                             # gate.breach took the author
+            wake.assert_called_once()
+            marker = self.st.breach_get(7)
+            self.assertEqual(marker["escalated"]["by"], "operator-renamed")
+            pr = {**self.live, "head": {"sha": HEAD, "ref": "review-only-7"}}
+            row = {"repo": fg.REPO, "pr": 7, "head": HEAD, "seat": "adjudicator",
+                   "turn_key": "breach:1", "id": "ruling-1", "created": time.time()}
+            with mock.patch.object(gh, "api", return_value=pr), \
+                    mock.patch.object(gh, "reviews", return_value=self.reviews), \
+                    mock.patch.object(pr_facts, "effective_reviews", return_value=self.reviews):
+                self.assertEqual(pr_facts.adjudication_state(self.loop, row)[0], "ok")
+            # The watchdog's retry of a failed delivery decides the same author set (#1158 F1):
+            # an escalation retries for the review-only author, a spent cap on one never does.
+            from scripts import watchdog
+            review_only_pr = {**fg.LIVE, "user": {"login": "Owner-Human"}}
+            for escalated, retried in ((marker["escalated"], True), (None, False)):
+                with self.subTest(retry_escalated=bool(escalated)):
+                    entry = {**marker, "status": "delivery-pending"}
+                    if escalated is None:
+                        entry.pop("escalated")
+                    state_mod._atomic_write(self.st.breach, {f"{fg.REPO}#7": entry})
+                    with mock.patch.object(gh, "reviews", return_value=self.reviews), \
+                            mock.patch.object(gate, "breach") as parked:
+                        watchdog.retry_pending_breaches(self.loop, self.st, [review_only_pr])
+                    self.assertEqual(parked.called, retried)
 
 
     def test_a_review_only_pr_with_a_turn_running_is_refused_not_left_pending(self):
@@ -378,6 +417,48 @@ class Parked(Base):
                 self.assertEqual(breach.called, retried)
 
 
+class ParkedReviewOnly(Base):
+    """#1156: a review-only PR a person escalated below its verdict cap is parked for a ruling,
+    and `explain`'s next step says so, as its blockers do (not the author's push)."""
+
+    def setUp(self):
+        super().setUp()
+        path = config.config_dir() / "one.json"
+        data = json.loads(path.read_text())
+        data["review_only"] = ["owner-human"]
+        path.write_text(json.dumps(data))
+        self.loop = config.load_id("one")
+        self.live = {**fg.LIVE, "user": {"login": "Owner-Human"}}
+        self.assertEqual(self.escalate("person asks for ruling")[0], 0)
+
+    def explain(self, ruled=None):
+        """The real `explain` over the real state; GitHub's facts are given, the ruling mocked."""
+        facts = {"pr": self.live, "reviews": self.reviews, "armed": True, "read_at": time.time()}
+        with mock.patch.object(explain, "_ruled", return_value=ruled):
+            return explain.explain(self.loop, self.st, 7, facts)
+
+    def test_the_next_step_is_the_adjudication_not_the_authors_push(self):
+        report = self.explain()
+        self.assertLess(report["spent"], report["cap"])                # below the verdict cap
+        self.assertTrue(any("parked awaiting adjudication" in b for b in report["blockers"]),
+                        report["blockers"])
+        self.assertEqual(report["next"]["kind"], "adjudication", report["next"])
+        self.assertIn("the adjudicator rules at head", report["next"]["action"])
+        self.assertNotIn("pushes a fix", report["next"]["action"])
+
+    def test_once_ruled_the_decision_is_the_operators(self):
+        report = self.explain(ruled="REJECT")
+        self.assertEqual(report["next"]["kind"], "operator", report["next"])
+        self.assertIn("the adjudicator ruled REJECT", report["next"]["action"])
+
+    def test_with_no_escalation_the_author_still_pushes(self):
+        state_mod._atomic_write(self.st.breach, {})                 # nothing parks the head
+        self.assertEqual(self.st.breach_get(7), {})
+        report = self.explain()
+        self.assertEqual(report["next"]["kind"], "author-push", report["next"])
+        self.assertIn("pushes a fix", report["next"]["action"])
+
+
 class Pending(Base):
     """#1246: an escalation asked for while a run is in flight takes effect at the next
     changes-requested verdict; an approval drops it."""
@@ -396,6 +477,39 @@ class Pending(Base):
         self.assertEqual(kwargs["escalated"]["reason"], "stuck on scope")
         self.assertIn("pending escalation taken", err)
         self.assertIsNone(escalate_pending.get(self.st, 7))
+
+    def test_a_pending_escalation_is_written_with_the_operator_constant(self):
+        # #1158: the record's default kind and the fixer gate's fallback are gate's constant.
+        with mock.patch.object(gate, "OPERATOR_ESCALATION", "operator-renamed"):
+            self.assertEqual(escalate_pending.record(self.st, 7, reason="r", head=HEAD)["by"],
+                             "operator-renamed")
+            state_mod._atomic_write(self.st.dir / escalate_pending.FILE,
+                                    {"7": {"reason": "r", "head": HEAD, "at": time.time()}})
+            _, _, breach, _ = self.fixer_gate(
+                verdict(6) | {"state": "changes_requested"}, [verdict(5), verdict(6)])
+        self.assertEqual(breach.call_args.kwargs["escalated"]["by"], "operator-renamed")
+
+    def test_a_supplied_kind_is_stored_as_given_and_only_an_omitted_one_defaults(self):
+        # #1158 F2/F3: the constant replaced the default, not the rule. Any value passed is stored
+        # unchanged, "" and an explicit None included (as before); only an omitted `by` defaults.
+        omitted = object()
+        for given, stored in (("shadow", "shadow"), ("", ""), (None, None),
+                              (omitted, gate.OPERATOR_ESCALATION)):
+            with self.subTest(by=given):
+                kwargs = {} if given is omitted else {"by": given}
+                entry = escalate_pending.record(self.st, 7, reason="r", head=HEAD, **kwargs)
+                self.assertEqual(entry["by"], stored)
+                self.assertEqual(escalate_pending.get(self.st, 7)["by"], stored)
+
+    def test_a_pending_record_without_a_kind_still_reaches_the_breach_as_the_operator(self):
+        # #1158 F3: a stored `by` of None (or "") is not a new kind; the fixer gate reading it
+        # falls back to the operator kind, exactly as it did when the default was the literal.
+        for given in (None, ""):
+            with self.subTest(by=given):
+                escalate_pending.record(self.st, 7, reason="r", head=HEAD, by=given)
+                _, _, breach, _ = self.fixer_gate(
+                    verdict(6) | {"state": "changes_requested"}, [verdict(5), verdict(6)])
+                self.assertEqual(breach.call_args.kwargs["escalated"]["by"], "operator")
 
     def test_the_cap_comes_first_and_clears_it(self):
         reviews = [verdict(4), verdict(5), verdict(6)]               # 3 of 3: the cap breaches

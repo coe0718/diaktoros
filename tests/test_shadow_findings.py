@@ -106,6 +106,28 @@ class Retention(unittest.TestCase):
         self.fill(st, st.SHADOW_FINDINGS_KEPT + 3)
         self.assertEqual(st.shadow_findings_get(1000, ts.HEAD), {})
 
+    def test_a_ledger_path_that_is_not_a_file_evicts_nothing(self):
+        # #1130: a directory at the ledger path is an existing ledger that cannot be read, not
+        # "no open runs": the empty set would have let the cap evict the oldest snapshot, while
+        # ``shadow_hold`` on the same path holds. Through the enforcing entry point.
+        import tempfile
+        loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
+        st = state_mod.state_for(loop)
+        self.fill(st, st.SHADOW_FINDINGS_KEPT)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=temp.name):
+            with self.assertRaises(OSError):
+                gate.shadow_open_heads("acme/widgets")
+            held, _note = gate.shadow_hold({**loop, "shadow": {**loop["shadow"], "escalate": True}},
+                                           7, ts.HEAD)
+            supervisor = mock.Mock()
+            gate.enqueue_shadow(loop, supervisor, 7, ts.HEAD)
+        self.assertTrue(held)                                          # the hold agrees
+        self.assertEqual(st.shadow_findings_get(1000, ts.HEAD), {})   # the oldest: not evicted
+        self.assertEqual(st.shadow_findings_get(7, ts.HEAD), {})
+        supervisor.submit.assert_called_once()                        # the shadow is still queued
+
     def test_queueing_through_the_gate_keeps_the_snapshot_of_a_delayed_shadow(self):
         loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
         st = state_mod.state_for(loop)

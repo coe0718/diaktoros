@@ -761,7 +761,7 @@ def _escalate(loop, args, emit=print):
     if expected is not None:
         st = _ConfirmedEscalationState(st, loop, number, expected)
     why = " ".join(str(args.reason or "").split())[:200] or "the operator asked for a ruling"
-    escalation = {"by": "operator", "at": now_iso(), "reason": why,
+    escalation = {"by": gate.OPERATOR_ESCALATION, "at": now_iso(), "reason": why,
                   "operation_id": secrets.token_hex(16)}
     args.expected_marker = {"pr": number, "head": head, "rounds": verdicts, "cap": loop["cap"],
                             "reason": f"escalated: {why}", "escalated": escalation}

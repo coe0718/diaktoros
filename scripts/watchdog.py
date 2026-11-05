@@ -45,6 +45,7 @@ from diaktoros import conflict_person  # noqa: E402
 from diaktoros import escalate_pending  # noqa: E402
 from diaktoros import merge_check  # noqa: E402
 from diaktoros import push_settle  # noqa: E402
+from diaktoros import ruling_issues  # noqa: E402
 from diaktoros import shadow_issues  # noqa: E402
 from diaktoros import review_kick  # noqa: E402
 from diaktoros import (  # noqa: E402
@@ -169,11 +170,9 @@ def retry_pending_breaches(loop: dict, st: state_mod.LoopState, prs: list,
         if type(number) is not int or not head:
             continue
         marker = markers.get(f"{loop['repo']}#{number}")
-        # The authors gate.breach parks (shadow on #1154): an operator's or a shadow's escalation
-        # covers every reviewed author, review-only included; a spent cap only a fixer's PR.
-        by = ((marker.get("escalated") or {}).get("by") if isinstance(marker, dict) else None)
-        authors = (config.reviewed_authors(loop) if by in {gate.SHADOW_ESCALATION, "operator"}
-                   else set(loop["fixers"]))
+        # The authors gate.breach parks (shadow on #1154): the same set, from the same function.
+        authors = gate.breach_authors(
+            loop, marker.get("escalated") if isinstance(marker, dict) else None)
         if ((pr.get("user") or {}).get("login") or "").lower() not in authors:
             continue
         if (not isinstance(marker, dict) or gate.breach_delivery_status(marker, head) != "delivery-pending"
@@ -864,6 +863,13 @@ def _finish(c: _Sweep) -> None:
             log(f"shadow-found issue #{issue} filed")
     except Exception as exc:
         log(f"shadow issue filing failed: {type(exc).__name__}: {exc}")
+    try:
+        # #1864: the follow-ups an adjudicator ruled valid but not blocking, once it has ruled
+        # (off unless adjudicator_file_issues; bounded per day).
+        for issue in ruling_issues.file_pending(loop, log=log):
+            log(f"adjudicator-found issue #{issue} filed")
+    except Exception as exc:
+        log(f"adjudicator issue filing failed: {type(exc).__name__}: {exc}")
     if observer.retry(loop, st):
         log("observer: retried an undelivered notice")
     observer.flush(loop, st, wait_s=0 if watch_mode.TEST else observer.digest_wait(loop))
