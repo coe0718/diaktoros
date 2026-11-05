@@ -45,6 +45,21 @@ def _top_level_names(path: pathlib.Path) -> set[str]:
     return names
 
 
+def _moved_names() -> set[str]:
+    """Names that no longer resolve as ``run_supervisor.<name>``: the module-level names of the
+    SUBMODULES, plus the methods of every class in any submodule (``turns`` included), minus
+    what the package itself still binds (the re-exported state classes, ``Supervisor``)."""
+    moved = {n for sub in SUBMODULES for n in _top_level_names(PACKAGE / f"{sub}.py")}
+    for path in PACKAGE.glob("*.py"):
+        if path.stem in ("__init__", "__main__"):
+            continue
+        for node in ast.parse(path.read_text()).body:
+            if isinstance(node, ast.ClassDef):
+                moved.update(n.name for n in node.body
+                             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)))
+    return {n for n in moved if not hasattr(run_supervisor, n)}
+
+
 def _local_submodule_shadows(source: str, filename: str) -> list[tuple[str, str]]:
     """(function, name) for each function in the source with a local (not imported) binding named
     like any run_supervisor submodule."""
@@ -170,7 +185,7 @@ class Split(unittest.TestCase):
     def test_prose_names_a_moved_function_by_its_submodule(self):
         # Docs and docstrings that write `run_supervisor.<name>` for a moved name point at a path
         # that no longer resolves (#1458): they must say `run_supervisor.<submodule>.<name>`.
-        moved = {n for sub in SUBMODULES for n in _top_level_names(PACKAGE / f"{sub}.py")}
+        moved = _moved_names()
         pattern = re.compile(r"run_supervisor\.(\w+)")
         files = [*(ROOT / "docs").glob("*.md"), *(ROOT / "diaktoros").rglob("*.py")]
         for path in files:
@@ -179,6 +194,15 @@ class Split(unittest.TestCase):
                     if name not in SUBMODULES and name in moved:
                         self.fail(f"{path.relative_to(ROOT)}:{number} names run_supervisor.{name}, "
                                   f"which moved to a submodule")
+
+    def test_the_moved_set_holds_mixin_methods(self):
+        # `run_supervisor._spawn` is a method of workers.WorkerLifecycle, so it is as unresolvable
+        # as a moved function (#1663); the package's own bindings stay out of the set.
+        moved = _moved_names()
+        for method in ("_spawn", "_heartbeat", "_worker_log", "_claim"):
+            self.assertIn(method, moved)
+        self.assertNotIn("Supervisor", moved)
+        self.assertNotIn("_Turn", moved)
 
     def test_a_test_does_not_shadow_a_submodule_it_imports(self):
         # The package's own shadow rule, applied to the tests (#1458): a function that binds a

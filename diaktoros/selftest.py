@@ -166,8 +166,8 @@ def github_read_only():
 def worker_tempdir():
     """Use the temp directory the production worker gets.
 
-    ``run_supervisor._spawn`` starts the worker without ``TMPDIR``, so its per-turn socket
-    directories land in ``/tmp``. A long ``TMPDIR`` in the operator's shell would otherwise make
+    ``run_supervisor.Supervisor._spawn`` starts the worker without ``TMPDIR``, so its per-turn
+    socket directories land in ``/tmp``. A long ``TMPDIR`` in the operator's shell would otherwise make
     the selftest fail (AF_UNIX path limit) where the worker would not, or pass where it would not.
     """
     saved = tempfile.tempdir
