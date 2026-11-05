@@ -52,6 +52,16 @@ class StatusLinesSeats(unittest.TestCase):
         self.assertTrue(any(line.startswith("reviewer ") for line in lines), lines)
         self.assertFalse(any(line.startswith("fixer ") for line in lines), lines)
 
+    def test_the_reverse_spelling_order_lists_one_seat_too(self):
+        # The comparison alone: `seen` holds the reviewer's key, the fixer's login is spelled the
+        # other way. (With the reviewer spelled `fix-ß`, a `lower()` comparison still matched,
+        # because the key stored in `seen` was already casefolded.)
+        loop = {"read_token": "reader", "tokens": {ASKED: "/x/a.pat", "reader": "/x/r.pat"},
+                "seats": {"reviewer": {"login": ASKED}, "fixer": {"login": MAPPED}}}
+        lines = cli_common._credential_lines(loop)
+        self.assertTrue(any(line.startswith("reviewer ") for line in lines), lines)
+        self.assertFalse(any(line.startswith("fixer ") for line in lines), lines)
+
     def test_a_distinct_fixer_is_kept(self):
         loop = {"read_token": "reader", "tokens": {MAPPED: "/x/a.pat", "other": "/x/o.pat"},
                 "seats": {"reviewer": {"login": MAPPED}, "fixer": {"login": "other"}}}

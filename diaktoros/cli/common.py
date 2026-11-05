@@ -534,11 +534,11 @@ def hook_write_need(loop: dict, token_login: str | None) -> str:
         # An App has a key and a permission, not a token file and PAT scopes (#1276); the
         # wording agrees with admin_unmapped.
         need = _app_hook_need(login, loop.get("repo"))
-        return need + (" — that is the reader's App" if login.lower() == reader.lower() else
+        return need + (" — that is the reader's App" if util.login_key(login) == util.login_key(reader) else
                        " — check that App's permission and that it is installed on the repo")
     need = (f"the token for {login!r} needs hook write access on {loop.get('repo')} (classic `repo` or "
             "`admin:repo_hook`, or fine-grained `repository_hooks: write`)")
-    if login and login.lower() == reader.lower():
+    if login and util.login_key(login) == util.login_key(reader):
         need += (" — that is the reader's file. On a user-owned repo only the owner can manage "
                  "hooks, so if the reader is the owner give that file hook write; otherwise pass "
                  "--admin-token <owner login> (a login mapped with its own --token at init)")
