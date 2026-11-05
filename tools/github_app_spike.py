@@ -129,19 +129,25 @@ class Spike:
                                  {"query": query, "variables": variables})
         return (body or {}).get("data") if isinstance(body, dict) else None
 
-    def deliveries(self, role: str, since: float, event_prefix: str = "") -> list[dict]:
+    def deliveries(self, role: str, since: float, event_prefix: str = "") -> tuple[int, list | None]:
+        """``(read_status, events)`` for the App's recorded webhook deliveries since ``since``.
+
+        ``events`` is ``None`` when the list read did not answer 200: an unread list is not an
+        empty one, so a failed read cannot pass for "no event was sent". Each event carries the
+        ``detail_status`` of the read of its own payload; when that is not 200 its payload fields
+        are ``None`` because the payload was not read, not because it had none."""
         status, items = self.app(role, "GET", "/app/hook/deliveries?per_page=100")
         if status != 200:
-            return []
+            return status, None
         out = []
         for item in items:
             if epoch(item["delivered_at"]) < since or not item["event"].startswith(event_prefix):
                 continue
-            _, full = self.app(role, "GET", f"/app/hook/deliveries/{item['id']}")
+            detail_status, full = self.app(role, "GET", f"/app/hook/deliveries/{item['id']}")
             payload = ((full or {}).get("request") or {}).get("payload") or {}
             review = payload.get("review") or {}
             out.append({"event": item["event"], "action": item.get("action"),
-                        "at": item["delivered_at"],
+                        "at": item["delivered_at"], "detail_status": detail_status,
                         "sender": (payload.get("sender") or {}).get("login"),
                         "sender_type": (payload.get("sender") or {}).get("type"),
                         "requested_reviewer": (payload.get("requested_reviewer") or {}).get("login"),
@@ -150,7 +156,7 @@ class Spike:
                         "review_user_type": (review.get("user") or {}).get("type"),
                         "review_commit": (review.get("commit_id") or "")[:7],
                         "installation": bool(payload.get("installation"))})
-        return sorted(out, key=lambda d: d["at"])
+        return status, sorted(out, key=lambda d: d["at"])
 
     # -- helpers on the repository --------------------------------------------------------------
     def put_file(self, role, branch, text, message):
@@ -192,6 +198,15 @@ class Spike:
 
 def emit(step, **data):
     print(json.dumps({"step": step, **data}, default=str), flush=True)
+
+
+def emit_deliveries(s: Spike, step: str, role: str, since: float, key: str, prefix: str = "",
+                    named: bool = False) -> None:
+    """Print one delivery read with its ``read_status``; the ``key`` field is ``null`` (not an
+    empty list) when the read failed, so a failed read never looks like "no events". ``named``
+    adds the ``role`` field to the line."""
+    status, events = s.deliveries(role, since, prefix)
+    emit(step, **({"role": role} if named else {}), read_status=status, **{key: events})
 
 
 def run(s: Spike) -> None:
@@ -288,9 +303,9 @@ def run(s: Spike) -> None:
     # Q1/Q2/Q3/Q5: which events each App's webhook recorded
     time.sleep(15)
     for role in ROLES:
-        emit("deliveries", role=role, since_start=s.deliveries(role, t0))
-    emit("deliveries_after_reviewer_requests", reader=s.deliveries("reader", t3, "pull_request"))
-    emit("review_deliveries", reader=s.deliveries("reader", t2, "pull_request_review"))
+        emit_deliveries(s, "deliveries", role, t0, "since_start", named=True)
+    emit_deliveries(s, "deliveries_after_reviewer_requests", "reader", t3, "reader", "pull_request")
+    emit_deliveries(s, "review_deliveries", "reader", t2, "reader", "pull_request_review")
     if s.check_branch:
         required_check(s, tag)
 

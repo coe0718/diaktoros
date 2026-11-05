@@ -272,7 +272,69 @@ class SecondBranch(unittest.TestCase):
             self.assertEqual(rc.call_count, calls)
 
 
+class DeliverySpike(FakeSpike):
+    """Answers the webhook-delivery reads: ``list_status`` for the list, ``detail_status`` for each."""
+
+    def __init__(self, list_status=200, detail_status=200, items=()):
+        super().__init__()
+        self.list_status, self.detail_status, self.items = list_status, detail_status, list(items)
+
+    def app(self, role, method, path, body=None):
+        if path.startswith("/app/hook/deliveries?"):
+            return self.list_status, self.items if self.list_status == 200 else {"message": "denied"}
+        if path.startswith("/app/hook/deliveries/"):
+            if self.detail_status != 200:
+                return self.detail_status, {"message": "gone"}
+            return 200, {"request": {"payload": {"sender": {"login": "fixer-app[bot]", "type": "Bot"}}}}
+        return super().app(role, method, path, body)
+
+
+DELIVERY_STEPS = ("deliveries", "deliveries_after_reviewer_requests", "review_deliveries")
+RECENT = {"id": 7, "event": "pull_request", "action": "opened", "delivered_at": "2999-01-01T00:00:00Z"}
+
+
+class FailedDeliveryRead(unittest.TestCase):
+    def delivery_lines(self, fake):
+        return [line for line in run_quietly(fake) if line["step"] in DELIVERY_STEPS]
+
+    def test_a_failed_list_read_is_not_printed_as_no_events(self):
+        lines = self.delivery_lines(DeliverySpike(list_status=403))
+        self.assertEqual(len(lines), 5, "three Apps, then the two reader reads")
+        for line in lines:
+            with self.subTest(step=line["step"], role=line.get("role")):
+                self.assertEqual(line["read_status"], 403)
+                events = [v for k, v in line.items() if k in ("since_start", "reader")]
+                self.assertEqual(events, [None], "null, not [], so it cannot read as 'no events'")
+
+    def test_an_empty_but_successful_read_stays_an_empty_list(self):
+        lines = self.delivery_lines(DeliverySpike())
+        self.assertEqual(len(lines), 5)
+        for line in lines:
+            with self.subTest(step=line["step"], role=line.get("role")):
+                self.assertEqual(line["read_status"], 200)
+                self.assertEqual([v for k, v in line.items() if k in ("since_start", "reader")], [[]])
+
+    def test_each_role_line_names_its_own_read_status(self):
+        lines = self.delivery_lines(DeliverySpike(items=[RECENT]))
+        roles = [line["role"] for line in lines if line["step"] == "deliveries"]
+        self.assertEqual(roles, list(spike.ROLES))
+        self.assertEqual(lines[0]["since_start"][0]["event"], "pull_request")
+        self.assertEqual(lines[0]["since_start"][0]["detail_status"], 200)
+
+    def test_a_failed_payload_read_is_marked_on_the_event(self):
+        lines = self.delivery_lines(DeliverySpike(detail_status=404, items=[RECENT]))
+        event = lines[0]["since_start"][0]
+        self.assertEqual(lines[0]["read_status"], 200)
+        self.assertEqual(event["detail_status"], 404)
+        self.assertIsNone(event["sender"], "the payload was not read: say so, not that it had none")
+
+
 class DocsAgree(unittest.TestCase):
+    def test_docs_say_a_failed_delivery_read_is_null_with_its_status(self):
+        doc = (ROOT / "docs" / "github-app-support.md").read_text()
+        for word in ("read_status", "detail_status"):
+            self.assertIn(word, doc)
+
     def test_docs_name_the_flags_the_harness_has(self):
         doc = (ROOT / "docs" / "github-app-support.md").read_text()
         parser_src = (ROOT / "tools" / "github_app_spike.py").read_text()

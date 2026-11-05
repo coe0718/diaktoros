@@ -41,6 +41,13 @@ To set a loop up with Apps, see [Getting started with GitHub Apps](github-apps.m
     competing commit status), 9h and 9i (an administrator's merge with *include administrators*
     on and off) are **not** repeated: they need a person's status and an administrator's merge,
     and the harness does not change the protection. Measure them by hand.
+  - Rows 1, 3 and 5 rest on the webhook deliveries each App recorded (the `deliveries`,
+    `deliveries_after_reviewer_requests` and `review_deliveries` steps). Each of those lines
+    carries `read_status`, the HTTP status of `GET /app/hook/deliveries`. When it is not 200 the
+    list field (`since_start` or `reader`) is `null`, not `[]`: an unread list is not "no event
+    was sent", and a `null` list proves nothing about rows 3 and 5. Each event also carries
+    `detail_status`, the status of the read of its own payload; when it is not 200 the payload
+    fields (`sender`, `review_state` and the rest) are `null` because they were not read.
   - The permission probes in "The reviewer App's permissions are wider than its seat" (contents
     push, merge, title edit, adding a label, close and then reopen) are the `reviewer_permissions`
     step.
