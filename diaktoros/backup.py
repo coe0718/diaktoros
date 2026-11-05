@@ -12,7 +12,9 @@ and model logins; ``restore`` checks the token files the loops name and lists an
 
 Nothing here has a setting: the only knob is ``--out``. An output directory or retention setting
 would have to be settable from the form, ``init``, ``setup``, ``set`` and the loop file, and none
-exists yet.
+exists yet. For the same reason ``doctor``'s ``backup:fresh`` check (#1081) warns on a fixed age,
+``FRESH_DAYS``, and reads only ``backups_dir()``: it cannot see an archive written with ``--out``
+elsewhere, nor a backup taken some other way.
 """
 from __future__ import annotations
 
@@ -33,6 +35,7 @@ from . import config, gate_shims, route_intent, routes, run_supervisor, util
 
 VERSION = 1
 MANIFEST = "manifest.json"
+FRESH_DAYS = 30         # doctor's backup:fresh warns when the newest archive is older than this
 WARNING = ("this archive holds route secrets (webhook HMAC keys): keep it private; "
            "it was written mode 0600 and its contents are never printed")
 
@@ -44,9 +47,41 @@ class BackupError(RuntimeError):
     pass
 
 
+def backups_dir() -> pathlib.Path:
+    """Where ``create`` puts a default-named archive, and the one place ``doctor``'s
+    ``backup:fresh`` check looks for one (#1081)."""
+    return config.home() / "backups"
+
+
+def latest_archive() -> tuple[pathlib.Path, float] | None:
+    """The newest archive in ``backups_dir()`` as ``(path, mtime)``, or None when there is none.
+
+    An archive here is a regular, non-empty ``*.tar.gz`` (not a symlink), whatever its name: an
+    operator's ``--out`` into this directory counts as much as a default name. The file is not
+    opened, so this says a recent archive *exists*, not that it would restore. A directory that
+    does not exist is "none"; one that cannot be read raises ``OSError`` — the caller says so
+    rather than reporting a backup that may be there as missing.
+    """
+    try:
+        entries = list(os.scandir(backups_dir()))
+    except FileNotFoundError:
+        return None
+    newest: tuple[pathlib.Path, float] | None = None
+    for entry in entries:
+        if not entry.name.endswith(".tar.gz") or not entry.is_file(follow_symlinks=False):
+            continue
+        try:
+            info = entry.stat(follow_symlinks=False)
+        except OSError:
+            continue        # gone between the listing and now
+        if info.st_size and (newest is None or info.st_mtime > newest[1]):
+            newest = (pathlib.Path(entry.path), info.st_mtime)
+    return newest
+
+
 def default_out() -> pathlib.Path:
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    base = config.home() / "backups"
+    base = backups_dir()
     path = base / f"diaktoros-backup-{stamp}.tar.gz"
     n = 1
     while path.exists() or path.is_symlink():   # two runs in one second must not collide

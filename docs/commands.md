@@ -1013,6 +1013,16 @@ the state directory, the gateway's reachability and the repo hooks. Each line is
 An unknown hook state is not a paused hook. Verify it with an authorized hook-admin account;
 see [account access and token permissions](accounts.md#choose-pat-type-and-permissions).
 
+`backup:fresh` (#1081) is the matching check for [`backup`](#backup): it warns (⚠️, never ❌) when
+`$HERMES_HOME/backups/` holds no non-empty `*.tar.gz` written in the last 30 days, and names
+`hermes dk backup`. So `doctor` still exits `0` on an install that was never backed up, and only
+`--strict` makes the warning a failure. It reads that one directory by file age, with a fixed 30 days:
+`backup` has no output-directory or retention setting to follow. An archive written with `--out`
+somewhere else, or a backup taken some other way, is not seen, and the check warns although a backup
+exists. It does not open the archive, so it shows that one exists, not that it would restore. A
+backup covers the whole install, so every loop's report carries the same line, and `--offline` does
+not skip it (it reads only local files).
+
 ```bash
 hermes dk doctor --loop "<loop-id>"
 hermes dk doctor --loop "<loop-id>" --offline
@@ -1126,7 +1136,8 @@ The archive holds the routes' HMAC secrets, so restored hooks keep working. It i
 `0600`, the command warns about it, and the secrets are never printed. It leaves out GitHub
 tokens (PATs), Hermes profiles and model logins. It never overwrites a file. There is no
 output-directory or retention setting yet; when one is added it must be settable from the
-Desktop form, `init`, `setup`, `set` and the loop file.
+Desktop form, `init`, `setup`, `set` and the loop file. Until then `doctor`'s `backup:fresh` check
+looks only in `$HERMES_HOME/backups/`, for an archive from the last 30 days.
 
 ```bash
 hermes dk backup --out "<archive-file>"
