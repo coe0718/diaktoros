@@ -27,8 +27,8 @@ sys.path.insert(0, str(ROOT))
 from diaktoros import ledger  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros import state as state_mod  # noqa: E402
-from diaktoros import (broker, broker_ipc, config, fix_hold, gate, gh, run_supervisor, seat_model,  # noqa: E402
-                         safe_push, trusted_turn)
+from diaktoros import (broker, broker_ipc, config, fix_hold, gate, gh, observer, run_supervisor,  # noqa: E402
+                         seat_model, safe_push, trusted_turn)
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 REPO = "acme/widgets"
@@ -462,11 +462,41 @@ class Gate(Base):
         notices = []
         with mock.patch.object(gate, "enqueue_isolated", boom), \
                 mock.patch.object(self.module, "_fix_notice",
-                                  lambda loop, n, base, outcome: notices.append((n, base, outcome))):
+                                  lambda loop, n, base, outcome, kind: notices.append(
+                                      (n, base, outcome, kind))):
             log = self.run_gate(self.labeled(label="Agent-Fix"))
         self.assertIn("fix held: isolated worker unavailable: OSError: boom", log)
         self.assertNotIn("UnboundLocalError", log)
-        self.assertEqual(notices, [(12, BASE, "held — isolated worker unavailable: OSError: boom")])
+        self.assertEqual(notices, [(12, BASE, "held — isolated worker unavailable: OSError: boom",
+                                    "held")])
+
+    def feed(self):
+        """Switch the loop's observer feed on and capture what would be POSTed: the messages."""
+        self.loop = {**self.loop, "observer": {"route": "widgets-observe", "profile": "default",
+                                               "deliver": "telegram"}}
+        sent = []
+
+        def post(loop, block, tag, delivery="", urgent=False):
+            sent.append(block["message"])
+            return True, "", False
+        patch = mock.patch.object(observer, "_post", post)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return sent
+
+    def test_a_held_hand_off_does_not_swallow_the_queued_one_at_the_same_base(self):
+        # #1080 / #1057: both notices were keyed (loop, issue, base, "fixing", base), so the
+        # "queued" notice after a "held" one at the same base was reported as already recorded.
+        sent = self.feed()
+
+        def boom(*a, **k):
+            raise OSError("boom")
+        with mock.patch.object(gate, "enqueue_isolated", boom):
+            self.run_gate(self.labeled())                   # the worker is down: held at BASE
+        self.run_gate(self.labeled())                       # it is back: queued at the same BASE
+        self.assertEqual(len(sent), 2, sent)
+        self.assertIn("held — isolated worker unavailable: OSError: boom", sent[0])
+        self.assertIn(f"fix turn queued from main at {BASE[:7]}", sent[1])
 
     def test_nobody_else_and_nothing_else_starts_a_fix(self):
         log = self.run_gate(self.labeled(sender="owner"))       # the author is not a maintainer
