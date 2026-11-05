@@ -54,9 +54,10 @@ def get(st, number: int) -> dict | None:
 
 def record(st, number: int, *, reason: str, head: str, by: str | None = None) -> dict:
     """Record (or replace) the PR's pending escalation; returns it. ``by`` is the breach
-    marker's ``escalated.by`` it will be written with: the operator's unless given."""
-    entry = {"reason": reason, "head": head, "by": by or gate.OPERATOR_ESCALATION,
-             "at": time.time()}
+    marker's ``escalated.by`` it will be written with: the operator's when omitted. A value that
+    is given is stored as it is (an empty one too), as before the constant."""
+    entry = {"reason": reason, "head": head,
+             "by": gate.OPERATOR_ESCALATION if by is None else by, "at": time.time()}
     with st.locked():
         memory = st._load(_path(st), {})
         memory = memory if isinstance(memory, dict) else {}

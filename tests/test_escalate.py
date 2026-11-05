@@ -149,7 +149,20 @@ class Command(Base):
                     mock.patch.object(gh, "reviews", return_value=self.reviews), \
                     mock.patch.object(pr_facts, "effective_reviews", return_value=self.reviews):
                 self.assertEqual(pr_facts.adjudication_state(self.loop, row)[0], "ok")
-
+            # The watchdog's retry of a failed delivery decides the same author set (#1158 F1):
+            # an escalation retries for the review-only author, a spent cap on one never does.
+            from scripts import watchdog
+            review_only_pr = {**fg.LIVE, "user": {"login": "Owner-Human"}}
+            for escalated, retried in ((marker["escalated"], True), (None, False)):
+                with self.subTest(retry_escalated=bool(escalated)):
+                    entry = {**marker, "status": "delivery-pending"}
+                    if escalated is None:
+                        entry.pop("escalated")
+                    state_mod._atomic_write(self.st.breach, {f"{fg.REPO}#7": entry})
+                    with mock.patch.object(gh, "reviews", return_value=self.reviews), \
+                            mock.patch.object(gate, "breach") as parked:
+                        watchdog.retry_pending_breaches(self.loop, self.st, [review_only_pr])
+                    self.assertEqual(parked.called, retried)
 
 
     def test_a_review_only_pr_with_a_turn_running_is_refused_not_left_pending(self):
@@ -433,6 +446,16 @@ class Pending(Base):
             _, _, breach, _ = self.fixer_gate(
                 verdict(6) | {"state": "changes_requested"}, [verdict(5), verdict(6)])
         self.assertEqual(breach.call_args.kwargs["escalated"]["by"], "operator-renamed")
+
+    def test_a_supplied_kind_is_stored_as_given_and_only_an_omitted_one_defaults(self):
+        # #1158 F2: the constant replaced the default, not the rule. An explicit value is stored
+        # unchanged, an empty one included (as before); `by=None`, the omitted case, defaults.
+        for given, stored in (("shadow", "shadow"), ("", ""), (None, gate.OPERATOR_ESCALATION)):
+            with self.subTest(by=given):
+                kwargs = {} if given is None else {"by": given}
+                entry = escalate_pending.record(self.st, 7, reason="r", head=HEAD, **kwargs)
+                self.assertEqual(entry["by"], stored)
+                self.assertEqual(escalate_pending.get(self.st, 7)["by"], stored)
 
     def test_the_cap_comes_first_and_clears_it(self):
         reviews = [verdict(4), verdict(5), verdict(6)]               # 3 of 3: the cap breaches
