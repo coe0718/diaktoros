@@ -320,10 +320,13 @@ def ruling_answers(ruling, review_run: str, review_created: float) -> bool:
     return str(shown) == str(review_run)
 
 
-def shadow_open_heads(db=None) -> set[tuple[int, str]]:
-    """``(pr, head)`` of every shadow run still open (``SHADOW_OPEN``), whose findings snapshot
-    must outlive it (#1013). Empty when the ledger does not exist yet; raises when it exists
-    but cannot be read, so the caller never evicts on a guess."""
+def shadow_open_heads(repo: str, db=None) -> set[tuple[int, str]]:
+    """``(pr, head)`` of every shadow run of ``repo`` still open (``SHADOW_OPEN``), whose
+    findings snapshot must outlive it (#1013). Scoped to the loop's repo (#1133): the snapshot
+    file is per loop and keyed by ``pr:head`` alone, so another repo's open run at the same PR
+    number and head would otherwise keep this loop's snapshot past the cap. Empty when the
+    ledger does not exist yet; raises when it exists but cannot be read, so the caller never
+    evicts on a guess."""
     from . import run_supervisor
     path = pathlib.Path(db or run_supervisor.production_ledger())
     if not path.exists():
@@ -332,8 +335,9 @@ def shadow_open_heads(db=None) -> set[tuple[int, str]]:
     if con is None:
         return set()
     try:
-        rows = con.execute(f"SELECT pr, head FROM runs WHERE seat='shadow' AND "
-                           f"state IN ({','.join('?' * len(SHADOW_OPEN))})", SHADOW_OPEN).fetchall()
+        rows = con.execute(f"SELECT pr, head FROM runs WHERE repo=? AND seat='shadow' AND "
+                           f"state IN ({','.join('?' * len(SHADOW_OPEN))})",
+                           (repo, *SHADOW_OPEN)).fetchall()
     finally:
         con.close()
     return {(int(r[0]), str(r[1])) for r in rows}
@@ -561,7 +565,7 @@ def snapshot_shadow(loop: dict, number: int, head: str) -> bool:
         st = state_mod.state_for(loop)
         with st.locked():
             try:
-                keep = shadow_open_heads()
+                keep = shadow_open_heads(loop["repo"])
             except Exception as exc:
                 keep = None                  # unknown open runs: evict nothing
                 log(f"#{number}: shadow runs unreadable, no snapshot evicted: "
