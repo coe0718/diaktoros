@@ -633,9 +633,25 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
             f"--force-with-lease={lease}", url, f"{new_head}:{ref}")
         return new_head
 
+
+def _receipt(*, repo: str, number: int, head: str, branch: str, role: str, login: str,
+             files: list, merge: dict | None) -> dict:
+    """The audit receipt of one ``push``, before its new head is known: the scope, who pushes,
+    the changed paths, and the merged base of a conflict resolution."""
+    # The SHA is known after local construction, before the only remote mutation.
+    receipt = {"repo": repo, "pr": number, "old_head": head,
+               "branch": branch, "role": role, "login": login,
+               "paths": [path for path, _ in files], "operation": "push"}
+    if merge is not None:
+        # #303: a conflict resolution — a merge commit of this base into the head.
+        receipt["merge_base"] = merge.get("base_sha")
+    return receipt
+
+
 def push(loop: dict, *, repo: str, number: int, head: str, role: str,
          branch: str, manifest: object, merge: dict | None = None,
-         ci_fix: bool = False, shadow_fix: float | None = None) -> dict:
+         ci_fix: bool = False, shadow_fix: float | None = None,
+         ledger_db: str | None = None) -> dict:
     """Create Git objects and lease-advance only the gate-scoped PR branch.
 
     The trusted caller supplies scope from the gate, never from the manifest. All
@@ -647,17 +663,13 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
     try:
         files, patch, verdict, login, ref_path, check_ref, identity = _before_attempt(
             loop, repo=repo, number=number, head=head, role=role, branch=branch,
-            manifest=manifest, merge=merge, ci_fix=ci_fix, shadow_fix=shadow_fix)
+            manifest=manifest, merge=merge, ci_fix=ci_fix, shadow_fix=shadow_fix,
+            ledger_db=ledger_db)
     except Exception as exc:
         raise PreWrite.of(exc) from exc     # reads and checks only: nothing written (#1763)
     scope_check = verdict and role == "fixer"   # only a fix round answering findings (#482)
-    # The SHA is known after local construction, before the only remote mutation.
-    receipt = {"repo": repo, "pr": number, "old_head": head,
-               "branch": branch, "role": role, "login": login,
-               "paths": [path for path, _ in files], "operation": "push"}
-    if merge is not None:
-        # #303: a conflict resolution — a merge commit of this base into the head.
-        receipt["merge_base"] = merge.get("base_sha")
+    receipt = _receipt(repo=repo, number=number, head=head, branch=branch, role=role,
+                       login=login, files=files, merge=merge)
     # A diff's paths are known once Git has applied it; they reach the receipt before the push.
     extra = {"patch": patch, "changed": receipt["paths"]} if patch is not None else {}
     error = None
@@ -710,10 +722,12 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
 
 def _before_attempt(loop: dict, *, repo: str, number: int, head: str, role: str, branch: str,
                     manifest: object, merge: dict | None, ci_fix: bool,
-                    shadow_fix: float | None) -> tuple:
+                    shadow_fix: float | None, ledger_db: str | None = None) -> tuple:
     """What ``push`` checks before its attempt begins, every step a read or a local check: the
     manifest, the policy, a shadow ruling still standing, who pushes, the branch and its head,
-    the fixer's identity. ``(files, patch, verdict, login, ref_path, check_ref, identity)``."""
+    the fixer's identity. ``(files, patch, verdict, login, ref_path, check_ref, identity)``.
+    The ruling is read from ``ledger_db``, the run's ledger (``RunScope.ledger_db``), as the
+    claim and the launch read it; None reads the production ledger (#1354)."""
     base, files, patch = _manifest(manifest)
     assert isinstance(manifest, dict)  # _manifest rejects any other shape
     if not config.unattended_fixer_push_enabled(loop):
@@ -728,7 +742,7 @@ def _before_attempt(loop: dict, *, repo: str, number: int, head: str, role: str,
         # #1004 part 3: the work order is the adjudicator's REJECT of an upheld shadow review,
         # not a changes-requested review (the head is approved): it must still stand here.
         from . import gate
-        if gate.upheld_shadow_ruling(loop, number, head) != shadow_fix:
+        if gate.upheld_shadow_ruling(loop, number, head, db=ledger_db) != shadow_fix:
             raise broker.BrokerDenied("upheld shadow ruling no longer current")
     login = broker.authorize(loop, repo=repo, number=number, head=head,
                              role=role, branch=branch, operation="push", require_verdict=verdict)

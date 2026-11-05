@@ -419,7 +419,8 @@ class RunBroker(broker_issues.IssueWrites):
                                     **({"merge": dict(self.scope.merge)}
                                        if self.scope.merge else {}),
                                     ci_fix=self.scope.ci_fix,
-                                    shadow_fix=self.scope.shadow_fix)
+                                    shadow_fix=self.scope.shadow_fix,
+                                    ledger_db=self.scope.ledger_db)
             # safe_push returns only after exact ref + PR readback and
             # durable audit. Failure to commit completion leaves intent.
             supervisor.confirm_push(self.scope.run_id, self.scope.repo,
