@@ -17,6 +17,10 @@ The repository, its branch protection and the Apps are set up by hand; the harne
 of them (an App has no Administration permission). The second protected branch (no required
 approvals) is the one named by ``--check-branch``.
 
+A step that gets an answer it cannot go on without (an App's identity, a file, a branch, a pull
+request, a commit) ends the run: the last line printed is ``{"step": ..., "status": ..., "error":
+...}`` and the exit code is 1, so a failed run still says where it stopped.
+
 Standard library plus the ``openssl`` CLI (App JWTs are RS256). No key or token is ever printed:
 a token is described by its length, prefix and expiry only. The repository's ``main`` should be
 protected with one required approval, so step ``protection`` can say whether an App counts.
@@ -50,6 +54,37 @@ def epoch(stamp: str) -> float:
 
 def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+class StepFailed(Exception):
+    """A step got an API answer it cannot go on without: its name, GitHub's status, what it said."""
+
+    def __init__(self, step: str, status: int, error: str):
+        super().__init__(f"{step}: {status} {error}")
+        self.step, self.status, self.error = step, status, error
+
+
+def dig(body, path: str):
+    """The value at the dotted ``path`` (``"commit.sha"``) in nested objects, else ``None``."""
+    for part in path.split("."):
+        body = body.get(part) if isinstance(body, dict) else None
+    return body
+
+
+def expect(step: str, got: tuple, *paths: str, what: str = ""):
+    """The body of ``got`` (the ``(status, body)`` of ``Spike.gh`` / ``Spike.app``) when its status
+    is 2xx and the body holds a value at every dotted one of ``paths``; otherwise ``StepFailed``
+    for ``step``. ``what`` names the request. Only GitHub's ``message`` (or the start of a text
+    answer) goes into the error, never a request body or a token."""
+    status, body = got
+    lead = f"{what}: " if what else ""
+    if not 200 <= status < 300:
+        said = body.get("message") if isinstance(body, dict) else body
+        raise StepFailed(step, status, f"{lead}{str(said)[:200]}")
+    missing = [p for p in paths if dig(body, p) is None]
+    if missing:
+        raise StepFailed(step, status, f"{lead}the answer has no {', '.join(missing)}")
+    return body
 
 
 class Spike:
@@ -154,15 +189,34 @@ class Spike:
 
     # -- helpers on the repository --------------------------------------------------------------
     def put_file(self, role, branch, text, message):
-        _, f = self.gh(role, "GET", f"/repos/{self.repo}/contents/app.py?ref={branch}")
-        return self.gh(role, "PUT", f"/repos/{self.repo}/contents/app.py",
-                       {"message": message, "branch": branch, "sha": f["sha"],
-                        "content": base64.b64encode(text.encode()).decode()})
+        """Replace ``app.py`` on ``branch``; the ``(status, body)`` of the commit. A missing file
+        or branch, or a refused commit, raises ``StepFailed`` for step ``put_file``."""
+        f = expect("put_file", self.gh(role, "GET", f"/repos/{self.repo}/contents/app.py?ref={branch}"),
+                   "sha", what=f"{role} GET app.py on {branch}")
+        got = self.gh(role, "PUT", f"/repos/{self.repo}/contents/app.py",
+                      {"message": message, "branch": branch, "sha": f["sha"],
+                       "content": base64.b64encode(text.encode()).decode()})
+        expect("put_file", got, "commit.sha", what=f"{role} PUT app.py on {branch}")
+        return got
 
-    def branch(self, role, name):
-        _, ref = self.gh(role, "GET", f"/repos/{self.repo}/git/ref/heads/main")
-        return self.gh(role, "POST", f"/repos/{self.repo}/git/refs",
-                       {"ref": f"refs/heads/{name}", "sha": ref["object"]["sha"]})[0]
+    def branch(self, role, name, base="main"):
+        """Create ``name`` at the tip of ``base``; the status of the creation. A missing ``base``
+        or a refused creation raises ``StepFailed`` for step ``branch``."""
+        ref = expect("branch", self.gh(role, "GET", f"/repos/{self.repo}/git/ref/heads/{base}"),
+                     "object.sha", what=f"{role} GET ref {base}")
+        got = self.gh(role, "POST", f"/repos/{self.repo}/git/refs",
+                      {"ref": f"refs/heads/{name}", "sha": ref["object"]["sha"]})
+        expect("branch", got, what=f"{role} POST ref {name}")
+        return got[0]
+
+    def open_pr(self, role, title, head, base="main", body=""):
+        """Open a PR from ``head`` into ``base``; the PR object. A refused request or an answer
+        without a number or an author raises ``StepFailed`` for step ``open_pr``."""
+        payload = {"title": title, "head": head, "base": base}
+        if body:
+            payload["body"] = body
+        return expect("open_pr", self.gh(role, "POST", f"/repos/{self.repo}/pulls", payload),
+                      "number", "user", what=f"{role} POST pulls for {head}")
 
     def reviews_by(self, role, number):
         """The ``[state, commit]`` of each review the ``role`` App left on the PR, oldest first."""
@@ -200,7 +254,7 @@ def run(s: Spike) -> None:
 
     # identity: each App, its bot principal and its token (never the token itself)
     for role in ROLES:
-        _, app = s.app(role, "GET", "/app")
+        app = expect("identity", s.app(role, "GET", "/app"), "slug", what=f"{role} GET /app")
         s.slugs[role] = app["slug"]
         _, bot = s.gh(role, "GET", f"/users/{app['slug']}[bot]")
         emit("identity", role=role, slug=app["slug"], events=app.get("events"),
@@ -211,16 +265,15 @@ def run(s: Spike) -> None:
     # Q1/Q7: the fixer App opens a PR and pushes again (API commits)
     branch = f"spike-fix-{tag}"
     s.branch("fixer", branch)
-    _, c1 = s.put_file("fixer", branch, "def add(a, b):\n    return a + b\n\n\ndef sub(a, b):\n"
-                       "    return a - b\n", "Add sub")
-    _, pr = s.gh("fixer", "POST", f"/repos/{s.repo}/pulls",
-                 {"title": f"Spike {tag}: fixer App PR", "head": branch, "base": "main",
-                  "body": "GitHub App feasibility spike."})
+    s.put_file("fixer", branch, "def add(a, b):\n    return a + b\n\n\ndef sub(a, b):\n"
+               "    return a - b\n", "Add sub")
+    pr = s.open_pr("fixer", f"Spike {tag}: fixer App PR", branch, body="GitHub App feasibility spike.")
     number = pr["number"]
     _, c2 = s.put_file("fixer", branch, "def add(a, b):\n    return a + b\n\n\ndef sub(a, b):\n"
                        "    return a - b\n\n\ndef mul(a, b):\n    return a * b\n", "Add mul")
     head = c2["commit"]["sha"]
-    _, cm = s.gh("reader", "GET", f"/repos/{s.repo}/commits/{head}")
+    cm = expect("fixer_pr", s.gh("reader", "GET", f"/repos/{s.repo}/commits/{head}"),
+                "commit.author", "commit.verification.verified", what=f"reader GET commit {head[:7]}")
     emit("fixer_pr", pr=number, pr_user=pr["user"]["login"], pr_user_type=pr["user"]["type"],
          commit_author=cm["commit"]["author"], author_login=(cm.get("author") or {}).get("login"),
          verified=cm["commit"]["verification"]["verified"])
@@ -265,7 +318,8 @@ def run(s: Spike) -> None:
         git = lambda *a, cwd=clone: subprocess.run(["git", *a], env=env, cwd=cwd,  # noqa: E731
                                                    capture_output=True, text=True)
         git("clone", "-q", "--branch", branch, f"https://github.com/{s.repo}.git", clone, cwd=tmp)
-        _, bot = s.gh("fixer", "GET", f"/users/{s.slugs['fixer']}[bot]")
+        bot = expect("git_push", s.gh("fixer", "GET", f"/users/{s.slugs['fixer']}[bot]"), "id",
+                     what="fixer GET its bot user")
         git("config", "user.name", f"{s.slugs['fixer']}[bot]")
         git("config", "user.email", f"{bot['id']}+{s.slugs['fixer']}[bot]@users.noreply.github.com")
         with open(os.path.join(clone, "app.py"), "a") as fh:
@@ -274,7 +328,9 @@ def run(s: Spike) -> None:
         pushed = git("push", "-q", "origin", branch)
         sha = git("rev-parse", "HEAD").stdout.strip()
     settled = s.settled_protection(number)
-    _, cm = s.gh("reader", "GET", f"/repos/{s.repo}/commits/{sha}")
+    cm = expect("git_push", s.gh("reader", "GET", f"/repos/{s.repo}/commits/{sha}"),
+                "commit.verification.verified", "commit.verification.reason",
+                what=f"reader GET commit {sha[:7]}")
     emit("git_push", returncode=pushed.returncode, author_login=(cm.get("author") or {}).get("login"),
          verified=cm["commit"]["verification"]["verified"],
          reason=cm["commit"]["verification"]["reason"], new_head=sha[:7],
@@ -298,7 +354,9 @@ def run(s: Spike) -> None:
 def reviewer_probes(s: Spike, branch: str, number: int, tag: str) -> dict:
     """The status of each thing the reviewer App's ``pull_requests: write`` might allow beyond
     reviews. Closing comes last and is followed by a reopen, so the PR is left open."""
-    _, f = s.gh("reviewer", "GET", f"/repos/{s.repo}/contents/app.py?ref={branch}")
+    f = expect("reviewer_permissions",
+               s.gh("reviewer", "GET", f"/repos/{s.repo}/contents/app.py?ref={branch}"), "sha",
+               what=f"reviewer GET app.py on {branch}")
     pr = f"/repos/{s.repo}/pulls/{number}"
     probes = {}
     probes["push_contents"] = s.gh("reviewer", "PUT", f"/repos/{s.repo}/contents/app.py",
@@ -325,8 +383,7 @@ def stale_approval(s: Spike, tag: str) -> None:
     s.branch("person", branch)
     _, c1 = s.put_file("person", branch, "def add(a, b):\n    return a + b\n\n\n"
                        "def neg(a):\n    return -a\n", "Add neg")
-    _, pr = s.gh("person", "POST", f"/repos/{s.repo}/pulls",
-                 {"title": f"Spike {tag}: person PR", "head": branch, "base": "main"})
+    pr = s.open_pr("person", f"Spike {tag}: person PR", branch)
     number, head = pr["number"], c1["commit"]["sha"]
     status, ap = s.gh("reviewer", "POST", f"/repos/{s.repo}/pulls/{number}/reviews",
                       {"commit_id": head, "event": "APPROVE", "body": "Fine."})
@@ -351,13 +408,10 @@ def required_check(s: Spike, tag: str) -> None:
         return (s.settled_protection(number, tries=10) or {}).get("mergeStateStatus")
 
     branch = f"spike-check-{tag}"
-    _, ref = s.gh("fixer", "GET", f"/repos/{s.repo}/git/ref/heads/{s.check_branch}")
-    s.gh("fixer", "POST", f"/repos/{s.repo}/git/refs",
-         {"ref": f"refs/heads/{branch}", "sha": ref["object"]["sha"]})
+    s.branch("fixer", branch, base=s.check_branch)
     _, c = s.put_file("fixer", branch, f"def add(a, b):\n    return a + b  # {tag}\n", "Check test")
     head = c["commit"]["sha"]
-    _, pr = s.gh("fixer", "POST", f"/repos/{s.repo}/pulls",
-                 {"title": f"Spike {tag}: required check", "head": branch, "base": s.check_branch})
+    pr = s.open_pr("fixer", f"Spike {tag}: required check", branch, base=s.check_branch)
     number, states = pr["number"], {}
     states["no_check"] = merge_state(number)
     status, run = s.gh("reviewer", "POST", f"/repos/{s.repo}/check-runs",
@@ -397,8 +451,12 @@ def main(argv=None) -> int:
     apps = dict(item.split("=", 1) for item in args.app)
     if set(apps) != set(ROLES):
         ap.error("give --app for exactly reader, reviewer and fixer")
-    run(Spike(args.repo, {k: int(v) for k, v in apps.items()}, args.keys, args.check_branch,
-              os.environ.get(args.person_token_env, "")))
+    try:
+        run(Spike(args.repo, {k: int(v) for k, v in apps.items()}, args.keys, args.check_branch,
+                  os.environ.get(args.person_token_env, "")))
+    except StepFailed as exc:
+        emit(exc.step, status=exc.status, error=exc.error)
+        return 1
     return 0
 
 

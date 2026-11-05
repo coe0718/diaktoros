@@ -80,7 +80,8 @@ class FakeSpike(spike.Spike):
         return [(m, p, b) for r, m, p, b in self.requests if r == role]
 
 
-def run_quietly(fake):
+def run_quietly(fake, entry=None):
+    """The lines ``entry`` prints (default: ``spike.run(fake)``) with git and sleeping stubbed."""
     out = io.StringIO()
     # git is the only subprocess left in ``run``; it must not touch the network here.
     done = mock.Mock(returncode=0, stdout=SHA + "\n", stderr="")
@@ -97,7 +98,7 @@ def run_quietly(fake):
     with mock.patch.object(spike.time, "sleep", side_effect=lambda n: fake.events.append(("sleep", n))), \
             mock.patch.object(spike.subprocess, "run", side_effect=fake_git), \
             contextlib.redirect_stdout(out):
-        spike.run(fake)
+        (entry or (lambda: spike.run(fake)))()
     return [json.loads(line) for line in out.getvalue().splitlines()]
 
 
@@ -270,6 +271,136 @@ class SecondBranch(unittest.TestCase):
             with self.subTest(branch=branch), mock.patch.object(spike, "required_check") as rc:
                 run_quietly(FakeSpike(check_branch=branch))
             self.assertEqual(rc.call_count, calls)
+
+
+class Refusing(FakeSpike):
+    """``FakeSpike`` where chosen requests get a failure answer instead of the usual one.
+
+    ``refuse`` is a list of ``(role, method, path part, answer[, let_through])``: a request of that
+    role and method whose path holds the part gets ``answer`` once ``let_through`` earlier matches
+    have been answered as usual. ``app_answer`` replaces the answer to ``GET /app``."""
+
+    def __init__(self, refuse=(), app_answer=None, **kwargs):
+        super().__init__(**kwargs)
+        self.refuse, self.app_answer, self.seen = list(refuse), app_answer, {}
+
+    def app(self, role, method, path, body=None):
+        if path == "/app" and self.app_answer:
+            return self.app_answer
+        return super().app(role, method, path, body)
+
+    def gh(self, role, method, path, body=None):
+        for i, (r, m, part, answer, *skip) in enumerate(self.refuse):
+            if (r, m) == (role, method) and part in path:
+                self.seen[i] = self.seen.get(i, 0) + 1
+                if self.seen[i] > (skip[0] if skip else 0):
+                    self.requests.append((role, method, path, body))
+                    return answer
+        return super().gh(role, method, path, body)
+
+
+def run_main(fake):
+    """The harness's ``main`` on ``fake``: ``(exit code, the JSON lines it printed)``."""
+    argv = ["--repo", "o/r", "--keys", "/k", "--app", "reader=1", "--app", "reviewer=2",
+            "--app", "fixer=3"]
+    if fake.check_branch:
+        argv += ["--check-branch", fake.check_branch]
+    code = []
+    with mock.patch.object(spike, "Spike", return_value=fake):
+        lines = run_quietly(fake, lambda: code.append(spike.main(argv)))
+    return code[0], lines
+
+
+NOT_FOUND = (404, {"message": "Not Found", "token": "ghs_must_not_be_printed"})
+UNPROCESSABLE = (422, {"message": "Reference already exists"})
+FORBIDDEN = (403, {"message": "Resource not accessible by integration"})
+
+
+class FailedStatuses(unittest.TestCase):
+    """A step whose answer the run cannot go on without ends it with one named JSON line (#1171)."""
+
+    CASES = (
+        # name, fake arguments, step, status, request that must never be made afterwards
+        ("app 401", dict(app_answer=(401, {"message": "A JSON web token could not be decoded"})),
+         "identity", 401, None),
+        ("app answer without a slug", dict(app_answer=(200, {})), "identity", 200, None),
+        ("app answer that is not an object", dict(app_answer=(200, None)), "identity", 200, None),
+        ("main ref missing", dict(refuse=[("fixer", "GET", "/git/ref/heads/main", NOT_FOUND)]),
+         "branch", 404, "pulls"),
+        ("branch not created", dict(refuse=[("fixer", "POST", "/git/refs", UNPROCESSABLE)]),
+         "branch", 422, "pulls"),
+        ("app.py missing on the branch",
+         dict(refuse=[("fixer", "GET", "/contents/app.py", NOT_FOUND)]), "put_file", 404, "pulls"),
+        ("commit refused", dict(refuse=[("fixer", "PUT", "/contents/app.py", FORBIDDEN)]),
+         "put_file", 403, "pulls"),
+        ("commit answer without a sha",
+         dict(refuse=[("fixer", "PUT", "/contents/app.py", (200, {"content": {}}))]),
+         "put_file", 200, "pulls"),
+        ("pull request refused", dict(refuse=[("fixer", "POST", "/pulls", FORBIDDEN)]),
+         "open_pr", 403, "requested_reviewers"),
+        ("commit lookup 404", dict(refuse=[("reader", "GET", "/commits/", NOT_FOUND)]),
+         "fixer_pr", 404, "requested_reviewers"),
+        ("pushed commit lookup 404", dict(refuse=[("reader", "GET", "/commits/", NOT_FOUND, 1)]),
+         "git_push", 404, "/merge"),
+        ("fixer bot user lookup 404", dict(refuse=[("fixer", "GET", "/users/", NOT_FOUND, 1)]),
+         "git_push", 404, "/merge"),
+        ("reviewer cannot read app.py",
+         dict(refuse=[("reviewer", "GET", "/contents/app.py", NOT_FOUND)]),
+         "reviewer_permissions", 404, "/merge"),
+        ("person's branch refused",
+         dict(person_token="pat", refuse=[("person", "POST", "/git/refs", FORBIDDEN)]),
+         "branch", 403, "/pulls/12/reviews"),
+        ("person's pull request refused",
+         dict(person_token="pat", refuse=[("person", "POST", "/pulls", FORBIDDEN)]),
+         "open_pr", 403, "/pulls/12/reviews"),
+        ("check branch missing",
+         dict(check_branch="gated", refuse=[("fixer", "GET", "/git/ref/heads/gated", NOT_FOUND)]),
+         "branch", 404, "/check-runs"),
+    )
+
+    def test_main_ends_with_the_named_step_and_exits_1(self):
+        for name, kwargs, step_name, status, _ in self.CASES:
+            with self.subTest(name):
+                code, lines = run_main(Refusing(**kwargs))
+                self.assertEqual(code, 1)
+                self.assertEqual(set(lines[-1]), {"step", "status", "error"})
+                self.assertEqual((lines[-1]["step"], lines[-1]["status"]), (step_name, status))
+                self.assertTrue(lines[-1]["error"])
+
+    def test_the_run_stops_at_the_failed_step(self):
+        for name, kwargs, _, _, never in self.CASES:
+            if never is None:
+                continue
+            with self.subTest(name):
+                fake = Refusing(**kwargs)
+                run_main(fake)
+                self.assertFalse([p for _, _, p, _ in fake.requests if never in p],
+                                 f"the run went on to {never} after the failure")
+
+    def test_nothing_after_a_failed_identity_is_printed(self):
+        code, lines = run_main(Refusing(app_answer=(401, {"message": "Bad credentials"})))
+        self.assertEqual([line["step"] for line in lines], ["identity"])
+        self.assertIn("reader GET /app", lines[0]["error"])
+        self.assertIn("Bad credentials", lines[0]["error"])
+
+    def test_the_error_holds_github_message_and_never_the_rest_of_the_body(self):
+        _, lines = run_main(Refusing(refuse=[("fixer", "GET", "/git/ref/heads/main", NOT_FOUND)]))
+        self.assertIn("Not Found", lines[-1]["error"])
+        self.assertNotIn("ghs_must_not_be_printed", json.dumps(lines))
+
+    def test_a_text_answer_is_kept_short(self):
+        _, lines = run_main(Refusing(app_answer=(502, "x" * 5000)))
+        self.assertLess(len(lines[-1]["error"]), 300)
+
+    def test_a_run_that_gets_every_answer_still_exits_0(self):
+        code, lines = run_main(FakeSpike())
+        self.assertEqual(code, 0)
+        self.assertNotIn("error", lines[-1])
+
+    def test_run_raises_step_failed_with_the_step_and_status(self):
+        with self.assertRaises(spike.StepFailed) as ctx:
+            run_quietly(Refusing(refuse=[("fixer", "GET", "/contents/app.py", NOT_FOUND)]))
+        self.assertEqual((ctx.exception.step, ctx.exception.status), ("put_file", 404))
 
 
 class DocsAgree(unittest.TestCase):
