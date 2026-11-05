@@ -455,7 +455,7 @@ def cmd_retry(args) -> int:
 
 
 def cmd_cancel(args) -> int:
-    """Stop a queued, waiting or running isolated run (#1148).
+    """Stop a queued, blocked, waiting or running isolated run (#1148).
 
     The selection, the state change and the read-back are ``cancel_action``'s, which the
     Desktop's confirmed cancel calls too: this function supplies the CLI's one GitHub read (the
@@ -1045,8 +1045,9 @@ def add_retry(sub) -> None:  # noqa: ANN001
 
 def add_cancel(sub) -> None:  # noqa: ANN001
     """The ``cancel`` subcommand's parser, registered by ``cli.register_cli`` (#1148)."""
-    cancel = sub.add_parser("cancel", help="Stop a queued, waiting or running isolated run "
-                                           "(only `retry` re-arms it)")
+    summary = ("Stop a queued, blocked (not admitted yet), waiting or running isolated run "
+               "(only `retry` re-arms it)")
+    cancel = sub.add_parser("cancel", help=summary, description=summary)
     cancel.add_argument("--loop", required=True,
                         help="loop id (its config file name; `list` shows them)")
     cancel.add_argument("--run", help="the run id to cancel (`status` lists it)")

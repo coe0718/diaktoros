@@ -109,7 +109,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | link a later bug to the approved PR that shipped it | [`regression`](#regression) |
 | find out why a webhook started nothing | [`trace`](#trace) |
 | run a failed turn again | [`retry`](#retry) |
-| stop a queued, waiting or running turn | [`cancel`](#cancel) |
+| stop a queued, blocked, waiting or running turn | [`cancel`](#cancel) |
 | finish a half-written issue fix | [`continue`](#continue) |
 | start a queued turn now | [`drain`](#drain) |
 | settle an observer notice whose delivery is uncertain | [`observer`](#observer) |
@@ -1738,9 +1738,9 @@ and reconcile it instead.
 
 ### cancel
 
-Stops an isolated run that is queued, waiting to retry, or running. Only `retry` re-arms a
-cancelled run. A redelivered event or a watchdog sweep doesn't, and a new head queues a fresh
-run as usual.
+Stops an isolated run that is queued, blocked (not admitted yet), waiting to retry, or running.
+Only `retry` re-arms a cancelled run. A redelivered event or a watchdog sweep doesn't, and a new
+head queues a fresh run as usual.
 
 ```bash
 hermes dk cancel --loop "<loop-id>" --pr 12
