@@ -27,7 +27,13 @@ USER_CALLERS = {"diaktoros/gh.py", "diaktoros/doctor/identity_checks.py", "diakt
 # The Python that ships: the package, the gate/watchdog scripts, and the dashboard and desktop pages.
 SCANNED = ("diaktoros", "scripts", "dashboard", "desktop")
 _UNKNOWN = "\0"                       # a part of a string only known at run time
-_USER_PATH = re.compile(r"/user(?=$|[/?#\0])")    # ``/user``, ``/user/emails``, ``/user?x``; not ``/users``
+# An endpoint, not a sentence: one run of non-blank text, matched whole, that ends in ``/user`` and
+# goes on only into a subpath, a query or a part run time fills. What comes before it is nothing, a
+# ``scheme://host`` or bare host, or a run that holds a part only run time knows (``f"{base}/user"``,
+# ``f"/{version}/user"``). So ``/user``, ``/user/emails``, ``/user?x`` and
+# ``https://api.github.com/user`` are found; ``/users/x`` is not, and neither is prose that merely
+# names it (``GET /user``, ``could not read /user``) or a file path (``/home/user``).
+_USER_PATH = re.compile(r"(?:[^/\s]*://[^/\s]*|(?:[\w-]+\.)+[\w-]+(?::\d+)?|\S*\0\S*)?/user(?:[/?#\0]\S*)?")
 
 
 _NOT_STATIC = object()                # an interpolated expression that is not a constant or a spelled string
@@ -109,11 +115,12 @@ def _parts(node: ast.AST) -> list[ast.AST]:
 
 
 def user_reads(source: str) -> list[int]:
-    """The lines of ``source`` that spell a ``/user`` path: a literal, or one built in an f-string,
-    a concatenation or a join. The whole expression is read, never its fragments on their own; an
-    interpolation or operand that is not a string (a call) is searched for its own paths. A bare
-    string statement (a docstring) is prose, not a call. A path assembled from a variable or a
-    call's result is out of its reach."""
+    """The lines of ``source`` that spell a ``/user`` endpoint (``_USER_PATH``): a literal, or one
+    built in an f-string, a concatenation or a join. The whole expression is read, never its
+    fragments on their own; an interpolation or operand that is not a string (a call) is searched
+    for its own paths. Message text that names the endpoint (``"GET /user"``, anything with a blank
+    in it) is not an endpoint, and a bare string statement (a docstring) is prose, not a call. A
+    path assembled from a variable or a call's result is out of its reach."""
     tree = ast.parse(source)
     prose = {id(node.value) for node in ast.walk(tree)
              if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)}
@@ -124,7 +131,7 @@ def user_reads(source: str) -> list[int]:
             continue
         text = _text(node)
         if text is not None:
-            if id(node) not in fragments and _USER_PATH.search(text):
+            if id(node) not in fragments and _USER_PATH.fullmatch(text):
                 lines.add(node.lineno)
             fragments.update(id(part) for part in _parts(node))
         pending.extend(ast.iter_child_nodes(node))
@@ -194,6 +201,11 @@ class UserScan(unittest.TestCase):
         "a concatenation interpolated into an f-string": "api(loop, f\"/{'us' + 'er'}\")",
         "a call inside the interpolation of a users path": "api(loop, f\"/users/{get('/user')}\")",
         "a call among the operands of a concatenation": 'api(loop, "/users/" + get("/user"))',
+        "a scheme and a host built at run time": 'get(f"{scheme}://{host}/user")',
+        "a base and a query": 'api(loop, f"{base}/user?page=1")',
+        "a version segment before it": 'api(loop, f"/{version}/user")',
+        "two run time segments before it": 'api(loop, f"{base}/{version}/user")',
+        "a host with no scheme": 'get("api.github.com/user")',
     }
     CLEAN = {
         "the users endpoint": 'api(loop, "/users/someone")',
@@ -203,6 +215,14 @@ class UserScan(unittest.TestCase):
         "a docstring naming it": '"""GET /user answers who the token is."""',
         "a comment naming it": "x = 1  # GET /user",
         "a message naming it": 'say(f"{login}: GET /user failed")',
+        "a message ending in it": 'say("GET /user")',
+        "a message ending in it and a question mark": 'say("Use GET /user?")',
+        "a message ending in it and a colon": 'say("could not read /user:")',
+        "a bare message ending in it": 'say("read /user")',
+        "an f-string message ending in it": 'say(f"{login} cannot call GET /user")',
+        "a message with a blank after the query mark": 'say("GET /user? no")',
+        "a message ending in a path of its own": 'say("see /home/user")',
+        "a file path of its own": 'home = "/home/user"',
         "a filesystem join": 'os.path.join(home, "user")',
         "a users path whose s is interpolated": "api(loop, f\"/user{'s'}/alice\")",
         "a users path split by a concatenation": 'api(loop, "/user" + "s/alice")',
@@ -248,6 +268,14 @@ class UserScan(unittest.TestCase):
             (Path(tmp) / "scripts").mkdir()
             (Path(tmp) / "scripts" / "watchdog.py").write_text('x = 1\nurl = base + "/user"\n')
             self.assertEqual(user_calls(Path(tmp)), ['scripts/watchdog.py:2: url = base + "/user"'])
+
+    def test_a_diagnostic_that_names_the_endpoint_is_not_a_finding_in_a_scanned_file(self):
+        """The walk the principal test runs: message text ending in ``/user`` passes, a read beside it does not."""
+        source = 'say("GET /user")\nsay("Use GET /user?")\nsay(f"{login} cannot call GET /user")\nurl = base + "/user"\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "scripts").mkdir()
+            (Path(tmp) / "scripts" / "watchdog.py").write_text(source)
+            self.assertEqual(user_calls(Path(tmp)), ['scripts/watchdog.py:4: url = base + "/user"'])
 
 
 class FixerIdentity(unittest.TestCase):
