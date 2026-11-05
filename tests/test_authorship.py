@@ -214,6 +214,41 @@ class Authorship(fg.Base):
         self.assertIn("only the first 10 of 30 open PRs were read", check.detail)
         self.assertIn(f"budget of {authorship.READS_MAX} commit-page reads", check.detail)
 
+    def budget_check(self, first_page):
+        """doctor over 30 open PRs of 300 commits each; ``first_page(n)`` is PR n's first commit
+        page (a list, ``None`` for an unreadable page, or ``False`` for the default page)."""
+        self.journal(self.push_record(PUSHED))
+
+        def fetch(loop, path, *args, **kwargs):
+            number = int(path.split("/pulls/", 1)[1].split("/", 1)[0])
+            page = int(path.rsplit("&page=", 1)[1]) if "&page=" in path else 1
+            override = first_page(number) if page == 1 else False
+            if override is not False:
+                return (None, "HTTP 502") if override is None else (override, "")
+            return ([commit(f"{page:02d}{i:038d}", "someone") for i in range(100)]
+                    if page <= 3 else []), ""
+        with mock.patch.object(gh, "open_prs_read",
+                               return_value=([{"number": n} for n in range(1, 31)], "")), \
+             mock.patch.object(gh, "fetch", side_effect=fetch):
+            return doctor.check_authorship(self.loop)
+
+    def test_doctor_says_the_budget_cut_alongside_a_misattributed_commit(self):
+        """F1 (PR #1932): a finding must not hide that 20 of the 30 open PRs were never read."""
+        stray = [commit(STRAY, "fixer")] + [commit(f"01{i:038d}", "someone") for i in range(99)]
+        check = self.budget_check(lambda n: stray if n == 1 else False)
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn(f"#1 commit {STRAY[:7]}", check.detail)
+        self.assertIn("only the first 10 of 30 open PRs were read", check.detail)
+        self.assertIn(f"budget of {authorship.READS_MAX} commit-page reads", check.detail)
+
+    def test_doctor_says_the_budget_cut_alongside_an_unreadable_pr(self):
+        """F1 (PR #1932): an unreadable PR must not hide that later open PRs were never read."""
+        check = self.budget_check(lambda n: None if n == 1 else False)
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn("#1: commits unreadable", check.detail)
+        self.assertIn("only the first 10 of 30 open PRs were read", check.detail)
+        self.assertIn(f"budget of {authorship.READS_MAX} commit-page reads", check.detail)
+
     def test_commit_reads_counts_the_pages_pr_commits_read_reads(self):
         for count, pages in ((0, 1), (99, 1), (100, 2), (250, 3), (500, 6)):
             self.assertEqual(authorship.commit_reads([{}] * count), pages)

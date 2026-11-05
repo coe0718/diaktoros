@@ -788,20 +788,29 @@ def check_authorship(loop: dict, offline: bool = False) -> Check:
         if problem:
             unread.append(f"#{number}: {problem}")
         found += [f"#{number} {authorship.line(entry)}" for entry in stray]
+    cut = _authorship_cut(authorship, scanned, len(numbers))
     if found:
         return Check(name, UNKNOWN, "misattributed: " + "; ".join(found[:5])
-                     + (f" (+{len(found) - 5} more)" if len(found) > 5 else "") + named,
+                     + (f" (+{len(found) - 5} more)" if len(found) > 5 else "")
+                     + (f"; {cut}" if cut else "") + named,
                      "give each agent its own GitHub account and git email (docs/accounts.md); "
                      "this check never blocks a turn")
-    if unread or scanned < len(numbers):
-        spent = (f" (the check's budget of {authorship.READS_MAX} commit-page reads was spent)"
-                 if scanned < min(len(numbers), authorship.PRS_MAX) else "")
+    if unread or cut:
         return Check(name, UNKNOWN, "no misattributed commit found, but "
-                     + ("; ".join(unread[:3]) if unread else
-                        f"only the first {scanned} of {len(numbers)} open PRs were read{spent}")
-                     + named)
+                     + "; ".join(unread[:3] + ([cut] if cut else [])) + named)
     return Check(name, VERIFIED, f"no commit on {len(numbers)} open PR(s) shows as a seat's "
                  f"account without a seat turn pushing it" + named)
+
+
+def _authorship_cut(authorship, scanned: int, total: int) -> str:
+    """The notice that only the first ``scanned`` of ``total`` open PRs were read, naming the
+    read budget when it (not ``PRS_MAX``) stopped the scan; ``""`` when every PR was read. Said
+    with every outcome of ``check_authorship`` (a finding, an unreadable PR), never dropped."""
+    if scanned >= total:
+        return ""
+    spent = (f" (the check's budget of {authorship.READS_MAX} commit-page reads was spent)"
+             if scanned < min(total, authorship.PRS_MAX) else "")
+    return f"only the first {scanned} of {total} open PRs were read{spent}"
 
 
 def check_state_dir(loop: dict) -> Check:
