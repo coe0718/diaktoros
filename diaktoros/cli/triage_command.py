@@ -11,6 +11,7 @@ from .. import (
     gh,
     route_intent,
     routes,
+    util,
 )
 from ..doctor import hook_checks
 from . import common as cli_common
@@ -71,8 +72,8 @@ def _is_seat_or_reader_login(loop: dict, login: str) -> bool:
     """Whether ``login`` is a seat (reviewer, fixer) or the current reader: the accounts whose
     token files `set --token` and `triage --token` never rebind (a seat's moves through the
     plugin settings and `apply`, the reader's with `--read-token`)."""
-    seat_logins = {config.seat_login(loop, seat).lower() for seat in config.SEAT_KEYS} - {""}
-    return login.lower() in seat_logins | {str(loop.get("read_token") or "").lower()}
+    seat_logins = {util.login_key(config.seat_login(loop, seat)) for seat in config.SEAT_KEYS} - {""}
+    return util.login_key(login) in seat_logins | {util.login_key(loop.get("read_token") or "")}
 
 
 def cmd_triage(args) -> int:
@@ -206,7 +207,7 @@ def cmd_triage(args) -> int:
         except config.ConfigError as exc:
             print(f"refused: {exc}")
             return 2
-        for key in [k for k in tokens if str(k).lower() == who.lower()]:
+        for key in [k for k in tokens if util.login_key(k) == util.login_key(who)]:
             del tokens[key]
         tokens[who] = str(pathlib.Path(file.strip()).expanduser())
     seats = dict(loop.get("seats") or {})

@@ -7,6 +7,7 @@ import pathlib
 
 from .. import (
     config,
+    util,
 )
 from . import common as cli_common
 from ..config import settings_form
@@ -182,8 +183,10 @@ def cmd_identity(args) -> int:
               f"switch once they finish{settle}")
         return 2
     raw = json.loads(json.dumps(loop))
-    tokens = {k: v for k, v in (raw.get("tokens") or {}).items() if k.lower() != login.lower()}
-    apps = {k: v for k, v in (raw.get("apps") or {}).items() if k.lower() != login.lower()}
+    tokens = {k: v for k, v in (raw.get("tokens") or {}).items()
+              if util.login_key(k) != util.login_key(login)}
+    apps = {k: v for k, v in (raw.get("apps") or {}).items()
+            if util.login_key(k) != util.login_key(login)}
     if args.app:
         apps[login] = spec
     else:

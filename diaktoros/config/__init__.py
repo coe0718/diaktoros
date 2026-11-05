@@ -60,7 +60,7 @@ import re
 from urllib.parse import urlsplit
 from urllib.request import Request
 
-from .. import envnames
+from .. import envnames, util
 from . import flags
 
 # Seat identity: *who* a seat is. A profile decides the model, the budget and the credentials the
@@ -845,9 +845,9 @@ def parse_app_id(value) -> int | None:
 
 def is_app(loop: dict, login: str) -> bool:
     """Whether ``login`` is mapped as a GitHub App identity (#1163), not a PAT."""
-    name = str(login or "").lower()
-    pats = {str(k).lower() for k in loop.get("tokens") or {}}
-    return bool(name) and name not in pats and name in {str(k).lower() for k in loop.get("apps") or {}}
+    name = util.login_key(login or "")
+    pats = {util.login_key(k) for k in loop.get("tokens") or {}}
+    return bool(name) and name not in pats and name in {util.login_key(k) for k in loop.get("apps") or {}}
 
 
 # What the reader needs to see each part of the repository's setup (#1241): a PAT's scope, or a
@@ -881,9 +881,7 @@ def reviewer_is_app(loop: dict) -> bool:
     """Whether the reviewer seat is a GitHub App identity (#1163). GitHub cannot request an App
     bot as a reviewer (a request answers 201 and does nothing, docs/github-app-support.md), so the
     handoff to it is delivered to the reviewer gate by the host instead."""
-    seat = str(loop.get("reviewer_seat") or "").lower()
-    pats = {str(k).lower() for k in loop.get("tokens") or {}}
-    return bool(seat) and seat not in pats and seat in {str(k).lower() for k in loop.get("apps") or {}}
+    return is_app(loop, str(loop.get("reviewer_seat") or ""))
 
 
 def credentials_map(loop: dict) -> dict:
