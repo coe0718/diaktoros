@@ -30,6 +30,7 @@ TIP = "c" * 40
 UNKNOWN = {**fg.LIVE, "mergeable": None, "mergeable_state": "unknown"}
 DIRTY = {**fg.LIVE, "mergeable": False, "mergeable_state": "dirty"}
 CLEAN = {**fg.LIVE, "mergeable": True, "mergeable_state": "clean"}
+APPROVED = object()                 # the fixture's reviews: an approval at the head
 
 
 class Detection(fg.Base):
@@ -37,7 +38,9 @@ class Detection(fg.Base):
         super().setUp()
         self.set_push(True)
 
-    def patches(self, reads, hold=(None, ""), prs=None, armed=True):
+    def patches(self, reads, hold=(None, ""), prs=None, armed=True, reviews=APPROVED):
+        """``reviews``: what ``gh.reviews`` answers, by default an approval at the head (a change
+        request there would make the conflict turn wait for the fixer, #1907)."""
         from scripts import watchdog
         enqueue = mock.patch.object(gate, "enqueue_isolated", return_value="queued")
         return watchdog, enqueue, [
@@ -47,7 +50,8 @@ class Detection(fg.Base):
             mock.patch.object(watchdog.route_intent, "heal", return_value=[]),
             mock.patch.object(gh, "open_prs", return_value=[fg.LIVE] if prs is None else prs),
             mock.patch.object(gh, "pr", side_effect=list(reads)),
-            mock.patch.object(gh, "reviews", return_value=[fg.verdict()]),
+            mock.patch.object(gh, "reviews", return_value=(
+                [fg.verdict(state="APPROVED")] if reviews is APPROVED else reviews)),
             mock.patch.object(pr_hold, "read", return_value=hold),
             mock.patch.object(watch_conflicts, "base_tip", return_value=TIP),
             mock.patch.object(watchdog, "retry_pending_breaches"),
@@ -59,8 +63,8 @@ class Detection(fg.Base):
     def run_with(self, call, reads, **kw):
         watchdog, enqueue, patches = self.patches(reads, **kw)
         with enqueue as queued:
-            for patch in patches:
-                patch.start()
+            started = [patch.start() for patch in patches]
+            self.notified = started[-3]                 # observer.notify
             try:
                 call(watchdog)
             finally:
@@ -89,6 +93,55 @@ class Detection(fg.Base):
         queued = self.run_with(lambda _: watch_conflicts.scan_conflicts(self.loop, self.st),
                                [DIRTY], hold=({"by": "boss"}, ""))
         queued.assert_not_called()
+
+
+class WaitsForTheFix(Detection):
+    """#1907: a conflict turn does not overtake a change request the fixer still owes an answer.
+    On #1875 the fix turn timed out, the merge went first, and the merged head's review spent the
+    PR's last round with the finding never attempted."""
+
+    OTHER = "d" * 40
+
+    def scan(self, reviews, marker=None):
+        if marker is not None:
+            self.st.breach_set(7, marker)
+        return self.run_with(lambda _: watch_conflicts.scan_conflicts(self.loop, self.st),
+                             [DIRTY], reviews=reviews)
+
+    def conflict_notice(self):
+        (call,) = [c for c in self.notified.call_args_list if c.args[2] == "conflict"]
+        return call.kwargs["next_turn"]
+
+    def test_changes_requested_at_the_head_waits_for_the_fixer_and_says_so(self):
+        self.scan([fg.verdict()]).assert_not_called()
+        said = self.conflict_notice()
+        self.assertIn("the fixer answers the changes requested at aaaaaaa first", said)
+        self.assertIn("hermes dk retry", said)
+        self.assertNotIn("will try to merge", said)
+
+    def test_an_approved_or_unreviewed_head_still_gets_its_turn(self):
+        for reviews in ([fg.verdict(state="APPROVED")], [],
+                        [{**fg.verdict(), "commit_id": self.OTHER}]):   # answered: a new head since
+            with self.subTest(reviews=reviews):
+                (call,) = self.scan(reviews).call_args_list
+                self.assertEqual(call.kwargs["turn_key"].split(":")[-1], TIP)
+                self.assertIn("will try to merge", self.conflict_notice())
+
+    def test_at_the_cap_the_merge_is_not_held_for_a_fix_that_will_not_come(self):
+        spent = [{**fg.verdict(1), "commit_id": self.OTHER}, {**fg.verdict(2), "commit_id": "e" * 40},
+                 fg.verdict(5)]                                   # 3 of cap 3, the last at the head
+        (call,) = self.scan(spent).call_args_list
+        self.assertEqual(call.kwargs["turn_key"].split(":")[-1], TIP)
+
+    def test_an_operator_escalation_at_the_head_does_not_hold_the_merge_either(self):
+        marker = {"head": fg.HEAD, "status": "awaiting-adjudication", "rounds": 1,
+                  "escalated": {"by": "operator", "why": "x"}}
+        self.assertTrue(gate.escalated(marker, fg.HEAD))
+        self.scan([fg.verdict()], marker=marker).assert_called_once()
+
+    def test_unreadable_reviews_wait_for_a_later_sweep(self):
+        self.scan(None).assert_not_called()       # gh.reviews answered None: unread
+        self.assertIn("its reviews could not be read", self.conflict_notice())
 
 
 class ScanFilters(Detection):

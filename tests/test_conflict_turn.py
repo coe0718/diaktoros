@@ -27,6 +27,7 @@ import test_safe_push as tsp  # noqa: E402
 import test_seat_models as sm  # noqa: E402
 from diaktoros import (broker, broker_ipc, config, contained, gh, ledger,  # noqa: E402
                          run_supervisor, safe_push, trusted_turn)
+from diaktoros import wire  # noqa: E402
 from diaktoros.run_supervisor import CONFLICT_KEY, Supervisor  # noqa: E402
 
 BASE_SHA = "b" * 40
@@ -190,6 +191,37 @@ class Broker(unittest.TestCase):
 
     def test_an_ordinary_push_is_unchanged(self):
         self.assertNotIn("merge", self.push(None))
+
+    def answers(self, merge):
+        """The comment the broker posts for this turn's summary, through its real recording,
+        after its push was confirmed."""
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET push_confirmed=1 WHERE id=?", (self.row["id"],))
+            con.execute("DELETE FROM fixer_answers WHERE run_id=?", (self.row["id"],))
+        scope = broker_ipc.RunScope("acme/widgets", 7, sm.HEAD, "fixer", "fix-7", self.row["id"],
+                                    str(self.db), merge=merge)
+        loop = {"repo": "acme/widgets", "state_dir": str(self.home), "unattended_fixer_push": True}
+        server = broker_ipc.RunBroker(loop, scope, self.home)
+        with mock.patch.object(broker, "authorize", return_value="fix"), \
+             mock.patch.object(broker, "post_fixer_answers", return_value=99) as post:
+            self.assertEqual(server._publish_answers("d" * 40, "a.py: kept both sides."), "posted")
+        return post.call_args.kwargs["text"]
+
+    def test_a_conflict_turns_summary_is_headed_as_a_merge_not_as_answers(self):
+        # #1907: on #1875 a conflict turn's summary went out as "Fixer's answers to the review of
+        # ..." and said "no finding was a defect", while the review's P1 was never attempted.
+        text = self.answers({"base_ref": "main", "base_sha": BASE_SHA, "tree": TREE})
+        self.assertIn(f"**Fixer's merge of `main` at `{BASE_SHA[:12]}` into `{sm.HEAD[:12]}`**",
+                      text)
+        self.assertIn("A merge only: it answers no review finding", text)
+        self.assertNotIn("answers to the review", text)
+        self.assertTrue(text.startswith(f"{wire.ANSWERS_MARKER} run={self.row['id']} "))
+        self.assertIn(f"**Fixer's answers to the review of `{sm.HEAD[:12]}`**", self.answers(None))
+
+    def test_the_conflict_prompt_says_the_turn_answers_no_finding(self):
+        from diaktoros import prompts
+        self.assertIn("Say nothing about the\n   review's findings: this turn answers none of them",
+                      prompts.ISOLATED_CONFLICT)
 
 
 class MergeAuthorization(unittest.TestCase):

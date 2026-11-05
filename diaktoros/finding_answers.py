@@ -77,7 +77,7 @@ def stated_at(loop: dict, number: int, entry: dict, ids) -> dict[str, float]:
 
 def _read_answers(loop: dict, number: int) -> list[dict] | None:
     """Every candidate answer on the PR and its closing issues, or None when GitHub can't say."""
-    from . import broker, gh, issue_facts
+    from . import fixer_answers, gh, issue_facts
     comments, _ = gh.issue_comments_read(loop, number)
     numbers = issue_facts.closing_numbers(loop, number)
     if comments is None or numbers is None:
@@ -94,7 +94,7 @@ def _read_answers(loop: dict, number: int) -> list[dict] | None:
             out.append({"at": util.iso_epoch(at), "stamp": at, "who": f"maintainer {login}",
                         "where": where, "body": body, "fixer": False})
     for comment in comments:
-        found = broker.parse_answers_comment(comment, loop)
+        found = fixer_answers.parse_answers_comment(comment, loop)
         if found:
             out.append({"at": util.iso_epoch(found["created_at"]), "stamp": found["created_at"],
                         "who": "the fixer", "where": "the PR", "body": found["body"],
