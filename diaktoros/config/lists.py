@@ -1,7 +1,7 @@
 """The list and limit settings ``normalize`` checks (#1349, split from the core): required
 checks, CI coverage, human paths, generated files and the fixer check, with the parsers and
 readers of the first four, and the login lists and per-PR limits (``review_only``,
-``operator_agents``, ``review_only_cap`` / ``review_only_daily``, ``ci_fix_cap``). Each reaches
+``operator_agents``, ``review_only_cap`` / ``review_only_daily``, ``ci_fix_cap``, ``change_proof_max``). Each reaches
 the core through ``config`` (``from .. import config``), so a patch on a core rule reaches it
 too; callers use ``lists.<name>``.
 """
@@ -305,16 +305,27 @@ def _check_review_only_limit(value, key: str, where: str) -> int | None:
     return value
 
 
-def check_ci_fix_cap(value, where: str) -> int | None:
-    """``ci_fix_cap`` (#539): a whole number 1-10, or empty (unset: the default, 3)."""
+def _check_bound(value, key: str, top: int, default: int, where: str) -> int | None:
+    """A whole number 1-``top``, or empty (unset: ``default``)."""
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
     if isinstance(value, str):
         value = config._form_int(value)
-    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= config.CI_FIX_CAP_MAX:
-        raise config.ConfigError(f"{where}: ci_fix_cap must be a whole number, 1-{config.CI_FIX_CAP_MAX} "
-                          f"(leave it empty for {config.CI_FIX_CAP_DEFAULT}), got {value!r}")
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= top:
+        raise config.ConfigError(f"{where}: {key} must be a whole number, 1-{top} "
+                          f"(leave it empty for {default}), got {value!r}")
     return value
+
+
+def check_ci_fix_cap(value, where: str) -> int | None:
+    """``ci_fix_cap`` (#539): a whole number 1-10, or empty (unset: the default, 3)."""
+    return _check_bound(value, "ci_fix_cap", config.CI_FIX_CAP_MAX, config.CI_FIX_CAP_DEFAULT, where)
+
+
+def check_change_proof_max(value, where: str) -> int | None:
+    """``change_proof_max`` (#1782): a whole number 1-50, or empty (unset: the default, 20)."""
+    return _check_bound(value, "change_proof_max", config.CHANGE_PROOF_MAX_LIMIT,
+                        config.CHANGE_PROOF_MAX_DEFAULT, where)
 
 
 def check_fixer_check(value, where: str) -> str:

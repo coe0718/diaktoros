@@ -245,6 +245,21 @@ def _init_shadow(args, d: dict) -> dict:
                      or settings_form._form_value(d, "shadow_never_paths"))) or {}
 
 
+def _init_limits(args, d: dict) -> dict:
+    """``cmd_init``: CI-fix turns per PR (#539), changed tests proved per head (#1782) and the
+    review-only verdict and daily caps. A flag wins over the form; empty = the default. Raises
+    ``config.ConfigError`` for a bad value."""
+    checks = (("ci_fix_cap", lists.check_ci_fix_cap),
+              ("change_proof_max", lists.check_change_proof_max),
+              *((key, lambda value, where, key=key: lists._check_review_only_limit(value, key, where))
+                for key in ("review_only_cap", "review_only_daily")))
+    limits = {}
+    for key, check in checks:
+        flag = getattr(args, key, None)
+        limits[key] = check(flag if flag is not None else d[key], "init")
+    return limits
+
+
 def _init_settings(args, d: dict) -> dict:
     """``init``'s loop settings, each from its flag, else the plugin settings form (``d``)."""
     return {
@@ -461,23 +476,11 @@ def cmd_init(args) -> int:
     if raw["review_only_update"] and not getattr(args, "acknowledge_branch_push", False):
         print(BRANCH_PUSH_REFUSAL)
         return 2
-    # #539: CI-fix turns per PR; a flag wins over the form; empty = the default.
     try:
-        raw["ci_fix_cap"] = lists.check_ci_fix_cap(
-            getattr(args, "ci_fix_cap", None) if getattr(args, "ci_fix_cap", None) is not None
-            else d["ci_fix_cap"], "init")
+        raw.update(_init_limits(args, d))
     except config.ConfigError as exc:
         print(f"refused: {exc}")
         return 2
-    # The review-only verdict cap and daily cap: a flag wins over the form; empty = unset.
-    for key in ("review_only_cap", "review_only_daily"):
-        flag = getattr(args, key, None)
-        try:
-            raw[key] = lists._check_review_only_limit(
-                flag if flag is not None else d[key], key, "init")
-        except config.ConfigError as exc:
-            print(f"refused: {exc}")
-            return 2
     # A seat-level capacity wins over the loop default, so only write it when it was asked for.
     for seat, value in _init_seat_concurrency(args, d).items():
         raw["seats"][seat]["concurrency"] = value
@@ -912,6 +915,8 @@ def _init_review_only_flags(init) -> None:  # noqa: ANN001
     init.add_argument("--ci-fix-cap", default=None, metavar="N",
                       help="CI-fix turns per PR before a red head waits for you, 1-10 "
                            "(default: the plugin setting, else 3)")
+    init.add_argument("--change-proof-max", default=None, metavar="N",
+                      help="changed tests the change proof runs per head, 1-50 (default: the plugin setting, else 20)")
     init.add_argument("--review-only-daily", default=None, metavar="N",
                       help="reviewer turns a day on review-only PRs, 1-1000 (default: the "
                            "plugin setting, else no cap)")

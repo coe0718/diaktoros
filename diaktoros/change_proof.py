@@ -7,7 +7,7 @@ before each reviewer turn instead:
 
 - the tests: every unittest test method the PR adds or changes, found by comparing the merge-base
   and head trees (``ast``, so a reformatted method is unchanged and a truncated patch can't hide
-  one), at most ``IDS_MAX`` of them;
+  one), at most ``change_proof_max`` of them (20 unless set);
 - the runs: those ids in the seat's network-less sandbox against the merge base with every file
   under the PR's test paths applied, fixtures and deletions included (they should fail), and
   against the head (they should pass), judged as ``repro_proof`` judges a named reproduction;
@@ -29,9 +29,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from . import ci_fix, repro_proof
+from . import ci_fix, config, repro_proof
 
-IDS_MAX = 20                 # changed test methods run per head; the proof says how many there were
 RUN_TIMEOUT_S = 180          # each of the two sandbox runs
 NONE_CHANGED = "none_changed"
 
@@ -58,8 +57,8 @@ def changed_files(base: Path, head: Path) -> list[str]:
 
 def apply_tests(tree: Path, head: Path) -> None:
     """Make ``tree``'s test paths the head's: every file under one removed, then every file under
-    one at the head copied in, so the PR's fixtures, data files and deletions reach the base run
-    and not only its Python. A file in the way of a directory (or the reverse) that isn't on a
+    one at the head copied in with its mode, so the PR's fixtures, data files, executable helpers
+    and deletions reach the base run and not only its Python. A file in the way of a directory (or the reverse) that isn't on a
     test path raises ``OSError``: the PR's tests can't be applied faithfully, and nothing runs."""
     emptied = set()
     for path in sorted(tree.rglob("*"), reverse=True):     # a directory's files before it
@@ -75,6 +74,7 @@ def apply_tests(tree: Path, head: Path) -> None:
         if path.is_file() and not path.is_symlink() and ci_fix.TEST_PATH.search(rel):
             (tree / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(path, tree / rel)
+            shutil.copymode(path, tree / rel)      # an executable helper stays one
 
 
 def _test_methods(path: Path) -> dict[str, str]:
@@ -104,15 +104,15 @@ def changed_tests(base: Path, head: Path, files: list[str] | None = None) -> lis
     return ids
 
 
-def prove(base: Path, head: Path, run) -> dict:
-    """Run the changed tests on the base (with the PR's test paths, ``apply_tests``) and at the
-    head. ``run(tree, ids, pythonpath)`` returns the runner's combined output (the sandbox in
-    production)."""
+def prove(base: Path, head: Path, run, bound: int = config.CHANGE_PROOF_MAX_DEFAULT) -> dict:
+    """Run the first ``bound`` changed tests on the base (with the PR's test paths,
+    ``apply_tests``) and at the head. ``run(tree, ids, pythonpath)`` returns the runner's combined
+    output (the sandbox in production)."""
     files = changed_files(base, head)
     every = changed_tests(base, head, files)
     if not every:
         return {"overall": NONE_CHANGED, "ids": []}
-    ids = every[:IDS_MAX]
+    ids = every[:bound]
     with tempfile.TemporaryDirectory(prefix="change-proof-") as temp:
         old, new = Path(temp) / "base", Path(temp) / "head"
         shutil.copytree(base, old, symlinks=True)
@@ -159,7 +159,7 @@ def for_head(loop: dict, scope, head_tree: Path, base_root: Path, run,
                 loop, repo=scope.repo, number=scope.number, head=scope.head, ref=scope.branch,
                 role=scope.role, sandbox_root=base_root)
             step = "the tests could not be applied to the merge base or run"
-            kept = {**prove(base, head_tree, run), "base": sha}
+            kept = {**prove(base, head_tree, run, config.change_proof_max(loop)), "base": sha}
         except Exception as exc:
             log(f"#{scope.number}: change proof not run: {step}: {type(exc).__name__}: {exc}")
             return section(repro_proof.unavailable(f"{step} ({type(exc).__name__})"))
@@ -201,7 +201,7 @@ def section(proof: dict | None) -> tuple[str, str]:
             "fixtures and deletions) and against this head, in the sandbox. "
             f"{_WORDS[proof['overall']]}")
     if proof.get("total"):
-        note += f" {len(rows)} of {proof['total']} changed tests were run (at most {IDS_MAX} a head)."
+        note += f" {len(rows)} of {proof['total']} changed tests were run (the loop's change_proof_max)."
     if any(row.get("old") == repro_proof.IMPORT_ERROR for row in rows):
         note += (" A test module did not import on the base, so its tests ran nowhere there; that "
                  "counts as failing on the base. Check the cause: it should be what this PR adds, "

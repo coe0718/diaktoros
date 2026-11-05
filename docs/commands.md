@@ -496,6 +496,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--adjudicator-profile` | `ADJUDICATOR_PROFILE` |  | Hermes profile that rules when a PR's verdict cap is spent; turns adjudication on (blank: off) (default: the plugin setting) |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000 (default: the plugin setting, else the review cap) |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10 (default: the plugin setting, else 3) |
+| `--change-proof-max` | `N` |  | changed tests the change proof runs per head, 1-50 (default: the plugin setting, else 20) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000 (default: the plugin setting, else no cap) |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting) |
 | `--operator-agent` | `OPERATOR_AGENT` (repeatable) |  | a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated) (default: the plugin setting) |
@@ -641,6 +642,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default on) |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000 (default: the plugin setting, else the review cap) |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10 (default: the plugin setting, else 3) |
+| `--change-proof-max` | `N` |  | changed tests the change proof runs per head, 1-50 (default: the plugin setting, else 20) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000 (default: the plugin setting, else no cap) |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting) |
 | `--operator-agent` | `OPERATOR_AGENT` (repeatable) |  | a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated) (default: the plugin setting) |
@@ -748,6 +750,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000; 0 = the review cap |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10; 0 = the default (3) |
+| `--change-proof-max` | `N` |  | changed tests the change proof runs per head, 1-50; 0 = the default (20) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000; 0 = no cap |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated); replaces the list (one of `--review-only`, `--no-review-only`) |
 | `--no-review-only` |  |  | clear the review-only list (one of `--review-only`, `--no-review-only`) |

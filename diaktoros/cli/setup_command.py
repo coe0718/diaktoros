@@ -221,7 +221,7 @@ def _setup_setting_argv(args, d: dict, interactive: bool) -> list[str]:
     argv += _given(args, ("reviewer_max_steps", "fixer_max_steps", "reviewer_daily_tokens",
                           "fixer_daily_tokens", "shadow_daily_tokens", "fix_daily_turns",
                           "shadow_concurrency", "triage_concurrency",
-                          "review_only_cap", "review_only_daily", "ci_fix_cap"))
+                          "review_only_cap", "review_only_daily", "ci_fix_cap", "change_proof_max"))
     return argv
 
 def _setup_check_argv(args, d: dict, interactive: bool) -> list[str]:
@@ -549,6 +549,8 @@ def _setup_review_only_flags(first) -> None:  # noqa: ANN001
     first.add_argument("--ci-fix-cap", default=None, metavar="N",
                        help="CI-fix turns per PR before a red head waits for you, 1-10 "
                             "(default: the plugin setting, else 3)")
+    first.add_argument("--change-proof-max", default=None, metavar="N",
+                       help="changed tests the change proof runs per head, 1-50 (default: the plugin setting, else 20)")
     first.add_argument("--review-only-daily", default=None, metavar="N",
                        help="reviewer turns a day on review-only PRs, 1-1000 (default: the "
                             "plugin setting, else no cap)")

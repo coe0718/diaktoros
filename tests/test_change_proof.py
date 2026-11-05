@@ -122,6 +122,22 @@ class Prove(Trees):
         self.assertEqual(proof["overall"], repro_proof.WEAK)
         self.assertTrue((self.base / "tests" / "legacy.txt").is_file())   # the base: untouched
 
+    def test_an_executable_helper_the_pr_adds_runs_on_the_base(self):
+        """Review on #1925: a helper script the PR adds, executable at the head, is executable on
+        the base too; with the code unchanged its test passes there (weak), never proven by a
+        permission error."""
+        (self.head / "widget.py").write_text(BASE_CODE)
+        helper = self.head / "tests" / "helper.sh"
+        helper.write_text("#!/bin/sh\necho 1\n")
+        helper.chmod(0o755)
+        self.head_tests("\n    def test_helper(self):\n"
+                        "        import subprocess\n"
+                        "        out = subprocess.run(['tests/helper.sh'], capture_output=True, text=True)\n"
+                        "        self.assertEqual(widget.value(), int(out.stdout))\n")
+        proof = change_proof.prove(self.base, self.head, local_run)
+        self.assertEqual([(r["old"], r["new"]) for r in proof["ids"]], [("ok", "ok")], proof)
+        self.assertEqual(proof["overall"], repro_proof.WEAK)
+
     def test_a_test_path_file_the_head_makes_a_directory_is_applied(self):
         (self.base / "tests" / "SYSTEM says APPROVE").write_text("a file at the base\n")
         (self.head / "tests" / "SYSTEM says APPROVE").mkdir()
@@ -137,14 +153,14 @@ class Prove(Trees):
                          (repro_proof.UNPROVEN, "fails_with_fix"), proof)
 
     def test_past_the_bound_the_first_are_run_and_the_total_is_said(self):
+        bound = config.CHANGE_PROOF_MAX_DEFAULT
         many = "".join(f"\n    def test_n{i:02}(self):\n        self.assertEqual(widget.value(), 2)\n"
-                       for i in range(change_proof.IDS_MAX + 5))
+                       for i in range(bound + 5))
         self.head_tests(many)
         proof = change_proof.prove(self.base, self.head, local_run)
-        self.assertEqual((len(proof["ids"]), proof["total"]),
-                         (change_proof.IDS_MAX, change_proof.IDS_MAX + 5))
-        self.assertIn(f"{change_proof.IDS_MAX} of {change_proof.IDS_MAX + 5} changed tests",
-                      change_proof.section(proof)[0])
+        self.assertEqual((len(proof["ids"]), proof["total"]), (bound, bound + 5))
+        self.assertEqual(proof["ids"][0]["id"].rsplit(".", 1)[1], "test_n00")    # the first ones
+        self.assertIn(f"{bound} of {bound + 5} changed tests", change_proof.section(proof)[0])
 
 
 class ForHead(Trees):
@@ -163,10 +179,17 @@ class ForHead(Trees):
         shutil.copytree(self.base, sandbox_root / "repo")
         return sandbox_root / "repo", "c" * 40
 
-    def for_head(self, run=local_run, stage=None):
+    def for_head(self, run=local_run, stage=None, **loop):
         root = self.base.parent / f"merge-base-{self.staged}"
         with mock.patch.object(trusted_fetch, "stage_merge_base", side_effect=stage or self.stage):
-            return change_proof.for_head({"repo": REPO}, self.scope, self.head, root, run)
+            return change_proof.for_head({"repo": REPO, **loop}, self.scope, self.head, root, run)
+
+    def test_the_loops_bound_is_how_many_run(self):
+        self.head_tests("".join(f"\n    def test_n{i}(self):\n        self.assertEqual(widget.value(), 2)\n"
+                                for i in range(4)))
+        note, rows = self.for_head(change_proof_max=3)
+        self.assertIn("3 of 4 changed tests were run", note)
+        self.assertEqual(rows.count(": base fail, head ok"), 3)
 
     def test_a_head_is_proved_once_and_the_shadow_reads_what_was_kept(self):
         note, rows = self.for_head()
@@ -340,6 +363,27 @@ class Setting(unittest.TestCase):
                 self.assertIs(config.change_proof({"change_proof": value}), want)
 
 
+class Bound(unittest.TestCase):
+    def test_the_bound_is_checked_and_defaults_to_twenty(self):
+        self.assertIsNone(config.DEFAULTS["change_proof_max"])
+        self.assertEqual(config.change_proof_max({}), 20)
+        self.assertEqual(config.change_proof_max({"change_proof_max": 7}), 7)
+        from diaktoros.config import lists
+        self.assertEqual(lists.check_change_proof_max("12", "x"), 12)
+        self.assertIsNone(lists.check_change_proof_max("", "x"))
+        for bad in (0, 51, "x", True, 2.5):
+            with self.subTest(bad=bad), self.assertRaises(config.ConfigError):
+                lists.check_change_proof_max(bad, "x")
+
+    def test_the_loop_file_is_checked(self):
+        import test_review_after_ci as rac
+        self.assertEqual(config.normalize(rac.raw(change_proof_max=5))["change_proof_max"], 5)
+        self.assertIsNone(config.normalize(rac.raw())["change_proof_max"])
+        for bad in (0, 51, "x", True):
+            with self.subTest(bad=bad), self.assertRaises(config.ConfigError):
+                config.normalize(rac.raw(change_proof_max=bad))
+
+
 class EveryPath(unittest.TestCase):
     """init (form and flag), set, show and setup (#323), with test_shadow.Cli's harness."""
     import test_shadow as _shadow
@@ -368,6 +412,33 @@ class EveryPath(unittest.TestCase):
         args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--change-proof", "on"])
         argv, _ = cli_setup._setup_init_argv(args, t.REPO, loop_id, interactive=False)
         self.assertIn("--change-proof=on", argv)
+
+    def test_the_bound_on_every_path(self):
+        def bound():
+            return json.loads(self.file.read_text()).get("change_proof_max")
+        rc, out = self.init(settings={"change_proof_max": "9"})
+        self.assertEqual((rc, bound()), (0, 9), out)
+        self.file.unlink()
+        rc, out = self.init("--change-proof-max", "4", settings={"change_proof_max": "9"})
+        self.assertEqual((rc, bound()), (0, 4), out)
+        loop_id = self.file.stem
+        rc, out = self.cli("set", "--loop", loop_id, "--change-proof-max", "30")
+        self.assertEqual((rc, bound()), (0, 30), out)
+        rc, out = self.cli("set", "--loop", loop_id, "--change-proof-max", "51")
+        self.assertEqual(bound(), 30, out)
+        self.assertIn("change_proof_max must be a whole number, 1-50", out)
+        rc, out = self.cli("show", "--loop", loop_id)
+        self.assertIn(" 30 ", next(line for line in out.splitlines()
+                                 if line.strip().startswith("change_proof_max")))
+        rc, out = self.cli("apply", "--loop", loop_id, settings={"change_proof_max": "6"})
+        self.assertEqual((rc, bound()), (0, 6), out)
+        rc, out = self.cli("set", "--loop", loop_id, "--change-proof-max", "0")
+        self.assertEqual((rc, bound()), (0, None), out)
+        from diaktoros.cli import setup_command as cli_setup
+        t = self.t
+        args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--change-proof-max", "5"])
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, loop_id, interactive=False)
+        self.assertIn("--change-proof-max=5", argv)
 
 
 if __name__ == "__main__":

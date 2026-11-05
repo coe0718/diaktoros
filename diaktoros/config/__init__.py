@@ -261,6 +261,7 @@ DEFAULTS: dict = {
     "adjudicator_approves": False,  # an ACCEPT ruling approves as the adjudicator (#905)
     "adjudicator_file_issues": False,  # a ruling's non-blocking findings become issues (#1864)
     "change_proof": False,    # the host proves each reviewed head's changed tests (#1782)
+    "change_proof_max": None, # changed tests it runs per head; None = 20
 }
 
 def unattended_fixer_push_enabled(loop: dict) -> bool:
@@ -1319,6 +1320,18 @@ def fixer_scope_lock(loop: dict) -> bool:
     """Whether a fix round's push is held when it changes files outside its findings (#482).
     Off unless set. It acts only where the broker pushes, so it needs unattended fixer pushes."""
     return loop.get("fixer_scope_lock") is True
+
+
+CHANGE_PROOF_MAX_DEFAULT = 20
+CHANGE_PROOF_MAX_LIMIT = 50
+
+
+def change_proof_max(loop: dict) -> int:
+    """The changed test methods ``change_proof`` runs per head (#1782); the proof says how many
+    there were."""
+    value = loop.get("change_proof_max")
+    ok = isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= CHANGE_PROOF_MAX_LIMIT
+    return value if ok else CHANGE_PROOF_MAX_DEFAULT
 
 
 def change_proof(loop: dict) -> bool:

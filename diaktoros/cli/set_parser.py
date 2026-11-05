@@ -86,6 +86,8 @@ def _set_review_only_flags(change) -> None:  # noqa: ANN001
     change.add_argument("--ci-fix-cap", default=None, metavar="N",
                         help="CI-fix turns per PR before a red head waits for you, "
                              "1-10; 0 = the default (3)")
+    change.add_argument("--change-proof-max", default=None, metavar="N",
+                        help="changed tests the change proof runs per head, 1-50; 0 = the default (20)")
     change.add_argument("--review-only-daily", default=None, metavar="N",
                         help="reviewer turns a day on review-only PRs, 1-1000; 0 = no cap")
     reviewed = change.add_mutually_exclusive_group()

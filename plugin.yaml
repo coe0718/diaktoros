@@ -353,7 +353,12 @@ config_schema:
     label: "Prove the changed tests"
     type: bool
     default: false
-    description: "On: before each reviewer turn the host runs the test methods the PR adds or changes against its merge base (with the PR's test files applied) and at the head, in the sandbox, and shows the reviewer whether they fail without the change and pass with it (#1782): at most 20 tests, kept per head, so the shadow review reads the same. Informs, never blocks. Off: the reviewer proves it by hand."
+    description: "On: before each reviewer turn the host runs the test methods the PR adds or changes against its merge base (with the PR's test files applied) and at the head, in the sandbox, and shows the reviewer whether they fail without the change and pass with it (#1782): at most 20 tests unless set below, kept per head, so the shadow review reads the same. Informs, never blocks. Off: the reviewer proves it by hand."
+  change_proof_max:
+    label: "Changed tests proved per head"
+    type: str
+    default: ""
+    description: "The changed test methods 'Prove the changed tests' runs per head, a whole number 1-50; the reviewer is told how many there were. Blank = not set here: the loop's own value, else 20"
   attribution:
     label: "Sign what the loop posts"
     type: bool

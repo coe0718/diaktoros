@@ -374,9 +374,14 @@ SETTINGS_SCHEMA: dict = {
                                     "(with the PR's test files applied) and at the head, in "
                                     "the sandbox, and shows the reviewer whether they fail "
                                     "without the change and pass with it (#1782): at most 20 "
-                                    "tests, kept per head, so the shadow review reads the "
+                                    "tests unless set below, kept per head, so the shadow review reads the "
                                     "same. Informs, never blocks. Off: the reviewer proves it "
                                     "by hand."},
+    "change_proof_max": {"label": "Changed tests proved per head", "type": "str", "default": "",
+                         "description": "The changed test methods 'Prove the changed tests' "
+                                        "runs per head, a whole number 1-50; the reviewer is "
+                                        "told how many there were. Blank = not set here: the "
+                                        "loop's own value, else 20"},
     "attribution": {"label": "Sign what the loop posts", "type": "bool", "default": True,
                     "description": "On: every review, comment and commit the loop itself "
                                    "posts ends with 'Automated by Diaktoros' and "
@@ -597,8 +602,10 @@ def _apply_switches(overlaid, d, settings) -> None:  # noqa: ANN001
     if _form_value(settings, "operator_agents") is not None:
         overlaid["operator_agents"] = [name.strip() for name in str(d["operator_agents"]).split(",")
                                        if name.strip()]
-    if _form_value(settings, "ci_fix_cap") is not None:
-        overlaid["ci_fix_cap"] = lists.check_ci_fix_cap(config._form_int(d["ci_fix_cap"].strip()), "settings")
+    for key, check in (("ci_fix_cap", lists.check_ci_fix_cap),
+                       ("change_proof_max", lists.check_change_proof_max)):
+        if _form_value(settings, key) is not None:
+            overlaid[key] = check(config._form_int(d[key].strip()), "settings")
     for key in ("review_only_cap", "review_only_daily"):
         if _form_value(settings, key) is not None:
             overlaid[key] = lists._check_review_only_limit(config._form_int(d[key].strip()), key, "settings")
