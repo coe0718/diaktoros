@@ -1069,8 +1069,8 @@ def check_environment(loop: dict, offline: bool) -> list[Check]:
 def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     """Every check, in the order an operator reads an install: what it is, who runs it, what
     wakes it, what schedules it, and where it works."""
-    from . import (cron_checks, hook_checks, identity_checks,   # here, not module level (#676)
-                   route_checks, seat_checks)
+    from . import (backup_checks, cron_checks, hook_checks,   # here, not module level (#676)
+                   identity_checks, route_checks, seat_checks)
     checks = [check_config(loop), check_turn_budget(loop), check_host_names()]
     duplicate = check_duplicate_repo(loop)
     if duplicate:
@@ -1102,6 +1102,7 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     checks.append(cron_checks.check_shim(loop))
     checks.append(cron_checks.check_cron_job(loop))
     checks.append(cron_checks.check_watchdog_last_run(loop))
+    checks.append(backup_checks.check_backup_fresh())
     checks.extend(check_runtime_paths(loop))
     checks.append(check_clone(loop))
     checks.append(check_state_dir(loop))

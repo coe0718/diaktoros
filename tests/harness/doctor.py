@@ -109,6 +109,21 @@ def install_watchdog_state(loop: dict) -> None:
     config_mod.state_dir(loop).mkdir(parents=True, exist_ok=True)
 
 
+def install_backup_state() -> pathlib.Path:
+    """A host that backed up just now: one archive in the Hermes home's ``backups/``.
+
+    ``backup:fresh`` (#1081) warns when no ``hermes dk backup`` archive there is recent, so a
+    *correct installation* — one every check verifies, including ``--strict`` — has taken one.
+    The check looks at the file's name suffix, size and mtime, never inside it, so the file only
+    needs to be there. ``reset()`` does not clear it, so every call re-stamps it as written now.
+    """
+    path = HOME / "backups" / "diaktoros-backup-fixture.tar.gz"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"archive")
+    os.utime(path, None)
+    return path
+
+
 def install_doctor_fixture() -> dict:
     """A complete, correct installation — down to the pieces `reset()` does not build.
 
@@ -167,6 +182,7 @@ def install_doctor_fixture() -> dict:
     # never-swept/strict paths still call ``install_watchdog_state``/``doctor_runtime_fixture``
     # explicitly where they need to re-shape or re-remove that state.
     install_watchdog_state(loop)
+    install_backup_state()
     _runtime_added.extend(doctor_runtime_fixture())
     return loop
 
@@ -506,6 +522,8 @@ DOCTOR_FIXTURE_CHECKS = frozenset({
     # its five new checks merged unnamed and main went red here — which is the roster working: a
     # new check is a decision, and this is the decision.
     "watchdog:run",
+    # #1081: whether a recent `hermes dk backup` archive exists (a warning, not a failure).
+    "backup:fresh",
     # #526: whether a failed required check on a fixer's PR becomes a fixer turn (off by default).
     "fix-ci",
     # #474: per login with a token file, expiry and scopes.
@@ -1381,6 +1399,21 @@ def group_doctor() -> None:
     save_world()
     rc, out = run_doctor("--loop", "widgets")
     check("route-name suffix impostor not verified", "✅ hook:widgets-review" in out, False)
+
+    # #1081: no recent backup archive is a warning, never a failure — exit 0, and exit 1 only
+    # with --strict. (The fixture's own archive is what makes "a correct install passes" green.)
+    install_doctor_fixture()
+    shutil.rmtree(HOME / "backups")
+    rc, out = run_doctor("--loop", "widgets")
+    check("no backup archive warns without failing doctor", rc, 0)
+    check("  as an unknown line that names the command",
+          "⚠️ backup:fresh" in out and "hermes dk backup" in out, True)
+    rc, out = run_doctor("--loop", "widgets", "--strict")
+    check("  and --strict makes it a failure", rc, 1)
+    install_doctor_fixture()
+    rc, out = run_doctor("--loop", "widgets", "--strict")
+    check("a fresh archive verifies backup:fresh, even --strict",
+          (rc, "✅ backup:fresh" in out), (0, True))
 
     section("doctor — reading it")
     install_doctor_fixture()

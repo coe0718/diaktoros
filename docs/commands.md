@@ -1028,6 +1028,19 @@ the state directory, the gateway's reachability and the repo hooks. Each line is
 An unknown hook state is not a paused hook. Verify it with an authorized hook-admin account;
 see [account access and token permissions](accounts.md#choose-pat-type-and-permissions).
 
+`backup:fresh` (#1081) is the matching check for [`backup`](#backup): it warns (⚠️, never ❌) when
+`$HERMES_HOME/backups/` holds no non-empty `*.tar.gz` written in the last 30 days, and names
+`hermes dk backup`. So `doctor` still exits `0` on an install that was never backed up, and only
+`--strict` makes the warning a failure. It reads that one directory by file age, with a fixed 30 days:
+`backup` has no output-directory or retention setting to follow. An archive written with `--out`
+somewhere else, or a backup taken some other way, is not seen, and the check warns although a backup
+exists. It does not open the archive, so it shows that one exists, not that it would restore. An
+archive dated more than a day in the future (a wrong clock when it was written, or a copy from a host
+whose clock is) is not counted as recent, since it would stay "fresh" long after the backup: with
+nothing else there, the warning says so. A backup covers the whole install, so every loop's report
+carries the same line, and `--offline` does
+not skip it (it reads only local files).
+
 ```bash
 hermes dk doctor --loop "<loop-id>"
 hermes dk doctor --loop "<loop-id>" --offline
@@ -1154,7 +1167,8 @@ migration ends, since the archive is its only undo). A held archive is not prune
 and is not counted, so it is pruned by a later backup once its run is over. The hold is a `flock`
 on the file, which a filesystem without `flock` does not give. `migrate`'s automatic backup
 prunes with the default of 10. `--keep` is a per-run flag, not a plugin setting, so a scheduled
-backup must pass it to use another count; there is no output-directory setting.
+backup must pass it to use another count; there is no output-directory setting. `doctor`'s
+`backup:fresh` check looks only in `$HERMES_HOME/backups/`, for an archive from the last 30 days.
 
 ```bash
 hermes dk backup --out "<archive-file>"
