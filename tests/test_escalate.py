@@ -124,6 +124,32 @@ class Command(Base):
         from diaktoros.run_supervisor.turn_prompts import adjudication_situation
         self.assertIn("operator asked for a ruling", adjudication_situation(marker))
 
+    def test_the_operator_kind_is_one_constant_at_every_site(self):
+        # #1158: "operator" was a literal in the writer (one_shot_action), the breach's author set
+        # (gate.breach) and the worker's check (pr_facts); a typo in one would drop an
+        # escalated review-only PR with no error. Renaming the constant must move all of them
+        # together: written by `escalate`, accepted by gate.breach, accepted by the worker.
+        path = config.config_dir() / "one.json"
+        data = json.loads(path.read_text())
+        data["review_only"] = ["owner-human"]
+        path.write_text(json.dumps(data))
+        self.loop = config.load_id("one")
+        self.live = {**fg.LIVE, "user": {"login": "Owner-Human"}}
+        self.assertEqual(gate.OPERATOR_ESCALATION, "operator")      # the stored kind is unchanged
+        with mock.patch.object(gate, "OPERATOR_ESCALATION", "operator-renamed"):
+            rc, out, wake = self.escalate("person asks for ruling")
+            self.assertEqual(rc, 0, out)                             # gate.breach took the author
+            wake.assert_called_once()
+            marker = self.st.breach_get(7)
+            self.assertEqual(marker["escalated"]["by"], "operator-renamed")
+            pr = {**self.live, "head": {"sha": HEAD, "ref": "review-only-7"}}
+            row = {"repo": fg.REPO, "pr": 7, "head": HEAD, "seat": "adjudicator",
+                   "turn_key": "breach:1", "id": "ruling-1", "created": time.time()}
+            with mock.patch.object(gh, "api", return_value=pr), \
+                    mock.patch.object(gh, "reviews", return_value=self.reviews), \
+                    mock.patch.object(pr_facts, "effective_reviews", return_value=self.reviews):
+                self.assertEqual(pr_facts.adjudication_state(self.loop, row)[0], "ok")
+
 
 
     def test_a_review_only_pr_with_a_turn_running_is_refused_not_left_pending(self):
@@ -396,6 +422,17 @@ class Pending(Base):
         self.assertEqual(kwargs["escalated"]["reason"], "stuck on scope")
         self.assertIn("pending escalation taken", err)
         self.assertIsNone(escalate_pending.get(self.st, 7))
+
+    def test_a_pending_escalation_is_written_with_the_operator_constant(self):
+        # #1158: the record's default kind and the fixer gate's fallback are gate's constant.
+        with mock.patch.object(gate, "OPERATOR_ESCALATION", "operator-renamed"):
+            self.assertEqual(escalate_pending.record(self.st, 7, reason="r", head=HEAD)["by"],
+                             "operator-renamed")
+            state_mod._atomic_write(self.st.dir / escalate_pending.FILE,
+                                    {"7": {"reason": "r", "head": HEAD, "at": time.time()}})
+            _, _, breach, _ = self.fixer_gate(
+                verdict(6) | {"state": "changes_requested"}, [verdict(5), verdict(6)])
+        self.assertEqual(breach.call_args.kwargs["escalated"]["by"], "operator-renamed")
 
     def test_the_cap_comes_first_and_clears_it(self):
         reviews = [verdict(4), verdict(5), verdict(6)]               # 3 of 3: the cap breaches

@@ -403,6 +403,7 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
 
 
 SHADOW_ESCALATION = "shadow"           # the breach marker's ``escalated.by`` for #1004
+OPERATOR_ESCALATION = "operator"       # ... and for ``hermes dk escalate`` (#459, #1246)
 
 
 def _dissent_state(loop: dict, number: int, head: str, short: str, ruling, marker) -> tuple[str, str, str]:
@@ -1147,12 +1148,12 @@ def breach(loop: dict, st: state_mod.LoopState, number: int, head: str, rounds: 
     # Shadow rulings and explicit operator requests may concern any reviewed PR; automatic
     # cap/dispute rulings remain fixer-only. Review-only authors are never fixed here.
     authors = (config.reviewed_authors(loop)
-               if (escalated or {}).get("by") in {SHADOW_ESCALATION, "operator"}
+               if (escalated or {}).get("by") in {SHADOW_ESCALATION, OPERATOR_ESCALATION}
                else set(loop["fixers"]))
 
     route = loop.get("adjudicator", {}).get("route")
     def observe_reserved(marker: dict) -> None:
-        by = str((marker.get("escalated") or {}).get("by") or "operator")
+        by = str((marker.get("escalated") or {}).get("by") or OPERATOR_ESCALATION)
         outcome = ((f"the fixer disputed the review at {marker['rounds']}/{loop['cap']} verdicts"
                     if by == "dispute" else
                     "the shadow review requested changes at an approved head"

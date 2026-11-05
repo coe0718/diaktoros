@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 import time
 
+from . import gate
+
 FILE = "escalate-pending.json"
 TTL_S = 24 * 3600
 
@@ -50,9 +52,11 @@ def get(st, number: int) -> dict | None:
     return entry if _live(entry, time.time()) else None
 
 
-def record(st, number: int, *, reason: str, head: str, by: str = "operator") -> dict:
-    """Record (or replace) the PR's pending escalation; returns it."""
-    entry = {"reason": reason, "head": head, "by": by, "at": time.time()}
+def record(st, number: int, *, reason: str, head: str, by: str | None = None) -> dict:
+    """Record (or replace) the PR's pending escalation; returns it. ``by`` is the breach
+    marker's ``escalated.by`` it will be written with: the operator's unless given."""
+    entry = {"reason": reason, "head": head, "by": by or gate.OPERATOR_ESCALATION,
+             "at": time.time()}
     with st.locked():
         memory = st._load(_path(st), {})
         memory = memory if isinstance(memory, dict) else {}
