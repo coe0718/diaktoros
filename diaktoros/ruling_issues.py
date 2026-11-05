@@ -21,9 +21,6 @@ import time
 
 from . import broker, config, shadow_issues
 
-LIVE = ("pending", "waiting", "claimed", "launching", "running")
-
-
 def _send(loop: dict, sup, row, depth: int) -> tuple[int, str]:
     return broker.file_ruling_issue(
         loop, repo=loop["repo"], number=int(row["pr"]), head=str(row["head"]),
@@ -48,7 +45,7 @@ def file_pending(loop: dict, db=None, now: float | None = None,
     for row in waiting:
         number, head = int(row["pr"]), str(row["head"])
         if row["verdict"] is None:
-            if row["run_state"] not in LIVE:
+            if row["run_state"] not in run_supervisor.NOT_ENDED:
                 sup.shadow_issue_status(row["run_id"], row["seq"], "denied", expect="recorded",
                                         error="the adjudicator's run ended without a ruling")
             continue                                  # still ruling: filed once it has

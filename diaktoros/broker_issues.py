@@ -212,7 +212,8 @@ class IssueWrites:
         try:
             Supervisor(self.scope.ledger_db, create=False).record_shadow_issue(
                 self.scope.run_id, self.scope.repo, self.scope.number, self.scope.head,
-                title, body, labels, broker.FILED_ISSUES_MAX, seat="adjudicator")
+                title, body, labels, broker.FILED_ISSUES_MAX, seat="adjudicator",
+                shadow_files=config.shadow_file_issues(current))
         except ValueError as exc:
             raise broker_ipc.ProtocolError(f"{exc}; nothing was recorded")
         return {"accepted": True}

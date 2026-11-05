@@ -97,6 +97,23 @@ class Record(unittest.TestCase):
                          ("Retry never ends", ["bug"], "ACCEPT"))
         self.assertEqual(sup.shadow_issues_waiting(REPO), [])  # not a shadow's
 
+    def test_a_shadows_request_the_loop_never_files_gives_way(self):
+        # Review of #1874, F1, through the broker: it reads shadow.file_issues from the loop.
+        self.loop = {**self.loop, "id": "one", "triage": TRIAGE, "adjudicator_file_issues": True,
+                     "shadow": {"profile": "p"}}                      # shadow filing off
+        sup, scope = self.adjudicator_run()
+        sup.enqueue("s", REPO, 7, HEAD, "shadow")
+        with ledger.connect(sup.db) as con:
+            con.execute("UPDATE runs SET state='running', launch_intent=1 WHERE seat='shadow'")
+            shadow = con.execute("SELECT id FROM runs WHERE seat='shadow'").fetchone()[0]
+        sup.record_shadow_issue(shadow, REPO, 7, HEAD, "Retry never ends", "b", ["bug"], 3)
+        for files_on, accepted in ((True, False), (False, True)):
+            with self.subTest(shadow_file_issues=files_on):
+                loop = {**self.loop, "shadow": {"profile": "p", "file_issues": files_on}}
+                with mock.patch.object(config, "by_repo", return_value=loop):
+                    answer = self.ask(self.start(scope))
+                self.assertEqual(answer["ok"], accepted, answer)
+
     def test_refused_where_the_loop_does_not_file_them(self):
         self.loop = {**self.loop, "id": "one", "triage": TRIAGE}
         sup, scope = self.adjudicator_run()
@@ -113,6 +130,83 @@ class Record(unittest.TestCase):
         server = broker_ipc.RunBroker(self.loop, scope, self.root)
         with self.assertRaisesRegex(broker_ipc.ProtocolError, "out of scope"):
             broker_issues.IssueWrites._file_issue(server, b"{}", {"operation": "file_issue"})
+
+
+class EarlierRequests(unittest.TestCase):
+    """Review of #1874, F1: one title per PR, but an earlier request that never will be filed
+    gives way to the adjudicator's, while one filed, in flight or still due keeps blocking."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.sup = Supervisor(Path(tmp.name) / "runs.sqlite")
+        self.n = 0
+
+    def run_of(self, seat, state="running", verdict=None):
+        self.n += 1
+        run, now = f"{seat[0]}{self.n}", time.time()
+        with ledger.connect(self.sup.db) as con:
+            con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,state,attempts,turn_key,"
+                        "created,updated,launch_intent) VALUES(?,?,?,?,?,?,?,0,?,?,?,?)",
+                        (run, f"d{self.n}", REPO, 7, HEAD, seat, state, f"t{self.n}", now, now,
+                         now))
+            if verdict:
+                con.execute("INSERT INTO rulings(run_id,repo,pr,head,turn_key,verdict,body,"
+                            "created,updated) VALUES(?,?,?,?,?,?,?,?,?)",
+                            (run, REPO, 7, HEAD, f"t{self.n}", verdict, "why", now, now))
+        return run
+
+    def earlier(self, seat, state, run_state="succeeded", verdict=None):
+        run = self.run_of(seat, "running")
+        self.sup.record_shadow_issue(run, REPO, 7, HEAD, "Retry never ends", "b", ["bug"], 3,
+                                     seat=seat)
+        with ledger.connect(self.sup.db) as con:
+            con.execute("UPDATE shadow_issues SET state=? WHERE run_id=?", (state, run))
+            con.execute("UPDATE runs SET state=? WHERE id=?", (run_state, run))
+            if verdict:
+                con.execute("INSERT INTO rulings(run_id,repo,pr,head,turn_key,verdict,body,"
+                            "created,updated) VALUES(?,?,?,?,'t',?,'why',1,1)",
+                            (run, REPO, 7, HEAD, verdict))
+
+    def ask(self, shadow_files=True):
+        run = self.run_of("adjudicator")
+        self.sup.record_shadow_issue(run, REPO, 7, HEAD, "retry never ends", "b", ["bug"], 3,
+                                     seat="adjudicator", shadow_files=shadow_files)
+        return run
+
+    def test_one_that_never_will_be_filed_gives_way(self):
+        for name, args, shadow_files in (
+                ("denied", ("shadow", "denied"), True),
+                ("a shadow's, shadow filing off", ("shadow", "recorded"), False),
+                ("an ended adjudicator run that never ruled", ("adjudicator", "recorded"), True)):
+            with self.subTest(name):
+                self.setUp()
+                self.earlier(*args)
+                run = self.ask(shadow_files)
+                [row] = self.sup.shadow_issues_waiting(REPO, seat="adjudicator")
+                self.assertEqual(row["run_id"], run)
+
+    def test_one_filed_in_flight_or_still_due_keeps_blocking(self):
+        for name, args, shadow_files in (
+                ("posted", ("shadow", "posted"), True),
+                ("posting", ("shadow", "posting"), True),
+                ("uncertain", ("shadow", "uncertain"), True),
+                ("a duplicate of a filed one", ("shadow", "duplicate"), True),
+                ("a shadow's, still due", ("shadow", "recorded"), True),
+                ("a live adjudicator run's", ("adjudicator", "recorded", "running"), True),
+                ("a ruled adjudicator run's", ("adjudicator", "recorded", "succeeded", "ACCEPT"),
+                 True)):
+            with self.subTest(name):
+                self.setUp()
+                self.earlier(*args)
+                with self.assertRaisesRegex(ValueError, "already asked for"):
+                    self.ask(shadow_files)
+
+    def test_a_shadow_still_cannot_reask_a_denied_title(self):
+        self.earlier("shadow", "denied")
+        with self.assertRaisesRegex(ValueError, "already asked for"):
+            self.sup.record_shadow_issue(self.run_of("shadow"), REPO, 7, HEAD,
+                                         "Retry never ends", "b", ["bug"], 3)
 
 
 class FilePending(unittest.TestCase):
@@ -259,6 +353,47 @@ class EveryPath(unittest.TestCase):
                                             "--adjudicator-file-issues", "on"])
         argv, _ = cli_setup._setup_init_argv(args, t.REPO, loop_id, interactive=False)
         self.assertIn("--adjudicator-file-issues=on", argv)
+
+import test_shadow_escalate_ruling as _ruling  # noqa: E402
+
+
+class Sweep(_ruling.Base):
+    """Review of #1874, F2: the real watchdog sweep files a ruled follow-up."""
+    sweep = _ruling.CallSites.sweep
+
+    def test_the_watchdog_sweep_files_a_ruled_follow_up(self):
+        import sqlite3
+        from contextlib import closing
+        self.loop = {**self.loop, "adjudicator_file_issues": True,
+                     "read_token": self.loop.get("read_token") or "reader"}
+        now = time.time()
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,state,attempts,turn_key,"
+                        "created,updated) VALUES('adj','dadj',?,7,?,'adjudicator','succeeded',0,"
+                        "'breach:1',?,?)", (REPO_SWEEP, HEAD_SWEEP, now, now))
+            con.execute("INSERT INTO rulings(run_id,repo,pr,head,turn_key,verdict,body,created,"
+                        "updated) VALUES('adj',?,7,?,'breach:1','ACCEPT','why',?,?)",
+                        (REPO_SWEEP, HEAD_SWEEP, now, now))
+            con.execute("INSERT INTO shadow_issues(run_id,seq,repo,pr,head,title,title_key,body,"
+                        "labels,state,created,updated) VALUES('adj',1,?,7,?,'Lock leaks',"
+                        "'lock leaks','evidence','[]','recorded',?,?)",
+                        (REPO_SWEEP, HEAD_SWEEP, now, now))
+        posts = []
+
+        def write(loop, path, method, body, login):
+            posts.append((path, body))
+            return {"number": 300, "labels": [{"name": x} for x in body["labels"]]}, ""
+        with mock.patch.object(broker, "_write", side_effect=write), \
+                mock.patch.object(broker, "_audit"):
+            self.sweep()                     # the first sweep only snapshots the heads
+            self.sweep()
+        issues = [body for path, body in posts if path == f"/repos/{REPO_SWEEP}/issues"]
+        self.assertEqual(len(issues), 1, posts)
+        self.assertEqual(issues[0]["labels"], ["adjudicator-found"])
+        self.assertTrue(issues[0]["body"].startswith("Follow-up to #7"))
+
+
+REPO_SWEEP, HEAD_SWEEP = _ruling.fg.REPO, _ruling.fg.HEAD
 
 if __name__ == "__main__":
     unittest.main()

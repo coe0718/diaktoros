@@ -262,11 +262,15 @@ class LedgerRecords:
             return count + 1
 
     def record_shadow_issue(self, run_id: str, repo: str, number: int, head: str, title: str,
-                            body: str, labels: list, limit: int, seat: str = 'shadow') -> int:
+                            body: str, labels: list, limit: int, seat: str = 'shadow',
+                            shadow_files: bool = True) -> int:
         """Record one issue a live shadow run asked to file (#914), or an adjudicator run (#1864,
         ``seat``); its sequence in the run. Refused (``ValueError``) like the reviewer's
         (``record_filed_issue``): any run but a live one of ``seat`` on this PR and head, past
-        ``limit`` in the run, or a title already recorded here."""
+        ``limit`` in the run, or a title already recorded here. For an adjudicator, an earlier
+        request for the title blocks it only while that one is or may be filed: one that never
+        will be (denied; a shadow's while ``shadow_files`` is off; an ended adjudicator run's that
+        never ruled) gives way to it (review of #1874, F1)."""
         key = " ".join(title.casefold().split())
         with self._connect() as con:
             con.execute('BEGIN IMMEDIATE')
@@ -276,9 +280,20 @@ class LedgerRecords:
                     (repo, number, head, seat) or row['launch_intent'] is None
                     or row['state'] not in ('launching', 'running')):
                 raise ValueError(f'{seat} run identity unavailable')
-            if con.execute('SELECT 1 FROM shadow_issues WHERE repo=? AND pr=? AND title_key=?',
-                           (repo, number, key)).fetchone():
-                raise ValueError('an issue with this title was already asked for from this PR')
+            earlier = con.execute(
+                'SELECT i.run_id, i.seq, i.state, r.seat, r.state AS run_state, g.verdict '
+                'FROM shadow_issues i JOIN runs r ON r.id=i.run_id LEFT JOIN rulings g ON '
+                'g.run_id=i.run_id WHERE i.repo=? AND i.pr=? AND i.title_key=?',
+                (repo, number, key)).fetchone()
+            if earlier is not None:
+                never = (earlier['state'] == 'denied' or earlier['state'] == 'recorded' and (
+                    (earlier['seat'] == 'shadow' and not shadow_files)
+                    or (earlier['seat'] == 'adjudicator' and earlier['verdict'] is None
+                        and earlier['run_state'] not in run_supervisor.NOT_ENDED)))
+                if seat != 'adjudicator' or not never:
+                    raise ValueError('an issue with this title was already asked for from this PR')
+                con.execute('DELETE FROM shadow_issues WHERE run_id=? AND seq=?',
+                            (earlier['run_id'], earlier['seq']))
             count = con.execute('SELECT COUNT(*) FROM shadow_issues WHERE run_id=?',
                                 (run_id,)).fetchone()[0]
             if count >= limit:
