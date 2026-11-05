@@ -577,6 +577,51 @@ class Push(Base):
             with safe_push._isolated(self.loop, BOT, {"name": BOT, "email": "e"}, self.remote):
                 pass
 
+    TOKEN = "ghs_" + "t" * 386
+
+    def test_a_short_write_still_leaves_the_whole_token_in_the_file(self):
+        # os.write may take fewer bytes than it is given (#1180): the askpass must still read
+        # the whole minted token, not its first few bytes.
+        real = os.write
+        identity = {"name": BOT, "email": f"1+{BOT}@users.noreply.github.com"}
+        with mock.patch.object(gh, "token", return_value=self.TOKEN), \
+                mock.patch.object(safe_push.os, "write",
+                                  side_effect=lambda fd, data: real(fd, bytes(data[:50]))):
+            with safe_push._isolated(self.loop, BOT, identity, self.remote) as (git, _url):
+                self.assertEqual(Path(git.env["DIAKTOROS_TOKEN_FILE"]).read_text(), self.TOKEN)
+
+    def test_a_token_write_that_makes_no_progress_refuses_the_push_by_name(self):
+        # Not an opaque git authentication failure later: the same named refusal as a mint that
+        # failed, and no private directory left behind with a partial token in it.
+        roots = []
+        real_mkdtemp = safe_push.tempfile.TemporaryDirectory
+        identity = {"name": BOT, "email": f"1+{BOT}@users.noreply.github.com"}
+
+        def watching(*args, **kwargs):
+            temp = real_mkdtemp(*args, **kwargs)
+            roots.append(Path(temp.name))
+            return temp
+        with mock.patch.object(gh, "token", return_value=self.TOKEN), \
+                mock.patch.object(safe_push.tempfile, "TemporaryDirectory", side_effect=watching), \
+                mock.patch.object(safe_push.os, "write", return_value=0), \
+                self.assertRaisesRegex(broker.BrokerDenied,
+                                       "fixer credential unavailable: .*could not be written"):
+            with safe_push._isolated(self.loop, BOT, identity, self.remote):
+                self.fail("the isolated transport must not start with a partial token")
+        self.assertEqual(len(roots), 1)
+        self.assertFalse(roots[0].exists())
+
+    def test_merged_tree_refuses_when_the_token_write_fails(self):
+        # merged_tree enters through _isolated: the refusal holds at an entry point,
+        # not only in the helper (the token is never passed to git).
+        with mock.patch.object(gh, "token", return_value=self.TOKEN), \
+                mock.patch.object(safe_push.os, "write", return_value=0), \
+                mock.patch.object(safe_push, "_merge",
+                                  side_effect=AssertionError("git ran with a partial token")), \
+                self.assertRaisesRegex(broker.BrokerDenied, "fixer credential unavailable"):
+            safe_push.merged_tree(self.loop, branch="fix-7", head=HEAD, base_ref="main",
+                                  base_sha="b" * 40, login=BOT, remote=self.remote)
+
 
 if __name__ == "__main__":
     unittest.main()

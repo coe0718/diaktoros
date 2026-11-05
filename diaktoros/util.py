@@ -73,6 +73,17 @@ def temp_in_use(path) -> bool:
     return False
 
 
+def write_all(fd: int, data: bytes | memoryview, failure: str = "short write") -> None:
+    """Write all of ``data`` to ``fd``: ``os.write`` may take less than it is given, so loop on the
+    rest. A write that makes no progress raises ``OSError(failure)`` rather than spin."""
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError(failure)
+        view = view[written:]
+
+
 def atomic_write(path, data: str | bytes, *, mode: int = 0o600, before_replace=None) -> None:
     """Publish ``data`` to ``path`` whole or not at all, and durably before returning: a temp file
     beside it (``mode`` from creation, never wider), fsync, ``before_replace()`` (a last check,
@@ -80,17 +91,13 @@ def atomic_write(path, data: str | bytes, *, mode: int = 0o600, before_replace=N
     name survives a crash. The temp file never outlives a failure. The one home of the rule."""
     import tempfile
     path = Path(path)
-    view = memoryview(data.encode() if isinstance(data, str) else data)
+    view = data.encode() if isinstance(data, str) else data
     fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=TEMP_SUFFIX, dir=path.parent)
     try:
         try:
             hold_temp(fd)         # held until the rename: a backup sees a live writer's temp
             os.fchmod(fd, mode)
-            while view:
-                written = os.write(fd, view)
-                if written <= 0:
-                    raise OSError(f"short write to {path}")
-                view = view[written:]
+            write_all(fd, view, f"short write to {path}")
             os.fsync(fd)
             if before_replace is not None:
                 before_replace()
