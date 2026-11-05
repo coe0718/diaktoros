@@ -821,6 +821,12 @@ def _best_effort_sweeps(c: _Sweep) -> None:
         stale_approval.sweep(loop, st, prs, watch, log)   # #473: approved, then CI went bad
     except Exception as exc:
         log(f"stale approval sweep failed: {type(exc).__name__}: {exc}")
+    # #1063: ``stale_approval.sweep`` changed the in-memory ``watch``; the ready queue and the merge
+    # check below read the watch file, so save it first or a cleared flag is read a sweep late.
+    try:
+        st.watch_save(watch)
+    except Exception as exc:
+        log(f"watch save failed: {type(exc).__name__}: {exc}")
     try:
         ruled_approval.sweep(loop, st, prs, log)  # #905: an ACCEPT approves, its block dismissed
     except Exception as exc:
