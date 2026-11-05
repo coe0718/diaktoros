@@ -7,8 +7,10 @@ the watchdog job's schedule and delivery target.
 
 What the archive holds is a ``manifest.json`` (where every member goes back to, the routes, the
 job) plus the members. Route entries carry their HMAC secrets so restored hooks keep working, so
-the archive is created 0600 and nothing in it is ever printed. Left out: PATs, Hermes profiles
-and model logins; ``restore`` checks the token files the loops name and lists any that are missing.
+the archive is created 0600 and nothing in it is ever printed. Left out: PATs, GitHub App private
+keys, Hermes profiles and model logins. The manifest records the path of each credential file a
+loop names; ``restore`` writes the archive regardless and lists any that are missing or not
+private as ``NOT FINISHED`` (it does not refuse on them).
 
 Nothing here has a setting: the only knob is ``--out``. An output directory or retention setting
 would have to be settable from the form, ``init``, ``setup``, ``set`` and the loop file, and none
@@ -154,7 +156,10 @@ def watchdog_job() -> dict | None:
 
 def token_paths(loop: dict) -> dict[str, str]:
     """Every identity's credential path: PAT files and GitHub App private keys (#1163). Paths
-    only, never contents; restore checks each is back before it writes the loop."""
+    only, never contents: the archive does not hold the files. ``restore`` does not check them
+    before it writes. It collects ``missing_tokens`` notices, writes the archive anyway, and
+    prints the notices as ``NOT FINISHED`` with the final report (exit 1; a dry run prints them
+    too and exits 0), so the files can be put back afterwards."""
     return {str(login): str(path) for login, path in config.credentials_map(loop).items() if path}
 
 
@@ -532,6 +537,10 @@ def existing(manifest: dict) -> list[str]:
 
 
 def missing_tokens(manifest: dict) -> list[str]:
+    """Each credential file (a PAT file or an App private key) the manifest names that is
+    missing or not private on this host, as ``<loop>: credential file for <login> (<path>):
+    <problem>``. Only metadata is inspected. These are notices for ``restore`` to print, not a
+    reason for it to refuse."""
     out = []
     for loop_id, tokens in sorted((manifest.get("tokens") or {}).items()):
         for login, path in sorted(tokens.items()):
