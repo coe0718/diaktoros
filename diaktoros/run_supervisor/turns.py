@@ -134,6 +134,17 @@ def _cap_held(turn: _Turn, seat: str, cap: int) -> None:
                   f"{pacing.when(turn.paced_until)}")
 
 
+def _conflict_waits(loop: dict, row) -> str:
+    """Why a conflict row waits for the fixer (#1907), or ``""``: ``watch_conflicts.fix_owed``,
+    read again at the claim and at the launch, since a verdict can land after the row was queued.
+    A row that waits is superseded once the fixer pushes; the next sweep merges into that head."""
+    from .. import state as state_mod, watch_conflicts
+    owed = watch_conflicts.fix_owed(loop, state_mod.state_for(loop), row['pr'], row['head'])
+    if owed:
+        util.log(f"#{row['pr']} @ {str(row['head'])[:7]} conflict turn waits: {owed}")
+    return owed
+
+
 class ClaimAndLaunch:
     """The claim and turn methods of :class:`~diaktoros.run_supervisor.Supervisor`."""
 
@@ -331,10 +342,12 @@ class ClaimAndLaunch:
                 ruled = gate.upheld_shadow_ruling(loop, row['pr'], row['head'], db=self.db)
                 if ruled is None or row['turn_key'] != f"{run_supervisor.SHADOW_FIX_KEY}{int(ruled)}":
                     read.superseded = 'upheld shadow ruling no longer current'
-            elif (str(row['turn_key'] or '').startswith(run_supervisor.CONFLICT_KEY)
-                  or ci_fix.is_ci_fix(row['turn_key'])):
+            elif str(row['turn_key'] or '').startswith(run_supervisor.CONFLICT_KEY):
                 # #303: a conflict turn answers no verdict (the PR may be approved, or
-                # unreviewed); the worker checks the merge itself before launch.
+                # unreviewed); the worker checks the merge itself before launch. #1907: but a
+                # change request at the head is the fixer's first: the row waits for it.
+                read.retry_read = read.retry_read or bool(_conflict_waits(loop, row))
+            elif ci_fix.is_ci_fix(row['turn_key']):
                 # #306: nor does a CI-fix turn; the worker re-reads CI before launch.
                 pass
             else:
@@ -918,6 +931,8 @@ class ClaimAndLaunch:
         row, loop = turn.row, turn.loop
         if self._policy_hold(turn):
             return None
+        if owed := _conflict_waits(loop, row):            # #1907: a verdict since the claim
+            raise run_supervisor.RetryableError(f"conflict turn waits: {owed}")
         merged = run_supervisor.conflict_merge(loop, row, head["ref"])
         if self._settle_generated(turn, head, merged):
             return None

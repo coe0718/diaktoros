@@ -54,7 +54,7 @@ MAX_MESSAGE = 240
 MAX_PATCH = 512 * 1024             # safe_push.MAX_PATCH
 MAX_PATCH_PATHS = 64               # safe_push.MAX_PATCH_PATHS
 MAX_DIFF_SOURCE = 16 * 1024 * 1024  # the largest file the client will read to diff
-# diaktoros.broker.ANSWERS_MAX, and the broker's request line limit the answers travel in.
+# diaktoros.fixer_answers.ANSWERS_MAX, and the broker's request line limit the answers travel in.
 MAX_ANSWERS = 8 * 1024
 FILED_ISSUE_BODY_MAX = 6 * 1024    # broker.FILED_ISSUE_BODY_MAX
 ISSUE_TITLE_MAX = 120              # broker.ISSUE_PR_TITLE_MAX

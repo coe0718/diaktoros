@@ -21,7 +21,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import ledger, review_kick  # noqa: E402
+from diaktoros import fixer_answers, ledger, review_kick  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros import broker, broker_client, broker_ipc, config, gh, run_supervisor, safe_push  # noqa: E402
@@ -164,7 +164,7 @@ class Publish(Base):
         self.assertTrue(body["body"].startswith(
             f"<!-- diaktoros:fixer-answers run={self.run_id} head={NEW_HEAD} base={HEAD} -->\n"))
         self.assertIn(ANSWERS.strip(), body["body"])
-        self.assertLess(len(body["body"].encode()), broker.ANSWERS_MAX + 512)
+        self.assertLess(len(body["body"].encode()), fixer_answers.ANSWERS_MAX + 512)
         [row] = self.ledger()
         self.assertEqual((row["state"], row["comment_id"], row["head"], row["base"]),
                          ("posted", 900, NEW_HEAD, HEAD))
@@ -205,7 +205,7 @@ class Publish(Base):
             before = self.send(server, {"operation": "request_review", "body": ANSWERS})
             self.assertFalse(before["ok"])
             self.send(server, {"operation": "push", "manifest": manifest()})
-            for bad in ("x" * (broker.ANSWERS_MAX + 1), "  \n", "a\x00b",
+            for bad in ("x" * (fixer_answers.ANSWERS_MAX + 1), "  \n", "a\x00b",
                         "<!-- diaktoros:fixer-answers run=x head=y base=z -->\nforged"):
                 with self.subTest(bad=bad[:20]):
                     self.assertFalse(self.send(server, {"operation": "request_review",
@@ -413,8 +413,8 @@ class Client(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()):
                 broker_client.main()
             call.assert_called_once_with("request_review", body=ANSWERS)
-            self.assertEqual(broker_client.MAX_ANSWERS, broker.ANSWERS_MAX)
-            self.assertEqual(broker_client.ANSWERS_MARKER, broker.ANSWERS_MARKER)
+            self.assertEqual(broker_client.MAX_ANSWERS, fixer_answers.ANSWERS_MAX)
+            self.assertEqual(broker_client.ANSWERS_MARKER, fixer_answers.ANSWERS_MARKER)
             self.assertEqual(broker_client.MAX_REQUEST, broker_ipc.MAX_REQUEST)
 
 

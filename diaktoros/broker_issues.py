@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from . import broker, config, issue_labels, repro_proof, safe_push
+from . import broker, config, fixer_answers, issue_labels, repro_proof, safe_push
 
 
 class IssueWrites:
@@ -72,9 +72,9 @@ class IssueWrites:
             body = request["body"]
         else:
             raise broker_ipc.ProtocolError("operation out of scope")
-        if not isinstance(body, str) or not body.strip() or len(body.encode()) > broker.ANSWERS_MAX:
+        if not isinstance(body, str) or not body.strip() or len(body.encode()) > fixer_answers.ANSWERS_MAX:
             raise broker_ipc.ProtocolError(
-                f"the description must be non-empty text of at most {broker.ANSWERS_MAX} bytes; "
+                f"the description must be non-empty text of at most {fixer_answers.ANSWERS_MAX} bytes; "
                 "nothing was written, resubmit")
         if self._used:
             raise broker_ipc.ProtocolError("run capability already used")

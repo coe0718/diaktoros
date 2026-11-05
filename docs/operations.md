@@ -597,6 +597,24 @@ queues one **resolving fixer turn** per head and base:
    exact-head lease.
 3. The fixer asks for the review, and the merged head is reviewed fresh.
 
+The turn is a merge only, and its summary is posted as **Fixer's merge of `main` at …** with the
+note that it answers no review finding. It never appears under the fixer-answers heading (#1907).
+The reviewer's record shows it as a merge, and it never counts as the fixer's answer to a
+finding, even when it names one.
+
+**It waits for a fix that is owed (#1907).** While the newest reviewer verdict at the head is a
+change request and the PR isn't held for a ruling, no conflict turn is queued. The fixer answers
+first, and the next sweep merges the base into the fixed head. Merging first would move the head
+under that verdict: the fix turn would then answer a stale head, and the merged head's review
+would spend a round with the findings still open. On #1875 a fix turn timed out, the merge went
+first, and that review was the PR's last round. The check is made again wherever a verdict could
+have landed since: a conflict turn already queued waits at its claim, its launch is held, and
+`safe_push` refuses the merge right before pushing it. A waiting turn is superseded once the fixer
+pushes, and the next sweep merges into the fixed head. The `conflict` notice says so. If the fix turn
+failed, `hermes dk retry` re-arms it. Reviews that cannot be read wait for a later sweep. An
+approved or unreviewed head is merged at once, as before. So is a PR at its verdict cap or
+escalated to adjudication, since no fix is coming there.
+
 **When it is noticed.** A merge into the base is what usually causes a conflict, so the
 reviewer gate, on a PR's merged `closed` event, asks for a conflict-only check about 45 seconds
 later (`watchdog.py --loop <id> --conflicts`, started detached). A run of merges collapses into one

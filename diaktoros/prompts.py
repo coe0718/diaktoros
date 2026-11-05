@@ -535,7 +535,8 @@ What to do:
    in it, and commits it as a merge of `{base}` into the PR (both parents), only if the branch
    is still at {head}.
 4. Write two or three sentences on how you resolved each file to a file, and ask for the next
-   review through the broker with it. The merged head is reviewed fresh.
+   review through the broker with it. The merged head is reviewed fresh. Say nothing about the
+   review's findings: this turn answers none of them, and the host heads your summary as a merge.
 
 If you cannot resolve a file honestly (you cannot tell what one side meant), do not guess and
 do not push: say so in your summary, file by file. A person resolves it.
