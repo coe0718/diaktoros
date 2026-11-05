@@ -249,6 +249,37 @@ class Push(ruling.Base):
         self.assertEqual(reason, "upheld shadow ruling no longer current")
         authorize.assert_not_called()
 
+    def test_the_broker_push_reads_the_ruling_from_the_runs_ledger(self):
+        # #1354: the broker's push checks the ruling in RunScope.ledger_db, as the claim and the
+        # launch do, not in the production ledger (which here holds no ruling at all).
+        from diaktoros import broker_ipc
+        self.set_push(True)
+        self.db = str(self.root / "run-ledger.sqlite")
+        run_supervisor.Supervisor(self.db)
+        self.shadow("REQUEST_CHANGES")
+        self.ruled("REJECT")
+        ruled = gate.upheld_shadow_ruling(self.loop, 7, fg.HEAD, db=self.db)
+        self.assertIsNotNone(ruled)
+        self.assertIsNone(gate.upheld_shadow_ruling(self.loop, 7, fg.HEAD))  # not production's
+        scope = broker_ipc.RunScope(fg.REPO, 7, fg.HEAD, "fixer", "fix-7", "rid", self.db,
+                                    shadow_fix=ruled)
+        server = broker_ipc.RunBroker(self.loop, scope, self.root)
+        supervisor = run_supervisor.Supervisor
+        raw = b'{"operation":"push","manifest":{}}\n'
+        with mock.patch.object(safe_push, "_manifest", return_value=(fg.HEAD, {}, "")), \
+                mock.patch.object(broker_ipc.RunBroker, "_policy_hold", return_value=""), \
+                mock.patch.object(broker_ipc.RunBroker, "_partial_view", return_value=""), \
+                mock.patch.object(supervisor, "push_admitted", return_value=True), \
+                mock.patch.object(supervisor, "begin_push"), \
+                mock.patch.object(supervisor, "abort_push") as aborted, \
+                mock.patch.object(broker, "authorize",
+                                  side_effect=broker.BrokerDenied("stop here")) as authorize:
+            with self.assertRaises(broker.BrokerDenied) as denied:
+                server._dispatch(raw)
+        self.assertEqual(str(denied.exception), "stop here")   # past the ruling check
+        self.assertIs(authorize.call_args.kwargs["require_verdict"], False)
+        aborted.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
