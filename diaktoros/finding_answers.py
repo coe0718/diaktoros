@@ -95,7 +95,7 @@ def _read_answers(loop: dict, number: int) -> list[dict] | None:
                         "where": where, "body": body, "fixer": False})
     for comment in comments:
         found = fixer_answers.parse_answers_comment(comment, loop)
-        if found:
+        if found and not found["merge"]:             # a merge's summary answers nothing (#1907)
             out.append({"at": util.iso_epoch(found["created_at"]), "stamp": found["created_at"],
                         "who": "the fixer", "where": "the PR", "body": found["body"],
                         "fixer": True})

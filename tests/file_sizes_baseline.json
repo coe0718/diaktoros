@@ -72,7 +72,7 @@
     "diaktoros/run_supervisor/workers.py::WorkerLifecycle.complete_uncertain": 100,
     "diaktoros/safe_push.py::_git_cas": 149,
     "diaktoros/safe_push.py::open_branch": 86,
-    "diaktoros/safe_push.py::push": 88,
+    "diaktoros/safe_push.py::push": 87,
     "diaktoros/safe_push.py::update_branch": 96,
     "diaktoros/seat_model.py::describe_seat_wire": 140,
     "diaktoros/seat_model.py::extras_for": 84,

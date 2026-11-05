@@ -97,6 +97,7 @@ class Claim(fg.Base):
         self.assertEqual(row["state"], "pending")
         with mock.patch.object(gh, "api", return_value={
                 "number": 7, "state": "open", "draft": False, "head": {"sha": fg.HEAD}}), \
+             mock.patch.object(gh, "reviews", return_value=[]), \
              mock.patch.object(config, "by_repo", return_value={
                  **self.loop, "triage": {"maintainers": [BOSS]}}), \
              mock.patch.object(gh, "issue_events_read",

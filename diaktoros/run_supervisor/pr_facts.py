@@ -126,9 +126,12 @@ def pr_record(loop: dict, row, reviews, comments=None) -> str:
     for comment in comments if isinstance(comments, list) else []:
         found = fixer_answers.parse_answers_comment(comment, loop)
         if found and found['base'] in answered:
+            what = (f"fixer's merge of the base into {found['base'][:12]} (a merge only: it "
+                    "answers no finding)" if found['merge'] else
+                    f"fixer's answers to the verdict at {found['base'][:12]}")     # #1907
             items.append((found['created_at'],
-                          f"fixer's answers to the verdict at {found['base'][:12]}, pushed as "
-                          f"{found['head'][:12]} ({found['created_at'] or 'undated'}; the fixer "
+                          f"{what}, pushed as {found['head'][:12]} "
+                          f"({found['created_at'] or 'undated'}; the fixer "
                           "model's own words, published through the broker)",
                           attribution.unsign(found['body'])))
     items.sort(key=lambda item: item[0])

@@ -19,6 +19,11 @@ _ANSWERS_MARKER = re.compile("(?:" + "|".join(map(re.escape, ANSWERS_MARKERS)) +
                              r"head=([0-9a-f]{40}) base=([0-9a-f]{40}) -->\n")
 
 
+# How the host heads a conflict turn's summary (#1907). The heading is the host's, written ahead of
+# the fixer's text, so a comment that starts with it after the marker is a merge's, never answers.
+MERGE_TITLE = "**Fixer's merge of "
+
+
 def answers_valid(text: object) -> bool:
     """Non-empty text within the bound, with no NUL and no marker of its own."""
     return (isinstance(text, str) and bool(text.strip()) and "\x00" not in text
@@ -30,7 +35,7 @@ def answers_comment_body(text: str, *, head: str, base: str, run_id: str,
                          merge: dict | None = None) -> str:
     """The comment's text. A conflict turn's (``merge``, its scope's) is headed as the merge of
     the base it is: it answers no review finding, so it must not read as answers (#1907)."""
-    title = (f"**Fixer's merge of `{merge.get('base_ref')}` at `{str(merge.get('base_sha'))[:12]}` "
+    title = (f"{MERGE_TITLE}`{merge.get('base_ref')}` at `{str(merge.get('base_sha'))[:12]}` "
              f"into `{base[:12]}`** — pushed as `{head[:12]}`. A merge only: it answers no review "
              "finding" if merge else
              f"**Fixer's answers to the review of `{base[:12]}`** — pushed as `{head[:12]}`")
@@ -42,7 +47,8 @@ def answers_comment_body(text: str, *, head: str, base: str, run_id: str,
 
 
 def parse_answers_comment(comment: object, loop: dict) -> dict | None:
-    """``{run, head, base, body, created_at}`` for a fixer-answers comment, else ``None``.
+    """``{run, head, base, body, created_at, merge}`` for a fixer-answers comment, else ``None``.
+    ``merge``: the comment is a conflict turn's summary (``MERGE_TITLE``), which answers nothing.
 
     Both must hold: the author is the configured fixer seat login, and the body starts with the
     host's marker. A human (or anyone else) writing the marker is not the fixer seat; the fixer
@@ -61,4 +67,5 @@ def parse_answers_comment(comment: object, loop: dict) -> dict | None:
     if not match:
         return None
     return {"run": match.group(1), "head": match.group(2), "base": match.group(3),
-            "body": body[match.end():], "created_at": str(comment.get("created_at") or "")}
+            "body": body[match.end():], "created_at": str(comment.get("created_at") or ""),
+            "merge": body[match.end():].startswith(MERGE_TITLE)}

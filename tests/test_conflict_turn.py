@@ -27,7 +27,7 @@ import test_safe_push as tsp  # noqa: E402
 import test_seat_models as sm  # noqa: E402
 from diaktoros import (broker, broker_ipc, config, contained, gh, ledger,  # noqa: E402
                          run_supervisor, safe_push, trusted_turn)
-from diaktoros import wire  # noqa: E402
+from diaktoros import fixer_answers, wire  # noqa: E402
 from diaktoros.run_supervisor import CONFLICT_KEY, Supervisor  # noqa: E402
 
 BASE_SHA = "b" * 40
@@ -65,9 +65,79 @@ class Claim(fg.Base):
         self.assertEqual(row["state"], "pending")
 
 
+class Sequence(Claim):
+    """#1907, the sequence on #1875 (review of #1917, F3): a conflict turn queued on an unreviewed
+    head; then the review requests changes and the fix turn fails. The conflict row does not go
+    first: it waits at the claim, the sweep queues nothing new, and once the fix lands the old
+    row is superseded and the merge is queued on the fixed head. No head is reviewed before the
+    fix, so no round is spent on findings nobody answered. On main the conflict row is claimed."""
+
+    CR = {"id": 5, "state": "CHANGES_REQUESTED", "commit_id": fg.HEAD,
+          "submitted_at": "2026-01-01T00:00:00Z", "user": {"login": "reviewer"}}
+    FIXED = "e" * 40
+
+    def sup(self):
+        self.set_push(True)
+        settings = self.root / "runtime.json"
+        settings.write_text("{}")
+        settings.chmod(0o600)
+        return Supervisor(config.home() / "state" / "diaktoros-runs.sqlite",
+                          production_config=settings, hermes_home=self.root / "home")
+
+    def claim(self, sup, head, reviews):
+        pr = {"number": 7, "state": "open", "draft": False, "head": {"sha": head}}
+        with mock.patch.object(gh, "api", return_value=pr), \
+             mock.patch.object(gh, "reviews", return_value=reviews):
+            return sup._claim()
+
+    def sweep(self, head, reviews):
+        from diaktoros import gate, observer, watch_conflicts
+        with mock.patch.object(watch_conflicts, "base_tip", return_value="c" * 40), \
+             mock.patch.object(gh, "reviews", return_value=reviews), \
+             mock.patch.object(gate, "enqueue_isolated", return_value="enqueued") as queued, \
+             mock.patch.object(observer, "notify") as notified:
+            watch_conflicts.act_on_conflicts(self.loop, self.st, [(7, head, "b" * 40, "fixer")], {})
+        return queued, notified
+
+    def test_a_failed_fix_is_not_overtaken_by_a_merge(self):
+        sup = self.sup()
+        with mock.patch.object(sup, "_spawn"):
+            sup.enqueue("conflict", fg.REPO, 7, fg.HEAD, "fixer",           # before the verdict
+                        turn_key=f"{CONFLICT_KEY}{BASE_SHA}", require_push_admission=True)
+            sup.enqueue("fix", fg.REPO, 7, fg.HEAD, "fixer", require_push_admission=True)
+        with ledger.connect(sup.db) as con:                              # the fix timed out
+            con.execute("UPDATE runs SET state='failed', error='TimeoutExpired' WHERE delivery='fix'")
+        self.assertIsNone(self.claim(sup, fg.HEAD, [self.CR]))
+        self.assertEqual(sup.get("conflict")["state"], "pending")         # waits, not claimed
+        queued, notified = self.sweep(fg.HEAD, [self.CR])
+        queued.assert_not_called()                                         # and none queued again
+        self.assertIn("hermes dk retry", notified.call_args.kwargs["next_turn"])
+        # The fix is retried and lands: a new head, with no verdict yet.
+        self.assertIsNone(self.claim(sup, self.FIXED, [self.CR]))
+        self.assertEqual(sup.get("conflict")["state"], "cancelled")       # superseded by the push
+        queued, _ = self.sweep(self.FIXED, [self.CR])
+        self.assertEqual(queued.call_args.args[1:4], ("fixer", 7, self.FIXED))
+        self.assertTrue(queued.call_args.kwargs["turn_key"].startswith(CONFLICT_KEY))
+
+    def test_once_the_head_is_approved_the_waiting_row_is_claimed(self):
+        sup = self.sup()
+        with mock.patch.object(sup, "_spawn"):
+            sup.enqueue("conflict", fg.REPO, 7, fg.HEAD, "fixer",
+                        turn_key=f"{CONFLICT_KEY}{BASE_SHA}", require_push_admission=True)
+        self.assertIsNone(self.claim(sup, fg.HEAD, [self.CR]))
+        approved = {**self.CR, "id": 6, "state": "APPROVED", "submitted_at": "2026-01-02T00:00:00Z"}
+        self.assertIsNotNone(self.claim(sup, fg.HEAD, [self.CR, approved]))
+        self.assertEqual(sup.get("conflict")["state"], "claimed")
+
+
+for _name in [n for n in dir(Claim) if n.startswith("test_")]:
+    setattr(Sequence, _name, None)       # Claim's own tests run once, in Claim
+
+
 class Worker(sm.Worker):
-    def conflict_run(self, merged=None, merge_error=None):
-        """run_seat with the row keyed as a conflict turn and the host merge mocked."""
+    def conflict_run(self, merged=None, merge_error=None, reviews=()):
+        """run_seat with the row keyed as a conflict turn and the host merge mocked; ``reviews``:
+        the PR's reviews when the launch reads them (#1907), by default none."""
         runtime = self.root / "runtime.json"
         runtime.write_text(json.dumps(self.settings))
         runtime.chmod(0o600)
@@ -92,19 +162,19 @@ class Worker(sm.Worker):
         with mock.patch.object(config, "by_repo", return_value=loop), \
              mock.patch.object(gh, "api", return_value={"number": 7, "head": {"sha": sm.HEAD,
                                                                               "ref": "fix-7"}}), \
-             mock.patch.object(gh, "reviews") as reviews, \
+             mock.patch.object(gh, "reviews", return_value=list(reviews)) as read, \
              merge as merged_tree, \
              mock.patch.object(trusted_turn, "run_turn", side_effect=run_turn), \
              mock.patch.object(sup, "recover"):
             sup._run_production(run_id, "w")
         with ledger.connect(sup.db) as con:
             row = con.execute("SELECT state, error FROM runs WHERE id=?", (run_id,)).fetchone()
-        return seen, row, reviews, merged_tree
+        return seen, row, read, merged_tree
 
     def test_the_turn_gets_the_merge_scope_the_export_and_the_conflict_prompt(self):
         seen, row, reviews, merged_tree = self.conflict_run()
         self.assertEqual(row[0], "succeeded")
-        reviews.assert_not_called()                                   # no verdict is answered
+        reviews.assert_called_once()        # no verdict is answered; read for #1907's check only
         self.assertEqual(merged_tree.call_args.kwargs["base_sha"], BASE_SHA)
         self.assertEqual(merged_tree.call_args.kwargs["branch"], "fix-7")
         self.assertEqual(seen["scope"].merge,
@@ -140,6 +210,17 @@ class Worker(sm.Worker):
                 else:
                     self.assertIn(words.replace("conflict needs a person: ", ""), recorded)
                 (st.dir / conflict_person.FILE).unlink(missing_ok=True)
+
+    def test_a_change_request_since_the_claim_holds_the_launch_and_merges_nothing(self):
+        # Review of #1917, F1: a verdict can land between the claim and the launch.
+        cr = {"id": 5, "state": "CHANGES_REQUESTED", "commit_id": sm.HEAD,
+              "submitted_at": "2026-01-01T00:00:00Z", "user": {"login": "rev"}}
+        self.loop = {**self.loop, "reviewers": ["rev"], "cap": 3}
+        seen, row, _, merged_tree = self.conflict_run(reviews=[cr])
+        self.assertEqual(seen, {}, "no turn launched")
+        merged_tree.assert_not_called()
+        self.assertEqual(row[0], "waiting")
+        self.assertIn("conflict turn waits: its changes-requested verdict is not answered", row[1])
 
     def test_a_git_or_network_failure_is_a_retry(self):
         from diaktoros import broker
@@ -218,6 +299,36 @@ class Broker(unittest.TestCase):
         self.assertTrue(text.startswith(f"{wire.ANSWERS_MARKER} run={self.row['id']} "))
         self.assertIn(f"**Fixer's answers to the review of `{sm.HEAD[:12]}`**", self.answers(None))
 
+    def comment(self, merge):
+        body = fixer_answers.answers_comment_body("F1.py: kept both sides.", head="d" * 40,
+                                                  base=sm.HEAD, run_id="r1", merge=merge)
+        return {"user": {"login": "fix"}, "body": body, "created_at": "2026-01-02T00:00:00Z"}
+
+    def test_a_merge_summary_is_never_read_as_answers(self):
+        # Review of #1917, F2: the reviewer's record and the finding-answer filter read the same
+        # marked comment; a merge summary must be neither "answers" nor an answer to F1.
+        from diaktoros import finding_answers
+        from diaktoros.run_supervisor import pr_facts
+        loop = {"seats": {"fixer": {"login": "fix"}}, "reviewers": ["rev"]}
+        merge = {"base_ref": "main", "base_sha": BASE_SHA, "tree": TREE}
+        parsed = [fixer_answers.parse_answers_comment(self.comment(m), loop) for m in (merge, None)]
+        self.assertEqual([p["merge"] for p in parsed], [True, False])
+        review = {"id": 5, "state": "CHANGES_REQUESTED", "commit_id": sm.HEAD,
+                  "submitted_at": "2026-01-01T00:00:00Z", "user": {"login": "rev"}, "body": "F1"}
+        record = pr_facts.pr_record(loop, {}, [review], [self.comment(merge)])
+        self.assertIn(f"fixer's merge of the base into {sm.HEAD[:12]} (a merge only: it answers "
+                      "no finding)", record)
+        self.assertNotIn("fixer's answers to the verdict", record)
+        self.assertIn("fixer's answers to the verdict",
+                      pr_facts.pr_record(loop, {}, [review], [self.comment(None)]))
+        for merge_or_not, want in ((merge, []), (None, ["the fixer"])):
+            with self.subTest(merge=bool(merge_or_not)), \
+                    mock.patch.object(gh, "issue_comments_read",
+                                      return_value=([self.comment(merge_or_not)], "")), \
+                    mock.patch("diaktoros.issue_facts.closing_numbers", return_value=[]), \
+                    mock.patch("diaktoros.issue_facts.maintainers_among", return_value=[]):
+                self.assertEqual([a["who"] for a in finding_answers._read_answers(loop, 7)], want)
+
     def test_the_conflict_prompt_says_the_turn_answers_no_finding(self):
         from diaktoros import prompts
         self.assertIn("Say nothing about the\n   review's findings: this turn answers none of them",
@@ -257,6 +368,14 @@ class MergeAuthorization(unittest.TestCase):
                 receipt = self.push(reviews, self.MERGE)
                 self.assertEqual(receipt["outcome"], "published")
                 self.assertEqual(self.merged, self.MERGE)
+
+    def test_a_merge_is_not_pushed_over_a_change_request_the_fixer_owes(self):
+        # Review of #1917, F1: the verdict may land during the conflict turn itself.
+        self.fake.branch_head = self.fake.pr_head = tsp.HEAD
+        self.loop = {**self.loop, "cap": 3}
+        with self.assertRaisesRegex(broker.BrokerDenied, "a merge waits for the fixer here"):
+            self.push(self.review("CHANGES_REQUESTED"), self.MERGE)
+        self.assertEqual(self.fake.branch_head, tsp.HEAD, "nothing was pushed")
 
     def test_an_ordinary_push_without_a_change_request_is_still_refused(self):
         for reviews in (self.review("APPROVED"), []):

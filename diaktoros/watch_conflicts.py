@@ -14,6 +14,9 @@ from diaktoros import review_only_conflict, watch_mode
 from diaktoros import state as state_mod
 from diaktoros.util import log
 
+# fix_owed's answer when the PR's reviews could not be read: wait, a later read decides (#1907).
+UNREAD = "its reviews could not be read"
+
 # GitHub computes a PR's mergeability lazily: the first read after its base moves usually
 # answers null/"unknown" and starts the computation. One short wait, then one re-read.
 MERGEABILITY_WAIT_S = 5.0
@@ -166,13 +169,15 @@ def fix_owed(loop: dict, st: state_mod.LoopState, number: int, head: str) -> str
     head is reviewed as a round with the findings still open. On #1875 a fix turn timed out, the
     merge went first, and its review spent the PR's last round. Reviews that cannot be read wait
     too, until a later sweep reads them. Approved, unreviewed, or at the cap: no wait, as before.
+    The sweep asks before queueing the turn, the worker again at its claim and launch (a verdict
+    can land after it was queued), and ``safe_push`` once more right before the merge is pushed.
     """
     from diaktoros import transition
     reviews = gh.reviews(loop, number)
     if isinstance(reviews, list):
         reviews = transition.effective_reviews(loop, st, number, head, reviews)
     if not isinstance(reviews, list):
-        return "its reviews could not be read"
+        return UNREAD
     latest = gate.latest_effective_review_at_head(reviews, loop, head)
     if latest is None or gh.review_state(latest) != "CHANGES_REQUESTED":
         return ""
