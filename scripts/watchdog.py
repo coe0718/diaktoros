@@ -742,7 +742,7 @@ def _stuck_states(c: _Sweep) -> None:
     loop, now = c.loop, c.now
     # A fresh clock (review on #937): ``now`` was taken before this sweep's GitHub reads and
     # hand-offs, so a claim made since would look dated in the future and be reported dead.
-    stuck: list[tuple[str, str]] = died_locks(loop, c.st._load(c.st.locks, {}) or {}, time.time())
+    stuck: list[tuple[str, str]] = died_locks(loop, c.st.kv_get(c.st.locks, {}) or {}, time.time())
     queue = c.st.queue_all()
     for seat, items in (queue if isinstance(queue, dict) else {}).items():
         for key, entry in (items if isinstance(items, dict) else {}).items():

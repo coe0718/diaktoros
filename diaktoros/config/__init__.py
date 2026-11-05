@@ -93,7 +93,7 @@ LEGACY_GATE_SCRIPTS: dict = {"adjudicator": frozenset({"gate_reviewer.py"})}
 _PROFILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
-def _form_int(value):
+def form_int(value):
     """A form number: whole-number text becomes an int; anything else is left for the checker."""
     if isinstance(value, str):
         try:
@@ -409,7 +409,7 @@ def adjudicating_stall_s(loop: dict) -> int:
     return max(grace, worst_turn_s(loop, "adjudicator"))
 
 
-def _check_budget(value, what: str, where: str) -> int:
+def validate_budget(value, what: str, where: str) -> int:
     low, high = TURN_BUDGET_RANGE
     try:
         budget = int(value)
@@ -437,7 +437,7 @@ DEFAULT_SHADOW_MAX_STEPS = 100
 MAX_STEPS_RANGE = (8, 200)
 
 
-def _check_max_steps(value, what: str, where: str) -> int:
+def validate_max_steps(value, what: str, where: str) -> int:
     low, high = MAX_STEPS_RANGE
     if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
         raise ConfigError(f"{where}: {what} must be a whole number of agent steps, {low}-{high} "
@@ -563,7 +563,7 @@ def required_checks(loop: dict) -> list[str]:
     return list(names) if isinstance(names, list) else []
 
 
-def _check_daily_turns(value, what: str, where: str) -> int:
+def validate_daily_turns(value, what: str, where: str) -> int:
     """A per-seat daily turn cap (#219): a whole number of turns, 1–DAILY_TURNS_MAX."""
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= DAILY_TURNS_MAX:
         raise ConfigError(f"{where}: {what} must be a whole number of turns, 1-{DAILY_TURNS_MAX} "
@@ -571,7 +571,7 @@ def _check_daily_turns(value, what: str, where: str) -> int:
     return value
 
 
-def _check_daily_tokens(value, what: str, where: str) -> int:
+def validate_daily_tokens(value, what: str, where: str) -> int:
     """A per-seat daily token budget (#480): a whole number of tokens, 1-DAILY_TOKENS_MAX."""
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= DAILY_TOKENS_MAX:
         raise ConfigError(f"{where}: {what} must be a whole number of tokens, "
@@ -1063,7 +1063,7 @@ def push_policy_lock():
             fcntl.flock(stream, fcntl.LOCK_UN)
 
 
-def _path(value: str) -> pathlib.Path:
+def expand_path(value: str) -> pathlib.Path:
     return pathlib.Path(str(value)).expanduser()
 
 
@@ -1074,7 +1074,7 @@ def relative_path_problem(value) -> str:
     ``credentials.token_file_problem`` for the write path and doctor.
     """
     raw = str(value or "").strip()
-    if raw and not _path(raw).is_absolute():
+    if raw and not expand_path(raw).is_absolute():
         return f"{raw!r} is not an absolute path (use /… or ~/…)"
     return ""
 
@@ -1297,7 +1297,7 @@ def state_dir(loop: dict) -> pathlib.Path:
     audits, route intent, artifacts, turn directories). Under the test guard, never inside the
     real Hermes home."""
     from .host_guards import guard_real_home   # here, not module level: one binding (#676)
-    return guard_real_home(_path(loop["state_dir"]))
+    return guard_real_home(expand_path(loop["state_dir"]))
 
 
 def artifacts_dir(loop: dict, number: int) -> pathlib.Path:
@@ -1305,7 +1305,7 @@ def artifacts_dir(loop: dict, number: int) -> pathlib.Path:
 
 
 def clone_path(loop: dict) -> pathlib.Path | None:
-    return _path(loop["clone"]) if loop.get("clone") else None
+    return expand_path(loop["clone"]) if loop.get("clone") else None
 
 
 def fix_ci(loop: dict) -> bool:

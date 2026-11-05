@@ -298,7 +298,7 @@ def _check_review_only_limit(value, key: str, where: str) -> int | None:
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
     if isinstance(value, str):
-        value = config._form_int(value)
+        value = config.form_int(value)
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= config.DAILY_TURNS_MAX:
         raise config.ConfigError(f"{where}: {key} must be a whole number, 1-{config.DAILY_TURNS_MAX} "
                           f"(leave it empty for the default), got {value!r}")
@@ -310,7 +310,7 @@ def check_ci_fix_cap(value, where: str) -> int | None:
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
     if isinstance(value, str):
-        value = config._form_int(value)
+        value = config.form_int(value)
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= config.CI_FIX_CAP_MAX:
         raise config.ConfigError(f"{where}: ci_fix_cap must be a whole number, 1-{config.CI_FIX_CAP_MAX} "
                           f"(leave it empty for {config.CI_FIX_CAP_DEFAULT}), got {value!r}")

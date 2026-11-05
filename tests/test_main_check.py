@@ -29,11 +29,11 @@ class FakeState:
         self.dir = Path(path)
         self._real = state_mod.LoopState.__new__(state_mod.LoopState)
 
-    def _load(self, path, default):
-        return state_mod.LoopState._load(self._real, path, default)
+    def kv_get(self, path, default):
+        return state_mod.LoopState.kv_get(self._real, path, default)
 
-    def _save(self, path, data):
-        state_mod.LoopState._save(self._real, path, data)
+    def kv_set(self, path, data):
+        state_mod.LoopState.kv_set(self._real, path, data)
 
     def locked(self):
         import contextlib
@@ -69,7 +69,7 @@ class MainCheck(unittest.TestCase):
         path = self.st.dir / main_check.FILE
 
         def other_writer(*_a, **_k):                  # lands between the sweep's load and save
-            self.st._save(path, {"green": "g" * 40})
+            self.st.kv_set(path, {"green": "g" * 40})
             return RED
 
         def api(_loop, p, **_kw):
@@ -78,7 +78,7 @@ class MainCheck(unittest.TestCase):
              mock.patch.object(ci, "read", side_effect=other_writer), \
              mock.patch.object(observer, "notify"):
             self.assertTrue(main_check.sweep(LOOP, self.st))
-        self.assertEqual(self.st._load(path, {}), {"green": "g" * 40, "notified": "b" * 40})
+        self.assertEqual(self.st.kv_get(path, {}), {"green": "g" * 40, "notified": "b" * 40})
 
     def test_green_main_sends_nothing(self):
         self.assertFalse(self.run_sweep("a" * 40, GREEN))

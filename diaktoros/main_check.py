@@ -93,9 +93,9 @@ def _outcome(failed: list[str], merges: list[int] | None, url: str) -> str:
 def _remember(st, path, key: str, head: str) -> None:
     """Record ``key`` = head, re-reading the file under the lock so the other key survives."""
     with st.locked():
-        current = st._load(path, {})
+        current = st.kv_get(path, {})
         current = current if isinstance(current, dict) else {}
-        st._save(path, {**current, key: head})
+        st.kv_set(path, {**current, key: head})
 
 
 def sweep(loop: dict, st, log=lambda _msg: None) -> bool:
@@ -107,7 +107,7 @@ def sweep(loop: dict, st, log=lambda _msg: None) -> bool:
     if not isinstance(head, str) or not head:
         return False                                  # unreadable main is no notice
     path = st.dir / FILE
-    memory = st._load(path, {})
+    memory = st.kv_get(path, {})
     memory = memory if isinstance(memory, dict) else {}
     if head in (memory.get("notified"), memory.get("green")):
         return False                                  # this head is already judged
