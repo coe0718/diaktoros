@@ -29,7 +29,7 @@ import tempfile
 import time
 import zlib
 
-from .ledger import read_only
+from .ledger import LOCK_WAIT_S, read_only
 from .config import credentials
 from . import config, gate_shims, route_intent, routes, run_supervisor, util
 
@@ -255,7 +255,7 @@ def _ledger_problem(path: pathlib.Path) -> str | None:
     if path.stat().st_size == 0:
         return "the ledger snapshot is empty"
     try:
-        con = sqlite3.connect(path)
+        con = sqlite3.connect(path, timeout=LOCK_WAIT_S)
         try:
             rows = [row[0] for row in con.execute("PRAGMA integrity_check")]
         finally:
