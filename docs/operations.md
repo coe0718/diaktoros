@@ -905,8 +905,10 @@ unreadable, or when its own budget ran out (it prints a line saying so first), s
 output. Exit 2 is refused input: an unknown seat, a loop file `--loop` cannot load (it prints
 `no such loop: ...`), or a budget that escaped the script. Exit 1 is only the script refusing a
 loop that loaded a moment earlier and then failed to load again. Running `scripts/watchdog.py
---drain` directly differs: a refused loop file exits 1 there, and a spent budget prints its line
-and exits 0. Inspect `explain`
+--drain` directly differs: with an explicit `--loop <id>`, a refused loop file exits 1; without
+`--loop`, a refused file is only named on stderr (`not drained: ConfigError`), the other loops
+still drain and the exit is 0, so 0 does not rule out a refused file. A spent budget there prints
+its line and exits 0. Inspect `explain`
 and the queue before asking again. Escalation also refuses corrupt marker stores and unknown
 ledger outcomes through either caller. No action grants merge authority.
 

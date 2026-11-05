@@ -146,7 +146,8 @@ monkeypatches the host to make a button work. A CLI drain exits 0 when the watch
 and run outcomes are unconfirmed; 0 does not prove the sweep covered the queue (a held
 migration, paused hooks or a spent budget also return). 2 is the refused-input code, including a loop file `--loop` cannot load; 1 is
 only the script refusing a loop that loaded and then failed to load again (running
-`scripts/watchdog.py --drain` directly exits 1 on a refused loop file). The
+`scripts/watchdog.py --drain --loop <id>` directly exits 1 on a refused loop file, but without
+`--loop` it only names the refused file on stderr and exits 0). The
 selector also refuses corrupt markers and uncertain/quarantined ledger outcomes for escalation.
 Existing retry, pause/resume and seat configuration are unchanged. Diaktoros never merges.
 
