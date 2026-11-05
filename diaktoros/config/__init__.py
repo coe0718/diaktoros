@@ -259,6 +259,7 @@ DEFAULTS: dict = {
     "ci_fix_cap": None,       # CI-fix turns per PR before a red head's review waits; None = 3
     "fixer_scope_lock": False,  # hold a fix round that changes files its findings do not name (#482)
     "adjudicator_approves": False,  # an ACCEPT ruling approves as the adjudicator (#905)
+    "adjudicator_file_issues": False,  # a ruling's non-blocking findings become issues (#1864)
 }
 
 def unattended_fixer_push_enabled(loop: dict) -> bool:
@@ -1305,6 +1306,17 @@ def fixer_scope_lock(loop: dict) -> bool:
     """Whether a fix round's push is held when it changes files outside its findings (#482).
     Off unless set. It acts only where the broker pushes, so it needs unattended fixer pushes."""
     return loop.get("fixer_scope_lock") is True
+
+
+def adjudicator_file_issues(loop: dict) -> bool:
+    """Whether the findings an adjudicator rules valid but not blocking are filed as issues
+    (#1864): asked for in its ruling turn, filed afterwards by the reader. Off unless set."""
+    return loop.get("adjudicator_file_issues") is True
+
+
+# The most issues the host files a day for adjudicator rulings (#1864), a bound, not a setting: at
+# most FILED_ISSUES_MAX per ruling, and rulings are rare.
+ADJUDICATOR_ISSUES_DAILY = 25
 
 
 def adjudicator_approves(loop: dict) -> bool:

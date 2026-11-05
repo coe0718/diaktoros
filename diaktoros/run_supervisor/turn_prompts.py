@@ -61,6 +61,36 @@ def issue_labels_fact(loop: dict) -> str:
             if allowed else 'none (this loop has no label list: file without labels)')
 
 
+def ruling_issues_section(loop: dict) -> str:
+    """The adjudicator's follow-ups (#1864), only where the loop files them: how to ask for one
+    issue per finding it rules valid but not blocking. The same for every ruling of the loop, so
+    it sits with the prompt's cached part (#1649)."""
+    from .. import broker, config
+    if not config.adjudicator_file_issues(loop):
+        return ''
+    return (
+        '\n\n## Follow-up issues\n\n'
+        'This loop files an issue for each finding you rule valid but not blocking: on an ACCEPT '
+        'every such finding you let through, on a REJECT or RESPEC only those apart from what the '
+        'next round must fix. For each, before your ruling, write the finding to a file under '
+        '`/tmp` (what is wrong, the `file:line`, your evidence, and what would fix it) and run '
+        '`python -P -m diaktoros.broker_client file_issue --title "..." --body-file /tmp/issue1.md '
+        '--label bug --label P3`, with a one-line title of at most 120 characters and labels '
+        f'from {issue_labels_fact(loop)}. At most {broker.FILED_ISSUES_MAX}. Asking costs your '
+        'ruling nothing, and nothing is filed until you rule; the host then files them as the '
+        'loop\'s reader, as follow-ups to this PR, and leaves out any the reviewer already filed. '
+        'Name each in your ruling.')
+
+
+def _standing_section(loop: dict, seat: str) -> str:
+    """The seat's section that is the same in every round: the fixer's always-run check, the
+    adjudicator's follow-up issues (#1864)."""
+    from .. import prompts
+    if seat == 'fixer':
+        return prompts.fixer_check_section(loop)
+    return ruling_issues_section(loop) if seat == 'adjudicator' else ''
+
+
 def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, shadow=_READ) -> str:
     """Render the role's isolated prompt from host facts plus the bounded PR record. ``shadow``
     is the shadow review already read for an adjudicator's shadow escalation
@@ -92,10 +122,8 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, shadow=_
         facts['reviewer'] = gate.reviewer_login(latest) if latest else 'the reviewer'
     else:
         comments = _adjudicator_facts(loop, row, marker, facts)
-    text = prompts.render_isolated(seat, **facts)
+    text = prompts.render_isolated(seat, **facts) + _standing_section(loop, seat)
     round_at = None
-    if seat == 'fixer':
-        text += prompts.fixer_check_section(loop)
     if seat in ('reviewer', 'fixer', 'adjudicator'):
         # #1649: everything above this line and the issue section are the same in every round of
         # a PR (no head, round or timestamp), so the provider's prompt cache can reuse them.

@@ -198,11 +198,30 @@ class IssueWrites:
             raise broker_ipc.ProtocolError(f"{exc}; nothing was filed")
         return {"accepted": True}
 
+    def _record_ruling_issue(self, raw: bytes, request: object) -> object:
+        """Record one follow-up an adjudicator asks to file (#1864), checked as the reviewer's
+        would be. The host files it after the run's ruling (``ruling_issues.file_pending``), as
+        the reader; a run that never rules files nothing. Only where the loop opts in."""
+        from .run_supervisor import Supervisor
+        title, body, labels, current = self._issue_request(raw, request)
+        if not config.adjudicator_file_issues(current):
+            raise broker_ipc.ProtocolError("this loop does not file the adjudicator's follow-ups "
+                                           "(adjudicator_file_issues is off); nothing was recorded")
+        if not self.scope.run_id or not self.scope.ledger_db:
+            raise broker_ipc.ProtocolError("host run ledger unavailable")
+        try:
+            Supervisor(self.scope.ledger_db, create=False).record_shadow_issue(
+                self.scope.run_id, self.scope.repo, self.scope.number, self.scope.head,
+                title, body, labels, broker.FILED_ISSUES_MAX, seat="adjudicator")
+        except ValueError as exc:
+            raise broker_ipc.ProtocolError(f"{exc}; nothing was recorded")
+        return {"accepted": True}
+
     def _issue_request(self, raw: bytes, request: object) -> tuple:
         """A ``file_issue`` request checked as the reviewer's is (#247): ``(title, body, labels,
-        loop)``, or ``ProtocolError``. Shared by the reviewer's filing and the shadow's record
-        (#914), so a second model's request is held to exactly the same rules."""
-        if self.scope.role != "reviewer" or not isinstance(request, dict):
+        loop)``, or ``ProtocolError``. Shared by the reviewer's filing, the shadow's record
+        (#914) and the adjudicator's (#1864), so each is held to exactly the same rules."""
+        if self.scope.role not in ("reviewer", "adjudicator") or not isinstance(request, dict):
             raise broker_ipc.ProtocolError("operation out of scope")
         if (set(request) != {"operation", "title", "body", "labels"}
                 or len(raw) > broker_ipc.MAX_REQUEST):
@@ -261,6 +280,8 @@ class IssueWrites:
         automatic fixes it came from) so a later automatic hand-off can be bounded.
         """
         from .run_supervisor import Supervisor
+        if self.scope.role != "reviewer":          # an adjudicator's is only ever recorded
+            raise broker_ipc.ProtocolError("operation out of scope")
         title, body, labels, current = self._issue_request(raw, request)
         if not self.scope.run_id or not self.scope.ledger_db:
             raise broker_ipc.ProtocolError("host run ledger unavailable")

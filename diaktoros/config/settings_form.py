@@ -341,6 +341,17 @@ SETTINGS_SCHEMA: dict = {
                                             "merge. Never for a human_paths diff or a held PR. "
                                             "Needs the adjudicator comment login. Off: the "
                                             "ruling is left to you."},
+    "adjudicator_file_issues": {"label": "File the adjudicator's follow-ups", "type": "bool",
+                                "default": False,
+                                "description": "On: the findings the adjudicator rules valid "
+                                               "but not blocking (every one it lets through on "
+                                               "an ACCEPT; on a REJECT or RESPEC, those apart "
+                                               "from what the next round must fix) are filed "
+                                               "as issues (#1864): asked for in its ruling "
+                                               "turn, filed after the ruling by the reader, "
+                                               "labelled adjudicator-found, at most 3 a ruling "
+                                               "and 25 a day. Off: its follow-ups stay in the "
+                                               "ruling comment."},
     "attribution": {"label": "Sign what the loop posts", "type": "bool", "default": True,
                     "description": "On: every review, comment and commit the loop itself "
                                    "posts ends with 'Automated by Diaktoros' and "
@@ -532,7 +543,7 @@ def _apply_switches(overlaid, d, settings) -> None:  # noqa: ANN001
     """``apply_settings``: the on/off and named settings, and the review-only and CI-fix limits."""
     # The on/off knobs, attribution (#197) among them, move only when the form names them.
     for key in ("attribution", "review_after_ci", "fix_ci", "fixer_scope_lock",
-                "adjudicator_approves", "review_only_update"):
+                "adjudicator_approves", "adjudicator_file_issues", "review_only_update"):
         if _form_value(settings, key) is not None:
             overlaid[key] = d[key]
     if str(d.get("merge_check") or "").strip():

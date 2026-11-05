@@ -212,7 +212,8 @@ def _setup_setting_argv(args, d: dict, interactive: bool) -> list[str]:
     agents = (args.operator_agent if getattr(args, "operator_agent", None) is not None else
               [name for name in str(d["operator_agents"]).split(",") if name.strip()])
     argv += [f"--operator-agent={name.strip()}" for name in agents]
-    argv += _given(args, ("review_only_update", "fixer_scope_lock", "adjudicator_approves"))
+    argv += _given(args, ("review_only_update", "fixer_scope_lock", "adjudicator_approves",
+                          "adjudicator_file_issues"))
     if getattr(args, "acknowledge_branch_push", False):
         argv.append("--acknowledge-branch-push")
     argv += _given(args, ("reviewer_max_steps", "fixer_max_steps", "reviewer_daily_tokens",
@@ -604,6 +605,7 @@ def _setup_switch_flags(first) -> None:  # noqa: ANN001
             ("--adjudicator-approves", "on an ACCEPT ruling with green checks, approve as the "
                                        "adjudicator login and dismiss the change request it "
                                        "overruled", "off"),
+            ("--adjudicator-file-issues", "file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found", "off"),
             ("--attribution", "sign what the loop posts with 'Automated by Diaktoros'", "on")):
         first.add_argument(flag, choices=("on", "off"), default=None,
                            help=f"{text} (default: the plugin setting, {default})")
