@@ -73,7 +73,8 @@ class Retention(unittest.TestCase):
             st.shadow_findings_put(1000 + i, ts.HEAD, {})
 
     def ledger(self, *runs):
-        """A run ledger holding shadow rows ``(pr, state)``, as the production one would."""
+        """A run ledger holding shadow rows ``(pr, state)`` or ``(pr, state, repo)`` (default
+        ``acme/widgets``, the fixture loop's), as the production one would."""
         import pathlib
         import sqlite3
         import tempfile
@@ -84,9 +85,10 @@ class Retention(unittest.TestCase):
         db = pathlib.Path(temp.name) / "runs.sqlite"
         sup = Supervisor(db, fixture_mode=True)
         sup._spawn = lambda: None
-        for pr, state in runs:
-            delivery = f"acme/widgets:{pr}:{ts.HEAD}:shadow"
-            sup.enqueue(delivery, "acme/widgets", pr, ts.HEAD, "shadow")
+        for pr, state, *repo in runs:
+            repo = repo[0] if repo else "acme/widgets"
+            delivery = f"{repo}:{pr}:{ts.HEAD}:shadow"
+            sup.enqueue(delivery, repo, pr, ts.HEAD, "shadow")
             with closing(sqlite3.connect(db)) as con, con:
                 con.execute("UPDATE runs SET state=? WHERE delivery=?", (state, delivery))
         return db
@@ -113,6 +115,21 @@ class Retention(unittest.TestCase):
             gate.enqueue_shadow(loop, mock.Mock(), 7, ts.HEAD)
         self.assertEqual(st.shadow_findings_get(1000, ts.HEAD), {})   # delayed, still open
         self.assertIsNone(st.shadow_findings_get(1001, ts.HEAD))      # ended: evicted
+        self.assertEqual(st.shadow_findings_get(7, ts.HEAD), {})
+
+    def test_another_repos_open_shadow_at_the_same_pr_and_head_keeps_nothing(self):
+        # #1133: the snapshot file is per loop and keyed "pr:head", so an open shadow run of
+        # another repo at the same PR number and head must not hold this loop's snapshot.
+        loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
+        st = state_mod.state_for(loop)
+        self.fill(st, st.SHADOW_FINDINGS_KEPT)
+        db = self.ledger((1000, "waiting", "other/repo"), (1001, "waiting"))
+        with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=db):
+            self.assertEqual(gate.shadow_open_heads("acme/widgets"), {(1001, ts.HEAD)})
+            self.assertEqual(gate.shadow_open_heads("other/repo"), {(1000, ts.HEAD)})
+            gate.enqueue_shadow(loop, mock.Mock(), 7, ts.HEAD)       # the enforcing entry point
+        self.assertIsNone(st.shadow_findings_get(1000, ts.HEAD))      # only another repo's: evicted
+        self.assertEqual(st.shadow_findings_get(1001, ts.HEAD), {})   # this repo's, open: kept
         self.assertEqual(st.shadow_findings_get(7, ts.HEAD), {})
 
     def test_a_delayed_shadow_is_still_judged_on_its_snapshot_after_the_cap(self):

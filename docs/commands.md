@@ -1130,12 +1130,24 @@ Desktop form, `init`, `setup`, `set` and the loop file.
 
 ```bash
 hermes dk backup --out "<archive-file>"
+hermes dk backup --verify "<archive-file>"
 ```
+
+`--verify` writes nothing: it re-reads the manifest, reads every member the manifest names to its
+end, reads the whole gzip stream to its end (so a cut or damaged gzip trailer is caught even when
+every member reads), and opens the ledger snapshot with SQLite's `PRAGMA integrity_check` on a
+temporary copy (deleted afterwards). Exit `0` if the archive reads back, `2` with each problem
+named if not (corrupt gzip, truncated tar or trailer, a missing member, a ledger that is not
+SQLite). It checks that the
+bytes are restorable, not that restoring is safe here (paths, routes, secrets): `restore
+--dry-run` does both. It cannot check that the token files exist, since they are not in the
+archive; `restore` lists those.
 
 <!-- flags:backup -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--out` | `FILE` |  | where to write it (default: $HERMES_HOME/backups/…); never overwrites a file |
+| `--verify` | `FILE` |  | write nothing: read this archive back (manifest, every member, the ledger snapshot's SQLite integrity check) and report whether it is restorable (exit 2 if not) |
 <!-- /flags -->
 
 ### restore
@@ -1145,7 +1157,8 @@ claims nothing), refuses to overwrite existing files, routes or the watchdog job
 `--force`, rewrites the shims, recreates the watchdog job through `hermes cron` and reads it
 back, then runs `doctor`. It checks that the token files the loops name exist and lists any that
 are missing; the tokens themselves are not in the archive. `--dry-run` lists what it would
-restore and overwrite and writes nothing. Exit `1` means a step is not finished or `doctor`
+restore and overwrite, reads the archive back like `backup --verify` (exit `2`, `NOT RESTORABLE`,
+if it cannot) and writes nothing. Exit `1` means a step is not finished or `doctor`
 listed a check that is not verified.
 
 An archive is treated as outside input. `restore` refuses it (exit `2`, nothing written) when:
@@ -1180,7 +1193,7 @@ hermes dk restore "<archive-file>"
 <!-- flags:restore -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
-| `--dry-run` |  |  | report what would be restored and overwritten; write nothing |
+| `--dry-run` |  |  | report what would be restored and overwritten, and read the archive back (every member, the ledger's integrity); write nothing |
 | `--force` |  |  | overwrite existing state (refused without it) |
 | `--allow-state-dir` | `DIR` (repeatable) |  | write this loop state directory, which the archive declares outside the Hermes home (the dry run lists them; repeat per directory) |
 <!-- /flags -->

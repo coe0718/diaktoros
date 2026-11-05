@@ -16,9 +16,10 @@ run ledger in any state, it is no newer than ``GRACE_S`` (the gate may still be 
 older than ``HORIZON_S`` (a backlog from before the loop was armed is not triaged in bulk). An
 issue a maintainer already sent to the fixer (``triage.fix_label``) is left alone as well. At most
 ``PER_SWEEP`` are queued per sweep, oldest first; the rest wait for the next one. The listing is
-newest first and bounded (``gh.MAX_ISSUE_PAGES`` pages, pull requests included): past the bound the
-sweep works on the newest issues it read and returns an alert line saying the older ones were not
-checked (#1037).
+newest first and bounded (``gh.MAX_ISSUE_PAGES`` pages of 100, pull requests included). It is read
+until a page reaches issues older than ``HORIZON_S``, so a window of more than 500 items is still
+read whole (#1147); only past the page bound does the sweep work on the newest issues it read and
+return an alert line saying the older ones were not checked (#1037).
 """
 from __future__ import annotations
 

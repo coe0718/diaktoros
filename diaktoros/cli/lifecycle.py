@@ -500,9 +500,33 @@ def _migrate(args) -> int:
                     for word in ("REFUSED", "NOT rewritten", "NOT FINISHED")) else 0
 
 
-def cmd_backup(args) -> int:
-    """``backup`` (#496): one 0600 archive of everything the plugin owns; see ``backup``."""
+def _verify_backup(args) -> int:
+    """``backup --verify FILE`` (#1078): read an archive back and report; writes nothing."""
     from .. import backup
+    archive = pathlib.Path(args.verify).expanduser()
+    try:
+        read, problems = backup.verify(archive)
+    except (backup.BackupError, OSError) as exc:
+        print(f"backup verify: FAILED — {exc}")
+        return 2
+    if problems:
+        print("\n".join([f"backup verify: FAILED — {p}" for p in problems[:20]]
+                        + [f"backup verify: {archive} is not restorable as it is"]))
+        return 2
+    print(f"backup verify: ok — {read} member(s) read back and the ledger snapshot (if any) "
+          "passed SQLite's integrity check; nothing was written")
+    return 0
+
+
+def cmd_backup(args) -> int:
+    """``backup`` (#496): one 0600 archive of everything the plugin owns; see ``backup``.
+    With ``--verify FILE`` it writes nothing and reads an existing archive back (#1078)."""
+    from .. import backup
+    if getattr(args, "verify", None):
+        if args.out:
+            print("cannot back up: --verify reads an existing archive and takes no --out")
+            return 2
+        return _verify_backup(args)
     try:
         archive = backup.create(pathlib.Path(args.out) if args.out else None)
     except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
@@ -557,7 +581,14 @@ def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
                          + ["nothing was written"]))
         return 2
     if args.dry_run:
-        print("\n".join(lines + ["dry run: nothing was written"]))
+        read, broken = backup.verify(archive)    # the same read-back as `backup --verify` (#1078)
+        if broken:
+            print("\n".join(lines + [f"restore: NOT RESTORABLE — {p}" for p in broken[:20]]
+                             + ["dry run: nothing was written"]))
+            return 2
+        print("\n".join(lines + [f"restore: {read} member(s) read back; any ledger snapshot "
+                                 "passed SQLite's integrity check",
+                                 "dry run: nothing was written"]))
         return 0
     backup.put_files(archive, manifest)
     lines.append(f"restore: {len(manifest['files'])} file(s) put back")
@@ -995,6 +1026,10 @@ def add_backup(sub) -> None:  # noqa: ANN001
     bak.add_argument("--out", metavar="FILE", default=None,
                      help="where to write it (default: $HERMES_HOME/backups/…); never "
                           "overwrites a file")
+    bak.add_argument("--verify", metavar="FILE", default=None,
+                     help="write nothing: read this archive back (manifest, every member, the "
+                          "ledger snapshot's SQLite integrity check) and report whether it is "
+                          "restorable (exit 2 if not)")
     bak.set_defaults(func=cmd_backup)
 
 
@@ -1004,7 +1039,8 @@ def add_restore(sub) -> None:  # noqa: ANN001
                                           "watchdog job; ends with doctor (#496)")
     rest.add_argument("file", metavar="FILE", help="an archive `backup` wrote")
     rest.add_argument("--dry-run", action="store_true",
-                      help="report what would be restored and overwritten; write nothing")
+                      help="report what would be restored and overwritten, and read the archive "
+                           "back (every member, the ledger's integrity); write nothing")
     rest.add_argument("--force", action="store_true",
                       help="overwrite existing state (refused without it)")
     rest.add_argument("--allow-state-dir", action="append", default=None, metavar="DIR",

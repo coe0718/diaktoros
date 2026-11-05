@@ -11,8 +11,10 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_issue_fix import BASE, REPO, Base, issue  # noqa: E402
 
-from diaktoros import config, fix_hold, gate, gh, pacing  # noqa: E402
+from diaktoros import config, fix_hold, gate, gh, observer, pacing  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
+
+_NOTICE = fix_hold._notice      # the real one, before AutoOffer.setUp swaps in a no-op
 
 
 class AutoFixConfig(Base):
@@ -94,6 +96,37 @@ class AutoOffer(Base):
         self.assertIn("auto-offered", fix_hold.auto_offer(self.loop, 12))
         self.assertEqual(self.enqueued, [("issue_fixer", 12)])
         self.assertEqual(pacing.turns_today(self.loop["id"], fix_hold.AUTO_FIX_SEAT), 1)
+
+    def feed(self):
+        """The real ``_notice`` and ``observer.notify`` with a feed switched on; returns the list
+        of messages the observer would POST. (``setUp`` stubs ``_notice`` for the other tests.)"""
+        self.loop = {**self.loop, "observer": {"route": "widgets-observe", "profile": "default",
+                                               "deliver": "telegram"}}
+        sent = []
+
+        def post(loop, block, tag, delivery="", urgent=False):
+            sent.append(block["message"])
+            return True, "", False
+        for target, name, value in ((fix_hold, "_notice", _NOTICE), (observer, "_post", post)):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return sent
+
+    def test_the_auto_offer_notice_reaches_the_observer_with_its_queued_kind(self):
+        # Review of #1873, F1: without its kind, ``key_for`` refuses the ``fixing`` notice and
+        # ``notify`` drops it, logged and silent. Only a configured feed shows that.
+        sent = self.feed()
+        self.assertIn("auto-offered at", fix_hold.auto_offer(self.loop, 12))
+        self.assertEqual(self.enqueued, [("issue_fixer", 12)])
+        self.assertEqual(len(sent), 1, sent)
+        self.assertIn(f"auto-offered; fix turn queued from main at {BASE[:7]}", sent[0])
+
+    def test_an_auto_offer_that_scheduled_nothing_sends_no_queued_notice(self):
+        sent = self.feed()
+        with mock.patch.object(gate, "enqueue_isolated", lambda *a, **k: "duplicate running"):
+            self.assertIn("duplicate running", fix_hold.auto_offer(self.loop, 12))
+        self.assertEqual(sent, [])
 
     def test_nothing_without_the_setting(self):
         self.raw["triage"].pop("auto_fix_labels"), self.raw["triage"].pop("auto_fix_daily")
