@@ -233,6 +233,152 @@ for _name in [n for n in dir(sm.Worker) if n.startswith("test_")]:
     setattr(Worker, _name, None)     # its own tests run in test_seat_models
 
 
+class FailedFixSequence(Worker):
+    """#1907's sequence on #1875, end to end (review of #1917, F3), through the real worker
+    (claim, launch, run), sweep, enqueue and push, with GitHub, Git and the seat faked: a change
+    request; the fix turn killed at its budget; main moves. The merge never goes first, so no
+    head is reviewed before the fix: the operator's retry of the fix is claimed and pushes, the
+    merge follows on its head, and the next verdict, the second, is of a head with the fix in
+    it. On main the sweep queues the merge over the failed fix, the merged head is reviewed with
+    the finding unanswered, and the round is spent."""
+
+    FIXED, MERGED_HEAD = "e" * 40, "f" * 40
+
+    def setUp(self):
+        super().setUp()
+        tokens = {login: self.key_file(login + ".pat", "DUMMY_SECRET_" + login)
+                  for login in ("read", "review", "fix")}
+        self.loop = {**self.loop, "tokens": tokens, "read_token": "read", "reviewer_seat": "review",
+                     "fixers": ["fix"], "reviewers": ["review"], "cap": 3,
+                     "seats": {"reviewer": {"profile": "rev", "login": "review"},
+                               "fixer": {"profile": "fix", "login": "fix"}}}
+        Path(self.loop["state_dir"]).mkdir(exist_ok=True)     # the push's audit lives there
+        (self.root / "runtime.json").write_text(json.dumps(self.settings))
+        (self.root / "runtime.json").chmod(0o600)
+        self.sup = Supervisor(self.root / "ledger.sqlite", hermes_home=self.home,
+                              production_config=self.root / "runtime.json")
+        self.sup._spawn = mock.Mock()
+        self.fake = tsp.FakeGitHub()
+        self.reviews = [self.review(1, sm.HEAD)]
+        self.pushed = []
+
+    def review(self, rid, head):
+        return {"id": rid, "state": "CHANGES_REQUESTED", "commit_id": head,
+                "submitted_at": f"2026-01-0{rid}T00:00:00Z", "user": {"login": "review"}}
+
+    def github(self):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(mock.patch.object(config, "by_repo", return_value=self.loop))
+        stack.enter_context(mock.patch.object(gh, "api", side_effect=self.fake.api))
+        stack.enter_context(mock.patch.object(gh, "reviews",
+                                              side_effect=lambda *_a, **_k: list(self.reviews)))
+        return stack
+
+    def sweep(self, head):
+        """The watchdog's conflict sweep, with main moved, and the real enqueue."""
+        from diaktoros import gate, observer, state as state_mod, watch_conflicts
+        with self.github(), mock.patch.object(gate, "isolated_supervisor", return_value=self.sup), \
+             mock.patch.object(watch_conflicts, "base_tip", return_value="c" * 40), \
+             mock.patch.object(observer, "notify") as notified:
+            watch_conflicts.act_on_conflicts(self.loop, state_mod.state_for(self.loop),
+                                             [(7, head, BASE_SHA, "fixer")], {})
+        return notified
+
+    def work(self, turn):
+        """One pass of the worker: the real claim, launch and run; the seat's turn is
+        ``turn(scope)``."""
+        from diaktoros.run_supervisor import pr_facts, turn_prompts
+        with self.github(), \
+             mock.patch.object(safe_push, "merged_tree", return_value=MERGED), \
+             mock.patch.object(turn_prompts, "isolated_prompt", return_value="PROMPT"), \
+             mock.patch.object(pr_facts, "pr_change", return_value=pr_facts.PRChange("C", "D")), \
+             mock.patch.object(trusted_turn, "run_turn",
+                               side_effect=lambda _loop, scope, **_kw: turn(scope)), \
+             mock.patch.object(self.sup, "recover"):
+            self.sup._run_one()
+
+    def seat_push(self, scope):
+        """The seat's push as the broker makes it (``_push_under_intent``), for the run's scope."""
+        self.sup.begin_push(scope.run_id, scope.repo, scope.number, scope.head)
+        outcome, _ = self.push(scope.head, dict(scope.merge) if scope.merge else None)
+        self.sup.confirm_push(scope.run_id, scope.repo, scope.number, scope.head)
+        return 0 if outcome == "published" else 1
+
+    def push(self, head, merge=None):
+        """The real ``safe_push.push`` (GitHub and Git faked): ``(outcome or refusal, head)``."""
+        def cas(loop, repo, branch, at, files, message, login, identity, *, before_push,
+                merge=None, **_):
+            new = self.MERGED_HEAD if merge else self.FIXED
+            before_push(new)
+            self.pushed.append(("merge" if merge else "fix", at))
+            self.fake.branch_head = self.fake.pr_head = new
+            return new
+        try:
+            with self.github(), mock.patch.object(safe_push, "_git_cas", side_effect=cas):
+                outcome = safe_push.push(self.loop, repo="acme/widgets", number=7, head=head,
+                                         role="fixer", branch="fix-7", merge=merge,
+                                         manifest={**tsp.manifest(), "base_head": head})["outcome"]
+        except broker.BrokerDenied as exc:
+            outcome = str(exc)
+        return outcome, self.fake.branch_head
+
+    def state(self, delivery):
+        return self.sup.get(delivery)["state"]
+
+    def conflict_rows(self):
+        with ledger.connect(self.sup.db) as con:
+            return con.execute("SELECT head, state FROM runs WHERE turn_key LIKE 'conflict:%' "
+                               "ORDER BY created").fetchall()
+
+    def spent(self):
+        from diaktoros import gate
+        return len(gate.verdicts(self.reviews, self.loop))
+
+    def test_a_merge_never_spends_the_round_a_failed_fix_owes(self):
+        def killed(_scope):
+            raise trusted_turn.TurnBudgetExceeded(["sandbox"], 1800, 30)
+        with self.github():
+            self.sup.enqueue("fix", "acme/widgets", 7, sm.HEAD, "fixer",
+                             require_push_admission=True)
+        self.work(killed)                                          # the fix turn times out
+        self.assertEqual(self.state("fix"), "failed")
+        self.assertIn("killed at the 1800s turn budget", self.sup.get("fix")["error"])
+        notified = self.sweep(sm.HEAD)                             # main moved
+        self.assertEqual(self.conflict_rows(), [], "no merge queued over the failed fix")
+        self.assertIn("hermes dk retry", notified.call_args.kwargs["next_turn"])
+        # A merge queued before the verdict (the race) waits at the claim, and a turn past it
+        # can't push: the head stays the reviewed one, so no fresh review starts.
+        with self.github():
+            self.sup.enqueue("early", "acme/widgets", 7, sm.HEAD, "fixer",
+                             turn_key=f"{CONFLICT_KEY}{BASE_SHA}", require_push_admission=True)
+        self.work(mock.Mock(side_effect=AssertionError("the merge ran")))
+        self.assertEqual(self.state("early"), "pending")
+        refused, head = self.push(sm.HEAD, merge={"base_ref": "main", "base_sha": BASE_SHA,
+                                                  "tree": TREE})
+        self.assertIn("a merge waits for the fixer here", refused)
+        self.assertEqual((head, self.pushed, self.spent()), (sm.HEAD, [], 1))
+        # The operator retries the fix: it is claimed ahead of the merge, and pushes.
+        with self.github():
+            self.sup.retry(self.sup.get("fix")["id"])
+        self.work(self.seat_push)
+        self.assertEqual((self.state("fix"), self.state("early")), ("succeeded", "pending"))
+        self.assertEqual(self.fake.branch_head, self.FIXED)
+        # Then the merge, on the fix's head: the waiting row is superseded, a new one queued,
+        # claimed and pushed with the host's merge scope. The fresh review is of the fix.
+        self.sweep(self.FIXED)
+        self.work(self.seat_push)
+        self.assertEqual(self.conflict_rows(), [(sm.HEAD, "cancelled"), (self.FIXED, "succeeded")])
+        self.assertEqual(self.pushed, [("fix", sm.HEAD), ("merge", self.FIXED)])
+        self.assertEqual(self.fake.branch_head, self.MERGED_HEAD)
+        self.reviews.append(self.review(2, self.MERGED_HEAD))
+        self.assertEqual(self.spent(), 2)
+
+
+for _name in [n for n in dir(Worker) if n.startswith("test_")]:
+    setattr(FailedFixSequence, _name, None)     # Worker's own tests run once, in Worker
+
+
 class Broker(unittest.TestCase):
     """The broker's push passes the host-owned merge scope, and only for a conflict turn."""
 
