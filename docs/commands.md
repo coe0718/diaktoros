@@ -1133,10 +1133,13 @@ archive carries a `default-place` first member; only archives that carry it are 
 deleted. So an archive written with `--out` (even one with a default-shaped name inside
 `$HERMES_HOME/backups`), an archive written by an earlier version (no mark: delete those by
 hand once), and any other file in that directory are never counted or deleted. An archive that
-another run still holds open is skipped too. The hold is a `flock` on the file, which a
-filesystem without `flock` does not give. `migrate`'s automatic backup prunes with the default
-of 10. `--keep` is a per-run flag, not a plugin setting, so a scheduled backup must pass it to use
-another count; there is no output-directory setting.
+another run still holds open is skipped too: a run holds its archive from before its first byte
+until its command is done with it (for `backup`, until it has printed; for `migrate`, until the
+migration ends, since the archive is its only undo). A held archive is not pruned by a newer run
+and is not counted, so it is pruned by a later backup once its run is over. The hold is a `flock`
+on the file, which a filesystem without `flock` does not give. `migrate`'s automatic backup
+prunes with the default of 10. `--keep` is a per-run flag, not a plugin setting, so a scheduled
+backup must pass it to use another count; there is no output-directory setting.
 
 ```bash
 hermes dk backup --out "<archive-file>"

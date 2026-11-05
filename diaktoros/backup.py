@@ -16,7 +16,9 @@ archives it wrote there (``$HERMES_HOME/backups``) beyond the newest ``keep`` (`
 named like ``default_out``'s that carries ``DEFAULT_MARK`` as its first member (written only on a
 write to the default place, so a file made by ``--out`` is never one, even with a default-shaped
 name inside that directory) and that no run still holds open (each run takes ``util.hold_temp`` on
-its archive until it is whole). Anything else in the directory is neither counted nor deleted.
+its archive before the first byte and keeps it until the command that made it is done with the
+archive: after the write, the chmod, the prune, and for ``backup`` and ``migrate`` until they
+return; see ``create``'s ``using``). Anything else in the directory is neither counted nor deleted.
 Archives written before the mark existed carry none, so they are never pruned (delete them by
 hand once). ``hermes dk migrate`` takes its backup through ``create`` too, so it prunes with the
 default ``keep``. On a filesystem without ``flock`` the hold does not take (``util.hold_temp``
@@ -29,6 +31,7 @@ has to pass it to get a count other than ``DEFAULT_KEEP``. An output directory s
 """
 from __future__ import annotations
 
+import contextlib
 import io
 import importlib
 import json
@@ -100,8 +103,9 @@ def prune(keep: int, protect: pathlib.Path | None = None) -> list[pathlib.Path]:
     A candidate is a regular, non-symlink file whose name is one ``default_out`` makes, that
     carries ``DEFAULT_MARK`` (``made_by_default``: so not an ``--out`` archive that happens to be
     named alike), and that no writer still holds open (``util.temp_in_use``: ``create`` holds a
-    lock on its file until it is whole, so another run's unfinished archive is neither counted
-    nor deleted). Anything else in the directory is left alone. Candidates are ordered by the
+    lock on its file until it is whole, and its caller may keep holding it while it uses the
+    path, so another run's archive in either state is neither counted nor deleted). Anything
+    else in the directory is left alone. Candidates are ordered by the
     stamp in the name and then its collision suffix (not mtime, which a copy resets).
     ``protect`` (the archive just written) is never deleted. ``keep`` 0 deletes nothing. A file
     that cannot be removed is left: retention never fails a backup that was written. Returns what
@@ -111,11 +115,14 @@ def prune(keep: int, protect: pathlib.Path | None = None) -> list[pathlib.Path]:
     base = config.home() / "backups"
     if not keep or not base.is_dir():
         return []
+    mine = protect.absolute() if protect is not None else None
     found = []
     for path in base.iterdir():
         match = _DEFAULT_NAME.fullmatch(path.name)
+        # ``protect`` is counted but never skipped as held: the run that wrote it holds it (see
+        # ``create``'s ``using``) and it is the newest archive that run made.
         if match and path.is_file() and not path.is_symlink() and made_by_default(path) \
-                and not util.temp_in_use(path):
+                and (path.absolute() == mine or not util.temp_in_use(path)):
             # Mark first, then the lock: ``create`` takes its lock before it writes a byte, so a
             # readable mark means the lock is already held or the archive is whole. The other
             # order could see "unlocked" just before a run's lock and its first flushed bytes.
@@ -123,7 +130,7 @@ def prune(keep: int, protect: pathlib.Path | None = None) -> list[pathlib.Path]:
     found.sort(key=lambda item: item[0], reverse=True)
     removed = []
     for _, path in found[keep:]:
-        if protect is not None and path == protect.absolute():
+        if path.absolute() == mine:
             continue
         try:
             path.unlink()
@@ -255,17 +262,12 @@ def _open_new(out: pathlib.Path, chosen: bool) -> tuple[int, pathlib.Path]:
     return fd, out
 
 
-def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
-           pruned: list[pathlib.Path] | None = None) -> pathlib.Path:
-    """Write the archive and return its path. Refuses to overwrite a file.
-
-    A default-named archive (no ``out``) is followed by ``prune(keep)``; what it deleted is
-    appended to ``pruned`` when given. An ``out`` archive is never followed by a prune."""
-    check_keep(keep)
-    chosen = bool(out)
-    out = (pathlib.Path(out).expanduser() if chosen else default_out()).absolute()
-    loops = config.all_loops()
-    files: list[tuple[pathlib.Path, pathlib.Path | None, str]] = []   # (target, source, kind)
+def _listed_files(loops: list[dict]) -> tuple[list[tuple[pathlib.Path, pathlib.Path | None, str]],
+                                              list[str]]:
+    """The files ``create`` archives, as ``(target, source, kind)``, and the temp-shaped names it
+    leaves out (``skipped``; the manifest lists them): the loop files, the runtime and pacing
+    files, the gate-failure ledger and each loop's state directory. The ledger is added later."""
+    files: list[tuple[pathlib.Path, pathlib.Path | None, str]] = []
     cfg = config.config_dir()
     for path in sorted(cfg.glob("*.json")) if cfg.is_dir() else []:
         if path.is_file() and not path.is_symlink():
@@ -274,13 +276,34 @@ def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
         path = config.host_path(key)
         if path.is_file() and not path.is_symlink():
             files.append((path, path, "file"))
-    skipped: list[str] = []      # temp-shaped names left out; the manifest lists them
+    skipped: list[str] = []
     for key in ("gate_failures",):
         for path in _regular_files(config.host_path(key), skipped):
             files.append((path, path, "file"))
     for loop in loops:
         for path in _regular_files(config.state_dir(loop), skipped):
             files.append((path, path, "file"))
+    return files, skipped
+
+
+def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
+           pruned: list[pathlib.Path] | None = None,
+           using: contextlib.ExitStack | None = None) -> pathlib.Path:
+    """Write the archive and return its path. Refuses to overwrite a file.
+
+    A default-named archive (no ``out``) is followed by ``prune(keep)``; what it deleted is
+    appended to ``pruned`` when given. An ``out`` archive is never followed by a prune.
+
+    The archive is locked from before its first byte (``_open_new``) until ``create`` returns, so
+    no other run's ``prune`` can take it while it is written, chmodded or pruned around. With
+    ``using`` (an ``ExitStack`` the caller owns) the lock is kept until the caller closes the
+    stack, so a caller that goes on to read or print the archive has it for as long as it needs
+    it; without, the lock ends when ``create`` returns."""
+    check_keep(keep)
+    chosen = bool(out)
+    out = (pathlib.Path(out).expanduser() if chosen else default_out()).absolute()
+    loops = config.all_loops()
+    files, skipped = _listed_files(loops)
     ledger = run_supervisor.production_ledger()
     manifest = {"version": VERSION, "created": time.time(), "loops": [l["id"] for l in loops],
                 "files": [], "skipped": skipped,
@@ -292,7 +315,9 @@ def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
     out.parent.mkdir(parents=True, exist_ok=True)
     fd, out = _open_new(out, chosen)
     try:
-        with os.fdopen(fd, "wb") as stream, tarfile.open(fileobj=stream, mode="w:gz") as tar, \
+        # ``closefd=False``: the lock is on ``fd`` and must outlive the stream (see ``using``).
+        with os.fdopen(fd, "wb", closefd=False) as stream, \
+                tarfile.open(fileobj=stream, mode="w:gz") as tar, \
                 tempfile.TemporaryDirectory() as scratch:
             if not chosen:
                 tar.addfile(tarfile.TarInfo(DEFAULT_MARK))   # provenance: first member, see prune
@@ -316,14 +341,19 @@ def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
             info = tarfile.TarInfo(MANIFEST)
             info.size, info.mtime, info.mode = len(raw), int(time.time()), 0o600
             tar.addfile(info, io.BytesIO(raw))
-        os.chmod(out, 0o600)
+        os.chmod(out, 0o600)           # still locked: no other run's prune can take it from here
     except BaseException:
-        out.unlink(missing_ok=True)
+        try:
+            out.unlink(missing_ok=True)
+        finally:
+            os.close(fd)
         raise
-    if not chosen:
-        removed = prune(keep, protect=out)
-        if pruned is not None:
-            pruned.extend(removed)
+    with contextlib.ExitStack() as own:
+        (own if using is None else using).callback(os.close, fd)
+        if not chosen:
+            removed = prune(keep, protect=out)
+            if pruned is not None:
+                pruned.extend(removed)
     return out
 
 

@@ -7,6 +7,7 @@ every command here; the install plumbing they share with ``init`` and ``set`` is
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import pathlib
@@ -449,6 +450,14 @@ def cmd_migrate(args) -> int:
 
 
 def _migrate(args) -> int:
+    """Run the migration steps. The backup ``migrate`` takes first is its undo, so it stays locked
+    (``backup.create(using=...)``) until the migration ends: a backup another process runs in the
+    meantime cannot prune it away (#1079)."""
+    with contextlib.ExitStack() as using:
+        return _migrate_steps(args, using)
+
+
+def _migrate_steps(args, using: contextlib.ExitStack) -> int:
     from .. import backup, migrate, run_supervisor
     try:
         loops = config.all_loops()
@@ -461,7 +470,7 @@ def _migrate(args) -> int:
         # Before the first move (#496): migrate has no undo, the archive is the undo.
         pruned: list[pathlib.Path] = []
         try:
-            archive = backup.create(pruned=pruned)
+            archive = backup.create(pruned=pruned, using=using)
         except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
             print(f"cannot migrate: the backup before it failed ({exc}); nothing was moved")
             return 2
@@ -510,22 +519,23 @@ def cmd_backup(args) -> int:
     keep = getattr(args, "keep", None)
     keep = backup.DEFAULT_KEEP if keep is None else keep
     pruned: list[pathlib.Path] = []
-    try:
-        archive = backup.create(pathlib.Path(args.out) if args.out else None,
-                                keep=keep, pruned=pruned)
-    except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
-        print(f"cannot back up: {exc}")
-        return 2
-    print(f"backup written: {archive}")
-    if pruned:
-        print(f"removed {len(pruned)} older default-named archive(s) beyond the newest {keep}: "
-              + ", ".join(p.name for p in pruned))
-    left_out = backup.read_manifest(archive).get("skipped") or []
-    if left_out:
-        print(f"left out ({len(left_out)} temp-named file(s), assumed a writer's scratch): "
-              + ", ".join(left_out[:5]) + (" ..." if len(left_out) > 5 else ""))
-    print(f"warning: {backup.WARNING}")
-    return 0
+    with contextlib.ExitStack() as using:       # the archive stays locked until this command is done
+        try:
+            archive = backup.create(pathlib.Path(args.out) if args.out else None,
+                                    keep=keep, pruned=pruned, using=using)
+        except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
+            print(f"cannot back up: {exc}")
+            return 2
+        print(f"backup written: {archive}")
+        if pruned:
+            print(f"removed {len(pruned)} older default-named archive(s) beyond the newest "
+                  f"{keep}: " + ", ".join(p.name for p in pruned))
+        left_out = backup.read_manifest(archive).get("skipped") or []
+        if left_out:
+            print(f"left out ({len(left_out)} temp-named file(s), assumed a writer's scratch): "
+                  + ", ".join(left_out[:5]) + (" ..." if len(left_out) > 5 else ""))
+        print(f"warning: {backup.WARNING}")
+        return 0
 
 
 def _restore_cron(job: dict | None) -> list[str]:
