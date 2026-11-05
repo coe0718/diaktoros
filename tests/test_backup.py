@@ -876,5 +876,106 @@ class InterruptedKeepsThePause(Base):
         self.assertIsNone(migrate.migrating())
 
 
+class Verify(Base):
+    """``backup --verify FILE`` (#1078): an archive is read back, not only written."""
+
+    def rebuilt(self, replace=None, drop=()):
+        """A copy of a good archive with some members' bytes replaced or removed."""
+        good = self.root / "good.tar.gz"
+        self.run_cmd(cli.cmd_backup, out=str(good))
+        bad = self.root / "bad.tar.gz"
+        with tarfile.open(good, "r:gz") as src, tarfile.open(bad, "w:gz") as dst:
+            for member in src.getmembers():
+                if member.name in drop:
+                    continue
+                data = (replace or {}).get(member.name)
+                if data is None:
+                    dst.addfile(member, src.extractfile(member))
+                else:
+                    member.size = len(data)
+                    dst.addfile(member, io.BytesIO(data))
+        return bad
+
+    def ledger_member(self):
+        good = self.root / "probe.tar.gz"
+        self.run_cmd(cli.cmd_backup, out=str(good))
+        entries = backup.read_manifest(good)["files"]
+        return next(e["member"] for e in entries if e["kind"] == "ledger")
+
+    def verify(self, archive):
+        return self.run_cmd(cli.cmd_backup, out=None, verify=str(archive))
+
+    def test_a_good_archive_verifies_and_nothing_is_written(self):
+        good = self.root / "good.tar.gz"
+        self.run_cmd(cli.cmd_backup, out=str(good))
+        before = sorted(str(p) for p in self.root.rglob("*"))
+        code, text = self.verify(good)
+        self.assertEqual(code, 0, text)
+        self.assertIn("backup verify: ok", text)
+        self.assertEqual(sorted(str(p) for p in self.root.rglob("*")), before)
+        self.assertNotIn(SECRET, text)
+
+    def test_a_ledger_snapshot_that_is_not_sqlite_fails_verify(self):
+        bad = self.rebuilt({self.ledger_member(): b"this is not a database" * 50})
+        code, text = self.verify(bad)
+        self.assertEqual(code, 2, text)
+        self.assertIn("does not open as SQLite", text)
+
+    def test_an_empty_ledger_snapshot_fails_verify(self):
+        bad = self.rebuilt({self.ledger_member(): b""})
+        code, text = self.verify(bad)
+        self.assertEqual(code, 2, text)
+        self.assertIn("ledger snapshot is empty", text)
+
+    def test_a_ledger_snapshot_failing_the_integrity_check_fails_verify(self):
+        with mock.patch.object(backup.sqlite3, "connect") as connect:
+            connect.return_value.execute.return_value = [("row 1 missing from index x",)]
+            why = backup._ledger_problem(self.db)
+        self.assertIn("integrity check", why)
+
+    def test_a_member_the_manifest_names_but_the_archive_lacks_fails_verify(self):
+        bad = self.rebuilt(drop=(self.ledger_member(),))
+        code, text = self.verify(bad)
+        self.assertEqual(code, 2, text)
+        self.assertIn("is missing", text)
+
+    def test_a_truncated_archive_fails_verify(self):
+        good = self.root / "good.tar.gz"
+        self.run_cmd(cli.cmd_backup, out=str(good))
+        cut = self.root / "cut.tar.gz"
+        cut.write_bytes(good.read_bytes()[:len(good.read_bytes()) // 2])
+        code, text = self.verify(cut)
+        self.assertEqual(code, 2, text)
+        self.assertIn("FAILED", text)
+
+    def test_a_corrupt_member_stream_fails_verify_even_when_the_manifest_reads(self):
+        archive = self.root / "good.tar.gz"
+        self.run_cmd(cli.cmd_backup, out=str(archive))
+        with mock.patch.object(backup.shutil, "copyfileobj", side_effect=EOFError("eof")):
+            read, problems = backup.verify(archive)
+        self.assertTrue(any("cannot be read to its end" in p for p in problems), problems)
+
+    def test_restore_dry_run_reads_the_ledger_back_too(self):
+        bad = self.rebuilt({self.ledger_member(): b"this is not a database" * 50})
+        code, text = self.run_cmd(cli.cmd_restore, file=str(bad), dry_run=True, force=False)
+        self.assertEqual(code, 2, text)
+        self.assertIn("NOT RESTORABLE", text)
+        self.assertIn("does not open as SQLite", text)
+
+    def test_verify_takes_no_out(self):
+        good = self.root / "good.tar.gz"
+        self.run_cmd(cli.cmd_backup, out=str(good))
+        code, text = self.run_cmd(cli.cmd_backup, out=str(self.root / "x.tar.gz"),
+                                  verify=str(good))
+        self.assertEqual(code, 2, text)
+        self.assertFalse((self.root / "x.tar.gz").exists())
+
+    def test_verify_is_a_flag_of_the_backup_verb(self):
+        parser = argparse.ArgumentParser()
+        cli_lifecycle.add_backup(parser.add_subparsers())
+        args = parser.parse_args(["backup", "--verify", "a.tar.gz"])
+        self.assertEqual(args.verify, "a.tar.gz")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -22,10 +22,12 @@ import json
 import os
 import pathlib
 import shlex
+import shutil
 import sqlite3
 import tarfile
 import tempfile
 import time
+import zlib
 
 from .ledger import read_only
 from .config import credentials
@@ -232,7 +234,7 @@ def read_manifest(archive: pathlib.Path) -> dict:
         with tarfile.open(archive, "r:gz") as tar:
             member = tar.getmember(MANIFEST)
             manifest = json.load(tar.extractfile(member))
-    except (OSError, KeyError, ValueError, tarfile.TarError) as exc:
+    except (OSError, EOFError, KeyError, ValueError, tarfile.TarError, zlib.error) as exc:
         raise BackupError(f"{archive} is not a diaktoros backup ({type(exc).__name__}: {exc})")
     if not isinstance(manifest, dict) or manifest.get("version") != VERSION \
             or not isinstance(manifest.get("files"), list):
@@ -244,6 +246,63 @@ def read_manifest(archive: pathlib.Path) -> dict:
                 or ".." in pathlib.PurePath(entry["path"]).parts:
             raise BackupError(f"{archive}: manifest names an unsafe path")
     return manifest
+
+
+def _ledger_problem(path: pathlib.Path) -> str | None:
+    """Why the extracted ledger snapshot at ``path`` is not a usable SQLite database, or None.
+
+    Opened on the caller's private scratch copy, never on the archive or the live ledger."""
+    if path.stat().st_size == 0:
+        return "the ledger snapshot is empty"
+    try:
+        con = sqlite3.connect(path)
+        try:
+            rows = [row[0] for row in con.execute("PRAGMA integrity_check")]
+        finally:
+            con.close()
+    except sqlite3.Error as exc:
+        return f"the ledger snapshot does not open as SQLite ({type(exc).__name__}: {exc})"
+    if rows == ["ok"]:
+        return None
+    return "the ledger snapshot fails SQLite's integrity check: " + "; ".join(rows[:3])
+
+
+def verify(archive: pathlib.Path) -> tuple[int, list[str]]:
+    """Read a backup back as a restore would, writing nothing outside a temp directory (#1078).
+
+    Re-reads the manifest (``read_manifest``), reads every member the manifest names to its end
+    (a corrupt gzip or a truncated tar fails here) and opens each ledger snapshot with SQLite's
+    integrity check. Returns ``(members read, problems)``; no problems means the archive is
+    restorable as far as its bytes go. Whether it is *safe* to restore here is ``unsafe``'s
+    question, which ``restore --dry-run`` asks too. A manifest that does not read raises
+    ``BackupError``."""
+    manifest = read_manifest(archive)
+    problems: list[str] = []
+    read = 0
+    try:
+        with tarfile.open(archive, "r:gz") as tar, tempfile.TemporaryDirectory() as scratch:
+            for index, entry in enumerate(manifest["files"]):
+                try:
+                    member = tar.getmember(entry["member"])
+                except KeyError:
+                    problems.append(f"{entry['path']}: member {entry['member']} is missing")
+                    continue
+                if not member.isfile():
+                    problems.append(f"{entry['path']}: {entry['member']} is not a regular file")
+                    continue
+                copy = pathlib.Path(scratch) / str(index)
+                with open(copy, "wb") as out:
+                    shutil.copyfileobj(tar.extractfile(member), out)
+                read += 1
+                if copy.stat().st_size != member.size:
+                    problems.append(f"{entry['path']}: {entry['member']} is truncated")
+                elif entry.get("kind") == "ledger":
+                    why = _ledger_problem(copy)
+                    if why:
+                        problems.append(f"{entry['path']}: {why}")
+    except (OSError, EOFError, tarfile.TarError, zlib.error) as exc:
+        problems.append(f"the archive cannot be read to its end ({type(exc).__name__}: {exc})")
+    return read, problems
 
 
 def outside_state_dirs(manifest: dict) -> list[str]:
