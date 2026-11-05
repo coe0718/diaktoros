@@ -20,7 +20,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import explain, gate, run_supervisor, state as state_mod  # noqa: E402
+from diaktoros import explain, gate, run_supervisor, stale_approval, state as state_mod  # noqa: E402
 from diaktoros import watch_mode  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 
@@ -99,6 +99,29 @@ class Trigger(Base):
                 breach.assert_not_called()
         self.shadow("APPROVE")                                # the newest shadow review agrees
         self.assertEqual(self.escalate()[0], "shadow agrees")
+
+    def flag_stale(self, head=fg.HEAD):
+        """The watchdog's #473 finding, as ``stale_approval.sweep`` leaves it in the watch file."""
+        watch = self.st.watch()
+        watch[stale_approval.KEY] = {"7": {"head": head, "why": "tests is red", "at": time.time()}}
+        self.st.watch_save(watch)
+
+    def test_a_stale_approval_sends_nothing(self):
+        # #1117: ``ready`` and ``explain`` deny an approval a stale check no longer backs, and
+        # the ruling prompt calls the head approved: the same test decides it here.
+        self.shadow("REQUEST_CHANGES")
+        self.flag_stale()
+        self.assertTrue(stale_approval.is_stale(self.st.watch(), 7, fg.HEAD))
+        outcome, breach = self.escalate()
+        self.assertEqual(outcome, "not approved")
+        breach.assert_not_called()
+
+    def test_a_stale_approval_at_another_head_does_not_hold_this_one(self):
+        self.shadow("REQUEST_CHANGES")
+        self.flag_stale(head="b" * 40)
+        outcome, breach = self.escalate()
+        self.assertEqual(outcome, "new")
+        breach.assert_called_once()
 
 
 class Hold(Base):
@@ -521,6 +544,23 @@ class CallSites(Base):
             self.sweep()                                      # first sweep: snapshot only
             self.sweep()
         self.assertIn((7, fg.HEAD), calls)
+
+    def test_the_sweep_sends_a_stale_approval_nowhere(self):
+        # #1117, through the enforcing entry point: the sweep reads the finding the last sweep
+        # left in the watch file. The same sweep sends the head when the approval stands.
+        self.shadow("REQUEST_CHANGES")
+        with mock.patch.object(gate, "breach", return_value="new") as breach:
+            self.sweep()                                      # first sweep: snapshot only
+            self.sweep()
+            self.assertIn((7, fg.HEAD), [c.args[2:4] for c in breach.call_args_list])
+            breach.reset_mock()
+            self.st.breach.unlink(missing_ok=True)
+            watch = self.st.watch()
+            watch[stale_approval.KEY] = {"7": {"head": fg.HEAD, "why": "tests is red", "at": 1.0}}
+            self.st.watch_save(watch)
+            with mock.patch.object(stale_approval, "sweep"):  # keep the finding for this sweep
+                self.sweep()
+            breach.assert_not_called()
 
     def test_the_shadows_finish_checks_once_its_review_is_recorded(self):
         import test_shadow as ts
