@@ -72,6 +72,22 @@ class RunScope:
     # push needs no changes-requested review (the head is approved) but that ruling, still current
     # at the head; its review request needs none. None: not such a turn. Host-built.
     shadow_fix: float | None = None
+    # The run's own turn key (the ledger row's, '' for an ordinary turn). A shadow review is judged
+    # on the findings snapshot kept for its reviewer turn (#1139), so the broker reads that one,
+    # never another turn's at the same PR and head. Host-built, like every field here.
+    turn_key: str = ""
+    # A shadow review's turn (the ledger row's seat; its role is the reviewer's). With no findings
+    # snapshot of its own, its verdict is refused, not judged on the live ledger (#1139). False
+    # for another no-write broker (selftest, the corpus), which keeps the live ledger. Host-built.
+    shadow: bool = False
+
+
+# A shadow review whose findings snapshot is gone: the live ledger holds what the real review
+# recorded since, so judging it there could pass an approval its own snapshot forbids (#1139).
+SHADOW_SNAPSHOT_REFUSAL = (
+    "the host no longer holds the findings snapshot this shadow review was queued with (evicted, "
+    "or kept before snapshots were per reviewer turn), so no verdict of it can be judged; nothing "
+    "was recorded and resubmitting cannot change that: end the turn")
 
 
 # What a reviewer that could not see the whole change reads when it tries to approve (#93, #110).
@@ -433,6 +449,20 @@ class RunBroker(broker_issues.IssueWrites):
             raise
         return result
 
+    def _findings_entry(self, st) -> dict | None:
+        """The findings ledger a review is judged on. A shadow (#218) is judged on the snapshot
+        its prompt was built from: the real review of the same head may have recorded findings
+        meanwhile, which it never saw (on #1005 they turned its approval into a forced block). A
+        shadow with no snapshot of its own is refused, never judged on the live ledger (#1139);
+        another no-write broker (selftest, the corpus) has none and keeps the live one."""
+        entry = st.findings_get(self.scope.number)
+        if not self._no_write:
+            return entry
+        snapshot = st.shadow_findings_get(self.scope.number, self.scope.head, self.scope.turn_key)
+        if snapshot is None and self.scope.shadow:
+            raise ProtocolError(SHADOW_SNAPSHOT_REFUSAL)
+        return entry if snapshot is None else snapshot
+
     def _dispatch(self, raw: bytes) -> object:
         self.requests += 1
         request = json.loads(raw)
@@ -593,14 +623,7 @@ class RunBroker(broker_issues.IssueWrites):
             # Numbered findings (#475): every open one accounted for, new ones on changed code.
             # Before the capability is consumed, so the reviewer can resubmit in the same turn.
             from . import findings, state as state_mod
-            st = state_mod.state_for(self._loop)
-            entry = st.findings_get(self.scope.number)
-            if self._no_write:
-                # A shadow (#218) is judged on the ledger its prompt was built from: the real
-                # review of the same head may have recorded findings meanwhile, which it never
-                # saw (on #1005 they turned its approval into a forced block).
-                snapshot = st.shadow_findings_get(self.scope.number, self.scope.head)
-                entry = entry if snapshot is None else snapshot
+            entry = self._findings_entry(state_mod.state_for(self._loop))
             reason = findings.check(self._loop, entry, self.scope.number, self.scope.head, body,
                                     verdict)
             if reason:
