@@ -478,7 +478,12 @@ review holds the PR*, or the loop file.
 **The ruling.** With an adjudicator configured, a head where the reviewer **approved** and the
 shadow review **requested changes** is sent to the adjudicator once. The shadow's own finish
 sends it, and the watchdog sweep does too if the shadow finished before the reviewer. The ruling
-prompt says the head is approved and includes the shadow review as host-recorded data.
+prompt says the head is approved and includes the shadow review as host-recorded data. An
+approval a stale check no longer backs (#473, `stale_approval`: a required check at the head went
+red, was cancelled or never reported) sends nothing (#1117): `ready` and `explain` already deny it,
+and the prompt would call the head approved. The check reads the finding the previous watchdog
+sweep left, so a head can go for a ruling in the one sweep before the finding lands. The head goes
+once the finding clears (the check is green again).
 - **ACCEPT** overrules it: the hold lifts, and `ready` and `explain` treat the approval as standing.
 - **REJECT** upholds it (#1004 part 3). The hold stays, and the shadow's findings go to the fixer as a
   turn of their own (`shadow:<ruling time>`), as a changes-requested verdict would. Its prompt

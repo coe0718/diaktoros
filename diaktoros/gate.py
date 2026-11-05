@@ -31,7 +31,7 @@ import subprocess
 import sys
 import time
 
-from . import config, gh, isolation, observer, state as state_mod
+from . import config, gh, isolation, observer, stale_approval, state as state_mod
 from .util import log, now_iso, silence
 from . import envnames
 
@@ -498,12 +498,39 @@ def shadow_overruled(loop: dict, marker, head: str, db=None) -> bool:
     return not held and "overruled the shadow review" in _note
 
 
+def _shadow_review_and_ruling(loop: dict, number: int, head: str, marker, db=None):
+    """``(newest shadow review row, ruling on the marker's round)`` at a head, from the run
+    ledger; the ruling is None unless the marker is this head's shadow escalation, or none is in
+    yet. None when the ledger cannot be read."""
+    import sqlite3
+    from . import run_supervisor
+    mine = (isinstance(marker, dict) and marker.get("head") == head
+            and (marker.get("escalated") or {}).get("by") == SHADOW_ESCALATION)
+    try:
+        con = run_supervisor.views.read_only_connect(db or run_supervisor.production_ledger())
+        if con is None:
+            return None
+        try:
+            row = _latest_shadow_review(con, loop["repo"], number, head)
+            # The ruling on this marker's round, if it is in.
+            ruled = next(iter(_rulings_at(con, loop["repo"], number, head,
+                                          f"breach:{marker.get('rounds')}")), None) if mine else None
+        finally:
+            con.close()
+    except (sqlite3.Error, OSError):
+        return None
+    return row, ruled
+
+
 def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) -> str:
     """Send a head for a ruling when the shadow review disagrees with the reviewer's approval
     (#1004 part 2): ``shadow.escalate`` on, the reviewer's effective verdict at the head
-    APPROVED, and the newest shadow review there REQUEST_CHANGES. Once per shadow review: the
-    breach marker dedups, and a dissent newer than the head's ruling goes as the next round
-    (#1111). ``gate.breach``'s outcome, or why nothing was sent."""
+    APPROVED and that approval not stale (#473: a required check at the head has since gone
+    red, cancelled or missing, the finding ``ready`` and ``explain`` deny the approval by), and
+    the newest shadow review there REQUEST_CHANGES. A stale approval is "not approved": the
+    ruling prompt says the reviewer approved the head, which it no longer vouches for. Once per
+    shadow review: the breach marker dedups, and a dissent newer than the head's ruling goes as
+    the next round (#1111). ``gate.breach``'s outcome, or why nothing was sent."""
     if not config.shadow_escalate(loop):
         return "off"
     if not loop.get("adjudicator", {}).get("route"):
@@ -513,24 +540,13 @@ def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) 
     latest = latest_effective_review_at_head(reviews, loop, head)
     if latest is None or gh.review_state(latest) != "APPROVED":
         return "not approved"
-    import sqlite3
-    from . import run_supervisor
+    if stale_approval.is_stale(st.watch(), number, head):
+        return "not approved"             # the one test ``ready`` and ``explain`` apply
     marker = st.breach_get(number)
-    mine = (isinstance(marker, dict) and marker.get("head") == head
-            and (marker.get("escalated") or {}).get("by") == SHADOW_ESCALATION)
-    try:
-        con = run_supervisor.views.read_only_connect(db or run_supervisor.production_ledger())
-        if con is None:
-            return "ledger unreadable"
-        try:
-            row = _latest_shadow_review(con, loop["repo"], number, head)
-            # The ruling on this marker's round, if it is in.
-            ruled = next(iter(_rulings_at(con, loop["repo"], number, head,
-                                          f"breach:{marker.get('rounds')}")), None) if mine else None
-        finally:
-            con.close()
-    except (sqlite3.Error, OSError):
+    read = _shadow_review_and_ruling(loop, number, head, marker, db)
+    if read is None:
         return "ledger unreadable"
+    row, ruled = read
     if row is None or str(row[0]) != "REQUEST_CHANGES":
         return "shadow agrees"
     if ruled is not None and not ruling_answers(ruled, row[2], row[1]):
