@@ -827,12 +827,42 @@ class Restore(Base):
         self.assertIn(notice, text)
         self.assertNotIn("token file missing", text)
         self.assertEqual(code, 1)
-        # The notice comes after the write, not before it (what ``backup.token_paths`` says):
-        # the archive was restored in full, only the key is left for the operator to put back.
+        # The check runs before the write but only reports: the archive was restored in full and
+        # the notice is printed afterwards, so only the key is left for the operator to put back.
         self.assertEqual(self.ledger_count(), 298)
         self.assertEqual(config.all_loops()[0]["apps"]["acme-reader[bot]"]["key_file"], str(key))
         code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=True, force=False)
         self.assertIn(notice, text)
+
+    def test_restore_checks_credential_files_before_writing_but_never_refuses_on_them(self):
+        """What ``backup.token_paths`` says: ``missing_tokens`` runs before ``put_files`` and finds
+        the missing key, ``unsafe`` does not read the manifest's tokens, and the write goes ahead."""
+        key = self.app_loop()
+        out = self.take()
+        self.wipe()
+        key.unlink()
+        manifest = backup.read_manifest(out)
+        self.assertEqual(manifest["tokens"], {"one": {"acme-reader[bot]": str(key)}})
+        self.assertEqual(backup.unsafe(manifest, allowed_state_dirs=(), archive=out), [])
+        calls = []
+        real_missing, real_put = backup.missing_tokens, backup.put_files
+        def missing(man):
+            found = real_missing(man)
+            calls.append(("missing_tokens", len(found)))
+            return found
+        def put(*args, **kw):
+            calls.append(("put_files", None))
+            return real_put(*args, **kw)
+        with mock.patch.object(backup, "missing_tokens", missing), \
+                mock.patch.object(backup, "put_files", put):
+            code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=False)
+        self.assertEqual(calls, [("missing_tokens", 1), ("put_files", None)])
+        self.assertEqual(code, 1)
+        self.assertNotIn("REFUSED", text)
+        self.assertEqual(self.ledger_count(), 298)
+        doc = " ".join(backup.token_paths.__doc__.split())    # the docstring says the same (#1204)
+        self.assertIn("does check them before it writes", doc)
+        self.assertNotIn("does not check them", doc)
 
     def test_a_foreign_archive_or_path_traversal_is_refused(self):
         bad = self.root / "bad.tar.gz"
