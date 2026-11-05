@@ -333,8 +333,7 @@ def _identity_refusal(args, loop: dict, updated: dict) -> bool:
         print(f"settings refused: {updated['id']}: read_token {reader!r} has no entry in "
               "'tokens' or 'apps' — the gates read GitHub as that login and have no credential "
               "to read it with")
-        print(f"fix: hermes dk set --loop {updated['id']} --read-token {reader} "
-              f"--token {reader}=/path/to/pat")
+        print(f"fix: {credentials.reader_fix(updated, reader)}")
         return True
     return False
 

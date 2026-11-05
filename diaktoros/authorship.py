@@ -18,8 +18,15 @@ import json
 
 from . import config, gh
 
-# Open PRs one doctor run reads the commits of (one read per PR): bounded, and said when cut.
+# Open PRs one doctor run reads the commits of (one read per 100 commits): bounded, and said
+# when cut.
 PRS_MAX = 30
+# GitHub reads of PR commit pages one doctor run may spend across those PRs (#1338). A PR under
+# 100 commits is one read, so 30 ordinary PRs fit; a PR near GitHub's 250-commit listing is three,
+# and an unreadable one is counted at its bound (``gh.MAX_PR_COMMIT_PAGES`` + the probe page), as
+# how many pages it read is not known. No PR is started once this is spent, so a run reads at most
+# ``READS_MAX - 1 + gh.MAX_PR_COMMIT_PAGES + 1`` commit pages; the open PRs left unread are said.
+READS_MAX = 40
 
 
 def pushed_heads(loop: dict) -> tuple[set[str], str]:
@@ -66,14 +73,30 @@ def misattributed(loop: dict, commits: list, pushed: set[str]) -> list[dict]:
 def scan(loop: dict, number: int, pushed: set[str] | None = None) -> tuple[list[dict], str]:
     """``(misattributed commits, error)`` for one PR. An unread commit list or journal is an
     error, never "none"."""
+    stray, error, _reads = scan_reads(loop, number, pushed)
+    return stray, error
+
+
+def scan_reads(loop: dict, number: int,
+               pushed: set[str] | None = None) -> tuple[list[dict], str, int]:
+    """``scan``, with the commit-page reads it spent (``commit_reads``), for ``READS_MAX``."""
     if pushed is None:
         pushed, error = pushed_heads(loop)
         if error:
-            return [], f"push journal unreadable ({error})"
+            return [], f"push journal unreadable ({error})", 0
     commits, error = gh.pr_commits_read(loop, number)
     if commits is None:
-        return [], f"commits unreadable ({error})"
-    return misattributed(loop, commits, pushed), ""
+        return [], f"commits unreadable ({error})", commit_reads(None)
+    return misattributed(loop, commits, pushed), "", commit_reads(commits)
+
+
+def commit_reads(commits: list | None) -> int:
+    """The pages ``gh.pr_commits_read`` read for a listing of ``commits``: a short page ends it,
+    and a listing of whole pages took one more (empty) page to prove it ended. ``None`` (not
+    read) counts as the bound plus the probe: how far it got is not known."""
+    if commits is None:
+        return gh.MAX_PR_COMMIT_PAGES + 1
+    return len(commits) // gh.REVIEW_PAGE_SIZE + 1
 
 
 def line(entry: dict) -> str:

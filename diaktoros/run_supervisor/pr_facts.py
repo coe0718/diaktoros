@@ -105,12 +105,12 @@ def _clip(text: object, limit: int) -> str:
 def pr_record(loop: dict, row, reviews, comments=None) -> str:
     """The reviewer verdicts and the fixer's published answers, as the host read them.
 
-    Answers are only the comments ``broker.parse_answers_comment`` recognizes (the fixer seat's
+    Answers are only the comments ``fixer_answers.parse_answers_comment`` recognizes (the fixer seat's
     own login *and* the host's marker), and only those answering a verdict in ``reviews`` — so a
     retargeted PR's fresh record does not inherit answers to verdicts it no longer counts, and a
     human's comment is never presented as the fixer's side.
     """
-    from .. import attribution, broker, gate, gh
+    from .. import attribution, broker, fixer_answers, gate, gh
     items = []
     answered = set()
     for review in reviews if isinstance(reviews, list) else []:
@@ -124,11 +124,14 @@ def pr_record(loop: dict, row, reviews, comments=None) -> str:
                               f"({review.get('submitted_at') or 'undated'})",
                               attribution.unsign(review.get('body'))))
     for comment in comments if isinstance(comments, list) else []:
-        found = broker.parse_answers_comment(comment, loop)
+        found = fixer_answers.parse_answers_comment(comment, loop)
         if found and found['base'] in answered:
+            what = (f"fixer's merge of the base into {found['base'][:12]} (a merge only: it "
+                    "answers no finding)" if found['merge'] else
+                    f"fixer's answers to the verdict at {found['base'][:12]}")     # #1907
             items.append((found['created_at'],
-                          f"fixer's answers to the verdict at {found['base'][:12]}, pushed as "
-                          f"{found['head'][:12]} ({found['created_at'] or 'undated'}; the fixer "
+                          f"{what}, pushed as {found['head'][:12]} "
+                          f"({found['created_at'] or 'undated'}; the fixer "
                           "model's own words, published through the broker)",
                           attribution.unsign(found['body'])))
     items.sort(key=lambda item: item[0])

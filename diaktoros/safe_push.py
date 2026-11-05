@@ -336,9 +336,17 @@ def _isolated(loop: dict, login: str, identity: dict, remote: str | None):
             token_file = root / "token"
             fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
-                os.write(fd, gh.token(loop, login).encode())
-            except gh.GitHubError as exc:
-                raise broker.BrokerDenied(f"fixer credential unavailable: {exc}") from None
+                try:
+                    minted = gh.token(loop, login).encode()
+                except gh.GitHubError as exc:
+                    raise broker.BrokerDenied(f"fixer credential unavailable: {exc}") from None
+                try:
+                    util.write_all(fd, minted)
+                except OSError:
+                    # A write that stops short leaves a partial token in the file: name it here
+                    # rather than let git fail later with an opaque authentication error.
+                    raise broker.BrokerDenied("fixer credential unavailable: "
+                                              "the minted token could not be written") from None
             finally:
                 os.close(fd)
         env = {"PATH": "/usr/bin:/bin", "HOME": temp, "XDG_CONFIG_HOME": temp,
@@ -662,8 +670,7 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
         broker.authorize(loop, repo=repo, number=number, head=head,
                          role=role, branch=branch, operation="push", require_verdict=verdict)
         check_ref()
-        if scope_check:                      # #482: the paths are known here, diff or whole files
-            scope_lock.check(loop, number, head, receipt["paths"])
+        _write_checks(loop, number, head, merge, receipt["paths"] if scope_check else None)
         attempt_started = True
         _audit(loop, {**receipt, "new_head": created, "phase": "attempt"})
         new_head = created
@@ -745,6 +752,23 @@ def _before_attempt(loop: dict, *, repo: str, number: int, head: str, role: str,
                      role=role, branch=branch, operation="push", require_verdict=verdict)
     check_ref()
     return files, patch, verdict, login, ref_path, check_ref, identity
+
+
+def _write_checks(loop: dict, number: int, head: str, merge: dict | None,
+                  paths: list | None) -> None:
+    """Right before the ref mutation, beside the PR's identity: the scope lock (#482, ``paths``
+    known here, diff or whole files; None when it is off), and for a merge of the base, no
+    change request the fixer owes an answer (#1907): it may have landed during the conflict
+    turn, after its claim and launch checks."""
+    if paths is not None:
+        scope_lock.check(loop, number, head, paths)
+    if merge is None:
+        return
+    from . import state as state_mod, watch_conflicts
+    owed = watch_conflicts.fix_owed(loop, state_mod.state_for(loop), number, head)
+    if owed:
+        raise broker.BrokerDenied(f"a merge waits for the fixer here: {owed} (#1907); nothing "
+                                  "was pushed, do not retry")
 
 
 def _pr_follows(loop: dict, repo: str, number: int, new_head: str, role: str, branch: str,

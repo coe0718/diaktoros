@@ -1,11 +1,13 @@
 """#757: ``operator_agents`` (logins that post as the operator, named apart from the operator) and
 the authorship check (a commit that shows as a seat's account but that no seat turn pushed).
+The behaviour of code that existed before ``authorship`` (an agent's comment and hold, what
+``cmd_explain`` prints) is tested in ``test_operator_agents_explain.py``, which imports only that
+code, so a fail-then-pass proof can run it on a head without this module (#1339).
 GitHub is mocked; nothing real is touched."""
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import contextlib
-import io
 import json
 import sys
 import unittest
@@ -14,8 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import authorship, config, doctor, explain, gate, gh, issue_facts, pr_hold  # noqa: E402
-from diaktoros.cli import operations  # noqa: E402
+from diaktoros import authorship, config, doctor, explain, gate, gh, pr_hold  # noqa: E402
 
 STRAY = "c" * 40          # authored as the fixer's account; no seat turn pushed it
 PUSHED = "d" * 40         # authored as the fixer's account; the fixer's turn pushed it
@@ -58,53 +59,6 @@ class OperatorAgentsConfig(fg.Base):
         self.assertEqual(config.maintainers(loop), {"docs-bot"})
         self.assertEqual(config.maintainer_kind(loop, "Docs-Bot"), "operator agent")
         self.assertEqual(config.maintainer_kind(loop, "boss"), "maintainer")
-
-
-class AgentComments(fg.Base):
-    """The comment's route to the seats, and the label on it."""
-
-    def comments(self, loop, number):
-        return [{"user": {"login": "Docs-Bot"}, "body": "AGENT-SAYS", "created_at": "t"},
-                {"user": {"login": "boss"}, "body": "BOSS-SAYS", "created_at": "t"},
-                {"user": {"login": "stranger"}, "body": "STRANGER-SAYS", "created_at": "t"}], ""
-
-    def loop_with(self, agents):
-        loop = config.normalize({**fg.raw_loop(False), "state_dir": str(self.root / "state"),
-                                 "operator_agents": agents})
-        loop["triage"] = {"maintainers": ["boss"]}      # as test_issue_facts: no triage seat needed
-        return loop
-
-    def test_an_agents_comment_reaches_the_seats_labelled_and_a_strangers_does_not(self):
-        loop = self.loop_with(["docs-bot"])
-        with mock.patch.object(gh, "issue_comments_read", side_effect=self.comments):
-            text = issue_facts.comments_section(loop, 5)
-        self.assertIn("AGENT-SAYS", text)
-        self.assertIn("### docs-bot (operator agent, t)", text)
-        self.assertIn("### boss (t)", text)               # the person is not labelled an agent
-        self.assertNotIn("STRANGER-SAYS", text)
-
-    def test_without_the_setting_the_agents_comment_is_left_out(self):
-        loop = self.loop_with([])
-        with mock.patch.object(gh, "issue_comments_read", side_effect=self.comments):
-            text = issue_facts.comments_section(loop, 5)
-        self.assertNotIn("AGENT-SAYS", text)
-        self.assertNotIn("operator agent", text)
-
-    def test_an_agents_hold_counts_and_explain_names_it(self):
-        loop = self.loop_with(["docs-bot"])
-        events = [{"event": "labeled", "actor": {"login": "docs-bot"},
-                   "label": {"name": pr_hold.LABEL}, "created_at": "2026-01-01T00:00:00Z"}]
-        hold = pr_hold.decide(loop, 7, events, [])
-        self.assertEqual(hold["by"], "docs-bot")
-        facts = {"pr": fg.LIVE, "reviews": [], "armed": True, "read_at": 0, "hold": hold}
-        report = explain.explain(loop, state_for(loop), 7, facts)
-        self.assertTrue(any("held by docs-bot (operator agent)" in b for b in report["blockers"]))
-        self.assertEqual(report["operator_agents"], ["docs-bot"])
-
-
-def state_for(loop):
-    from diaktoros import state as state_mod
-    return state_mod.state_for(loop)
 
 
 class Authorship(fg.Base):
@@ -156,20 +110,6 @@ class Authorship(fg.Base):
         self.assertIn("misattributed", report["authorship"][0])
         self.assertFalse(any(STRAY[:7] in b for b in report["blockers"]))      # never a blocker
 
-    def test_cmd_explain_prints_the_authorship_line(self):
-        report = self.explain_report()
-        args = mock.Mock(loop="one", pr=7)
-        out = io.StringIO()
-        with mock.patch.object(explain, "explain", return_value=report), \
-             mock.patch.object(explain, "explain_facts", return_value={}), \
-             mock.patch.object(operations, "_print_ledger_runs", return_value=[]), \
-             mock.patch.object(operations, "_print_shadows"), \
-             mock.patch.object(operations, "_view_lines", return_value=[]), \
-             mock.patch.object(operations, "_dependency_lines", return_value=[]), \
-             contextlib.redirect_stdout(out):
-            operations.cmd_explain(args)
-        self.assertRegex(out.getvalue(), r"authorship:\s+misattributed: commit " + STRAY[:7])
-
     def test_an_unreadable_commit_list_is_said_not_taken_as_clean(self):
         with mock.patch.object(gh, "pr_commits_read", return_value=(None, "HTTP 502")):
             found, error = authorship.scan(self.loop, 7, set())
@@ -192,6 +132,67 @@ class Authorship(fg.Base):
     def test_doctor_is_clean_when_every_seat_commit_was_pushed(self):
         self.journal(self.push_record(PUSHED), self.push_record(STRAY))
         self.assertEqual(self.doctor_check().status, doctor.VERIFIED)
+
+    def test_doctor_stops_reading_commit_pages_at_the_read_budget(self):
+        """#1338: 30 open PRs of 300 commits each are 4 commit-page reads apiece (3 full pages
+        and the empty page that proves the end); doctor stops starting PRs at ``READS_MAX``."""
+        self.journal(self.push_record(PUSHED))
+        reads = []
+
+        def fetch(loop, path, *args, **kwargs):
+            reads.append(path)
+            page = int(path.rsplit("&page=", 1)[1]) if "&page=" in path else 1
+            return ([commit(f"{page:02d}{i:038d}", "someone") for i in range(100)]
+                    if page <= 3 else []), ""
+        with mock.patch.object(gh, "open_prs_read",
+                               return_value=([{"number": n} for n in range(1, 31)], "")), \
+             mock.patch.object(gh, "fetch", side_effect=fetch):
+            check = doctor.check_authorship(self.loop)
+        self.assertLessEqual(len(reads), authorship.READS_MAX)
+        self.assertEqual(len(reads), 40)
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn("only the first 10 of 30 open PRs were read", check.detail)
+        self.assertIn(f"budget of {authorship.READS_MAX} commit-page reads", check.detail)
+
+    def budget_check(self, first_page):
+        """doctor over 30 open PRs of 300 commits each; ``first_page(n)`` is PR n's first commit
+        page (a list, ``None`` for an unreadable page, or ``False`` for the default page)."""
+        self.journal(self.push_record(PUSHED))
+
+        def fetch(loop, path, *args, **kwargs):
+            number = int(path.split("/pulls/", 1)[1].split("/", 1)[0])
+            page = int(path.rsplit("&page=", 1)[1]) if "&page=" in path else 1
+            override = first_page(number) if page == 1 else False
+            if override is not False:
+                return (None, "HTTP 502") if override is None else (override, "")
+            return ([commit(f"{page:02d}{i:038d}", "someone") for i in range(100)]
+                    if page <= 3 else []), ""
+        with mock.patch.object(gh, "open_prs_read",
+                               return_value=([{"number": n} for n in range(1, 31)], "")), \
+             mock.patch.object(gh, "fetch", side_effect=fetch):
+            return doctor.check_authorship(self.loop)
+
+    def test_doctor_says_the_budget_cut_alongside_a_misattributed_commit(self):
+        """F1 (PR #1932): a finding must not hide that 20 of the 30 open PRs were never read."""
+        stray = [commit(STRAY, "fixer")] + [commit(f"01{i:038d}", "someone") for i in range(99)]
+        check = self.budget_check(lambda n: stray if n == 1 else False)
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn(f"#1 commit {STRAY[:7]}", check.detail)
+        self.assertIn("only the first 10 of 30 open PRs were read", check.detail)
+        self.assertIn(f"budget of {authorship.READS_MAX} commit-page reads", check.detail)
+
+    def test_doctor_says_the_budget_cut_alongside_an_unreadable_pr(self):
+        """F1 (PR #1932): an unreadable PR must not hide that later open PRs were never read."""
+        check = self.budget_check(lambda n: None if n == 1 else False)
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn("#1: commits unreadable", check.detail)
+        self.assertIn("only the first 10 of 30 open PRs were read", check.detail)
+        self.assertIn(f"budget of {authorship.READS_MAX} commit-page reads", check.detail)
+
+    def test_commit_reads_counts_the_pages_pr_commits_read_reads(self):
+        for count, pages in ((0, 1), (99, 1), (100, 2), (250, 3), (500, 6)):
+            self.assertEqual(authorship.commit_reads([{}] * count), pages)
+        self.assertEqual(authorship.commit_reads(None), gh.MAX_PR_COMMIT_PAGES + 1)
 
     def test_doctor_names_the_operator_agents(self):
         loop = config.normalize({**fg.raw_loop(False), "state_dir": str(self.root / "state"),

@@ -145,7 +145,9 @@ def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None)
     if not config.merge_check_on(loop):
         return 0
     import time
-    listed_at = time.time()             # entries written after this are newer than the listing
+    with st.locked():                   # what the store held before the listing (#1260)
+        before = st._load(st.dir / FILE, {})
+    before = before if isinstance(before, dict) else {}
     prs, kinds, error = ready.collect_kinds(loop, st, only)
     if error:
         log(f"merge check not refreshed: {error}")
@@ -178,12 +180,13 @@ def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None)
                 memory = memory if isinstance(memory, dict) else {}
                 memory[str(number)] = {"head": head, "state": state, "digest": digest,
                                        "at": time.time(), **({"run_id": run_id} if run_id else {})}
-                # Drop only what the listing shows gone and was written before it (#1258): a
-                # pending mark made mid-refresh, for a PR the listing predates, is kept.
+                # Drop only what the listing shows gone and was already there, unchanged, before
+                # it (#1258): a pending mark made mid-refresh, for a PR the listing predates, is
+                # kept. Compared by content, not by wall-clock stamps, so a clock stepped back
+                # between the two reads cannot make a later mark look older (#1260).
                 open_numbers = {str(p["number"]) for p in prs}
-                memory = {k: v for k, v in memory.items() if k in open_numbers
-                          or (isinstance(v, dict) and isinstance(v.get("at"), (int, float))
-                              and v["at"] >= listed_at)}
+                memory = {k: v for k, v in memory.items()
+                          if k in open_numbers or k not in before or v != before[k]}
                 st._save(path, memory)
         written += 1
         log(f"#{number} @ {head[:7]}: merge check {state}")

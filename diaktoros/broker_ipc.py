@@ -34,7 +34,7 @@ import stat
 import threading
 from dataclasses import dataclass
 
-from . import broker, config, contained, safe_push
+from . import broker, config, contained, fixer_answers, safe_push
 from . import broker_issues   # RunBroker's issue writes: broker_issues.IssueWrites, inherited
 
 MAX_REQUEST = 16 * 1024
@@ -586,9 +586,9 @@ class RunBroker(broker_issues.IssueWrites):
             if not self._pushed_head and not answers_only:
                 raise ProtocolError("answers are published with the review request after a "
                                     "confirmed push")
-            if verdict or not broker.answers_valid(body):
+            if verdict or not fixer_answers.answers_valid(body):
                 raise ProtocolError(f"answers must be non-empty text of at most "
-                                    f"{broker.ANSWERS_MAX} bytes without the answers marker; "
+                                    f"{fixer_answers.ANSWERS_MAX} bytes without the answers marker; "
                                     "nothing was written, resubmit")
             if not self.scope.run_id or not self.scope.ledger_db:
                 raise ProtocolError("host run ledger unavailable")
@@ -878,8 +878,9 @@ class RunBroker(broker_issues.IssueWrites):
             comment_id = broker.post_fixer_answers(
                 self._loop, repo=self.scope.repo, number=self.scope.number, head=head,
                 branch=self.scope.branch, login=login,
-                text=broker.answers_comment_body(text, head=head, base=self.scope.head,
-                                                 run_id=self.scope.run_id))
+                text=fixer_answers.answers_comment_body(text, head=head, base=self.scope.head,
+                                                 run_id=self.scope.run_id,
+                                                 merge=self.scope.merge))
         except Exception as exc:
             try:
                 supervisor.answers_status(self.scope.run_id, "uncertain",

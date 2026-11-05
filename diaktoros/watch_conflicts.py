@@ -14,6 +14,9 @@ from diaktoros import review_only_conflict, watch_mode
 from diaktoros import state as state_mod
 from diaktoros.util import log
 
+# fix_owed's answer when the PR's reviews could not be read: wait, a later read decides (#1907).
+UNREAD = "its reviews could not be read"
+
 # GitHub computes a PR's mergeability lazily: the first read after its base moves usually
 # answers null/"unknown" and starts the computation. One short wait, then one re-read.
 MERGEABILITY_WAIT_S = 5.0
@@ -70,24 +73,13 @@ def act_on_conflicts(loop: dict, st: state_mod.LoopState,
             log(f"#{number} @ {head[:7]} conflict turn not queued: {loop['base']}'s tip "
                 "unreadable (GitHub read failed); the next sweep retries")
         person = conflict_person.get(st, number, head) if resolving and not review_only else ""
+        owed = ""
         if person:
             # #1154: this head's conflict was already handed to a person; a new base tip does
             # not change that (a new push does), so no turn and no repeated failure notice.
             log(f"#{number} @ {head[:7]} conflict needs a person ({person}): not requeued")
         elif resolving and not review_only and re.fullmatch(r"[0-9a-f]{40}", base_sha):
-            # #303 stage 3: one resolving fixer turn per (head, base); the ledger's turn key
-            # dedups every later sweep. The worker merges and may still hand it to a person
-            # (a whole-file conflict, or workflow changes the fixer's token cannot push).
-            # enqueue_isolated, not block_pr_agent: that one is a gate's and ends the process.
-            from diaktoros.run_supervisor import CONFLICT_KEY
-            try:
-                outcome = gate.enqueue_isolated(loop, "fixer", number, head,
-                                                turn_key=f"{CONFLICT_KEY}{base_sha}")
-                log(f"#{number} @ {head[:7]} conflict with {loop['base']} at {base_sha[:7]}: "
-                    f"fixer {outcome}")
-            except Exception as exc:
-                log(f"#{number} @ {head[:7]} conflict turn at {base_sha[:7]} not queued: "
-                    f"{type(exc).__name__}: {exc}")
+            owed = _queue_turn(loop, st, number, head, base_sha)
         next_review_only = ""
         if review_only:
             # The cause, the files and the commands (a dry merge on the host, nothing pushed);
@@ -134,12 +126,65 @@ def act_on_conflicts(loop: dict, st: state_mod.LoopState,
         # notice, a sweep that sees the same conflicted head again is not.
         observer.notify(loop, st, "conflict", number, head, identity="conflict",
                         outcome=f"conflicts with {loop['base']} — GitHub cannot merge it as it is",
-                        next_turn=(next_review_only if review_only else
+                        next_turn=(next_review_only if review_only else owed if owed else
                                    f"the fixer will try to merge {loop['base']} into the branch "
                                    "and resolve it (a whole-file conflict or workflow changes "
                                    "come back to you)" if resolving else
                                    f"you: merge {loop['base']} into the branch (unattended fixer "
                                    "pushes are off, so the loop does not resolve it)"))
+
+
+def _queue_turn(loop: dict, st: state_mod.LoopState, number: int, head: str, base_sha: str) -> str:
+    """Queue the resolving fixer turn for a conflicted head (#303 stage 3), or say why it waits.
+
+    One turn per (head, base): the ledger's turn key dedups every later sweep. The worker merges
+    and may still hand it to a person (a whole-file conflict, or workflow changes the fixer's token
+    cannot push). ``enqueue_isolated``, not ``block_pr_agent``: that one is a gate's and ends the
+    process. Returns ``""``, or the notice's next step when the turn waits for the fixer's answer
+    (``fix_owed``)."""
+    owed = fix_owed(loop, st, number, head)
+    if owed:
+        log(f"#{number} @ {head[:7]} conflict turn not queued: {owed}")
+        return (f"the fixer answers the changes requested at {head[:7]} first ({owed}); the "
+                f"next sweep then merges {loop['base']} into the fixed head. If that fix turn "
+                f"failed, `hermes dk retry` re-arms it")
+    from diaktoros.run_supervisor import CONFLICT_KEY
+    try:
+        outcome = gate.enqueue_isolated(loop, "fixer", number, head,
+                                        turn_key=f"{CONFLICT_KEY}{base_sha}")
+        log(f"#{number} @ {head[:7]} conflict with {loop['base']} at {base_sha[:7]}: "
+            f"fixer {outcome}")
+    except Exception as exc:
+        log(f"#{number} @ {head[:7]} conflict turn at {base_sha[:7]} not queued: "
+            f"{type(exc).__name__}: {exc}")
+    return ""
+
+
+def fix_owed(loop: dict, st: state_mod.LoopState, number: int, head: str) -> str:
+    """Why a conflict turn at this head waits for the fixer (#1907), or ``""`` when it need not.
+
+    It waits while the live latest effective verdict at the head requests changes and the PR is
+    not held for a ruling (``gate.breach_holds``): the fixer owes that verdict an answer. Merging
+    first moves the head under it, so the fix turn is left answering a stale head and the merged
+    head is reviewed as a round with the findings still open. On #1875 a fix turn timed out, the
+    merge went first, and its review spent the PR's last round. Reviews that cannot be read wait
+    too, until a later sweep reads them. Approved, unreviewed, or at the cap: no wait, as before.
+    The sweep asks before queueing the turn, the worker again at its claim and launch (a verdict
+    can land after it was queued), and ``safe_push`` once more right before the merge is pushed.
+    """
+    from diaktoros import transition
+    reviews = gh.reviews(loop, number)
+    if isinstance(reviews, list):
+        reviews = transition.effective_reviews(loop, st, number, head, reviews)
+    if not isinstance(reviews, list):
+        return UNREAD
+    latest = gate.latest_effective_review_at_head(reviews, loop, head)
+    if latest is None or gh.review_state(latest) != "CHANGES_REQUESTED":
+        return ""
+    if gate.breach_holds(st.breach_get(number), head, len(gate.verdicts(reviews, loop)),
+                         loop["cap"]):
+        return ""                         # the adjudicator's or the operator's, not the fixer's
+    return "its changes-requested verdict is not answered yet"
 
 
 def scan_conflicts(loop: dict, st: state_mod.LoopState) -> int:

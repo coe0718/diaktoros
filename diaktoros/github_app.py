@@ -192,11 +192,11 @@ def _as_app(loop: dict, login: str, path: str, method: str = "GET", body=None) -
     # Charged to a gate's budget like every gh call (#1187): its timeout is what is left, and a
     # failure past the deadline is an overrun, not an answer.
     timeout = gh._budgeted(method, path)
-    answered = False
+    answered, status, headers = False, None, None
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             headers = {k.lower(): v for k, v in resp.headers.items()}
-            answered = True
+            answered, status = True, resp.status
             gh_calls.record(who, method, path, gh_calls.outcome(path, resp.status), headers)
             return gh.Response(json.loads(resp.read().decode() or "null"), "", resp.status,
                                headers)
@@ -213,7 +213,10 @@ def _as_app(loop: dict, login: str, path: str, method: str = "GET", body=None) -
     except Exception as exc:
         if not answered:                                # no HTTP answer: it may have counted
             gh_calls.record(who, method, path, "error")
-        return gh._outcome(method, path, gh.Response(None, f"{type(exc).__name__}: {exc}"))
+        # A body that failed to read or parse follows an HTTP answer: its status and headers stay
+        # on the response, so "no status" keeps meaning "no HTTP answer" (the doctor's UNKNOWN).
+        return gh._outcome(method, path, gh.Response(None, f"{type(exc).__name__}: {exc}",
+                                                     status, headers))
 
 
 def _expires(stamp) -> float | None:

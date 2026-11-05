@@ -18,6 +18,7 @@ import re
 import symtable
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from diaktoros import run_supervisor  # noqa: E402
@@ -27,10 +28,23 @@ ROOT = PACKAGE.parents[1]
 SUBMODULES = ("pr_facts", "turn_prompts", "records", "views", "notices", "intake", "workers", "claims",
               "issue_inputs", "ledger_schema")
 # Every real submodule, for the shadow rules. ``turns`` is not in SUBMODULES: the package
-# deliberately re-exports its state classes (_ClaimRead, _Turn, _Launch), which the one-home
-# tests would refuse, but a local named ``turns`` shadows the module like any other (#1528).
+# deliberately re-exports its state classes (_ClaimRead, _Turn, _Launch), so the one-home rules
+# check it through ONE_HOME_SUBMODULES with those three exempt (#1332), and a local named
+# ``turns`` shadows the module like any other (#1528).
 ALL_SUBMODULES = tuple(sorted(
     p.stem for p in PACKAGE.glob("*.py") if p.stem not in ("__init__", "__main__")))
+# The package's deliberate re-exports (#758): the only names of a submodule that may also resolve
+# as ``run_supervisor.<name>``. The one-home rules check every other name of every submodule,
+# ``turns`` included (#1332).
+RE_EXPORTS = {"turns": frozenset({"_ClaimRead", "_Turn", "_Launch"})}
+ONE_HOME_SUBMODULES = SUBMODULES + ("turns",)
+
+
+def _one_home_names() -> set[tuple[str, str]]:
+    """(submodule, name) for each top-level name that must have that submodule as its only home:
+    every name of every ONE_HOME_SUBMODULES module, minus the package's RE_EXPORTS."""
+    return {(sub, name) for sub in ONE_HOME_SUBMODULES
+            for name in _top_level_names(PACKAGE / f"{sub}.py") - RE_EXPORTS.get(sub, frozenset())}
 
 
 def _top_level_names(path: pathlib.Path) -> set[str]:
@@ -46,10 +60,10 @@ def _top_level_names(path: pathlib.Path) -> set[str]:
 
 
 def _moved_names() -> set[str]:
-    """Names that no longer resolve as ``run_supervisor.<name>``: the module-level names of the
-    SUBMODULES, plus the methods of every class in any submodule (``turns`` included), minus
+    """Names that no longer resolve as ``run_supervisor.<name>``: the one-home names of the
+    submodules (``turns`` included), plus the methods of every class in any submodule, minus
     what the package itself still binds (the re-exported state classes, ``Supervisor``)."""
-    moved = {n for sub in SUBMODULES for n in _top_level_names(PACKAGE / f"{sub}.py")}
+    moved = {name for _, name in _one_home_names()}
     for path in PACKAGE.glob("*.py"):
         if path.stem in ("__init__", "__main__"):
             continue
@@ -58,6 +72,47 @@ def _moved_names() -> set[str]:
                 moved.update(n.name for n in node.body
                              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)))
     return {n for n in moved if not hasattr(run_supervisor, n)}
+
+
+def _one_home_violations() -> list[str]:
+    """One message per one-home name that the package core defines or binds again, or that its
+    submodule does not bind: the enforcement behind test_a_moved_name_has_one_home."""
+    core = _top_level_names(PACKAGE / "__init__.py")
+    problems = []
+    for sub, moved in sorted(_one_home_names()):
+        module = importlib.import_module(f"diaktoros.run_supervisor.{sub}")
+        if moved in core:
+            problems.append(f"run_supervisor/__init__.py defines {moved}: it lives in {sub}")
+        if hasattr(run_supervisor, moved):
+            problems.append(f"run_supervisor.{moved} resolves: call {sub}.{moved}")
+        if not hasattr(module, moved):
+            problems.append(f"{sub}.{moved} does not resolve")
+    return problems
+
+
+def _package_imports_of_moved_names(source: str) -> list[tuple[int, list[str]]]:
+    """(line, names) for each ``from [diaktoros.]run_supervisor import`` in the source that
+    imports a one-home name from the package instead of from its submodule."""
+    moved = {name for _, name in _one_home_names()}
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if (isinstance(node, ast.ImportFrom)
+                and node.module in ("run_supervisor", "diaktoros.run_supervisor")
+                and {alias.name for alias in node.names} & moved):
+            found.append((node.lineno, sorted({a.name for a in node.names} & moved)))
+    return found
+
+
+def _prose_names_of_moved(text: str) -> list[tuple[int, str]]:
+    """(line, name) for each ``run_supervisor.<name>`` in the text that names a moved name (see
+    _moved_names) where it should say ``run_supervisor.<submodule>.<name>``."""
+    moved = _moved_names()
+    found = []
+    for number, line in enumerate(text.splitlines(), 1):
+        for name in re.findall(r"run_supervisor\.(\w+)", line):
+            if name not in SUBMODULES and name in moved:
+                found.append((number, name))
+    return found
 
 
 def _local_submodule_shadows(source: str, filename: str) -> list[tuple[str, str]]:
@@ -98,14 +153,50 @@ def _shadowed_submodules(source: str) -> list[tuple[int, str]]:
 
 class Split(unittest.TestCase):
     def test_a_moved_name_has_one_home(self):
-        core = _top_level_names(PACKAGE / "__init__.py")
-        for name in SUBMODULES:
-            module = importlib.import_module(f"diaktoros.run_supervisor.{name}")
-            for moved in _top_level_names(PACKAGE / f"{name}.py"):
-                with self.subTest(module=name, name=moved):
-                    self.assertNotIn(moved, core)
-                    self.assertFalse(hasattr(run_supervisor, moved), f"call {name}.{moved}")
-                    self.assertTrue(hasattr(module, moved))
+        for problem in _one_home_violations():
+            with self.subTest(problem=problem):
+                self.fail(problem)
+
+    def test_the_one_home_rules_cover_the_turns_submodule(self):
+        # turns' own names have one home like any submodule's (#1332); only the package's
+        # deliberate re-exports of its state classes (#758) are exempt.
+        names = _one_home_names()
+        for name in ("ClaimAndLaunch", "_turn_pool", "_turn_role", "ci_wait_expired"):
+            self.assertIn(("turns", name), names)
+        for name in ("_ClaimRead", "_Turn", "_Launch"):
+            self.assertNotIn(("turns", name), names)
+            self.assertIs(getattr(run_supervisor, name), getattr(run_supervisor.turns, name))
+        self.assertEqual(set(ONE_HOME_SUBMODULES), set(ALL_SUBMODULES))
+        self.assertEqual(set(RE_EXPORTS), {"turns"})
+
+    def test_the_one_home_guard_refuses_a_second_binding_of_a_turns_name(self):
+        # Drives the guard's enforcement itself (#1933 review): a turns function bound again on
+        # the package is refused, while the deliberate re-exports (#758) stay accepted.
+        from diaktoros.run_supervisor import turns
+        self.assertEqual(_one_home_violations(), [])
+        with mock.patch.object(run_supervisor, "ci_wait_expired", turns.ci_wait_expired,
+                               create=True):
+            self.assertIn("run_supervisor.ci_wait_expired resolves: call turns.ci_wait_expired",
+                          _one_home_violations())
+        self.assertFalse(hasattr(run_supervisor, "ci_wait_expired"))
+
+    def test_the_import_guard_refuses_a_turns_name_from_the_package(self):
+        # A turns function imported from the package is refused like any moved name; the
+        # re-exported state classes may still be imported from it.
+        for module in ("diaktoros.run_supervisor", "run_supervisor"):
+            source = f"from {module} import ci_wait_expired, _turn_pool\n"
+            self.assertEqual(_package_imports_of_moved_names(source),
+                             [(1, ["_turn_pool", "ci_wait_expired"])])
+        self.assertEqual(_package_imports_of_moved_names(
+            "from diaktoros.run_supervisor import _ClaimRead, _Turn, _Launch\n"), [])
+
+    def test_the_prose_guard_refuses_a_turns_function_named_on_the_package(self):
+        # Prose naming run_supervisor.ci_wait_expired points at a path that does not resolve;
+        # run_supervisor.turns.ci_wait_expired and the re-exported run_supervisor._Turn are fine.
+        text = ("see run_supervisor.ci_wait_expired\n"
+                "see run_supervisor.turns.ci_wait_expired\n"
+                "see run_supervisor._Turn\n")
+        self.assertEqual(_prose_names_of_moved(text), [(1, "ci_wait_expired")])
 
     def test_the_record_methods_live_only_in_the_mixin(self):
         # Supervisor inherits records.LedgerRecords: a method defined again in Supervisor's own
@@ -153,16 +244,11 @@ class Split(unittest.TestCase):
         self.assertIn("recover", own[workers.WorkerLifecycle])
 
     def test_nothing_imports_a_moved_name_from_the_package(self):
-        moved = {n for sub in SUBMODULES for n in _top_level_names(PACKAGE / f"{sub}.py")}
         files = [*(ROOT / "diaktoros").rglob("*.py"), *(ROOT / "scripts").glob("*.py"),
                  *(ROOT / "tests").rglob("*.py")]
         for path in files:
-            for node in ast.walk(ast.parse(path.read_text())):
-                if (isinstance(node, ast.ImportFrom)
-                        and node.module in ("run_supervisor", "diaktoros.run_supervisor")
-                        and {alias.name for alias in node.names} & moved):
-                    self.fail(f"{path.relative_to(ROOT)}:{node.lineno} imports "
-                              f"{sorted({a.name for a in node.names} & moved)} from the package")
+            for lineno, names in _package_imports_of_moved_names(path.read_text()):
+                self.fail(f"{path.relative_to(ROOT)}:{lineno} imports {names} from the package")
 
     def test_no_function_shadows_a_submodule_it_calls(self):
         for path in PACKAGE.glob("*.py"):
@@ -185,15 +271,11 @@ class Split(unittest.TestCase):
     def test_prose_names_a_moved_function_by_its_submodule(self):
         # Docs and docstrings that write `run_supervisor.<name>` for a moved name point at a path
         # that no longer resolves (#1458): they must say `run_supervisor.<submodule>.<name>`.
-        moved = _moved_names()
-        pattern = re.compile(r"run_supervisor\.(\w+)")
         files = [*(ROOT / "docs").glob("*.md"), *(ROOT / "diaktoros").rglob("*.py")]
         for path in files:
-            for number, line in enumerate(path.read_text().splitlines(), 1):
-                for name in pattern.findall(line):
-                    if name not in SUBMODULES and name in moved:
-                        self.fail(f"{path.relative_to(ROOT)}:{number} names run_supervisor.{name}, "
-                                  f"which moved to a submodule")
+            for number, name in _prose_names_of_moved(path.read_text()):
+                self.fail(f"{path.relative_to(ROOT)}:{number} names run_supervisor.{name}, "
+                          f"which moved to a submodule")
 
     def test_the_moved_set_holds_mixin_methods(self):
         # `run_supervisor._spawn` is a method of workers.WorkerLifecycle, so it is as unresolvable
