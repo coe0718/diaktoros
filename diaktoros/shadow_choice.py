@@ -12,13 +12,14 @@ list set nothing is read: sampling alone, exactly as before. Globs match like ``
 (``fnmatch``, case-sensitive, ``*`` also crosses ``/``); a renamed file counts under both names,
 and a path in both lists is an always path.
 
-The changed paths are GitHub's ``pulls/N/files`` listing, read once per PR head as the reader. A
-failed read shadows the head when the loop has always paths (it may change one, and
-``shadow.escalate`` relies on those being shadowed: review of #1852, F1), else samples; so does
-a listing GitHub cut short at 3,000 files, which may leave one out (F5). The choice is kept per PR
-head in ``shadow-choices.json`` (the newest ``KEEP``), with the lists and rate it was made under:
-the gate's several asks, a redelivery and ``explain`` all see the same one, and a change to the
-lists or the rate makes it again (F2).
+The changed paths are GitHub's ``pulls/N/files`` listing, read once per reviewer turn as the
+reader. A failed read shadows the head when the loop has always paths (it may change one, and
+``shadow.escalate`` relies on those being shadowed: review of #1852, F1), else samples; so does a
+listing GitHub cut short at 3,000 files, which may leave one out (F5). The choice is kept per PR,
+head and reviewer turn in ``shadow-choices.json`` (the newest ``KEEP``), with the lists and rate
+it was made under: the gate's several asks for one turn, a redelivery and ``explain`` all see the
+same one; a new turn at the same head (a retarget's fresh review, whose base and so whose listing
+changed) chooses again (F6), and a change to the lists or the rate makes it again (F2).
 """
 from __future__ import annotations
 
@@ -61,13 +62,15 @@ def by_risk(loop: dict) -> bool:
     return bool(config.shadow_always_paths(loop) or config.shadow_never_paths(loop))
 
 
-def choose(loop: dict, number: int, head: str) -> dict:
-    """``{"shadow": bool, "why": str}`` for this PR head: the kept choice if there is one, else
-    decided now and kept. Never raises: an unreadable state is a choice made again."""
+def choose(loop: dict, number: int, head: str, turn_key: str = "") -> dict:
+    """``{"shadow": bool, "why": str}`` for this reviewer turn (PR, head and turn key): the kept
+    choice if there is one, else decided now and kept. A new turn at the same head chooses again:
+    a retarget's fresh review (``transition.turn_key``) has a new base, so a new file listing
+    (review of #1852, F6). Never raises: an unreadable state is a choice made again."""
     if not by_risk(loop):
         return _sampling(loop, number, head)
-    key = f"{number}:{head}"
-    kept = recorded(loop, number, head)
+    key = f"{number}:{head}:{turn_key}"
+    kept = recorded(loop, number, head, turn_key)
     if kept is not None:
         return kept
     choice = _decide(loop, number, head)
@@ -87,17 +90,23 @@ def choose(loop: dict, number: int, head: str) -> dict:
     return choice
 
 
-def recorded(loop: dict, number: int, head: str) -> dict | None:
-    """The choice kept for this PR head under the loop's current lists and rate, or None.
-    Read-only (``explain``)."""
+def recorded(loop: dict, number: int, head: str, turn_key: str | None = None) -> dict | None:
+    """The choice kept for this reviewer turn under the loop's current lists and rate, or None;
+    with no ``turn_key``, the newest kept for any turn at the head (``explain``). Read-only."""
     try:
         from . import state as state_mod
-        entry = _memory(state_mod.state_for(loop)).get(f"{number}:{head}")
+        memory = _memory(state_mod.state_for(loop))
     except Exception:  # noqa: BLE001 - unreadable is "none kept"
         return None
-    if entry is None or entry["policy"] != policy(loop):
-        return None
-    return {"shadow": entry["shadow"], "why": entry["why"]}
+    made_under = policy(loop)
+    if turn_key is not None:
+        found = [memory.get(f"{number}:{head}:{turn_key}")]
+    else:
+        prefix = f"{number}:{head}:"
+        found = sorted((e for k, e in memory.items() if k.startswith(prefix)),
+                       key=lambda e: e["at"], reverse=True)
+    entry = next((e for e in found if e is not None and e["policy"] == made_under), None)
+    return None if entry is None else {"shadow": entry["shadow"], "why": entry["why"]}
 
 
 def explain_line(loop: dict, number: int, head: str) -> str:
@@ -117,7 +126,8 @@ def explain_line(loop: dict, number: int, head: str) -> str:
 def _memory(st) -> dict:
     data = st._load(st.dir / FILE, {})
     return {key: entry for key, entry in (data.items() if isinstance(data, dict) else ())
-            if isinstance(entry, dict) and isinstance(entry.get("shadow"), bool)
+            if isinstance(key, str) and key.count(":") >= 2      # PR:head:turn key
+            and isinstance(entry, dict) and isinstance(entry.get("shadow"), bool)
             and isinstance(entry.get("why"), str) and isinstance(entry.get("policy"), str)
             and isinstance(entry.get("at"), (int, float)) and not isinstance(entry["at"], bool)}
 
@@ -189,7 +199,7 @@ def status_lines(loop: dict, limit: int = 3) -> list[str]:
     except Exception:  # noqa: BLE001 - the policy line still stands
         return lines
     for key in sorted(memory, key=lambda k: memory[k]["at"], reverse=True)[:limit]:
-        number, _, head = key.partition(":")
+        number, head, _turn = key.split(":", 2)
         entry = memory[key]
         lines.append(f"PR #{number} at {head[:7]}: {'shadowed' if entry['shadow'] else 'no shadow'}"
                      f" — {entry['why']}")

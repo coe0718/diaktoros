@@ -51,14 +51,14 @@ class ByRisk(unittest.TestCase):
         return config.normalize({**RAW, "shadow": {k: v for k, v in block.items()
                                                    if v is not None}})
 
-    def enqueue(self, loop, listing, number=8, head=None, seat="reviewer"):
+    def enqueue(self, loop, listing, number=8, head=None, seat="reviewer", turn_key=""):
         """The seats ``enqueue_isolated`` submitted, and the files reads it made."""
         head = head or an_unsampled_head(loop, number)
         sup = mock.Mock()
         sup.submit.return_value = "enqueued"
         with mock.patch.object(gate, "isolated_supervisor", return_value=sup), \
                 mock.patch.object(gh, "pr_files_read", return_value=listing) as read:
-            gate.enqueue_isolated(loop, seat, number, head)
+            gate.enqueue_isolated(loop, seat, number, head, turn_key=turn_key)
         return [c.args[4] for c in sup.submit.call_args_list], read.call_count
 
     def test_a_docs_only_pr_gets_no_shadow_even_at_every_1(self):
@@ -164,6 +164,32 @@ class ByRisk(unittest.TestCase):
         seats, reads = self.enqueue(self.loop, (files("diaktoros/broker.py"), ""), seat="fixer")
         self.assertEqual((seats, reads), (["fixer"], 0))
 
+    def test_a_new_turn_at_the_same_head_chooses_again_from_its_own_diff(self):
+        # Review of #1852, F6: a same-head retarget changes the PR's file listing (its base) and
+        # starts a fresh reviewer turn (transition.turn_key). Kept per head alone, its docs-only
+        # "no shadow" would outlive a new diff that changes the broker.
+        head = an_unsampled_head(self.loop, 20)
+        retarget = "retarget:release:1700000000000"
+        with mock.patch.object(gh, "pr_files_read", return_value=(files("docs/a.md"), "")):
+            self.assertFalse(gate.shadow_sampled(self.loop, 20, head))
+        with mock.patch.object(gh, "pr_files_read",
+                               return_value=(files("diaktoros/broker.py"), "")) as read:
+            self.assertTrue(gate.shadow_sampled(self.loop, 20, head, retarget))
+            self.assertFalse(gate.shadow_sampled(self.loop, 20, head))      # each turn its own
+            self.assertTrue(gate.shadow_sampled(self.loop, 20, head, retarget))
+        self.assertEqual(read.call_count, 1)
+        # Through the real enqueue: the retarget's fresh turn carries its key to every ask.
+        head = an_unsampled_head(self.loop, 21)
+        self.assertEqual(self.enqueue(self.loop, (files("docs/a.md"), ""), 21, head)[0],
+                         ["reviewer"])
+        seats, reads = self.enqueue(self.loop, (files("diaktoros/broker.py"), ""), 21, head,
+                                    turn_key=retarget)
+        self.assertEqual((seats, reads), (["reviewer", "shadow"], 1))
+        self.assertIn("diaktoros/broker.py", shadow_choice.explain_line(self.loop, 21, head))
+        lines = shadow_choice.status_lines(self.loop)
+        self.assertTrue(any(line.startswith(f"PR #21 at {head[:7]}: shadowed") for line in lines),
+                        lines)
+
     def test_status_says_how_and_lists_the_newest_choices(self):
         head = an_unsampled_head(self.loop, 14)
         self.enqueue(self.loop, (files("diaktoros/broker.py"), ""), 14, head)
@@ -199,7 +225,7 @@ class ByRisk(unittest.TestCase):
             for n in range(5):
                 shadow_choice.choose(self.loop, 100 + n, "e" * 40)
         kept = shadow_choice._memory(state_mod.state_for(self.loop))
-        self.assertEqual(sorted(kept), [f"{100 + n}:{'e' * 40}" for n in (2, 3, 4)])
+        self.assertEqual(sorted(kept), [f"{100 + n}:{'e' * 40}:" for n in (2, 3, 4)])
 
 
 class Setting(unittest.TestCase):

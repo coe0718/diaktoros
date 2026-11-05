@@ -169,12 +169,12 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
     """
     supervisor = isolated_supervisor(loop)
     supervisor.recover()
-    with _shadow_snapshot_lock(loop, seat, number, head):
+    with _shadow_snapshot_lock(loop, seat, number, head, turn_key):
         # Before the reviewer's row exists, so its worker can record nothing first (#1647). A
         # shadow is queued only on that snapshot: one taken later could hold the review's own
         # findings. The lock keeps another enqueue from evicting it before the shadow's row is
         # visible as open (review of #1656, F6).
-        snapped = seat == "reviewer" and snapshot_shadow(loop, number, head)
+        snapped = seat == "reviewer" and snapshot_shadow(loop, number, head, turn_key)
         delivery = f"{loop['repo']}:{number}:{head}:{seat}"
         # The turn's wall clock rides on the row (#49): whichever worker claims it — possibly
         # one spawned by another loop's event — runs it for this loop's seat budget.
@@ -187,13 +187,13 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
     return outcome
 
 
-def _shadow_snapshot_lock(loop: dict, seat: str, number: int, head: str):
+def _shadow_snapshot_lock(loop: dict, seat: str, number: int, head: str, turn_key: str = ""):
     """The loop's state lock for a reviewer turn that gets a shadow, held from its snapshot to
     the shadow's submit: every eviction runs under it and reads the open shadow runs first, so
     none can drop a snapshot whose row is not in the ledger yet. Otherwise no lock."""
     from contextlib import nullcontext
-    if seat != "reviewer" or not config.shadow_profile(loop) or not shadow_sampled(loop, number,
-                                                                                    head):
+    if seat != "reviewer" or not config.shadow_profile(loop) or not shadow_sampled(
+            loop, number, head, turn_key):
         return nullcontext()
     try:
         return state_mod.state_for(loop).locked()
@@ -201,12 +201,13 @@ def _shadow_snapshot_lock(loop: dict, seat: str, number: int, head: str):
         return nullcontext()
 
 
-def shadow_sampled(loop: dict, number: int, head: str) -> bool:
+def shadow_sampled(loop: dict, number: int, head: str, turn_key: str = "") -> bool:
     """Whether this reviewer turn also gets a shadow review (#218): by what the PR changes when
-    the loop names paths (#1788), else one in ``shadow.every``; chosen once per repo, PR and head,
-    so a redelivery or a re-queued turn chooses the same (``shadow_choice``)."""
+    the loop names paths (#1788), else one in ``shadow.every``; chosen once per PR, head and
+    reviewer turn, so a redelivery or a re-queued turn chooses the same, and a new turn at the
+    same head (a retarget's fresh review) chooses again from its own diff (``shadow_choice``)."""
     from . import shadow_choice
-    return shadow_choice.choose(loop, number, head)["shadow"]
+    return shadow_choice.choose(loop, number, head, turn_key)["shadow"]
 
 
 # A shadow run in one of these states may still record its review at the head (#1004):
@@ -550,11 +551,11 @@ def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) 
                   escalated={"by": SHADOW_ESCALATION, "at": now_iso(), "reason": reason})
 
 
-def snapshot_shadow(loop: dict, number: int, head: str) -> bool:
+def snapshot_shadow(loop: dict, number: int, head: str, turn_key: str = "") -> bool:
     """Keep the findings ledger for a sampled head's shadow review (#218): the broker judges the
     shadow against it, never against what the real review records. Taken before the reviewer's
     row exists (#1647); the first snapshot wins. Whether one is kept; never raises."""
-    if not config.shadow_profile(loop) or not shadow_sampled(loop, number, head):
+    if not config.shadow_profile(loop) or not shadow_sampled(loop, number, head, turn_key):
         return False
     try:
         st = state_mod.state_for(loop)
@@ -581,7 +582,7 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
     try:
         if not config.shadow_profile(loop):
             return "off"
-        if not shadow_sampled(loop, number, head):
+        if not shadow_sampled(loop, number, head, turn_key):
             return "not sampled"
         delivery = f"{loop['repo']}:{number}:{head}:shadow" + (f":{turn_key}" if turn_key else "")
         # No durable snapshot, no shadow: the broker would judge it on the live ledger, which
@@ -596,7 +597,7 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
         # enqueue cannot sample the ledger before this run is visible in it and then evict this
         # snapshot as unused (#1013). The lock is reentrant.
         with st.locked():
-            if not snapshot_shadow(loop, number, head):
+            if not snapshot_shadow(loop, number, head, turn_key):
                 log(f"#{number}: no shadow findings snapshot, shadow not queued")
                 return "no snapshot"
             return supervisor.submit(delivery, loop["repo"], number, head, "shadow",
