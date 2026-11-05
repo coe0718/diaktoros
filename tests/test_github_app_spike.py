@@ -356,6 +356,10 @@ class FailedStatuses(unittest.TestCase):
         ("check branch missing",
          dict(check_branch="gated", refuse=[("fixer", "GET", "/git/ref/heads/gated", NOT_FOUND)]),
          "branch", 404, "/check-runs"),
+        # the first creation (the fixer PR's branch) goes through; the check branch's is refused
+        ("check branch not created",
+         dict(check_branch="gated", refuse=[("fixer", "POST", "/git/refs", UNPROCESSABLE, 1)]),
+         "branch", 422, "/check-runs"),
     )
 
     def test_main_ends_with_the_named_step_and_exits_1(self):
@@ -377,6 +381,20 @@ class FailedStatuses(unittest.TestCase):
                 self.assertFalse([p for _, _, p, _ in fake.requests if never in p],
                                  f"the run went on to {never} after the failure")
 
+    def test_a_refused_check_branch_opens_no_pull_request_and_posts_no_check_run(self):
+        """``required_check`` creates its branch from ``--check-branch``: when that POST is refused
+        the run names the branch step and goes no further (#1888 F2)."""
+        fake = Refusing(check_branch="gated",
+                        refuse=[("fixer", "POST", "/git/refs", UNPROCESSABLE, 1)])
+        code, lines = run_main(fake)
+        self.assertEqual(code, 1)
+        self.assertEqual((lines[-1]["step"], lines[-1]["status"]), ("branch", 422))
+        self.assertIn("spike-check-", lines[-1]["error"])
+        self.assertNotIn("required_check", [line["step"] for line in lines])
+        self.assertEqual([p for _, m, p, _ in fake.requests if m == "POST" and p.endswith("/pulls")],
+                         ["/repos/o/r/pulls"], "only the fixer PR before the check branch")
+        self.assertFalse([p for _, _, p, _ in fake.requests if "/check-runs" in p])
+
     def test_nothing_after_a_failed_identity_is_printed(self):
         code, lines = run_main(Refusing(app_answer=(401, {"message": "Bad credentials"})))
         self.assertEqual([line["step"] for line in lines], ["identity"])
@@ -390,7 +408,7 @@ class FailedStatuses(unittest.TestCase):
 
     def test_a_text_answer_is_kept_short(self):
         _, lines = run_main(Refusing(app_answer=(502, "x" * 5000)))
-        self.assertLess(len(lines[-1]["error"]), 300)
+        self.assertLessEqual(len(lines[-1]["error"]), spike.ERROR_LIMIT)
 
     def test_a_run_that_gets_every_answer_still_exits_0(self):
         code, lines = run_main(FakeSpike())
@@ -401,6 +419,71 @@ class FailedStatuses(unittest.TestCase):
         with self.assertRaises(spike.StepFailed) as ctx:
             run_quietly(Refusing(refuse=[("fixer", "GET", "/contents/app.py", NOT_FOUND)]))
         self.assertEqual((ctx.exception.step, ctx.exception.status), ("put_file", 404))
+
+
+class NoCredentialInTheError(unittest.TestCase):
+    """What GitHub (or a proxy in front of it) says is printed, so a credential in it must not be
+    (#1888 F1): the docs promise that no token reaches the log."""
+
+    HELD = "Zq9-held-secret-value-0123456"  # an installation token with no prefix to recognise
+    SHAPES = (
+        ("ghs_ token", "bad token ghs_secret_example", "ghs_secret_example"),
+        ("short ghp_ token", "rejected ghp_abc", "ghp_abc"),
+        ("fine-grained token", "github_pat_11ABCDEFG_zzzzzzzzzz is expired", "github_pat_11ABCDEFG"),
+        ("Authorization value", "sent Authorization: token 0123456789abcdef0123456789abcdef01234567",
+         "0123456789abcdef0123456789abcdef01234567"),
+        ("bearer value", "Bearer abcdefghijklmnopqrstuvwxyz012345 is not valid",
+         "abcdefghijklmnopqrstuvwxyz012345"),
+        ("app JWT", "bad jwt eyJhbGciOiJSUzI1NiJ9.eyJpYXQiOjE2MDAwMDAwMDB9.c2lnbmF0dXJlLWJ5dGVz",
+         "eyJhbGciOiJSUzI1NiJ9"),
+        ("private key", "key -----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n"
+         "-----END RSA PRIVATE KEY----- rejected", "MIIEowIBAAKCAQEA"),
+    )
+
+    def test_a_credential_shaped_message_or_text_answer_is_redacted(self):
+        for name, said, secret in self.SHAPES:
+            for kind, answer in (("message", (401, {"message": said})), ("text", (502, said))):
+                with self.subTest(f"{name} as {kind}"):
+                    code, lines = run_main(Refusing(app_answer=answer))
+                    self.assertEqual(code, 1)
+                    self.assertNotIn(secret, json.dumps(lines))
+                    self.assertIn("[REDACTED]", lines[-1]["error"])
+                    self.assertEqual((lines[-1]["step"], lines[-1]["status"]),
+                                     ("identity", answer[0]))
+
+    def test_the_text_around_a_credential_is_kept(self):
+        _, lines = run_main(Refusing(app_answer=(401, {"message": "bad token ghs_secret_example"})))
+        self.assertIn("bad token [REDACTED]", lines[-1]["error"])
+
+    def test_a_token_this_run_holds_is_redacted_whatever_it_looks_like(self):
+        fake = Refusing(app_answer=(401, {"message": f"Bad credentials: {self.HELD}"}))
+        fake.tokens["reader"]["token"] = self.HELD
+        _, lines = run_main(fake)
+        self.assertNotIn(self.HELD, json.dumps(lines))
+        self.assertIn("Bad credentials: [REDACTED]", lines[-1]["error"])
+
+    def test_the_person_token_is_redacted_too(self):
+        person = "0123456789abcdef0123456789abcdef01234567"  # a classic token has no prefix
+        fake = Refusing(person_token=person, refuse=[
+            ("person", "POST", "/git/refs", (403, {"message": f"no access for {person}"}))])
+        _, lines = run_main(fake)
+        self.assertEqual((lines[-1]["step"], lines[-1]["status"]), ("branch", 403))
+        self.assertNotIn(person, json.dumps(lines))
+
+    def test_a_cut_cannot_leave_the_start_of_a_held_token(self):
+        """The token is removed before the error is cut to ``ERROR_LIMIT``: cutting first would
+        leave its first characters in the log, where no whole-token match can find them."""
+        lead = len("reader GET /app: ") + 1
+        said = "x" * (spike.ERROR_LIMIT - lead - 10) + " " + self.HELD
+        fake = Refusing(app_answer=(502, said))
+        fake.tokens["reader"]["token"] = self.HELD
+        _, lines = run_main(fake)
+        self.assertNotIn(self.HELD[:6], json.dumps(lines))
+        self.assertLessEqual(len(lines[-1]["error"]), spike.ERROR_LIMIT)
+
+    def test_scrub_replaces_every_secret_given_longest_first(self):
+        self.assertEqual(spike.scrub("a abcd-long b abcd c", ["abcd", "abcd-long", "x", None]),
+                         "a [REDACTED] b [REDACTED] c")
 
 
 class DocsAgree(unittest.TestCase):

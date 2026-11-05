@@ -33,6 +33,7 @@ import base64
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -56,6 +57,29 @@ def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
+ERROR_LIMIT = 240  # characters of a failed step's ``error`` that reach the log
+
+
+# What a credential looks like wherever GitHub or a proxy might echo it back into an answer:
+# GitHub's own token prefixes (any length: a short one is still a token), an Authorization value,
+# a JWT (an App's) and a PEM private key.
+_CREDENTIAL_SHAPES = re.compile(
+    r"\b(?:gh[pousr]_|github_pat_)\w+"
+    r"|(?i:\b(?:token|bearer)\s+)[A-Za-z0-9_.~+/=-]{20,}"
+    r"|\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}"
+    r"|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----|[\s\S]*)")
+
+
+def scrub(text: str, secrets=()) -> str:
+    """``text`` with every credential-shaped piece, and every one of ``secrets`` (values this run
+    holds; four characters or more), replaced by ``[REDACTED]``. What GitHub says goes into the
+    log only through here: the docs promise that no token is printed."""
+    for secret in sorted({s.strip() for s in secrets if isinstance(s, str) and len(s.strip()) >= 4},
+                         key=len, reverse=True):
+        text = text.replace(secret, "[REDACTED]")
+    return _CREDENTIAL_SHAPES.sub("[REDACTED]", text)
+
+
 class StepFailed(Exception):
     """A step got an API answer it cannot go on without: its name, GitHub's status, what it said."""
 
@@ -74,13 +98,15 @@ def dig(body, path: str):
 def expect(step: str, got: tuple, *paths: str, what: str = ""):
     """The body of ``got`` (the ``(status, body)`` of ``Spike.gh`` / ``Spike.app``) when its status
     is 2xx and the body holds a value at every dotted one of ``paths``; otherwise ``StepFailed``
-    for ``step``. ``what`` names the request. Only GitHub's ``message`` (or the start of a text
-    answer) goes into the error, never a request body or a token."""
+    for ``step``. ``what`` names the request. Only GitHub's ``message`` (or a text answer) goes
+    into the error, never the rest of a body, and it passes through ``scrub`` first, so a token
+    echoed in it is gone. ``main`` cuts the error to ``ERROR_LIMIT`` after removing the tokens the
+    run holds, so the cut can never leave half of a token behind."""
     status, body = got
     lead = f"{what}: " if what else ""
     if not 200 <= status < 300:
         said = body.get("message") if isinstance(body, dict) else body
-        raise StepFailed(step, status, f"{lead}{str(said)[:200]}")
+        raise StepFailed(step, status, f"{lead}{scrub(str(said))}")
     missing = [p for p in paths if dig(body, p) is None]
     if missing:
         raise StepFailed(step, status, f"{lead}the answer has no {', '.join(missing)}")
@@ -95,6 +121,10 @@ class Spike:
         self.person_token = person_token
         self.tokens: dict = {}
         self.slugs: dict = {}
+
+    def secrets(self) -> list[str]:
+        """The tokens this run holds (each App's installation token, the person's), for ``scrub``."""
+        return [held["token"] for held in self.tokens.values()] + [self.person_token]
 
     # -- authentication ------------------------------------------------------------------------
     def key(self, role: str) -> str:
@@ -451,11 +481,14 @@ def main(argv=None) -> int:
     apps = dict(item.split("=", 1) for item in args.app)
     if set(apps) != set(ROLES):
         ap.error("give --app for exactly reader, reviewer and fixer")
+    harness = Spike(args.repo, {k: int(v) for k, v in apps.items()}, args.keys, args.check_branch,
+                    os.environ.get(args.person_token_env, ""))
     try:
-        run(Spike(args.repo, {k: int(v) for k, v in apps.items()}, args.keys, args.check_branch,
-                  os.environ.get(args.person_token_env, "")))
+        run(harness)
     except StepFailed as exc:
-        emit(exc.step, status=exc.status, error=exc.error)
+        # ``expect`` removed what is shaped like a token; this removes the tokens this run holds
+        # (a legacy personal token has no prefix to recognise), and only then cuts.
+        emit(exc.step, status=exc.status, error=scrub(exc.error, harness.secrets())[:ERROR_LIMIT])
         return 1
     return 0
 

@@ -37,8 +37,13 @@ To set a loop up with Apps, see [Getting started with GitHub Apps](github-apps.m
     reading or committing `app.py`, opening a PR, reading a commit) that is refused or answers
     without the field the next step needs ends the run: the last JSON line is
     `{"step": ..., "status": ..., "error": ...}` (the step is `identity`, `branch`, `put_file`,
-    `open_pr`, `fixer_pr`, `git_push` or `reviewer_permissions`; the error is GitHub's message,
-    never a token) and the exit code is 1. The review, reviewer-request and check-run steps are
+    `open_pr`, `fixer_pr`, `git_push` or `reviewer_permissions`) and the exit code is 1. The error
+    is GitHub's `message` (or a text answer) and nothing else of the body, cut to 240 characters.
+    Before it is printed, anything shaped like a credential (a `ghp_`/`ghs_`/`github_pat_` token,
+    an `Authorization` value, an App JWT, a private key) and every token this run holds, the
+    person's included, is replaced by `[REDACTED]`. A credential GitHub echoes in some other shape
+    that this run does not hold would not be recognised: the log is still a spike's, read before
+    it is shared. The review, reviewer-request and check-run steps are
     not covered by this: they still print the status they got, and a refused review or check run
     can still end the run with a traceback.
   - Row 3 is repeated only for the App bot (both login forms, `request_reviewer`). The human
