@@ -119,6 +119,21 @@ class Doctor(AppLoop):
         self.assertIn("same token file as the reviewer", got.detail)
 
 
+class _Answer:
+    """What ``urlopen`` returns for an HTTP answer: a status, headers and a body to read."""
+    def __init__(self, status, body):
+        self.status, self.body, self.headers = status, body, {"X-Foo": "1"}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self.body
+
+
 class Live(AppLoop):
     """doctor's live App check (shadow review of #1198): the key signs as this App and the App is
     installed here, read with the App's JWT; no token minted."""
@@ -185,18 +200,47 @@ class Live(AppLoop):
                 self.assertNotIn("private key", got.fix)
                 self.assertNotIn("is not installed", got.detail)
 
-    def test_the_real_transport_error_reaches_the_check_as_unknown(self):
-        # The path the issue names: _as_app's except-Exception branch, then the check. Only the
-        # socket (urlopen) and the JWT signer are replaced.
-        gone = urllib.error.URLError("[Errno -2] Name or service not known")
+    def real(self, call, **urlopen):
+        """``call()`` with the real ``_as_app``: only the socket (``urlopen``) and the JWT signer
+        are replaced, so the response it builds is the one the check sees."""
         env = {k: v for k, v in os.environ.items() if k not in envnames.both("GH_STUB")}
         with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.object(gh, "API", "http://127.0.0.1:9"), \
                 mock.patch.object(github_app, "jwt", return_value="a.b.c"), \
-                mock.patch("urllib.request.urlopen", side_effect=gone):
-            got = identity_checks.check_app_live(self.loop, BOT_REV, offline=False)
+                mock.patch("urllib.request.urlopen", **urlopen):
+            return call()
+
+    def live_real(self, **urlopen):
+        return self.real(lambda: identity_checks.check_app_live(self.loop, BOT_REV, offline=False),
+                         **urlopen)
+
+    def test_the_real_transport_error_reaches_the_check_as_unknown(self):
+        # The path the issue names: _as_app's except-Exception branch, then the check.
+        got = self.live_real(side_effect=urllib.error.URLError("[Errno -2] Name or service not known"))
         self.assertEqual(got.status, doctor.UNKNOWN, got.detail)
         self.assertIn("URLError", got.detail)
+
+    def test_a_malformed_answer_is_not_reported_as_a_network_outage(self):
+        # Review F1 (#1913): a 200 whose body is not JSON fails in _as_app's except-Exception
+        # branch AFTER GitHub answered. The check must not say "no HTTP answer" and send the
+        # operator to the network: GitHub did answer, so it stays a failed read of the key.
+        got = self.live_real(return_value=_Answer(200, b"<html>not json</html>"))
+        self.assertEqual(got.status, doctor.MISMATCH, got.detail)
+        self.assertNotIn("no HTTP answer", got.detail)
+        self.assertNotIn("api.github.com", got.fix)
+        self.assertIn("JSONDecodeError", got.detail)
+
+    def test_as_app_keeps_the_status_of_an_answer_whose_body_cannot_be_read(self):
+        # The layer under the check: a missing status means no HTTP answer, never "answered,
+        # then failed to read".
+        bad = self.real(lambda: github_app._as_app(self.loop, BOT_REV, "/app"),
+                        return_value=_Answer(200, b"not json"))
+        gone = self.real(lambda: github_app._as_app(self.loop, BOT_REV, "/app"),
+                         side_effect=urllib.error.URLError("down"))
+        self.assertEqual((bad.status, bad.data, bad.headers), (200, None, {"x-foo": "1"}))
+        self.assertIn("JSONDecodeError", bad.error)
+        self.assertEqual((gone.status, gone.data), (None, None))
+        self.assertIn("URLError", gone.error)
 
     def test_an_answer_from_github_stays_a_mismatch_or_absent(self):
         # What the fix must not loosen: a status is GitHub's answer about the key or the install.
