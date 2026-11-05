@@ -1124,9 +1124,15 @@ moves anything and prints the path.
 
 The archive holds the routes' HMAC secrets, so restored hooks keep working. It is created mode
 `0600`, the command warns about it, and the secrets are never printed. It leaves out GitHub
-tokens (PATs), Hermes profiles and model logins. It never overwrites a file. There is no
-output-directory or retention setting yet; when one is added it must be settable from the
-Desktop form, `init`, `setup`, `set` and the loop file.
+tokens (PATs), Hermes profiles and model logins. It never overwrites a file.
+
+Retention (#1079): a backup written to the default place (`$HERMES_HOME/backups`, no `--out`)
+is followed by deleting the oldest default-named archives (`diaktoros-backup-<stamp>[-n].tar.gz`,
+regular files only) beyond the newest `--keep N` (default 10; `0` keeps every archive). An
+archive written with `--out`, and any other file in that directory, is never counted or deleted.
+`migrate`'s automatic backup prunes with the default of 10. `--keep` is a per-run flag, not a
+plugin setting, so a scheduled backup must pass it to use another count; there is no
+output-directory setting.
 
 ```bash
 hermes dk backup --out "<archive-file>"
@@ -1136,6 +1142,7 @@ hermes dk backup --out "<archive-file>"
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--out` | `FILE` |  | where to write it (default: $HERMES_HOME/backups/…); never overwrites a file |
+| `--keep` | `N` |  | after a backup to the default place, keep the newest N default-named archives in $HERMES_HOME/backups and delete older ones; 0 keeps all (default: 10). Archives written with --out are never counted or deleted (#1079) |
 <!-- /flags -->
 
 ### restore

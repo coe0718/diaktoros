@@ -459,13 +459,17 @@ def _migrate(args) -> int:
         print(f"backup: would write {backup.default_out()} before anything moves")
     else:
         # Before the first move (#496): migrate has no undo, the archive is the undo.
+        pruned: list[pathlib.Path] = []
         try:
-            archive = backup.create()
+            archive = backup.create(pruned=pruned)
         except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
             print(f"cannot migrate: the backup before it failed ({exc}); nothing was moved")
             return 2
         print(f"backup: {archive} (restore with `hermes dk restore {shlex.quote(str(archive))}`)")
         print(f"backup: {backup.WARNING}")
+        if pruned:
+            print(f"backup: removed {len(pruned)} older default-named archive(s) beyond the "
+                  f"newest {backup.DEFAULT_KEEP}: " + ", ".join(p.name for p in pruned))
     lines = migrate.settings_step(cli_common._CTX, dry_run=args.dry_run)
     watchdog = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "watchdog.py"
     if not args.dry_run:
@@ -503,12 +507,19 @@ def _migrate(args) -> int:
 def cmd_backup(args) -> int:
     """``backup`` (#496): one 0600 archive of everything the plugin owns; see ``backup``."""
     from .. import backup
+    keep = getattr(args, "keep", None)
+    keep = backup.DEFAULT_KEEP if keep is None else keep
+    pruned: list[pathlib.Path] = []
     try:
-        archive = backup.create(pathlib.Path(args.out) if args.out else None)
+        archive = backup.create(pathlib.Path(args.out) if args.out else None,
+                                keep=keep, pruned=pruned)
     except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
         print(f"cannot back up: {exc}")
         return 2
     print(f"backup written: {archive}")
+    if pruned:
+        print(f"removed {len(pruned)} older default-named archive(s) beyond the newest {keep}: "
+              + ", ".join(p.name for p in pruned))
     left_out = backup.read_manifest(archive).get("skipped") or []
     if left_out:
         print(f"left out ({len(left_out)} temp-named file(s), assumed a writer's scratch): "
@@ -995,6 +1006,11 @@ def add_backup(sub) -> None:  # noqa: ANN001
     bak.add_argument("--out", metavar="FILE", default=None,
                      help="where to write it (default: $HERMES_HOME/backups/…); never "
                           "overwrites a file")
+    bak.add_argument("--keep", metavar="N", type=int, default=None,
+                     help="after a backup to the default place, keep the newest N default-named "
+                          "archives in $HERMES_HOME/backups and delete older ones; 0 keeps all "
+                          "(default: 10). Archives written with --out are never counted or "
+                          "deleted (#1079)")
     bak.set_defaults(func=cmd_backup)
 
 

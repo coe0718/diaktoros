@@ -10,9 +10,17 @@ job) plus the members. Route entries carry their HMAC secrets so restored hooks 
 the archive is created 0600 and nothing in it is ever printed. Left out: PATs, Hermes profiles
 and model logins; ``restore`` checks the token files the loops name and lists any that are missing.
 
-Nothing here has a setting: the only knob is ``--out``. An output directory or retention setting
-would have to be settable from the form, ``init``, ``setup``, ``set`` and the loop file, and none
-exists yet.
+Retention (#1079): after a successful write to the default place, ``create`` deletes the oldest
+default-named archives in ``$HERMES_HOME/backups`` beyond the newest ``keep`` (``DEFAULT_KEEP``;
+``hermes dk backup --keep N``; 0 keeps every archive). Only regular, non-symlink files named like
+``default_out``'s are ever candidates. An archive written with ``--out`` is never counted or
+deleted, and neither is anything else that sits in the directory. ``hermes dk migrate`` takes its
+backup through ``create`` too, so it prunes with the default ``keep``.
+
+Retention is a flag with a built-in default, not a plugin setting. A setting would have to be
+settable from the form, ``init``, ``setup``, ``set`` and the loop file, and the form's keys are
+per-loop while a backup is per-install; ``--keep`` is per run, so a cron job that runs the backup
+has to pass it to get a count other than ``DEFAULT_KEEP``. An output directory still has no knob.
 """
 from __future__ import annotations
 
@@ -21,6 +29,7 @@ import importlib
 import json
 import os
 import pathlib
+import re
 import shlex
 import sqlite3
 import tarfile
@@ -38,6 +47,8 @@ WARNING = ("this archive holds route secrets (webhook HMAC keys): keep it privat
 
 
 _DEFAULT_TRIES = 20     # re-picks of a default name that a concurrent run took first
+DEFAULT_KEEP = 10       # default-named archives kept in the default directory; 0 keeps them all
+_DEFAULT_NAME = re.compile(r"diaktoros-backup-(\d{8}-\d{6})(?:-(\d+))?\.tar\.gz")
 
 
 class BackupError(RuntimeError):
@@ -53,6 +64,43 @@ def default_out() -> pathlib.Path:
         n += 1
         path = base / f"diaktoros-backup-{stamp}-{n}.tar.gz"
     return path
+
+
+def check_keep(keep: int) -> None:
+    """``--keep`` is a count of archives: 0 (keep all) or more."""
+    if keep < 0:
+        raise BackupError(f"--keep must be 0 (keep all) or more, not {keep}")
+
+
+def prune(keep: int, protect: pathlib.Path | None = None) -> list[pathlib.Path]:
+    """Delete the oldest default-named archives in the default directory beyond the newest ``keep``.
+
+    Candidates are regular, non-symlink files whose name is one ``default_out`` makes, ordered by
+    the stamp in the name and then its collision suffix (not mtime, which a copy resets).
+    ``protect`` (the archive just written) is never deleted. ``keep`` 0 deletes nothing. A file
+    that cannot be removed is left: retention never fails a backup that was written. Returns what
+    was deleted.
+    """
+    check_keep(keep)
+    base = config.home() / "backups"
+    if not keep or not base.is_dir():
+        return []
+    found = []
+    for path in base.iterdir():
+        match = _DEFAULT_NAME.fullmatch(path.name)
+        if match and path.is_file() and not path.is_symlink():
+            found.append(((match[1], int(match[2] or 1)), path))
+    found.sort(key=lambda item: item[0], reverse=True)
+    removed = []
+    for _, path in found[keep:]:
+        if protect is not None and path == protect.absolute():
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        removed.append(path)
+    return removed
 
 
 # The flock files the plugin's own writers keep directly in a state directory (or the gate-failure
@@ -155,8 +203,13 @@ def token_paths(loop: dict) -> dict[str, str]:
     return {str(login): str(path) for login, path in config.credentials_map(loop).items() if path}
 
 
-def create(out: pathlib.Path | None = None) -> pathlib.Path:
-    """Write the archive and return its path. Refuses to overwrite a file."""
+def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
+           pruned: list[pathlib.Path] | None = None) -> pathlib.Path:
+    """Write the archive and return its path. Refuses to overwrite a file.
+
+    A default-named archive (no ``out``) is followed by ``prune(keep)``; what it deleted is
+    appended to ``pruned`` when given. An ``out`` archive is never followed by a prune."""
+    check_keep(keep)
     chosen = bool(out)
     out = (pathlib.Path(out).expanduser() if chosen else default_out()).absolute()
     loops = config.all_loops()
@@ -224,6 +277,10 @@ def create(out: pathlib.Path | None = None) -> pathlib.Path:
     except BaseException:
         out.unlink(missing_ok=True)
         raise
+    if not chosen:
+        removed = prune(keep, protect=out)
+        if pruned is not None:
+            pruned.extend(removed)
     return out
 
 

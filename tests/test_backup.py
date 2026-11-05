@@ -595,6 +595,123 @@ class Create(Base):
         self.assertEqual(self.ledger_count(), 298)
 
 
+class Retention(Base):
+    """#1079: the default place keeps the newest ``--keep`` default-named archives."""
+
+    def old(self, *names):
+        folder = config.home() / "backups"
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (folder / name).write_text("old")
+        return folder
+
+    @staticmethod
+    def stamped(n):
+        return [f"diaktoros-backup-2020010{d}-000000.tar.gz" for d in range(1, n + 1)]
+
+    def names(self, folder):
+        return sorted(p.name for p in folder.iterdir())
+
+    def test_backup_keeps_the_newest_n_default_archives(self):
+        folder = self.old(*self.stamped(4))
+        code, text = self.run_cmd(cli.cmd_backup, out=None, keep=3)
+        self.assertEqual(code, 0, text)
+        left = self.names(folder)
+        self.assertEqual(len(left), 3)
+        self.assertEqual(left[:2], self.stamped(4)[2:])           # the two newest old ones stay
+        self.assertIn("removed 2 older", text)
+        self.assertIn(self.stamped(4)[0], text)
+
+    def test_the_default_keep_applies_when_none_is_given(self):
+        folder = self.old(*self.stamped(9), "diaktoros-backup-20200110-000000.tar.gz",
+                          "diaktoros-backup-20200111-000000.tar.gz")
+        code, text = self.run_cmd(cli.cmd_backup, out=None, keep=None)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(len(self.names(folder)), backup.DEFAULT_KEEP)
+
+    def test_order_is_the_stamp_then_the_collision_suffix_not_the_mtime(self):
+        folder = self.old("diaktoros-backup-20200101-000000.tar.gz",
+                          "diaktoros-backup-20200101-000000-2.tar.gz",
+                          "diaktoros-backup-20200101-000000-10.tar.gz")
+        os.utime(folder / "diaktoros-backup-20200101-000000-10.tar.gz", (1, 1))
+        backup.prune(1)
+        self.assertEqual(self.names(folder), ["diaktoros-backup-20200101-000000-10.tar.gz"])
+
+    def test_keep_zero_keeps_everything(self):
+        folder = self.old(*self.stamped(5))
+        code, text = self.run_cmd(cli.cmd_backup, out=None, keep=0)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(len(self.names(folder)), 6)
+        self.assertNotIn("removed", text)
+
+    def test_only_default_named_regular_files_are_ever_deleted(self):
+        folder = self.old("notes.txt", "diaktoros-backup-mine.tar.gz",
+                          "diaktoros-backup-20200101-000000.tar.gz.bak",
+                          *self.stamped(2))
+        (folder / "diaktoros-backup-20190101-000000.tar.gz").mkdir()
+        target = self.root / "elsewhere.tar.gz"
+        target.write_text("precious")
+        (folder / "diaktoros-backup-20180101-000000.tar.gz").symlink_to(target)
+        code, text = self.run_cmd(cli.cmd_backup, out=None, keep=1)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(target.read_text(), "precious")
+        left = self.names(folder)
+        for kept in ("notes.txt", "diaktoros-backup-mine.tar.gz",
+                     "diaktoros-backup-20200101-000000.tar.gz.bak",
+                     "diaktoros-backup-20190101-000000.tar.gz",
+                     "diaktoros-backup-20180101-000000.tar.gz"):
+            self.assertIn(kept, left)
+        for gone in self.stamped(2):
+            self.assertNotIn(gone, left)
+
+    def test_an_out_archive_is_never_counted_or_pruned(self):
+        folder = self.old(*self.stamped(3))
+        mine = self.root / "diaktoros-backup-20190101-000000.tar.gz"
+        code, text = self.run_cmd(cli.cmd_backup, out=str(mine), keep=1)
+        self.assertEqual(code, 0, text)
+        self.assertTrue(mine.is_file())
+        self.assertEqual(self.names(folder), self.stamped(3))     # no prune after an --out write
+
+    def test_a_negative_keep_is_refused_before_anything_is_written_or_deleted(self):
+        folder = self.old(*self.stamped(2))
+        code, text = self.run_cmd(cli.cmd_backup, out=None, keep=-1)
+        self.assertEqual(code, 2)
+        self.assertIn("--keep", text)
+        self.assertEqual(self.names(folder), self.stamped(2))
+
+    def test_a_failed_backup_prunes_nothing(self):
+        folder = self.old(*self.stamped(3))
+        with mock.patch.object(backup, "_snapshot_ledger", side_effect=sqlite3.Error("boom")):
+            code, text = self.run_cmd(cli.cmd_backup, out=None, keep=1)
+        self.assertEqual(code, 2)
+        self.assertEqual(self.names(folder), self.stamped(3))
+
+    def test_a_file_that_cannot_be_removed_does_not_fail_the_backup(self):
+        folder = self.old(*self.stamped(2))
+        with mock.patch.object(Path, "unlink", side_effect=PermissionError("no")):
+            made = backup.create(keep=1)
+        self.assertTrue(made.is_file())
+
+    def test_migrate_prunes_through_the_same_create(self):
+        folder = self.old(*self.stamped(9), "diaktoros-backup-20200110-000000.tar.gz",
+                          "diaktoros-backup-20200111-000000.tar.gz")
+        with mock.patch.object(migrate, "settings_step", return_value=[]), \
+                mock.patch.object(migrate, "shim_step", return_value=[]), \
+                mock.patch.object(migrate, "files_step", return_value=[]), \
+                mock.patch.object(migrate, "repo_step", return_value=[]), \
+                mock.patch.object(cli_lifecycle, "_move_watchdog_job", return_value=[]):
+            code, text = self.run_cmd(cli.cmd_migrate, dry_run=False)
+        self.assertEqual(len(self.names(folder)), backup.DEFAULT_KEEP, text)
+        self.assertIn("removed 2 older", text)
+
+    def test_the_flag_is_parsed_and_defaults_to_unset(self):
+        import argparse as ap
+        parser = ap.ArgumentParser()
+        cli_lifecycle.add_backup(parser.add_subparsers())
+        self.assertIsNone(parser.parse_args(["backup"]).keep)
+        self.assertEqual(parser.parse_args(["backup", "--keep", "3"]).keep, 3)
+
+
 class LockInventory(unittest.TestCase):
     """Review F2: the lock names come from the writers' registrations, and a lock a writer names
     without registering fails here, whatever the writer is (no list in this test to keep up)."""
