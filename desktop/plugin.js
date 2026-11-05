@@ -492,10 +492,16 @@ function CheckRow({ check }) {
   })
 }
 
+// ``children`` says what a failed read means when nothing is known about the answer (a transport
+// failure). An INVALID_RESPONSE is different: the backend did answer and validation refused the
+// answer, so saying it "did not answer" would be false. Only the error's code is read, never its
+// message, so nothing the backend sent reaches the page.
 function ErrorLine({ error, children }) {
+  const rejected = error?.code === 'INVALID_RESPONSE'
   return jsxs('div', {
     className: 'text-xs text-(--ui-text-tertiary)',
-    children: [error ? safeError(error) + ' — ' : '', children]
+    children: [error ? safeError(error) + ' — ' : '',
+      rejected ? 'the loop backend answered, but the response was rejected by validation' : children]
   })
 }
 
