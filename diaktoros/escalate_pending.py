@@ -52,12 +52,16 @@ def get(st, number: int) -> dict | None:
     return entry if _live(entry, time.time()) else None
 
 
-def record(st, number: int, *, reason: str, head: str, by: str | None = None) -> dict:
+_OMITTED = object()     # ``by`` not passed: told apart from any value, ``None`` and "" included
+
+
+def record(st, number: int, *, reason: str, head: str, by=_OMITTED) -> dict:
     """Record (or replace) the PR's pending escalation; returns it. ``by`` is the breach
-    marker's ``escalated.by`` it will be written with: the operator's when omitted. A value that
-    is given is stored as it is (an empty one too), as before the constant."""
+    marker's ``escalated.by`` it will be written with: the operator's when it is not passed. A
+    value that is passed is stored as it is, ``None`` and an empty string too, as before the
+    constant (the fixer gate then falls back to the operator kind when it reads the record)."""
     entry = {"reason": reason, "head": head,
-             "by": gate.OPERATOR_ESCALATION if by is None else by, "at": time.time()}
+             "by": gate.OPERATOR_ESCALATION if by is _OMITTED else by, "at": time.time()}
     with st.locked():
         memory = st._load(_path(st), {})
         memory = memory if isinstance(memory, dict) else {}

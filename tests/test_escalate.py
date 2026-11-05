@@ -448,14 +448,26 @@ class Pending(Base):
         self.assertEqual(breach.call_args.kwargs["escalated"]["by"], "operator-renamed")
 
     def test_a_supplied_kind_is_stored_as_given_and_only_an_omitted_one_defaults(self):
-        # #1158 F2: the constant replaced the default, not the rule. An explicit value is stored
-        # unchanged, an empty one included (as before); `by=None`, the omitted case, defaults.
-        for given, stored in (("shadow", "shadow"), ("", ""), (None, gate.OPERATOR_ESCALATION)):
+        # #1158 F2/F3: the constant replaced the default, not the rule. Any value passed is stored
+        # unchanged, "" and an explicit None included (as before); only an omitted `by` defaults.
+        omitted = object()
+        for given, stored in (("shadow", "shadow"), ("", ""), (None, None),
+                              (omitted, gate.OPERATOR_ESCALATION)):
             with self.subTest(by=given):
-                kwargs = {} if given is None else {"by": given}
+                kwargs = {} if given is omitted else {"by": given}
                 entry = escalate_pending.record(self.st, 7, reason="r", head=HEAD, **kwargs)
                 self.assertEqual(entry["by"], stored)
                 self.assertEqual(escalate_pending.get(self.st, 7)["by"], stored)
+
+    def test_a_pending_record_without_a_kind_still_reaches_the_breach_as_the_operator(self):
+        # #1158 F3: a stored `by` of None (or "") is not a new kind; the fixer gate reading it
+        # falls back to the operator kind, exactly as it did when the default was the literal.
+        for given in (None, ""):
+            with self.subTest(by=given):
+                escalate_pending.record(self.st, 7, reason="r", head=HEAD, by=given)
+                _, _, breach, _ = self.fixer_gate(
+                    verdict(6) | {"state": "changes_requested"}, [verdict(5), verdict(6)])
+                self.assertEqual(breach.call_args.kwargs["escalated"]["by"], "operator")
 
     def test_the_cap_comes_first_and_clears_it(self):
         reviews = [verdict(4), verdict(5), verdict(6)]               # 3 of 3: the cap breaches
