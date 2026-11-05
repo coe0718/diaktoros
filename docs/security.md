@@ -144,8 +144,9 @@ outcome is reported, and a partial or uncertain one is not success. Desktop stil
 until its confirmed control is wired to that entry point. No route invokes a subprocess CLI or
 monkeypatches the host to make a button work. A CLI drain exits 0 when the watchdog script returned and prints that queue
 and run outcomes are unconfirmed; 0 does not prove the sweep covered the queue (a held
-migration, paused hooks or a spent budget also return). 2 stays the refused-input code, and a
-refused loop file exits 1. The
+migration, paused hooks or a spent budget also return). 2 is the refused-input code, including a loop file `--loop` cannot load; 1 is
+only the script refusing a loop that loaded and then failed to load again (running
+`scripts/watchdog.py --drain` directly exits 1 on a refused loop file). The
 selector also refuses corrupt markers and uncertain/quarantined ledger outcomes for escalation.
 Existing retry, pause/resume and seat configuration are unchanged. Diaktoros never merges.
 

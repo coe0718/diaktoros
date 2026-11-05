@@ -361,6 +361,31 @@ class DrainExitCodeDocs(unittest.TestCase):
             self.assertNotRegex(text, r"(?i)exits 0 after a completed sweep", name)
             self.assertRegex(text, r"(?i)does not prove the sweep covered the queue", name)
 
+    def test_docs_do_not_say_a_refused_loop_file_exits_1_for_the_cli(self):
+        """`hermes dk drain --loop bad` exits 2 (``_one_loop`` refuses it); the docs must agree."""
+        import pathlib
+        import re
+        docs = pathlib.Path(__file__).resolve().parent.parent / "docs"
+        for name in ("operations.md", "security.md"):
+            text = re.sub(r"\s+", " ", (docs / name).read_text(encoding="utf-8"))
+            self.assertNotRegex(text, r"(?i)and a refused loop file exits 1", name)
+            self.assertRegex(text, r"(?i)loop file `--loop` cannot load", name)
+
+    def test_cmd_drain_exits_2_for_a_loop_file_that_will_not_load(self):
+        import os
+        import tempfile
+        from types import SimpleNamespace
+        from diaktoros.cli import operations
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "bad.json"), "w") as handle:
+                handle.write("{not json")
+            with mock.patch.dict(os.environ, {"DIAKTOROS_CONFIG_DIR": root}), \
+                    mock.patch.object(actions, "perform_drain") as drain, \
+                    mock.patch("builtins.print"):
+                code = operations.cmd_drain(SimpleNamespace(loop="bad", seat="reviewer"))
+        self.assertEqual(code, 2)
+        drain.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
