@@ -588,6 +588,32 @@ class Gate(Base):
         self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix")])
         self.assertEqual(st.fix_holds(), {})
 
+    def test_the_sweep_release_notice_reaches_the_observer_with_its_queued_kind(self):
+        # Review of #1873, F1: ``_release`` sends a ``fixing`` notice, and ``key_for`` refuses one
+        # without its kind, which ``notify`` catches and logs: the notice vanishes without a
+        # sound. Only a configured feed and a captured POST can see that.
+        sent = self.feed()
+        self.origin = 7
+        self.run_gate(self.labeled())                   # held behind PR #7: the "held" notice
+        st = state_mod.state_for(self.loop)
+        self.origin_pr = {"number": 7, "state": "closed", "merged": True}
+        fix_hold.sweep(self.loop, st)                   # merged: the release queues the fix
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix")])
+        queued = [m for m in sent if "fix turn queued" in m]
+        self.assertEqual(len(queued), 1, sent)
+        self.assertIn(f"PR #7 merged; fix turn queued from main at {BASE[:7]}", queued[0])
+
+    def test_a_release_that_scheduled_nothing_sends_no_queued_notice(self):
+        sent = self.feed()
+        self.origin = 7
+        self.run_gate(self.labeled())
+        st = state_mod.state_for(self.loop)
+        self.origin_pr = {"number": 7, "state": "closed", "merged": True}
+        with mock.patch.object(gate, "enqueue_isolated", lambda *a, **k: "duplicate running"):
+            fix_hold.sweep(self.loop, st)               # a turn is already running: no new one
+        self.assertEqual(st.fix_holds(), {})
+        self.assertEqual([m for m in sent if "fix turn queued" in m], [], sent)
+
     def test_a_still_open_origin_stays_held_in_the_sweep(self):
         self.origin = 7
         self.run_gate(self.labeled())
