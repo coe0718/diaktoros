@@ -1301,8 +1301,9 @@ class LoopState:
     def shadow_findings_put(self, number: int, head: str, entry: dict,
                             keep: "set[tuple[int, str]] | None" = None) -> None:
         """Keep the snapshot for this PR and head. Past ``SHADOW_FINDINGS_KEPT`` the oldest are
-        dropped, but never one in ``keep`` (the (number, head) of a shadow run that has not
-        ended: its broker would fall back to the live ledger, #1013). ``keep=None`` means the
+        dropped, but never one in ``keep`` (the (number, head) of this loop's repo's shadow run
+        that has not ended: its broker would fall back to the live ledger, #1013; another
+        repo's run is not in it, #1133). ``keep=None`` means the
         caller could not tell which runs are open, so nothing is dropped."""
         with self.locked():
             path = self.dir / "shadow-findings.json"

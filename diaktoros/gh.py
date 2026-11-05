@@ -33,7 +33,7 @@ import urllib.parse
 import urllib.request
 from typing import NamedTuple
 
-from .util import log, login_entry
+from .util import epoch, log, login_entry
 from . import envnames
 
 API = "https://api.github.com"
@@ -620,7 +620,8 @@ def reviews_read(loop: dict, number: int,
 
 def _read_pages(loop: dict, path: str, what: str, max_pages: int,
                 login: str | None = None,
-                keep_partial: bool = False) -> tuple[list[dict] | None, str]:
+                keep_partial: bool = False,
+                created_floor: float = 0.0) -> tuple[list[dict] | None, str]:
     """Every page of a ``per_page=100`` listing, or ``(None, reason)`` — never a prefix of it.
 
     A failed, malformed or oversized page anywhere makes the whole listing unknown: the caller
@@ -631,6 +632,11 @@ def _read_pages(loop: dict, path: str, what: str, max_pages: int,
     A listing of exactly ``max_pages`` full pages is told from a longer one by reading one page
     past the bound (#1146): empty means whole, any item means past the bound. That probe is one
     extra request, made only when every page up to the bound was full.
+
+    ``created_floor`` is for a listing sorted by ``created`` descending (#1147): the caller needs
+    nothing created before that epoch, so a page whose last item is older than it ends the
+    listing as whole, however many pages the newer ones took. An item with no readable
+    ``created_at`` never ends it.
     """
     result: list[dict] = []
     # One page past the bound is a probe: a full last page does not prove another exists, so a
@@ -648,10 +654,16 @@ def _read_pages(loop: dict, path: str, what: str, max_pages: int,
                 isinstance(item, dict) for item in items):
             return None, f"{what} page {page}: invalid {what} list"
         result.extend(items)
-        if len(items) < REVIEW_PAGE_SIZE:
+        if len(items) < REVIEW_PAGE_SIZE or _older_than(items[-1], created_floor):
             return result, ""
     reason = f"{what} listing exceeds {max_pages} full pages"
     return (result, reason) if keep_partial else (None, reason)
+
+
+def _older_than(item: dict, floor: float) -> bool:
+    """Whether the item was created before ``floor`` (False without a floor or a readable stamp)."""
+    created = epoch(item.get("created_at"))
+    return bool(floor and created and created < floor)
 
 
 # Issue comments on a PR, read in full for the seats' records (the fixer's answers, #52).
@@ -750,7 +762,9 @@ def open_prs(loop: dict, errors: list | None = None):
     return result
 
 
-MAX_ISSUE_PAGES = 5
+# 3,000 items. The listing normally stops sooner, at the first page that reaches issues created
+# before the window (#1147); the bound only bites on a window with more open issues and PRs.
+MAX_ISSUE_PAGES = 30
 
 
 def open_issues_read(loop: dict, since: str) -> tuple[list[dict] | None, str]:
@@ -758,13 +772,17 @@ def open_issues_read(loop: dict, since: str) -> tuple[list[dict] | None, str]:
 
     GitHub's issues listing includes pull requests (they carry ``pull_request``) and cannot be
     filtered of them; the caller filters. Bounded to ``MAX_ISSUE_PAGES`` pages, read newest
-    first so a burst (the case the recovery sweep exists for) stays reachable. A listing past
+    first so a burst (the case the recovery sweep exists for) stays reachable. It keeps paging
+    until a page reaches issues created before ``since`` (older than the window, so nothing the
+    caller wants lies beyond), so eligible issues older than the newest 500 are read too (#1147).
+    A listing past
     the bound returns the pages read *and* a reason: ``(issues, reason)`` is an incomplete
     listing the caller must report; ``(None, reason)`` is unreadable; ``(issues, "")`` is whole.
     """
     path = (f"/repos/{loop['repo']}/issues?state=open&sort=created&direction=desc"
             f"&since={since}&per_page=100")
-    return _read_pages(loop, path, "open issue", MAX_ISSUE_PAGES, keep_partial=True)
+    return _read_pages(loop, path, "open issue", MAX_ISSUE_PAGES, keep_partial=True,
+                       created_floor=epoch(since))
 
 
 def request_review(loop: dict, number: int, login: str | None = None, as_login: str | None = None):

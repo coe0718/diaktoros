@@ -232,7 +232,7 @@ class SnapshotFirst(Ledger):
                 st.findings_put(7, {"findings": {"F1": {"state": "open"}}})   # the worker ran
             return "enqueued"
         sup.submit.side_effect = submit
-        def opened():
+        def opened(_repo):
             return {(c.args[2], c.args[3]) for c in sup.submit.call_args_list
                     if c.args[4] == "shadow"}
         with mock.patch.object(gate, "isolated_supervisor", return_value=sup), \

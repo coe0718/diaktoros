@@ -65,7 +65,7 @@ def fix(loop: dict, payload: dict) -> None:
         reason = f"isolated worker unavailable: {type(exc).__name__}: {exc}"
         failed_base = getattr(exc, "fix_base", None)
         if failed_base:
-            _fix_notice(loop, number, failed_base, f"held — {reason}")
+            _fix_notice(loop, number, failed_base, f"held — {reason}", "held")
         silence(f"issue #{number} fix held: {reason}")
     # Handed off, so an earlier decline's reason is stale: the fix is queued, or a wait the
     # sweep follows is recorded (review of #1804, F6). Not before: a hand-off that failed
@@ -75,17 +75,23 @@ def fix(loop: dict, payload: dict) -> None:
     if kind != "queued":
         silence(f"issue #{number}: {text}; not handed to the fixer")
     if outcome in ("enqueued", "rearmed", "pending"):
-        _fix_notice(loop, number, base, f"fix turn queued from {loop['base']} at {base[:7]}")
+        _fix_notice(loop, number, base, f"fix turn queued from {loop['base']} at {base[:7]}",
+                    "queued")
     # Recorded like the reviewer gate's acceptances (#1244): explain and Desktop show the event
     # that started the fix, not only the ones declined around it.
     silence(f"issue #{number} handed to the fixer at {base[:7]}: {outcome}", "accepted")
 
 
-def _fix_notice(loop: dict, number: int, base: str, outcome: str) -> None:
-    """The observer's "handed to the fixer" notice (#231): once per issue and base."""
+def _fix_notice(loop: dict, number: int, base: str, outcome: str, kind: str) -> None:
+    """The observer's "handed to the fixer" notice (#231): once per issue, base and outcome.
+
+    ``kind`` (``observer.OUTCOME_KINDS["fixing"]``: ``queued`` or ``held``) is part of the
+    notice's key, so a hand-off that was held at a base and then queued at the same base (the
+    worker came back) is two notices, not one swallowed by the first (#1057, #1080).
+    """
     from diaktoros import observer, state as state_mod
     observer.notify(loop, state_mod.state_for(loop), "fixing", number, base, identity=base,
-                    outcome=outcome, issue=True)
+                    outcome=outcome, issue=True, outcome_kind=kind)
 
 
 def _resolve_declined(loop: dict, payload: dict) -> None:

@@ -902,8 +902,13 @@ host owner; `review --another-round` remains CLI-only. CLI drain exits 0 when th
 queue and run outcomes are unconfirmed. That code does not prove the sweep covered the queue:
 the script also returns normally when a migration holds the install, when hooks are paused or
 unreadable, or when its own budget ran out (it prints a line saying so first), so read the
-output. Exit 2 is refused input (an unknown seat) or a budget that escaped the script, and a
-refused loop file exits 1. Inspect `explain`
+output. Exit 2 is refused input: an unknown seat, a loop file `--loop` cannot load (it prints
+`no such loop: ...`), or a budget that escaped the script. Exit 1 is only the script refusing a
+loop that loaded a moment earlier and then failed to load again. Running `scripts/watchdog.py
+--drain` directly differs: with an explicit `--loop <id>`, a refused loop file exits 1; without
+`--loop`, a refused file is only named on stderr (`not drained: ConfigError`), the other loops
+still drain and the exit is 0, so 0 does not rule out a refused file. A spent budget there prints
+its line and exits 0. Inspect `explain`
 and the queue before asking again. Escalation also refuses corrupt marker stores and unknown
 ledger outcomes through either caller. No action grants merge authority.
 

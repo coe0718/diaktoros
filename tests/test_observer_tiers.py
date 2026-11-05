@@ -52,6 +52,18 @@ class ObserverTierTests(unittest.TestCase):
             self.assertFalse(observer.is_urgent(event))
         self.assertTrue(observer.is_urgent("fixed", "POST outcome uncertain"))
 
+    def test_the_outcome_kind_is_part_of_the_key_and_unlisted_ones_are_refused(self):
+        # #1080: two outcomes at one (loop, number, head, event, identity) cannot share a key.
+        key = lambda kind="": observer.key_for(self.loop, 12, HEAD, "fixing", HEAD, kind)  # noqa: E731
+        self.assertNotEqual(key("queued"), key("held"))
+        self.assertEqual(key("queued"), key("queued"))
+        for bad in ("", "done"):
+            with self.subTest(bad), self.assertRaises(ValueError):
+                key(bad)
+        with self.assertRaises(ValueError):
+            observer.key_for(self.loop, 7, HEAD, "opened", "x", "held")
+        self.assertEqual(observer.key_for(self.loop, 7, HEAD, "opened", "x"), f"feed:7:{HEAD}:opened:x")
+
     def test_digest_queues_routine_and_sends_urgent_at_once(self):
         self.loop["observer"]["digest_min"] = 30
         self.register()
@@ -89,7 +101,8 @@ class ObserverTierTests(unittest.TestCase):
         n(self.loop, self.state, "handoff", 312, HEAD, identity="fix")
         n(self.loop, self.state, "approved", 312, HEAD, identity=2)
         n(self.loop, self.state, "approved", 316, HEAD, identity=3)
-        n(self.loop, self.state, "fixing", 318, "base", identity="b", issue=True)
+        n(self.loop, self.state, "fixing", 318, "base", identity="b", issue=True,
+          outcome_kind="queued")
         with patch.object(routes, "fire", return_value=True) as fire:
             self.assertTrue(observer.flush(self.loop, self.state))
         text = fire.call_args.args[2]["_observer"]["message"]

@@ -279,6 +279,8 @@ def explain_facts(loop: dict, number: int) -> dict:
         breach_marker = None               # no marker read: an unruled hold, never an error
     shadow = (gate.shadow_hold(loop, number, head, marker=breach_marker)
               if isinstance(head, str) and head else ("", ""))
+    from . import shadow_choice
+    choice = shadow_choice.explain_line(loop, number, head) if isinstance(head, str) else ""
     # #757: commits that show as a seat's but no seat turn pushed. Report-only, never a blocker.
     stray, stray_error = [], ""
     if isinstance(pr, dict):
@@ -289,7 +291,7 @@ def explain_facts(loop: dict, number: int) -> dict:
             stray_error = f"{type(exc).__name__}: {exc}"
     return {"review_only_conflict": ro_conflict, "hold": hold, "hold_error": hold_error,
             "misattributed": stray, "misattributed_error": stray_error,
-            "shadow_hold": shadow,
+            "shadow_hold": shadow, "shadow_choice": choice,
             "pr": pr, "pr_error": pr_error, "reviews": reviews, "reviews_error": reviews_error,
             "armed": armed, "armed_error": armed_error, "read_at": time.time(),
             "chain": chain, "parent_readiness": readiness,
@@ -367,6 +369,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
 def _read(c) -> None:
     """Read ``facts`` into ``c``: the PR, its head, base and chain, its author, the review request."""
     c.shadow_held, c.shadow_note = c.facts.get("shadow_hold") or ("", "")      # #1004
+    c.shadow_choice = str(c.facts.get("shadow_choice") or "")                  # #1788
     c.now = float(c.facts.get("read_at") or time.time())
     c.pr = c.facts.get("pr") if isinstance(c.facts.get("pr"), dict) else None
     c.reviews = c.facts.get("reviews") if isinstance(c.facts.get("reviews"), list) else None
@@ -1182,7 +1185,7 @@ def _report(c, kind: str, action: str) -> dict:
         "github": c.local.get("github", "no failed GitHub call recorded"),
         "gate_decisions": [gate_decisions.line(e) for e in gate_decisions.for_pr(c.loop, c.number)],
         "gate_failures": c.gate_failed, "blockers": c.blockers, "next": {"kind": kind, "action": action},
-        "shadow": {"hold": c.shadow_held, "note": c.shadow_note},
+        "shadow": {"hold": c.shadow_held, "note": c.shadow_note, "choice": c.shadow_choice},
         "authorship": authorship_lines(c.facts),
         "operator_agents": sorted(config.operator_agents(c.loop)),
     }
