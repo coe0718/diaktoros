@@ -272,7 +272,11 @@ class Compare(Ledger):
         text = stats.report_text(stats.report({"repo": "acme/widgets", "id": "w"}, self.db, 0,
                                               time.time() + 10, breaches={},
                                               pr_state=lambda n: None, tracked={}))
-        self.assertNotIn("shadow", text)
+        # No shadow-review section or case lines. The escalations line always names its
+        # `by shadow` bucket (#1116), so that one line may carry the word, and no other.
+        self.assertEqual([line for line in text.splitlines()
+                          if "shadow" in line and not line.startswith("escalations: ")], [])
+        self.assertEqual(text.count("shadow"), 1)
         self.assertIsNone(stats.shadow_outcomes(self.db.parent / "none.sqlite", "acme/widgets",
                                                 0, 1, {}))
 
