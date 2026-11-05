@@ -11,11 +11,16 @@ the archive is created 0600 and nothing in it is ever printed. Left out: PATs, H
 and model logins; ``restore`` checks the token files the loops name and lists any that are missing.
 
 Retention (#1079): after a successful write to the default place, ``create`` deletes the oldest
-default-named archives in ``$HERMES_HOME/backups`` beyond the newest ``keep`` (``DEFAULT_KEEP``;
-``hermes dk backup --keep N``; 0 keeps every archive). Only regular, non-symlink files named like
-``default_out``'s are ever candidates. An archive written with ``--out`` is never counted or
-deleted, and neither is anything else that sits in the directory. ``hermes dk migrate`` takes its
-backup through ``create`` too, so it prunes with the default ``keep``.
+archives it wrote there (``$HERMES_HOME/backups``) beyond the newest ``keep`` (``DEFAULT_KEEP``;
+``hermes dk backup --keep N``; 0 keeps every archive). A candidate is a regular, non-symlink file
+named like ``default_out``'s that carries ``DEFAULT_MARK`` as its first member (written only on a
+write to the default place, so a file made by ``--out`` is never one, even with a default-shaped
+name inside that directory) and that no run still holds open (each run takes ``util.hold_temp`` on
+its archive until it is whole). Anything else in the directory is neither counted nor deleted.
+Archives written before the mark existed carry none, so they are never pruned (delete them by
+hand once). ``hermes dk migrate`` takes its backup through ``create`` too, so it prunes with the
+default ``keep``. On a filesystem without ``flock`` the hold does not take (``util.hold_temp``
+says the same), and an archive another run is still writing is then not kept out by the lock.
 
 Retention is a flag with a built-in default, not a plugin setting. A setting would have to be
 settable from the form, ``init``, ``setup``, ``set`` and the loop file, and the form's keys are
@@ -35,6 +40,7 @@ import sqlite3
 import tarfile
 import tempfile
 import time
+import zlib
 
 from .ledger import read_only
 from .config import credentials
@@ -49,6 +55,10 @@ WARNING = ("this archive holds route secrets (webhook HMAC keys): keep it privat
 _DEFAULT_TRIES = 20     # re-picks of a default name that a concurrent run took first
 DEFAULT_KEEP = 10       # default-named archives kept in the default directory; 0 keeps them all
 _DEFAULT_NAME = re.compile(r"diaktoros-backup-(\d{8}-\d{6})(?:-(\d+))?\.tar\.gz")
+# The first member of an archive ``create`` wrote to the default place: its provenance (#1079).
+# ``prune`` deletes only archives that carry it, so a default-shaped file that came from ``--out``,
+# or from a version before the mark, is never a candidate, whatever its name or directory.
+DEFAULT_MARK = "default-place"
 
 
 class BackupError(RuntimeError):
@@ -72,11 +82,27 @@ def check_keep(keep: int) -> None:
         raise BackupError(f"--keep must be 0 (keep all) or more, not {keep}")
 
 
-def prune(keep: int, protect: pathlib.Path | None = None) -> list[pathlib.Path]:
-    """Delete the oldest default-named archives in the default directory beyond the newest ``keep``.
+def made_by_default(path: pathlib.Path) -> bool:
+    """Did ``create`` write the archive at ``path`` to the default place? Its first member says so
+    (``DEFAULT_MARK``); only that header is read. An archive from ``--out`` or from before the
+    mark, and a file that is not a readable tar.gz, is not."""
+    try:
+        with tarfile.open(path, "r:gz") as tar:
+            first = tar.next()
+    except (OSError, EOFError, zlib.error, tarfile.TarError):
+        return False
+    return first is not None and first.name == DEFAULT_MARK
 
-    Candidates are regular, non-symlink files whose name is one ``default_out`` makes, ordered by
-    the stamp in the name and then its collision suffix (not mtime, which a copy resets).
+
+def prune(keep: int, protect: pathlib.Path | None = None) -> list[pathlib.Path]:
+    """Delete the oldest default-place archives in the default directory beyond the newest ``keep``.
+
+    A candidate is a regular, non-symlink file whose name is one ``default_out`` makes, that
+    carries ``DEFAULT_MARK`` (``made_by_default``: so not an ``--out`` archive that happens to be
+    named alike), and that no writer still holds open (``util.temp_in_use``: ``create`` holds a
+    lock on its file until it is whole, so another run's unfinished archive is neither counted
+    nor deleted). Anything else in the directory is left alone. Candidates are ordered by the
+    stamp in the name and then its collision suffix (not mtime, which a copy resets).
     ``protect`` (the archive just written) is never deleted. ``keep`` 0 deletes nothing. A file
     that cannot be removed is left: retention never fails a backup that was written. Returns what
     was deleted.
@@ -88,7 +114,11 @@ def prune(keep: int, protect: pathlib.Path | None = None) -> list[pathlib.Path]:
     found = []
     for path in base.iterdir():
         match = _DEFAULT_NAME.fullmatch(path.name)
-        if match and path.is_file() and not path.is_symlink():
+        if match and path.is_file() and not path.is_symlink() and made_by_default(path) \
+                and not util.temp_in_use(path):
+            # Mark first, then the lock: ``create`` takes its lock before it writes a byte, so a
+            # readable mark means the lock is already held or the archive is whole. The other
+            # order could see "unlocked" just before a run's lock and its first flushed bytes.
             found.append(((match[1], int(match[2] or 1)), path))
     found.sort(key=lambda item: item[0], reverse=True)
     removed = []
@@ -203,6 +233,28 @@ def token_paths(loop: dict) -> dict[str, str]:
     return {str(login): str(path) for login, path in config.credentials_map(loop).items() if path}
 
 
+def _open_new(out: pathlib.Path, chosen: bool) -> tuple[int, pathlib.Path]:
+    """Create the archive file exclusively (0600) and return ``(fd, path)``. A default name that
+    another run took after ``default_out`` looked is re-picked, up to ``_DEFAULT_TRIES`` times; an
+    ``--out`` that exists is refused. The new file is locked (``util.hold_temp``) before anything
+    is written and until the caller closes ``fd``, so ``prune`` in another run skips an archive
+    that is not whole yet (#1079)."""
+    for attempt in range(_DEFAULT_TRIES):
+        try:
+            fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            break
+        except FileExistsError:
+            if chosen:
+                raise BackupError(f"{out} already exists — pick another --out") from None
+            # A default name another run took after default_out() looked: pick the next free one.
+            if attempt == _DEFAULT_TRIES - 1:
+                raise BackupError(f"{out} already exists and no free default name was found; "
+                                  "retry, or pass --out") from None
+            out = default_out().absolute()
+    util.hold_temp(fd)
+    return fd, out
+
+
 def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
            pruned: list[pathlib.Path] | None = None) -> pathlib.Path:
     """Write the archive and return its path. Refuses to overwrite a file.
@@ -238,21 +290,12 @@ def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
                 "cron": watchdog_job(),
                 "tokens": {l["id"]: token_paths(l) for l in loops}}
     out.parent.mkdir(parents=True, exist_ok=True)
-    for attempt in range(_DEFAULT_TRIES):
-        try:
-            fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            break
-        except FileExistsError:
-            if chosen:
-                raise BackupError(f"{out} already exists — pick another --out") from None
-            # A default name another run took after default_out() looked: pick the next free one.
-            if attempt == _DEFAULT_TRIES - 1:
-                raise BackupError(f"{out} already exists and no free default name was found; "
-                                  "retry, or pass --out") from None
-            out = default_out().absolute()
+    fd, out = _open_new(out, chosen)
     try:
         with os.fdopen(fd, "wb") as stream, tarfile.open(fileobj=stream, mode="w:gz") as tar, \
                 tempfile.TemporaryDirectory() as scratch:
+            if not chosen:
+                tar.addfile(tarfile.TarInfo(DEFAULT_MARK))   # provenance: first member, see prune
             if ledger.is_file():
                 snap = pathlib.Path(scratch) / "ledger"
                 _snapshot_ledger(ledger, snap)

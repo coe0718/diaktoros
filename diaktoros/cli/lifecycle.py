@@ -1007,10 +1007,10 @@ def add_backup(sub) -> None:  # noqa: ANN001
                      help="where to write it (default: $HERMES_HOME/backups/…); never "
                           "overwrites a file")
     bak.add_argument("--keep", metavar="N", type=int, default=None,
-                     help="after a backup to the default place, keep the newest N default-named "
-                          "archives in $HERMES_HOME/backups and delete older ones; 0 keeps all "
-                          "(default: 10). Archives written with --out are never counted or "
-                          "deleted (#1079)")
+                     help="after a backup to the default place, keep the newest N archives "
+                          "written there and delete older ones; 0 keeps all (default: 10). "
+                          "Archives written with --out, before this existed, or by hand are "
+                          "never counted or deleted (#1079)")
     bak.set_defaults(func=cmd_backup)
 
 

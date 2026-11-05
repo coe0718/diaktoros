@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -596,9 +597,24 @@ class Create(Base):
 
 
 class Retention(Base):
-    """#1079: the default place keeps the newest ``--keep`` default-named archives."""
+    """#1079: the default place keeps the newest ``--keep`` archives ``create`` wrote there."""
+
+    @staticmethod
+    def marked(path):
+        """An archive as ``create`` writes it to the default place: ``DEFAULT_MARK`` first."""
+        with tarfile.open(path, "w:gz") as tar:
+            tar.addfile(tarfile.TarInfo(backup.DEFAULT_MARK))
 
     def old(self, *names):
+        """Archives of the default place (marked), named ``names``."""
+        folder = config.home() / "backups"
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            self.marked(folder / name)
+        return folder
+
+    def plain(self, *names):
+        """Files with those names that ``create`` did not write (no mark; not even a tar)."""
         folder = config.home() / "backups"
         folder.mkdir(parents=True, exist_ok=True)
         for name in names:
@@ -645,9 +661,9 @@ class Retention(Base):
         self.assertNotIn("removed", text)
 
     def test_only_default_named_regular_files_are_ever_deleted(self):
-        folder = self.old("notes.txt", "diaktoros-backup-mine.tar.gz",
-                          "diaktoros-backup-20200101-000000.tar.gz.bak",
-                          *self.stamped(2))
+        folder = self.old(*self.stamped(2))
+        self.plain("notes.txt", "diaktoros-backup-mine.tar.gz",
+                   "diaktoros-backup-20200101-000000.tar.gz.bak")
         (folder / "diaktoros-backup-20190101-000000.tar.gz").mkdir()
         target = self.root / "elsewhere.tar.gz"
         target.write_text("precious")
@@ -671,6 +687,115 @@ class Retention(Base):
         self.assertEqual(code, 0, text)
         self.assertTrue(mine.is_file())
         self.assertEqual(self.names(folder), self.stamped(3))     # no prune after an --out write
+
+    def test_an_out_archive_inside_the_default_directory_survives_a_later_default_backup(self):
+        """F1 of the review on #1869: ``--out`` into ``$HERMES_HOME/backups`` with a default-shaped
+        name, then a default backup that would prune it by name alone."""
+        folder = self.old(*self.stamped(2))
+        mine = folder / "diaktoros-backup-20190101-000000.tar.gz"
+        code, text = self.run_cmd(cli.cmd_backup, out=str(mine), keep=1)
+        self.assertEqual(code, 0, text)
+        self.assertNotIn(backup.DEFAULT_MARK, tarfile.open(mine, "r:gz").getnames())
+        code, text = self.run_cmd(cli.cmd_backup, out=None, keep=1)
+        self.assertEqual(code, 0, text)
+        self.assertTrue(mine.is_file(), text)
+        left = self.names(folder)
+        self.assertEqual(len(left), 2)                    # the new one, and the --out one
+        self.assertIn(mine.name, left)
+        self.assertNotIn(mine.name, text)                 # not reported as removed
+        for gone in self.stamped(2):                      # the marked ones were pruned as before
+            self.assertNotIn(gone, left)
+
+    def test_an_archive_without_the_mark_is_neither_counted_nor_deleted(self):
+        folder = self.old(*self.stamped(2))
+        legacy = self.root / "legacy.tar.gz"
+        backup.create(legacy)                             # a real archive, as an earlier version wrote
+        kept = folder / "diaktoros-backup-20190101-000000.tar.gz"
+        shutil.copy(legacy, kept)
+        backup.prune(1)
+        self.assertEqual(self.names(folder), [kept.name, self.stamped(2)[1]])
+
+    def test_the_default_place_marks_its_archive_first_and_restore_still_reads_it(self):
+        made = backup.create()
+        with tarfile.open(made, "r:gz") as tar:
+            self.assertEqual(tar.getnames()[0], backup.DEFAULT_MARK)
+        self.assertTrue(backup.made_by_default(made))
+        self.assertFalse(backup.made_by_default(self.root / "nowhere.tar.gz"))
+        self.wipe()
+        code, text = self.run_cmd(cli.cmd_restore, file=str(made), dry_run=False, force=False)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.ledger_count(), 298)
+
+    def paused_backup(self, stamp, keep=1):
+        """Start ``backup.create()`` on a thread and pause it with its archive half written: the
+        mark is flushed to the file, so the half-written archive reads as a default-place one and
+        only the writer's lock tells ``prune`` it is unfinished (a bigger archive flushes this
+        early by itself). Returns ``(thread, outcome, resume)``; the caller must call
+        ``resume()`` and join. ``outcome`` gets ``path`` or ``error``."""
+        reached, resume, outcome = threading.Event(), threading.Event(), {}
+        real, real_open = backup._snapshot_ledger, tarfile.open
+        runner = {}
+
+        def spy(*args, **kw):
+            tar = real_open(*args, **kw)
+            if threading.get_ident() == runner.get("id"):
+                runner["tar"] = tar
+            return tar
+
+        def pause(source, dest):
+            if threading.get_ident() == runner["id"]:
+                runner["tar"].fileobj.flush()             # gzip sync flush, then the file's own
+                reached.set()
+                resume.wait(10)
+            return real(source, dest)
+
+        def run():
+            runner["id"] = threading.get_ident()
+            try:
+                outcome["path"] = backup.create(keep=keep)
+            except BaseException as exc:                  # noqa: BLE001  the test reads it
+                outcome["error"] = repr(exc)
+        self.stamp = stamp
+        for patch in (mock.patch.object(backup, "_snapshot_ledger", pause),
+                      mock.patch.object(tarfile, "open", spy)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        thread = threading.Thread(target=run)
+        thread.start()
+        self.addCleanup(thread.join, 10)
+        self.addCleanup(resume.set)
+        self.assertTrue(reached.wait(10), "the first backup never reached its pause")
+        return thread, outcome, resume
+
+    def test_a_default_backup_still_being_written_is_not_pruned_by_another_run(self):
+        """F2 of the review on #1869: run 2 (newer name, keep=1) prunes while run 1 is still
+        writing; run 1 must finish with its archive in place."""
+        folder = self.old("diaktoros-backup-20190101-000000.tar.gz")
+        with mock.patch.object(backup.time, "strftime", side_effect=lambda fmt: self.stamp):
+            thread, outcome, resume = self.paused_backup("20200101-000000")
+            self.stamp = "20200102-000000"
+            fast = backup.create(keep=1)
+            resume.set()
+            thread.join(10)
+        self.assertNotIn("error", outcome)
+        slow = outcome["path"]
+        self.assertTrue(slow.is_file() and fast.is_file())
+        self.assertEqual(backup.read_manifest(slow)["version"], backup.VERSION)
+        self.assertEqual(self.names(folder), sorted([slow.name, fast.name]))
+
+    def test_an_archive_being_written_does_not_cost_a_finished_one_its_place(self):
+        """The half-written file is not counted: with keep=2 the older finished archive stays."""
+        folder = self.old("diaktoros-backup-20200101-000000.tar.gz")
+        with mock.patch.object(backup.time, "strftime", side_effect=lambda fmt: self.stamp):
+            thread, outcome, resume = self.paused_backup("20200103-000000", keep=0)   # clock ahead
+            self.stamp = "20200102-000000"
+            fast = backup.create(keep=2)
+            resume.set()
+            thread.join(10)
+        self.assertNotIn("error", outcome)
+        self.assertEqual(self.names(folder),
+                         sorted(["diaktoros-backup-20200101-000000.tar.gz",
+                                 fast.name, outcome["path"].name]))
 
     def test_a_negative_keep_is_refused_before_anything_is_written_or_deleted(self):
         folder = self.old(*self.stamped(2))
