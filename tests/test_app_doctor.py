@@ -11,17 +11,19 @@ from __future__ import annotations
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import copy
 import io
+import os
 import sys
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_app_cli as app_cli  # noqa: E402
 import test_token_file_settings as tfs  # noqa: E402
-from diaktoros import backup, config, doctor, gh, github_app, selftest  # noqa: E402
+from diaktoros import backup, config, doctor, envnames, gh, github_app, selftest  # noqa: E402
 from diaktoros.config import credentials, loop_checks  # noqa: E402
-from diaktoros.doctor import identity_checks, seat_checks  # noqa: E402
+from diaktoros.doctor import hook_checks, identity_checks, seat_checks  # noqa: E402
 
 BOT_REV, BOT_READ = app_cli.BOT_REV, app_cli.BOT_READ
 BAD = (doctor.ABSENT, doctor.MISMATCH)
@@ -117,6 +119,21 @@ class Doctor(AppLoop):
         self.assertIn("same token file as the reviewer", got.detail)
 
 
+class _Answer:
+    """What ``urlopen`` returns for an HTTP answer: a status, headers and a body to read."""
+    def __init__(self, status, body):
+        self.status, self.body, self.headers = status, body, {"X-Foo": "1"}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self.body
+
+
 class Live(AppLoop):
     """doctor's live App check (shadow review of #1198): the key signs as this App and the App is
     installed here, read with the App's JWT; no token minted."""
@@ -158,6 +175,88 @@ class Live(AppLoop):
         self.assertEqual(self.live(raises=github_app.AppError("signing failed")).status,
                          doctor.MISMATCH)
         self.assertEqual(self.live(None, None).status, doctor.MISMATCH)
+
+    def silent(self, which):
+        """The live probe when ``which`` (/app, /installation or both) gets no HTTP answer."""
+        def as_app(loop, login, path, method="GET", body=None):
+            if path == "/app" and which != "installation":
+                return gh.Response(None, "URLError: <urlopen error [Errno -2] Name or service not known>")
+            if path == "/app":
+                return gh.Response({"id": 2, "slug": "acme-reviewer"}, "", 200, {})
+            return gh.Response(None, "URLError: <urlopen error timed out>")
+        with mock.patch.object(github_app, "_as_app", side_effect=as_app):
+            return identity_checks.check_app_live(self.loop, BOT_REV, offline=False)
+
+    def test_a_network_outage_is_unknown_not_a_key_mismatch(self):
+        # #1202: no HTTP answer said nothing about the key; the fix must not send the operator
+        # to regenerate a working key.
+        for which in ("app", "installation"):
+            with self.subTest(which):
+                got = self.silent(which)
+                self.assertEqual(got.status, doctor.UNKNOWN, got.detail)
+                self.assertIn("no HTTP answer", got.detail)
+                self.assertIn("URLError", got.detail)
+                self.assertIn("api.github.com", got.fix)
+                self.assertNotIn("private key", got.fix)
+                self.assertNotIn("is not installed", got.detail)
+
+    def real(self, call, **urlopen):
+        """``call()`` with the real ``_as_app``: only the socket (``urlopen``) and the JWT signer
+        are replaced, so the response it builds is the one the check sees."""
+        env = {k: v for k, v in os.environ.items() if k not in envnames.both("GH_STUB")}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(gh, "API", "http://127.0.0.1:9"), \
+                mock.patch.object(github_app, "jwt", return_value="a.b.c"), \
+                mock.patch("urllib.request.urlopen", **urlopen):
+            return call()
+
+    def live_real(self, **urlopen):
+        return self.real(lambda: identity_checks.check_app_live(self.loop, BOT_REV, offline=False),
+                         **urlopen)
+
+    def test_the_real_transport_error_reaches_the_check_as_unknown(self):
+        # The path the issue names: _as_app's except-Exception branch, then the check.
+        got = self.live_real(side_effect=urllib.error.URLError("[Errno -2] Name or service not known"))
+        self.assertEqual(got.status, doctor.UNKNOWN, got.detail)
+        self.assertIn("URLError", got.detail)
+
+    def test_a_malformed_answer_is_not_reported_as_a_network_outage(self):
+        # Review F1 (#1913): a 200 whose body is not JSON fails in _as_app's except-Exception
+        # branch AFTER GitHub answered. The check must not say "no HTTP answer" and send the
+        # operator to the network: GitHub did answer, so it stays a failed read of the key.
+        got = self.live_real(return_value=_Answer(200, b"<html>not json</html>"))
+        self.assertEqual(got.status, doctor.MISMATCH, got.detail)
+        self.assertNotIn("no HTTP answer", got.detail)
+        self.assertNotIn("api.github.com", got.fix)
+        self.assertIn("JSONDecodeError", got.detail)
+
+    def test_as_app_keeps_the_status_of_an_answer_whose_body_cannot_be_read(self):
+        # The layer under the check: a missing status means no HTTP answer, never "answered,
+        # then failed to read".
+        bad = self.real(lambda: github_app._as_app(self.loop, BOT_REV, "/app"),
+                        return_value=_Answer(200, b"not json"))
+        gone = self.real(lambda: github_app._as_app(self.loop, BOT_REV, "/app"),
+                         side_effect=urllib.error.URLError("down"))
+        self.assertEqual((bad.status, bad.data, bad.headers), (200, None, {"x-foo": "1"}))
+        self.assertIn("JSONDecodeError", bad.error)
+        self.assertEqual((gone.status, gone.data), (None, None))
+        self.assertIn("URLError", gone.error)
+
+    def test_an_answer_from_github_stays_a_mismatch_or_absent(self):
+        # What the fix must not loosen: a status is GitHub's answer about the key or the install.
+        self.assertEqual(self.live(None, None).status, doctor.MISMATCH)
+        self.assertEqual(self.live({"id": 2, "slug": "acme-reviewer"}, None).status, doctor.ABSENT)
+
+    def test_check_loop_reports_the_outage_as_unknown_per_app(self):
+        def as_app(loop, login, path, method="GET", body=None):
+            return gh.Response(None, "URLError: <urlopen error [Errno -3] Temporary failure>")
+        with mock.patch.object(github_app, "_as_app", side_effect=as_app), \
+                mock.patch.object(hook_checks, "gateway_reachable", return_value=(True, "")):
+            checks = {c.name: c for c in doctor.check_loop(self.loop, offline=False)
+                      if c.name.startswith("app-live:")}
+        self.assertEqual({f"app-live:{BOT_REV}", f"app-live:{BOT_READ}"}, set(checks))
+        for check in checks.values():
+            self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
 
     def test_offline_says_not_probed_and_check_loop_runs_it_per_app(self):
         self.assertEqual(identity_checks.check_app_live(self.loop, BOT_REV, offline=True).status,
