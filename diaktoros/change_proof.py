@@ -201,7 +201,14 @@ def section(proof: dict | None) -> tuple[str, str]:
             "fixtures and deletions) and against this head, in the sandbox. "
             f"{_WORDS[proof['overall']]}")
     if proof.get("total"):
-        note += f" {len(rows)} of {proof['total']} changed tests were run (the loop's change_proof_max)."
+        # Past the bound the verdict covers the tests run, never the rest (review on #1925).
+        if proof["overall"] == repro_proof.PROVEN:
+            note = note.replace(_WORDS[repro_proof.PROVEN],
+                                "PROVEN FOR THE TESTS RUN ONLY: each one run fails on the base and "
+                                "passes at this head.")
+        note += (f" {len(rows)} of {proof['total']} changed tests were run (the loop's "
+                 f"change_proof_max); the host says nothing about the other "
+                 f"{proof['total'] - len(rows)}: prove those by hand.")
     if any(row.get("old") == repro_proof.IMPORT_ERROR for row in rows):
         note += (" A test module did not import on the base, so its tests ran nowhere there; that "
                  "counts as failing on the base. Check the cause: it should be what this PR adds, "

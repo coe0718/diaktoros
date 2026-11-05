@@ -184,6 +184,18 @@ class ForHead(Trees):
         with mock.patch.object(trusted_fetch, "stage_merge_base", side_effect=stage or self.stage):
             return change_proof.for_head({"repo": REPO, **loop}, self.scope, self.head, root, run)
 
+    def test_past_the_bound_proven_covers_only_the_tests_run(self):
+        """Review on #1925: the test the bound leaves out passes on the base; the note never says
+        every changed test fails there."""
+        self.head_tests("\n    def test_two(self):\n        self.assertEqual(widget.value(), 2)\n"
+                        "\n    def test_int(self):\n        self.assertIsInstance(widget.value(), int)\n")
+        note, rows = self.for_head(change_proof_max=1)
+        self.assertIn("PROVEN FOR THE TESTS RUN ONLY", note)
+        self.assertNotIn("every changed test fails", note)
+        self.assertIn("1 of 2 changed tests were run", note)
+        self.assertIn("the other 1: prove those by hand", note)
+        self.assertNotIn("test_int", rows)
+
     def test_the_loops_bound_is_how_many_run(self):
         self.head_tests("".join(f"\n    def test_n{i}(self):\n        self.assertEqual(widget.value(), 2)\n"
                                 for i in range(4)))
