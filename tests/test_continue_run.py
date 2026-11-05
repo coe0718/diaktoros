@@ -211,6 +211,33 @@ class Continue(Base):
                 with ledger.connect(self.db) as con:
                     con.execute("UPDATE issue_fixes SET state='opened'")
 
+    def test_a_non_verdict_at_the_current_head_does_not_count_as_given(self):
+        # Only an approval or change request is a review (gate.reviewed_at_head). The old check
+        # counted any review by the reviewer, so a comment, a dismissed or a pending review at
+        # the current head hid a head nobody had judged: continue must still hand it over.
+        from diaktoros import review_kick
+        for app in (False, True):
+            for state in ("COMMENTED", "DISMISSED", "PENDING"):
+                with self.subTest(app=app, state=state):
+                    if app:
+                        self.as_app_reviewer()
+                    self.open_pr_row()
+                    self.reviews = [self.verdict(self.branch_sha, state=state)]
+                    self.writes = []
+                    plan = continue_run.inspect(self.loop, self.sup, self.run_id)
+                    self.assertEqual(plan["stages"], ["deliver_review" if app else "request_review"])
+                    self.assertFalse(any("already" in fact for fact in plan["facts"]), plan)
+                    with mock.patch.object(gh, "api", return_value=self.pr(5)), \
+                            mock.patch.object(review_kick, "kick", return_value=True) as kick:
+                        ok, lines = continue_run.run(self.loop, self.sup, self.run_id)
+                    self.assertTrue(ok, lines)
+                    self.assertFalse(any("already given" in line for line in lines), lines)
+                    # The broker call is the audited no-op for an App; the kick is its delivery.
+                    self.assertEqual(self.writes, ["request_review"])
+                    self.assertEqual(kick.call_count, 1 if app else 0)
+                    with ledger.connect(self.db) as con:
+                        con.execute("UPDATE issue_fixes SET state='opened'")
+
     def test_the_cli_dry_run_names_the_app_handoff(self):
         self.as_app_reviewer()
         self.open_pr_row()
