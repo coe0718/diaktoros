@@ -14,8 +14,8 @@ and a path in both lists is an always path.
 
 The changed paths are GitHub's ``pulls/N/files`` listing, read once per PR head as the reader. A
 failed read shadows the head when the loop has always paths (it may change one, and
-``shadow.escalate`` relies on those being shadowed: review of #1852, F1), else samples; a listing
-GitHub cut short (3,000 files) is never taken as "only low-risk paths". The choice is kept per PR
+``shadow.escalate`` relies on those being shadowed: review of #1852, F1), else samples; so does
+a listing GitHub cut short at 3,000 files, which may leave one out (F5). The choice is kept per PR
 head in ``shadow-choices.json`` (the newest ``KEEP``), with the lists and rate it was made under:
 the gate's several asks, a redelivery and ``explain`` all see the same one, and a change to the
 lists or the rate makes it again (F2).
@@ -139,9 +139,16 @@ def _decide(loop: dict, number: int, head: str) -> dict:
     if always:
         more = f" and {len(always) - 1} more" if len(always) > 1 else ""
         return {"shadow": True, "why": f"it changes {always[0]}{more} (shadow.always_paths)"}
+    if len(files) >= gh.PR_FILES_LISTING_LIMIT:
+        # GitHub lists at most 3,000 files: an unlisted one may be an always path (review of
+        # #1852, F5), and the listed ones can't prove "only never paths".
+        cut = f"GitHub lists only the first {gh.PR_FILES_LISTING_LIMIT} of its changed files"
+        if config.shadow_always_paths(loop):
+            return {"shadow": True, "why": f"{cut}: shadowed, since an unlisted one may change a "
+                                           "shadow.always_paths path"}
+        return _sampling(loop, number, head, cut)
     never = config.shadow_never_paths(loop)
-    if (paths and len(files) < gh.PR_FILES_LISTING_LIMIT
-            and len(hits(paths, never)) == len(paths)):
+    if paths and len(hits(paths, never)) == len(paths):
         return {"shadow": False, "why": f"it changes only {len(paths)} path(s) matching "
                                         "shadow.never_paths"}
     return _sampling(loop, number, head)

@@ -110,10 +110,23 @@ class ByRisk(unittest.TestCase):
         seats, _ = self.enqueue(never_only, (None, "HTTP 502"), number=12)
         self.assertEqual(seats, ["reviewer"])
 
-    def test_a_listing_cut_short_is_never_only_never_paths(self):
-        loop = self.make(every=1)
+    def test_a_listing_cut_short_shadows_beside_always_paths_and_is_never_only_never_paths(self):
+        # Review of #1852, F5: GitHub lists at most 3,000 files, so an always path may be among
+        # the unlisted ones. On a head sampling alone skips, that would be no shadow, no hold.
         cut = files(*[f"docs/{i}.md" for i in range(gh.PR_FILES_LISTING_LIMIT)])
-        self.assertEqual(self.enqueue(loop, (cut, ""), number=12)[0], ["reviewer", "shadow"])
+        head = an_unsampled_head(self.loop, 17)
+        self.assertEqual(self.enqueue(self.loop, (cut, ""), number=17, head=head)[0],
+                         ["reviewer", "shadow"])
+        self.assertIn("GitHub lists only the first 3000 of its changed files: shadowed",
+                      shadow_choice.explain_line(self.loop, 17, head))
+        # With only a never list, the listed docs can't prove "only never paths": sampled.
+        never_only = self.make(every=1000, always_paths=None)
+        head = an_unsampled_head(never_only, 18)
+        self.assertEqual(self.enqueue(never_only, (cut, ""), number=18, head=head)[0],
+                         ["reviewer"])
+        self.assertIn("not sampled", shadow_choice.explain_line(never_only, 18, head))
+        every_1 = self.make(every=1, always_paths=None)
+        self.assertEqual(self.enqueue(every_1, (cut, ""), number=19)[0], ["reviewer", "shadow"])
 
     def test_a_change_to_the_lists_or_the_rate_makes_the_choice_again(self):
         # Review of #1852, F2: a choice kept under the old lists would outlive the new ones.
