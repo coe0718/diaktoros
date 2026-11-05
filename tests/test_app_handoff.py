@@ -185,6 +185,33 @@ class ExplainPendingHandoff(AppSeat):
         self.fake.pr_head = fa.NEW_HEAD
         self.assertFalse(self.report()["request_pending"])
 
+    def test_a_late_ack_for_an_older_head_keeps_the_current_heads(self):
+        """Vex F3 on #1943: deliveries complete out of order; an older head's acknowledgement
+        arriving after the current head's must not erase the current head's handoff."""
+        self.fake.pr_head = fa.NEW_HEAD
+        live = self.fake.api(self.loop, f"/repos/{fa.REPO}/pulls/7")
+        with mock.patch.object(routes, "fire", return_value=True):
+            self.assertTrue(review_kick.kick(self.loop, live, fa.NEW_HEAD, "fix", "kick-review-7"))
+            self.assertTrue(self.report()["request_pending"])
+            self.assertTrue(review_kick.kick(self.loop, live, "e" * 40, "fix", "sweep-review-7"))
+        report = self.report()
+        self.assertTrue(report["request_pending"], report)
+        self.assertFalse([b for b in report["blockers"] if "no review request exists" in b],
+                         report["blockers"])
+        self.assertTrue(review_kick.app_handoff_delivered(self.loop, 7, "e" * 40))
+
+    def test_a_handoff_recorded_by_the_earlier_format_still_counts(self):
+        """A record written before F3 (one head per PR) still reads, and the next delivery
+        keeps it."""
+        self.fake.pr_head = fa.NEW_HEAD
+        (Path(self.loop["state_dir"])).mkdir(parents=True, exist_ok=True)
+        (Path(self.loop["state_dir"]) / review_kick.HANDOFFS).write_text('{"7": "%s"}' % fa.NEW_HEAD)
+        self.assertTrue(self.report()["request_pending"])
+        live = self.fake.api(self.loop, f"/repos/{fa.REPO}/pulls/7")
+        with mock.patch.object(routes, "fire", return_value=True):
+            self.assertTrue(review_kick.kick(self.loop, live, "e" * 40, "fix", "sweep-review-7"))
+        self.assertTrue(self.report()["request_pending"])
+
     def test_an_unreadable_record_is_no_request(self):
         self.hand_off()
         (Path(self.loop["state_dir"]) / review_kick.HANDOFFS).write_text('{"7": ')   # torn

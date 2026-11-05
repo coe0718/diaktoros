@@ -49,16 +49,34 @@ def _handoffs_path(loop: dict):
     return config.state_dir(loop) / HANDOFFS
 
 
+HANDOFF_HEADS_KEPT = 16
+
+
+def _acknowledged_heads(entry: object) -> list[str]:
+    """The heads one PR's record entry names, oldest first: a list, or a single head as an
+    earlier record wrote it. Anything else names none."""
+    if isinstance(entry, str):
+        return [entry] if entry else []
+    if isinstance(entry, list):
+        return [h for h in entry if isinstance(h, str) and h]
+    return []
+
+
 def _record_handoff(loop: dict, number: object, head: str) -> None:
     """Remember that ``head`` of PR ``number`` reached the reviewer gate (#1213), under the
-    loop's state lock so two deliveries for different PRs do not lose each other's entry."""
+    loop's state lock so two deliveries for different PRs do not lose each other's entry.
+
+    Every acknowledged head is kept (the last ``HANDOFF_HEADS_KEPT`` of them), not only the
+    latest one to complete (Vex F3 on #1943): deliveries can complete out of order, and a late
+    acknowledgement for an older head must not erase the current head's."""
     from . import state as state_mod      # here: state imports much more than this module needs
     st = state_mod.state_for(loop)
     path = _handoffs_path(loop)
     with st.locked():
         record = st.kv_get(path, {})
         record = record if isinstance(record, dict) else {}
-        record[str(number)] = head
+        heads = [h for h in _acknowledged_heads(record.get(str(number))) if h != head]
+        record[str(number)] = (heads + [head])[-HANDOFF_HEADS_KEPT:]
         st.kv_set(path, record)
 
 
@@ -80,7 +98,7 @@ def app_handoff_delivered(loop: dict, number: int, head: str) -> bool:
         record = json.loads(_handoffs_path(loop).read_text())
     except (OSError, ValueError):
         return False
-    return isinstance(record, dict) and record.get(str(number)) == head
+    return isinstance(record, dict) and head in _acknowledged_heads(record.get(str(number)))
 
 
 def kick(loop: dict, pr: dict, head: str, sender: str, tag: str) -> bool:
