@@ -174,7 +174,8 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
         # shadow is queued only on that snapshot: one taken later could hold the review's own
         # findings. The lock keeps another enqueue from evicting it before the shadow's row is
         # visible as open (review of #1656, F6).
-        snapped = seat == "reviewer" and snapshot_shadow(loop, number, head, turn_key)
+        snapped = seat == "reviewer" and snapshot_shadow(loop, number, head, turn_key,
+                                                         _ledger_of(supervisor))
         delivery = f"{loop['repo']}:{number}:{head}:{seat}"
         # The turn's wall clock rides on the row (#49): whichever worker claims it — possibly
         # one spawned by another loop's event — runs it for this loop's seat budget.
@@ -575,15 +576,36 @@ def shadow_escalation(loop: dict, st, number: int, head: str, reviews, db=None) 
                   escalated={"by": SHADOW_ESCALATION, "at": now_iso(), "reason": reason})
 
 
-def snapshot_shadow(loop: dict, number: int, head: str, turn_key: str = "") -> bool:
+def _ledger_of(supervisor) -> str | pathlib.Path | None:
+    """The ledger path a supervisor submits to; None for one with no path (a test's Mock), which
+    then reads the production ledger."""
+    db = getattr(supervisor, "db", None)
+    return db if isinstance(db, (str, pathlib.Path)) else None
+
+
+def shadow_snapshot_gone(st, repo: str, number: int, head: str, turn_key: str, db=None) -> bool:
+    """Whether this reviewer turn's shadow row is in the ledger ``db`` but its own findings
+    snapshot is not (evicted, or from before turns were keyed): one taken now would be the live
+    ledger's (#1139). Call it under the state lock; raises when the ledger cannot be read."""
+    return (st.shadow_findings_get(number, head, turn_key) is None
+            and shadow_row_exists(repo, number, head, turn_key, db))
+
+
+def snapshot_shadow(loop: dict, number: int, head: str, turn_key: str = "", db=None) -> bool:
     """Keep the findings ledger for a sampled head's shadow review (#218): the broker judges the
     shadow against it, never against what the real review records. Taken before the reviewer's
-    row exists (#1647); the first snapshot wins. Whether one is kept; never raises."""
+    row exists (#1647); the first snapshot wins. Whether one is kept; never raises. Never for a
+    shadow row already in the ledger ``db`` whose own snapshot is gone (#1139): a re-queued
+    reviewer turn would otherwise give it one from the live ledger, which ``retry`` accepts."""
     if not config.shadow_profile(loop) or not shadow_sampled(loop, number, head, turn_key):
         return False
     try:
         st = state_mod.state_for(loop)
         with st.locked():
+            if shadow_snapshot_gone(st, loop["repo"], number, head, turn_key, db):
+                from .run_supervisor import intake
+                log(f"#{number}: no shadow findings snapshot taken: {intake.SHADOW_SNAPSHOT_GONE}")
+                return False
             try:
                 keep = shadow_open_heads(loop["repo"])
             except Exception as exc:
@@ -629,14 +651,12 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
             # Snapshots are kept per reviewer turn (``shadow_findings_put``), so another turn's,
             # or one from before turns were keyed, never stands in for this turn's own. The row
             # is looked up in the ledger this supervisor submits to, not only the production one.
-            ledger_db = getattr(supervisor, "db", None)
-            ledger_db = ledger_db if isinstance(ledger_db, (str, pathlib.Path)) else None
-            if (st.shadow_findings_get(number, head, turn_key) is None
-                    and shadow_row_exists(loop["repo"], number, head, turn_key, ledger_db)):
+            ledger_db = _ledger_of(supervisor)
+            if shadow_snapshot_gone(st, loop["repo"], number, head, turn_key, ledger_db):
                 from .run_supervisor import intake
                 log(f"#{number}: shadow not queued again: {intake.SHADOW_SNAPSHOT_GONE}")
                 return "snapshot gone"
-            if not snapshot_shadow(loop, number, head, turn_key):
+            if not snapshot_shadow(loop, number, head, turn_key, ledger_db):
                 log(f"#{number}: no shadow findings snapshot, shadow not queued")
                 return "no snapshot"
             return supervisor.submit(delivery, loop["repo"], number, head, "shadow",

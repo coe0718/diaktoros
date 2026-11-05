@@ -413,7 +413,7 @@ class ProductionTurn(unittest.TestCase):
         def turn(loop, scope, **kwargs):
             self.seen.update(role=scope.role, no_write=kwargs.get("no_write"),
                              prompt=kwargs.get("prompt"), steps=kwargs.get("steps"),
-                             turn_key=scope.turn_key)
+                             turn_key=scope.turn_key, shadow=scope.shadow)
             kwargs["observed"]["submissions"] = list(submissions)
             return rc
 
@@ -456,6 +456,7 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual(row["state"], "succeeded", row)
         self.assertEqual(self.resolved_seat, "shadow")          # its own profile, never Vex's
         self.assertEqual((self.seen["role"], self.seen["no_write"]), ("reviewer", True))
+        self.assertTrue(self.seen["shadow"])        # its broker refuses it with no snapshot (#1139)
         self.assertEqual(self.seen["prompt_seat"], "reviewer")
         # The real review posted after the shadow was queued is not shown to it.
         self.assertEqual([r["id"] for r in self.seen["reviews"]], [1])

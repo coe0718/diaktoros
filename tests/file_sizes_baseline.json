@@ -26,7 +26,7 @@
   },
   "functions": {
     "diaktoros/arm_action.py::set_hooks": 157,
-    "diaktoros/broker_ipc.py::RunBroker._dispatch": 347,
+    "diaktoros/broker_ipc.py::RunBroker._dispatch": 339,
     "diaktoros/broker_issues.py::IssueWrites._issue_fix_write": 134,
     "diaktoros/cli/apply_command.py::_apply": 121,
     "diaktoros/cli/common.py::_install_routes": 81,

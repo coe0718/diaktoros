@@ -37,6 +37,7 @@ class Snapshot(unittest.TestCase):
                                       socket_path=str(server.socket_path)), server
 
     def test_a_shadow_is_judged_on_the_ledger_it_was_queued_with(self):
+        self.scope = dataclasses.replace(self.scope, shadow=True)
         st = state_mod.state_for(self.fx.loop)
         st.findings_put(7, VEX_SAME_ROUND)               # the real review, meanwhile
         st.shadow_findings_put(7, ts.HEAD, {})           # what the shadow was queued with
@@ -45,6 +46,8 @@ class Snapshot(unittest.TestCase):
         self.assertEqual(server.recorded[0]["verdict"], "APPROVE")
 
     def test_without_a_snapshot_the_live_ledger_still_applies(self):
+        # Another no-write broker (selftest's live turn, the corpus) has no shadow snapshot: it
+        # keeps the live ledger. A shadow's own refuses instead (Retention, #1139).
         state_mod.state_for(self.fx.loop).findings_put(7, VEX_SAME_ROUND)
         answer, _ = self.approve()
         self.assertFalse(answer.get("ok"))
@@ -284,11 +287,74 @@ class Retention(unittest.TestCase):
         self.assertEqual(sup.get(f"acme/widgets:7:{ts.HEAD}:shadow:old")["state"], "failed")
         self.assertEqual(set(json.loads((st.dir / "shadow-findings.json").read_text())),
                          {f"7:{ts.HEAD}"})                      # nothing written beside it
-        # The broker of that turn does not read it either: with no snapshot of its own it falls
-        # back to the live ledger, where F1 is open (the legacy {} snapshot would have passed).
-        self.scope = dataclasses.replace(self.scope, turn_key="old")
+        # The broker of that turn does not read it either: with no snapshot of its own the
+        # shadow's verdict is refused (the legacy {} snapshot would have passed it).
+        self.scope = dataclasses.replace(self.scope, turn_key="old", shadow=True)
+        answer, _ = Snapshot.approve(self)
+        self.assertEqual(answer.get("error"), broker_ipc.SHADOW_SNAPSHOT_REFUSAL)
+
+    def test_a_running_shadow_with_only_a_legacy_snapshot_is_not_judged_on_the_live_ledger(self):
+        # Adjudication of #1900 (REJECT, F4): a turnless shadow queued before the upgrade, still
+        # running, its `PR:head` snapshot holding an open F1 that the live ledger has since lost.
+        # Judged on the live ledger its approval would pass; its broker refuses the verdict.
+        st = state_mod.state_for(self.fx.loop)
+        st._save_strict(st.dir / "shadow-findings.json",
+                        {f"7:{ts.HEAD}": {"entry": VEX_SAME_ROUND, "at": time.time()}})
+        st.findings_put(7, {})
+        self.scope = dataclasses.replace(self.scope, shadow=True)
+        answer, server = Snapshot.approve(self)
+        self.assertEqual(answer, {"ok": False, "error": broker_ipc.SHADOW_SNAPSHOT_REFUSAL})
+        self.assertEqual(server.recorded, [])
+        st.shadow_findings_put(7, ts.HEAD, VEX_SAME_ROUND, set())     # its own, F1 open
         answer, _ = Snapshot.approve(self)
         self.assertIn("cannot APPROVE with open finding(s) F1", answer.get("error", ""))
+
+    def test_a_requeued_reviewer_turn_takes_no_snapshot_for_its_shadow_whose_one_is_gone(self):
+        # Adjudication of #1900 (REJECT, F1): the reviewer's enqueue took its snapshot before it
+        # knew whether its row was new, so a re-armed reviewer turn wrote the evicted shadow row's
+        # snapshot from the live ledger, and the gate and `retry` then re-armed that row on it.
+        import sqlite3
+        from contextlib import closing
+        loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
+        st = state_mod.state_for(loop)
+        sup = self.queued_failed_shadow(loop, turn_key="t")
+        reviewer = f"acme/widgets:7:{ts.HEAD}:reviewer:t"
+        sup.enqueue(reviewer, "acme/widgets", 7, ts.HEAD, "reviewer", turn_key="t")
+        with closing(sqlite3.connect(sup.db)) as con, con:
+            con.execute("UPDATE runs SET state='failed', error='x' WHERE delivery=?", (reviewer,))
+        st.findings_put(7, VEX_SAME_ROUND)                # live findings, since the shadow's turn
+        sup.recover = lambda: None
+        with mock.patch.object(gate, "isolated_supervisor", return_value=sup):
+            self.assertEqual(gate.enqueue_isolated(loop, "reviewer", 7, ts.HEAD, turn_key="t"),
+                             "rearmed")
+        self.assertIsNone(st.shadow_findings_get(7, ts.HEAD, "t"))      # none taken for it
+        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="t"),
+                         "snapshot gone")
+        shadow = sup.get(f"acme/widgets:7:{ts.HEAD}:shadow:t")
+        with mock.patch("diaktoros.config.by_repo", return_value=loop):
+            with self.assertRaisesRegex(ValueError, "findings snapshot"):
+                sup.retry(shadow["id"])
+        self.assertEqual(sup.get(f"acme/widgets:7:{ts.HEAD}:shadow:t")["state"], "failed")
+
+    def test_a_requeued_reviewer_turn_whose_shadow_kept_its_snapshot_keeps_it(self):
+        # The refusal is only for a gone snapshot: one still kept stands, first snapshot wins.
+        import sqlite3
+        from contextlib import closing
+        loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
+        st = state_mod.state_for(loop)
+        sup = self.queued_failed_shadow(loop, turn_key="t")
+        st.shadow_findings_put(7, ts.HEAD, {}, set(), "t")
+        reviewer = f"acme/widgets:7:{ts.HEAD}:reviewer:t"
+        sup.enqueue(reviewer, "acme/widgets", 7, ts.HEAD, "reviewer", turn_key="t")
+        with closing(sqlite3.connect(sup.db)) as con, con:
+            con.execute("UPDATE runs SET state='failed', error='x' WHERE delivery=?", (reviewer,))
+        st.findings_put(7, VEX_SAME_ROUND)
+        sup.recover = lambda: None
+        with mock.patch.object(gate, "isolated_supervisor", return_value=sup):
+            self.assertEqual(gate.enqueue_isolated(loop, "reviewer", 7, ts.HEAD, turn_key="t"),
+                             "rearmed")
+        self.assertEqual(st.shadow_findings_get(7, ts.HEAD, "t"), {})
+        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="t"), "rearmed")
 
     def test_a_new_turn_at_a_head_whose_earlier_snapshot_is_kept_gets_its_own(self):
         # Review of #1900, round 2 F3: the put used to return early for the existing PR and head,
