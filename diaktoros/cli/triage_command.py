@@ -76,6 +76,33 @@ def _is_seat_or_reader_login(loop: dict, login: str) -> bool:
     return util.login_key(login) in seat_logins | {util.login_key(loop.get("read_token") or "")}
 
 
+def _mapped_tokens(args, loop: dict) -> dict | None:
+    """The loop's token map with ``--token LOGIN=FILE`` applied, or None after a refusal (said).
+
+    The same refusals as `set --token`: never a seat or the reader, and a private file."""
+    tokens = dict(loop.get("tokens") or {})
+    for pair in args.token or []:
+        split = cli_common._split_token_pair(pair)
+        if split is None:
+            return None
+        who, file = split
+        if _is_seat_or_reader_login(loop, who):
+            print(f"refused: `triage --token` maps the token file of the triage login or of an "
+                  f"extra login such as a hook admin; {who!r} is a seat or the current reader — "
+                  "seat token files move through the plugin settings and `apply`, and a reader "
+                  "moves with `set --read-token`")
+            return None
+        try:
+            credentials.check_token_file(file, f"--token {who}")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return None
+        for key in [k for k in tokens if util.login_key(k) == util.login_key(who)]:
+            del tokens[key]
+        tokens[who] = str(pathlib.Path(file.strip()).expanduser())
+    return tokens
+
+
 def cmd_triage(args) -> int:
     """Turn issue triage (#213) on or off for one loop, or show it.
 
@@ -189,27 +216,9 @@ def cmd_triage(args) -> int:
         print("refused: --auto-fix-label/--auto-fix-daily need a fix label "
               "(--fix-label LABEL --maintainer LOGIN); nothing changed")
         return 2
-    tokens = dict(loop.get("tokens") or {})
-    for pair in args.token or []:
-        split = cli_common._split_token_pair(pair)
-        if split is None:
-            return 2
-        who, file = split
-        # The same refusals as `set --token`: never a seat or the reader, and a private file.
-        if _is_seat_or_reader_login(loop, who):
-            print(f"refused: `triage --token` maps the token file of the triage login or of an "
-                  f"extra login such as a hook admin; {who!r} is a seat or the current reader — "
-                  "seat token files move through the plugin settings and `apply`, and a reader "
-                  "moves with `set --read-token`")
-            return 2
-        try:
-            credentials.check_token_file(file, f"--token {who}")
-        except config.ConfigError as exc:
-            print(f"refused: {exc}")
-            return 2
-        for key in [k for k in tokens if util.login_key(k) == util.login_key(who)]:
-            del tokens[key]
-        tokens[who] = str(pathlib.Path(file.strip()).expanduser())
+    tokens = _mapped_tokens(args, loop)
+    if tokens is None:
+        return 2
     seats = dict(loop.get("seats") or {})
     if args.daily_turns is not None:
         seat = {k: v for k, v in (seats.get("triage") or {}).items() if k != "daily_turns"}
