@@ -54,7 +54,7 @@ def adjudication_state(loop: dict | None, row, ledger=None) -> tuple[str, dict]:
               and (marker.get('escalated') or {}).get('by') == gate.SHADOW_ESCALATION)
     from .. import config
     operator = (isinstance(marker, dict) and marker.get('head') == row['head']
-                and (marker.get('escalated') or {}).get('by') == 'operator')
+                and (marker.get('escalated') or {}).get('by') == gate.OPERATOR_ESCALATION)
     allowed = (set(config.reviewed_authors(loop)) if shadow else set(loop.get('fixers') or ()))
     if operator:
         allowed |= config.review_only(loop)

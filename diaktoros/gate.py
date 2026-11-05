@@ -407,6 +407,7 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
 
 
 SHADOW_ESCALATION = "shadow"           # the breach marker's ``escalated.by`` for #1004
+OPERATOR_ESCALATION = "operator"       # ... and for ``hermes dk escalate`` (#459, #1246)
 
 
 def _dissent_state(loop: dict, number: int, head: str, short: str, ruling, marker) -> tuple[str, str, str]:
@@ -1126,6 +1127,17 @@ def wake_adjudicator(loop: dict, number: int, head: str, rounds: int, reason: st
     return True
 
 
+def breach_authors(loop: dict, escalated: dict | None) -> set[str]:
+    """The PR authors ``breach`` parks for a ruling, given the marker's ``escalated`` record.
+
+    Shadow rulings and explicit operator requests may concern any reviewed PR; automatic
+    cap/dispute rulings remain fixer-only. Review-only authors are never fixed here. The
+    watchdog's retry of a pending delivery calls this too, so the two cannot disagree."""
+    return (config.reviewed_authors(loop)
+            if (escalated or {}).get("by") in {SHADOW_ESCALATION, OPERATOR_ESCALATION}
+            else set(loop["fixers"]))
+
+
 def breach(loop: dict, st: state_mod.LoopState, number: int, head: str, rounds: int,
            reason: str, *, escalated: dict | None = None) -> str:
     """Park the PR at ``head`` for a ruling and wake the adjudicator; the marker's outcome.
@@ -1148,15 +1160,11 @@ def breach(loop: dict, st: state_mod.LoopState, number: int, head: str, rounds: 
                 and ((current.get("user") or {}).get("login") or "").lower() in authors
                 and (current.get("head") or {}).get("sha") == head)
 
-    # Shadow rulings and explicit operator requests may concern any reviewed PR; automatic
-    # cap/dispute rulings remain fixer-only. Review-only authors are never fixed here.
-    authors = (config.reviewed_authors(loop)
-               if (escalated or {}).get("by") in {SHADOW_ESCALATION, "operator"}
-               else set(loop["fixers"]))
+    authors = breach_authors(loop, escalated)
 
     route = loop.get("adjudicator", {}).get("route")
     def observe_reserved(marker: dict) -> None:
-        by = str((marker.get("escalated") or {}).get("by") or "operator")
+        by = str((marker.get("escalated") or {}).get("by") or OPERATOR_ESCALATION)
         outcome = ((f"the fixer disputed the review at {marker['rounds']}/{loop['cap']} verdicts"
                     if by == "dispute" else
                     "the shadow review requested changes at an approved head"
