@@ -43,10 +43,16 @@ def _combos(parts):
 
 
 def _filled(template, args, keywords=None, percent=False):
-    """``template`` with ``args`` (and ``keywords``) filled in, or ``None`` when they do not fit."""
+    """``template`` with ``args`` (and ``keywords``) filled in, or ``None`` when they do not fit.
+
+    Any failure means "the code cannot build this string from these candidates", never a
+    failure of the scan. The name table merges every scope of a file, so a candidate can be a
+    value the code never pairs with this template: ``"{x.foo}".format(x=x)`` tried with an
+    unrelated ``x = "bar"`` raises ``AttributeError``, ``"{0[a]}"`` a ``TypeError``, and a huge
+    width a ``MemoryError``. So the catch is deliberately broad."""
     try:
         return template % tuple(args) if percent else template.format(*args, **(keywords or {}))
-    except (TypeError, ValueError, KeyError, IndexError):
+    except Exception:  # noqa: BLE001  see the docstring: an unfit candidate is skipped
         return None
 
 
@@ -232,6 +238,60 @@ class UserScan(unittest.TestCase):
     def test_a_name_that_keeps_growing_ends_the_scan(self):
         self.assertEqual(user_paths('p = "/x"\nfor _ in range(3):\n    p += "y"\n'), [])
         self.assertEqual(user_paths('p = "/us"\nfor _ in range(3):\n    p += "er"\nuse(p)\n'), [4])
+
+    def test_a_candidate_that_does_not_fit_its_template_is_skipped(self):
+        """The name table merges every scope, so ``x = "bar"`` in one function is also tried as
+        the ``x`` that another function formats with ``"{x.foo}"``: that raises
+        ``AttributeError`` (``.real`` on a str, ``[a]`` on a str: ``TypeError``), and the scan
+        has to go on, still finding a real hit in the same file."""
+        merged_scopes = (
+            'class Thing:\n    foo = "ok"\n\n\ndef one():\n    x = "bar"\n    return x\n\n\n'
+            'def two():\n    x = Thing()\n    return "{x.foo}".format(x=x)\n')
+        for source in (merged_scopes, 'x = "a"\nprint("{0.real}".format(x))\n',
+                       'x = "a"\nprint("{0[a]}".format(x))\n', 'print("%d" % ("a",))\n',
+                       'x = "a"\nprint("{:99999999999}".format(x))\n'):
+            with self.subTest(source=source):
+                self.assertEqual(user_paths(source), [])
+                self.assertEqual(user_paths(source + 'path = "/us"\ngh.api(path + "er")\n'),
+                                 [source.count("\n") + 2])
+
+    def run_seam(self, files):
+        """Run ``Seam.test_no_identity_check_calls_user_directly`` itself, with ``ROOT`` pointing
+        at a temporary tree whose ``diaktoros/`` holds ``files``, and return its result."""
+        with tempfile.TemporaryDirectory() as raw:
+            package = Path(raw) / "diaktoros"
+            package.mkdir()
+            for name, text in files.items():
+                (package / name).write_text(text)
+            result = unittest.TestResult()
+            with mock.patch.dict(globals(), ROOT=Path(raw)):
+                Seam("test_no_identity_check_calls_user_directly").run(result)
+        return result
+
+    def test_the_seam_test_fails_on_an_assembled_path_it_used_to_miss(self):
+        """The old seam test grepped each line for a quoted ``"/user"``. Each of these used to
+        leave it green and must now turn it red, naming the file and the line."""
+        for source, line in (
+                ('def who(loop, login):\n    return gh.api(loop, "/us" "er", login=login)\n', 2),
+                ('def who(loop, login):\n    path = "/us"\n'
+                 '    return gh.api(loop, path + "er", login=login)\n', 3),
+                ('PATH = "/user"\n\n\ndef who(loop, login):\n'
+                 '    return gh.api(loop, PATH, login=login)\n', 5)):
+            with self.subTest(source=source):
+                result = self.run_seam({"evader.py": source, "gh.py": 'PROBE = "/user"\n'})
+                self.assertEqual(result.errors, [])
+                self.assertEqual(len(result.failures), 1, "the seam test stayed green")
+                self.assertIn(f"diaktoros/evader.py:{line}:", result.failures[0][1])
+
+    def test_the_seam_test_spares_its_own_callers_and_other_paths(self):
+        """It stays green for the allowed callers and the look-alikes, and a module the merged
+        name table cannot format does not turn it into an error."""
+        result = self.run_seam({
+            "gh.py": 'PROBE = "/user"\n', "selftest.py": 'path = "/us"\nuse(path + "er")\n',
+            "fine.py": 'USERS = "/users/x"\nINFO = "/userinfo"\n',
+            "scopes.py": 'x = "bar"\n\n\ndef two(x):\n    return "{x.foo}".format(x=x)\n'})
+        self.assertEqual((result.errors, result.failures), ([], []))
+        self.assertEqual(result.testsRun, 1)
 
     def test_the_package_scan_reports_an_evader_and_spares_the_seam(self):
         evader = 'diaktoros/evader.py:6: return gh.api(loop, path + "er", login=login)'
