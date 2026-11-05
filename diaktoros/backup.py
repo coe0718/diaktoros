@@ -14,7 +14,8 @@ Nothing here has a setting: the only knob is ``--out``. An output directory or r
 would have to be settable from the form, ``init``, ``setup``, ``set`` and the loop file, and none
 exists yet. For the same reason ``doctor``'s ``backup:fresh`` check (#1081) warns on a fixed age,
 ``FRESH_DAYS``, and reads only ``backups_dir()``: it cannot see an archive written with ``--out``
-elsewhere, nor a backup taken some other way.
+elsewhere, nor a backup taken some other way. It does not trust an archive dated more than
+``CLOCK_SKEW_S`` in the future, since that file would stay "fresh" long after the backup.
 """
 from __future__ import annotations
 
@@ -36,6 +37,7 @@ from . import config, gate_shims, route_intent, routes, run_supervisor, util
 VERSION = 1
 MANIFEST = "manifest.json"
 FRESH_DAYS = 30         # doctor's backup:fresh warns when the newest archive is older than this
+CLOCK_SKEW_S = 86400    # an archive dated further ahead than this is not trusted as recent (#1875)
 WARNING = ("this archive holds route secrets (webhook HMAC keys): keep it private; "
            "it was written mode 0600 and its contents are never printed")
 
@@ -53,8 +55,17 @@ def backups_dir() -> pathlib.Path:
     return config.home() / "backups"
 
 
-def latest_archive() -> tuple[pathlib.Path, float] | None:
-    """The newest archive in ``backups_dir()`` as ``(path, mtime)``, or None when there is none.
+def latest_archive(now: float | None = None) -> tuple[tuple[pathlib.Path, float] | None,
+                                                      tuple[pathlib.Path, float] | None]:
+    """The archives in ``backups_dir()`` as ``(newest, ahead)``, each ``(path, mtime)`` or None.
+
+    ``newest`` is the most recently written archive whose mtime is not past ``now`` plus
+    ``CLOCK_SKEW_S`` (``now`` defaults to the current time). ``ahead`` is the latest-dated archive
+    that is past that: written while the host clock was wrong, or copied in from a host whose
+    clock is. Its age cannot be told, and trusting it would keep ``doctor`` green for as long as
+    the clock was ahead plus ``FRESH_DAYS``, however long ago the backup really was (#1875), so the
+    caller must not count it as a recent backup. It is returned so that an install holding nothing
+    else can be told why, rather than reported as having no archive.
 
     An archive here is a regular, non-empty ``*.tar.gz`` (not a symlink), whatever its name: an
     operator's ``--out`` into this directory counts as much as a default name. The file is not
@@ -62,11 +73,13 @@ def latest_archive() -> tuple[pathlib.Path, float] | None:
     does not exist is "none"; one that cannot be read raises ``OSError`` — the caller says so
     rather than reporting a backup that may be there as missing.
     """
+    limit = (time.time() if now is None else now) + CLOCK_SKEW_S
     try:
         entries = list(os.scandir(backups_dir()))
     except FileNotFoundError:
-        return None
+        return None, None
     newest: tuple[pathlib.Path, float] | None = None
+    ahead: tuple[pathlib.Path, float] | None = None
     for entry in entries:
         if not entry.name.endswith(".tar.gz") or not entry.is_file(follow_symlinks=False):
             continue
@@ -74,9 +87,14 @@ def latest_archive() -> tuple[pathlib.Path, float] | None:
             info = entry.stat(follow_symlinks=False)
         except OSError:
             continue        # gone between the listing and now
-        if info.st_size and (newest is None or info.st_mtime > newest[1]):
-            newest = (pathlib.Path(entry.path), info.st_mtime)
-    return newest
+        if not info.st_size:
+            continue
+        found = (pathlib.Path(entry.path), info.st_mtime)
+        if info.st_mtime > limit:
+            ahead = found if ahead is None or found[1] > ahead[1] else ahead
+        elif newest is None or info.st_mtime > newest[1]:
+            newest = found
+    return newest, ahead
 
 
 def default_out() -> pathlib.Path:

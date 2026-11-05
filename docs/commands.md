@@ -1019,8 +1019,11 @@ see [account access and token permissions](accounts.md#choose-pat-type-and-permi
 `--strict` makes the warning a failure. It reads that one directory by file age, with a fixed 30 days:
 `backup` has no output-directory or retention setting to follow. An archive written with `--out`
 somewhere else, or a backup taken some other way, is not seen, and the check warns although a backup
-exists. It does not open the archive, so it shows that one exists, not that it would restore. A
-backup covers the whole install, so every loop's report carries the same line, and `--offline` does
+exists. It does not open the archive, so it shows that one exists, not that it would restore. An
+archive dated more than a day in the future (a wrong clock when it was written, or a copy from a host
+whose clock is) is not counted as recent, since it would stay "fresh" long after the backup: with
+nothing else there, the warning says so. A backup covers the whole install, so every loop's report
+carries the same line, and `--offline` does
 not skip it (it reads only local files).
 
 ```bash

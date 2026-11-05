@@ -62,15 +62,16 @@ class LatestArchive(Base):
     """``backup.latest_archive``: what counts as an archive, and which is newest."""
 
     def test_no_directory_and_an_empty_one_are_none(self):
-        self.assertIsNone(backup.latest_archive())
+        self.assertEqual(backup.latest_archive(), (None, None))
         self.dir.mkdir()
-        self.assertIsNone(backup.latest_archive())
+        self.assertEqual(backup.latest_archive(), (None, None))
 
     def test_the_newest_archive_wins_whatever_its_name(self):
         self.archive("diaktoros-backup-20250101-000000.tar.gz", age_days=40)
         newer = self.archive("by-hand.tar.gz", age_days=2)
         self.archive("diaktoros-backup-20250201-000000.tar.gz", age_days=9)
-        path, written = backup.latest_archive()
+        (path, written), ahead = backup.latest_archive()
+        self.assertIsNone(ahead)
         self.assertEqual(path, newer)
         self.assertAlmostEqual(time.time() - written, 2 * DAY, delta=60)
 
@@ -83,7 +84,25 @@ class LatestArchive(Base):
         outside = self.root / "elsewhere.tar.gz"
         outside.write_bytes(b"x" * 10)
         (self.dir / "link.tar.gz").symlink_to(outside)
-        self.assertEqual(backup.latest_archive()[0], real)
+        self.assertEqual(backup.latest_archive()[0][0], real)
+        self.assertIsNone(backup.latest_archive()[1])
+
+    def test_an_archive_dated_past_the_skew_allowance_is_set_apart_not_newest(self):
+        """A future mtime must not win as "newest": it is returned as ``ahead`` instead (#1875)."""
+        real = self.archive("real.tar.gz", age_days=20)
+        future = self.archive("future.tar.gz", age_days=-3650)
+        newest, ahead = backup.latest_archive()
+        self.assertEqual(newest[0], real)
+        self.assertEqual(ahead[0], future)
+        # Within the allowance (an hour of drift between hosts) it is an ordinary newest archive.
+        near = self.archive("near.tar.gz", age_days=-1 / 24)
+        newest, ahead = backup.latest_archive()
+        self.assertEqual(newest[0], near)
+        self.assertEqual(ahead[0], future)
+        # The caller's clock is the one given, not the module's.
+        newest, ahead = backup.latest_archive(now=future.stat().st_mtime)
+        self.assertEqual(newest[0], future)
+        self.assertIsNone(ahead)
 
     def test_an_unreadable_directory_raises_rather_than_reading_as_none(self):
         self.dir.mkdir()
@@ -126,11 +145,38 @@ class BackupFresh(Base):
         self.archive("a.tar.gz", age_days=backup.FRESH_DAYS + 0.01)
         self.assertEqual(backup_checks.check_backup_fresh().status, doctor.UNKNOWN)
 
-    def test_a_clock_skewed_future_mtime_is_not_an_error(self):
-        self.archive("future.tar.gz", age_days=-2)
+    def test_a_small_clock_drift_is_still_a_fresh_archive(self):
+        self.archive("drift.tar.gz", age_days=-1 / 24)     # an hour ahead: within the allowance
         check = backup_checks.check_backup_fresh()
         self.assertEqual(check.status, doctor.VERIFIED, check.detail)
         self.assertIn("0 day(s) old", check.detail)
+
+    def test_a_future_dated_archive_is_not_a_recent_backup(self):
+        """#1875 F1: an archive written under a clock years ahead is not green, now or later."""
+        future = self.archive("future.tar.gz", age_days=-3650)
+        mtime = future.stat().st_mtime
+        check = backup_checks.check_backup_fresh()
+        self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
+        self.assertIn("future.tar.gz", check.detail)
+        self.assertIn("in the future", check.detail)
+        self.assertNotIn("no backup archive", check.detail)
+        self.assertIn("hermes dk backup", check.detail)
+        # The reviewer's probe: the clock is corrected to 31 days before the file's mtime, i.e. more
+        # than FRESH_DAYS after the real backup, and the file must not read as a fresh one.
+        with mock.patch.object(backup_checks.time, "time",
+                               return_value=mtime - (backup.FRESH_DAYS + 1) * DAY):
+            late = backup_checks.check_backup_fresh()
+        self.assertEqual(late.status, doctor.UNKNOWN, late.detail)
+        self.assertNotIn("day(s) old (within", late.detail)
+
+    def test_a_real_archive_beside_a_future_one_decides_the_check(self):
+        self.archive("future.tar.gz", age_days=-3650)
+        self.archive("real.tar.gz", age_days=2)
+        self.assertEqual(backup_checks.check_backup_fresh().status, doctor.VERIFIED)
+        self.archive("real.tar.gz", age_days=backup.FRESH_DAYS + 5)
+        stale = backup_checks.check_backup_fresh()
+        self.assertEqual(stale.status, doctor.UNKNOWN, stale.detail)
+        self.assertIn("real.tar.gz", stale.detail)
 
     def test_an_unreadable_directory_is_unknown_not_missing(self):
         with mock.patch.object(backup.os, "scandir", side_effect=PermissionError("denied")):
@@ -156,6 +202,12 @@ class ThroughDoctor(Base):
         self.assertEqual(self.check_named().status, doctor.UNKNOWN)
         self.archive("diaktoros-backup-now.tar.gz", age_days=0)
         self.assertEqual(self.check_named().status, doctor.VERIFIED)
+
+    def test_check_loop_does_not_count_a_future_dated_archive(self):
+        self.archive("future.tar.gz", age_days=-3650)
+        check = self.check_named()
+        self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
+        self.assertIn("in the future", check.detail)
 
     def test_check_loop_orders_it_beside_the_watchdog_line(self):
         names = [c.name for c in doctor.check_loop(_loop(), offline=True)]

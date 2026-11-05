@@ -10,8 +10,11 @@ writes without ``--out``), at the file's modification time, against a fixed ``ba
 — ``backup`` has no output-directory or retention setting to read either from. An archive
 written with ``--out`` somewhere else, or a backup of the host taken some other way, is invisible
 here: the check then warns although a backup exists. It says an archive *exists*; it does not
-open it, so it does not prove the archive would restore. A backup is of the whole install, not
-of a loop, so every loop's report carries the same line.
+open it, so it does not prove the archive would restore. An archive whose modification time is
+more than ``backup.CLOCK_SKEW_S`` in the future (the clock was wrong when it was written, or it was
+copied from a host whose clock is) is not counted as recent: its age is unknown, and counting it
+would keep the line green for as long as the clock was ahead plus ``FRESH_DAYS`` (#1875). A backup
+is of the whole install, not of a loop, so every loop's report carries the same line.
 """
 from __future__ import annotations
 
@@ -33,18 +36,25 @@ def check_backup_fresh() -> doctor.Check:
     name = "backup:fresh"
     command = "hermes dk backup"
     where = backup.backups_dir()
+    now = time.time()
     try:
-        newest = backup.latest_archive()
+        newest, ahead = backup.latest_archive(now)
     except OSError as exc:
         return doctor.Check(name, doctor.UNKNOWN,
                             f"cannot read {where} ({exc}), so a recent backup cannot be confirmed",
                             f"make {where} readable by the user running doctor")
+    if newest is None and ahead is not None:
+        path, written = ahead
+        return doctor.Check(name, doctor.UNKNOWN,
+                            f"{path.name} in {where} is dated {(written - now) / _DAY_S:.0f} days "
+                            f"in the future (a wrong clock when it was written?), so how old the "
+                            f"newest backup is cannot be told; run `{command}`", f"`{command}`")
     if newest is None:
         return doctor.Check(name, doctor.UNKNOWN,
                             f"no backup archive in {where} — nothing would restore this install; "
                             f"run `{command}`", f"`{command}`")
     path, written = newest
-    age_days = max(0.0, (time.time() - written) / _DAY_S)
+    age_days = max(0.0, (now - written) / _DAY_S)
     if age_days > backup.FRESH_DAYS:
         return doctor.Check(name, doctor.UNKNOWN,
                             f"the newest backup in {where} is {path.name}, {age_days:.0f} days old "
