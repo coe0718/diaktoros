@@ -17,6 +17,7 @@ from .. import (
     gate_shims,
     route_intent,
     routes,
+    util,
 )
 from . import common as cli_common
 from ..config import credentials
@@ -324,6 +325,25 @@ def _init_hooks_preview(loop: dict, args) -> list[str]:
             _hook_editor_line(loop, args.admin_token, armed, True)]
 
 
+def _form_credentials(d: dict, explicit: set, reviewer_seat: str, fixer_seat: str,
+                      adjudicator_login: str) -> dict:
+    """The plugin-settings credential fields ``init`` still takes: a role's three fields (token
+    file, App id, App key file) unless its login has a credential from the command line.
+
+    ``explicit`` holds ``util.login_key`` of every login given ``--token`` or ``--app``, so a
+    login is compared by the same rule the credential maps use (#1210)."""
+    credential_form = {}
+    for role, login in (("reviewer", reviewer_seat), ("fixer", fixer_seat),
+                        ("adjudicator", adjudicator_login)):
+        if role == "adjudicator" and d["adjudicator_login"] and (
+                util.login_key(d["adjudicator_login"]) != util.login_key(login)):
+            continue  # A form credential for another named adjudicator is not this CLI identity.
+        if util.login_key(login) not in explicit:
+            for suffix in ("token_file", "app_id", "app_key_file"):
+                credential_form[f"{role}_{suffix}"] = d[f"{role}_{suffix}"]
+    return credential_form
+
+
 def cmd_init(args) -> int:
     """Install a loop: write its config, its routes, and (on request) its hooks and cron job.
 
@@ -401,16 +421,8 @@ def cmd_init(args) -> int:
               "a ruling, and without a breach route nothing rules")
         return 2
     # CLI credentials win; select and validate only effective form paths, as apply does.
-    explicit = {login.lower() for login in (*tokens, *apps)}
-    credential_form = {}
-    for role, login in (("reviewer", reviewer_seat), ("fixer", fixer_seat),
-                        ("adjudicator", adjudicator_login)):
-        if role == "adjudicator" and d["adjudicator_login"] and (
-                d["adjudicator_login"].lower() != login.lower()):
-            continue  # A form credential for another named adjudicator is not this CLI identity.
-        if login.lower() not in explicit:
-            for suffix in ("token_file", "app_id", "app_key_file"):
-                credential_form[f"{role}_{suffix}"] = d[f"{role}_{suffix}"]
+    credential_form = _form_credentials(d, {util.login_key(login) for login in (*tokens, *apps)},
+                                        reviewer_seat, fixer_seat, adjudicator_login)
     credential_loop = {"tokens": tokens, "apps": apps,
                        "seats": {"reviewer": {"login": reviewer_seat},
                                  "fixer": {"login": fixer_seat},
@@ -492,36 +504,36 @@ def cmd_init(args) -> int:
     try:
         for seat in ("reviewer", "fixer"):
             flag = getattr(args, f"{seat}_max_steps", None)
-            steps = flag if flag is not None else config._form_int(d[f"{seat}_max_steps"].strip())
+            steps = flag if flag is not None else config.form_int(d[f"{seat}_max_steps"].strip())
             if steps not in (0, ""):
-                raw["seats"][seat]["max_steps"] = config._check_max_steps(
+                raw["seats"][seat]["max_steps"] = config.validate_max_steps(
                     steps, f"seats.{seat}.max_steps", "init")
         for seat in ("reviewer", "fixer"):
             flag = getattr(args, f"{seat}_daily_tokens", None)
-            budget = flag if flag is not None else config._form_int(
+            budget = flag if flag is not None else config.form_int(
                 d[f"{seat}_daily_tokens"].strip())
             if budget not in (0, ""):
-                raw["seats"][seat]["daily_tokens"] = config._check_daily_tokens(
+                raw["seats"][seat]["daily_tokens"] = config.validate_daily_tokens(
                     budget, f"seats.{seat}.daily_tokens", "init")
         # The shadow seat's token budget (#875): the flag, else the form.
         flag = getattr(args, "shadow_daily_tokens", None)
-        budget = flag if flag is not None else config._form_int(
+        budget = flag if flag is not None else config.form_int(
             str(d.get("shadow_daily_tokens") or "").strip())
         if budget not in (0, "", None):
-            raw["seats"].setdefault("shadow", {})["daily_tokens"] = config._check_daily_tokens(
+            raw["seats"].setdefault("shadow", {})["daily_tokens"] = config.validate_daily_tokens(
                 budget, "seats.shadow.daily_tokens", "init")
         # The shadow and triage seats' own capacity: the flag, else the form; blank = unset.
         for seat in ("shadow", "triage"):
             flag = getattr(args, f"{seat}_concurrency", None)
-            capacity = flag if flag is not None else config._form_int(
+            capacity = flag if flag is not None else config.form_int(
                 str(d.get(f"{seat}_concurrency") or "").strip())
             if capacity not in ("", None):
                 raw["seats"].setdefault(seat, {})["concurrency"] = config.check_concurrency(
                     capacity, f"seats.{seat}.concurrency", "init")
         flag = getattr(args, "fix_daily_turns", None)
-        cap = flag if flag is not None else config._form_int(d["fix_daily_turns"].strip())
+        cap = flag if flag is not None else config.form_int(d["fix_daily_turns"].strip())
         if cap not in (0, ""):
-            config._check_daily_turns(cap, "triage.fix_daily_turns", "init")
+            config.validate_daily_turns(cap, "triage.fix_daily_turns", "init")
             # A new loop has no triage block for the cap to live in (it needs no fix label,
             # #1218), and `apply` refuses it for the same reason: refuse rather than drop it.
             print(f"refused: the issue-fix daily cap {cap} cannot be set by init: a new loop "

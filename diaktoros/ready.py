@@ -429,9 +429,9 @@ def sweep(loop: dict, st, log=lambda _msg: None) -> bool:
     numbers = [e["number"] for e in ready]
     path = st.dir / FILE
     with st.locked():
-        memory = st._load(path, {})
+        memory = st.kv_get(path, {})
         previous = memory.get("ready") if isinstance(memory, dict) else None
-        st._save(path, {"ready": numbers})
+        st.kv_set(path, {"ready": numbers})
     if not isinstance(previous, list) or previous == numbers:
         return False                                  # first run, or nothing changed
     observer.notify(loop, st, "ready_set", numbers[0] if numbers else 0, "",

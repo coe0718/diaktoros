@@ -146,7 +146,7 @@ def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None)
         return 0
     import time
     with st.locked():                   # what the store held before the listing (#1260)
-        before = st._load(st.dir / FILE, {})
+        before = st.kv_get(st.dir / FILE, {})
     before = before if isinstance(before, dict) else {}
     prs, kinds, error = ready.collect_kinds(loop, st, only)
     if error:
@@ -165,7 +165,7 @@ def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None)
         digest = _digest(state, summary)
         with _writer(st):
             with st.locked():
-                memory = st._load(path, {})
+                memory = st.kv_get(path, {})
                 memory = memory if isinstance(memory, dict) else {}
                 last = memory.get(str(number)) if isinstance(memory.get(str(number)), dict) else {}
             if last.get("head") == head and last.get("digest") == digest:
@@ -176,7 +176,7 @@ def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None)
                 log(f"#{number} @ {head[:7]}: merge check not posted ({why})")
                 continue
             with st.locked():
-                memory = st._load(path, {})
+                memory = st.kv_get(path, {})
                 memory = memory if isinstance(memory, dict) else {}
                 memory[str(number)] = {"head": head, "state": state, "digest": digest,
                                        "at": time.time(), **({"run_id": run_id} if run_id else {})}
@@ -187,7 +187,7 @@ def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None)
                 open_numbers = {str(p["number"]) for p in prs}
                 memory = {k: v for k, v in memory.items()
                           if k in open_numbers or k not in before or v != before[k]}
-                st._save(path, memory)
+                st.kv_set(path, memory)
         written += 1
         log(f"#{number} @ {head[:7]}: merge check {state}")
     return written
@@ -197,7 +197,7 @@ def has_head(st, number: int, head: str) -> bool:
     """Whether ``merge-check.json`` already holds ``head`` for this PR: the check was decided
     (or marked pending) for it, so nothing new has to be posted on its account."""
     with st.locked():
-        memory = st._load(st.dir / FILE, {})
+        memory = st.kv_get(st.dir / FILE, {})
     last = memory.get(str(number)) if isinstance(memory, dict) else None
     return isinstance(last, dict) and last.get("head") == head
 
@@ -226,12 +226,12 @@ def mark_pending(loop: dict, st, number: int, head: str, why: str) -> bool:
             if failed:
                 return False
             with st.locked():
-                memory = st._load(path, {})
+                memory = st.kv_get(path, {})
                 memory = memory if isinstance(memory, dict) else {}
                 memory[str(number)] = {"head": head, "state": PENDING, "at": time.time(),
                                        "digest": _digest(PENDING, summary),
                                        **({"run_id": run_id} if run_id else {})}
-                st._save(path, memory)
+                st.kv_set(path, memory)
             return True
     except (Exception, gh.GateBudgetExceeded):
         # Never changes what the gate decided (shadow review of #1249): the turn is already armed,

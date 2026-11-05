@@ -307,7 +307,7 @@ def _move_state(loop: dict, old: str, new: str, *, dry_run: bool) -> int:
     if not st.dir.is_dir():
         return 0
     changed = 0
-    with st.locked(), st._breach_lock():
+    with st.locked(), st.breach_lock():
         for path in sorted(st.dir.rglob("*.json")):
             if path.is_symlink() or not path.is_file():
                 continue

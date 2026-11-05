@@ -72,6 +72,23 @@ class Commands(unittest.TestCase):
             bare.func(bare)
         self.assertIn(cli.RENAMED_NOTE, err.getvalue())
 
+    def test_the_rename_note_names_the_release_that_removes_the_old_name(self):
+        """#1089: "a later release" had no end; the note, README and operations doc name one."""
+        release = f"v{cli.RENAMED_REMOVED_IN}"
+        self.assertIn(f"removed in {release}", self.run_verb("review-loop"))
+        self.assertNotIn("later release", cli.RENAMED_NOTE)
+        for doc in (ROOT / "README.md", ROOT / "docs" / "operations.md"):
+            text = " ".join(doc.read_text(encoding="utf-8").split())
+            self.assertIn(f"as an alias until {release}, which removes it", text, doc)
+
+    def test_the_old_name_is_gone_by_the_release_it_names(self):
+        """Releasing ``RENAMED_REMOVED_IN`` with the alias still registered turns this red."""
+        def parts(version):
+            return tuple(int(n) for n in re.findall(r"\d+", version)[:3])
+        import diaktoros
+        if parts(diaktoros.__version__) >= parts(cli.RENAMED_REMOVED_IN):
+            self.assertNotIn("review-loop", self.ctx.commands)
+
     def test_the_old_name_never_becomes_the_parser_verbs_run_through(self):
         parse(self.ctx, "diaktoros")
         real = cli_common._PARSER

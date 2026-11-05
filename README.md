@@ -115,7 +115,7 @@ hermes dk doctor                                 # green? then:
 hermes plugins remove hermes-review-loop
 ```
 
-`hermes review-loop` keeps working as an alias that says it was renamed, for one release. [Operations](docs/operations.md#upgrading-from-hermes-review-loop) has the details.
+`hermes review-loop` keeps working, as an alias until v0.6.0, which removes it. Each use says it was renamed. [Operations](docs/operations.md#upgrading-from-hermes-review-loop) has the details.
 
 ## Safety model
 

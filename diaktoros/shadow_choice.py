@@ -84,7 +84,7 @@ def choose(loop: dict, number: int, head: str, turn_key: str = "") -> dict:
                 return {"shadow": memory[key]["shadow"], "why": memory[key]["why"]}
             memory[key] = {**choice, "at": time.time(), "policy": made_under}
             newest = sorted(memory, key=lambda k: memory[k]["at"], reverse=True)[:KEEP]
-            st._save(st.dir / FILE, {k: memory[k] for k in newest})
+            st.kv_set(st.dir / FILE, {k: memory[k] for k in newest})
     except Exception as exc:  # noqa: BLE001 - the choice stands; only its record is lost
         log(f"#{number}: shadow choice at {head[:7]} not kept: {type(exc).__name__}: {exc}")
     return choice
@@ -124,7 +124,7 @@ def explain_line(loop: dict, number: int, head: str) -> str:
 
 
 def _memory(st) -> dict:
-    data = st._load(st.dir / FILE, {})
+    data = st.kv_get(st.dir / FILE, {})
     return {key: entry for key, entry in (data.items() if isinstance(data, dict) else ())
             if isinstance(key, str) and key.count(":") >= 2      # PR:head:turn key
             and isinstance(entry, dict) and isinstance(entry.get("shadow"), bool)

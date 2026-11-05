@@ -347,7 +347,7 @@ class RealHomeWrites(unittest.TestCase):
                 ("config.artifacts_dir", lambda: config.artifacts_dir(loop, 7)),
                 ("isolation.ensure", lambda: isolation.ensure({**loop, "clone": str(self.source)}, 7,
                                                               "reviewer")),
-                ("selftest._work_root", lambda: selftest._work_root(loop)),
+                ("selftest.work_root", lambda: selftest.work_root(loop)),
                 ("deps.cache_root", lambda: deps.cache_root(loop))):
             with self.subTest(name):
                 self.assert_refused(write)

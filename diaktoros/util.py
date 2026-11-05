@@ -242,6 +242,18 @@ def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def login_key(login) -> str:
+    """The one folding rule for "which mapped login is this" (#1210): two spellings are one
+    login when their keys are equal. ``casefold``, the rule ``login_entry``, ``case_clash`` and
+    ``check_apps`` already applied, so a lookup, a check and a form that writes a key agree on
+    every spelling, not only on ASCII ones (where ``lower`` and ``casefold`` never differ).
+
+    It is for comparing logins, never for validating one: ``config.APP_LOGIN`` is ASCII-only and
+    is matched against ``lower()``, because folding turns ``ß`` into ``ss`` and would accept a
+    login GitHub cannot have."""
+    return str(login).casefold()
+
+
 def login_entry(table, login: str | None):
     """``table``'s entry for ``login`` (a ``tokens`` or ``apps`` map): the exact key first, then
     any case, as validation matches logins; None when there is none. GitHub logins are
@@ -250,8 +262,8 @@ def login_entry(table, login: str | None):
         return None
     if login in table:
         return table[login]
-    folded = login.casefold()
-    return next((v for k, v in table.items() if str(k).casefold() == folded), None)
+    folded = login_key(login)
+    return next((v for k, v in table.items() if login_key(k) == folded), None)
 
 
 def iso_at(when: float) -> str:

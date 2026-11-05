@@ -137,7 +137,7 @@ def _inflight_marks(c) -> None:
                 continue
             marks.append(f"{label} for head {c.head[:7]} armed "
                          f"{_minutes_since(c.st.inflight_at(mark), c.now)}m ago "
-                         f"(ttl {c.st._minutes('inflight_ttl_min'):g}m)")   # the TTL inflight() used
+                         f"(ttl {c.st.minutes('inflight_ttl_min'):g}m)")   # the TTL inflight() used
             if label == "review":
                 c.inflight_review = True
             else:
@@ -936,7 +936,7 @@ def _mark_wait(c) -> str:
     it to expire first (#1510 review); a bare lock does not hold the gate, so nothing to wait for."""
     if not c.inflight_fix:
         return ""
-    ttl = c.st._minutes("inflight_ttl_min")
+    ttl = c.st.minutes("inflight_ttl_min")
     armed = _minutes_since(c.st.inflight_at(f"fix:{c.number}:{c.head}"), c.now)
     return (f"the fixer gate refuses a re-delivery while the in-flight fix mark for this head stands "
             f"(armed {armed}m ago, ttl {ttl:g}m — `hermes dk set --loop {c.loop['id']} "

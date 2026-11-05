@@ -122,8 +122,12 @@ from .triage_command import cmd_triage  # noqa: F401
 # -- verbs ----------------------------------------------------------------------
 
 
+# The release that drops ``hermes review-loop`` (#1089). The rename shipped in 0.2.0 and the alias
+# was promised "for one release"; it now names its end. README.md and docs/operations.md name the
+# same release, and tests/test_rename.py fails once ``__version__`` reaches it with the alias kept.
+RENAMED_REMOVED_IN = "0.6.0"
 RENAMED_NOTE = ("note: `hermes review-loop` is now `hermes dk` (short for `hermes diaktoros`); "
-                "the old name will be removed in a later release")
+                f"the old name will be removed in v{RENAMED_REMOVED_IN}")
 
 
 def _renamed(func):

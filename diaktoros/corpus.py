@@ -169,7 +169,7 @@ def live_review(loop: dict, settings: dict, reviewer, timeout: int):
                               credential=reviewer.credential_provider(),
                               proxy_model=reviewer.proxy_model,
                               client_identity=reviewer.client_identity, timeout=timeout,
-                              work_root=selftest._work_root(loop), no_write=True,
+                              work_root=selftest.work_root(loop), no_write=True,
                               observed=observed)
         submissions = observed.get("submissions") or []
         if not submissions:

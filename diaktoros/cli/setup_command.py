@@ -11,7 +11,7 @@ import pathlib
 import shlex
 import sys
 
-from .. import config, onboarding
+from .. import config, onboarding, util
 from . import checks as cli_checks
 from . import common as cli_common
 from . import install as cli_install
@@ -123,6 +123,16 @@ def _switch(flag, question: str, default: bool, interactive: bool) -> str:
     return flag or ("on" if _agree(question, default, interactive, default) else "off")
 
 
+def _app_logins_test(args):
+    """A predicate: whether a login was given a GitHub App identity with ``--app`` (#1163).
+
+    Such a login has a key, not a PAT, so no token file is asked for it. Logins compare by
+    ``util.login_key``, the rule the credential maps use (#1210)."""
+    app_logins = {util.login_key(str(pair).split("=", 1)[0].strip())
+                  for pair in (getattr(args, "app", None) or [])}
+    return lambda login: bool(login) and util.login_key(login) in app_logins
+
+
 def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[list[str], str]:
     """Step 2's answers as the ``init`` command line, and the hook admin login ("" for none)."""
     d = settings_form.settings_defaults(cli_common._SETTINGS)
@@ -133,9 +143,7 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     reviewer_profile = ask(args.reviewer_profile, "reviewer's Hermes profile", d["reviewer_profile"])
     fixer_profile = ask(args.fixer_profile, "fixer's Hermes profile", d["fixer_profile"])
     # A login given a GitHub App identity (--app, #1163) has a key, not a PAT: no file is asked.
-    app_logins = {str(pair).split("=", 1)[0].strip().lower()
-                  for pair in (getattr(args, "app", None) or [])}
-    has_app = lambda login: bool(login) and login.lower() in app_logins  # noqa: E731
+    has_app = _app_logins_test(args)
     reviewer_file = "" if has_app(reviewer) else ask(
         args.reviewer_token, f"token file for {reviewer or 'the reviewer'}", d["reviewer_token_file"])
     fixer_file = "" if has_app(fixer) else ask(
@@ -164,7 +172,7 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
                   interactive))
     admin_file = ""
     if (admin and not has_app(admin)
-            and admin.lower() not in {x.lower() for x in (reviewer, fixer, reader) if x}):
+            and util.login_key(admin) not in {util.login_key(x) for x in (reviewer, fixer, reader) if x}):
         admin_file = ask(args.admin_token_file, f"token file for {admin}")
     argv = ["init", f"--repo={repo}", f"--id={loop_id}", f"--reviewer={reviewer}",
             f"--fixer={fixer}", f"--reviewer-profile={reviewer_profile}",
