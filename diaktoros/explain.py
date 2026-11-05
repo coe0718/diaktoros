@@ -8,7 +8,8 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
-from . import config, gate, gate_decisions, gate_failures, gh, pr_hold, situation, transition, state as state_mod
+from . import config, gate, gate_decisions, gate_failures, gh, pr_hold, review_kick, situation, transition
+from . import state as state_mod
 from .util import iso_at
 
 
@@ -401,10 +402,9 @@ def _read(c) -> None:
     c.state = ("unknown" if c.pr is None
                else "merged" if (c.pr.get("merged") or c.pr.get("merged_at"))
                else str(c.pr.get("state") or "unknown"))
-    requested = {str((entry or {}).get("login") or "").lower()
-                 for entry in (c.pr or {}).get("requested_reviewers") or []
-                 if isinstance(entry, dict)}
-    c.request_pending = bool(c.loop["reviewer_seat"]) and c.loop["reviewer_seat"] in requested
+    # A PAT reviewer's pending request is GitHub's; an App reviewer's is the host's handoff
+    # (``_head_verdicts``, #1213), as GitHub never lists an App there.
+    c.request_pending = review_kick.already_requested(c.loop, c.pr)
     c.blockers: list[str] = []
     # A gate that crashed, overran or silenced after a failed read (#75) is not a decision.
     c.gate_failed = [gate_failure_line(entry) for entry in gate_failures.open_for(c.loop, c.number)]
@@ -446,6 +446,12 @@ def _head_verdicts(c) -> None:
             c.head_states = sorted({gh.review_state(r) for r in gate.reviews_at_head(c.reviews, c.loop, c.head)})
 
     c.stale_line, c.watch = "", c.st.watch()
+    # #1213: an App reviewer's request is the handoff the gateway acknowledged at this head
+    # (not merely the audited request), pending until a verdict lands there, as GitHub clears
+    # a request then. Unread reviews leave it as read: an unknown verdict list proves no
+    # request still open.
+    if not c.request_pending and c.reviews is not None and not c.reviewed:
+        c.request_pending = review_kick.app_handoff_delivered(c.loop, c.number, c.head)
     # #905: approved on the adjudicator's ACCEPT, but GitHub still counts a change request.
     from . import ready                   # here: ready reads explain at import
     c.unlifted = ([text for _, text in ready.acting(c.loop, c.number, c.head, c.reviews,
@@ -1161,7 +1167,9 @@ def _state_line(c) -> None:
         if c.pr.get("draft"):
             bits.append("draft")
         if c.request_pending:
-            bits.append(f"review requested from {c.loop['reviewer_seat']}")
+            bits.append(f"review requested from {c.loop['reviewer_seat']}"
+                        + (" (handed to its gate by the host: GitHub cannot request an App)"
+                           if config.reviewer_is_app(c.loop) else ""))
         if c.pr.get("mergeable_state") == "dirty":
             # #303 stage 1: GitHub cannot merge it as it is; nothing in the loop resolves that yet.
             bits.append(f"CONFLICTS with {c.base or 'its base'} — merge {c.base or 'the base'} into "
