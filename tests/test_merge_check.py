@@ -15,7 +15,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from diaktoros import ci, explain, gate, gh, merge_check, ready, state as state_mod  # noqa: E402
+from diaktoros import ci, explain, gate, gh, merge_check, protection, ready, state as state_mod  # noqa: E402
 
 HEAD = "a" * 40
 CLEAN = {"mergeable": True, "mergeable_state": "clean", "number": 7, "state": "open",
@@ -316,6 +316,16 @@ class Decide(unittest.TestCase):
         state, _ = merge_check.decide([(ready.GITHUB, "not mergeable: GitHub reports blocked")])
         self.assertEqual(state, merge_check.SUCCESS)
 
+    def test_githubs_blocked_waits_when_the_check_is_not_required(self):
+        # #1227: then blocked is another rule (required reviews, another check), as ready says.
+        state, summary = merge_check.decide(
+            [(ready.GITHUB, "not mergeable: GitHub reports blocked")], required=False)
+        self.assertEqual(state, merge_check.PENDING)
+        self.assertIn("GitHub reports blocked", summary)
+        state, _ = merge_check.decide([(ready.GITHUB, "blocked"), (ready.FAILURE, "red CI")],
+                                      required=False)
+        self.assertEqual(state, merge_check.FAILURE)
+
     def test_any_failure_fails_and_lists_the_rest_as_waiting(self):
         state, summary = merge_check.decide([(ready.PENDING, "CI unreadable"),
                                              (ready.FAILURE, "not approved at head aaaaaaa")])
@@ -393,6 +403,9 @@ class Posting(unittest.TestCase):
             return {"context": body["context"]}
         for patch in (mock.patch.object(gh, "api", side_effect=api),
                       mock.patch.object(gh, "last_error", return_value="HTTP 403"),
+                      # #1227: the base requires the check unless a test says otherwise.
+                      mock.patch.object(protection, "read",
+                                        return_value=protection.Protection(sources=[1])),
                       mock.patch.object(ready, "collect_kinds",
                                         side_effect=lambda *a: (self.prs, self.kinds, ""))):
             patch.start()
@@ -456,6 +469,32 @@ class Posting(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         self.kinds = {7: [(ready.PENDING, "review not yet posted"), (ready.GITHUB, "blocked")]}
         self.assertEqual(self.refresh(), 0)           # GitHub's blocked does not count
+
+    def base(self, sources=(), unread=()):
+        found = protection.Protection(sources=list(sources), unread=list(unread))
+        return mock.patch.object(protection, "read", return_value=found)
+
+    def test_blocked_on_a_base_that_does_not_require_the_check_keeps_it_pending(self):
+        # #1227: the refresh reads the base; blocked there is another rule, so no green check.
+        self.kinds = {7: [(ready.GITHUB, "not mergeable: GitHub reports blocked")]}
+        with self.base() as read:
+            self.assertEqual(self.refresh(), 1)
+        read.assert_called_once()
+        self.assertEqual(self.memory()["7"]["state"], "pending")
+        self.assertIn("GitHub reports blocked", self.calls[0][2]["output"]["summary"])
+
+    def test_blocked_on_a_base_that_requires_the_check_or_is_unread_is_left_out(self):
+        self.kinds = {7: [(ready.GITHUB, "not mergeable: GitHub reports blocked")]}
+        for found in ({"sources": [1]}, {"unread": ["classic branch protection (HTTP 403)"]}):
+            with self.subTest(found), self.base(**found):
+                self.st.kv_set(self.st.dir / merge_check.FILE, {})
+                self.assertEqual(self.refresh(), 1)
+                self.assertEqual(self.memory()["7"]["state"], "success")
+
+    def test_the_base_is_not_read_when_no_pr_is_blocked(self):
+        with self.base() as read:
+            self.assertEqual(self.refresh(), 1)
+        read.assert_not_called()
 
     def test_a_pat_loop_that_opted_in_posts_a_commit_status(self):
         self.loop.update(reviewer_seat="rev", apps={}, tokens={"rev": "/t"}, merge_check="on",
@@ -598,11 +637,11 @@ class Posting(unittest.TestCase):
         self.kinds[8] = []
         real_decide, decided = merge_check.decide, []
 
-        def decide(kinds):
+        def decide(kinds, *rest):
             decided.append(kinds)
             if len(decided) == 2:         # after PR 7's record, before PR 8 takes the lock
                 self.assertTrue(merge_check.mark_pending(self.loop, self.st, 9, "d" * 40, "x"))
-            return real_decide(kinds)
+            return real_decide(kinds, *rest)
         with mock.patch.object(merge_check, "decide", side_effect=decide):
             self.refresh()
         self.assertEqual(sorted(self.memory()), ["7", "8", "9"])
@@ -627,12 +666,12 @@ class Posting(unittest.TestCase):
         self.kinds[8] = []
         real_decide, decided = merge_check.decide, []
 
-        def decide(kinds):
+        def decide(kinds, *rest):
             decided.append(kinds)
             if len(decided) == 2:         # after PR 7's record, before PR 8 takes the lock
                 with mock.patch("time.time", return_value=1000.0):   # the clock stepped back
                     self.assertTrue(merge_check.mark_pending(self.loop, self.st, 9, "d" * 40, "x"))
-            return real_decide(kinds)
+            return real_decide(kinds, *rest)
         with mock.patch.object(merge_check, "decide", side_effect=decide):
             self.refresh()
         self.assertEqual(sorted(self.memory()), ["7", "8", "9"])

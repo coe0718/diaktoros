@@ -12,11 +12,16 @@ from the reviewer's PAT): this module reads and decides, it writes nothing.
 * **pending**: everything left can still clear on its own — a review, the shadow, CI or a ruling
   still out, a draft, or a read that failed and will be retried.
 
-GitHub's ``blocked`` never counts: with this check required, GitHub reports ``blocked`` *because*
-the check is not green yet, and counting that would keep the check from ever turning green. (Its
-other verdicts do: a conflict or ``behind`` needs a change, an uncomputed state is pending.) The
-per-PR reasons come from ``ready.build_kinds``, stacking included. A PR outside the loop gets no
-check at all.
+GitHub's ``blocked`` is left out only while the base may require this check (#1227): with the
+check required, GitHub reports ``blocked`` *because* the check is not green yet, and counting that
+would keep the check from ever turning green. When the base is known not to require it,
+``blocked`` is some other rule (required reviews, another required check), so it counts as a wait
+(pending), as ``ready`` excludes the PR for it, instead of reading success while the merge button
+refuses. A base whose protection could not be fully read (the classic protection read needs admin
+access) is taken as requiring the check: guessing wrong that way only reads green early, the other
+way deadlocks. (GitHub's other verdicts always count: a conflict or ``behind`` needs a change, an
+uncomputed state is pending.) The per-PR reasons come from ``ready.build_kinds``, stacking
+included. A PR outside the loop gets no check at all.
 """
 from __future__ import annotations
 
@@ -31,12 +36,14 @@ SUCCESS, PENDING, FAILURE = "success", "pending", "failure"
 SUMMARY_MAX = 60_000          # GitHub's check-run summary allows 65535 characters
 
 
-def decide(kinds: list[tuple[str, str]]) -> tuple[str | None, str]:
+def decide(kinds: list[tuple[str, str]], required: bool = True) -> tuple[str | None, str]:
     """``(state, summary)`` from ``ready.assess_kinds``' reasons; state ``None`` when the PR is not
-    the loop's (no check is posted)."""
+    the loop's (no check is posted). ``required`` (``base_requires_check``): whether the base may
+    require this check; only then is GitHub's ``blocked`` left out, else it is a wait."""
     if any(kind == ready.OUTSIDE for kind, _ in kinds):
         return None, "not a loop PR"
-    counted = [(kind, text) for kind, text in kinds if kind != ready.GITHUB]
+    counted = [(ready.PENDING if kind == ready.GITHUB else kind, text) for kind, text in kinds
+               if kind != ready.GITHUB or not required]
     failing = [text for kind, text in counted if kind == ready.FAILURE]
     waiting = [text for kind, text in counted if kind != ready.FAILURE]
     if failing:
@@ -52,6 +59,23 @@ def decide(kinds: list[tuple[str, str]]) -> tuple[str | None, str]:
     head = ("Blocked: what has to change, then what is still in progress."
             if state == FAILURE else "In progress: nothing needs a change yet.")
     return state, (head + "\n\n" + "\n".join(lines))[:SUMMARY_MAX]
+
+
+def base_requires_check(loop: dict) -> bool:
+    """Whether GitHub's ``blocked`` may be the base waiting on this check (#1227): True when the
+    base requires ``diaktoros/review`` or a read of its protection did not answer; False only when
+    both reads answered and neither requires it."""
+    from . import protection
+    found = protection.read(loop)
+    return found.required or bool(found.unread)
+
+
+def _blocked_counts(loop: dict, kinds: dict) -> bool:
+    """``decide``'s ``required`` for one refresh: the base is read only when some PR carries
+    GitHub's ``blocked``, and once for all of them."""
+    if not any(kind == ready.GITHUB for reasons in kinds.values() for kind, _ in reasons):
+        return True
+    return base_requires_check(loop)
 
 
 def title(state: str) -> str:
@@ -154,12 +178,13 @@ def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None)
         return 0
     path = st.dir / FILE
     written = 0
+    required = _blocked_counts(loop, kinds)
     for pr in prs:
         number = pr["number"]
         head = (pr.get("head") or {}).get("sha") or ""
         if not head or (only is not None and number not in only):
             continue
-        state, summary = decide(kinds.get(number) or [])
+        state, summary = decide(kinds.get(number) or [], required)
         if state is None:
             continue                                   # not a loop PR: no check
         digest = _digest(state, summary)

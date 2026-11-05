@@ -52,8 +52,9 @@ def _changed_since_listing(pr: dict, detail: dict) -> list[str]:
 # PENDING can still clear on its own (a review, the shadow, CI or a ruling still out, or a read
 # that failed and is retried); FAILURE needs a change or a person (changes requested, red CI, a
 # conflict, a hold, a ruling the operator decides). GITHUB is GitHub's ``blocked``: with the merge
-# check required GitHub reads ``blocked`` *because* the check is not green, so the check never
-# counts it (it would wait on itself). OUTSIDE: not a loop PR.
+# check required GitHub reads ``blocked`` *because* the check is not green, so the check does not
+# count it then (it would wait on itself); on a base known not to require the check it is a wait
+# (``merge_check.decide``, #1227). OUTSIDE: not a loop PR.
 PENDING, FAILURE, GITHUB, OUTSIDE = "pending", "failure", "github", "outside"
 
 
