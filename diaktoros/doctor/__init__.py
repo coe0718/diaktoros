@@ -778,25 +778,39 @@ def check_authorship(loop: dict, offline: bool = False) -> Check:
     pushed, error = authorship.pushed_heads(loop)
     if error:
         return Check(name, UNKNOWN, f"push journal unreadable ({error}): authorship not checked")
-    found, unread = [], []
+    found, unread, reads, scanned = [], [], 0, 0
     numbers = [pr.get("number") for pr in prs if isinstance(pr.get("number"), int)]
     for number in numbers[:authorship.PRS_MAX]:
-        stray, problem = authorship.scan(loop, number, pushed)
+        if reads >= authorship.READS_MAX:
+            break                       # the check's commit-read budget is spent (#1338)
+        stray, problem, cost = authorship.scan_reads(loop, number, pushed)
+        reads, scanned = reads + cost, scanned + 1
         if problem:
             unread.append(f"#{number}: {problem}")
         found += [f"#{number} {authorship.line(entry)}" for entry in stray]
+    cut = _authorship_cut(authorship, scanned, len(numbers))
     if found:
         return Check(name, UNKNOWN, "misattributed: " + "; ".join(found[:5])
-                     + (f" (+{len(found) - 5} more)" if len(found) > 5 else "") + named,
+                     + (f" (+{len(found) - 5} more)" if len(found) > 5 else "")
+                     + (f"; {cut}" if cut else "") + named,
                      "give each agent its own GitHub account and git email (docs/accounts.md); "
                      "this check never blocks a turn")
-    if unread or len(numbers) > authorship.PRS_MAX:
+    if unread or cut:
         return Check(name, UNKNOWN, "no misattributed commit found, but "
-                     + ("; ".join(unread[:3]) if unread else
-                        f"only the first {authorship.PRS_MAX} of {len(numbers)} open PRs were read")
-                     + named)
+                     + "; ".join(unread[:3] + ([cut] if cut else [])) + named)
     return Check(name, VERIFIED, f"no commit on {len(numbers)} open PR(s) shows as a seat's "
                  f"account without a seat turn pushing it" + named)
+
+
+def _authorship_cut(authorship, scanned: int, total: int) -> str:
+    """The notice that only the first ``scanned`` of ``total`` open PRs were read, naming the
+    read budget when it (not ``PRS_MAX``) stopped the scan; ``""`` when every PR was read. Said
+    with every outcome of ``check_authorship`` (a finding, an unreadable PR), never dropped."""
+    if scanned >= total:
+        return ""
+    spent = (f" (the check's budget of {authorship.READS_MAX} commit-page reads was spent)"
+             if scanned < min(total, authorship.PRS_MAX) else "")
+    return f"only the first {scanned} of {total} open PRs were read{spent}"
 
 
 def check_state_dir(loop: dict) -> Check:
