@@ -589,7 +589,7 @@ def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
     from .. import backup, migrate
     lines = [f"restore: {len(manifest['files'])} file(s), {len(manifest.get('routes') or {})} "
              f"route(s), loops: {', '.join(manifest.get('loops') or []) or 'none'}"]
-    lines += [f"restore: NOT FINISHED — token file missing: {line}"
+    lines += [f"restore: NOT FINISHED — credential file missing: {line}"
               for line in backup.missing_tokens(manifest)]
     lines += [f"restore: will overwrite {name}" for name in backup.existing(manifest)]
     lines += [f"restore: writes a loop state directory outside the Hermes home: {path}"

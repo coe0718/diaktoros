@@ -1127,6 +1127,81 @@ class Restore(Base):
         manifest = {"tokens": {"one": {"reviewer": str(self.root / "no-such-pat")}}}
         self.assertTrue(any("no-such-pat" in line for line in backup.missing_tokens(manifest)))
 
+    def app_loop(self):
+        """The starting install with a GitHub App identity added to ``apps`` (#1163): its private
+        key is a credential file the archive records the path of and does not hold."""
+        key = self.root / "keys" / "reader-app.pem"
+        key.parent.mkdir()
+        key.write_text("not a real key")
+        key.chmod(0o600)
+        path = config.config_dir() / "one.json"
+        raw = json.loads(path.read_text())
+        raw["apps"] = {"acme-reader[bot]": {"app_id": 7, "key_file": str(key)}}
+        path.write_text(json.dumps(raw))
+        self.assertEqual(backup.token_paths(config.all_loops()[0]), {"acme-reader[bot]": str(key)})
+        return key
+
+    def test_round_trip_records_an_app_key_and_a_present_one_is_not_reported(self):
+        key = self.app_loop()
+        out = self.take()
+        self.assertEqual(backup.read_manifest(out)["tokens"], {"one": {"acme-reader[bot]": str(key)}})
+        with tarfile.open(out, "r:gz") as tar:                # the path is recorded, never the key
+            held = b"".join(tar.extractfile(m).read() for m in tar.getmembers() if m.isfile())
+        self.assertNotIn(b"not a real key", held)
+        self.wipe()
+        code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=False)
+        self.assertEqual(code, 0, text)
+        self.assertNotIn("credential file", text)
+        self.assertEqual(config.all_loops()[0]["apps"]["acme-reader[bot]"]["key_file"], str(key))
+
+    def test_restore_names_a_missing_app_key_as_a_credential_file_after_writing(self):
+        key = self.app_loop()
+        out = self.take()
+        self.wipe()
+        key.unlink()
+        code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=False)
+        notice = (f"restore: NOT FINISHED — credential file missing: one: credential file for "
+                  f"acme-reader[bot] ({key}): ")
+        self.assertIn(notice, text)
+        self.assertNotIn("token file missing", text)
+        self.assertEqual(code, 1)
+        # The check runs before the write but only reports: the archive was restored in full and
+        # the notice is printed afterwards, so only the key is left for the operator to put back.
+        self.assertEqual(self.ledger_count(), 298)
+        self.assertEqual(config.all_loops()[0]["apps"]["acme-reader[bot]"]["key_file"], str(key))
+        code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=True, force=False)
+        self.assertIn(notice, text)
+
+    def test_restore_checks_credential_files_before_writing_but_never_refuses_on_them(self):
+        """What ``backup.token_paths`` says: ``missing_tokens`` runs before ``put_files`` and finds
+        the missing key, ``unsafe`` does not read the manifest's tokens, and the write goes ahead."""
+        key = self.app_loop()
+        out = self.take()
+        self.wipe()
+        key.unlink()
+        manifest = backup.read_manifest(out)
+        self.assertEqual(manifest["tokens"], {"one": {"acme-reader[bot]": str(key)}})
+        self.assertEqual(backup.unsafe(manifest, allowed_state_dirs=(), archive=out), [])
+        calls = []
+        real_missing, real_put = backup.missing_tokens, backup.put_files
+        def missing(man):
+            found = real_missing(man)
+            calls.append(("missing_tokens", len(found)))
+            return found
+        def put(*args, **kw):
+            calls.append(("put_files", None))
+            return real_put(*args, **kw)
+        with mock.patch.object(backup, "missing_tokens", missing), \
+                mock.patch.object(backup, "put_files", put):
+            code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=False)
+        self.assertEqual(calls, [("missing_tokens", 1), ("put_files", None)])
+        self.assertEqual(code, 1)
+        self.assertNotIn("REFUSED", text)
+        self.assertEqual(self.ledger_count(), 298)
+        doc = " ".join(backup.token_paths.__doc__.split())    # the docstring says the same (#1204)
+        self.assertIn("does check them before it writes", doc)
+        self.assertNotIn("does not check them", doc)
+
     def test_a_foreign_archive_or_path_traversal_is_refused(self):
         bad = self.root / "bad.tar.gz"
         with tarfile.open(bad, "w:gz"):
