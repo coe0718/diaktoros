@@ -104,8 +104,8 @@ def act_on_conflicts(loop: dict, st: state_mod.LoopState,
                     facts, attempt = review_only_conflict.assess(
                         loop, number, head, conflict_live.get(number) or {}), True
                 if (conflict_live.get(number) or {}).get("mergeable_state") == "behind" \
-                        and (facts["conflicted"] or facts["error"]):
-                    continue                  # behind, not conflicting: nothing to say
+                        and facts["error"]:
+                    continue                  # behind, no dry merge ran: nothing to say
                 pushed = ""
                 # A stop that is not a fact about the pair (pushes off, a broker refusal, a
                 # failed push) keeps the dry merge but is attempted again (shadow on #1151).
