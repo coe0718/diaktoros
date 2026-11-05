@@ -139,7 +139,9 @@ Once spent they wait until midnight. Unset, review-only turns count against `dai
 form. Push your
 fix and re-request the reviewer on the PR to get the next review: the reviewer gate
 accepts that request from the PR's own review-only author. `explain` shows `next: author-push`
-while a verdict waits for you, and the watchdog never reports a fixer stall on these PRs.
+while a verdict waits for you (once a person has escalated the head it shows the adjudication
+next-step instead, then the ruling, as its blockers do), and the watchdog never reports a fixer
+stall on these PRs.
 `set --no-review-only` clears the list. A login can't be both review-only and a fixer.
 
 ## Upgrading from hermes-review-loop
