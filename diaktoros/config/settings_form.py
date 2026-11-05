@@ -7,7 +7,7 @@ the package so a test that patches one reaches this module too.
 """
 from __future__ import annotations
 
-from .. import config
+from .. import config, util
 from ..config import blocks
 from ..config import lists
 from ..config import prices
@@ -767,8 +767,10 @@ def select_credentials(loop: dict, settings: dict | None) -> tuple[dict, dict, d
             raise config.ConfigError(f"{token_key} or {role}_app_id is set but no {role} login is "
                                      "available — set its login first (no adjudicator login "
                                      "means the ruling has no comment identity)")
-        existing_pat = next((v for k, v in tokens.items() if k.lower() == login.lower()), "")
-        existing_app = next((v for k, v in apps.items() if k.lower() == login.lower()), None)
+        existing_pat = next((v for k, v in tokens.items()
+                             if util.login_key(k) == util.login_key(login)), "")
+        existing_app = next((v for k, v in apps.items()
+                             if util.login_key(k) == util.login_key(login)), None)
         if app_id:
             parsed_id = config.parse_app_id(app_id)
             if parsed_id is None:
@@ -782,10 +784,10 @@ def select_credentials(loop: dict, settings: dict | None) -> tuple[dict, dict, d
             if path:
                 ignored[token_key] = login
             for key in list(tokens):
-                if key.lower() == login.lower():
+                if util.login_key(key) == util.login_key(login):
                     del tokens[key]
             for key in list(apps):
-                if key.lower() == login.lower():
+                if util.login_key(key) == util.login_key(login):
                     del apps[key]
             apps[login] = {"app_id": parsed_id, "key_file": str(config._path(key_file))}
             selected[f"{role}_app_key_file"] = key_file
@@ -799,6 +801,6 @@ def select_credentials(loop: dict, settings: dict | None) -> tuple[dict, dict, d
 
 def _map_token(tokens: dict, login: str, path: str) -> None:
     """Point ``login`` at ``path``, dropping any case-variant key that would shadow it."""
-    for key in [k for k in tokens if str(k).lower() == login.lower() and k != login]:
+    for key in [k for k in tokens if util.login_key(k) == util.login_key(login) and k != login]:
         del tokens[key]
     tokens[login] = str(config._path(path))

@@ -99,7 +99,7 @@ def admin_unmapped(loop: dict, admin: str, *, also: set | None = None) -> str:
     from .. import gh
     if not admin or gh.credential_path(loop, admin) is not None:
         return ""
-    if admin.lower() in {str(x).lower() for x in (also or set())}:
+    if util.login_key(admin) in {util.login_key(x) for x in (also or set())}:
         return ""
     lid = shlex.quote(str(loop.get("id") or "<id>"))
     return (f"--admin-token {admin!r} has no credential mapped on this loop — map a PAT with "
@@ -132,13 +132,13 @@ def _credential_lines(loop: dict) -> list[str]:
     seen: set[str] = set()
     for role in ("reviewer", "fixer"):
         login = config.seat_login(loop, role)
-        if not login or login.lower() in seen:
+        if not login or util.login_key(login) in seen:
             continue
-        seen.add(login.lower())
+        seen.add(util.login_key(login))
         lines.append(f"{role} {login} → "
                      f"{_credential_label(loop, login) or '(no file mapped — falls back to read_token)'}")
     read_token = loop.get("read_token") or ""
-    if read_token and read_token.lower() not in seen:
+    if read_token and util.login_key(read_token) not in seen:
         lines.append(f"read {read_token} → {_credential_label(loop, read_token) or '(no file mapped)'}")
     adj = config.adjudicator_login(loop)
     if adj:
