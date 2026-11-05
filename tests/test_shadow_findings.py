@@ -179,10 +179,12 @@ class Retention(unittest.TestCase):
             self.assertEqual(gate.enqueue_shadow(loop, supervisor, 7, ts.HEAD), "no snapshot")
         supervisor.submit.assert_not_called()
 
-    def queued_failed_shadow(self, loop, turn_key=""):
+    def queued_failed_shadow(self, loop, turn_key="", production=True):
         """A failed shadow row with no findings snapshot on file (evicted), and a real supervisor
-        over its ledger; ``production_ledger`` is patched to that ledger as the gate reads it."""
+        over its ledger; ``production_ledger`` is patched to that ledger as the gate reads it
+        (``production=False``: to an empty one, so only the supervisor's own ledger holds it)."""
         import sqlite3
+        import tempfile
         from contextlib import closing
         from diaktoros.run_supervisor import Supervisor
         db = self.ledger((7, "failed"))
@@ -192,11 +194,45 @@ class Retention(unittest.TestCase):
                             (turn_key, ":" + turn_key))
         sup = Supervisor(db, fixture_mode=True)
         sup._spawn = lambda: None
-        patcher = mock.patch("diaktoros.run_supervisor.production_ledger", return_value=db)
+        elsewhere = db
+        if not production:
+            temp = tempfile.TemporaryDirectory()
+            self.addCleanup(temp.cleanup)
+            elsewhere = Path(temp.name) / "production.sqlite"      # no ledger there at all
+        patcher = mock.patch("diaktoros.run_supervisor.production_ledger", return_value=elsewhere)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.assertIsNone(state_mod.state_for(loop).shadow_findings_get(7, ts.HEAD))
         return sup
+
+    def test_a_new_turns_snapshot_does_not_stand_in_for_an_evicted_one(self):
+        # Review of #1900, F1: snapshots are keyed by PR and head, so a new reviewer turn at the
+        # head takes the evicted place. The old turn's failed row must not be re-armed on it,
+        # neither by the gate's enqueue nor by the operator's retry.
+        loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
+        st = state_mod.state_for(loop)
+        sup = self.queued_failed_shadow(loop, turn_key="old")
+        st.findings_put(7, VEX_SAME_ROUND)                  # live findings, since the old turn
+        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="new"), "enqueued")
+        self.assertEqual(st.shadow_findings_get(7, ts.HEAD, "new"), VEX_SAME_ROUND)
+        self.assertIsNone(st.shadow_findings_get(7, ts.HEAD, "old"))
+        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="old"),
+                         "snapshot gone")
+        self.assertEqual(sup.get(f"acme/widgets:7:{ts.HEAD}:shadow:old")["state"], "failed")
+        with mock.patch("diaktoros.config.by_repo", return_value=loop):
+            with self.assertRaisesRegex(ValueError, "findings snapshot"):
+                sup.retry(sup.get(f"acme/widgets:7:{ts.HEAD}:shadow:old")["id"])
+        self.assertEqual(sup.get(f"acme/widgets:7:{ts.HEAD}:shadow:old")["state"], "failed")
+
+    def test_a_supervisor_on_another_ledger_than_the_production_one_is_not_rearmed(self):
+        # Review of #1900, F2: the row is looked up in the ledger the supervisor submits to.
+        loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
+        st = state_mod.state_for(loop)
+        sup = self.queued_failed_shadow(loop, production=False)
+        st.findings_put(7, VEX_SAME_ROUND)
+        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD), "snapshot gone")
+        self.assertEqual(sup.get(f"acme/widgets:7:{ts.HEAD}:shadow")["state"], "failed")
+        self.assertIsNone(st.shadow_findings_get(7, ts.HEAD))
 
     def test_an_existing_shadow_whose_snapshot_is_gone_is_not_rearmed_or_given_a_new_one(self):
         # #1139: the row's snapshot was evicted. A second enqueue must not take a fresh one from

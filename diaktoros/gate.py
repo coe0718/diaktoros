@@ -590,7 +590,7 @@ def snapshot_shadow(loop: dict, number: int, head: str, turn_key: str = "") -> b
                 keep = None                  # unknown open runs: evict nothing
                 log(f"#{number}: shadow runs unreadable, no snapshot evicted: "
                     f"{type(exc).__name__}: {exc}")
-            st.shadow_findings_put(number, head, st.findings_get(number), keep)
+            st.shadow_findings_put(number, head, st.findings_get(number), keep, turn_key)
         return True
     except Exception as exc:
         log(f"#{number}: shadow findings snapshot not kept: {type(exc).__name__}: {exc}")
@@ -626,8 +626,13 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
             # A row that is already queued keeps the snapshot it was queued with (#1139): one
             # evicted since would be taken again from the live ledger, and ``submit`` would
             # re-arm the row on it. ``retry`` refuses the same (the same lock, then the ledger).
-            if (st.shadow_findings_get(number, head) is None
-                    and shadow_row_exists(loop["repo"], number, head, turn_key)):
+            # The snapshot must be this turn's own (the file is keyed by PR and head, so another
+            # turn's can stand in an evicted one's place), and the row is looked up in the ledger
+            # this supervisor submits to, not only the production one.
+            ledger_db = getattr(supervisor, "db", None)
+            ledger_db = ledger_db if isinstance(ledger_db, (str, pathlib.Path)) else None
+            if (st.shadow_findings_get(number, head, turn_key) is None
+                    and shadow_row_exists(loop["repo"], number, head, turn_key, ledger_db)):
                 from .run_supervisor import intake
                 log(f"#{number}: shadow not queued again: {intake.SHADOW_SNAPSHOT_GONE}")
                 return "snapshot gone"

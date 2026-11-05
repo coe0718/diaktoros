@@ -1299,8 +1299,10 @@ class LoopState:
     SHADOW_FINDINGS_KEPT = 300
 
     def shadow_findings_put(self, number: int, head: str, entry: dict,
-                            keep: "set[tuple[int, str]] | None" = None) -> None:
-        """Keep the snapshot for this PR and head. Past ``SHADOW_FINDINGS_KEPT`` the oldest are
+                            keep: "set[tuple[int, str]] | None" = None,
+                            turn_key: str = "") -> None:
+        """Keep the snapshot for this PR and head, noting the reviewer turn it was taken for
+        (``turn_key``, #1139). Past ``SHADOW_FINDINGS_KEPT`` the oldest are
         dropped, but never one in ``keep`` (the (number, head) of this loop's repo's shadow run
         that has not ended: its broker would fall back to the live ledger, #1013; another
         repo's run is not in it, #1133). ``keep=None`` means the
@@ -1312,7 +1314,8 @@ class LoopState:
             key = f"{number}:{head}"
             if key in data:
                 return
-            data[key] = {"entry": entry if isinstance(entry, dict) else {}, "at": time.time()}
+            data[key] = {"entry": entry if isinstance(entry, dict) else {}, "at": time.time(),
+                         "turn_key": turn_key}
             if keep is not None and len(data) > self.SHADOW_FINDINGS_KEPT:
                 held = {f"{n}:{h}" for n, h in keep} | {key}
                 oldest = sorted((k for k in data if k not in held),
@@ -1321,10 +1324,20 @@ class LoopState:
                     data.pop(old, None)
             self._save_strict(path, data)
 
-    def shadow_findings_get(self, number: int, head: str) -> dict | None:
-        """The snapshot for this PR and head, or None (none was taken)."""
+    def shadow_findings_get(self, number: int, head: str,
+                            turn_key: str | None = None) -> dict | None:
+        """The snapshot for this PR and head, or None (none was taken).
+
+        With ``turn_key``, only a snapshot taken for that reviewer turn (#1139): the file is keyed
+        by PR and head, so after one was evicted another turn's can stand in its place, and a
+        row of the first turn would otherwise be re-armed on findings it never had. One written
+        before turns were noted carries no turn and matches any. The broker passes none: it
+        judges a shadow on whatever snapshot the PR and head hold."""
         data = self._load(self.dir / "shadow-findings.json", {})
         item = data.get(f"{number}:{head}") if isinstance(data, dict) else None
+        if (turn_key is not None and isinstance(item, dict)
+                and item.get("turn_key", turn_key) != turn_key):
+            return None
         entry = item.get("entry") if isinstance(item, dict) else None
         return entry if isinstance(entry, dict) else None
 

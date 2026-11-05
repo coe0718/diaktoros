@@ -57,6 +57,16 @@ SHADOW_SNAPSHOT_GONE = (
     "(#1013); a new head gets a fresh shadow")
 
 
+def shadow_snapshot_refusal(st, run) -> str:
+    """Why ``retry`` refuses a shadow run (a ledger row with ``pr``, ``head`` and ``turn_key``),
+    or ``''``: the findings snapshot kept for its own reviewer turn is gone (#1013, #1139). ``st``
+    is the loop's state, None when it cannot be read. A snapshot another turn took at the same
+    head does not count, as in ``gate.enqueue_shadow``."""
+    if st is None or st.shadow_findings_get(run['pr'], run['head'], run['turn_key'] or '') is None:
+        return f"refused: {SHADOW_SNAPSHOT_GONE}"
+    return ''
+
+
 class RunIntake:
     """The intake, retry and cancel methods of :class:`~diaktoros.run_supervisor.Supervisor`."""
 
@@ -181,7 +191,7 @@ class RunIntake:
         """
         from .. import config
         with self._connect() as con:
-            first = con.execute('SELECT repo,seat,pr,head FROM runs WHERE id=?',
+            first = con.execute('SELECT repo,seat,pr,head,turn_key FROM runs WHERE id=?',
                                 (run_id,)).fetchone()
         fixer = first is not None and first['seat'] == 'fixer'
         st = None
@@ -203,9 +213,8 @@ class RunIntake:
                 (config.push_policy_lock() if fixer or issue_fix else nullcontext()), \
                 self._connect() as con:
             admitted, policy_off = None, ''
-            if shadow and (st is None
-                           or st.shadow_findings_get(first['pr'], first['head']) is None):
-                policy_off = f"refused: {SHADOW_SNAPSHOT_GONE}"
+            if shadow:
+                policy_off = shadow_snapshot_refusal(st, first)
             if issue_fix:
                 try:
                     loop = config.by_repo(first['repo'])
