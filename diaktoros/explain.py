@@ -720,7 +720,8 @@ def _next_step(c) -> tuple[str, str]:
     c.fix_push = f"the fixer pushes a fix and re-requests review of head {c.short} — "
     c.verdict_at = f"the reviewer's verdict at head {c.short} (round {(c.spent or 0) + 1} of {c.cap}) — "
     return (_next_unread(c) or _next_approval(c) or _next_person(c) or _next_ruling(c)
-            or _next_push_off(c) or _next_escalation(c) or _next_lock(c) or _next_run(c))
+            or _next_review_only(c) or _next_push_off(c) or _next_escalation(c)
+            or _next_lock(c) or _next_run(c))
 
 
 def _next_unread(c) -> tuple[str, str] | None:
@@ -823,14 +824,21 @@ def _next_approval(c) -> tuple[str, str] | None:
 
 
 def _next_person(c) -> tuple[str, str] | None:
-    """Next event for a human hold, a review-only cap, or a review-only verdict."""
+    """Next event for a human hold: a person must approve the head."""
     if c.head and isinstance(c.st.human_hold(c.number, c.head), dict):
-        kind = "operator"
         c.held = c.st.human_hold(c.number, c.head)
-        action = (f"a person must review and approve head {c.short}: the loop would approve, but "
-                  f"{c.held.get('why') or 'it touches human_paths'}")
-    elif (c.review_only and c.spent is not None
-          and gate.review_cap_hit(c.loop, c.st, c.number, c.head, c.spent, c.author)):
+        return "operator", (f"a person must review and approve head {c.short}: the loop would "
+                            f"approve, but {c.held.get('why') or 'it touches human_paths'}")
+    return None
+
+
+def _next_review_only(c) -> tuple[str, str] | None:
+    """Next event for a review-only PR (#191) that is not waiting on a ruling: its verdict cap, or
+    the author's answer to a verdict. Read after ``_next_ruling``: a head parked for adjudication
+    (by the cap, or by a person's ``escalate`` below it, #1156), pending delivery, or ruled waits
+    on that, as ``blockers`` says, and the author's push is not the next event."""
+    if (c.review_only and c.spent is not None
+            and gate.review_cap_hit(c.loop, c.st, c.number, c.head, c.spent, c.author)):
         kind = "operator"
         push_first = ("the author pushes a new head first (this head already has a verdict, so a "
                       "grant now would be wasted), then " if c.reviewed else "")

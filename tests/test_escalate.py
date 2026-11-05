@@ -378,6 +378,48 @@ class Parked(Base):
                 self.assertEqual(breach.called, retried)
 
 
+class ParkedReviewOnly(Base):
+    """#1156: a review-only PR a person escalated below its verdict cap is parked for a ruling,
+    and `explain`'s next step says so, as its blockers do (not the author's push)."""
+
+    def setUp(self):
+        super().setUp()
+        path = config.config_dir() / "one.json"
+        data = json.loads(path.read_text())
+        data["review_only"] = ["owner-human"]
+        path.write_text(json.dumps(data))
+        self.loop = config.load_id("one")
+        self.live = {**fg.LIVE, "user": {"login": "Owner-Human"}}
+        self.assertEqual(self.escalate("person asks for ruling")[0], 0)
+
+    def explain(self, ruled=None):
+        """The real `explain` over the real state; GitHub's facts are given, the ruling mocked."""
+        facts = {"pr": self.live, "reviews": self.reviews, "armed": True, "read_at": time.time()}
+        with mock.patch.object(explain, "_ruled", return_value=ruled):
+            return explain.explain(self.loop, self.st, 7, facts)
+
+    def test_the_next_step_is_the_adjudication_not_the_authors_push(self):
+        report = self.explain()
+        self.assertLess(report["spent"], report["cap"])                # below the verdict cap
+        self.assertTrue(any("parked awaiting adjudication" in b for b in report["blockers"]),
+                        report["blockers"])
+        self.assertEqual(report["next"]["kind"], "adjudication", report["next"])
+        self.assertIn("the adjudicator rules at head", report["next"]["action"])
+        self.assertNotIn("pushes a fix", report["next"]["action"])
+
+    def test_once_ruled_the_decision_is_the_operators(self):
+        report = self.explain(ruled="REJECT")
+        self.assertEqual(report["next"]["kind"], "operator", report["next"])
+        self.assertIn("the adjudicator ruled REJECT", report["next"]["action"])
+
+    def test_with_no_escalation_the_author_still_pushes(self):
+        state_mod._atomic_write(self.st.breach, {})                 # nothing parks the head
+        self.assertEqual(self.st.breach_get(7), {})
+        report = self.explain()
+        self.assertEqual(report["next"]["kind"], "author-push", report["next"])
+        self.assertIn("pushes a fix", report["next"]["action"])
+
+
 class Pending(Base):
     """#1246: an escalation asked for while a run is in flight takes effect at the next
     changes-requested verdict; an approval drops it."""
