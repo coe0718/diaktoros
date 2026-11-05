@@ -33,10 +33,13 @@ def pr_state(loop: dict, pr: int) -> str | None:
     return "merged" if data.get("merged") or data.get("merged_at") else "closed"
 
 
-def _notice(loop: dict, number: int, event: str, pr: int, outcome: str) -> None:
+def _notice(loop: dict, number: int, event: str, pr: int, outcome: str,
+            outcome_kind: str = "") -> None:
+    """The observer's notice for a hand-off step. A ``fixing`` notice names its outcome kind
+    (``observer.OUTCOME_KINDS``), which the notice's key carries."""
     from . import observer, state as state_mod
     observer.notify(loop, state_mod.state_for(loop), event, number, "", identity=f"pr{pr}",
-                    outcome=outcome, issue=True)
+                    outcome=outcome, issue=True, outcome_kind=outcome_kind)
 
 
 def queue_fix(loop: dict, number: int, turn_key: str = "issue-fix") -> tuple[str, str]:
@@ -270,7 +273,7 @@ def _release(loop: dict, st, number: int, lines: list[str], drop, pr: int, why: 
     log(f"issue #{number} released at {base[:7]}: {outcome}")
     if outcome in ("enqueued", "rearmed", "pending"):
         _notice(loop, number, "fixing", pr,
-                f"{why}; fix turn queued from {loop['base']} at {base[:7]}")
+                f"{why}; fix turn queued from {loop['base']} at {base[:7]}", "queued")
 
 
 AUTO_FIX_SEAT = "auto_fix"      # pacing counter key for automatic hand-offs (#232)
@@ -412,7 +415,7 @@ def auto_offer(loop: dict, number: int) -> str:
             return f"not auto-offered: {text}"
         if outcome in ("enqueued", "rearmed", "pending"):
             _notice(loop, number, "fixing", 0,
-                    f"auto-offered; fix turn queued from {loop['base']} at {base[:7]}")
+                    f"auto-offered; fix turn queued from {loop['base']} at {base[:7]}", "queued")
         return f"auto-offered at {base[:7]}: {outcome}"
     except Exception as exc:
         return f"not auto-offered: {type(exc).__name__}: {exc}"
