@@ -163,6 +163,37 @@ class StaleApproval(unittest.TestCase):
         self.assertEqual(seen["token"], "secret")
 
 
+class AppArgs(unittest.TestCase):
+    """``--app ROLE=ID`` is checked by argparse: a malformed value is a usage error (exit 2)."""
+
+    def test_main_refuses_a_malformed_app_value_as_a_usage_error(self):
+        good = ["--app", "reader=1", "--app", "reviewer=2", "--app", "fixer=3"]
+        for bad in ("reader", "reader=", "=1", "reader=abc", "reader=1.5", "reader=-1"):
+            with self.subTest(app=bad), mock.patch.object(spike, "run") as ran, \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                with self.assertRaises(SystemExit) as cm:
+                    spike.main(["--repo", "o/r", "--keys", "/k", "--app", bad] + good[2:])
+                self.assertEqual(cm.exception.code, 2)
+                self.assertIn("usage:", err.getvalue())
+                self.assertIn("ROLE=ID", err.getvalue())
+                ran.assert_not_called()
+
+    def test_main_still_refuses_a_missing_role_as_a_usage_error(self):
+        with mock.patch.object(spike, "run") as ran, contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as cm:
+                spike.main(["--repo", "o/r", "--keys", "/k", "--app", "reader=1"])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("exactly reader, reviewer and fixer", err.getvalue())
+        ran.assert_not_called()
+
+    def test_main_passes_numeric_app_ids_by_role(self):
+        seen = {}
+        with mock.patch.object(spike, "run", side_effect=lambda s: seen.update(apps=s.apps)):
+            spike.main(["--repo", "o/r", "--keys", "/k", "--app", "reader=1", "--app", "reviewer=2",
+                        "--app", "fixer=3"])
+        self.assertEqual(seen["apps"], {"reader": 1, "reviewer": 2, "fixer": 3})
+
+
 class RealAuth(spike.Spike):
     """The real ``gh`` dispatch; only the HTTP ``call`` and the App token mint are replaced."""
 

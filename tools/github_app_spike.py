@@ -382,10 +382,19 @@ def required_check(s: Spike, tag: str) -> None:
     emit("required_check", pr=number, **states)
 
 
+def app_arg(text: str) -> tuple[str, int]:
+    """Parse one ``--app ROLE=ID`` value. A value without ``=``, or whose ID is not a number, is
+    an ``ArgumentTypeError``, which argparse prints as a usage error rather than a traceback."""
+    role, sep, app_id = text.partition("=")
+    if not sep or not role or not app_id.isascii() or not app_id.isdigit():
+        raise argparse.ArgumentTypeError(f"{text!r} is not ROLE=ID (for example reader=12345)")
+    return role, int(app_id)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--repo", required=True, help="the throwaway OWNER/REPO")
-    ap.add_argument("--app", action="append", default=[], metavar="ROLE=ID",
+    ap.add_argument("--app", action="append", default=[], metavar="ROLE=ID", type=app_arg,
                     help="reader=ID, reviewer=ID and fixer=ID")
     ap.add_argument("--keys", required=True, help="directory holding one *ROLE*.pem per App")
     ap.add_argument("--check-branch", default="",
@@ -394,10 +403,10 @@ def main(argv=None) -> int:
     ap.add_argument("--person-token-env", default=PERSON_TOKEN_ENV, metavar="NAME",
                     help="the environment variable holding a person's token, for step Q6")
     args = ap.parse_args(argv)
-    apps = dict(item.split("=", 1) for item in args.app)
+    apps = dict(args.app)
     if set(apps) != set(ROLES):
         ap.error("give --app for exactly reader, reviewer and fixer")
-    run(Spike(args.repo, {k: int(v) for k, v in apps.items()}, args.keys, args.check_branch,
+    run(Spike(args.repo, apps, args.keys, args.check_branch,
               os.environ.get(args.person_token_env, "")))
     return 0
 
