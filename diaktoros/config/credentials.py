@@ -136,10 +136,18 @@ def reader_problem(loop: dict) -> str:
     return ""
 
 
-def reader_fix(loop: dict) -> str:
-    """The command that moves a loop's reader onto its own account."""
-    return (f"hermes dk set --loop {loop.get('id') or '<id>'} --read-token "
-            "<its own login> --token <that login>=/path/to/pat")
+def reader_fix(loop: dict, login: str = "") -> str:
+    """The command that moves a loop's reader onto its own account, or — with ``login``, a reader
+    that has no credential yet — gives that login one.
+
+    The reader's credential is a PAT file or a GitHub App identity (#1163): both are named, so
+    every refusal and doctor line that points at this fix says the same thing.
+    """
+    reader = login or "<its own login>"
+    account = login or "<that login>"
+    return (f"hermes dk set --loop {loop.get('id') or '<id>'} --read-token {reader} "
+            f"--token {account}=/path/to/pat "
+            f"(or --app {account}=APP_ID:/abs/key.pem for a GitHub App reader)")
 
 
 def verify_reader(loop: dict) -> None:

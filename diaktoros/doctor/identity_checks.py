@@ -229,7 +229,7 @@ def check_read_token(loop: dict) -> doctor.Check:
     name = str(loop.get("read_token") or "")
     if not name:
         return doctor.Check("read_token", doctor.ABSENT, "no login is named as the reader",
-                            "run `hermes dk set --loop <id> --read-token <login> --token <login>=/path/to/pat`")
+                            credentials.reader_fix(loop))
     if util.login_entry(config.credentials_map(loop), name) is None:
         return doctor.Check("read_token", doctor.MISMATCH, f"read_token names {name!r}, which has no token file",
                             f"run `hermes dk set --loop <id> --token {name}=/path/to/pat` (or --app "
