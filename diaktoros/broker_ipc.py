@@ -72,6 +72,10 @@ class RunScope:
     # push needs no changes-requested review (the head is approved) but that ruling, still current
     # at the head; its review request needs none. None: not such a turn. Host-built.
     shadow_fix: float | None = None
+    # The run's own turn key (the ledger row's, '' for an ordinary turn). A shadow review is judged
+    # on the findings snapshot kept for its reviewer turn (#1139), so the broker reads that one,
+    # never another turn's at the same PR and head. Host-built, like every field here.
+    turn_key: str = ""
 
 
 # What a reviewer that could not see the whole change reads when it tries to approve (#93, #110).
@@ -599,7 +603,8 @@ class RunBroker(broker_issues.IssueWrites):
                 # A shadow (#218) is judged on the ledger its prompt was built from: the real
                 # review of the same head may have recorded findings meanwhile, which it never
                 # saw (on #1005 they turned its approval into a forced block).
-                snapshot = st.shadow_findings_get(self.scope.number, self.scope.head)
+                snapshot = st.shadow_findings_get(self.scope.number, self.scope.head,
+                                                  self.scope.turn_key)
                 entry = entry if snapshot is None else snapshot
             reason = findings.check(self._loop, entry, self.scope.number, self.scope.head, body,
                                     verdict)

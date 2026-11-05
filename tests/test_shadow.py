@@ -412,7 +412,8 @@ class ProductionTurn(unittest.TestCase):
 
         def turn(loop, scope, **kwargs):
             self.seen.update(role=scope.role, no_write=kwargs.get("no_write"),
-                             prompt=kwargs.get("prompt"), steps=kwargs.get("steps"))
+                             prompt=kwargs.get("prompt"), steps=kwargs.get("steps"),
+                             turn_key=scope.turn_key)
             kwargs["observed"]["submissions"] = list(submissions)
             return rc
 
@@ -461,6 +462,19 @@ class ProductionTurn(unittest.TestCase):
         got = sup.shadow_reviews("acme/widgets", 8)
         self.assertEqual([(r["verdict"], r["model"], r["body"]) for r in got],
                          [("REQUEST_CHANGES", "grok-x", "F1: a.py:1: x")])
+
+    def test_the_broker_scope_names_the_shadows_own_turn_key(self):
+        # #1139: a shadow is judged on the findings snapshot kept for its own reviewer turn, so
+        # the scope the broker is built from carries the row's turn key (it reads the snapshot
+        # by PR, head and turn). Without it the broker would read the key of no turn at all.
+        sup = self.queue_shadow()
+        self.reviewer_is(sup, ("confirmed", "APPROVED"), "succeeded")
+        with closing(sqlite3.connect(sup.db)) as con, con:
+            con.execute("UPDATE runs SET turn_key='retarget' WHERE seat IN ('reviewer','shadow')")
+        sup, row = self.claim_shadow(sup, [{"verdict": "APPROVE", "body": "ok",
+                                            "authorized": True, "denial": ""}])
+        self.assertEqual(row["state"], "succeeded", row)
+        self.assertEqual(self.seen["turn_key"], "retarget")
 
     def test_the_shadow_waits_for_ci_like_the_reviewer_and_spends_nothing(self):
         # A shadow review is compared with the reviewer's, who never reviews a head CI is still

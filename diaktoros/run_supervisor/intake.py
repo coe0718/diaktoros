@@ -60,8 +60,9 @@ SHADOW_SNAPSHOT_GONE = (
 def shadow_snapshot_refusal(st, run) -> str:
     """Why ``retry`` refuses a shadow run (a ledger row with ``pr``, ``head`` and ``turn_key``),
     or ``''``: the findings snapshot kept for its own reviewer turn is gone (#1013, #1139). ``st``
-    is the loop's state, None when it cannot be read. A snapshot another turn took at the same
-    head does not count, as in ``gate.enqueue_shadow``."""
+    is the loop's state, None when it cannot be read. Snapshots are kept per reviewer turn, so one
+    another turn took at the same head, or one from before turns were keyed, does not count, as
+    in ``gate.enqueue_shadow``."""
     if st is None or st.shadow_findings_get(run['pr'], run['head'], run['turn_key'] or '') is None:
         return f"refused: {SHADOW_SNAPSHOT_GONE}"
     return ''

@@ -10,6 +10,7 @@ shadow, and the no-write broker judges the shadow against that snapshot.
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import dataclasses
 import sys
 import time
 import unittest
@@ -259,7 +260,61 @@ class Retention(unittest.TestCase):
         loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
         sup = self.queued_failed_shadow(loop, turn_key="old")
         self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="new"), "enqueued")
-        self.assertEqual(state_mod.state_for(loop).shadow_findings_get(7, ts.HEAD), {})
+        self.assertEqual(state_mod.state_for(loop).shadow_findings_get(7, ts.HEAD, "new"), {})
+
+    def test_a_snapshot_from_before_turns_were_keyed_is_not_taken_for_any_turns(self):
+        # Review of #1900, round 2 F1: a `PR:head` snapshot (written before turns were keyed) has
+        # no turn on record, so it must not stand in for an evicted one: the old turn's failed
+        # row is neither re-armed on it by the gate nor by `retry`, and the broker ignores it.
+        import json
+        loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
+        st = state_mod.state_for(loop)
+        sup = self.queued_failed_shadow(loop, turn_key="old")
+        st._save_strict(st.dir / "shadow-findings.json",
+                        {f"7:{ts.HEAD}": {"entry": {}, "at": time.time()}})
+        self.assertIsNone(st.shadow_findings_get(7, ts.HEAD, "old"))
+        st.findings_put(7, VEX_SAME_ROUND)
+        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="old"),
+                         "snapshot gone")
+        old = sup.get(f"acme/widgets:7:{ts.HEAD}:shadow:old")
+        self.assertEqual(old["state"], "failed")
+        with mock.patch("diaktoros.config.by_repo", return_value=loop):
+            with self.assertRaisesRegex(ValueError, "findings snapshot"):
+                sup.retry(old["id"])
+        self.assertEqual(sup.get(f"acme/widgets:7:{ts.HEAD}:shadow:old")["state"], "failed")
+        self.assertEqual(set(json.loads((st.dir / "shadow-findings.json").read_text())),
+                         {f"7:{ts.HEAD}"})                      # nothing written beside it
+        # The broker of that turn does not read it either: with no snapshot of its own it falls
+        # back to the live ledger, where F1 is open (the legacy {} snapshot would have passed).
+        self.scope = dataclasses.replace(self.scope, turn_key="old")
+        answer, _ = Snapshot.approve(self)
+        self.assertIn("cannot APPROVE with open finding(s) F1", answer.get("error", ""))
+
+    def test_a_new_turn_at_a_head_whose_earlier_snapshot_is_kept_gets_its_own(self):
+        # Review of #1900, round 2 F3: the put used to return early for the existing PR and head,
+        # so the new turn was queued with no snapshot of its own, `retry` refused it as "gone",
+        # and the broker judged it on the earlier turn's findings.
+        import sqlite3
+        from contextlib import closing
+        loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
+        st = state_mod.state_for(loop)
+        sup = self.queued_failed_shadow(loop, turn_key="old")
+        st.shadow_findings_put(7, ts.HEAD, VEX_SAME_ROUND, set(), "old")   # kept; F1 open then
+        st.findings_put(7, {})                                    # resolved since: live is empty
+        self.assertEqual(gate.enqueue_shadow(loop, sup, 7, ts.HEAD, turn_key="new"), "enqueued")
+        self.assertEqual(st.shadow_findings_get(7, ts.HEAD, "new"), {})            # its own
+        self.assertEqual(st.shadow_findings_get(7, ts.HEAD, "old"), VEX_SAME_ROUND)   # unchanged
+        new = sup.get(f"acme/widgets:7:{ts.HEAD}:shadow:new")
+        with closing(sqlite3.connect(sup.db)) as con, con:
+            con.execute("UPDATE runs SET state='failed', error='x' WHERE id=?", (new["id"],))
+        with mock.patch("diaktoros.config.by_repo", return_value=loop):
+            self.assertEqual(sup.retry(new["id"]), "pending")       # not refused as "gone"
+        # The new turn's broker judges it on its own snapshot: the old turn's F1 is not live.
+        self.scope = dataclasses.replace(self.scope, turn_key="new")
+        st.findings_put(7, VEX_SAME_ROUND)
+        answer, server = Snapshot.approve(self)
+        self.assertTrue(answer.get("ok"), answer)
+        self.assertEqual(server.recorded[0]["verdict"], "APPROVE")
 
 
 if __name__ == "__main__":

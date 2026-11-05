@@ -626,9 +626,9 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
             # A row that is already queued keeps the snapshot it was queued with (#1139): one
             # evicted since would be taken again from the live ledger, and ``submit`` would
             # re-arm the row on it. ``retry`` refuses the same (the same lock, then the ledger).
-            # The snapshot must be this turn's own (the file is keyed by PR and head, so another
-            # turn's can stand in an evicted one's place), and the row is looked up in the ledger
-            # this supervisor submits to, not only the production one.
+            # Snapshots are kept per reviewer turn (``shadow_findings_put``), so another turn's,
+            # or one from before turns were keyed, never stands in for this turn's own. The row
+            # is looked up in the ledger this supervisor submits to, not only the production one.
             ledger_db = getattr(supervisor, "db", None)
             ledger_db = ledger_db if isinstance(ledger_db, (str, pathlib.Path)) else None
             if (st.shadow_findings_get(number, head, turn_key) is None

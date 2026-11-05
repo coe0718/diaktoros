@@ -1298,12 +1298,19 @@ class LoopState:
     # what the real review of the same head recorded meanwhile. First snapshot wins.
     SHADOW_FINDINGS_KEPT = 300
 
+    @staticmethod
+    def _shadow_findings_key(number: int, head: str, turn_key: str) -> str:
+        """The snapshot's key: PR, head and the reviewer turn it was taken for (#1139). A number
+        and a head hold no ``:``, so the three parts cannot run into one another."""
+        return f"{number}:{head}:{turn_key}"
+
     def shadow_findings_put(self, number: int, head: str, entry: dict,
                             keep: "set[tuple[int, str]] | None" = None,
                             turn_key: str = "") -> None:
-        """Keep the snapshot for this PR and head, noting the reviewer turn it was taken for
-        (``turn_key``, #1139). Past ``SHADOW_FINDINGS_KEPT`` the oldest are
-        dropped, but never one in ``keep`` (the (number, head) of this loop's repo's shadow run
+        """Keep the snapshot for this PR, head and reviewer turn (``turn_key``, #1139): a new turn
+        at a head that already has one takes its own, and never shares or replaces another's.
+        The first snapshot of a turn wins. Past ``SHADOW_FINDINGS_KEPT`` the oldest are
+        dropped, but never one of a (number, head) in ``keep`` (this loop's repo's shadow run
         that has not ended: its broker would fall back to the live ledger, #1013; another
         repo's run is not in it, #1133). ``keep=None`` means the
         caller could not tell which runs are open, so nothing is dropped."""
@@ -1311,33 +1318,28 @@ class LoopState:
             path = self.dir / "shadow-findings.json"
             data = self._load(path, {})
             data = data if isinstance(data, dict) else {}
-            key = f"{number}:{head}"
+            key = self._shadow_findings_key(number, head, turn_key)
             if key in data:
                 return
-            data[key] = {"entry": entry if isinstance(entry, dict) else {}, "at": time.time(),
-                         "turn_key": turn_key}
+            data[key] = {"entry": entry if isinstance(entry, dict) else {}, "at": time.time()}
             if keep is not None and len(data) > self.SHADOW_FINDINGS_KEPT:
-                held = {f"{n}:{h}" for n, h in keep} | {key}
-                oldest = sorted((k for k in data if k not in held),
+                held = {f"{n}:{h}" for n, h in keep}
+                oldest = sorted((k for k in data
+                                 if k != key and ":".join(k.split(":", 2)[:2]) not in held),
                                 key=lambda k: (data[k] or {}).get("at") or 0)
                 for old in oldest[:len(data) - self.SHADOW_FINDINGS_KEPT]:
                     data.pop(old, None)
             self._save_strict(path, data)
 
-    def shadow_findings_get(self, number: int, head: str,
-                            turn_key: str | None = None) -> dict | None:
-        """The snapshot for this PR and head, or None (none was taken).
-
-        With ``turn_key``, only a snapshot taken for that reviewer turn (#1139): the file is keyed
-        by PR and head, so after one was evicted another turn's can stand in its place, and a
-        row of the first turn would otherwise be re-armed on findings it never had. One written
-        before turns were noted carries no turn and matches any. The broker passes none: it
-        judges a shadow on whatever snapshot the PR and head hold."""
+    def shadow_findings_get(self, number: int, head: str, turn_key: str = "") -> dict | None:
+        """The snapshot of this PR, head and reviewer turn, or None (none was taken, or it was
+        evicted). Only that turn's own (#1139): the shadow row of one turn is never judged or
+        re-armed on a snapshot another turn took at the same head. A snapshot written before
+        turns were keyed (``<number>:<head>``, its turn unknown) is never returned: nothing
+        shows which row it belongs to."""
         data = self._load(self.dir / "shadow-findings.json", {})
-        item = data.get(f"{number}:{head}") if isinstance(data, dict) else None
-        if (turn_key is not None and isinstance(item, dict)
-                and item.get("turn_key", turn_key) != turn_key):
-            return None
+        item = data.get(self._shadow_findings_key(number, head, turn_key)) \
+            if isinstance(data, dict) else None
         entry = item.get("entry") if isinstance(item, dict) else None
         return entry if isinstance(entry, dict) else None
 

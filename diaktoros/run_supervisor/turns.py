@@ -1016,7 +1016,7 @@ class ClaimAndLaunch:
     def _prepare_verdict_launch(self, turn: _Turn, head: dict) -> _Launch | None:
         """A review, a fix answering changes requested, or a ruling: the seat sees the PR's
         record (and, reviewer and fixer, the change itself)."""
-        from .. import broker_ipc, gh
+        from .. import gh
         row, loop = turn.row, turn.loop
         reviews, marker = None, None
         if row['seat'] == 'fixer':
@@ -1077,11 +1077,7 @@ class ClaimAndLaunch:
         # Nothing inside the namespace can reach either.
         partial = change.partial if change else ''
         self.record_view(turn.run_id, turn.owner, partial)
-        scope = broker_ipc.RunScope(row["repo"], row["pr"], row["head"],
-                                    prompt_row["seat"], head["ref"], row['id'],
-                                    str(self.db), row['generation'], partial_view=partial,
-                                    shadow_run=((shadow[0] if shadow else '')
-                                                if row['seat'] == 'adjudicator' else None))
+        scope = self._verdict_scope(row, prompt_row, head, partial, shadow)
         if row['seat'] == 'adjudicator':
             from .. import state as state_mod
             # Last step before launch: mark the breach as being ruled on. Anyone else's
@@ -1091,6 +1087,19 @@ class ClaimAndLaunch:
                 raise ValueError('breach marker already claimed or replaced')
             turn.breach = (state_mod.state_for(loop), marker['rounds'])
         return _Launch(prompt, scope, change=change)
+
+    def _verdict_scope(self, row, prompt_row, head: dict, partial: str, shadow):
+        """The broker scope of a review, fix or ruling turn, built from the ledger row. It names
+        the run's own turn key, so a shadow review is judged on the findings snapshot kept for
+        its reviewer turn and never another's at the same PR and head (#1139). An adjudicator's
+        also records the id of the shadow review its prompt showed (``shadow``, #1112)."""
+        from .. import broker_ipc
+        return broker_ipc.RunScope(row["repo"], row["pr"], row["head"],
+                                   prompt_row["seat"], head["ref"], row['id'],
+                                   str(self.db), row['generation'], partial_view=partial,
+                                   shadow_run=((shadow[0] if shadow else '')
+                                               if row['seat'] == 'adjudicator' else None),
+                                   turn_key=row['turn_key'] or '')
 
     def _refresh_shadow_check(self, loop: dict | None, row, state: str | None) -> None:
         """Refresh the merge check of a shadow run's own PR once the run has ended (#1786).
