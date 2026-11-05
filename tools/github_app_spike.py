@@ -61,11 +61,16 @@ ERROR_LIMIT = 240  # characters of a failed step's ``error`` that reach the log
 
 
 # What a credential looks like wherever GitHub or a proxy might echo it back into an answer:
-# GitHub's own token prefixes (any length: a short one is still a token), an Authorization value,
-# a JWT (an App's) and a PEM private key.
+# GitHub's own token prefixes (any length: a short one is still a token), an Authorization header
+# value, a Bearer value, a ``token`` value, a JWT (an App's) and a PEM private key. What follows
+# ``Authorization:`` and ``Bearer`` is a credential whatever its length: a proxy can echo a short
+# one that this run does not hold. A bare ``token`` is also ordinary English ("a JSON web token
+# could not be decoded"), so there only a value that has a digit or is 20+ characters is cut.
 _CREDENTIAL_SHAPES = re.compile(
     r"\b(?:gh[pousr]_|github_pat_)\w+"
-    r"|(?i:\b(?:token|bearer)\s+)[A-Za-z0-9_.~+/=-]{20,}"
+    r"|(?i:\bAuthorization\b[\"']?\s*[:=]\s*[\"']?(?:(?:token|bearer|basic)\s+)?[^\s\"',;]+)"
+    r"|(?i:\bbearer\s+)[A-Za-z0-9_.~+/=-]+"
+    r"|(?i:\btoken\s+)(?=[A-Za-z0-9_.~+/=-]*\d|[A-Za-z0-9_.~+/=-]{20})[A-Za-z0-9_.~+/=-]+"
     r"|\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}"
     r"|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----|[\s\S]*)")
 

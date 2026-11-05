@@ -434,6 +434,13 @@ class NoCredentialInTheError(unittest.TestCase):
          "0123456789abcdef0123456789abcdef01234567"),
         ("bearer value", "Bearer abcdefghijklmnopqrstuvwxyz012345 is not valid",
          "abcdefghijklmnopqrstuvwxyz012345"),
+        ("short bearer value", "rejected Bearer abc123xyz", "abc123xyz"),
+        ("short bearer value in capitals", "rejected BEARER ab12", "ab12"),
+        ("short Authorization token", "sent Authorization: token abc123", "abc123"),
+        ("short Authorization bearer", "sent Authorization: Bearer abc123xyz", "abc123xyz"),
+        ("Authorization value with no scheme", "sent authorization=s3cr3t;", "s3cr3t"),
+        ("quoted Authorization header", 'headers {"Authorization": "Bearer s3cr3t"}', "s3cr3t"),
+        ("short token value with a digit", "bad token abc123xyz", "abc123xyz"),
         ("app JWT", "bad jwt eyJhbGciOiJSUzI1NiJ9.eyJpYXQiOjE2MDAwMDAwMDB9.c2lnbmF0dXJlLWJ5dGVz",
          "eyJhbGciOiJSUzI1NiJ9"),
         ("private key", "key -----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n"
@@ -454,6 +461,12 @@ class NoCredentialInTheError(unittest.TestCase):
     def test_the_text_around_a_credential_is_kept(self):
         _, lines = run_main(Refusing(app_answer=(401, {"message": "bad token ghs_secret_example"})))
         self.assertIn("bad token [REDACTED]", lines[-1]["error"])
+
+    def test_plain_words_around_token_and_authorization_are_kept(self):
+        """The Authorization/Bearer/token patterns must not eat ordinary sentences."""
+        said = "A JSON web token could not be decoded; Authorization failed for this request"
+        _, lines = run_main(Refusing(app_answer=(401, {"message": said})))
+        self.assertEqual(lines[-1]["error"], f"reader GET /app: {said}")
 
     def test_a_token_this_run_holds_is_redacted_whatever_it_looks_like(self):
         fake = Refusing(app_answer=(401, {"message": f"Bad credentials: {self.HELD}"}))
