@@ -20,11 +20,11 @@ from .util import iso_at
 # flight, what the watchdog last saw).
 #
 # So ``explain`` gathers both halves read-only and runs them through the *same* predicates the
-# gates run — ``verdicts``, verdict-only ``reviewed_at_head``, ``changes_at_head``, ``approved_at_head``,
-# ``seat_key``, the seat ledgers, the queue, the breach marker, ``hooks_read`` — in the gates' own
-# guard order. It re-derives no rule, so it cannot drift from what the loop would do, and it writes
-# nothing: no claim, no queue entry, no drain, no webhook POST, no token. Two runs leave GitHub and
-# the state directory byte-for-byte as they were.
+# gates run — ``verdicts``, verdict-only ``reviewed_at_head``, ``changes_at_head``,
+# ``latest_effective_review_at_head``, ``seat_key``, the seat ledgers, the queue, the breach marker,
+# ``hooks_read`` — in the gates' own guard order. It re-derives no rule, so it cannot drift from
+# what the loop would do, and it writes nothing: no claim, no queue entry, no drain, no webhook
+# POST, no token. Two runs leave GitHub and the state directory byte-for-byte as they were.
 #
 # The difference from a gate is what happens at a guard. A gate stops there — *silence* — and the
 # operator only sees that nothing happened. This walks every guard, reports all of them, and then

@@ -100,5 +100,16 @@ class ReviewPaginationTest(unittest.TestCase):
         self.assertEqual(got, (page, "open issue listing exceeds 1 full pages"))
 
 
+class NoLooseApprovalPredicateTest(unittest.TestCase):
+    def test_gate_has_no_unordered_approval_predicate(self):
+        # #1061: ``approved_at_head`` was any(APPROVED at head), with no chronology: a later
+        # CHANGES_REQUESTED did not override it. Callers use latest_effective_review_at_head.
+        self.assertFalse(hasattr(gate, "approved_at_head"))
+        reviews = [verdict(1, "APPROVED"), verdict(2, "CHANGES_REQUESTED", "2026-01-02T00:00:00Z")]
+        latest = gate.latest_effective_review_at_head(reviews, LOOP, HEAD)
+        assert latest is not None
+        self.assertEqual(latest["state"], "CHANGES_REQUESTED")
+
+
 if __name__ == "__main__":
     unittest.main()
