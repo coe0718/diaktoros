@@ -21,7 +21,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
-from diaktoros import attribution, broker, config, gh, review_receipt, routes  # noqa: E402
+from diaktoros import attribution, broker, config, fixer_answers, gh, review_receipt, routes  # noqa: E402
 
 HEAD = "a" * 40
 BASE = "b" * 40
@@ -97,7 +97,7 @@ class Unsign(unittest.TestCase):
                   "submitted_at": "2026-10-01T00:00:00Z",
                   "body": attribution.stamp(loop(), "Fix the parser.", seat="reviewer",
                                             head=BASE)}
-        answers = broker.answers_comment_body("Fixed it.", head=HEAD, base=BASE, run_id="r1")
+        answers = fixer_answers.answers_comment_body("Fixed it.", head=HEAD, base=BASE, run_id="r1")
         comment = {"user": {"login": "fix"}, "created_at": "2026-10-01T01:00:00Z",
                    "body": attribution.stamp(loop(), answers, seat="fixer", head=HEAD)}
         with mock.patch("diaktoros.gate.is_reviewer", return_value=True):
@@ -166,7 +166,7 @@ class WritePaths(unittest.TestCase):
         self.assertEqual(self.posted[0][1], {"reviewers": ["rev"]})
 
     def test_fixer_answers_comment(self):
-        text = broker.answers_comment_body("Fixed both.", head=HEAD, base=BASE, run_id="r1")
+        text = fixer_answers.answers_comment_body("Fixed both.", head=HEAD, base=BASE, run_id="r1")
         broker.post_fixer_answers(loop(), repo=REPO, number=7, head=HEAD, branch="fix-7",
                                   login="fix", text=text)
         body = self.body()
@@ -174,7 +174,7 @@ class WritePaths(unittest.TestCase):
         self.assertIn("fixer seat (Coder)", body)
         self.assertEqual(body.count(LINK), 1)
         # The answers record still parses: the marker is first, the footer after the text.
-        parsed = broker.parse_answers_comment(
+        parsed = fixer_answers.parse_answers_comment(
             {"user": {"login": "fix"}, "body": body, "created_at": "2026-10-01T00:00:00Z"},
             {"seats": {"fixer": {"login": "fix"}}})
         self.assertEqual((parsed["run"], parsed["head"], parsed["base"]), ("r1", HEAD, BASE))

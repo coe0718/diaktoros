@@ -12,7 +12,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import conflict_person, gate  # noqa: E402
+from diaktoros import conflict_person, gate, gh  # noqa: E402
 from diaktoros import watch_conflicts  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
@@ -26,6 +26,8 @@ class Requeue(fg.Base):
                 mock.patch.object(watchdog.config, "unattended_fixer_push_enabled",
                                   return_value=True), \
                 mock.patch.object(gate, "enqueue_isolated", return_value="enqueued") as enqueue, \
+                mock.patch.object(gh, "reviews",              # approved: no fix owed (#1907)
+                                  return_value=[fg.verdict(state="APPROVED")]), \
                 mock.patch.object(watchdog.observer, "notify"):
             watch_conflicts.act_on_conflicts(self.loop, self.st, [(7, HEAD, "b" * 40, "fixer")], {})
         return enqueue

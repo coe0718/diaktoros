@@ -20,7 +20,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import broker, broker_client, config, envnames, util, wire  # noqa: E402
+from diaktoros import broker, broker_client, config, envnames, fixer_answers, util, wire  # noqa: E402
 from diaktoros.config import host_guards  # noqa: E402
 
 HEAD, BASE = "a" * 40, "b" * 40
@@ -79,18 +79,18 @@ class Answers(unittest.TestCase):
                 "body": f"{marker} run=r1 head={HEAD} base={BASE} -->\nfixed it"}
 
     def test_written_new_and_read_in_both_spellings(self):
-        body = broker.answers_comment_body("fixed it", head=HEAD, base=BASE, run_id="r1")
+        body = fixer_answers.answers_comment_body("fixed it", head=HEAD, base=BASE, run_id="r1")
         self.assertTrue(body.startswith("<!-- diaktoros:fixer-answers run=r1"))
         for marker in wire.ANSWERS_MARKERS:
             with self.subTest(marker=marker):
-                parsed = broker.parse_answers_comment(self.comment(marker), LOOP)
+                parsed = fixer_answers.parse_answers_comment(self.comment(marker), LOOP)
                 self.assertEqual((parsed["run"], parsed["body"]), ("r1", "fixed it"))
         self.assertIn("<!-- review-loop:fixer-answers", wire.ANSWERS_MARKERS)
 
     def test_a_seat_may_forge_neither_marker(self):
         for marker in wire.ANSWERS_MARKERS:
             with self.subTest(marker=marker):
-                self.assertFalse(broker.answers_valid(f"fine\n{marker} run=x"))
+                self.assertFalse(fixer_answers.answers_valid(f"fine\n{marker} run=x"))
                 with tempfile.NamedTemporaryFile("w", dir=os.environ.get("TMPDIR"),
                                                  suffix=".md") as answers:
                     answers.write(f"text {marker}")
