@@ -618,6 +618,25 @@ class Posting(unittest.TestCase):
         self.assertEqual([c for c in self.calls if c[:2] == ("/repos/acme/widgets/check-runs",
                                                              "POST")], [])
 
+    def test_a_mark_stamped_before_the_listing_by_a_clock_step_survives_its_prune(self):
+        # #1260: the clock stepped back between the listing and a mid-refresh mark, so the mark's
+        # stamp reads older than the listing; it is kept all the same, and a closed PR's entry
+        # that was there before the listing is still pruned.
+        self.st._save(self.st.dir / merge_check.FILE, {"10": {"head": "e" * 40, "at": 1.0}})
+        self.prs.append({"number": 8, "head": {"sha": "c" * 40}})
+        self.kinds[8] = []
+        real_decide, decided = merge_check.decide, []
+
+        def decide(kinds):
+            decided.append(kinds)
+            if len(decided) == 2:         # after PR 7's record, before PR 8 takes the lock
+                with mock.patch("time.time", return_value=1000.0):   # the clock stepped back
+                    self.assertTrue(merge_check.mark_pending(self.loop, self.st, 9, "d" * 40, "x"))
+            return real_decide(kinds)
+        with mock.patch.object(merge_check, "decide", side_effect=decide):
+            self.refresh()
+        self.assertEqual(sorted(self.memory()), ["7", "8", "9"])
+
     def test_a_pat_loops_pending_status_says_waiting_once(self):
         self.loop.update(reviewer_seat="rev", apps={}, tokens={"rev": "/t"}, merge_check="on",
                          seats={"reviewer": {"login": "rev"}})
