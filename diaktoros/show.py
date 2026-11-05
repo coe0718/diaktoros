@@ -329,6 +329,9 @@ def _rows_shadow_triage(plain, schema, triage, loop) -> None:  # noqa: ANN001
            derived="" if "file_issues" in shadow else "the default, off")
     schema("shadow_issues_daily", ("shadow", "issues_daily"), config.shadow_issues_daily(loop) or "no cap",
            derived="" if "issues_daily" in shadow else f"the default, {config.SHADOW_ISSUES_DAILY}")
+    for key in ("always_paths", "never_paths"):                                     # #1788
+        schema(f"shadow_{key}", ("shadow", key), list(shadow.get(key) or []),
+               on=bool(shadow.get(key)), off="none: sampling alone decides")
     plain("triage.enabled", ("triage", "route"), config.triage_enabled(loop),
           "issue triage (hermes dk triage)", on=config.triage_enabled(loop),
           off="new issues are not labelled")

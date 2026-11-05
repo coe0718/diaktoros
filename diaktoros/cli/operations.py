@@ -131,6 +131,29 @@ def _view_lines(loop: dict, pr: int, head: str | None, limit: int = 3) -> list[s
     return [views.describe_view(row) for row in rows if head and row["head"] == head]
 
 
+def _lock_lines(st) -> list[str]:
+    """``status``: each seat lock, running for how long, or why no reader counts it."""
+    from .. import state as state_mod
+    lines = []
+    for seat, entries in st._lock_ledger().items():
+        for key, entry in (entries if isinstance(entries, dict) else {}).items():
+            at = state_mod.mark_at(entry)
+            if at is None:
+                # Shown, not hidden: the file holds it, but no reader counts it as running
+                # and the next write of the ledger drops it (#80).
+                lines.append(f"  ⚠️  lock:    {seat} mark for {key} is unreadable (no numeric "
+                             "'at') — not counted as running; the next sweep prunes it")
+                continue
+            held = (time.time() - at) / 60
+            if held < 0:
+                # Not live (#794): no reader counts it, and the next sweep prunes it.
+                lines.append(f"  ⚠️  lock:    {seat} mark for {key} is dated in the future — "
+                             "not counted as running; the next sweep prunes it")
+                continue
+            lines.append(f"  running:    {seat} on {key} for {held:.0f}m")
+    return lines
+
+
 def cmd_status(args) -> int:
     skipped: list[str] = []
     if args.loop:
@@ -195,22 +218,11 @@ def cmd_status(args) -> int:
         if problem:
             print(f"  ⚠️  reader:  {problem} — {config.FOUR_IDENTITY_RULE}")
             print(f"  fix:        {credentials.reader_fix(loop)}")
-        for seat, entries in st._lock_ledger().items():
-            for key, entry in (entries if isinstance(entries, dict) else {}).items():
-                at = state_mod.mark_at(entry)
-                if at is None:
-                    # Shown, not hidden: the file holds it, but no reader counts it as running
-                    # and the next write of the ledger drops it (#80).
-                    print(f"  ⚠️  lock:    {seat} mark for {key} is unreadable (no numeric 'at') — "
-                          "not counted as running; the next sweep prunes it")
-                    continue
-                held = (time.time() - at) / 60
-                if held < 0:
-                    # Not live (#794): no reader counts it, and the next sweep prunes it.
-                    print(f"  ⚠️  lock:    {seat} mark for {key} is dated in the future — "
-                          "not counted as running; the next sweep prunes it")
-                    continue
-                print(f"  running:    {seat} on {key} for {held:.0f}m")
+        for line in _lock_lines(st):
+            print(line)
+        from .. import shadow_choice
+        for line in shadow_choice.status_lines(loop):                   # #1788
+            print(f"  shadow:     {line}")
         for line in _dependency_lines(loop):
             print(f"  deps:       {line}")
         from .. import fix_hold
@@ -370,11 +382,13 @@ def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> l
 
 
 def _print_shadow_note(report: dict, prefix: str) -> None:
-    """``explain``'s note when a held loop has no shadow review to wait for at this head (#1004):
-    none was queued, or its run ended without one."""
-    note = (report.get("shadow") or {}).get("note")
-    if note:
-        print(f"{prefix}{note}")
+    """``explain``'s shadow lines: whether this head gets a shadow review and why (#1788), and
+    the note when a held loop has no shadow review to wait for at it (#1004): none was queued,
+    or its run ended without one."""
+    for key in ("choice", "note"):
+        text = (report.get("shadow") or {}).get(key)
+        if text:
+            print(f"{prefix}{text}")
 
 
 def _print_shadows(loop: dict, pr: int, prefix: str) -> None:

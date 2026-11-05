@@ -788,6 +788,18 @@ def shadow_every(loop: dict) -> int:
             else DEFAULT_SHADOW_EVERY)
 
 
+def shadow_always_paths(loop: dict) -> list[str]:
+    """Globs a PR change to which always gets a shadow review (#1788); [] = none."""
+    value = (loop.get("shadow") or {}).get("always_paths")
+    return list(value) if isinstance(value, list) else []
+
+
+def shadow_never_paths(loop: dict) -> list[str]:
+    """Globs a PR that changes only these never gets a shadow review (#1788); [] = none."""
+    value = (loop.get("shadow") or {}).get("never_paths")
+    return list(value) if isinstance(value, list) else []
+
+
 def shadow_escalate(loop: dict) -> bool:
     """Whether a shadow review holds the PR (#1004): no ready-to-merge while the shadow review of
     the head is still running, or after it requested changes. Off unless the loop opts in."""

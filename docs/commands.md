@@ -142,8 +142,9 @@ No flags.
 
 Shows a loop's configuration and its live state: who serves each seat, the routes as they are
 actually installed, the token files (paths, never contents), the observer feed, pacing (daily
-caps, and any seat waiting for its usage window), queued and running turns, and when the
-watchdog last ran. Read-only.
+caps, and any seat waiting for its usage window), queued and running turns, how shadow reviews
+are chosen (with the newest choices made by path, #1788), and when the watchdog last ran.
+Read-only.
 
 ```bash
 hermes dk status --loop "<loop-id>"
@@ -498,9 +499,11 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting) |
 | `--shadow-profile` | `SHADOW_PROFILE` |  | the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted (default: the plugin setting, else none) |
 | `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5) |
-| `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
+| `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 or a --shadow-always-path (default: the plugin setting, else off) |
 | `--shadow-file-issues` | `on` \| `off` |  | on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to --shadow-issues-daily a day (#914) (default: the plugin setting, else off) |
 | `--shadow-issues-daily` | `N` |  | most shadow-found issues filed per rolling 24 hours, 0-1000; 0 = no cap (#1515) (default: the plugin setting, else 25) |
+| `--shadow-always-path` | `GLOB` (repeatable) |  | a glob for paths whose change always gets a shadow review, whatever --shadow-every says (#1788; repeat it; '*' also matches '/') (default: the plugin setting) |
+| `--shadow-never-path` | `GLOB` (repeatable) |  | a glob for paths a PR may change without a shadow review: one that changes only these gets none (#1788; repeat it; an always path wins) (default: the plugin setting) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
 | `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting) |
@@ -637,9 +640,11 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting) |
 | `--shadow-profile` | `SHADOW_PROFILE` |  | the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted (default: the plugin setting, else none) |
 | `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5) |
-| `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off) |
+| `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 or a --shadow-always-path (default: the plugin setting, else off) |
 | `--shadow-file-issues` | `on` \| `off` |  | on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to --shadow-issues-daily a day (#914) (default: the plugin setting, else off) |
 | `--shadow-issues-daily` | `N` |  | most shadow-found issues filed per rolling 24 hours, 0-1000; 0 = no cap (#1515) (default: the plugin setting, else 25) |
+| `--shadow-always-path` | `GLOB` (repeatable) |  | a glob for paths whose change always gets a shadow review, whatever --shadow-every says (#1788; repeat it; '*' also matches '/') (default: the plugin setting) |
+| `--shadow-never-path` | `GLOB` (repeatable) |  | a glob for paths a PR may change without a shadow review: one that changes only these gets none (#1788; repeat it; an always path wins) (default: the plugin setting) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--generated` | `PATH[,PATH]=COMMAND` (repeatable) |  | generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting) |
 | `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it; none = the reviewer is told nothing) (default: the plugin setting) |
@@ -744,9 +749,13 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--shadow-profile` | `SHADOW_PROFILE` |  | the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted; 'off' turns them off (one of `--shadow-profile`, `--no-shadow`) |
 | `--no-shadow` |  |  | turn shadow reviews off (one of `--shadow-profile`, `--no-shadow`) |
 | `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (needs a shadow profile) |
-| `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 |
+| `--shadow-escalate` | `on` \| `off` |  | on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 or a --shadow-always-path |
 | `--shadow-file-issues` | `on` \| `off` |  | on: the issues a shadow review asks to file are filed by the reader once the real review exists and did not file them, labelled shadow-found, up to --shadow-issues-daily a day (#914); needs a shadow profile |
 | `--shadow-issues-daily` | `N` |  | most shadow-found issues filed per rolling 24 hours, 0-1000; 0 = no cap (#1515, default 25); needs a shadow profile |
+| `--shadow-always-path` | `GLOB` (repeatable) |  | a glob for paths whose change always gets a shadow review, whatever --shadow-every says (#1788; repeat it; '*' also matches '/'); replaces the list; needs a shadow profile (one of `--shadow-always-path`, `--no-shadow-always-paths`) |
+| `--no-shadow-always-paths` |  |  | clear the list: no path always gets a shadow review (one of `--shadow-always-path`, `--no-shadow-always-paths`) |
+| `--shadow-never-path` | `GLOB` (repeatable) |  | a glob for paths a PR may change without a shadow review: one that changes only these gets none (#1788; repeat it; an always path wins); replaces the list; needs a shadow profile (one of `--shadow-never-path`, `--no-shadow-never-paths`) |
+| `--no-shadow-never-paths` |  |  | clear the list: every PR may be sampled for a shadow review (one of `--shadow-never-path`, `--no-shadow-never-paths`) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve (repeat it); replaces the list (one of `--human-path`, `--no-human-paths`) |
 | `--no-human-paths` |  |  | clear the list: no path is reserved for a human (one of `--human-path`, `--no-human-paths`) |
 | `--ci-covers` | `CHECK=COVERS` (repeatable) |  | what a CI check covers, told to the reviewer (#756): CHECK=COVERS, e.g. 'tests (3.14)=full unit suite and harness' (repeat it); replaces the map (one of `--ci-covers`, `--no-ci-coverage`) |
@@ -1452,7 +1461,10 @@ GitHub and the loop's state and shows:
 - with [shadow reviews](configuration.md#shadow-reviews) on, a `shadow:` line per shadow review
   of the PR (model, head, the verdict it would have given, the real reviewer's verdict there and
   whether they agree, its first findings). These are data for comparing models: a shadow is never
-  a turn the PR waits for, so a queued or failed one is not listed among the PR's turns.
+  a turn the PR waits for, so a queued or failed one is not listed among the PR's turns. Another
+  `shadow:` line says whether the current head gets a shadow review and why: sampled by
+  `shadow.every`, or chosen by the paths it changes (`shadow.always_paths`, `shadow.never_paths`,
+  #1788).
 
 Read-only.
 
