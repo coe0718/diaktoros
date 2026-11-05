@@ -7,6 +7,7 @@ every command here; the install plumbing they share with ``init`` and ``set`` is
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import pathlib
@@ -449,6 +450,14 @@ def cmd_migrate(args) -> int:
 
 
 def _migrate(args) -> int:
+    """Run the migration steps. The backup ``migrate`` takes first is its undo, so it stays locked
+    (``backup.create(using=...)``) until the migration ends: a backup another process runs in the
+    meantime cannot prune it away (#1079)."""
+    with contextlib.ExitStack() as using:
+        return _migrate_steps(args, using)
+
+
+def _migrate_steps(args, using: contextlib.ExitStack) -> int:
     from .. import backup, migrate, run_supervisor
     try:
         loops = config.all_loops()
@@ -459,13 +468,17 @@ def _migrate(args) -> int:
         print(f"backup: would write {backup.default_out()} before anything moves")
     else:
         # Before the first move (#496): migrate has no undo, the archive is the undo.
+        pruned: list[pathlib.Path] = []
         try:
-            archive = backup.create()
+            archive = backup.create(pruned=pruned, using=using)
         except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
             print(f"cannot migrate: the backup before it failed ({exc}); nothing was moved")
             return 2
         print(f"backup: {archive} (restore with `hermes dk restore {shlex.quote(str(archive))}`)")
         print(f"backup: {backup.WARNING}")
+        if pruned:
+            print(f"backup: removed {len(pruned)} older default-named archive(s) beyond the "
+                  f"newest {backup.DEFAULT_KEEP}: " + ", ".join(p.name for p in pruned))
     lines = migrate.settings_step(cli_common._CTX, dry_run=args.dry_run)
     watchdog = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "watchdog.py"
     if not args.dry_run:
@@ -527,18 +540,26 @@ def cmd_backup(args) -> int:
             print("cannot back up: --verify reads an existing archive and takes no --out")
             return 2
         return _verify_backup(args)
-    try:
-        archive = backup.create(pathlib.Path(args.out) if args.out else None)
-    except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
-        print(f"cannot back up: {exc}")
-        return 2
-    print(f"backup written: {archive}")
-    left_out = backup.read_manifest(archive).get("skipped") or []
-    if left_out:
-        print(f"left out ({len(left_out)} temp-named file(s), assumed a writer's scratch): "
-              + ", ".join(left_out[:5]) + (" ..." if len(left_out) > 5 else ""))
-    print(f"warning: {backup.WARNING}")
-    return 0
+    keep = getattr(args, "keep", None)
+    keep = backup.DEFAULT_KEEP if keep is None else keep
+    pruned: list[pathlib.Path] = []
+    with contextlib.ExitStack() as using:       # the archive stays locked until this command is done
+        try:
+            archive = backup.create(pathlib.Path(args.out) if args.out else None,
+                                    keep=keep, pruned=pruned, using=using)
+        except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
+            print(f"cannot back up: {exc}")
+            return 2
+        print(f"backup written: {archive}")
+        if pruned:
+            print(f"removed {len(pruned)} older default-named archive(s) beyond the newest "
+                  f"{keep}: " + ", ".join(p.name for p in pruned))
+        left_out = backup.read_manifest(archive).get("skipped") or []
+        if left_out:
+            print(f"left out ({len(left_out)} temp-named file(s), assumed a writer's scratch): "
+                  + ", ".join(left_out[:5]) + (" ..." if len(left_out) > 5 else ""))
+        print(f"warning: {backup.WARNING}")
+        return 0
 
 
 def _restore_cron(job: dict | None) -> list[str]:
@@ -1026,6 +1047,11 @@ def add_backup(sub) -> None:  # noqa: ANN001
     bak.add_argument("--out", metavar="FILE", default=None,
                      help="where to write it (default: $HERMES_HOME/backups/…); never "
                           "overwrites a file")
+    bak.add_argument("--keep", metavar="N", type=int, default=None,
+                     help="after a backup to the default place, keep the newest N archives "
+                          "written there and delete older ones; 0 keeps all (default: 10). "
+                          "Archives written with --out, before this existed, or by hand are "
+                          "never counted or deleted (#1079)")
     bak.add_argument("--verify", metavar="FILE", default=None,
                      help="write nothing: read this archive back (manifest, every member, the "
                           "ledger snapshot's SQLite integrity check) and report whether it is "

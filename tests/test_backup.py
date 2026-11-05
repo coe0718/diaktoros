@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -593,6 +594,343 @@ class Create(Base):
         with mock.patch.object(migrate, "doctor_step", return_value=[]):
             self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
         self.assertEqual(self.ledger_count(), 298)
+
+
+class Retention(Base):
+    """#1079: the default place keeps the newest ``--keep`` archives ``create`` wrote there."""
+
+    @staticmethod
+    def marked(path):
+        """An archive as ``create`` writes it to the default place: ``DEFAULT_MARK`` first."""
+        with tarfile.open(path, "w:gz") as tar:
+            tar.addfile(tarfile.TarInfo(backup.DEFAULT_MARK))
+
+    def old(self, *names):
+        """Archives of the default place (marked), named ``names``."""
+        folder = config.home() / "backups"
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            self.marked(folder / name)
+        return folder
+
+    def plain(self, *names):
+        """Files with those names that ``create`` did not write (no mark; not even a tar)."""
+        folder = config.home() / "backups"
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (folder / name).write_text("old")
+        return folder
+
+    @staticmethod
+    def stamped(n):
+        return [f"diaktoros-backup-2020010{d}-000000.tar.gz" for d in range(1, n + 1)]
+
+    def names(self, folder):
+        return sorted(p.name for p in folder.iterdir())
+
+    def test_backup_keeps_the_newest_n_default_archives(self):
+        folder = self.old(*self.stamped(4))
+        code, text = self.run_cmd(cli.cmd_backup, out=None, keep=3)
+        self.assertEqual(code, 0, text)
+        left = self.names(folder)
+        self.assertEqual(len(left), 3)
+        self.assertEqual(left[:2], self.stamped(4)[2:])           # the two newest old ones stay
+        self.assertIn("removed 2 older", text)
+        self.assertIn(self.stamped(4)[0], text)
+
+    def test_the_default_keep_applies_when_none_is_given(self):
+        folder = self.old(*self.stamped(9), "diaktoros-backup-20200110-000000.tar.gz",
+                          "diaktoros-backup-20200111-000000.tar.gz")
+        code, text = self.run_cmd(cli.cmd_backup, out=None, keep=None)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(len(self.names(folder)), backup.DEFAULT_KEEP)
+
+    def test_order_is_the_stamp_then_the_collision_suffix_not_the_mtime(self):
+        folder = self.old("diaktoros-backup-20200101-000000.tar.gz",
+                          "diaktoros-backup-20200101-000000-2.tar.gz",
+                          "diaktoros-backup-20200101-000000-10.tar.gz")
+        os.utime(folder / "diaktoros-backup-20200101-000000-10.tar.gz", (1, 1))
+        backup.prune(1)
+        self.assertEqual(self.names(folder), ["diaktoros-backup-20200101-000000-10.tar.gz"])
+
+    def test_keep_zero_keeps_everything(self):
+        folder = self.old(*self.stamped(5))
+        code, text = self.run_cmd(cli.cmd_backup, out=None, keep=0)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(len(self.names(folder)), 6)
+        self.assertNotIn("removed", text)
+
+    def test_only_default_named_regular_files_are_ever_deleted(self):
+        folder = self.old(*self.stamped(2))
+        self.plain("notes.txt", "diaktoros-backup-mine.tar.gz",
+                   "diaktoros-backup-20200101-000000.tar.gz.bak")
+        (folder / "diaktoros-backup-20190101-000000.tar.gz").mkdir()
+        target = self.root / "elsewhere.tar.gz"
+        target.write_text("precious")
+        (folder / "diaktoros-backup-20180101-000000.tar.gz").symlink_to(target)
+        code, text = self.run_cmd(cli.cmd_backup, out=None, keep=1)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(target.read_text(), "precious")
+        left = self.names(folder)
+        for kept in ("notes.txt", "diaktoros-backup-mine.tar.gz",
+                     "diaktoros-backup-20200101-000000.tar.gz.bak",
+                     "diaktoros-backup-20190101-000000.tar.gz",
+                     "diaktoros-backup-20180101-000000.tar.gz"):
+            self.assertIn(kept, left)
+        for gone in self.stamped(2):
+            self.assertNotIn(gone, left)
+
+    def test_an_out_archive_is_never_counted_or_pruned(self):
+        folder = self.old(*self.stamped(3))
+        mine = self.root / "diaktoros-backup-20190101-000000.tar.gz"
+        code, text = self.run_cmd(cli.cmd_backup, out=str(mine), keep=1)
+        self.assertEqual(code, 0, text)
+        self.assertTrue(mine.is_file())
+        self.assertEqual(self.names(folder), self.stamped(3))     # no prune after an --out write
+
+    def test_an_out_archive_inside_the_default_directory_survives_a_later_default_backup(self):
+        """F1 of the review on #1869: ``--out`` into ``$HERMES_HOME/backups`` with a default-shaped
+        name, then a default backup that would prune it by name alone."""
+        folder = self.old(*self.stamped(2))
+        mine = folder / "diaktoros-backup-20190101-000000.tar.gz"
+        code, text = self.run_cmd(cli.cmd_backup, out=str(mine), keep=1)
+        self.assertEqual(code, 0, text)
+        self.assertNotIn(backup.DEFAULT_MARK, tarfile.open(mine, "r:gz").getnames())
+        code, text = self.run_cmd(cli.cmd_backup, out=None, keep=1)
+        self.assertEqual(code, 0, text)
+        self.assertTrue(mine.is_file(), text)
+        left = self.names(folder)
+        self.assertEqual(len(left), 2)                    # the new one, and the --out one
+        self.assertIn(mine.name, left)
+        self.assertNotIn(mine.name, text)                 # not reported as removed
+        for gone in self.stamped(2):                      # the marked ones were pruned as before
+            self.assertNotIn(gone, left)
+
+    def test_an_archive_without_the_mark_is_neither_counted_nor_deleted(self):
+        folder = self.old(*self.stamped(2))
+        legacy = self.root / "legacy.tar.gz"
+        backup.create(legacy)                             # a real archive, as an earlier version wrote
+        kept = folder / "diaktoros-backup-20190101-000000.tar.gz"
+        shutil.copy(legacy, kept)
+        backup.prune(1)
+        self.assertEqual(self.names(folder), [kept.name, self.stamped(2)[1]])
+
+    def test_the_default_place_marks_its_archive_first_and_restore_still_reads_it(self):
+        made = backup.create()
+        with tarfile.open(made, "r:gz") as tar:
+            self.assertEqual(tar.getnames()[0], backup.DEFAULT_MARK)
+        self.assertTrue(backup.made_by_default(made))
+        self.assertFalse(backup.made_by_default(self.root / "nowhere.tar.gz"))
+        self.wipe()
+        code, text = self.run_cmd(cli.cmd_restore, file=str(made), dry_run=False, force=False)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.ledger_count(), 298)
+
+    def paused_backup(self, stamp, keep=1):
+        """Start ``backup.create()`` on a thread and pause it with its archive half written: the
+        mark is flushed to the file, so the half-written archive reads as a default-place one and
+        only the writer's lock tells ``prune`` it is unfinished (a bigger archive flushes this
+        early by itself). Returns ``(thread, outcome, resume)``; the caller must call
+        ``resume()`` and join. ``outcome`` gets ``path`` or ``error``."""
+        reached, resume, outcome = threading.Event(), threading.Event(), {}
+        real, real_open = backup._snapshot_ledger, tarfile.open
+        runner = {}
+
+        def spy(*args, **kw):
+            tar = real_open(*args, **kw)
+            if threading.get_ident() == runner.get("id"):
+                runner["tar"] = tar
+            return tar
+
+        def pause(source, dest):
+            if threading.get_ident() == runner["id"]:
+                runner["tar"].fileobj.flush()             # gzip sync flush, then the file's own
+                reached.set()
+                resume.wait(10)
+            return real(source, dest)
+
+        def run():
+            runner["id"] = threading.get_ident()
+            try:
+                outcome["path"] = backup.create(keep=keep)
+            except BaseException as exc:                  # noqa: BLE001  the test reads it
+                outcome["error"] = repr(exc)
+        self.stamp = stamp
+        for patch in (mock.patch.object(backup, "_snapshot_ledger", pause),
+                      mock.patch.object(tarfile, "open", spy)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        thread = threading.Thread(target=run)
+        thread.start()
+        self.addCleanup(thread.join, 10)
+        self.addCleanup(resume.set)
+        self.assertTrue(reached.wait(10), "the first backup never reached its pause")
+        return thread, outcome, resume
+
+    def test_a_default_backup_still_being_written_is_not_pruned_by_another_run(self):
+        """F2 of the review on #1869: run 2 (newer name, keep=1) prunes while run 1 is still
+        writing; run 1 must finish with its archive in place."""
+        folder = self.old("diaktoros-backup-20190101-000000.tar.gz")
+        with mock.patch.object(backup.time, "strftime", side_effect=lambda fmt: self.stamp):
+            thread, outcome, resume = self.paused_backup("20200101-000000")
+            self.stamp = "20200102-000000"
+            fast = backup.create(keep=1)
+            resume.set()
+            thread.join(10)
+        self.assertNotIn("error", outcome)
+        slow = outcome["path"]
+        self.assertTrue(slow.is_file() and fast.is_file())
+        self.assertEqual(backup.read_manifest(slow)["version"], backup.VERSION)
+        self.assertEqual(self.names(folder), sorted([slow.name, fast.name]))
+
+    def test_an_archive_being_written_does_not_cost_a_finished_one_its_place(self):
+        """The half-written file is not counted: with keep=2 the older finished archive stays."""
+        folder = self.old("diaktoros-backup-20200101-000000.tar.gz")
+        with mock.patch.object(backup.time, "strftime", side_effect=lambda fmt: self.stamp):
+            thread, outcome, resume = self.paused_backup("20200103-000000", keep=0)   # clock ahead
+            self.stamp = "20200102-000000"
+            fast = backup.create(keep=2)
+            resume.set()
+            thread.join(10)
+        self.assertNotIn("error", outcome)
+        self.assertEqual(self.names(folder),
+                         sorted(["diaktoros-backup-20200101-000000.tar.gz",
+                                 fast.name, outcome["path"].name]))
+
+    def test_an_archive_stays_held_between_its_stream_closing_and_its_chmod(self):
+        """F2 of the round-2 review on #1869: run 1's stream is closed and its archive whole, but
+        ``create`` has not chmodded it yet; run 2 (newer name, keep=1) prunes now. Run 1 must
+        finish, with its archive in place."""
+        folder = self.old("diaktoros-backup-20190101-000000.tar.gz")
+        reached, resume, outcome, runner = threading.Event(), threading.Event(), {}, {}
+        real_chmod = os.chmod
+
+        def pause(path, *args, **kw):
+            if threading.get_ident() == runner.get("id") and \
+                    Path(path).name.startswith("diaktoros-backup-"):
+                reached.set()
+                resume.wait(10)
+            return real_chmod(path, *args, **kw)
+
+        def run():
+            runner["id"] = threading.get_ident()
+            try:
+                outcome["path"] = backup.create(keep=1)
+            except BaseException as exc:                  # noqa: BLE001  the test reads it
+                outcome["error"] = repr(exc)
+        self.stamp = "20200101-000000"
+        with mock.patch.object(backup.time, "strftime", side_effect=lambda fmt: self.stamp), \
+                mock.patch.object(os, "chmod", pause):
+            thread = threading.Thread(target=run)
+            thread.start()
+            self.addCleanup(thread.join, 10)
+            self.addCleanup(resume.set)
+            self.assertTrue(reached.wait(10), "the first backup never reached its chmod")
+            self.stamp = "20200102-000000"
+            fast = backup.create(keep=1)
+            resume.set()
+            thread.join(10)
+        self.assertNotIn("error", outcome)
+        slow = outcome["path"]
+        self.assertEqual(stat.S_IMODE(slow.stat().st_mode), 0o600)
+        self.assertEqual(self.names(folder), sorted([slow.name, fast.name]))
+
+    def newer_backup_while(self, hook_owner, hook_name, stamp="20200102-000000"):
+        """Make ``hook_owner.hook_name`` take a newer default backup (keep=1) when it runs, and
+        return what that backup's ``create`` returned (a list that fills in when the hook runs)."""
+        real, taken, real_strftime = getattr(hook_owner, hook_name), [], backup.time.strftime
+
+        def hook(*args, **kw):
+            with mock.patch.object(backup.time, "strftime",
+                                   side_effect=lambda fmt: stamp if fmt == "%Y%m%d-%H%M%S"
+                                   else real_strftime(fmt)):
+                taken.append(backup.create(keep=1))
+            return real(*args, **kw)
+        patch = mock.patch.object(hook_owner, hook_name, hook)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return taken
+
+    def test_backup_command_holds_its_archive_until_it_is_done_with_it(self):
+        """The same window past ``create``: ``cmd_backup`` reads its archive back after ``create``
+        returns; a newer run in between must not prune it (``create(using=...)``)."""
+        folder = self.old("diaktoros-backup-20190101-000000.tar.gz")
+        taken = self.newer_backup_while(backup, "read_manifest")
+        with mock.patch.object(backup.time, "strftime", side_effect=lambda fmt: "20200101-000000"):
+            code, text = self.run_cmd(cli.cmd_backup, out=None, keep=1)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(len(taken), 1)
+        self.assertEqual(self.names(folder),
+                         ["diaktoros-backup-20200101-000000.tar.gz", taken[0].name])
+        self.assertIn("backup written: ", text)
+        # Once the command is over the hold is gone: the next default backup prunes it as usual.
+        again = backup.create(keep=1)
+        self.assertEqual(self.names(folder), [again.name])
+
+    def test_migrate_holds_its_backup_until_the_migration_ends(self):
+        """``migrate`` has no undo but its pre-move archive; a default backup another process
+        takes mid-migration (keep=1) must not prune it."""
+        folder = self.old("diaktoros-backup-20190101-000000.tar.gz")
+        taken = self.newer_backup_while(migrate, "settings_step")
+        with mock.patch.object(backup.time, "strftime", side_effect=lambda fmt: "20200101-000000"), \
+                mock.patch.object(migrate, "shim_step", return_value=[]), \
+                mock.patch.object(migrate, "files_step", return_value=[]), \
+                mock.patch.object(migrate, "repo_step", return_value=[]), \
+                mock.patch.object(cli_lifecycle, "_move_watchdog_job", return_value=[]):
+            code, text = self.run_cmd(cli.cmd_migrate, dry_run=False)
+        self.assertEqual(len(taken), 1, text)
+        self.assertEqual(self.names(folder),
+                         ["diaktoros-backup-20200101-000000.tar.gz", taken[0].name])
+
+    def test_a_failed_backup_releases_its_hold(self):
+        """``using`` keeps the lock only for an archive that was written: a failure removes the
+        file and closes the descriptor, so nothing is left held."""
+        fds = lambda: len(os.listdir("/proc/self/fd"))    # noqa: E731  Linux, like flock
+        before = fds()
+        with contextlib.ExitStack() as using, \
+                mock.patch.object(backup, "_snapshot_ledger", side_effect=sqlite3.Error("boom")):
+            with self.assertRaises(sqlite3.Error):
+                backup.create(keep=1, using=using)
+            self.assertEqual(fds(), before)
+
+    def test_a_negative_keep_is_refused_before_anything_is_written_or_deleted(self):
+        folder = self.old(*self.stamped(2))
+        code, text = self.run_cmd(cli.cmd_backup, out=None, keep=-1)
+        self.assertEqual(code, 2)
+        self.assertIn("--keep", text)
+        self.assertEqual(self.names(folder), self.stamped(2))
+
+    def test_a_failed_backup_prunes_nothing(self):
+        folder = self.old(*self.stamped(3))
+        with mock.patch.object(backup, "_snapshot_ledger", side_effect=sqlite3.Error("boom")):
+            code, text = self.run_cmd(cli.cmd_backup, out=None, keep=1)
+        self.assertEqual(code, 2)
+        self.assertEqual(self.names(folder), self.stamped(3))
+
+    def test_a_file_that_cannot_be_removed_does_not_fail_the_backup(self):
+        folder = self.old(*self.stamped(2))
+        with mock.patch.object(Path, "unlink", side_effect=PermissionError("no")):
+            made = backup.create(keep=1)
+        self.assertTrue(made.is_file())
+
+    def test_migrate_prunes_through_the_same_create(self):
+        folder = self.old(*self.stamped(9), "diaktoros-backup-20200110-000000.tar.gz",
+                          "diaktoros-backup-20200111-000000.tar.gz")
+        with mock.patch.object(migrate, "settings_step", return_value=[]), \
+                mock.patch.object(migrate, "shim_step", return_value=[]), \
+                mock.patch.object(migrate, "files_step", return_value=[]), \
+                mock.patch.object(migrate, "repo_step", return_value=[]), \
+                mock.patch.object(cli_lifecycle, "_move_watchdog_job", return_value=[]):
+            code, text = self.run_cmd(cli.cmd_migrate, dry_run=False)
+        self.assertEqual(len(self.names(folder)), backup.DEFAULT_KEEP, text)
+        self.assertIn("removed 2 older", text)
+
+    def test_the_flag_is_parsed_and_defaults_to_unset(self):
+        import argparse as ap
+        parser = ap.ArgumentParser()
+        cli_lifecycle.add_backup(parser.add_subparsers())
+        self.assertIsNone(parser.parse_args(["backup"]).keep)
+        self.assertEqual(parser.parse_args(["backup", "--keep", "3"]).keep, 3)
 
 
 class LockInventory(unittest.TestCase):

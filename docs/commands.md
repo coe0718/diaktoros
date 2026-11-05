@@ -1133,9 +1133,22 @@ moves anything and prints the path.
 
 The archive holds the routes' HMAC secrets, so restored hooks keep working. It is created mode
 `0600`, the command warns about it, and the secrets are never printed. It leaves out GitHub
-tokens (PATs), Hermes profiles and model logins. It never overwrites a file. There is no
-output-directory or retention setting yet; when one is added it must be settable from the
-Desktop form, `init`, `setup`, `set` and the loop file.
+tokens (PATs), Hermes profiles and model logins. It never overwrites a file.
+
+Retention (#1079): a backup written to the default place (`$HERMES_HOME/backups`, no `--out`)
+is followed by deleting the oldest archives written there (`diaktoros-backup-<stamp>[-n].tar.gz`,
+regular files only) beyond the newest `--keep N` (default 10; `0` keeps every archive). Such an
+archive carries a `default-place` first member; only archives that carry it are counted or
+deleted. So an archive written with `--out` (even one with a default-shaped name inside
+`$HERMES_HOME/backups`), an archive written by an earlier version (no mark: delete those by
+hand once), and any other file in that directory are never counted or deleted. An archive that
+another run still holds open is skipped too: a run holds its archive from before its first byte
+until its command is done with it (for `backup`, until it has printed; for `migrate`, until the
+migration ends, since the archive is its only undo). A held archive is not pruned by a newer run
+and is not counted, so it is pruned by a later backup once its run is over. The hold is a `flock`
+on the file, which a filesystem without `flock` does not give. `migrate`'s automatic backup
+prunes with the default of 10. `--keep` is a per-run flag, not a plugin setting, so a scheduled
+backup must pass it to use another count; there is no output-directory setting.
 
 ```bash
 hermes dk backup --out "<archive-file>"
@@ -1156,6 +1169,7 @@ archive; `restore` lists those.
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--out` | `FILE` |  | where to write it (default: $HERMES_HOME/backups/…); never overwrites a file |
+| `--keep` | `N` |  | after a backup to the default place, keep the newest N archives written there and delete older ones; 0 keeps all (default: 10). Archives written with --out, before this existed, or by hand are never counted or deleted (#1079) |
 | `--verify` | `FILE` |  | write nothing: read this archive back (manifest, every member, the ledger snapshot's SQLite integrity check) and report whether it is restorable (exit 2 if not) |
 <!-- /flags -->
 
