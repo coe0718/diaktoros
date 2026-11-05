@@ -193,6 +193,32 @@ class Authorship(fg.Base):
         self.journal(self.push_record(PUSHED), self.push_record(STRAY))
         self.assertEqual(self.doctor_check().status, doctor.VERIFIED)
 
+    def test_doctor_stops_reading_commit_pages_at_the_read_budget(self):
+        """#1338: 30 open PRs of 300 commits each are 4 commit-page reads apiece (3 full pages
+        and the empty page that proves the end); doctor stops starting PRs at ``READS_MAX``."""
+        self.journal(self.push_record(PUSHED))
+        reads = []
+
+        def fetch(loop, path, *args, **kwargs):
+            reads.append(path)
+            page = int(path.rsplit("&page=", 1)[1]) if "&page=" in path else 1
+            return ([commit(f"{page:02d}{i:038d}", "someone") for i in range(100)]
+                    if page <= 3 else []), ""
+        with mock.patch.object(gh, "open_prs_read",
+                               return_value=([{"number": n} for n in range(1, 31)], "")), \
+             mock.patch.object(gh, "fetch", side_effect=fetch):
+            check = doctor.check_authorship(self.loop)
+        self.assertLessEqual(len(reads), authorship.READS_MAX)
+        self.assertEqual(len(reads), 40)
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn("only the first 10 of 30 open PRs were read", check.detail)
+        self.assertIn(f"budget of {authorship.READS_MAX} commit-page reads", check.detail)
+
+    def test_commit_reads_counts_the_pages_pr_commits_read_reads(self):
+        for count, pages in ((0, 1), (99, 1), (100, 2), (250, 3), (500, 6)):
+            self.assertEqual(authorship.commit_reads([{}] * count), pages)
+        self.assertEqual(authorship.commit_reads(None), gh.MAX_PR_COMMIT_PAGES + 1)
+
     def test_doctor_names_the_operator_agents(self):
         loop = config.normalize({**fg.raw_loop(False), "state_dir": str(self.root / "state"),
                                  "operator_agents": ["docs-bot"]})

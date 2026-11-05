@@ -778,10 +778,13 @@ def check_authorship(loop: dict, offline: bool = False) -> Check:
     pushed, error = authorship.pushed_heads(loop)
     if error:
         return Check(name, UNKNOWN, f"push journal unreadable ({error}): authorship not checked")
-    found, unread = [], []
+    found, unread, reads, scanned = [], [], 0, 0
     numbers = [pr.get("number") for pr in prs if isinstance(pr.get("number"), int)]
     for number in numbers[:authorship.PRS_MAX]:
-        stray, problem = authorship.scan(loop, number, pushed)
+        if reads >= authorship.READS_MAX:
+            break                       # the check's commit-read budget is spent (#1338)
+        stray, problem, cost = authorship.scan_reads(loop, number, pushed)
+        reads, scanned = reads + cost, scanned + 1
         if problem:
             unread.append(f"#{number}: {problem}")
         found += [f"#{number} {authorship.line(entry)}" for entry in stray]
@@ -790,10 +793,12 @@ def check_authorship(loop: dict, offline: bool = False) -> Check:
                      + (f" (+{len(found) - 5} more)" if len(found) > 5 else "") + named,
                      "give each agent its own GitHub account and git email (docs/accounts.md); "
                      "this check never blocks a turn")
-    if unread or len(numbers) > authorship.PRS_MAX:
+    if unread or scanned < len(numbers):
+        spent = (f" (the check's budget of {authorship.READS_MAX} commit-page reads was spent)"
+                 if scanned < min(len(numbers), authorship.PRS_MAX) else "")
         return Check(name, UNKNOWN, "no misattributed commit found, but "
                      + ("; ".join(unread[:3]) if unread else
-                        f"only the first {authorship.PRS_MAX} of {len(numbers)} open PRs were read")
+                        f"only the first {scanned} of {len(numbers)} open PRs were read{spent}")
                      + named)
     return Check(name, VERIFIED, f"no commit on {len(numbers)} open PR(s) shows as a seat's "
                  f"account without a seat turn pushing it" + named)
