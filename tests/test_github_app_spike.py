@@ -178,6 +178,20 @@ class AppArgs(unittest.TestCase):
                 self.assertIn("ROLE=ID", err.getvalue())
                 ran.assert_not_called()
 
+    def test_main_refuses_a_non_ascii_digit_id_as_a_usage_error(self):
+        """A GitHub App ID is ASCII digits. ``int()`` would take Arabic-Indic ``١`` as 1, and
+        ``str.isdigit()`` is true for ``²`` though ``int()`` refuses it; each must get the
+        ``is not ROLE=ID`` usage error, not be accepted and not fail with a generic message."""
+        for bad in ("reader=\u0661", "reader=\u00b2", "reader=\uff11"):
+            with self.subTest(app=bad), mock.patch.object(spike, "run") as ran, \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                with self.assertRaises(SystemExit) as cm:
+                    spike.main(["--repo", "o/r", "--keys", "/k", "--app", bad,
+                                "--app", "reviewer=2", "--app", "fixer=3"])
+                self.assertEqual(cm.exception.code, 2)
+                self.assertIn("is not ROLE=ID", err.getvalue())
+                ran.assert_not_called()
+
     def test_main_still_refuses_a_missing_role_as_a_usage_error(self):
         with mock.patch.object(spike, "run") as ran, contextlib.redirect_stderr(io.StringIO()) as err:
             with self.assertRaises(SystemExit) as cm:
