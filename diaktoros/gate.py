@@ -325,15 +325,19 @@ def shadow_open_heads(repo: str, db=None) -> set[tuple[int, str]]:
     findings snapshot must outlive it (#1013). Scoped to the loop's repo (#1133): the snapshot
     file is per loop and keyed by ``pr:head`` alone, so another repo's open run at the same PR
     number and head would otherwise keep this loop's snapshot past the cap. Empty when the
-    ledger does not exist yet; raises when it exists but cannot be read, so the caller never
-    evicts on a guess."""
+    ledger does not exist yet; raises when it exists but cannot be read — a corrupt file, or a
+    path that is not a regular file (a directory) — so the caller never evicts on a guess, and
+    ``shadow_state`` holds on the same ledger."""
     from . import run_supervisor
     path = pathlib.Path(db or run_supervisor.production_ledger())
     if not path.exists():
         return set()
     con = run_supervisor.views.read_only_connect(path)
     if con is None:
-        return set()
+        # ``read_only_connect`` answers None for anything that is not a file, and this path
+        # exists: that is not an absent ledger, so not "no open runs" (an empty set would let
+        # the eviction run).
+        raise OSError(f"the run ledger {path} exists but is not a readable file")
     try:
         rows = con.execute(f"SELECT pr, head FROM runs WHERE repo=? AND seat='shadow' AND "
                            f"state IN ({','.join('?' * len(SHADOW_OPEN))})",
