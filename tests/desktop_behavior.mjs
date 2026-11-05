@@ -321,6 +321,25 @@ test('hold contract: malformed nested provenance identity actions and secret pro
   h.dispose()
 })
 
+test('drawer: a validation-rejected /pr response is not reported as the backend not answering (#1162)', async () => {
+  const { h, data } = await holdDrawer()
+  const broken = structuredClone(data); broken.stuck[0].explanation.text = '/home/private ghp_secret'; h.respond(broken)
+  // The real read path: the backend answered, validation refused it, and the drawer renders that error.
+  const rejected = await h.options.pr.queryFn().then(() => null, error => error)
+  assert.equal(rejected.code, 'INVALID_RESPONSE')
+  h.queries.pr = { ...h.fail(undefined), error: rejected }; h.render('page')
+  const text = h.text(h.tree())
+  assert.match(text, /Backend response could not be verified/)
+  assert.match(text, /answered, but the response was rejected by validation/)
+  assert.doesNotMatch(text, /did not answer/)
+  assert.doesNotMatch(text, /\/home\/private|ghp_secret/)
+  // A transport failure still says nothing was received, and still shows none of the error's text.
+  h.queries.pr = { ...h.fail(undefined), error: new Error('/home/private ghp_secret') }; h.render('page')
+  assert.match(h.text(h.tree()), /Backend read failed.*the loop backend did not answer/)
+  assert.doesNotMatch(h.text(h.tree()), /rejected by validation|\/home\/private|ghp_secret/)
+  h.dispose()
+})
+
 test('PR truth: null explanation head cannot bind a valid parent; unknown parent stays visible unavailable', async () => {
   const { h, data } = await holdDrawer()
   const broken = structuredClone(data); broken.stuck[0].explanation.head = null; h.respond(broken)
