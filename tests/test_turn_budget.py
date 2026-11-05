@@ -143,7 +143,7 @@ class CliSurfaces(unittest.TestCase):
         self.assertIn("widgets", out)
         with mock.patch("diaktoros.state.state_for") as state_for:
             state_for.return_value.dir = self.root / "state"
-            state_for.return_value._load.return_value = {}
+            state_for.return_value.kv_get.return_value = {}
             state_for.return_value.queue_items.return_value = {}
             state_for.return_value.queue_all.return_value = {}
             state_for.return_value.breach_all.return_value = {}
@@ -184,7 +184,7 @@ class CliSurfaces(unittest.TestCase):
 
         with mock.patch("diaktoros.state.state_for") as state_for:
             state_for.return_value.dir = self.root / "state"
-            state_for.return_value._load.return_value = {}
+            state_for.return_value.kv_get.return_value = {}
             state_for.return_value.queue_items.return_value = {}
             state_for.return_value.queue_all.return_value = {}
             state_for.return_value.breach_all.return_value = {}

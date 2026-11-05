@@ -369,13 +369,13 @@ def _rows_observer(obs, schema, rows, loop) -> None:  # noqa: ANN001
 
 
 def _key_spelling(value: str) -> str:
-    """``value`` as ``config._path`` spells it, whitespace kept (a trailing space names another file).
+    """``value`` as ``config.expand_path`` spells it, whitespace kept (a trailing space names another file).
 
     An unresolvable ``~user`` makes ``Path.expanduser`` raise; ``show`` must still report, so that
     value stays as written (``os.path.expanduser`` left it alone too).
     """
     try:
-        return str(config._path(value))
+        return str(config.expand_path(value))
     except RuntimeError:
         return value
 
@@ -398,7 +398,7 @@ def collect(loop: dict, raw: dict, form: dict | None = None) -> list[dict]:
             held = settings_form.settings_defaults(form)[row.name]
             shown = row.value
             if row.name.endswith("_app_key_file") and isinstance(held, str) and held.strip():
-                # apply stores the key path as ``config._path`` spells it (#1212, #1279): expanded
+                # apply stores the key path as ``config.expand_path`` spells it (#1212, #1279): expanded
                 # and normalized, so `~/keys/x.pem/` is the same file. A loop file written by hand
                 # with a raw `~` is the same file too (``github_app.key_path`` expands at use).
                 # The form value is read the way apply reads it (``seat_mapping`` strips it); the

@@ -259,7 +259,7 @@ class AfterEnabling(Steps):
         self.set_push(False)
         action = self.report(inflight_fix=True)["next"]["action"]
         self.assertIn("refuses a re-delivery while the in-flight fix mark", action)
-        self.assertIn(f"ttl {self.st._minutes('inflight_ttl_min'):g}m", action)
+        self.assertIn(f"ttl {self.st.minutes('inflight_ttl_min'):g}m", action)
         self.assertIn("once it has expired, re-deliver the changes-requested review event", action)
         self.assertNotIn(self.retry(), action)
         self.set_push(True)

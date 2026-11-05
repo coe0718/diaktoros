@@ -85,10 +85,10 @@ def pause_flag(st) -> bool | None:
 
 def set_paused(st, value: bool) -> None:
     with st.locked():
-        memory = st._load(st.dir / FILE, {})
+        memory = st.kv_get(st.dir / FILE, {})
         memory = memory if isinstance(memory, dict) else {}
         memory["paused"] = bool(value)
-        st._save_strict(st.dir / FILE, memory)
+        st.kv_set_strict(st.dir / FILE, memory)
 
 
 # The events an App's webhook must subscribe to for a loop: triage's only when it is on.

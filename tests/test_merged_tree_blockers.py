@@ -126,7 +126,7 @@ class EffectiveVerdictTest(unittest.TestCase):
                                  "heads": {"7": {"sha": HEAD, "observed_at": time.time() - 3600}},
                                  "alerts": {}}
         st.breach_all.return_value = {}
-        st._load.return_value = {}
+        st.kv_get.return_value = {}
         st.queue_all.return_value = {}
         with (mock.patch.object(watch_mode, "TEST", True),
               mock.patch.object(gh, "open_prs", return_value=[PR]),

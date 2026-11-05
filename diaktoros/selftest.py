@@ -443,7 +443,7 @@ _USERNS_FIX = ("enable unprivileged user namespaces: `sudo sysctl -w kernel.unpr
                "profile allowing bwrap); persist it in /etc/sysctl.d/")
 
 
-def _work_root(loop: dict) -> Path:
+def work_root(loop: dict) -> Path:
     """The same private parent the production worker uses for its turn directories."""
     root = config.state_dir(loop) / "isolated-runs"
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -511,7 +511,7 @@ def check_bwrap(report: Report, loop: dict, settings: dict | None, runtime_file:
         report.add(step, "sandbox:containment", SKIP, "needs a usable runtime config (step 1)")
         return
     try:
-        parent = _work_root(loop)
+        parent = work_root(loop)
     except Exception as exc:
         report.add(step, "sandbox:containment", FAIL, f"work root unusable: {exc}",
                    f"`chmod 700 {Path(loop['state_dir']).expanduser() / 'isolated-runs'}`")
@@ -1085,7 +1085,7 @@ def check_build(report: Report, loop: dict, settings: dict | None, pr: dict | No
         return
     number, head, ref = pr["number"], pr["head"]["sha"], pr["head"]["ref"]
     try:
-        parent = _work_root(loop)
+        parent = work_root(loop)
         cache = deps.cache_root(loop)
     except Exception as exc:
         report.add(step, "build:deps", FAIL, f"work root or dependency cache unusable: {exc}",
@@ -1238,7 +1238,7 @@ def run_live_turn(report: Report, loop: dict, settings: dict | None, pr: dict | 
                                    credential=reviewer.credential_provider(),
                                    proxy_model=reviewer.proxy_model,
                                    client_identity=reviewer.client_identity,
-                                   timeout=timeout, work_root=_work_root(loop),
+                                   timeout=timeout, work_root=work_root(loop),
                                    no_write=True, observed=observed,
                                    reasoning_effort=getattr(reviewer, "reasoning_effort", "") or "")
         error = ""

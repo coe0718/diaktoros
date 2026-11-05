@@ -236,6 +236,21 @@ class LoopState:
         except Exception as exc:
             log(f"state write failed ({path.name}): {exc}")
 
+    # The public key-value API (#1088): a module that keeps its own JSON file in the state dir
+    # (merge_check, ready, main_check, ...) reads and writes it through these, not the raw
+    # helpers. Thin wrappers, so a test that patches ``_save_strict`` still reaches every write.
+    def kv_get(self, path: pathlib.Path, default):
+        """The JSON at ``path``, or ``default`` when it is missing or unreadable."""
+        return self._load(path, default)
+
+    def kv_set(self, path: pathlib.Path, data) -> None:
+        """Publish ``data`` to ``path`` atomically, best effort: a failure is logged."""
+        self._save(path, data)
+
+    def kv_set_strict(self, path: pathlib.Path, data) -> None:
+        """Publish ``data`` to ``path`` atomically, or raise (#726)."""
+        self._save_strict(path, data)
+
     @contextlib.contextmanager
     def locked(self):
         """Hold the loop's state lock across a read-modify-write of locks/pending/inflight.
@@ -372,10 +387,10 @@ class LoopState:
         age arithmetic and stop the readers either. ``recorded`` is the budget the claim was taken
         with, which keeps a lowered ``turn_budget_s`` from shortening it.
         """
-        return config.seat_ttl_s({**self.loop, "ttl_min": self._minutes("ttl_min")}, seat=seat,
+        return config.seat_ttl_s({**self.loop, "ttl_min": self.minutes("ttl_min")}, seat=seat,
                                  recorded=recorded)
 
-    def _minutes(self, key: str) -> float:
+    def minutes(self, key: str) -> float:
         """A minutes knob (``ttl_min``, ``inflight_ttl_min``) as a finite number, never an error.
 
         ``normalize()`` does not coerce these and the settings form can write them raw, so a
@@ -621,7 +636,7 @@ class LoopState:
         before the first verdict lands. TTL-bounded so a crashed run cannot wedge the head.
         """
         now = time.time()
-        ttl_s = self._minutes("inflight_ttl_min") * 60
+        ttl_s = self.minutes("inflight_ttl_min") * 60
         if record:
             with self.locked():
                 # Read the clock only once the lock is held: a mark another process wrote while
@@ -664,7 +679,7 @@ class LoopState:
         writes cannot be made atomic across two files; this order makes it the harmless one.
         """
         key = f"{self.loop['repo']}#{number}"
-        with self.locked(), self._breach_lock():
+        with self.locked(), self.breach_lock():
             markers = _mapping(self._load(self.breach, {}))
             if key in markers:
                 markers.pop(key)
@@ -695,7 +710,7 @@ class LoopState:
     # -- breach markers -----------------------------------------------------
 
     @contextlib.contextmanager
-    def _breach_lock(self):
+    def breach_lock(self):
         hostdirs.ensure(self.dir)
         fd = os.open(self.dir / BREACH_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
         try:
@@ -717,7 +732,7 @@ class LoopState:
 
     def breach_set(self, number: int, entry: dict) -> dict:
         key = f"{self.loop['repo']}#{number}"
-        with self._breach_lock():
+        with self.breach_lock():
             data = _mapping(self._load(self.breach, {}))
             prior = _mapping(data.get(key))
             # Duplicate cap events cannot re-arm an already claimed head.
@@ -738,7 +753,7 @@ class LoopState:
         """
         key = f"{self.loop['repo']}#{number}"
         head = entry["head"]
-        with self._breach_lock():
+        with self.breach_lock():
             if not current():
                 return "stale"
             data = _mapping(self._load(self.breach, {}))
@@ -762,7 +777,7 @@ class LoopState:
         except Exception as exc:
             log(f"adjudicator delivery failed: {exc}")
             delivered = False
-        with self._breach_lock():
+        with self.breach_lock():
             data = _mapping(self._load(self.breach, {}))
             latest = _mapping(data.get(key))
             if (latest.get("head") == head
@@ -781,7 +796,7 @@ class LoopState:
         """Drop a ``delivery-pending`` marker at ``head`` that no longer holds it (a raised cap
         or a dismissed verdict). Only that status, that head, and no delivery in flight."""
         key = f"{self.loop['repo']}#{number}"
-        with self._breach_lock():
+        with self.breach_lock():
             data = _mapping(self._load(self.breach, {}))
             marker = _mapping(data.get(key))
             if (marker.get("head") != head or marker.get("status") != "delivery-pending"
@@ -794,7 +809,7 @@ class LoopState:
     def breach_claim(self, number: int, head: str) -> dict | None:
         """Claim exactly one wake for this PR/head across gateway processes."""
         key = f"{self.loop['repo']}#{number}"
-        with self._breach_lock():
+        with self.breach_lock():
             data = _mapping(self._load(self.breach, {}))
             marker = data.get(key)
             if (not isinstance(marker, dict) or marker.get("pr") != number
@@ -818,7 +833,7 @@ class LoopState:
         anyone else — including a legacy gateway route — refuses.
         """
         key = f"{self.loop['repo']}#{number}"
-        with self._breach_lock():
+        with self.breach_lock():
             data = _mapping(self._load(self.breach, {}))
             marker = data.get(key)
             if (not isinstance(marker, dict) or marker.get("pr") != number
@@ -838,7 +853,7 @@ class LoopState:
         any ruling (issue #53), so its retry can start it again. Only this head and round
         count, and only from ``adjudicating``; anything else is left alone."""
         key = f"{self.loop['repo']}#{number}"
-        with self._breach_lock():
+        with self.breach_lock():
             data = _mapping(self._load(self.breach, {}))
             marker = data.get(key)
             if (not isinstance(marker, dict) or marker.get("pr") != number
@@ -855,7 +870,7 @@ class LoopState:
         round and ``adjudicating``, so one caller re-arms it; ``gate.breach`` then delivers the
         new round's turn (its own turn key)."""
         key = f"{self.loop['repo']}#{number}"
-        with self._breach_lock():
+        with self.breach_lock():
             data = _mapping(self._load(self.breach, {}))
             marker = data.get(key)
             if (not isinstance(marker, dict) or marker.get("pr") != number

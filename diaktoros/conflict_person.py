@@ -53,10 +53,10 @@ def get(st, number: int, head: str) -> str:
 def record(st, number: int, head: str, reason: str) -> None:
     """Remember that ``head``'s conflict needs a person (replacing an older head's record)."""
     with st.locked():
-        memory = st._load(_path(st), {})
+        memory = st.kv_get(_path(st), {})
         memory = memory if isinstance(memory, dict) else {}
         memory[str(number)] = {"head": head, "reason": reason, "at": time.time()}
-        st._save(_path(st), memory)
+        st.kv_set(_path(st), memory)
 
 
 def prune(st, open_numbers) -> None:
@@ -66,6 +66,6 @@ def prune(st, open_numbers) -> None:
     if not any(k not in keep for k in current):
         return
     with st.locked():
-        memory = st._load(_path(st), {})
+        memory = st.kv_get(_path(st), {})
         if isinstance(memory, dict):
-            st._save(_path(st), {k: v for k, v in memory.items() if k in keep})
+            st.kv_set(_path(st), {k: v for k, v in memory.items() if k in keep})

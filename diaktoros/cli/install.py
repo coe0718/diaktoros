@@ -489,36 +489,36 @@ def cmd_init(args) -> int:
     try:
         for seat in ("reviewer", "fixer"):
             flag = getattr(args, f"{seat}_max_steps", None)
-            steps = flag if flag is not None else config._form_int(d[f"{seat}_max_steps"].strip())
+            steps = flag if flag is not None else config.form_int(d[f"{seat}_max_steps"].strip())
             if steps not in (0, ""):
-                raw["seats"][seat]["max_steps"] = config._check_max_steps(
+                raw["seats"][seat]["max_steps"] = config.validate_max_steps(
                     steps, f"seats.{seat}.max_steps", "init")
         for seat in ("reviewer", "fixer"):
             flag = getattr(args, f"{seat}_daily_tokens", None)
-            budget = flag if flag is not None else config._form_int(
+            budget = flag if flag is not None else config.form_int(
                 d[f"{seat}_daily_tokens"].strip())
             if budget not in (0, ""):
-                raw["seats"][seat]["daily_tokens"] = config._check_daily_tokens(
+                raw["seats"][seat]["daily_tokens"] = config.validate_daily_tokens(
                     budget, f"seats.{seat}.daily_tokens", "init")
         # The shadow seat's token budget (#875): the flag, else the form.
         flag = getattr(args, "shadow_daily_tokens", None)
-        budget = flag if flag is not None else config._form_int(
+        budget = flag if flag is not None else config.form_int(
             str(d.get("shadow_daily_tokens") or "").strip())
         if budget not in (0, "", None):
-            raw["seats"].setdefault("shadow", {})["daily_tokens"] = config._check_daily_tokens(
+            raw["seats"].setdefault("shadow", {})["daily_tokens"] = config.validate_daily_tokens(
                 budget, "seats.shadow.daily_tokens", "init")
         # The shadow and triage seats' own capacity: the flag, else the form; blank = unset.
         for seat in ("shadow", "triage"):
             flag = getattr(args, f"{seat}_concurrency", None)
-            capacity = flag if flag is not None else config._form_int(
+            capacity = flag if flag is not None else config.form_int(
                 str(d.get(f"{seat}_concurrency") or "").strip())
             if capacity not in ("", None):
                 raw["seats"].setdefault(seat, {})["concurrency"] = config.check_concurrency(
                     capacity, f"seats.{seat}.concurrency", "init")
         flag = getattr(args, "fix_daily_turns", None)
-        cap = flag if flag is not None else config._form_int(d["fix_daily_turns"].strip())
+        cap = flag if flag is not None else config.form_int(d["fix_daily_turns"].strip())
         if cap not in (0, ""):
-            config._check_daily_turns(cap, "triage.fix_daily_turns", "init")
+            config.validate_daily_turns(cap, "triage.fix_daily_turns", "init")
             # A new loop has no triage block for the cap to live in (it needs no fix label,
             # #1218), and `apply` refuses it for the same reason: refuse rather than drop it.
             print(f"refused: the issue-fix daily cap {cap} cannot be set by init: a new loop "
