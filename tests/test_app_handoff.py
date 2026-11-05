@@ -19,7 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_answers as fa  # noqa: E402
 from diaktoros import broker, config, explain, gate, github_app, review_kick, state as state_mod  # noqa: E402
-from diaktoros import watch_mode  # noqa: E402
+from diaktoros import routes, watch_mode  # noqa: E402
 
 
 class Predicate(unittest.TestCase):
@@ -141,13 +141,68 @@ class ExplainPendingHandoff(AppSeat):
                  "armed": True, "read_at": 0, "shadow_hold": ("", "")}
         return explain.explain(self.loop, st, 7, facts)
 
-    def hand_off(self):
-        """The fixer's push and request through the real run broker (the host's delivery)."""
-        with mock.patch.object(review_kick, "kick", return_value=True):
+    def setUp(self):
+        super().setUp()
+        self.loop["seats"]["reviewer"]["route"] = "widgets-review"
+
+    def hand_off(self, acknowledged=True):
+        """The fixer's push and request through the real run broker and the real ``kick``; only
+        the gateway's answer (``routes.fire``) is faked: 2xx, or a delivery that failed."""
+        with mock.patch.object(routes, "fire", return_value=acknowledged) as fire:
             with self.serving() as server:
                 self.assertTrue(self.send(server, {"operation": "push",
                                                    "manifest": fa.manifest()})["ok"])
                 self.assertTrue(self.send(server, {"operation": "request_review"})["ok"])
+        fire.assert_called_once()
+
+    def test_a_failed_delivery_is_no_pending_request(self):
+        """Vex F1 on #1943: the broker audits the request before the delivery, so an audit line
+        alone must not read as a handoff the gate received."""
+        self.hand_off(acknowledged=False)
+        audit = (Path(self.loop["state_dir"]) / "broker-audit.jsonl").read_text()
+        self.assertIn('"operation": "request_review"', audit)        # authorized and audited
+        report = self.report()
+        self.assertFalse(report["request_pending"], report)
+        self.assertNotIn("review requested from", report["state_line"])
+        self.assertTrue([b for b in report["blockers"] if "no review request exists" in b],
+                        report["blockers"])
+        self.assertNotIn("started none", report["next"]["action"])
+
+    def test_a_retry_that_lands_after_a_failed_delivery_is_pending(self):
+        self.hand_off(acknowledged=False)
+        with mock.patch.object(routes, "fire", return_value=True):
+            self.assertTrue(review_kick.kick(self.loop, self.fake.api(
+                self.loop, f"/repos/{fa.REPO}/pulls/7"), fa.NEW_HEAD, "fix", "sweep-review-7"))
+        self.assertTrue(self.report()["request_pending"])
+
+    def test_a_crash_between_delivery_and_its_record_reads_as_no_request(self):
+        """The record is written after the 2xx: losing it (a crash, a refused write) leaves
+        explain saying no request exists, never the reverse; the delivery itself still counts."""
+        with mock.patch.object(state_mod.LoopState, "_save_strict", side_effect=OSError("full")), \
+                mock.patch.object(routes, "fire", return_value=True):
+            self.assertTrue(review_kick.kick(self.loop, self.fake.api(
+                self.loop, f"/repos/{fa.REPO}/pulls/7"), fa.NEW_HEAD, "fix", "kick-review-7"))
+        self.fake.pr_head = fa.NEW_HEAD
+        self.assertFalse(self.report()["request_pending"])
+
+    def test_an_unreadable_record_is_no_request(self):
+        self.hand_off()
+        (Path(self.loop["state_dir"]) / review_kick.HANDOFFS).write_text('{"7": ')   # torn
+        self.assertFalse(self.report()["request_pending"])
+
+    def test_a_full_reviewer_seat_is_named_while_the_handoff_is_pending(self):
+        """Vex F2 on #1943: the reviewer-capacity attribution, reachable in App mode only once
+        the handoff counts as the pending request."""
+        self.hand_off()
+        st = state_mod.state_for(self.loop)
+        self.assertTrue(st.acquire("reviewer", gate.seat_key(self.loop, 9), head="f" * 40,
+                                   why="reviewer run"))
+        report = self.report()
+        self.assertTrue([b for b in report["blockers"]
+                         if "no capacity: reviewer seat at capacity 1/1 on other PRs" in b],
+                        report["blockers"])
+        self.assertEqual(report["next"]["kind"], "retry", report["next"])
+        self.assertIn("the reviewer gate will queue it at capacity 1/1", report["next"]["action"])
 
     def test_a_delivered_handoff_reads_as_a_pending_request(self):
         self.hand_off()
@@ -162,9 +217,12 @@ class ExplainPendingHandoff(AppSeat):
         self.assertIn("the pending request for review started none", report["next"]["action"])
 
     def test_the_sweeps_delivery_counts_too(self):
+        """The sweep delivers through the same ``kick``; its acknowledged delivery is recorded."""
         self.fake.pr_head = fa.NEW_HEAD
-        st = state_mod.state_for(self.loop)
-        st.watch_save({"review_kicks": {"7": fa.NEW_HEAD}})
+        self.assertFalse(self.report()["request_pending"])
+        with mock.patch.object(routes, "fire", return_value=True):
+            review_kick.kick(self.loop, self.fake.api(self.loop, f"/repos/{fa.REPO}/pulls/7"),
+                             fa.NEW_HEAD, "fix", "sweep-review-7")
         self.assertTrue(self.report()["request_pending"])
 
     def test_no_handoff_at_this_head_is_no_request(self):
@@ -184,9 +242,7 @@ class ExplainPendingHandoff(AppSeat):
         self.loop["tokens"]["review"] = self.loop["apps"].pop("review")["key_file"]
         self.fake.pr_head = fa.NEW_HEAD
         (Path(self.loop["state_dir"])).mkdir(parents=True, exist_ok=True)
-        (Path(self.loop["state_dir"]) / "broker-audit.jsonl").write_text(
-            '{"operation": "request_review", "repo": "%s", "pr": 7, "head": "%s"}\n'
-            % (fa.REPO, fa.NEW_HEAD))
+        (Path(self.loop["state_dir"]) / review_kick.HANDOFFS).write_text('{"7": "%s"}' % fa.NEW_HEAD)
         self.assertFalse(self.report()["request_pending"])
         self.fake.requested = ["review"]
         self.assertTrue(self.report()["request_pending"])

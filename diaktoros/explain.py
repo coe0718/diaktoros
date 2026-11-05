@@ -446,11 +446,12 @@ def _head_verdicts(c) -> None:
             c.head_states = sorted({gh.review_state(r) for r in gate.reviews_at_head(c.reviews, c.loop, c.head)})
 
     c.stale_line, c.watch = "", c.st.watch()
-    # #1213: an App reviewer's request is the handoff the host delivered at this head, pending
-    # until a verdict lands there, as GitHub clears a request then.
-    # Unread reviews leave it as read: an unknown verdict list proves no request still open.
+    # #1213: an App reviewer's request is the handoff the gateway acknowledged at this head
+    # (not merely the audited request), pending until a verdict lands there, as GitHub clears
+    # a request then. Unread reviews leave it as read: an unknown verdict list proves no
+    # request still open.
     if not c.request_pending and c.reviews is not None and not c.reviewed:
-        c.request_pending = review_kick.app_handoff_delivered(c.loop, c.watch, c.number, c.head)
+        c.request_pending = review_kick.app_handoff_delivered(c.loop, c.number, c.head)
     # #905: approved on the adjudicator's ACCEPT, but GitHub still counts a change request.
     from . import ready                   # here: ready reads explain at import
     c.unlifted = ([text for _, text in ready.acting(c.loop, c.number, c.head, c.reviews,

@@ -41,43 +41,62 @@ def already_requested(loop: dict, pr: object) -> bool:
         for user in pending)
 
 
-def app_handoff_delivered(loop: dict, watch: dict, number: int, head: str) -> bool:
-    """Whether the host handed ``head`` of PR ``number`` to an App reviewer's gate (#1213).
+HANDOFFS = "review-handoffs.json"
 
-    GitHub never lists an App reviewer in ``requested_reviewers`` (#1163), so for an App seat this
-    is what a pending request is: the fixer's ``request_review`` the broker audited at this head
-    (``broker.perform`` writes that line before the host delivers it to the gate), or the
-    watchdog sweep's delivery of it (``review_kicks`` in the loop's watch state). It says the
-    handoff was made, not that the gate's route accepted it; the caller ends it at a verdict, as
-    GitHub ends a request. Always False for a PAT reviewer, and for an unreadable audit.
-    An issue fix's PR is not covered: its request is audited with no head (its ``opened`` wakes
-    the gate), and ``hermes dk review`` writes no audit line either."""
+
+def _handoffs_path(loop: dict):
+    """The loop's record of the head of each PR whose review the gateway acknowledged."""
+    return config.state_dir(loop) / HANDOFFS
+
+
+def _record_handoff(loop: dict, number: object, head: str) -> None:
+    """Remember that ``head`` of PR ``number`` reached the reviewer gate (#1213), under the
+    loop's state lock so two deliveries for different PRs do not lose each other's entry."""
+    from . import state as state_mod      # here: state imports much more than this module needs
+    st = state_mod.state_for(loop)
+    path = _handoffs_path(loop)
+    with st.locked():
+        record = st.kv_get(path, {})
+        record = record if isinstance(record, dict) else {}
+        record[str(number)] = head
+        st.kv_set(path, record)
+
+
+def app_handoff_delivered(loop: dict, number: int, head: str) -> bool:
+    """Whether the host's delivery of ``head`` of PR ``number`` reached an App reviewer's gate
+    (#1213). GitHub never lists an App reviewer in ``requested_reviewers`` (#1163), so for an
+    App seat this is what a pending request is.
+
+    Only a delivery the gateway acknowledged counts: ``kick`` records it after ``routes.fire``
+    answers 2xx, whoever called it (the broker's ``request_review``, the watchdog sweep,
+    ``hermes dk continue``). A request the broker audited but could not deliver is no pending
+    request, so ``explain`` keeps saying none exists until the sweep's retry lands. The caller
+    ends it at a verdict at the head, as GitHub ends a request. Always False for a PAT reviewer
+    and for an unreadable record (unknown is never a request). ``hermes dk review`` and the
+    watchdog's queue drain do not go through ``kick``, so their deliveries are not seen."""
     if not config.reviewer_is_app(loop) or not head:
         return False
-    kicks = watch.get("review_kicks") if isinstance(watch, dict) else None
-    if isinstance(kicks, dict) and kicks.get(str(number)) == head:
-        return True
     try:
-        text = (config.state_dir(loop) / "broker-audit.jsonl").read_text()
-    except (OSError, UnicodeDecodeError):
+        record = json.loads(_handoffs_path(loop).read_text())
+    except (OSError, ValueError):
         return False
-    for line in text.splitlines():
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue                    # a torn line is no handoff
-        if (isinstance(record, dict) and record.get("operation") == "request_review"
-                and record.get("repo") == loop.get("repo") and record.get("pr") == number
-                and record.get("head") == head):
-            return True
-    return False
+    return isinstance(record, dict) and record.get(str(number)) == head
 
 
 def kick(loop: dict, pr: dict, head: str, sender: str, tag: str) -> bool:
     """Deliver the reviewer gate the ``review_requested`` GitHub did not send. True when the
-    gateway acknowledged it; the gate still decides whether a review starts."""
+    gateway acknowledged it; the gate still decides whether a review starts. An acknowledged
+    delivery is recorded for ``app_handoff_delivered`` (#1213); a failed one is not."""
     route = ((loop.get("seats") or {}).get("reviewer") or {}).get("route")
     if not route:
         return False
-    return routes.fire(route, "pull_request", review_requested(loop, pr, head, sender), tag,
+    sent = routes.fire(route, "pull_request", review_requested(loop, pr, head, sender), tag,
                        loop.get("host"))
+    if sent:
+        try:
+            _record_handoff(loop, pr.get("number"), head)
+        except Exception as exc:          # the delivery happened; only explain learns less
+            from .util import log
+            log(f"#{pr.get('number')} @ {str(head)[:7]}: review handoff not recorded: "
+                f"{type(exc).__name__}: {exc}")
+    return sent
