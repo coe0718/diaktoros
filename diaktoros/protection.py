@@ -24,10 +24,13 @@ RULESET_NAME = ci.MERGE_CHECK
 class Protection:
     """What the base requires. ``sources``: one entry per requirement of the merge check, the App
     id it is pinned to, ``None`` for any source. ``approvals``: the most approving reviews any rule
-    requires. ``unread``: the reads that did not answer (both unread: nothing is known)."""
+    requires. ``unread``: the reads that did not answer (both unread: nothing is known).
+    ``other_checks``: a read that answered requires some status check besides the merge check
+    (#1240: then the unread half may well require the merge check too)."""
     sources: list = field(default_factory=list)
     approvals: int = 0
     unread: list = field(default_factory=list)
+    other_checks: bool = False
 
     @property
     def known(self) -> bool:
@@ -73,9 +76,11 @@ def read(loop: dict, login: str | None = None) -> Protection:
             if not isinstance(params, dict):
                 continue
             if rule.get("type") == "required_status_checks":
-                found.sources += [c.get("integration_id")
-                                  for c in params.get("required_status_checks") or []
-                                  if isinstance(c, dict) and c.get("context") == ci.MERGE_CHECK]
+                listed = [c for c in params.get("required_status_checks") or []
+                          if isinstance(c, dict)]
+                found.sources += [c.get("integration_id") for c in listed
+                                  if c.get("context") == ci.MERGE_CHECK]
+                found.other_checks |= any(c.get("context") != ci.MERGE_CHECK for c in listed)
             elif rule.get("type") == "pull_request":
                 found.approvals = max(found.approvals,
                                       _count(params.get("required_approving_review_count")))
@@ -87,9 +92,12 @@ def read(loop: dict, login: str | None = None) -> Protection:
         if isinstance(checks, dict):
             listed = [c for c in checks.get("checks") or [] if isinstance(c, dict)]
             found.sources += [c.get("app_id") for c in listed if c.get("context") == ci.MERGE_CHECK]
-            if ci.MERGE_CHECK in (checks.get("contexts") or []) and not any(
+            contexts = [c for c in checks.get("contexts") or [] if isinstance(c, str)]
+            if ci.MERGE_CHECK in contexts and not any(
                     c.get("context") == ci.MERGE_CHECK for c in listed):
                 found.sources.append(None)
+            found.other_checks |= any(c != ci.MERGE_CHECK for c in contexts) or any(
+                c.get("context") != ci.MERGE_CHECK for c in listed)
         reviews = classic.data.get("required_pull_request_reviews")
         if isinstance(reviews, dict):
             found.approvals = max(found.approvals,
@@ -177,13 +185,22 @@ def problems(loop: dict, found: Protection) -> tuple[list[str], list[str], list[
         if found.required:
             blocking.append(f"{base} requires {ci.MERGE_CHECK} but this loop never posts it "
                             "(merge_check is off for it): every PR stays blocked")
+        elif found.unread and found.other_checks:
+            # #1240: silent when the half that answered requires no status check at all (most
+            # PAT loops' readers lack the admin access classic protection needs, so a warning
+            # there would be noise); a base that requires other checks may require this one in
+            # the half that was not read.
+            warnings.append(f"could not read {found.unread[0]}, and {base} requires other "
+                            f"status checks: if it also requires {ci.MERGE_CHECK}, which this "
+                            "loop never posts, every PR stays blocked")
         return blocking, warnings, facts
     app_id = reviewer_app_id(loop)
     if unpinnable(loop):
         blocking.append(unpinnable(loop))
         return blocking, warnings, facts
     if not found.required:
-        warnings.append(f"{ci.MERGE_CHECK} is posted but {base} does not require it: the merge "
+        where = "requires it nowhere doctor could read" if found.unread else "does not require it"
+        warnings.append(f"{ci.MERGE_CHECK} is posted but {base} {where}: the merge "
                         "button ignores it")
     elif app_id:
         others = sorted({s for s in found.sources if s is not None and s != app_id})

@@ -266,7 +266,9 @@ def cmd_setup(args) -> int:
        shown and confirmed, then ``init`` itself — skipped when the loop already exists;
     3. the shared watchdog job (created only if missing);
     4. ``doctor`` and ``selftest --no-model``: any ❌ stops here, with its fix line above;
-    5. ``arm``, only on a clean pass and only when asked.
+    5. the merge check: when the loop posts ``diaktoros/review``, an offer to require it on the
+       base (``protect``); otherwise one line saying there is nothing to require;
+    6. ``arm``, only on a clean pass and only when asked.
 
     Every step runs the same code as its own verb, so ``setup`` adds no second path to keep right.
     """
@@ -459,10 +461,12 @@ def _arm_step(args, loop_id: str, admin: str, interactive: bool) -> int:
 
 def _setup_merge_check(args, loop: dict, admin: str, interactive: bool) -> None:
     """Step 5 (#1163 M2c): when the loop posts ``diaktoros/review`` and the base does not require
-    it yet, offer the loop's own ruleset. Never blocks setup: the check is still posted, and
+    it yet, offer the loop's own ruleset; a loop that does not post it gets one line saying so
+    (#1240: the steps never skip a number). Never blocks setup: the check is still posted, and
     doctor keeps saying the base does not require it."""
     from .. import protection
     if not config.merge_check_on(loop):
+        print("\n5. The merge check — not posted by this loop, nothing to require")
         return
     print("\n5. The merge check")
     found = protection.read(loop, admin or None)
