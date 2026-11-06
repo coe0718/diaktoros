@@ -32,23 +32,116 @@ NOW = 1_800_000_000.0
 SECRET = "/home/someone/.hermes/tokens/x.pat exploded"
 PLUGIN_JS = ROOT / "desktop" / "plugin.js"
 
-# One left-to-right scan, so a `//` inside a block comment (or a `/*` inside a line comment) is
-# consumed by whichever comment, or string literal, starts first. String literals ('...', "...",
-# `...`) are matched as group 1 and kept whole, so a `/*` or `//` inside one opens no comment and
-# cannot hide the code after it (#1313). The lookbehind keeps `https://` outside a string too.
-# Not a full tokenizer: regex literals and `${...}` nesting a backtick are not recognized.
-_JS_COMMENT = re.compile(
-    r"""('(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`)"""
-    r"|/\*.*?\*/|(?<![:\w])//[^\n]*",
-    re.S,
-)
+# One left-to-right scan over the JS tokens that can hold a comment marker without being a comment:
+# string literals ('...', "..."), template literals (`...`, with each `${...}` scanned as code, so
+# a template nested in one is a template too) and regex literals (/.../flags). They are kept
+# verbatim, so a `/*`, `//` or quote inside one opens nothing and cannot hide the code after it
+# (#1313), and a quote inside a regex literal cannot pair with one in a later comment (#1965).
+# Only `//` line comments and `/* ... */` blocks are removed; whichever starts first wins, so a
+# `//` inside a block comment (or a `/*` inside a line comment) is part of that comment.
+# Not a full tokenizer: whether a `/` opens a regex is read from the token before it (punctuation
+# that cannot end an expression, or a keyword such as `return`), the usual heuristic, so the rare
+# `if (x) /re/.test(y)` reads as division. A quoted string or regex ends at a newline, and an
+# unclosed one is kept as plain code.
+_REGEX_AFTER = set("(,=:[!&|?{};+-*%<>~^")
+_REGEX_AFTER_WORDS = {"return", "typeof", "instanceof", "in", "of", "new", "delete", "void",
+                      "throw", "case", "do", "else", "yield", "await"}
+_LAST_WORD = re.compile(r"[\w$]+$")
+
+
+def _kept_tail(out: list[str]) -> str:
+    """The end of the code kept so far, trailing blanks dropped: enough to see the token before a
+    `/`, however many one-character chunks and blank lines precede it."""
+    tail = ""
+    for chunk in reversed(out):
+        tail = chunk + tail
+        if len(tail.strip()) >= 16:
+            break
+    return tail.rstrip()
+
+
+def _regex_may_start(tail: str) -> bool:
+    """Whether a `/` after the kept code ``tail`` opens a regex literal rather than dividing."""
+    if not tail or tail[-1] in _REGEX_AFTER:
+        return True
+    word = _LAST_WORD.search(tail)
+    return word is not None and word.group() in _REGEX_AFTER_WORDS
+
+
+def _literal_end(source: str, i: int) -> int:
+    """The index just past the quoted string or regex literal opening at ``source[i]``, or -1 when
+    it does not close before a newline or the end."""
+    quote, in_class, j = source[i], False, i + 1
+    while j < len(source):
+        c = source[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == "\n":
+            return -1
+        if quote == "/" and c in "[]":
+            in_class = c == "["
+        elif c == quote and not in_class:
+            j += 1
+            while quote == "/" and j < len(source) and (source[j].isalnum() or source[j] == "_"):
+                j += 1   # the regex's flags
+            return j
+        j += 1
+    return -1
+
+
+def _template_end(source: str, i: int) -> int:
+    """From inside a template literal at ``source[i]``: the index just past its closing backtick
+    or past the `${` that opens an expression (the caller scans that as code), or the end."""
+    while i < len(source):
+        if source[i] == "\\":
+            i += 2
+        elif source[i] == "`":
+            return i + 1
+        elif source.startswith("${", i):
+            return i + 2
+        else:
+            i += 1
+    return len(source)
 
 
 def strip_js_comments(source: str) -> str:
     """The JS that runs: `//` line comments and `/* ... */` / `/** ... */` blocks removed.
 
-    String and template literals are kept verbatim, comment markers inside them included."""
-    return _JS_COMMENT.sub(lambda m: m.group(1) or "", source)
+    String, template and regex literals are kept verbatim, comment markers inside them included."""
+    out: list[str] = []
+    depths: list[int] = []   # one per open `${`: the `{` depth inside it
+    i, n = 0, len(source)
+    while i < n:
+        c = source[i]
+        if source.startswith("/*", i):
+            end = source.find("*/", i + 2)
+            if end < 0:
+                out.append(source[i:])
+                break
+            i = end + 2
+        elif source.startswith("//", i):
+            end = source.find("\n", i)
+            i = n if end < 0 else end
+        elif c == "`" or (c == "}" and depths and depths[-1] == 0):
+            if c == "}":
+                depths.pop()                          # back in the template the `${` opened
+            end = _template_end(source, i + 1)
+            if source[end - 2:end] == "${":
+                depths.append(0)
+            out.append(source[i:end])
+            i = end
+        elif c in "'\"" or (c == "/" and _regex_may_start(_kept_tail(out))):
+            end = _literal_end(source, i)
+            end = i + 1 if end < 0 else end
+            out.append(source[i:end])
+            i = end
+        else:
+            if depths and c in "{}":
+                depths[-1] += 1 if c == "{" else -1
+            out.append(c)
+            i += 1
+    return "".join(out)
 
 
 class Now(unittest.TestCase):
@@ -758,6 +851,24 @@ class Package(unittest.TestCase):
         quoted = "const s = 'a // b'; const r = \"it\\'s /* \"; /* gone */ const k = 2;\n"
         self.assertEqual(strip_js_comments(quoted).strip(),
                          "const s = 'a // b'; const r = \"it\\'s /* \";  const k = 2;")
+
+    def test_comment_stripper_keeps_regex_literals_whole_1965(self):
+        # A quote in a regex literal opens no string, so it cannot pair with a quote in a later
+        # block comment and turn that comment's `//` into a line comment that hides the code after.
+        src = "const r = /'/; /* it's // prose */ const t = `backtick`;\n"
+        self.assertEqual(strip_js_comments(src), "const r = /'/;  const t = `backtick`;\n")
+        # ...so the first-render guard (no backtick in code) still fails on that code backtick.
+        self.assertIn("`", strip_js_comments(src))
+        # A `/*` or `//` in a regex (character class included) is the regex's, not a comment.
+        regex = "const a = x.replace(/\\/*[/*]/g, ''); // gone\nreturn /\"/.test(s) // it's\n"
+        self.assertEqual(strip_js_comments(regex),
+                         "const a = x.replace(/\\/*[/*]/g, ''); \nreturn /\"/.test(s) \n")
+        # Division is not a regex: the `//` after it is still a comment.
+        self.assertEqual(strip_js_comments("const h = (a) / 2 / b; // it's\n"),
+                         "const h = (a) / 2 / b; \n")
+        # A template's `${...}` is code: a nested template, and a comment, are seen as such.
+        tpl = "const m = `a ${f(`b`) /* `c` */} d`;\n"
+        self.assertEqual(strip_js_comments(tpl), "const m = `a ${f(`b`) } d`;\n")
 
     def test_first_render_findings_641(self):
         source = PLUGIN_JS.read_text()
