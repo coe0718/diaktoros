@@ -203,6 +203,18 @@ class Stacked(KindsBase):
         self.assertEqual({e["number"]: e["why"] for e in excluded}[2],
                          ["stacked on #1, which is not ready"])
 
+    def test_a_stacked_pr_on_a_gone_base_needs_a_person(self):
+        """#1228: a base that is no open PR's branch (its parent merged or closed) never clears
+        on its own, so the merge check fails instead of waiting."""
+        child = {**self.pr, "number": 2, "base": {"ref": "gone"}, "head": {"sha": HEAD, "ref": "b2"}}
+        reads = {2: {"reviews": [review("APPROVED")], "ci": ci.CIState(passed=["tests"]),
+                     "detail": {**CLEAN, "number": 2, "base": {"ref": "gone"}}, "files": ["b"]}}
+        out, kinds = ready.build_kinds(self.loop, self.st, [child], reads)
+        self.assertEqual(out, [])
+        self.assertEqual(kinds[2], [(ready.FAILURE, "stacked on gone, which is not an open PR "
+                                                    "branch: base unverified")])
+        self.assertEqual(merge_check.decide(kinds[2])[0], merge_check.FAILURE)
+
 
 class OnePR(KindsBase):
     """#1645: a refresh for one PR reads that PR (and any PR it is stacked on), not every open one."""

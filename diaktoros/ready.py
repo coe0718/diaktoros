@@ -310,7 +310,9 @@ def build_kinds(loop: dict, st, prs: list[dict],
         base = (pr.get("base") or {}).get("ref")
         parent = by_branch.get(base) if base and base != loop["base"] else None
         if base and base != loop["base"] and parent is None:
-            why.append((PENDING, f"stacked on {base}, which is not an open PR branch: base "
+            # #1228: its parent merged or closed, and nothing in the loop retargets the child or
+            # reopens the parent, so this never clears on its own: a person retargets or closes it.
+            why.append((FAILURE, f"stacked on {base}, which is not an open PR branch: base "
                                  "unverified"))
         info[number] = {"number": number, "title": str(pr.get("title") or "")[:80], "why": why,
                         "_parent": parent, "files": read.get("files")}
