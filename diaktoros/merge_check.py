@@ -12,17 +12,27 @@ from the reviewer's PAT): this module reads and decides, it writes nothing.
 * **pending**: everything left can still clear on its own — a review, the shadow, CI or a ruling
   still out, a draft, or a read that failed and will be retried.
 
-GitHub's ``blocked`` never counts: with this check required, GitHub reports ``blocked`` *because*
-the check is not green yet, and counting that would keep the check from ever turning green. (Its
-other verdicts do: a conflict or ``behind`` needs a change, an uncomputed state is pending.) The
-per-PR reasons come from ``ready.build_kinds``, stacking included. A PR outside the loop gets no
-check at all.
+GitHub's ``blocked`` is left out only while the PR's own base (the branch it targets: a stacked
+PR's parent branch, not the loop's base) may require this check (#1227): with the
+check required, GitHub reports ``blocked`` *because* the check is not green yet, and counting that
+would keep the check from ever turning green. When the base is known not to require it,
+``blocked`` is some other rule (required reviews, another required check), so it counts as a wait
+(pending), as ``ready`` excludes the PR for it, instead of reading success while the merge button
+refuses. A base whose protection could not be fully read (the classic protection read needs admin
+access), or a PR whose base ref is missing from the listing, is taken as requiring the check:
+guessing wrong that way only reads green early, the other way deadlocks. (GitHub's other verdicts
+always count: a conflict or ``behind`` needs a change, an
+uncomputed state is pending.) The per-PR reasons come from ``ready.build_kinds``, stacking
+included. A PR outside the loop gets no check at all.
 """
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import os
+import struct
+import sys
 
 from . import ci, ready, util
 
@@ -31,12 +41,14 @@ SUCCESS, PENDING, FAILURE = "success", "pending", "failure"
 SUMMARY_MAX = 60_000          # GitHub's check-run summary allows 65535 characters
 
 
-def decide(kinds: list[tuple[str, str]]) -> tuple[str | None, str]:
+def decide(kinds: list[tuple[str, str]], required: bool = True) -> tuple[str | None, str]:
     """``(state, summary)`` from ``ready.assess_kinds``' reasons; state ``None`` when the PR is not
-    the loop's (no check is posted)."""
+    the loop's (no check is posted). ``required`` (``base_requires_check``): whether the base may
+    require this check; only then is GitHub's ``blocked`` left out, else it is a wait."""
     if any(kind == ready.OUTSIDE for kind, _ in kinds):
         return None, "not a loop PR"
-    counted = [(kind, text) for kind, text in kinds if kind != ready.GITHUB]
+    counted = [(ready.PENDING if kind == ready.GITHUB else kind, text) for kind, text in kinds
+               if kind != ready.GITHUB or not required]
     failing = [text for kind, text in counted if kind == ready.FAILURE]
     waiting = [text for kind, text in counted if kind != ready.FAILURE]
     if failing:
@@ -52,6 +64,43 @@ def decide(kinds: list[tuple[str, str]]) -> tuple[str | None, str]:
     head = ("Blocked: what has to change, then what is still in progress."
             if state == FAILURE else "In progress: nothing needs a change yet.")
     return state, (head + "\n\n" + "\n".join(lines))[:SUMMARY_MAX]
+
+
+def base_requires_check(loop: dict, base: str | None = None) -> bool:
+    """Whether GitHub's ``blocked`` may be ``base`` (the loop's base when ``None``) waiting on this
+    check (#1227): True when that branch requires ``diaktoros/review`` or a read of its protection
+    did not answer; False only when both reads answered and neither requires it."""
+    from . import protection
+    found = protection.read({**loop, "base": base} if base else loop)
+    return found.required or bool(found.unread)
+
+
+def _blocked_counts(loop: dict, prs: list[dict], kinds: dict,
+                    only: set[int] | None = None) -> dict[int, bool]:
+    """``decide``'s ``required`` per PR for one refresh, from the protection of the branch each PR
+    actually targets (a stacked PR targets its parent's branch, #1227). Only PRs carrying GitHub's
+    ``blocked`` (and in ``only``, when given) are looked up, and each distinct base is read once.
+    A PR whose base ref is missing or malformed has an unknown base: True, with no read (never the
+    loop's base, which may differ in what it requires). A PR left out maps to True by its caller,
+    which ``decide`` never consults without a ``blocked`` reason."""
+    out: dict[int, bool] = {}
+    by_base: dict[str, bool] = {}
+    for pr in prs:
+        number = pr.get("number")
+        if only is not None and number not in only:
+            continue
+        if not any(kind == ready.GITHUB for kind, _ in kinds.get(number) or []):
+            continue
+        base = (pr.get("base") if isinstance(pr.get("base"), dict) else {}).get("ref")
+        if not isinstance(base, str) or not base.strip():
+            # Vex F1 round 2 on #1947: a missing or malformed base ref is an unknown base, never
+            # the loop's: taken as requiring the check (no read), as an unread base is.
+            out[number] = True
+            continue
+        if base not in by_base:
+            by_base[base] = base_requires_check(loop, base)
+        out[number] = by_base[base]
+    return out
 
 
 def title(state: str) -> str:
@@ -74,21 +123,65 @@ STATUS_DESCRIPTION_MAX = 140    # GitHub's commit-status description limit
 LOCK = util.register_lock("merge-check.lock")
 
 
+# Linux's open-file-description record locks (F_OFD_SETLK / F_OFD_SETLKW, Python 3.12+ names
+# them): owned by the descriptor, like ``flock``, so two writers in one process exclude each other
+# too, and closing the descriptor releases the lock. A plain ``lockf`` lock is per process.
+# Elsewhere the numbers mean other commands, so there is no per-PR lock off Linux.
+_OFD = sys.platform.startswith("linux")
+_OFD_SETLK = getattr(fcntl, "F_OFD_SETLK", 37)
+_OFD_SETLKW = getattr(fcntl, "F_OFD_SETLKW", 38)
+
+
+def _lock_pr(fd: int, number: int, wait: bool) -> bool:
+    """Take byte ``number`` of the lock file exclusively for this descriptor: one PR's writer
+    lock (#1257). False when ``wait`` is off and another writer holds that PR. Off Linux, or on a
+    filesystem without these locks, it takes the whole file instead (``flock``), so every PR's
+    writers share one lock there, as before #1257: a mark then yields to a refresh posting any PR
+    (delayed to the next refresh, never lost).
+
+    Before the byte lock it takes a *shared* ``flock`` on the whole file: a writer of a version
+    before #1257 takes that file with an exclusive ``flock`` and knows nothing of byte locks, so
+    during an upgrade an old refresh still running and a new mark still exclude each other (review
+    of #1953). Shared ``flock`` locks never conflict among themselves, so new writers are only
+    scoped by the byte lock."""
+    if _OFD:
+        if not _flock(fd, fcntl.LOCK_SH, wait):
+            return False                                # an old-version writer holds the file
+        record = struct.pack("@hhqqi0q", fcntl.F_WRLCK, os.SEEK_SET, number, 1, 0)
+        try:
+            fcntl.fcntl(fd, _OFD_SETLKW if wait else _OFD_SETLK, record)
+            return True
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EACCES):
+                return False
+            if exc.errno not in (errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP):
+                raise
+        fcntl.flock(fd, fcntl.LOCK_UN)                  # no byte locks here: the whole file below
+    return _flock(fd, fcntl.LOCK_EX, wait)
+
+
+def _flock(fd: int, kind: int, wait: bool) -> bool:
+    """``flock`` ``fd`` with ``kind``; False when ``wait`` is off and another descriptor holds a
+    conflicting lock."""
+    try:
+        fcntl.flock(fd, kind | (0 if wait else fcntl.LOCK_NB))
+    except BlockingIOError:
+        return False
+    return True
+
+
 @contextlib.contextmanager
-def _writer(st, wait: bool = True):
-    """The one merge-check writer for this loop (#1251): held from reading what was posted through
-    the POST to recording it, so two writers never both decide nothing is posted for a head and
-    both create a run. Taken before the state lock, never inside it. Yields False when ``wait`` is
-    off and another writer holds it."""
+def _writer(st, number: int, wait: bool = True):
+    """The one merge-check writer for PR ``number`` (#1251): held from reading what was posted
+    through the POST to recording it, so two writers never both decide nothing is posted for a
+    head and both create a run. Scoped to the PR (#1257): a refresh posting PR A never holds off
+    a mark for PR B (the record they share is read and written under the state lock). Taken before
+    the state lock, never inside it. Yields False when ``wait`` is off and another writer holds
+    this PR. The lock file stays empty: a byte-range lock writes nothing."""
     st.dir.mkdir(parents=True, exist_ok=True)
     fd = os.open(st.dir / LOCK, os.O_CREAT | os.O_RDWR, 0o600)
     try:                                # closing the descriptor releases the lock
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
-        except BlockingIOError:
-            yield False
-            return
-        yield True
+        yield _lock_pr(fd, int(number), wait)
     finally:
         os.close(fd)
 
@@ -154,16 +247,17 @@ def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None)
         return 0
     path = st.dir / FILE
     written = 0
+    required = _blocked_counts(loop, prs, kinds, only)
     for pr in prs:
         number = pr["number"]
         head = (pr.get("head") or {}).get("sha") or ""
         if not head or (only is not None and number not in only):
             continue
-        state, summary = decide(kinds.get(number) or [])
+        state, summary = decide(kinds.get(number) or [], required.get(number, True))
         if state is None:
             continue                                   # not a loop PR: no check
         digest = _digest(state, summary)
-        with _writer(st):
+        with _writer(st, number):
             with st.locked():
                 memory = st.kv_get(path, {})
                 memory = memory if isinstance(memory, dict) else {}
@@ -213,9 +307,9 @@ def mark_pending(loop: dict, st, number: int, head: str, why: str) -> bool:
         if not config.merge_check_on(loop) or not head:
             return False
         path = st.dir / FILE
-        with _writer(st, wait=False) as mine:
+        with _writer(st, number, wait=False) as mine:
             if not mine:
-                return False                # a refresh is posting now: it writes the real state
+                return False     # a refresh is posting this PR now: it writes the real state
             if has_head(st, number, head):
                 return False                           # already posted for this head
             # Only what is known without reading the PR: the next refresh gives the real reasons.

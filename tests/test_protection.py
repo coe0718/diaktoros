@@ -185,6 +185,48 @@ class Doctor(Fake):
         self.rules, self.classic = None, None                 # rulesets unread, classic 404
         self.assertEqual(self.check(pat_loop(merge_check="on")).status, doctor.UNKNOWN)
 
+    def test_a_half_read_base_that_requires_other_checks_warns_a_loop_that_does_not_post(self):
+        # #1240: the unread half (classic protection, needing admin) may require the check.
+        self.classic = "forbidden"
+        self.rules = [{"type": "required_status_checks",
+                       "parameters": {"required_status_checks": [{"context": "tests"}]}}]
+        c = self.check(pat_loop())
+        self.assertEqual(c.status, doctor.UNKNOWN)
+        self.assertIn("requires other status checks", c.detail)
+        self.assertIn("by hand", c.fix)
+        self.assertNotIn("hermes dk protect", c.fix)      # nothing to require: it is not posted
+        self.rules = []                                   # the readable half requires nothing
+        self.assertIsNone(self.check(pat_loop()))         # silent: most PAT readers lack admin
+        self.rules, self.classic = None, {"required_status_checks": {"contexts": ["tests"]}}
+        self.assertEqual(self.check(pat_loop()).status, doctor.UNKNOWN)   # the other half
+
+    def test_a_classic_check_listed_only_under_checks_counts_as_another_check(self):
+        # #1950 review: classic protection may list a check only in `checks` (with its app_id),
+        # not in `contexts`; that is another required check all the same.
+        self.rules = None                                     # rulesets unread
+        self.classic = {"required_status_checks": {"contexts": [],
+                                                   "checks": [{"context": "tests", "app_id": 7}]}}
+        self.assertTrue(protection.read(pat_loop()).other_checks)
+        c = self.check(pat_loop())
+        self.assertEqual(c.status, doctor.UNKNOWN)
+        self.assertIn("requires other status checks", c.detail)
+        # The merge check itself, listed only under `checks`, is not "another" check.
+        self.classic = {"required_status_checks": {
+            "contexts": [], "checks": [{"context": ci.MERGE_CHECK, "app_id": 7}]}}
+        found = protection.read(pat_loop())
+        self.assertFalse(found.other_checks)
+        self.assertEqual(found.sources, [7])
+        self.assertNotIn("requires other status checks", self.check(pat_loop()).detail)
+
+    def test_an_unread_half_never_claims_the_base_does_not_require_it(self):
+        # #1240: rulesets unread, classic 404.
+        self.rules, self.classic = None, None
+        c = self.check(pat_loop(merge_check="on"))
+        self.assertIn("requires it nowhere doctor could read", c.detail)
+        self.assertNotIn("does not require it", c.detail)
+        self.rules = []                                   # both answered: the plain claim
+        self.assertIn("does not require it", self.check(pat_loop(merge_check="on")).detail)
+
     def test_the_fix_names_the_reader_apps_permission_not_a_pat_scope(self):
         # #1241 (live trial): an App reader got "`read:repo_hook`, or `repo`", which an App has
         # no way to hold.
@@ -369,8 +411,29 @@ class Setup(Fake):
         return out.getvalue()
 
     def test_nothing_for_a_loop_that_does_not_post_the_check(self):
-        self.assertEqual(self.step(pat_loop(), protect=True), "")
+        # #1240: one line, so the steps run 4, 5, 6; nothing read or written.
+        self.assertEqual(self.step(pat_loop(), protect=True),
+                         "\n5. The merge check — not posted by this loop, nothing to require\n")
         self.assertEqual(self.calls, [])
+
+    def test_setup_numbers_every_step_for_a_loop_that_does_not_post_the_check(self):
+        # #1240, through cmd_setup: step 5 is printed between 4 and 6, never skipped.
+        args = argparse.Namespace(yes=True, repo="acme/w", id="w", dry_run=False, protect=False,
+                                  arm=False)
+        out = io.StringIO()
+        with mock.patch.object(cli_setup, "_setup_runtime", return_value=True), \
+                mock.patch.object(cli_setup, "_setup_loop", return_value=(None, "")), \
+                mock.patch.object(cli_setup, "_setup_watchdog", return_value=(None, True)), \
+                mock.patch.object(cli_setup, "_setup_checks", side_effect=lambda *a: print(
+                    "\n4. Checks")), \
+                mock.patch.object(cli_setup, "_arm_step", return_value=0), \
+                mock.patch.object(cli_setup, "_print_onboarding"), \
+                mock.patch.object(config, "load_id", return_value=pat_loop()), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(cli_setup.cmd_setup(args), 0)
+        steps = [line.split(".")[0] for line in out.getvalue().splitlines()
+                 if line[:1].isdigit()]
+        self.assertEqual(steps, ["4", "5", "6"], out.getvalue())
 
     def test_an_already_required_check_is_left_alone(self):
         self.rules = requires(APP)
