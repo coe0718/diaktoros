@@ -103,6 +103,10 @@ LABEL = {"opened": "opened — first look", "handoff": "fix pushed · review req
 # A stale claim may have reached the gateway before its sender died. Never replay it:
 # without a receiver-side idempotency guarantee, a replay can ping twice.
 STALE_CLAIM_S = 15 * 60
+# Written on every claim by a sender that records ``posting_at`` before its POST (#1314). Only a
+# claim carrying it proves, by lacking ``posting_at``, that its POST never began: a claim from an
+# older sender has neither field whatever happened, so it stays uncertain (#1319).
+POSTING_MARKED = "posting_marked"
 MAX_ATTEMPTS = 3
 
 # How long a delivery receipt is kept. Long enough that "was the operator told?" is answerable for a
@@ -641,10 +645,23 @@ def _post(loop: dict, block: dict, tag: str, delivery: str = "", urgent: bool = 
     return False, "POST result unverified; manual reconciliation required (not automatically retried)", True
 
 
+def _claim(entry: dict) -> dict:
+    """``entry`` as a ``pending`` claim of this writer: one whose sender marks ``posting_at``
+    before its POST (see :data:`POSTING_MARKED`). Every claim is written through here."""
+    return {**entry, "status": "pending", POSTING_MARKED: True}
+
+
+def _never_posted(entry: dict) -> bool:
+    """Does this ``pending`` claim prove its POST never began? Only when a sender that marks the
+    POST wrote it (#1319) and it carries no mark (#1314)."""
+    return entry.get(POSTING_MARKED) is True and not entry.get("posting_at")
+
+
 def _mark_posting(st, key: str) -> bool:
     """Record, just before the POST, that this claim's POST is starting (#1314). A stale claim
     without the mark provably never reached the gateway, so ``retry`` may send it; one with the
-    mark may have, so it stays uncertain. False: the claim is gone or no longer pending."""
+    mark may have, so it stays uncertain, as does a legacy claim written without
+    :data:`POSTING_MARKED` (#1319). False: the claim is gone or no longer pending."""
     with _lock(st.observations):
         data = _read(st.observations)
         entry = data["entries"].get(key)
@@ -746,6 +763,7 @@ def notify(loop: dict, st, event: str, number, head: str = "", *, identity: obje
             if queued:
                 data["entries"][key]["queued_at"] = now
             else:
+                data["entries"][key] = _claim(data["entries"][key])
                 data["entries"][key]["delivery"] = delivery
             _save(path, data)
 
@@ -856,12 +874,12 @@ def send_report(loop: dict, st, identity: str, text: str) -> bool:
             if isinstance(data["entries"].get(key), dict):
                 _save(st.observations, data)
                 return False
-            data["entries"][key] = {"status": "pending", "event": "report", "number": 0,
+            data["entries"][key] = _claim({"event": "report", "number": 0,
                                     "head": "", "identity": identity, "summary": text[:200],
                                     "base_sha": "", "issue": False, "outcome": "",
                                     "urgent": False, "message": text, "url": url,
                                     "delivery": delivery, "attempts": 0, "error": "",
-                                    "at": time.time()}
+                                    "at": time.time()})
             _save(st.observations, data)
         block = {"event": "report", "loop": loop.get("id"), "pr": "", "head": "", "url": url,
                  "at": now_iso(), "message": text}
@@ -905,9 +923,11 @@ def retry(loop: dict, st) -> int:
                         and int(entry.get("attempts") or 0) < MAX_ATTEMPTS):
                     pending.append((key, dict(entry)))
                 elif (status == "pending" and now - float(entry.get("at") or 0) > STALE_CLAIM_S
-                        and not entry.get("posting_at")):
+                        and _never_posted(entry)):
                     # #1314: the sender stopped before the POST began (no posting mark), so the
-                    # gateway never saw it: a definite pre-POST failure, resent like one.
+                    # gateway never saw it: a definite pre-POST failure, resent like one. A
+                    # legacy claim, written before senders marked the POST, proves nothing and
+                    # falls to the uncertain branch below (#1319).
                     # `attempts` counts POSTs and `_receipt` counts the resend's, so the sweep
                     # does not add one here (the failed-retryable branch above does the same).
                     entry.update(status="failed", retryable=True,
@@ -923,7 +943,7 @@ def retry(loop: dict, st) -> int:
                         if isinstance(record, dict) and record.get("status") == "digesting":
                             record["status"] = "uncertain"
             for key, entry in pending:
-                data["entries"][key] = {**entry, "status": "pending", "at": now}
+                data["entries"][key] = {**_claim(entry), "at": now}
             _save(st.observations, data)
     except Exception as exc:
         log(f"observer retry scan failed: {type(exc).__name__}: {exc}")
@@ -1001,12 +1021,12 @@ def flush(loop: dict, st, wait_s: int = 0) -> bool:
             text = render_digest(loop, members)
             tag = f"digest-{len(members)}"
             delivery = routes.delivery_id(tag)
-            data["entries"][key] = {"status": "pending", "event": DIGEST_EVENT, "number": "",
+            data["entries"][key] = _claim({"event": DIGEST_EVENT, "number": "",
                                     "head": "", "identity": queued[0], "summary": "",
                                     "message": text, "url": "", "batch": queued,
                                     "delivery": delivery,
                                     "attempts": int(prior.get("attempts") or 0) if isinstance(prior, dict) else 0,
-                                    "error": "", "at": now, "queued_at": oldest}
+                                    "error": "", "at": now, "queued_at": oldest})
             for member in queued:
                 data["entries"][member]["status"] = "digesting"
             _save(path, data)
