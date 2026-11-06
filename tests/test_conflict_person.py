@@ -52,6 +52,21 @@ class Requeue(fg.Base):
         with mock.patch.object(conflict_person.time, "time", return_value=later * 2):
             self.act().assert_not_called()                           # never lapses
 
+    def test_a_whole_file_record_from_before_the_lapse_lapses_too(self):
+        # #1271 review: a record written before ``until`` existed has only ``at``; a whole-file
+        # one (safe_push's reason) must lapse from it, an old workflow one must not.
+        old = {"head": HEAD, "at": 1.0,
+               "reason": f"{conflict_person.WHOLE_FILE_REASON}: 1 whole-file conflict(s)"}
+        self.st.kv_set(self.st.dir / conflict_person.FILE, {"7": old})
+        with mock.patch.object(conflict_person.time, "time", return_value=2.0):
+            self.act().assert_not_called()                           # within its day: held
+        with mock.patch.object(conflict_person.time, "time", return_value=1e9):
+            self.act().assert_called_once()                          # lapsed: queued again
+        old["reason"] = "main changed workflow files since this PR branched"
+        self.st.kv_set(self.st.dir / conflict_person.FILE, {"7": old})
+        with mock.patch.object(conflict_person.time, "time", return_value=1e9):
+            self.act().assert_not_called()                           # never lapses
+
     def test_reads_are_lock_free_and_prune_drops_closed_prs(self):
         conflict_person.record(self.st, 7, HEAD, "r")
         conflict_person.record(self.st, 8, HEAD, "r")

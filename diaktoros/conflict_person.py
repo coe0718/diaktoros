@@ -24,6 +24,10 @@ from diaktoros.util import log
 FILE = "conflict-person.json"
 # How long a whole-file conflict's record holds before a later base tip is tried again (#1271).
 WHOLE_FILE_RETRY_S = 24 * 3600
+# How safe_push's whole-file NeedsPerson reason begins (safe_push builds it from this constant).
+# A record written before #1271 has no ``until``; one with this reason is still a whole-file
+# refusal, so ``get`` lapses it from its ``at`` like a new one (the workflow reason never matches).
+WHOLE_FILE_REASON = "merge conflicts a person must resolve"
 
 
 def _path(st):
@@ -57,10 +61,27 @@ def get(st, number: int, head: str) -> str:
     entry = _read(st).get(str(number))
     if not isinstance(entry, dict) or entry.get("head") != head:
         return ""
-    until = entry.get("until")
-    if isinstance(until, (int, float)) and not isinstance(until, bool) and time.time() >= until:
+    until = _until(entry)
+    if until is not None and time.time() >= until:
         return ""
     return str(entry.get("reason") or "needs a person")
+
+
+def _number(value):
+    """``value`` if it is a real number (not a bool), else None."""
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _until(entry: dict):
+    """When ``entry`` lapses, or None (held until a new head). A record from before #1271 has no
+    ``until``: a whole-file one (its reason starts with ``WHOLE_FILE_REASON``) lapses
+    ``WHOLE_FILE_RETRY_S`` after its ``at``, so heads stuck before the upgrade are retried too."""
+    if "until" in entry:
+        return _number(entry.get("until"))
+    at = _number(entry.get("at"))
+    if at is not None and str(entry.get("reason") or "").startswith(WHOLE_FILE_REASON):
+        return at + WHOLE_FILE_RETRY_S
+    return None
 
 
 def record(st, number: int, head: str, reason: str, *, lapse_s: float | None = None) -> None:

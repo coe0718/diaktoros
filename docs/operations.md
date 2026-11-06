@@ -640,6 +640,8 @@ the PR, yours included, is a new head and clears it. A workflow-files refusal is
 then; a whole-file one only for a day (#1271), because a later base can fix it (the base deletes
 the same file, or re-adds it as a content conflict). After that day the next new base tip gets one
 more conflict turn, which resolves it or hands it back again: at most about one notice a day.
+A whole-file refusal recorded before this lapse existed (it has no `until`) is recognized by its
+reason and lapses a day after it was recorded, the same way.
 
 ## Publishing stats
 
