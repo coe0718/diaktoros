@@ -876,10 +876,24 @@ another login for it, `apply` refuses and says so. Fix the form, or pass
 
 As with `identity --pat`'s old login, `--identity-from-form` leaves the App's `apps` entry and
 its login on the allowlist in place (open PRs keep their verdicts and authorship), and `apply`
-says so; `doctor` still checks that App's key until you remove them. A reviewer moved off its
-App also turns `merge_check: auto` off, so the `diaktoros/review` check stops being posted:
-`apply` says so, and names `protect --remove` (if `protect`'s ruleset requires the check) and
-`set --merge-check on` (to keep posting it).
+says so; `doctor` still checks that App's key until you remove them. `apply` reports this only
+once the config is written (a refusal or a rolled-back write reports nothing); `--dry-run` says
+what *would* happen.
+
+A reviewer moved off its App also turns `merge_check: auto` off, so the `diaktoros/review`
+check stops being posted. Whether the check stays on or not, a ruleset `protect` wrote while the
+reviewer was an App is pinned to that App's id, and the PAT reviewer's commit status never
+satisfies a pin: every PR stays blocked until the ruleset changes. `apply` says so and names the
+two ways out:
+
+- delete the ruleset: `hermes dk protect --loop ID --admin-token LOGIN --remove`, or
+- keep the check: `hermes dk set --loop ID --merge-check on` (if `apply` turned it off), then
+  rewrite the ruleset with `hermes dk protect --loop ID --admin-token LOGIN`. The rewritten
+  ruleset has no App pin and accepts `diaktoros/review` from any source, because a commit status
+  cannot be pinned. Anyone with write access can then post a green status of that name.
+
+`apply` itself never edits the ruleset, because that needs an admin token. `doctor` reports a
+pin the reviewer cannot meet.
 
 ```bash
 hermes dk apply --loop "<loop-id>" --dry-run

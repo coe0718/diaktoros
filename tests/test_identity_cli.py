@@ -281,7 +281,7 @@ class Identity(app_cli.Base):
         loop = self.loop_json()
         self.assertEqual(loop["seats"]["reviewer"]["login"], tfs.REV, out)
         self.assertIn(BOT_REV, loop["apps"])                         # the App stays mapped
-        self.assertIn(f"the reviewer moves from the GitHub App '{BOT_REV}' to '{tfs.REV}'", out)
+        self.assertIn(f"the reviewer moved from the GitHub App '{BOT_REV}' to '{tfs.REV}'", out)
         self.assertIn("its 'apps' entry and its login on 'reviewers' stay", out)
         self.assertIn("the diaktoros/review merge check is now off", out)
         self.assertIn("hermes dk protect --loop widgets --admin-token LOGIN --remove", out)
@@ -293,8 +293,89 @@ class Identity(app_cli.Base):
         rc, out = self.run_cli(["apply", "--loop", "widgets", "--identity-from-form"],
                                settings={"fixer_login": tfs.FIX})
         self.assertEqual(self.loop_json()["seats"]["fixer"]["login"], tfs.FIX, out)
-        self.assertIn(f"the fixer moves from the GitHub App '{BOT_FIX}' to '{tfs.FIX}'", out)
+        self.assertIn(f"the fixer moved from the GitHub App '{BOT_FIX}' to '{tfs.FIX}'", out)
         self.assertNotIn("merge check", out)
+
+    def _reviewer_on_app(self):
+        rc, out = self.identity("--seat", "reviewer", "--app", f"{BOT_REV}=5416187:{self.key('rev')}")
+        self.assertEqual(rc, 0, out)
+        return self.loop_json()
+
+    def test_identity_from_form_says_the_app_pinned_ruleset_blocks_until_rewritten(self):
+        # #1979 review F1: `set --merge-check on` alone leaves protect's ruleset pinned to the old
+        # App, which a PAT reviewer's commit status never satisfies. Follow the advice through
+        # the protection module itself: the pinned ruleset blocks, the rewritten one does not.
+        from diaktoros import config, protection
+        before = self._reviewer_on_app()
+        pinned = protection.ruleset_body(before)["rules"][0]["parameters"]["required_status_checks"]
+        self.assertEqual(pinned[0].get("integration_id"), 5416187)
+        rc, out = self.run_cli(["apply", "--loop", "widgets", "--identity-from-form"],
+                               settings={"reviewer_login": tfs.REV, "reviewer_profile": "critic"})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("its ruleset is pinned to the App 5416187, which the PAT reviewer can never "
+                      "satisfy: every PR stays blocked", out)
+        self.assertIn("`hermes dk set --loop widgets --merge-check on`, then rewrite the ruleset "
+                      "with `hermes dk protect --loop widgets --admin-token LOGIN`", out)
+        self.assertIn("drops the App pin", out)
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--merge-check", "on"])
+        self.assertEqual(rc, 0, out)
+        after = config.load_id("widgets")
+        old_rule = protection.Protection(sources=[c.get("integration_id") for c in pinned])
+        blocking, _, _ = protection.problems(after, old_rule)
+        self.assertTrue(any("never satisfies it" in b for b in blocking), blocking)
+        rewritten = protection.ruleset_body(after)["rules"][0]["parameters"]["required_status_checks"]
+        self.assertNotIn("integration_id", rewritten[0])               # the pin is gone
+        blocking, _, _ = protection.problems(after, protection.Protection(sources=[None]))
+        self.assertEqual(blocking, [])
+
+    def test_identity_from_form_with_the_check_kept_on_still_names_the_pin(self):
+        # The form itself keeps `merge_check: on`: the check stays posted, the pin still blocks.
+        self._reviewer_on_app()
+        rc, out = self.run_cli(["apply", "--loop", "widgets", "--identity-from-form"],
+                               settings={"reviewer_login": tfs.REV, "merge_check": "on"})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("merge check stays on, posted now as the PAT reviewer's commit status", out)
+        self.assertIn("pinned to the App 5416187", out)
+        self.assertIn("or rewrite it with `hermes dk protect --loop widgets --admin-token LOGIN`",
+                      out)
+        self.assertNotIn("is now off", out)
+
+    def test_identity_from_form_dry_run_reports_only_what_would_happen(self):
+        # #1979 review F2: a dry run writes nothing, so it never reports the move as done.
+        self._reviewer_on_app()
+        before = self.loop_file().read_bytes()
+        rc, out = self.run_cli(["apply", "--loop", "widgets", "--identity-from-form", "--dry-run"],
+                               settings={"reviewer_login": tfs.REV})
+        self.assertEqual(self.loop_file().read_bytes(), before, out)
+        self.assertIn(f"the reviewer would move from the GitHub App '{BOT_REV}'", out)
+        self.assertIn("merge check would stop being posted", out)
+        self.assertNotIn("is now off", out)
+        self.assertNotIn("moved from", out)
+
+    def test_identity_from_form_says_nothing_when_apply_is_refused_or_rolled_back(self):
+        # #1979 review F2: a refusal after the guard, or a failed write rolled back, moves nothing
+        # and so must report nothing as moved.
+        from diaktoros.cli import common as cli_common
+        self._reviewer_on_app()
+        before = self.loop_file().read_bytes()
+        with mock.patch.object(cli_common, "_write_config", side_effect=OSError("disk full")):
+            rc2, out2 = self.run_cli(["apply", "--loop", "widgets", "--identity-from-form"],
+                                     settings={"reviewer_login": tfs.REV})
+        self.assertEqual(rc2, 2, out2)
+        self.assertIn("reconciliation FAILED", out2)
+        self.assertEqual(self.loop_file().read_bytes(), before)
+        from diaktoros import config
+        from diaktoros.cli import apply_command
+        refuse = config.ConfigError("the reviewer seat cannot run")    # a check after the guard
+        with mock.patch.object(apply_command, "_verify_write", side_effect=refuse):
+            rc, out = self.run_cli(["apply", "--loop", "widgets", "--identity-from-form"],
+                                   settings={"reviewer_login": tfs.REV})
+        self.assertEqual(rc, 2, out)
+        self.assertIn("settings refused: the reviewer seat cannot run", out)
+        self.assertEqual(self.loop_file().read_bytes(), before)
+        for text in (out, out2):
+            self.assertNotIn("moved from the GitHub App", text)
+            self.assertNotIn("merge check", text)
 
     def test_a_stale_form_never_moves_a_fixer_app_back(self):
         # #1307: the #1296 guard covers every seat, not only the reviewer.

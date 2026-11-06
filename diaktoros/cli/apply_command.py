@@ -6,10 +6,12 @@ import pathlib
 import shlex
 
 from .. import (
+    ci,
     config,
     doctor,
     gate_shims,
     observer,
+    protection,
     route_intent,
     routes,
     state as state_mod,
@@ -77,25 +79,50 @@ def _app_reverts(before: dict, after: dict) -> list[tuple[str, str, str]]:
     return out
 
 
-def _app_revert_notes(loop: dict, updated: dict, reverts: list) -> None:
+def _app_revert_notes(loop: dict, updated: dict, dry_run: bool) -> None:
     """What ``--identity-from-form`` leaves behind when it moves a seat off its App (#1307).
 
-    As with ``identity``, the App's ``apps`` entry and its login on the allowlist stay, so open PRs
-    keep their verdicts and authorship; ``doctor`` still checks that key until it is unmapped. A
-    reviewer moved off its App also turns ``merge_check: auto`` off, while ``protect``'s ruleset
-    may still require the ``diaktoros/review`` check: say so, and name both ways out."""
-    lid = loop["id"]
+    Called only once the move is certain: from the dry run's report (phrased as what *would*
+    happen) and after the config is written, never before a refusal, a preflight or a rollback
+    (#1979 review, F2). As with ``identity``, the App's ``apps`` entry and its login on the
+    allowlist stay, so open PRs keep their verdicts and authorship; ``doctor`` still checks that
+    key until it is unmapped. A reviewer moved off its App breaks a ``protect`` ruleset pinned to
+    that App whatever ``merge_check`` says (#1979 review, F1): see ``_merge_check_note``."""
+    reverts = _app_reverts(loop, updated)
     for role, old, new in reverts:
         allow = {"reviewer": "reviewers", "fixer": "fixers"}.get(role)
         kept = f"its 'apps' entry{' and its login on ' + repr(allow) if allow else ''}"
-        print(f"  --identity-from-form: the {role} moves from the GitHub App {old!r} to {new!r}; "
-              f"{kept} stay (doctor still checks its key) — remove them once no open PR needs them")
-    if (any(role == "reviewer" for role, _, _ in reverts)
-            and config.merge_check_on(loop) and not config.merge_check_on(updated)):
-        print(f"  the diaktoros/review merge check is now off (merge_check: auto follows an App "
-              f"reviewer): if `protect` required it, run `hermes dk protect --loop {lid} "
-              f"--admin-token LOGIN --remove`, or keep it with `hermes dk set --loop {lid} "
-              "--merge-check on`")
+        moves, stay = ("would move", "would stay") if dry_run else ("moved", "stay")
+        print(f"  --identity-from-form: the {role} {moves} from the GitHub App {old!r} to {new!r}; "
+              f"{kept} {stay} (doctor still checks its key) — remove them once no open PR needs "
+              "them")
+    if any(role == "reviewer" for role, _, _ in reverts) and config.merge_check_on(loop):
+        _merge_check_note(loop, updated, dry_run)
+
+
+def _merge_check_note(loop: dict, updated: dict, dry_run: bool) -> None:
+    """The merge check after the reviewer left the App it was pinned to (#1307, #1979 F1).
+
+    ``protect`` pinned its ruleset to the old App's id; the PAT reviewer posts a commit status,
+    which never satisfies a pin (``protection.problems``), so turning the check back on alone
+    leaves every PR blocked. Either way out goes through ``protect``: delete the ruleset, or
+    rewrite it from the loop as it now is (any source, since a commit status cannot be pinned)."""
+    lid, app_id = loop["id"], protection.reviewer_app_id(loop)
+    protect = f"hermes dk protect --loop {lid} --admin-token LOGIN"
+    if config.merge_check_on(updated):
+        state = ("would stay on, posted as the PAT reviewer's commit status" if dry_run
+                 else "stays on, posted now as the PAT reviewer's commit status")
+        rewrite = f"rewrite it with `{protect}`"
+    else:
+        state = ("would stop being posted" if dry_run else "is now off") + \
+            " (merge_check: auto follows an App reviewer)"
+        rewrite = (f"keep the check: `hermes dk set --loop {lid} --merge-check on`, then rewrite "
+                   f"the ruleset with `{protect}`")
+    print(f"  the {ci.MERGE_CHECK} merge check {state}. If `protect` required it, its ruleset "
+          f"is pinned to the App {app_id}, which the PAT reviewer can never satisfy: every PR "
+          f"stays blocked until you either delete it (`{protect} --remove`) or {rewrite} — that "
+          f"drops the App pin and accepts {ci.MERGE_CHECK} from any source (a commit status "
+          "cannot be pinned), so anyone with write access can post it")
 
 
 def _apply(args) -> int:
@@ -208,6 +235,14 @@ def _apply(args) -> int:
     except Exception as exc:
         return _rollback(args, loop, exc, attempted_hooks, previous, config_path,
                          previous_config)
+    _report_written(loop, updated, path, rebound, repairs, drifted, hook_moves, redundant_hooks)
+    return 1 if route_sync._diverged(updated) or redundant_hooks or leftover_hooks else 0
+
+
+def _report_written(loop: dict, updated: dict, path, rebound: list, repairs: dict, drifted: dict,
+                    hook_moves: list, redundant_hooks: list) -> None:
+    """What a successful apply wrote: the config, each rebound route and hook, and what
+    ``--identity-from-form`` left behind — printed only now, once the write has landed."""
     print(f"loop config updated: {path}")
     for role, name in rebound:
         print(f"  route {name} rebound → profile {config.seat_profile(updated, role)}"
@@ -217,7 +252,7 @@ def _apply(args) -> int:
         print(f"  hook {hook_id} → {new}")
     for hook, keep in redundant_hooks:
         print(f"  {route_sync._redundant_hook_line(loop, hook, keep)}")
-    return 1 if route_sync._diverged(updated) or redundant_hooks or leftover_hooks else 0
+    _app_revert_notes(loop, updated, dry_run=False)
 
 
 
@@ -339,7 +374,6 @@ def _identity_refusal(args, loop: dict, updated: dict) -> bool:
         print("fix: put the App's login in the settings form (or blank that login field), or pass "
               "--identity-from-form to move the identity back to what the form names")
         return True
-    _app_revert_notes(loop, updated, reverts)
 
     # The four-identity rule holds for the config apply would leave behind, whether or not this
     # push moves an identity: "nothing changed" must not endorse a reader that is also a seat.
@@ -457,6 +491,7 @@ def _dry_run_report(args, loop: dict, updated: dict, binds: dict, repairs: dict,
     except config.ConfigError as exc:
         print(f"refused: {exc}")
         return 2
+    _app_revert_notes(loop, updated, dry_run=True)
     print("(dry run — nothing written: no loop config, no routes touched)")
     if left:
         print("  apply would exit 1: the route(s) above still disagree with the config after it")
