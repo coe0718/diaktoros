@@ -223,6 +223,37 @@ class Flow(app_cli.Base):
                 self.assertEqual("leftover repo hook" in text, not redrive, text)
         self.assertFalse(app_ingress.woken_by_repo_hook())   # in-process (CLI, dispatcher)
 
+    def test_a_gate_whose_main_has_no_script_file_drops_the_delivery(self):
+        # #1289: an embedded interpreter or `python -c` has no __main__.__file__, so how the gate
+        # was started cannot be told: the delivery is dropped (fail closed), not acted on.
+        import os
+        import subprocess
+        from diaktoros import gate_failures, util
+        root = Path(__file__).resolve().parents[1]
+        payload = json.dumps({"action": "opened", "number": 7, "pull_request": {
+            "number": 7, "head": {"sha": "a" * 40}, "base": {"ref": "main"},
+            "user": {"login": tfs.FIX}}, "repository": {"full_name": "acme/widgets"},
+            "sender": {"login": tfs.FIX}})
+        decisions = state_mod.state_for(self.loop()).dir / "gate-decisions.jsonl"
+        decisions.unlink(missing_ok=True)
+        script = root / "scripts" / "gate_reviewer.py"
+        code = ("import runpy, sys\n"
+                f"sys.path.insert(0, {str(root)!r})\n"
+                f"gate = runpy.run_path({str(script)!r}, run_name='embedded')\n"
+                "from diaktoros import gate_failures\n"
+                "gate_failures.run('gate_reviewer', gate['main'])\n")
+        env = {k: v for k, v in os.environ.items() if k != gate_failures.REDRIVE_ENV}
+        proc = subprocess.run([sys.executable, "-c", code], input=payload, capture_output=True,
+                              text=True, timeout=60, cwd=str(root / "scripts"), env=env)
+        self.assertIn("[SILENT]", proc.stdout, proc.stderr)
+        text = decisions.read_text() if decisions.exists() else ""
+        self.assertIn("leftover repo hook", text, proc.stderr)
+        # Without a script file but inside an in-process gate call (the CLI's review): not dropped.
+        with mock.patch.dict(sys.modules, {"__main__": type(sys)("__main__")}):
+            self.assertTrue(app_ingress.woken_by_repo_hook())
+            with util.gate_call():
+                self.assertFalse(app_ingress.woken_by_repo_hook())
+
     def test_arm_refuses_while_the_apps_route_is_missing_and_repair_restores_it(self):
         routes.restore_entries({"dk-app-acme-reader": None})
         rc, out = self.run_cli(["arm", "--loop", "widgets"])
