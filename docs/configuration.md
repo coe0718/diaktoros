@@ -524,6 +524,10 @@ each one once the real review exists at that head:
   A POST that timed out or failed in transit (whatever the error text says), got a 408, a 5xx or an answer that isn't an issue is `uncertain` and is never
   replayed, since GitHub may have created it. A refused one is retried each sweep, up to that bound, and takes no
   room under the daily cap.
+  An `uncertain` filing does not reserve its title against the reviewer (#1360): if the reviewer
+  later files the same finding from that PR, its filing goes ahead, and the uncertain row stays
+  in the ledger (still never replayed) under a title key that steps aside. A filing confirmed
+  `posted`, or one still being sent, keeps refusing the reviewer's title.
 - **What's skipped:** an issue the reviewer already filed from that PR, with the same title or one
   close to it, is marked `duplicate` and never filed.
 - **Limits:** at most `shadow.issues_daily` a day per loop, counted over a rolling 24 hours (#1515;

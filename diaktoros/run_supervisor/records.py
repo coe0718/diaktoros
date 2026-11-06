@@ -15,6 +15,21 @@ import time
 from .. import run_supervisor, util
 
 
+def _give_way_to_reviewer(con, repo: str, number: int, key: str, run_id: str) -> None:
+    """Step a host filing's ``uncertain`` row aside for the reviewer's own filing (#1360).
+
+    The host files a shadow's or an adjudicator's issue (``record_shadow_filing``) before its POST;
+    a POST whose outcome is unknown leaves that row ``uncertain`` and never replayed, so without
+    this its title would refuse the reviewer's own filing of the finding from this PR for ever.
+    The row is kept, still ``uncertain`` (its run's write evidence and sequence stand); only its
+    title key steps aside, as a shadow request does for an adjudicator's (#1874). The reviewer's
+    own ``uncertain`` filing still blocks its title: a retry never refiles it."""
+    con.execute("UPDATE filed_issues SET title_key=?, updated=? WHERE repo=? AND pr=? AND "
+                "title_key=? AND state='uncertain' AND run_id IN (SELECT id FROM runs WHERE "
+                "seat IN ('shadow','adjudicator'))",
+                (f"{key}#gave-way:{run_id}", time.time(), repo, number, key))
+
+
 class LedgerRecords:
     """The record-table methods of :class:`~diaktoros.run_supervisor.Supervisor`."""
 
@@ -236,6 +251,9 @@ class LedgerRecords:
         Returns its sequence number in the run. Refused (``ValueError``) for any run but a live
         reviewer on this PR and head, past ``limit`` issues in the run, or for a title already
         filed on this PR (normalized) — so neither a retry nor a later round files it twice.
+        One exception (#1360): a title the host filed for a shadow review or an adjudicator whose
+        POST outcome is ``uncertain`` (never replayed) does not keep the reviewer's own finding
+        out; that row gives way (``_give_way_to_reviewer``).
         """
         key = " ".join(title.casefold().split())
         with self._connect() as con:
@@ -246,6 +264,7 @@ class LedgerRecords:
                     (repo, number, head, 'reviewer') or row['launch_intent'] is None
                     or row['state'] not in ('launching', 'running')):
                 raise ValueError('reviewer run identity unavailable')
+            _give_way_to_reviewer(con, repo, number, key, run_id)
             if con.execute('SELECT 1 FROM filed_issues WHERE repo=? AND pr=? AND title_key=?',
                            (repo, number, key)).fetchone():
                 raise ValueError('an issue with this title was already filed from this PR')
