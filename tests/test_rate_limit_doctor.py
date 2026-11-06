@@ -85,8 +85,9 @@ class ProfileGatewayNotRunning(unittest.TestCase):
         lock = home / "gateway.lock"
         lock.write_text(json.dumps(record) if record is not None else "")
         child = subprocess.Popen(
-            [sys.executable, "-c", "import fcntl,sys;f=open(sys.argv[1]);"
-             "fcntl.flock(f,fcntl.LOCK_EX);print('ok',flush=True);sys.stdin.read()", str(lock)],
+            [sys.executable, "-c", "import fcntl,sys\n"
+             "with open(sys.argv[1]) as f:\n"
+             "    fcntl.flock(f,fcntl.LOCK_EX);print('ok',flush=True);sys.stdin.read()", str(lock)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         self.assertEqual(child.stdout.readline().strip(), "ok")
 
