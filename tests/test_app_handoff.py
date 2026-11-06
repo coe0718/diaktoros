@@ -33,6 +33,25 @@ class Predicate(unittest.TestCase):
         # A PAT wins: a loop file holding both (which normalize refuses) never reads as an App.
         self.assertFalse(config.reviewer_is_app({**app, "tokens": {"rev[bot]": "/r"}}))
 
+    def test_github_app_is_app_is_the_same_rule(self):
+        """#1254: ``github_app.is_app`` and ``config.is_app`` answer one login alike, a login
+        mapped as both a PAT and an App included (the PAT wins in both)."""
+        both = {"tokens": {"Rev[bot]": "/r"}, "apps": {"rev[bot]": {"app_id": 1}}}
+        apps_only = {"apps": both["apps"]}
+        for loop, login in ((both, "rev[bot]"), (both, "REV[bot]"), (apps_only, "REV[bot]"),
+                            (apps_only, ""), ({}, "rev[bot]")):
+            self.assertEqual(github_app.is_app(loop, login), config.is_app(loop, login), (loop, login))
+        self.assertFalse(github_app.is_app(both, "rev[bot]"))
+
+    def test_hook_write_need_names_the_pat_remedy_for_a_pat_and_app_login(self):
+        """A caller of ``github_app.is_app`` that does not check ``tokens`` first: a login mapped
+        as both gets the PAT remedy, as ``config.reader_access_fix`` gives it (#1254)."""
+        from diaktoros.cli import common
+        loop = {"repo": "o/r", "read_token": "rev[bot]", "tokens": {"rev[bot]": "/r"},
+                "apps": {"rev[bot]": {"app_id": 1}}}
+        self.assertIn("the token for 'rev[bot]'", common.hook_write_need(loop, None))
+        self.assertIn("give the read token", config.reader_access_fix(loop, "hooks"))
+
 
 class AppSeat(fa.Base):
     """The real run broker, with the reviewer seat a GitHub App (its key mapped in ``apps``); its
