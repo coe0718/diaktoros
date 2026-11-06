@@ -12,11 +12,18 @@ from the reviewer's PAT): this module reads and decides, it writes nothing.
 * **pending**: everything left can still clear on its own — a review, the shadow, CI or a ruling
   still out, a draft, or a read that failed and will be retried.
 
-GitHub's ``blocked`` never counts: with this check required, GitHub reports ``blocked`` *because*
-the check is not green yet, and counting that would keep the check from ever turning green. (Its
-other verdicts do: a conflict or ``behind`` needs a change, an uncomputed state is pending.) The
-per-PR reasons come from ``ready.build_kinds``, stacking included. A PR outside the loop gets no
-check at all.
+GitHub's ``blocked`` is left out only while the PR's own base (the branch it targets: a stacked
+PR's parent branch, not the loop's base) may require this check (#1227): with the
+check required, GitHub reports ``blocked`` *because* the check is not green yet, and counting that
+would keep the check from ever turning green. When the base is known not to require it,
+``blocked`` is some other rule (required reviews, another required check), so it counts as a wait
+(pending), as ``ready`` excludes the PR for it, instead of reading success while the merge button
+refuses. A base whose protection could not be fully read (the classic protection read needs admin
+access), or a PR whose base ref is missing from the listing, is taken as requiring the check:
+guessing wrong that way only reads green early, the other way deadlocks. (GitHub's other verdicts
+always count: a conflict or ``behind`` needs a change, an
+uncomputed state is pending.) The per-PR reasons come from ``ready.build_kinds``, stacking
+included. A PR outside the loop gets no check at all.
 """
 from __future__ import annotations
 
@@ -34,12 +41,14 @@ SUCCESS, PENDING, FAILURE = "success", "pending", "failure"
 SUMMARY_MAX = 60_000          # GitHub's check-run summary allows 65535 characters
 
 
-def decide(kinds: list[tuple[str, str]]) -> tuple[str | None, str]:
+def decide(kinds: list[tuple[str, str]], required: bool = True) -> tuple[str | None, str]:
     """``(state, summary)`` from ``ready.assess_kinds``' reasons; state ``None`` when the PR is not
-    the loop's (no check is posted)."""
+    the loop's (no check is posted). ``required`` (``base_requires_check``): whether the base may
+    require this check; only then is GitHub's ``blocked`` left out, else it is a wait."""
     if any(kind == ready.OUTSIDE for kind, _ in kinds):
         return None, "not a loop PR"
-    counted = [(kind, text) for kind, text in kinds if kind != ready.GITHUB]
+    counted = [(ready.PENDING if kind == ready.GITHUB else kind, text) for kind, text in kinds
+               if kind != ready.GITHUB or not required]
     failing = [text for kind, text in counted if kind == ready.FAILURE]
     waiting = [text for kind, text in counted if kind != ready.FAILURE]
     if failing:
@@ -55,6 +64,43 @@ def decide(kinds: list[tuple[str, str]]) -> tuple[str | None, str]:
     head = ("Blocked: what has to change, then what is still in progress."
             if state == FAILURE else "In progress: nothing needs a change yet.")
     return state, (head + "\n\n" + "\n".join(lines))[:SUMMARY_MAX]
+
+
+def base_requires_check(loop: dict, base: str | None = None) -> bool:
+    """Whether GitHub's ``blocked`` may be ``base`` (the loop's base when ``None``) waiting on this
+    check (#1227): True when that branch requires ``diaktoros/review`` or a read of its protection
+    did not answer; False only when both reads answered and neither requires it."""
+    from . import protection
+    found = protection.read({**loop, "base": base} if base else loop)
+    return found.required or bool(found.unread)
+
+
+def _blocked_counts(loop: dict, prs: list[dict], kinds: dict,
+                    only: set[int] | None = None) -> dict[int, bool]:
+    """``decide``'s ``required`` per PR for one refresh, from the protection of the branch each PR
+    actually targets (a stacked PR targets its parent's branch, #1227). Only PRs carrying GitHub's
+    ``blocked`` (and in ``only``, when given) are looked up, and each distinct base is read once.
+    A PR whose base ref is missing or malformed has an unknown base: True, with no read (never the
+    loop's base, which may differ in what it requires). A PR left out maps to True by its caller,
+    which ``decide`` never consults without a ``blocked`` reason."""
+    out: dict[int, bool] = {}
+    by_base: dict[str, bool] = {}
+    for pr in prs:
+        number = pr.get("number")
+        if only is not None and number not in only:
+            continue
+        if not any(kind == ready.GITHUB for kind, _ in kinds.get(number) or []):
+            continue
+        base = (pr.get("base") if isinstance(pr.get("base"), dict) else {}).get("ref")
+        if not isinstance(base, str) or not base.strip():
+            # Vex F1 round 2 on #1947: a missing or malformed base ref is an unknown base, never
+            # the loop's: taken as requiring the check (no read), as an unread base is.
+            out[number] = True
+            continue
+        if base not in by_base:
+            by_base[base] = base_requires_check(loop, base)
+        out[number] = by_base[base]
+    return out
 
 
 def title(state: str) -> str:
@@ -201,12 +247,13 @@ def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None)
         return 0
     path = st.dir / FILE
     written = 0
+    required = _blocked_counts(loop, prs, kinds, only)
     for pr in prs:
         number = pr["number"]
         head = (pr.get("head") or {}).get("sha") or ""
         if not head or (only is not None and number not in only):
             continue
-        state, summary = decide(kinds.get(number) or [])
+        state, summary = decide(kinds.get(number) or [], required.get(number, True))
         if state is None:
             continue                                   # not a loop PR: no check
         digest = _digest(state, summary)
