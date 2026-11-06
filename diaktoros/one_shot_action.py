@@ -24,7 +24,7 @@ import time
 from types import SimpleNamespace
 from typing import cast
 
-from . import config, gate, gh, run_supervisor, state as state_mod, transition
+from . import config, gate, gh, review_asks, run_supervisor, state as state_mod, transition
 from .run_supervisor import views
 from .ledger import read_only
 from .util import logged, now_iso
@@ -447,23 +447,16 @@ def _drain(loop, seat):
 RECONSIDER_MAX = 2000
 
 
-def _gate_reviews(loop, st, number, head):
-    """The reviews the reviewer gate decides from at ``head`` (#1370): ``gh.reviews`` through
-    ``transition.effective_reviews``, so under a retarget hold only receipt-confirmed reviews
-    count. ``None`` when they (or the receipts) could not be read."""
-    return transition.effective_reviews(loop, st, number, head, gh.reviews(loop, number))
-
-
 def _reconsider_refusal(loop, st, number, pr, head, reason) -> str:
     """Why a maintainer's reconsider (#1334) cannot start here, or ``""``. One per head: a head
     already reconsidered is refused (the ledger's turn key would keep only the first anyway).
-    "Has a verdict" is read from the gate's own view (``_gate_reviews``, #1370)."""
+    "Has a verdict" is read from the gate's own view (``review_asks.gate_reviews``, #1370)."""
     from .run_supervisor import RECONSIDER_KEY
     if not isinstance(reason, str) or not reason.strip():
         return "a reconsider needs a reason (what the head must meet)"
     if len(reason) > RECONSIDER_MAX:
         return f"the reason is longer than {RECONSIDER_MAX} characters"
-    reviews = _gate_reviews(loop, st, number, head)
+    reviews = review_asks.gate_reviews(loop, st, number, head)
     if not isinstance(reviews, list):
         return "the reviews could not be read"
     if not gate.reviewed_at_head(reviews, loop, head):
@@ -472,23 +465,6 @@ def _reconsider_refusal(loop, st, number, pr, head, reason) -> str:
     if _reviewer_runs(loop["repo"], number, head, RECONSIDER_KEY):
         return "this head was already reconsidered (one per head) — a new head gets its own review"
     return ""
-
-
-def _reconsider_held(emit, st, key, waiting, args, head, loop) -> int:
-    """A reconsider (#1334) the gate held in the seat queue instead of queuing a turn (#1369):
-    no worker runtime, say. The queue entry keeps no turn key and no webhook carries a
-    reconsider, so nothing replays it: a drain or a later delivery at this reviewed head only
-    finds "already has a reviewer's verdict". Say it was not queued, drop the gate's hold so no
-    surface shows it as waiting (the exact entry only; a newer one stays), and ask again."""
-    if st.queue_pop_if("reviewer", key, waiting):
-        log_reason = "the hold was dropped"
-    else:
-        log_reason = "a newer queue entry was kept"
-    reason = waiting.get("reason") or "held in the seat queue"
-    emit(f"#{args.pr} @ {head[:7]}: reconsider NOT queued — {reason}; a held reconsider is "
-         f"never replayed ({log_reason}), so run `hermes dk review --loop {loop['id']} --pr "
-         f"{args.pr} --reconsider ...` again once that is resolved")
-    return 2
 
 
 def _reviewer_runs(repo: str, number: int, head: str, turn_key: str | None = None) -> int:
@@ -522,39 +498,6 @@ def _gate_unfinished(emit, args, payload, exc, started, what):
     return 2
 
 
-def _grant_another_round(loop, args, pr, head, st, emit):
-    """``review --another-round``: one more verdict on a review-only PR that hit its cap. The
-    exit code when nothing is granted (the review is not asked for), else None."""
-    # The operator running this on the host is the maintainer; the grant is recorded against
-    # this head and verdict count, so it buys exactly one verdict and a repeat of the command
-    # changes nothing.
-    author = ((pr.get("user") or {}).get("login") or "").lower()
-    if author not in config.review_only(loop):
-        emit(f"#{args.pr}: {author or 'its author'} is not review-only — only a review-only "
-              "PR has a review cap to lift; nothing granted")
-        return 1
-    reviews = _gate_reviews(loop, st, args.pr, head)
-    if not isinstance(reviews, list):
-        emit(f"#{args.pr}: the reviews could not be read — nothing granted")
-        return 2
-    rounds = len(gate.verdicts(reviews, loop))
-    if rounds < config.review_only_cap(loop):
-        emit(f"#{args.pr}: {rounds} of {config.review_only_cap(loop)} verdicts spent — the "
-              "cap is not reached; nothing to grant")
-        return 1
-    if gate.reviewed_at_head(reviews, loop, head):
-        # The gate declines a head that already has a verdict before it looks at the cap, so a
-        # grant here would be spent on nothing and not match the author's next push.
-        emit(f"#{args.pr} @ {head[:7]}: head already has a verdict — push the change, then "
-              "grant another round; nothing granted")
-        return 1
-    if not st.review_cap_grant(args.pr, head, rounds):
-        emit(f"#{args.pr} @ {head[:7]}: another round is already granted for this head")
-    else:
-        emit(f"#{args.pr} @ {head[:7]}: another round granted — one more verdict")
-    return None
-
-
 def _review(loop, args, emit=print):
     from . import migrate
     if migrate.migrating() is not None:
@@ -581,7 +524,7 @@ def _review(loop, args, emit=print):
             emit(f"#{args.pr} @ {head[:7]}: {refusal}; nothing started")
             return 1
     if getattr(args, "another_round", False):
-        refused = _grant_another_round(loop, args, pr, head, st, emit)
+        refused = review_asks.grant_another_round(loop, args, pr, head, st, emit)
         if refused is not None:
             return refused
 
@@ -623,12 +566,11 @@ def _review(loop, args, emit=print):
               f"(`hermes dk explain --loop {loop['id']} --pr {args.pr}` follows it)")
         return 0
     waiting = queued()
-    if waiting and waiting != before[1] and reconsider is not None:
-        return _reconsider_held(emit, st, key, waiting, args, head, loop)
     if waiting and waiting != before[1]:
+        if reconsider is not None:                # held, so never replayed (#1369)
+            return review_asks.reconsider_held(emit, st, key, waiting, args, head, loop)
         from .run_supervisor import record_operator_action
-        record_operator_action(loop["repo"], args.pr, "reconsider" if reconsider is not None
-                               else "review")
+        record_operator_action(loop["repo"], args.pr, "review")
         reason = waiting.get("reason") or "the reviewer seat is busy"
         emit(f"#{args.pr} @ {head[:7]}: review queued, waiting — {reason}")
         return 0
