@@ -402,9 +402,12 @@ minute) can therefore lose triage turns. Two things cover it:
   gateway. It is a gateway-wide setting: a `rate_limit` key on a route entry is never read, so
   `setup` and `arm` cannot raise it for you. Only gateways that serve the loop's routes are
   judged: a multiplexed profile's own gateway is skipped (noted `not running`) when its
-  `gateway.lock` is absent, unheld, or held by the host gateway's PID. When that lock is held but
-  cannot be told apart from the host's (no PID in it, or none in the host's), the profile's
-  gateway is still judged and its label says it cannot tell whether it runs.
+  `gateway.lock` is absent, unheld, or held by the host gateway's PID. The host's PID counts only
+  while the host's own `gateway.lock` is held: a stale record left by a stopped host gateway proves
+  nothing, and the profile's gateway is then judged as running. When the profile's lock is held
+  but cannot be told apart from the host's (no PID in it or in the host's, or a lock that cannot
+  be probed), the profile's gateway is still judged and its label says it cannot tell whether it
+  runs; that note stays in the result even when another gateway's limit cannot be read.
 
 A dropped review or fix wake (a burst of PR events) has no such backstop yet: only the doctor
 warning covers it.

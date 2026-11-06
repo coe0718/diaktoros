@@ -186,7 +186,9 @@ def profile_gateway_runs(home: pathlib.Path, root: pathlib.Path) -> tuple[bool |
     ``flock`` on the lock of each home it serves and writes its PID into it. So no lock file, or
     one nobody holds, is no gateway; one held under the same PID as the host's lock is the host
     gateway multiplexing the profile; one held by any other PID is the profile's own gateway.
-    Never waits (``util.flock_held``)."""
+    The host's PID is trusted only while the host's lock is itself held: a stale record left by a
+    host gateway that has stopped may name a PID the system has since given to the profile's own
+    gateway. Never waits (``util.flock_held``)."""
     lock = home / "gateway.lock"
     try:
         held = flock_held(lock)
@@ -200,6 +202,15 @@ def profile_gateway_runs(home: pathlib.Path, root: pathlib.Path) -> tuple[bool |
     if pid is None:
         return None, f"{lock} is held but names no PID"
     host_lock = root / "gateway.lock"
+    try:
+        host_held = flock_held(host_lock)
+    except FileNotFoundError:
+        return True, f"{lock} is held by pid {pid}, and there is no {host_lock}"
+    if host_held is None:
+        return None, (f"{lock} is held by pid {pid}, and the flock on {host_lock} cannot be "
+                      "probed to tell it apart")
+    if not host_held:      # a stale host record: its PID proves nothing (#1988)
+        return True, f"{lock} is held by pid {pid}, and nobody holds {host_lock}"
     host_pid = _lock_holder_pid(host_lock)
     if host_pid == pid:
         return False, f"{lock} is held by the host gateway (pid {pid})"

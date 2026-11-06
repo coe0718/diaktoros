@@ -7,7 +7,9 @@ rather than being missing. The roster of ``check_loop`` is held by ``tests/harne
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import fcntl
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -16,7 +18,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from diaktoros import doctor, gate_failures  # noqa: E402
+from diaktoros import doctor, gate_failures, util  # noqa: E402
 
 
 class RateLimitDoctor(unittest.TestCase):
@@ -130,6 +132,66 @@ class ProfileGatewayNotRunning(unittest.TestCase):
         self.assertIn("profile vex's own gateway (cannot tell whether it runs:", check.detail)
         self.assertIn("names no PID", check.detail)
         self.assertNotIn("drey", check.fix)
+
+    def test_a_stale_unheld_host_lock_naming_the_profile_gateways_pid_is_not_proof(self):
+        """#1988 F1: the host gateway stopped and left its record; the PID in it now belongs to
+        the profile's own gateway. That gateway runs at 30/min and must still be judged."""
+        vex = self.home / "profiles" / "vex"
+        (self.home / "gateway.lock").write_text(json.dumps({"pid": 5151}))   # nobody holds it
+        self.hold(vex, {"pid": 5151})
+        check = doctor.check_gateway_rate_limit(self.loop)
+        self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
+        self.assertIn("profile vex's own gateway (running): 30/min", check.detail)
+        self.assertIn(f"in {vex / 'config.yaml'} for the profile vex's own gateway (running)",
+                      check.fix)
+
+    def failing(self, real, name: str, exc: OSError):
+        """``real`` with ``exc`` raised for every call on a ``gateway.lock`` (path or fd)."""
+        def call(target, *args, **kwargs):
+            path = (os.readlink(f"/proc/self/fd/{target}") if isinstance(target, int)
+                    else os.fspath(target))
+            if path.endswith("gateway.lock"):
+                raise exc
+            return real(target, *args, **kwargs)
+        return mock.patch(name, side_effect=call)
+
+    def assert_cannot_tell(self):
+        check = doctor.check_gateway_rate_limit(self.loop)
+        self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
+        self.assertIn("profile vex's own gateway (cannot tell whether it runs: "
+                      "cannot probe the flock on", check.detail)
+        self.assertIn(f"in {self.home / 'profiles' / 'vex' / 'config.yaml'}", check.fix)
+
+    def test_a_gateway_lock_that_cannot_be_opened_is_cannot_tell_not_not_running(self):
+        """#1988 F2: ``util.flock_held`` gives None on an open error, never False."""
+        self.hold(self.home / "profiles" / "vex", {"pid": 5151})
+        with self.failing(os.open, "diaktoros.util.os.open", PermissionError(13, "denied")):
+            self.assertIsNone(util.flock_held(self.home / "profiles" / "vex" / "gateway.lock"))
+            self.assert_cannot_tell()
+
+    def test_a_gateway_lock_whose_flock_fails_is_cannot_tell_not_not_running(self):
+        """#1988 F2: ``util.flock_held`` gives None on a ``flock`` error, never False."""
+        (self.home / "profiles" / "vex" / "gateway.lock").write_text(json.dumps({"pid": 5151}))
+        with self.failing(fcntl.flock, "diaktoros.util.fcntl.flock", OSError(22, "no flock")):
+            self.assertIsNone(util.flock_held(self.home / "profiles" / "vex" / "gateway.lock"))
+            self.assert_cannot_tell()
+
+    def test_an_unreadable_limit_elsewhere_keeps_the_cannot_tell(self):
+        """#1988 F3: the host's limit is unreadable; the profile gateway's own limit reads 120,
+        but whether it runs cannot be told, and the result must still say so."""
+        vex = self.home / "profiles" / "vex"
+        self.config_at(self.home, {"platforms": {"webhook": {"extra": {"rate_limit": "lots"}}}})
+        self.config_at(vex, {"platforms": {"webhook": {"extra": {"rate_limit": 120}}}})
+        self.hold(vex, None)                                  # held, but no PID to compare
+        check = doctor.check_gateway_rate_limit(self.loop)
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn("cannot read every gateway's rate_limit", check.detail)
+        self.assertIn("profile vex's own gateway (cannot tell whether it runs:", check.detail)
+        self.assertIn("names no PID", check.detail)
+
+    @staticmethod
+    def config_at(home: pathlib.Path, data) -> None:
+        (home / "config.yaml").write_text(json.dumps(data))   # JSON is valid YAML
 
 
 if __name__ == "__main__":

@@ -552,12 +552,14 @@ def check_gateway_rate_limit(loop: dict) -> Check:
         limit, where = gf.gateway_rate_limit(host)
         rows.append((label, host, limit, where))
     unread = [row for row in rows if row[2] is None]
-    if unread:
+    read = [f"{label}: {limit}/min ({where})" for label, _h, limit, where in rows
+            if limit is not None] + skipped
+    if unread:             # the rest still shown: a "cannot tell whether it runs" is kept (#1988)
         return Check("gate:rate_limit", UNKNOWN,
                      "cannot read every gateway's rate_limit — "
-                     + "; ".join(f"{label}: {where}" for label, _h, _l, where in unread))
-    seen = "; ".join([f"{label}: {limit}/min ({where})" for label, _h, limit, where in rows]
-                     + skipped)
+                     + "; ".join(f"{label}: {where}" for label, _h, _l, where in unread)
+                     + (f" (also: {'; '.join(read)})" if read else ""))
+    seen = "; ".join(read)
     low = [row for row in rows if row[2] < RATE_LIMIT_MIN]
     if low:
         fixes = "; ".join(f"set platforms.webhook.extra.rate_limit: {RATE_LIMIT_SET} in "
