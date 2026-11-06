@@ -279,7 +279,9 @@ head ends the repair path naturally.
 By default the watchdog sweep notices a red check, so a CI-fix turn or a `main_red` notice
 can wait up to a sweep interval. With `ci_webhook` on (#681), GitHub's `check_suite` event
 does it when the run finishes: the host re-reads that commit's checks and runs the sweep's own
-passes for it alone, and the sweep stays the backstop for a delivery that never arrives.
+passes for it alone, and wakes a review held for CI at that head. A suite that finishes while
+a sweep is running is noted, and that sweep acts on it before it ends. The sweep stays the
+backstop for a delivery that never arrives.
 
 CI fixes have their own budget, `ci_fix_cap` CI-fix turns per PR (default 3, across its
 heads), outside the reviewer's verdict cap (#539). A red head goes to the fixer first,

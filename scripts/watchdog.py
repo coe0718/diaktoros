@@ -218,6 +218,10 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
         try:
             return _sweep_loop_locked(loop, st, lines)
         finally:
+            try:                    # #681: suites that finished while this sweep held the lock
+                ci_event.drain(loop, st, log)
+            except Exception as exc:
+                log(f"noted CI suites not acted on: {type(exc).__name__}: {exc}")
             fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
         os.close(fd)

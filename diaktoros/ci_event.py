@@ -9,11 +9,14 @@ for that commit alone, under the sweep's per-loop lock, so the two never act on 
 * the base branch's current head → ``main_check.sweep``: the ``main_red`` notice;
 * an open loop PR whose current head is that commit → ``ci_fix.sweep`` for that PR: the
   ``ci_failed`` notice, and the CI-fix turn within ``ci_fix_cap``. One turn per head, however many
-  suites finish for it: ``ci_fix`` keys the turn by head, and the ledger by its turn key.
+  suites finish for it: ``ci_fix`` keys the turn by head, and the ledger by its turn key. A review
+  held for CI at that head is made due now, and the worker woken: its claim reads CI again.
 
-A suite on any other commit (an older head, a branch with no loop PR) does nothing. A review held
-for CI needs nothing here: its worker re-reads CI every ``CI_POLL_S`` (#241). No delivery starts a
-turn the sweep would not have queued, and the sweep stays the backstop for one that never arrives.
+A suite on any other commit (an older head, a branch with no loop PR) does nothing. Each suite is
+noted (``NUDGES``) before the lock is taken: a sweep that holds it acts on every note as its last
+step (``drain``, from ``watchdog.sweep_loop``), so a suite that finished after that sweep read CI
+still gets a read. No delivery starts a turn the sweep would not have queued, and the sweep stays
+the backstop for one that never arrives.
 """
 from __future__ import annotations
 
@@ -29,6 +32,8 @@ from .util import log, register_lock, silence
 # The gateway gives a gate 30 seconds (``gate_failures``): wait this long for a running sweep's
 # lock, then leave the commit to that sweep, which reads CI itself.
 LOCK_WAIT_S = 20.0
+NUDGES = "ci-nudges.json"     # suites noted for the lock's holder, newest last
+NUDGES_MAX = 50
 # The watchdog's per-loop sweep lock (``watchdog.sweep_loop``), in the loop's state directory.
 SWEEP_LOCK = register_lock("sweep.lock")
 _SHA = re.compile(r"[0-9a-f]{40}")
@@ -46,13 +51,46 @@ def gate(loop: dict, st, payload: dict) -> None:
         silence("check_suite: payload has no head sha")
     numbers = [pr.get("number") for pr in suite.get("pull_requests") or []
                if isinstance(pr, dict) and type(pr.get("number")) is int and pr["number"] > 0]
+    note(st, head, numbers)
     with sweep_lock(st, LOCK_WAIT_S) as held:
         if not held:
-            silence(f"check_suite @ {head[:7]}: a watchdog sweep is running and reads CI itself")
-        acted = act(loop, st, head, numbers)
+            silence(f"check_suite @ {head[:7]}: noted for the running watchdog sweep, which acts "
+                    "on it before it ends", "accepted")
+        acted = drain(loop, st)
     if not acted:
         silence(f"check_suite @ {head[:7]}: not the base's head nor an open loop PR's head")
     silence(f"check_suite @ {head[:7]}: " + "; ".join(acted), "accepted")
+
+
+def note(st, head: str, numbers: list[int]) -> None:
+    """Note a finished suite for whoever holds the sweep lock next (``drain``)."""
+    path = st.dir / NUDGES
+    with st.locked():
+        noted = st.kv_get(path, [])
+        noted = noted if isinstance(noted, list) else []
+        st.kv_set(path, (noted + [{"head": head, "numbers": numbers}])[-NUDGES_MAX:])
+
+
+def drain(loop: dict, st, log=log) -> list[str]:
+    """Act on every noted suite, once per commit, under the sweep lock its caller holds: the
+    handler that took it, or the watchdog's sweep as its last step. What was acted on."""
+    path = st.dir / NUDGES
+    with st.locked():
+        noted = st.kv_get(path, [])
+        st.kv_set(path, [])
+    heads: dict[str, list[int]] = {}
+    for entry in noted if isinstance(noted, list) else []:
+        head = entry.get("head") if isinstance(entry, dict) else None
+        if isinstance(head, str) and _SHA.fullmatch(head):
+            heads.setdefault(head, []).extend(n for n in entry.get("numbers") or []
+                                              if type(n) is int and n > 0)
+    acted = []
+    for head, numbers in heads.items():
+        try:
+            acted += act(loop, st, head, numbers)
+        except Exception as exc:              # one unreadable commit does not drop the rest
+            log(f"check_suite @ {head[:7]} not acted on: {type(exc).__name__}: {exc}")
+    return acted
 
 
 def act(loop: dict, st, head: str, numbers: list[int]) -> list[str]:
@@ -67,7 +105,20 @@ def act(loop: dict, st, head: str, numbers: list[int]) -> list[str]:
     if prs:
         ci_fix.sweep(loop, st, prs, log)
         acted.append("CI read for " + ", ".join(f"#{pr['number']}" for pr in prs))
+        if wake_held_reviews(loop, head, prs):
+            acted.append("reviews held for CI woken")
     return acted
+
+
+def wake_held_reviews(loop: dict, head: str, prs: list[dict]) -> int:
+    """Make the reviews held for CI at ``head`` due now and run the worker's recovery, which
+    claims them: the claim re-reads CI and holds one whose checks still run (#241)."""
+    from . import gate, run_supervisor
+    sup = run_supervisor.Supervisor(run_supervisor.production_ledger(), create=False)
+    released = sum(sup.release_ci_holds(loop["repo"], pr["number"], head) for pr in prs)
+    if released:
+        gate.resume_isolated(loop)
+    return released
 
 
 def prs_at(loop: dict, head: str, numbers: list[int]) -> list[dict]:
