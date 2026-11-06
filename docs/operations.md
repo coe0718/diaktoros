@@ -504,10 +504,12 @@ The host classifies it as unpublished (no broker write was attempted) and retrie
 with a nudge to publish. If that attempt also exits without calling the broker, it fails
 for operator review. This is not a retry path for a denied or uncertain write.
 
-Before that happens, a reviewer or fixer turn is nudged once, five steps before its step cap
-(`seats.<seat>.max_steps`), to submit what it has verified and put the rest under
-`Not verified:` (#554). The nudge is a host-written message appended to that one model request;
-it never enters the agent's own history, so a turn that finishes early never sees it. It cannot
+Before that happens, a reviewer or fixer turn is nudged from five steps before its step cap
+(`seats.<seat>.max_steps`) to submit what it has verified and put the rest under
+`Not verified:` (#554). The nudge is a host-written message appended to every model request from
+there to the cap. It never enters the agent's own history, so the host adds it to each request
+again; one copy on one request was gone by the next (#1789). A turn that finishes early never
+sees it. It cannot
 save a turn whose budget (wall clock) runs out, and it is not sent to an adjudicator or triage
 turn. An unpublished exit that is retried is separate: its retry's prompt opens with the
 publish nudge above.
