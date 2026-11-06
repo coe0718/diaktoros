@@ -501,6 +501,35 @@ RATE_LIMIT_MIN = 60     # a burst the loop should absorb: 55 issues filed in a m
 RATE_LIMIT_SET = 120    # what the fix line asks for
 
 
+def _rate_limit_hosts(loop: dict) -> tuple[dict[pathlib.Path, str], list[str]]:
+    """The gateways that may serve this loop's routes, ``{home: label}``, and a note for each
+    profile's own gateway left out because it is not running (#1362).
+
+    A multiplexed profile names two candidates (``gate_failures.gateway_hosts``): its own gateway
+    and the host's. Its own one is judged only when it runs, or when that cannot be told
+    (``gate_failures.profile_gateway_runs``); then its label says so. Raises what the reads raise.
+    """
+    from .. import gate_failures as gf
+    hosts: dict[pathlib.Path, str] = {}
+    notes: list[str] = []
+    for profile in gate_timeout_profiles(loop):
+        candidates = gf.gateway_hosts(config.profile_dir(profile))
+        if len(candidates) == 2:
+            (_own_label, own), (_host_label, root) = candidates
+            runs, why = gf.profile_gateway_runs(own, root)
+            if runs is False:
+                notes.append(f"profile {own.name}'s own gateway: not running ({why})")
+                candidates = candidates[1:]
+            elif runs is True:     # it holds the profile's lock, so the host cannot serve it
+                candidates = [(f"profile {own.name}'s own gateway (running)", own)]
+            else:
+                candidates = [(f"profile {own.name}'s own gateway (cannot tell whether it runs: "
+                               f"{why})", own), candidates[1]]
+        for label, host in candidates:
+            hosts.setdefault(host, label)
+    return hosts, notes
+
+
 def check_gateway_rate_limit(loop: dict) -> Check:
     """Can each gateway that serves this loop's routes absorb a burst of deliveries (#849)?
 
@@ -512,25 +541,25 @@ def check_gateway_rate_limit(loop: dict) -> Check:
     issue whose delivery was dropped; a dropped review or fix wake has no such backstop yet.
     """
     from .. import gate_failures as gf
-    hosts: dict[pathlib.Path, str] = {}
-    for profile in gate_timeout_profiles(loop):
-        try:
-            for label, host in gf.gateway_hosts(config.profile_dir(profile)):
-                hosts.setdefault(host, label)
-        except Exception as exc:  # noqa: BLE001 - one unreadable profile must not stop doctor
-            return Check("gate:rate_limit", UNKNOWN,
-                         f"the gateways serving this loop could not be worked out: "
-                         f"{type(exc).__name__}: {exc}")
+    try:
+        hosts, skipped = _rate_limit_hosts(loop)
+    except Exception as exc:  # noqa: BLE001 - one unreadable profile must not stop doctor
+        return Check("gate:rate_limit", UNKNOWN,
+                     f"the gateways serving this loop could not be worked out: "
+                     f"{type(exc).__name__}: {exc}")
     rows = []
     for host, label in hosts.items():
         limit, where = gf.gateway_rate_limit(host)
         rows.append((label, host, limit, where))
     unread = [row for row in rows if row[2] is None]
-    if unread:
+    read = [f"{label}: {limit}/min ({where})" for label, _h, limit, where in rows
+            if limit is not None] + skipped
+    if unread:             # the rest still shown: a "cannot tell whether it runs" is kept (#1988)
         return Check("gate:rate_limit", UNKNOWN,
                      "cannot read every gateway's rate_limit — "
-                     + "; ".join(f"{label}: {where}" for label, _h, _l, where in unread))
-    seen = "; ".join(f"{label}: {limit}/min ({where})" for label, _h, limit, where in rows)
+                     + "; ".join(f"{label}: {where}" for label, _h, _l, where in unread)
+                     + (f" (also: {'; '.join(read)})" if read else ""))
+    seen = "; ".join(read)
     low = [row for row in rows if row[2] < RATE_LIMIT_MIN]
     if low:
         fixes = "; ".join(f"set platforms.webhook.extra.rate_limit: {RATE_LIMIT_SET} in "

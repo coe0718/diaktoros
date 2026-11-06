@@ -400,7 +400,16 @@ minute) can therefore lose triage turns. Two things cover it:
 - **Doctor.** `gate:rate_limit` reads the gateway's `rate_limit` and warns below 60. Raise it in
   the gateway's `config.yaml` (`platforms.webhook.extra.rate_limit: 120`) and restart that
   gateway. It is a gateway-wide setting: a `rate_limit` key on a route entry is never read, so
-  `setup` and `arm` cannot raise it for you.
+  `setup` and `arm` cannot raise it for you. Only gateways that serve the loop's routes are
+  judged: a multiplexed profile's own gateway is skipped (noted `not running`) when its
+  `gateway.lock` is absent, unheld, or held by the host gateway's PID. The host's PID counts only
+  while the host's own `gateway.lock` is held: a stale record left by a stopped host gateway proves
+  nothing, and the profile's gateway is then judged as running. When the profile's lock is held
+  but cannot be told apart from the host's (no PID in it or in the host's, or a lock that cannot
+  be probed), the profile's gateway is still judged and its label says it cannot tell whether it
+  runs; that note stays in the result even when another gateway's limit cannot be read. A lock
+  held for Hermes maintenance (a `purpose` in its record) is not a gateway, so it is treated the
+  same way: cannot tell, and both the profile's and the host's gateway are judged.
 
 A dropped review or fix wake (a burst of PR events) has no such backstop yet: only the doctor
 warning covers it.
