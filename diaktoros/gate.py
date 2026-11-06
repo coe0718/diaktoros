@@ -1033,8 +1033,8 @@ def hooks_read(loop: dict) -> tuple[bool | None, str]:
 
     A loop whose events arrive through a GitHub App's webhook (#1239) has no repo hooks: it is
     armed unless its own pause flag is set (``app_ingress``), which is what its dispatcher reads;
-    an unreadable or malformed flag is ``None`` (unknown) here, and the dispatcher drops on it
-    (#1295).
+    an unreadable or malformed flag is ``None`` (unknown) here: the dispatcher drops on it and the
+    watchdog's sweep starts nothing for it (#1295).
     """
     if config.app_ingress(loop):
         from . import app_ingress

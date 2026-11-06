@@ -65,10 +65,16 @@ def paused(st) -> bool:
 
 def pause_flag(st) -> bool | None:
     """Like ``paused`` but ``None`` when the flag cannot be read or is malformed: a missing file is
-    armed (``False``), a corrupt one is unknown, never a guess (#1599)."""
+    armed (``False``), a corrupt one is unknown, never a guess (#1599).
+
+    "Missing" is only an entry that is not there at all (``lstat`` raises ``FileNotFoundError``).
+    ``Path.exists`` follows symlinks, so a dangling flag symlink would read as missing and so as
+    armed; that entry exists and cannot be read, which is unknown (#1295 review, F2)."""
     try:
         path = st.dir / FILE
-        if not path.exists():
+        try:
+            path.lstat()
+        except FileNotFoundError:
             return False
         data = json.loads(path.read_text())
     except Exception:
