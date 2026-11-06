@@ -874,6 +874,32 @@ adjudicator is an App (moved there with [`identity`](#identity)) and the form st
 another login for it, `apply` refuses and says so. Fix the form, or pass
 `--identity-from-form` to let the form's login win.
 
+As with `identity --pat`'s old login, `--identity-from-form` leaves the App's `apps` entry and
+its login on the allowlist in place (open PRs keep their verdicts and authorship), and `apply`
+says so; `doctor` still checks that App's key until you remove them. `apply` reports this only
+once the config is written (a refusal or a rolled-back write reports nothing); `--dry-run` says
+what *would* happen.
+
+A reviewer moved off its App to a PAT also turns `merge_check: auto` off, so the
+`diaktoros/review` check stops being posted. Whatever `merge_check` was before or is after (a
+ruleset survives `set --merge-check off`, so turning the check on again meets it), a ruleset
+`protect` wrote while the reviewer was an App is pinned to that App's id. Neither the PAT
+reviewer's commit status nor another App's check run satisfies that pin: every PR stays blocked
+until the ruleset changes. For every reviewer move off an App, `apply` says so, says whether
+and how the check is now posted, and names the two ways out:
+
+- delete the ruleset: `hermes dk protect --loop ID --admin-token LOGIN --remove`, or
+- keep the check: `hermes dk set --loop ID --merge-check on` (if it is off), then rewrite the
+  ruleset with `hermes dk protect --loop ID --admin-token LOGIN`. If the reviewer moved to another
+  App, the rewritten ruleset is pinned to that App. If it moved to a PAT, the rewritten ruleset
+  has no App pin and accepts `diaktoros/review` from any source, because a commit status cannot
+  be pinned. Anyone with write access can then post a green status of that name.
+
+A move to another login of the same App id prints no merge-check note: the pin still matches.
+
+`apply` itself never edits the ruleset, because that needs an admin token. `doctor` reports a
+pin the reviewer cannot meet.
+
 ```bash
 hermes dk apply --loop "<loop-id>" --dry-run
 hermes dk apply --loop "<loop-id>"
