@@ -96,33 +96,61 @@ def _app_revert_notes(loop: dict, updated: dict, dry_run: bool) -> None:
         print(f"  --identity-from-form: the {role} {moves} from the GitHub App {old!r} to {new!r}; "
               f"{kept} {stay} (doctor still checks its key) — remove them once no open PR needs "
               "them")
-    if any(role == "reviewer" for role, _, _ in reverts) and config.merge_check_on(loop):
+    if any(role == "reviewer" for role, _, _ in reverts):
         _merge_check_note(loop, updated, dry_run)
 
 
-def _merge_check_note(loop: dict, updated: dict, dry_run: bool) -> None:
-    """The merge check after the reviewer left the App it was pinned to (#1307, #1979 F1).
+def _merge_check_state(loop: dict, updated: dict, dry_run: bool) -> str:
+    """How ``diaktoros/review`` is posted after the reviewer's move: on or off before and after
+    (``config.merge_check_on``, the predicate the host posts by), and as whose check — the new
+    App's check run or the PAT reviewer's commit status (#1979 review, F1 and F3)."""
+    was, now = config.merge_check_on(loop), config.merge_check_on(updated)
+    if not now:
+        if was:
+            return (("would stop being posted" if dry_run else "is now off")
+                    + " (merge_check: auto follows an App reviewer)")
+        return "would stay off" if dry_run else "stays off"
+    new_id = protection.reviewer_app_id(updated)
+    who = (f"a check run of the App {updated.get('reviewer_seat')!r} ({new_id})" if new_id
+           else "the PAT reviewer's commit status")
+    if was:
+        return f"would stay on, posted as {who}" if dry_run else f"stays on, posted now as {who}"
+    return f"would turn on, posted as {who}" if dry_run else f"is now on, posted as {who}"
 
-    ``protect`` pinned its ruleset to the old App's id; the PAT reviewer posts a commit status,
-    which never satisfies a pin (``protection.problems``), so turning the check back on alone
-    leaves every PR blocked. Either way out goes through ``protect``: delete the ruleset, or
-    rewrite it from the loop as it now is (any source, since a commit status cannot be pinned)."""
-    lid, app_id = loop["id"], protection.reviewer_app_id(loop)
+
+def _merge_check_note(loop: dict, updated: dict, dry_run: bool) -> None:
+    """The merge check after the reviewer left the App it was pinned to (#1307, #1979 F1, F3).
+
+    Printed for every reviewer move off an App, whatever ``merge_check`` was before: a ruleset
+    ``protect`` wrote while the reviewer was that App stays pinned to its id after
+    ``set --merge-check off`` (nothing removes it), so turning the check on later meets the same
+    pin. What a rewritten ruleset accepts depends on where the reviewer went:
+    ``protection.ruleset_body`` re-pins it to a new App, and drops the pin for a PAT's commit
+    status (which cannot be pinned). Either way out goes through ``protect``: delete the ruleset,
+    or rewrite it from the loop as it now is."""
+    lid, old_id = loop["id"], protection.reviewer_app_id(loop)
+    new_id = protection.reviewer_app_id(updated)
+    if old_id is not None and new_id == old_id:
+        return                                        # another login on the same App: pin holds
     protect = f"hermes dk protect --loop {lid} --admin-token LOGIN"
+    old = f"the App {old_id}" if old_id is not None else "the old reviewer App"
     if config.merge_check_on(updated):
-        state = ("would stay on, posted as the PAT reviewer's commit status" if dry_run
-                 else "stays on, posted now as the PAT reviewer's commit status")
         rewrite = f"rewrite it with `{protect}`"
     else:
-        state = ("would stop being posted" if dry_run else "is now off") + \
-            " (merge_check: auto follows an App reviewer)"
         rewrite = (f"keep the check: `hermes dk set --loop {lid} --merge-check on`, then rewrite "
                    f"the ruleset with `{protect}`")
-    print(f"  the {ci.MERGE_CHECK} merge check {state}. If `protect` required it, its ruleset "
-          f"is pinned to the App {app_id}, which the PAT reviewer can never satisfy: every PR "
-          f"stays blocked until you either delete it (`{protect} --remove`) or {rewrite} — that "
-          f"drops the App pin and accepts {ci.MERGE_CHECK} from any source (a commit status "
-          "cannot be pinned), so anyone with write access can post it")
+    if new_id:
+        who, result = (f"the new reviewer App {new_id}'s check run does not satisfy",
+                       f"that re-pins {ci.MERGE_CHECK} to the App {new_id}")
+    else:
+        who, result = ("the PAT reviewer can never satisfy",
+                       f"that drops the App pin and accepts {ci.MERGE_CHECK} from any source (a "
+                       "commit status cannot be pinned), so anyone with write access can post it")
+    print(f"  the {ci.MERGE_CHECK} merge check {_merge_check_state(loop, updated, dry_run)}. If "
+          f"`protect` required it while the reviewer was that App (turning merge_check off since "
+          f"leaves the ruleset in place), its ruleset is pinned to {old}, which {who}: every PR "
+          f"stays blocked until you either delete it (`{protect} --remove`) or {rewrite} — "
+          f"{result}")
 
 
 def _apply(args) -> int:

@@ -340,6 +340,59 @@ class Identity(app_cli.Base):
                       out)
         self.assertNotIn("is now off", out)
 
+    def test_identity_from_form_turning_the_check_back_on_still_names_the_pin(self):
+        # #1979 review round 2, F1: `set --merge-check off` leaves protect's ruleset (pinned to
+        # the App) in place, so a move that turns the check on again meets the same pin.
+        from diaktoros import config, protection
+        self._reviewer_on_app()
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--merge-check", "off"])
+        self.assertEqual(rc, 0, out)
+        rc, out = self.run_cli(["apply", "--loop", "widgets", "--identity-from-form"],
+                               settings={"reviewer_login": tfs.REV, "merge_check": "on"})
+        self.assertEqual(rc, 0, out)
+        after = config.load_id("widgets")
+        self.assertTrue(config.merge_check_on(after))
+        blocking, _, _ = protection.problems(after, protection.Protection(sources=[5416187]))
+        self.assertTrue(any("never satisfies it" in b for b in blocking), blocking)
+        self.assertIn("merge check is now on, posted as the PAT reviewer's commit status", out)
+        self.assertIn("turning merge_check off since leaves the ruleset in place", out)
+        self.assertIn("its ruleset is pinned to the App 5416187, which the PAT reviewer can never "
+                      "satisfy: every PR stays blocked", out)
+        self.assertIn("hermes dk protect --loop widgets --admin-token LOGIN --remove", out)
+
+    def test_identity_from_form_off_before_and_after_still_names_the_pin(self):
+        self._reviewer_on_app()
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--merge-check", "off"])
+        self.assertEqual(rc, 0, out)
+        rc, out = self.run_cli(["apply", "--loop", "widgets", "--identity-from-form"],
+                               settings={"reviewer_login": tfs.REV})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("merge check stays off", out)
+        self.assertIn("pinned to the App 5416187", out)
+        self.assertIn("hermes dk set --loop widgets --merge-check on", out)
+
+    def test_identity_from_form_to_another_app_says_protect_re_pins_it(self):
+        # #1979 review round 2, F3: the form names another App already mapped (999). A rewritten
+        # ruleset is pinned to that App (protection.ruleset_body), never opened to any source.
+        from diaktoros import config, protection
+        other = "acme-reviewer-two[bot]"
+        rc, out = self.identity("--seat", "reviewer", "--app", f"{other}=999:{self.key('rev2')}")
+        self.assertEqual(rc, 0, out)
+        self._reviewer_on_app()
+        rc, out = self.run_cli(["apply", "--loop", "widgets", "--identity-from-form"],
+                               settings={"reviewer_login": other})
+        self.assertEqual(rc, 0, out)
+        after = config.load_id("widgets")
+        self.assertEqual(protection.reviewer_app_id(after), 999, out)
+        rewritten = protection.ruleset_body(after)["rules"][0]["parameters"]["required_status_checks"]
+        self.assertEqual(rewritten[0].get("integration_id"), 999)
+        self.assertIn(f"stays on, posted now as a check run of the App '{other}' (999)", out)
+        self.assertIn("pinned to the App 5416187, which the new reviewer App 999's check run does "
+                      "not satisfy", out)
+        self.assertIn("re-pins diaktoros/review to the App 999", out)
+        for wrong in ("commit status", "drops the App pin", "any source", "PAT reviewer"):
+            self.assertNotIn(wrong, out)
+
     def test_identity_from_form_dry_run_reports_only_what_would_happen(self):
         # #1979 review F2: a dry run writes nothing, so it never reports the move as done.
         self._reviewer_on_app()
