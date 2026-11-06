@@ -531,6 +531,9 @@ each one once the real review exists at that head:
   later sweep. The setting needs a shadow profile and does nothing while `file_issues` is off; a loop
   file without the key gets 25. An unreadable review files nothing that sweep, and a head the
   real review never reaches is dropped after 7 days.
+- **In the report:** `hermes dk report` and the weekly report count the filed ones per shadow
+  model, and how many were later fixed (an issue-fix PR the loop proposed for it merged; a fix
+  made outside the loop is not counted): see [`report`](commands.md#report).
 
 Set it with `set`/`init`/`setup --shadow-file-issues on|off`, the settings form's *File the shadow's
 issues*, or the loop file. The cap is `set`/`init`/`setup --shadow-issues-daily N`, the form's
