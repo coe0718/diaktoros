@@ -176,6 +176,43 @@ class Identity(app_cli.Base):
         rc, out = self.run_cli(["set", "--loop", "widgets", "--cap", "4"])
         self.assertEqual(rc, 0, out)
 
+    def test_a_refused_set_writes_nothing_even_with_an_adjudication_change(self):
+        # #1293 (review F1): the in-flight refusal comes before `--adjudicator off` commits its
+        # config and route, so a mixed command refused for a busy reader leaves the loop as it was.
+        import json
+        data = json.loads(self.loop_file().read_text())
+        data["adjudicator"] = {"route": "widgets-adjudicate", "profile": "default"}
+        self.loop_file().write_text(json.dumps(data))
+        new = self.pat("new-reader")
+        self.busy("shadow")
+        before = self.loop_file().read_bytes()
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator", "off",
+                                "--read-token", "new-reader", "--token", f"new-reader={new}"])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("1 run(s) acting as the read identity are in flight", out)
+        self.assertNotIn("adjudication off", out)
+        self.assertEqual(self.loop_file().read_bytes(), before)
+
+    def test_set_remapping_the_adjudicators_credential_waits_for_its_runs(self):
+        # #1293 (review F2): the same login with a new token file still moves the adjudicator.
+        import json
+        data = json.loads(self.loop_file().read_text())
+        data["adjudicator"] = {"route": "widgets-adjudicate", "profile": "default"}
+        self.loop_file().write_text(json.dumps(data))
+        old, new = self.pat("judge-old"), self.pat("judge-new")
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-login", "judge",
+                                "--token", f"judge={old}"])
+        self.assertEqual(rc, 0, out)
+        self.busy("adjudicator")
+        before = self.loop_file().read_bytes()
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--token", f"judge={new}"])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("1 run(s) acting as the adjudicator identity are in flight", out)
+        self.assertEqual(self.loop_file().read_bytes(), before)
+        # Re-mapping the same file moves nothing, so it is not held up.
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--token", f"judge={old}"])
+        self.assertEqual(rc, 0, out)
+
     def test_the_adjudicator_moves_and_only_seats_keep_an_allowlisted_login(self):
         import json
         from diaktoros import config

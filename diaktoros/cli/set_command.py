@@ -322,6 +322,19 @@ def _credentials(args, loop: dict) -> tuple:
             read_changed)
 
 
+def _refuse_busy_identity(args, loop: dict) -> None:
+    """Raise ``_Refused``, after ``identity``'s refusal is printed, when this ``set`` would move
+    the reader or the adjudicator of ``loop`` while that identity has a run in flight (#1293).
+
+    Judged on the loop as it stands before ``set`` writes anything, so ``_set`` runs it before
+    ``_set_adjudication``; the same ``_credentials`` reading ``_set`` uses later decides what
+    moves."""
+    tokens, apps, adj_before, adj_after, _, _, _, read_changed = _credentials(args, loop)
+    if identity_command.set_moves_busy_identity(loop, tokens, apps, adj_before, adj_after,
+                                                read_changed):
+        raise _Refused
+
+
 def _seat_capacity(args, loop: dict, seats: dict, seat_changes: dict, adj_before: str,
                    adj_after: str) -> None:
     """The adjudicator seat's login and each seat's own concurrency."""
@@ -735,6 +748,10 @@ def cmd_set(args) -> int:
 def _set(args) -> int:
     """``cmd_set``'s steps, in order; a step that refuses raises ``_Refused``."""
     loop = _load_loop(args)
+    # #1293: moving the reader or the adjudicator waits for its runs, as `identity` does. It runs
+    # before every step that writes (the adjudication change commits its own config and route),
+    # so a refused `set` leaves the loop as it was, whatever other flags it carries.
+    _refuse_busy_identity(args, loop)
     adj_done = False
     if (getattr(args, "adjudicator_profile", None) or getattr(args, "adjudicator_route", None)
             or getattr(args, "adjudicator", None)):
@@ -754,10 +771,6 @@ def _set(args) -> int:
 
     (tokens, apps, adj_before, adj_after, read_before, read_after, adj_changed,
      read_changed) = _credentials(args, loop)
-    # #1293: moving the reader or the adjudicator waits for its runs, as `identity` does.
-    if identity_command.set_moves_busy_identity(loop, tokens, apps, adj_before, adj_after,
-                                                read_changed):
-        raise _Refused
     _seat_capacity(args, loop, seats, seat_changes, adj_before, adj_after)
     budget_changes = _seat_budgets(args, loop, seats, changes)
     observer_cfg = _observer_block(args, loop)
