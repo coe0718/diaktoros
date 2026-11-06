@@ -64,7 +64,13 @@ def context(payload: dict):
         silence(f"{loop['id']} takes its events from {loop.get('ingress_app')}'s webhook: this "
                 "delivery came from a leftover repo hook and is dropped (delete the repo's hooks "
                 "to this loop's routes)")
-    return loop, state_mod.state_for(loop)
+    st = state_mod.state_for(loop)
+    # The dispatcher drops a paused loop's deliveries before any gate runs (gate_app.py); a
+    # watchdog re-drive of one it took before ``arm --pause`` skips the dispatcher, so the same
+    # flag is read here (#1297). The operator's in-process runs (``hermes dk review``) still act.
+    if app_ingress.redrive_held(loop, st):
+        app_ingress.drop_held_redrive(loop)
+    return loop, st
 
 
 def _record_decisions(loop: dict, payload: dict) -> None:

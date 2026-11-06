@@ -54,12 +54,56 @@ def woken_by_repo_hook() -> bool:
     process cannot say how it was started, so the wake is treated as a leftover and dropped
     (#1289): fail closed. An in-process gate call (``util.gate_call``: the CLI's and the
     Desktop's reviews) says how it was started itself, so it is never dropped here."""
-    from . import gate_failures, util
-    if os.environ.get(gate_failures.REDRIVE_ENV) or util.in_gate_call():
+    from . import util
+    if redriven() or util.in_gate_call():
         return False
     main = sys.modules.get("__main__")
     stem = pathlib.Path(getattr(main, "__file__", "") or "").stem
     return not stem or stem in GATES
+
+
+def redriven() -> bool:
+    """Whether this process is a watchdog re-drive (``gate_failures.redrive`` sets its mark)."""
+    from . import gate_failures
+    return bool(os.environ.get(gate_failures.REDRIVE_ENV))
+
+
+def paused_reason(loop: dict) -> str:
+    """Why a paused loop's App delivery is dropped, as both the dispatcher (``gate_app.py``) and a
+    watchdog re-drive of a delivery it took before the pause (``gate.context``, #1297) say it."""
+    return f"{loop['id']} is paused: the App's delivery is dropped (`hermes dk arm` resumes)"
+
+
+def redrive_held(loop: dict, st) -> bool:
+    """Whether this process is a watchdog re-drive of an App delivery for a loop that is paused
+    (#1297). The dispatcher (``gate_app.py``) never sees a re-drive, so the gate drops it itself
+    (``gate.context``), and nothing the gate does on its way out acts either (the reviewer's
+    declined-head merge-check refresh sees the drop's mark, ``held_drop``, and does not ask this
+    again). The operator's in-process runs (``hermes dk review``) are not re-drives and still
+    act."""
+    from . import config
+    return bool(config.app_ingress(loop)) and redriven() and paused(st)
+
+
+_HELD_MARK = "diaktoros_paused_redrive"
+
+
+def drop_held_redrive(loop: dict):
+    """End a re-drive ``redrive_held`` held (#1297): ``silence`` with ``paused_reason``, its
+    ``SystemExit`` marked as this drop so the gate's exit (the reviewer's declined-head refresh,
+    ``scripts/gate_reviewer.refreshes_declined_head``) knows nothing may act, without reading
+    the pause flag again: an ``arm`` between two reads would let a dropped delivery act."""
+    from .util import silence
+    try:
+        silence(paused_reason(loop))
+    except SystemExit as exc:
+        setattr(exc, _HELD_MARK, True)
+        raise
+
+
+def held_drop(exc: BaseException) -> bool:
+    """Whether this exit is a held re-drive's drop (``drop_held_redrive``): nothing acts on it."""
+    return bool(getattr(exc, _HELD_MARK, False))
 
 
 def paused(st) -> bool:

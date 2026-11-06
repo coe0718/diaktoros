@@ -147,7 +147,9 @@ retry so the gateway can also deduplicate a logical send.
 Only definite pre-POST failures retry automatically, up to three attempts, including a sender that stopped before its POST began (#1314). That proof needs
 the claim's `posting_marked` field, which every current sender writes with the claim: a `pending`
 claim left by a sender from before #1314 has neither field, whether or not its POST ran, so after an
-upgrade it becomes `uncertain` like any claim that reached its POST, never resent (#1319). A timeout,
+upgrade it becomes `uncertain` like any claim that reached its POST, never resent (#1319). A digest
+claim that stopped before its POST on its last attempt is not resent: it and its batch members become
+`uncertain`, so `settle` can resend it once or record it (#1320). A timeout,
 5xx or other unconfirmed POST may have sent the message and is quarantined rather than
 replayed. Legacy failure receipts without proof of pre-POST failure become uncertain.
 These failures never consume a review seat or block PR admission, but may prevent an

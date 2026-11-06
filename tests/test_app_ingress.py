@@ -242,6 +242,103 @@ class Flow(app_cli.Base):
                 self.assertEqual("leftover repo hook" in text, not redrive, text)
         self.assertFalse(app_ingress.woken_by_repo_hook())   # in-process (CLI, dispatcher)
 
+    def test_a_watchdog_redrive_holds_arm_pause(self):
+        # #1297: a delivery the dispatcher took before `arm --pause`, whose gate then failed, is
+        # re-driven by the sweep straight through gate_reviewer.py, past the dispatcher's check.
+        import os
+        from diaktoros import gate_failures
+        root = Path(__file__).resolve().parents[1]
+        raw = json.dumps({"action": "opened", "number": 7, "pull_request": {
+            "number": 7, "head": {"sha": "a" * 40}, "base": {"ref": "main"},
+            "user": {"login": tfs.FIX}}, "repository": {"full_name": "acme/widgets"},
+            "sender": {"login": tfs.FIX}})
+        loop = self.loop()
+        st = state_mod.state_for(loop)
+        decisions = st.dir / "gate-decisions.jsonl"
+        ledger = gate_failures.loop_ledger(loop)
+        key = gate_failures.fingerprint("gate_reviewer", raw)
+        env = {k: v for k, v in os.environ.items() if k != gate_failures.REDRIVE_ENV}
+        for paused in (True, False):
+            with self.subTest(paused=paused), mock.patch.dict(os.environ, env, clear=True):
+                app_ingress.set_paused(st, paused)
+                decisions.unlink(missing_ok=True)
+                ledger.record(key, {"gate": "gate_reviewer", "kind": "crash", "pr": 7,
+                                    "repo": "acme/widgets", "redrivable": True}, raw)
+                lines = gate_failures.sweep(ledger, "widgets", root / "scripts", cooldown_s=0)
+                text = decisions.read_text() if decisions.exists() else ""
+                self.assertEqual("widgets is paused: the App's delivery is dropped" in text, paused,
+                                 f"{lines}\n{text}")
+
+    def test_a_paused_redrive_through_the_reviewer_gate_refreshes_no_merge_check(self):
+        # #1297 (review of #1963): the reviewer gate's wrapper refreshes the merge check for a
+        # declined event (#1797), which can read GitHub and post a status. A paused loop's re-drive
+        # is dropped by gate.context; its exit must not reach that refresh either. Driven through
+        # the decorated entry point, gate_reviewer.main, as the re-drive subprocess runs it.
+        import os
+        from diaktoros import gate_failures
+        from scripts import gate_reviewer
+        payload = json.dumps({"action": "synchronize", "number": 7, "pull_request": {
+            "number": 7, "head": {"sha": "a" * 40}, "base": {"ref": "main"},
+            "user": {"login": tfs.FIX}}, "repository": {"full_name": "acme/widgets"},
+            "sender": {"login": tfs.FIX}})
+        st = state_mod.state_for(self.loop())
+        env = {k: v for k, v in os.environ.items() if k != gate_failures.REDRIVE_ENV}
+        # (paused, re-drive) -> refreshed: only the paused re-drive is held; the normal declined
+        # refresh still runs, and so does the operator's in-process run while paused.
+        for paused, redrive, refreshed in ((True, True, False), (False, True, True),
+                                           (True, False, True)):
+            with self.subTest(paused=paused, redrive=redrive), \
+                    mock.patch.dict(os.environ, {**env, **(
+                        {gate_failures.REDRIVE_ENV: "k"} if redrive else {})}, clear=True), \
+                    mock.patch.object(gate_reviewer.sys, "stdin", io.StringIO(payload)), \
+                    mock.patch.object(gate_reviewer.merge_check, "refresh_new_head") as refresh, \
+                    mock.patch.object(app_ingress, "woken_by_repo_hook", return_value=False), \
+                    contextlib.redirect_stdout(io.StringIO()) as out, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                app_ingress.set_paused(st, paused)
+                with self.assertRaises(SystemExit) as stop:
+                    gate_reviewer.main()
+                self.assertIn(stop.exception.code, (None, 0))
+                self.assertIn("[SILENT]", out.getvalue())
+                self.assertEqual(refresh.called, refreshed, refresh.call_args_list)
+                if refreshed:
+                    self.assertEqual(refresh.call_args.args[2:], (7, "a" * 40))
+
+    def test_an_arm_after_the_redrive_drop_still_refreshes_no_merge_check(self):
+        # #1297 (round 2 of #1963): gate.context drops the paused re-drive; if the operator arms
+        # right after that read, the delivery is still dropped and its exit must not refresh the
+        # merge check. The drop is carried on the exit, not decided again from the flag.
+        import os
+        from diaktoros import gate_failures
+        from scripts import gate_reviewer
+        payload = json.dumps({"action": "synchronize", "number": 7, "pull_request": {
+            "number": 7, "head": {"sha": "a" * 40}, "base": {"ref": "main"},
+            "user": {"login": tfs.FIX}}, "repository": {"full_name": "acme/widgets"},
+            "sender": {"login": tfs.FIX}})
+        st = state_mod.state_for(self.loop())
+        app_ingress.set_paused(st, True)
+        real_paused, reads = app_ingress.paused, []
+
+        def paused_then_armed(state):
+            reads.append(real_paused(state))
+            app_ingress.set_paused(st, False)        # the operator's `arm` lands right after
+            return reads[-1]
+        env = {k: v for k, v in os.environ.items() if k != gate_failures.REDRIVE_ENV}
+        with mock.patch.dict(os.environ, {**env, gate_failures.REDRIVE_ENV: "k"}, clear=True), \
+                mock.patch.object(gate_reviewer.sys, "stdin", io.StringIO(payload)), \
+                mock.patch.object(gate_reviewer.merge_check, "refresh_new_head") as refresh, \
+                mock.patch.object(app_ingress, "woken_by_repo_hook", return_value=False), \
+                mock.patch.object(app_ingress, "paused", side_effect=paused_then_armed), \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as stop:
+                gate_reviewer.main()
+        self.assertIn(stop.exception.code, (None, 0))
+        self.assertIn("[SILENT]", out.getvalue())
+        self.assertEqual(reads[:1], [True])
+        self.assertFalse(app_ingress.paused(st))
+        self.assertFalse(refresh.called, (reads, refresh.call_args_list))
+
     def test_a_gate_whose_main_has_no_script_file_drops_the_delivery(self):
         # #1289: an embedded interpreter or `python -c` has no __main__.__file__, so how the gate
         # was started cannot be told: the delivery is dropped (fail closed), not acted on.

@@ -27,6 +27,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from diaktoros import (  # noqa: E402
+    app_ingress,
     config,
     gate,
     gh,
@@ -47,14 +48,16 @@ def refreshes_declined_head(decide_fn):
     merge check has not been decided for gets ``diaktoros/review`` now, naming why the head is not
     ready (a review-only author's push, a kick declined at the cap or by another hold), instead
     of at the next sweep. A head ``merge-check.json`` already holds spends nothing. Never changes
-    the gate's answer.
+    the gate's answer. A paused App loop's watchdog re-drive, which ``gate.context`` drops, posts
+    nothing either (#1297): its exit carries that drop (``app_ingress.held_drop``), so the pause
+    flag is not read again (an ``arm`` in between would let the dropped delivery act).
     """
     @functools.wraps(decide_fn)
     def wrapper(payload: dict, *args, **kwargs):
         try:
             return decide_fn(payload, *args, **kwargs)
         except SystemExit as exc:
-            if exc.code in (None, 0):
+            if exc.code in (None, 0) and not app_ingress.held_drop(exc):
                 refresh_declined(payload)
             raise
     return wrapper
