@@ -64,9 +64,10 @@ def closing_numbers(loop: dict, number: int, body: str | None = None) -> list[in
     return found[:MAX_ISSUES]
 
 
-def maintainers_among(loop: dict, comments: list) -> list[tuple[str, str, str]]:
+def maintainers_among(loop: dict, comments: list, newest: int | None = COMMENTS_MAX
+                      ) -> list[tuple[str, str, str]]:
     """``[(login, created_at, body)]`` of the maintainers' comments among ``comments`` (oldest
-    first, the newest ``COMMENTS_MAX``): the one filter for every reader of them."""
+    first, the newest ``newest``; ``None``, every one): the one filter for every reader of them."""
     from . import config
     allowed = config.maintainers(loop)
     out = []
@@ -75,16 +76,18 @@ def maintainers_among(loop: dict, comments: list) -> list[tuple[str, str, str]]:
         login = str(user.get("login") or "").lower() if isinstance(user, dict) else ""
         if login and login in allowed:
             out.append((login, str(comment.get("created_at") or ""), str(comment.get("body") or "")))
-    return out[-COMMENTS_MAX:]
+    return out if newest is None else out[-newest:]
 
 
-def maintainer_comments(loop: dict, number: int) -> tuple[list[tuple[str, str, str]], str]:
-    """``[(login, created_at, body)]`` of maintainers' comments (oldest first), and a note."""
+def maintainer_comments(loop: dict, number: int, newest: int | None = COMMENTS_MAX
+                        ) -> tuple[list[tuple[str, str, str]], str]:
+    """``[(login, created_at, body)]`` of maintainers' comments (oldest first, ``newest`` as in
+    ``maintainers_among``), and a note."""
     from . import gh
     comments, _ = gh.issue_comments_read(loop, number)
     if comments is None:
         return [], "(The maintainers' comments could not be read for this turn.)"
-    return maintainers_among(loop, comments), ""
+    return maintainers_among(loop, comments, newest), ""
 
 
 def comments_section(loop: dict, number: int, what: str = "issue", read=None) -> str:
@@ -120,9 +123,12 @@ def section(loop: dict, number: int) -> str:
     if body is None:
         return ""
     numbers = closing_numbers(loop, number, body)
-    pr_comments = maintainer_comments(loop, number)
-    referenced = referenced_section(loop, number, [body, *(text for _, _, text in pr_comments[0])],
-                                    numbers, comments_read=not pr_comments[1])
+    # Every maintainer comment is scanned for the issues it names (review on #1948): an old
+    # deferral is as binding as a new one. Only the newest ``COMMENTS_MAX`` are shown.
+    every, unread = maintainer_comments(loop, number, newest=None)
+    pr_comments = (every[-COMMENTS_MAX:], unread)
+    referenced = referenced_section(loop, number, [body, *(text for _, _, text in every)],
+                                    numbers, comments_read=not unread)
     if not numbers:
         return referenced
     out = []

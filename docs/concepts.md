@@ -149,7 +149,8 @@ at most three issues; title 256 bytes and body 8,000 bytes; the 20 newest mainta
 on the PR itself are read too, so a deferral can live there (#666).
 
 Every other issue or pull request the PR names by number (`deferred to #N`, `Follow-up to #N`,
-any `#N` in its description or in a maintainer's comment on it) is shown too, under "Referenced
+any `#N` in its description or in any maintainer's comment on it, including those older than
+the 20 shown) is shown too, under "Referenced
 issues", with its live state alone (#1783): whether it is an issue or a pull request; open, closed
 with GitHub's reason, or merged; and its title and labels, quoted. Its body is not shown. The seats
 have no network, so without this a reviewer could only list such a state as not verified. A

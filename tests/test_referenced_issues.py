@@ -98,6 +98,21 @@ class Referenced(unittest.TestCase):
         self.assertIn("- #50 (named): issue, open", text)
         self.assertNotIn("#51", text)
 
+    def test_a_maintainers_comment_older_than_the_shown_ones_still_names_one(self):
+        """Review on #1948: the oldest of 21 maintainer comments defers to a closed issue; only
+        the newest 20 are shown, but every one is read for the issues it names."""
+        older = [comment("boss", "deferred to #30")]
+        newer = [comment("boss", f"note {i}") for i in range(issue_facts.COMMENTS_MAX)]
+        github = GitHub("Closes #5", {5: issue(5), 30: issue(30, "closed", "completed")},
+                        older + newer)
+        text = self.section(github)
+        self.assertIn("- #30 (deferred to): issue, closed (completed)", text)
+        self.assertIn("NOT AN OPEN ISSUE", text)
+        shown = text[text.index("Maintainers' comments on the PR #7"):text.index("## Referenced")]
+        self.assertNotIn("deferred to #30", shown)     # the display keeps its newest 20
+        self.assertIn(f"note {issue_facts.COMMENTS_MAX - 1}", shown)
+        self.assertEqual([p for p, _ in github.reads].count("comments/7"), 1)
+
     def test_other_repositories_entities_and_the_pr_itself_are_not_references(self):
         github = GitHub("acme/other#60, &#61; and ##62, this PR #7, then #63", {63: issue(63)})
         text = self.section(github)
