@@ -33,13 +33,22 @@ SECRET = "/home/someone/.hermes/tokens/x.pat exploded"
 PLUGIN_JS = ROOT / "desktop" / "plugin.js"
 
 # One left-to-right scan, so a `//` inside a block comment (or a `/*` inside a line comment) is
-# consumed by whichever comment starts first. The lookbehind keeps `https://` in a string.
-_JS_COMMENT = re.compile(r"/\*.*?\*/|(?<![:\w])//[^\n]*", re.S)
+# consumed by whichever comment, or string literal, starts first. String literals ('...', "...",
+# `...`) are matched as group 1 and kept whole, so a `/*` or `//` inside one opens no comment and
+# cannot hide the code after it (#1313). The lookbehind keeps `https://` outside a string too.
+# Not a full tokenizer: regex literals and `${...}` nesting a backtick are not recognized.
+_JS_COMMENT = re.compile(
+    r"""('(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`)"""
+    r"|/\*.*?\*/|(?<![:\w])//[^\n]*",
+    re.S,
+)
 
 
 def strip_js_comments(source: str) -> str:
-    """The JS that runs: `//` line comments and `/* ... */` / `/** ... */` blocks removed."""
-    return _JS_COMMENT.sub("", source)
+    """The JS that runs: `//` line comments and `/* ... */` / `/** ... */` blocks removed.
+
+    String and template literals are kept verbatim, comment markers inside them included."""
+    return _JS_COMMENT.sub(lambda m: m.group(1) or "", source)
 
 
 class Now(unittest.TestCase):
@@ -736,6 +745,19 @@ class Package(unittest.TestCase):
         self.assertEqual(strip_js_comments(multi).strip(), "const b = `lit`;")
         url = "const u = 'https://example.test/a'; // `tail`\n"
         self.assertEqual(strip_js_comments(url).strip(), "const u = 'https://example.test/a';")
+
+    def test_comment_stripper_ignores_comment_markers_in_strings_1313(self):
+        # A `/*` in a string opens no comment, so it cannot swallow the code (and its backtick)
+        # up to a later `*/`.
+        src = 'const hint = "scale /* x";\nconst t = `backtick in code`;\n// note */\nconst u = 1;\n'
+        code = strip_js_comments(src)
+        self.assertIn("const t = `backtick in code`;", code)
+        self.assertIn('const hint = "scale /* x";', code)
+        self.assertNotIn("note", code)
+        self.assertIn("`", code)   # the first-render guard's check would see the code backtick
+        quoted = "const s = 'a // b'; const r = \"it\\'s /* \"; /* gone */ const k = 2;\n"
+        self.assertEqual(strip_js_comments(quoted).strip(),
+                         "const s = 'a // b'; const r = \"it\\'s /* \";  const k = 2;")
 
     def test_first_render_findings_641(self):
         source = PLUGIN_JS.read_text()
