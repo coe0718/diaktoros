@@ -21,8 +21,11 @@ check at all.
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import os
+import struct
+import sys
 
 from . import ci, ready, util
 
@@ -74,21 +77,50 @@ STATUS_DESCRIPTION_MAX = 140    # GitHub's commit-status description limit
 LOCK = util.register_lock("merge-check.lock")
 
 
+# Linux's open-file-description record locks (F_OFD_SETLK / F_OFD_SETLKW, Python 3.12+ names
+# them): owned by the descriptor, like ``flock``, so two writers in one process exclude each other
+# too, and closing the descriptor releases the lock. A plain ``lockf`` lock is per process.
+# Elsewhere the numbers mean other commands, so there is no per-PR lock off Linux.
+_OFD = sys.platform.startswith("linux")
+_OFD_SETLK = getattr(fcntl, "F_OFD_SETLK", 37)
+_OFD_SETLKW = getattr(fcntl, "F_OFD_SETLKW", 38)
+
+
+def _lock_pr(fd: int, number: int, wait: bool) -> bool:
+    """Take byte ``number`` of the lock file exclusively for this descriptor: one PR's writer
+    lock (#1257). False when ``wait`` is off and another writer holds that PR. Off Linux, or on a
+    filesystem without these locks, it takes the whole file instead (``flock``), so every PR's
+    writers share one lock there, as before #1257: a mark then yields to a refresh posting any PR
+    (delayed to the next refresh, never lost)."""
+    if _OFD:
+        record = struct.pack("@hhqqi0q", fcntl.F_WRLCK, os.SEEK_SET, number, 1, 0)
+        try:
+            fcntl.fcntl(fd, _OFD_SETLKW if wait else _OFD_SETLK, record)
+            return True
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EACCES):
+                return False
+            if exc.errno not in (errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP):
+                raise
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+    except BlockingIOError:
+        return False
+    return True
+
+
 @contextlib.contextmanager
-def _writer(st, wait: bool = True):
-    """The one merge-check writer for this loop (#1251): held from reading what was posted through
-    the POST to recording it, so two writers never both decide nothing is posted for a head and
-    both create a run. Taken before the state lock, never inside it. Yields False when ``wait`` is
-    off and another writer holds it."""
+def _writer(st, number: int, wait: bool = True):
+    """The one merge-check writer for PR ``number`` (#1251): held from reading what was posted
+    through the POST to recording it, so two writers never both decide nothing is posted for a
+    head and both create a run. Scoped to the PR (#1257): a refresh posting PR A never holds off
+    a mark for PR B (the record they share is read and written under the state lock). Taken before
+    the state lock, never inside it. Yields False when ``wait`` is off and another writer holds
+    this PR. The lock file stays empty: a byte-range lock writes nothing."""
     st.dir.mkdir(parents=True, exist_ok=True)
     fd = os.open(st.dir / LOCK, os.O_CREAT | os.O_RDWR, 0o600)
     try:                                # closing the descriptor releases the lock
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
-        except BlockingIOError:
-            yield False
-            return
-        yield True
+        yield _lock_pr(fd, int(number), wait)
     finally:
         os.close(fd)
 
@@ -163,7 +195,7 @@ def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None)
         if state is None:
             continue                                   # not a loop PR: no check
         digest = _digest(state, summary)
-        with _writer(st):
+        with _writer(st, number):
             with st.locked():
                 memory = st.kv_get(path, {})
                 memory = memory if isinstance(memory, dict) else {}
@@ -213,9 +245,9 @@ def mark_pending(loop: dict, st, number: int, head: str, why: str) -> bool:
         if not config.merge_check_on(loop) or not head:
             return False
         path = st.dir / FILE
-        with _writer(st, wait=False) as mine:
+        with _writer(st, number, wait=False) as mine:
             if not mine:
-                return False                # a refresh is posting now: it writes the real state
+                return False     # a refresh is posting this PR now: it writes the real state
             if has_head(st, number, head):
                 return False                           # already posted for this head
             # Only what is known without reading the PR: the next refresh gives the real reasons.

@@ -584,10 +584,40 @@ class Posting(unittest.TestCase):
         self.assertEqual([c[1] for c in self.calls], ["POST"])          # one run, not two
         self.assertEqual(self.memory()["7"]["run_id"], 55)
 
+    def test_a_gate_mark_for_another_pr_during_a_refresh_still_posts(self):
+        # #1257: the writer lock was one per loop, so a review armed for #8 while a refresh was
+        # posting #7 left #8 without its pending check until the next refresh.
+        marked = []
+        real_post = merge_check.post
+
+        def post_while_the_gate_fires(loop, number, *args, **kwargs):
+            if number == 7:
+                with mock.patch.object(gate, "enqueue_isolated", return_value="enqueued"), \
+                        mock.patch("sys.stdout", new_callable=__import__("io").StringIO), \
+                        self.assertRaises(SystemExit):
+                    gate.block_pr_agent(self.loop, self.st, "reviewer", 8, "c" * 40)
+                marked.append(merge_check.has_head(self.st, 8, "c" * 40))
+            return real_post(loop, number, *args, **kwargs)
+        with mock.patch.object(merge_check, "post", side_effect=post_while_the_gate_fires):
+            self.assertEqual(self.refresh(), 1)
+        self.assertEqual(marked, [True])                     # #8's mark posted mid-refresh
+        self.assertEqual(sorted(self.memory()), ["7", "8"])
+        self.assertEqual([(c[1], (c[2] or {}).get("head_sha")) for c in self.calls],
+                         [("POST", "c" * 40), ("POST", HEAD)])
+
+    def test_the_writer_lock_is_per_pr_and_exclusive_within_one(self):
+        with merge_check._writer(self.st, 7, wait=False) as mine:
+            self.assertTrue(mine)
+            with merge_check._writer(self.st, 7, wait=False) as again:
+                self.assertFalse(again)                       # same PR: one writer
+            with merge_check._writer(self.st, 8, wait=False) as other:
+                self.assertTrue(other)                        # another PR: not held off
+        self.assertEqual((self.st.dir / merge_check.LOCK).stat().st_size, 0)   # backup: litter
+
     def test_the_writer_lock_is_free_again_after_each_writer(self):
         self.assertEqual(self.refresh(), 1)
         self.assertTrue(merge_check.mark_pending(self.loop, self.st, 8, "b" * 40, "review queued"))
-        with merge_check._writer(self.st, wait=False) as mine:
+        with merge_check._writer(self.st, 9, wait=False) as mine:
             self.assertTrue(mine)
             self.assertFalse(merge_check.mark_pending(self.loop, self.st, 9, "c" * 40, "x"))
 
