@@ -846,7 +846,9 @@ def parse_app_id(value) -> int | None:
 
 
 def is_app(loop: dict, login: str) -> bool:
-    """Whether ``login`` is mapped as a GitHub App identity (#1163), not a PAT."""
+    """Whether ``login`` is mapped as a GitHub App identity (#1163), not a PAT: the one rule,
+    which ``github_app.is_app`` delegates to (#1254). A PAT key wins over an ``apps`` key for the
+    same login (normalize refuses a loop with both), and both maps fold with ``util.login_key``."""
     name = util.login_key(login or "")
     pats = {util.login_key(k) for k in loop.get("tokens") or {}}
     return bool(name) and name not in pats and name in {util.login_key(k) for k in loop.get("apps") or {}}

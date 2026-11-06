@@ -116,8 +116,12 @@ proposes posting turn state as a commit status).
 **As built (#1163 M2b):** the host posts this check with the reviewer App, on by default
 (`merge_check: auto`). It is posted as pending the moment a review is queued for a head, then written after every verdict, shadow review and ruling, and on every
 watchdog sweep, only when the head, state or summary changes; the summary lists what holds the
-head. GitHub's own `blocked` is not counted (with the check required, GitHub reports `blocked`
-*because* the check is not green). A required check that has not reported for 15 minutes after the
+head. GitHub's own `blocked` is not counted while the PR's own base (a stacked PR's parent
+branch, not the loop's base) requires the check (GitHub reports
+`blocked` *because* the check is not green); on a base read as not requiring it, `blocked` is
+another rule and keeps the check pending (#1227). A base whose protection could not be fully read,
+or a PR whose base ref is missing from GitHub's answer, is taken as requiring the check. A required
+check that has not reported for 15 minutes after the
 head was seen (or, for a head already open when the loop was armed, since arming) counts as a
 failure, not a wait. Don't list `diaktoros/review` in `required_checks`: the loop never reads its
 own check as CI, so `required_checks` refuses it. An escalated head with no adjudicator route is a
@@ -127,7 +131,7 @@ status, which branch protection cannot pin to one identity. To make it the block
 own that requires `diaktoros/review`, pinned to the reviewer App, with no bypass. `doctor`'s
 `merge-check` line says whether the base requires the check and from which App, and flags a base
 that still requires approvals (an App's never count, so each PR would need a person's), and one
-that requires the check while the loop does not post it, or from an App that is not the reviewer (a PAT reviewer's commit status never satisfies a pinned check): every PR would stay blocked. A base it could only half read is never reported as verified.
+that requires the check while the loop does not post it, or from an App that is not the reviewer (a PAT reviewer's commit status never satisfies a pinned check): every PR would stay blocked. A base it could only half read is never reported as verified. For a loop that does not post the check, a half-read base is silent unless the half that answered requires other status checks: then `merge-check` is ⚠️, since the unread half (usually classic protection, which needs admin access to read) may require `diaktoros/review` too. A half-read base whose readable half requires no checks stays silent, so a requirement in the unread half goes unreported there; give the reader the access named in the fix, or check repo settings → rules by hand.
 
 ## An App as the hook admin (#1196)
 
@@ -161,7 +165,9 @@ An existing loop moves over with `hermes dk set --ingress app-webhook --ingress-
 which installs the App's route, then `app-webhook --set`. Its repo hooks are not deleted for you:
 until you delete them, a gate the gateway runs straight from one of them drops the delivery
 (only the App's dispatcher, `hermes dk review` and a watchdog re-drive reach an App loop's
-gates), so nothing runs twice and `arm --pause` holds. `doctor`'s `hooks` line names each
+gates), so nothing runs twice and `arm --pause` holds. A gate whose process has no script file
+as `__main__` (an embedded interpreter, `python -c`) cannot tell how it was woken, so it drops
+the delivery too (#1289). `doctor`'s `hooks` line names each
 leftover hook by id.
 
 ## Recommendation: go, with a host-delivered handoff

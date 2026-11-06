@@ -52,8 +52,10 @@ def _changed_since_listing(pr: dict, detail: dict) -> list[str]:
 # PENDING can still clear on its own (a review, the shadow, CI or a ruling still out, or a read
 # that failed and is retried); FAILURE needs a change or a person (changes requested, red CI, a
 # conflict, a hold, a ruling the operator decides). GITHUB is GitHub's ``blocked``: with the merge
-# check required GitHub reads ``blocked`` *because* the check is not green, so the check never
-# counts it (it would wait on itself). OUTSIDE: not a loop PR.
+# check required GitHub reads ``blocked`` *because* the check is not green, so the check does not
+# count it then (it would wait on itself); on a PR base (the branch the PR targets) known not to
+# require the check it is a wait
+# (``merge_check.decide``, #1227). OUTSIDE: not a loop PR.
 PENDING, FAILURE, GITHUB, OUTSIDE = "pending", "failure", "github", "outside"
 
 
@@ -310,7 +312,9 @@ def build_kinds(loop: dict, st, prs: list[dict],
         base = (pr.get("base") or {}).get("ref")
         parent = by_branch.get(base) if base and base != loop["base"] else None
         if base and base != loop["base"] and parent is None:
-            why.append((PENDING, f"stacked on {base}, which is not an open PR branch: base "
+            # #1228: its parent merged or closed, and nothing in the loop retargets the child or
+            # reopens the parent, so this never clears on its own: a person retargets or closes it.
+            why.append((FAILURE, f"stacked on {base}, which is not an open PR branch: base "
                                  "unverified"))
         info[number] = {"number": number, "title": str(pr.get("title") or "")[:80], "why": why,
                         "_parent": parent, "files": read.get("files")}

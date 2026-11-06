@@ -20,7 +20,7 @@ import tempfile
 import time
 from urllib.parse import quote
 
-from . import attribution, broker, config, gh, scope_lock, util
+from . import attribution, broker, config, conflict_person, gh, scope_lock, util
 from .config import host_guards
 
 MAX_FILES = 24
@@ -439,7 +439,7 @@ def _merge(git: "_Isolated", url: str, branch: str, head: str, base_ref: str,
         if code or not CONFLICT_MARKER.search(blob):
             whole.append(path)                 # no marker block written: not a content conflict
     if whole:
-        raise NeedsPerson(f"merge conflicts a person must resolve: {len(whole)} whole-file "
+        raise NeedsPerson(f"{conflict_person.WHOLE_FILE_REASON}: {len(whole)} whole-file "
                           "conflict(s) (a modify/delete, a rename or a binary file)")
     return tree, conflicted
 

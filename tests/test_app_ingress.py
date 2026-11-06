@@ -74,6 +74,25 @@ class Flow(app_cli.Base):
                 if status == doctor.MISMATCH:
                     self.assertIn("hermes dk app-webhook --loop widgets --set", check.fix)
 
+    def test_a_wrong_url_does_not_hide_a_wrong_content_type(self):
+        # #1294: doctor and arm name both defects at once, not the URL first and the content
+        # type only on the next run.
+        from diaktoros.doctor import hook_checks
+        self.run_cli(["arm", "--loop", "widgets", "--pause"])
+        self.webhook.update(url="https://example.com/dk-spike", content_type="form")
+        check = hook_checks.check_app_webhook(self.loop(), offline=False)
+        self.assertIn("posts to https://example.com/dk-spike, not the route's", check.detail)
+        self.assertIn("content type is form, not json", check.detail)
+        rc, out = self.run_cli(["arm", "--loop", "widgets"])
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("posts to https://example.com/dk-spike, not the route's", out)
+        self.assertIn("content type is form, not json", out)
+        # `app-webhook --set` writes json too, so a wrong content type alone names that fix.
+        self.webhook["url"] = routes.target("dk-app-acme-reader", "https://gateway.example")[0]
+        rc, out = self.run_cli(["app-webhook", "--loop", "widgets"])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("fix: hermes dk app-webhook --loop widgets --set", out)
+
     def test_doctor_and_explain_carry_the_apps_lines(self):
         from diaktoros import doctor
         from diaktoros.doctor import hook_checks
@@ -249,6 +268,37 @@ class Flow(app_cli.Base):
                 text = decisions.read_text() if decisions.exists() else ""
                 self.assertEqual("widgets is paused: the App's delivery is dropped" in text, paused,
                                  f"{lines}\n{text}")
+
+    def test_a_gate_whose_main_has_no_script_file_drops_the_delivery(self):
+        # #1289: an embedded interpreter or `python -c` has no __main__.__file__, so how the gate
+        # was started cannot be told: the delivery is dropped (fail closed), not acted on.
+        import os
+        import subprocess
+        from diaktoros import gate_failures, util
+        root = Path(__file__).resolve().parents[1]
+        payload = json.dumps({"action": "opened", "number": 7, "pull_request": {
+            "number": 7, "head": {"sha": "a" * 40}, "base": {"ref": "main"},
+            "user": {"login": tfs.FIX}}, "repository": {"full_name": "acme/widgets"},
+            "sender": {"login": tfs.FIX}})
+        decisions = state_mod.state_for(self.loop()).dir / "gate-decisions.jsonl"
+        decisions.unlink(missing_ok=True)
+        script = root / "scripts" / "gate_reviewer.py"
+        code = ("import runpy, sys\n"
+                f"sys.path.insert(0, {str(root)!r})\n"
+                f"gate = runpy.run_path({str(script)!r}, run_name='embedded')\n"
+                "from diaktoros import gate_failures\n"
+                "gate_failures.run('gate_reviewer', gate['main'])\n")
+        env = {k: v for k, v in os.environ.items() if k != gate_failures.REDRIVE_ENV}
+        proc = subprocess.run([sys.executable, "-c", code], input=payload, capture_output=True,
+                              text=True, timeout=60, cwd=str(root / "scripts"), env=env)
+        self.assertIn("[SILENT]", proc.stdout, proc.stderr)
+        text = decisions.read_text() if decisions.exists() else ""
+        self.assertIn("leftover repo hook", text, proc.stderr)
+        # Without a script file but inside an in-process gate call (the CLI's review): not dropped.
+        with mock.patch.dict(sys.modules, {"__main__": type(sys)("__main__")}):
+            self.assertTrue(app_ingress.woken_by_repo_hook())
+            with util.gate_call():
+                self.assertFalse(app_ingress.woken_by_repo_hook())
 
     def test_arm_refuses_while_the_apps_route_is_missing_and_repair_restores_it(self):
         routes.restore_entries({"dk-app-acme-reader": None})

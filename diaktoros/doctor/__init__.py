@@ -959,7 +959,8 @@ def check_merge_check(loop: dict, offline: bool) -> Check | None:
     """The base's protection against the ``diaktoros/review`` merge check (#1163 M2c): required
     (in App mode pinned to the reviewer App) when the loop posts it, never required when it does
     not, and no required approvals in App mode (GitHub never counts the App's). None when the loop
-    does not post the check and nothing requires it."""
+    does not post the check and nothing it could read requires it, unless one half went unread
+    while the other requires other status checks (#1240: then ⚠️, the unread half may require it)."""
     from .. import protection
     lid = shlex.quote(str(loop.get("id") or "<id>"))
     posting = config.merge_check_on(loop)
@@ -989,7 +990,7 @@ def check_merge_check(loop: dict, offline: bool) -> Check | None:
         if any("approving review" in w for w in warnings):
             fixes.append(f"turn required approvals off on {loop['base']} (repo settings → rules), "
                          "or keep them and approve every PR yourself")
-        if any(ci.MERGE_CHECK in w and "approving" not in w for w in warnings):
+        if posting and any(ci.MERGE_CHECK in w and "approving" not in w for w in warnings):
             fixes.append(require)
         if any(w.startswith("could not read") for w in warnings):
             fixes.append(f"{config.reader_access_fix(loop, 'protection')}, or check "
