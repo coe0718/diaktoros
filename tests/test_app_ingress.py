@@ -223,6 +223,33 @@ class Flow(app_cli.Base):
                 self.assertEqual("leftover repo hook" in text, not redrive, text)
         self.assertFalse(app_ingress.woken_by_repo_hook())   # in-process (CLI, dispatcher)
 
+    def test_a_watchdog_redrive_holds_arm_pause(self):
+        # #1297: a delivery the dispatcher took before `arm --pause`, whose gate then failed, is
+        # re-driven by the sweep straight through gate_reviewer.py, past the dispatcher's check.
+        import os
+        from diaktoros import gate_failures
+        root = Path(__file__).resolve().parents[1]
+        raw = json.dumps({"action": "opened", "number": 7, "pull_request": {
+            "number": 7, "head": {"sha": "a" * 40}, "base": {"ref": "main"},
+            "user": {"login": tfs.FIX}}, "repository": {"full_name": "acme/widgets"},
+            "sender": {"login": tfs.FIX}})
+        loop = self.loop()
+        st = state_mod.state_for(loop)
+        decisions = st.dir / "gate-decisions.jsonl"
+        ledger = gate_failures.loop_ledger(loop)
+        key = gate_failures.fingerprint("gate_reviewer", raw)
+        env = {k: v for k, v in os.environ.items() if k != gate_failures.REDRIVE_ENV}
+        for paused in (True, False):
+            with self.subTest(paused=paused), mock.patch.dict(os.environ, env, clear=True):
+                app_ingress.set_paused(st, paused)
+                decisions.unlink(missing_ok=True)
+                ledger.record(key, {"gate": "gate_reviewer", "kind": "crash", "pr": 7,
+                                    "repo": "acme/widgets", "redrivable": True}, raw)
+                lines = gate_failures.sweep(ledger, "widgets", root / "scripts", cooldown_s=0)
+                text = decisions.read_text() if decisions.exists() else ""
+                self.assertEqual("widgets is paused: the App's delivery is dropped" in text, paused,
+                                 f"{lines}\n{text}")
+
     def test_arm_refuses_while_the_apps_route_is_missing_and_repair_restores_it(self):
         routes.restore_entries({"dk-app-acme-reader": None})
         rc, out = self.run_cli(["arm", "--loop", "widgets"])

@@ -49,10 +49,21 @@ def woken_by_repo_hook() -> bool:
     in-process runs (``hermes dk review``) and a watchdog re-drive (its environment mark) are not.
     For a loop on its App's webhook such a wake is a leftover repo hook (#1239): acting on it would
     run the gate twice, and act while ``arm --pause`` says the loop is paused."""
-    from . import gate_failures
     main = sys.modules.get("__main__")
     stem = pathlib.Path(getattr(main, "__file__", "") or "").stem
-    return stem in GATES and not os.environ.get(gate_failures.REDRIVE_ENV)
+    return stem in GATES and not redriven()
+
+
+def redriven() -> bool:
+    """Whether this process is a watchdog re-drive (``gate_failures.redrive`` sets its mark)."""
+    from . import gate_failures
+    return bool(os.environ.get(gate_failures.REDRIVE_ENV))
+
+
+def paused_reason(loop: dict) -> str:
+    """Why a paused loop's App delivery is dropped, as both the dispatcher (``gate_app.py``) and a
+    watchdog re-drive of a delivery it took before the pause (``gate.context``, #1297) say it."""
+    return f"{loop['id']} is paused: the App's delivery is dropped (`hermes dk arm` resumes)"
 
 
 def paused(st) -> bool:

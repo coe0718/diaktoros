@@ -66,7 +66,7 @@ def main() -> None:
         _quiet(f"app events: {loop['id']} uses repo hooks, not this App's webhook")
     st = state_mod.state_for(loop)
     if app_ingress.paused(st):
-        reason = f"{loop['id']} is paused: the App's delivery is dropped (`hermes dk arm` resumes)"
+        reason = app_ingress.paused_reason(loop)
         try:
             gate_decisions.record(loop, name, payload, "declined", reason)
         except Exception:
