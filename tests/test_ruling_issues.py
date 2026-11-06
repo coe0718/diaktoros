@@ -339,6 +339,27 @@ class FilePending(unittest.TestCase):
             self.assertEqual(self.file(), ([], []))            # the fourth waits for room
         self.assertEqual(self.state(runs[3]), "recorded")
 
+    def test_a_full_daily_bound_still_drops_and_logs_a_later_unruled_follow_up(self):
+        # Review of #1982, F1: the bound stops the POSTs, not the sweep. A follow-up behind ones
+        # it holds back, from a run that ended without a ruling, is still denied and logged.
+        first = self.recorded("Docs miss the flag")
+        held = self.recorded("Retry loops forever")
+        lost = self.recorded("Never ruled", verdict=None, run_state="failed")
+        logged = []
+        pr = {"number": 7, "head": {"sha": HEAD, "ref": "fix-7"}}
+        with mock.patch.object(config, "ADJUDICATOR_ISSUES_DAILY", 1), \
+                mock.patch.object(gh, "pr", return_value=pr), \
+                mock.patch.object(broker, "_write", return_value=(
+                    {"number": 201, "labels": [{"name": "bug"}, {"name": "adjudicator-found"}]},
+                    "")) as write, \
+                mock.patch.object(broker, "_audit"):
+            filed = ruling_issues.file_pending(self.loop, db=self.db, log=logged.append)
+        self.assertEqual((filed, write.call_count), ([201], 1))     # the bound: one POST only
+        self.assertEqual([self.state(first), self.state(held), self.state(lost)],
+                         ["posted", "recorded", "denied"])
+        self.assertIn("adjudicator-found issue for #7 ('Never ruled') denied: the adjudicator's "
+                      "run ended without a ruling", logged)
+
 
 class EveryPath(unittest.TestCase):
     """init (form and flag), set, show and setup (#323), with test_shadow.Cli's harness."""
@@ -409,6 +430,32 @@ class Sweep(_ruling.Base):
         self.assertEqual(len(issues), 1, posts)
         self.assertEqual(issues[0]["labels"], ["adjudicator-found"])
         self.assertTrue(issues[0]["body"].startswith("Follow-up to #7"))
+
+    def test_the_watchdog_sweep_logs_a_follow_up_it_drops(self):
+        # #1359: a filing that will never be made is said in the sweep's log, not only filed ones.
+        import sqlite3
+        from contextlib import closing
+        from scripts import watchdog
+        self.loop = {**self.loop, "adjudicator_file_issues": True}
+        now = time.time()
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,state,attempts,turn_key,"
+                        "created,updated) VALUES('adj','dadj',?,7,?,'adjudicator','failed',0,"
+                        "'breach:1',?,?)", (REPO_SWEEP, HEAD_SWEEP, now, now))
+            con.execute("INSERT INTO shadow_issues(run_id,seq,repo,pr,head,title,title_key,body,"
+                        "labels,state,created,updated) VALUES('adj',1,?,7,?,'Lock leaks',"
+                        "'lock leaks','evidence','[]','recorded',?,?)",
+                        (REPO_SWEEP, HEAD_SWEEP, now, now))
+        logged = []
+        with mock.patch.object(watchdog, "log", side_effect=logged.append), \
+                mock.patch.object(broker, "_write") as write, \
+                mock.patch.object(broker, "_audit"):
+            self.sweep()                     # the first sweep only snapshots the heads
+            self.sweep()
+        write.assert_not_called()
+        self.assertTrue(any("adjudicator-found issue for #7 ('Lock leaks') denied: the "
+                            "adjudicator's run ended without a ruling" in line
+                            for line in logged), logged)
 
 
 REPO_SWEEP, HEAD_SWEEP = _ruling.fg.REPO, _ruling.fg.HEAD

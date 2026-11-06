@@ -57,17 +57,28 @@ def temp_in_use(path) -> bool:
     the writer's ``flock`` (``hold_temp``), not the name: a file of this shape that nobody holds
     is a user's file or a crashed writer's leftover, and ``backup`` keeps it (#1651). Never waits."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+        held = flock_held(path)
     except FileNotFoundError:
         return True               # renamed away since the listing: nothing to archive
+    return held is True           # unprobeable: not proven a writer's, so keep it
+
+
+def flock_held(path) -> bool | None:
+    """Does another process hold a ``flock`` on ``path`` right now? ``None`` when it cannot be
+    probed (an open or ``flock`` error); ``FileNotFoundError`` when there is no such file. Never
+    waits, and lets go at once of the shared lock a probe of a free file takes."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        raise
     except OSError:
-        return False              # cannot be probed: not proven a writer's, so keep it
+        return None
     try:
         fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
     except BlockingIOError:
         return True
     except OSError:
-        return False
+        return None
     finally:
         os.close(fd)              # also drops a shared lock just taken
     return False

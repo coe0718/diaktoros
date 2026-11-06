@@ -941,6 +941,7 @@ class LockInventory(unittest.TestCase):
     ELSEWHERE = {
         "Cargo.lock": "a dependency lockfile",
         "auth.lock": "a Hermes profile's own file, copied by seat_model",
+        "gateway.lock": "a Hermes gateway's own lock in a profile home, only probed by doctor",
         "fetch.lock": "lives in the deps cache, not a state directory",
         ".fixer-push-policy.lock": "lives in the config directory (*.json only is archived)",
         ".lock": "a suffix: the pacing, migrate, routes, seat_model and safe_push locks, none in a "

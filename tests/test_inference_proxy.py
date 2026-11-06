@@ -615,8 +615,9 @@ class SubmitNowNudge(unittest.TestCase):
 
     The proxy sees every model request of a turn, so the host spends the turn's last stretch on
     one host-written message: submit what you have verified now, the rest under ``Not verified:``.
-    It arrives on the request five steps before the cap, exactly once, and a turn that finishes
-    early never sees it.
+    It arrives on every request from five steps before the cap (#1789: the agent's history never
+    keeps it, so a single one was gone by the next request), and a turn that finishes early never
+    sees it.
     """
 
     @staticmethod
@@ -675,15 +676,22 @@ class SubmitNowNudge(unittest.TestCase):
             messages.append({'role': 'assistant', 'content': f'step {step}'})
         return messages
 
-    def test_the_nudge_arrives_once_on_the_request_five_steps_before_the_cap(self):
-        cap, seen, send = self.capability(self, steps=12)     # nudge on request 7 of 12
-        for step in range(9):
+    def test_the_nudge_arrives_on_every_request_from_five_steps_before_the_cap(self):
+        cap, seen, send = self.capability(self, steps=12)     # nudged from request 7 of 12
+        for step in range(12):
             self.assertEqual(send({'messages': self.conversation(step)}), 200)
+        self.assertEqual(send({'messages': self.conversation(12)}), 429)   # past the quota
         nudged = [index + 1 for index, body in enumerate(seen)
                   if any(inference_proxy.NUDGE in str(message.get('content'))
                          for message in body['messages'])]
-        self.assertEqual(nudged, [7], [body['messages'][-1] for body in seen])
-        self.assertTrue(cap.nudged)
+        self.assertEqual(nudged, [7, 8, 9, 10, 11, 12], [body['messages'][-1] for body in seen])
+        self.assertEqual(cap.nudged, 6)
+        # #1789: each nudged request is the agent's own conversation plus one nudge, never the
+        # nudges of earlier requests stacked up.
+        for index in range(6, 12):
+            self.assertEqual(seen[index]['messages'],
+                             self.conversation(index) + [{'role': 'user',
+                                                          'content': inference_proxy.NUDGE}])
         # It is one appended user message: the agent's own conversation is untouched, and the
         # forced model and clamped output cap are still the host's.
         last = seen[6]['messages']

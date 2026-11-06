@@ -737,6 +737,22 @@ def overrides(db: Path, repo: str, since: float, until: float) -> dict | None:
 FIX_READS_MAX = 100
 
 
+def _read_pr(reads: dict, number: int, pr_state) -> bool:
+    """Read PR ``number``'s outcome into ``reads`` once (``pr_state``; None when unreadable).
+    At most ``FIX_READS_MAX`` reads per ``reads``: past it the PR is left None, unread, and
+    True is answered, so the caller can say its counts are partial."""
+    if number in reads:
+        return False
+    if len(reads) >= FIX_READS_MAX:
+        reads[number] = None
+        return True
+    try:
+        reads[number] = pr_state(number)
+    except Exception:
+        reads[number] = None
+    return False
+
+
 def fix_outcomes(db: Path, repo: str, since: float, until: float, pr_state) -> dict | None:
     """What became of the issue fixes proposed in ``[since, until)`` (#678).
 
@@ -800,15 +816,7 @@ def fix_outcomes(db: Path, repo: str, since: float, until: float, pr_state) -> d
         if number is None:
             outcomes["unknown"] += 1
             continue
-        if number not in reads:
-            if len(reads) >= FIX_READS_MAX:
-                partial = True
-                reads[number] = None
-            else:
-                try:
-                    reads[number] = pr_state(number)
-                except Exception:
-                    reads[number] = None
+        partial |= _read_pr(reads, number, pr_state)
         outcome = reads[number] or "unknown"
         outcomes[outcome] += 1
         mine = [a for a in actions if a["pr"] == number and a["created"] >= fix["created"]]
@@ -1008,6 +1016,53 @@ def shadow_outcomes(db: Path, repo: str, since: float, until: float,
             "findings": dict(zip(("matched", "shadow_only", "reviewer_only"), totals))}
 
 
+def shadow_found(db: Path, repo: str, since: float, until: float, pr_state) -> dict | None:
+    """The issues shadow reviews found (#914) that were filed, recorded in ``[since, until)``,
+    per shadow model, and how many were later fixed: an issue is fixed when an issue-fix PR the
+    loop proposed for it (``issue_fixes``) is merged, read now with ``pr_state`` as
+    ``fix_outcomes`` reads its PRs, so a later merge updates it. A fix made outside the loop is
+    not counted. Only the shadow seat's rows (``shadow_issues`` also holds the adjudicator's,
+    #1864); filed is ``posted`` or ``unlabelled``. None without a ledger; ``{}`` when none was
+    filed in the window."""
+    db = Path(db)
+    if not db.exists():
+        return None
+    con = read_only(db)
+    try:
+        con.row_factory = sqlite3.Row
+        try:
+            rows = con.execute(
+                "SELECT i.issue_number, s.model FROM shadow_issues i JOIN runs r ON r.id=i.run_id "
+                "LEFT JOIN shadow_reviews s ON s.run_id=i.run_id "
+                "WHERE i.repo=? AND r.seat='shadow' "
+                "AND i.state IN ('posted','unlabelled') AND i.issue_number IS NOT NULL "
+                "AND i.created>=? AND i.created<? ORDER BY i.created, i.run_id, i.seq",
+                (repo, since, until)).fetchall()
+            numbers = sorted({row["issue_number"] for row in rows})
+            fixes = con.execute(
+                f"SELECT number, pr_number FROM issue_fixes WHERE repo=? AND kind='pr' AND "
+                f"pr_number IS NOT NULL AND number IN ({','.join('?' * len(numbers))})",
+                (repo, *numbers)).fetchall() if numbers else []
+        except sqlite3.OperationalError:
+            return {}
+    finally:
+        con.close()
+    if not rows:
+        return {}
+    prs: dict = defaultdict(set)
+    for fix in fixes:
+        prs[fix["number"]].add(fix["pr_number"])
+    reads, partial, models = {}, False, {}
+    for row in rows:
+        model = models.setdefault(row["model"] or "unknown", {"filed": 0, "fixed": 0})
+        model["filed"] += 1
+        for number in sorted(prs[row["issue_number"]]):
+            partial |= _read_pr(reads, number, pr_state)
+        model["fixed"] += any(reads[number] == "merged" for number in prs[row["issue_number"]])
+    return {"filed": len(rows), "fixed": sum(m["fixed"] for m in models.values()),
+            "models": dict(sorted(models.items())), "partial": partial}
+
+
 def _tracked_findings(loop: dict) -> dict:
     """The loop's numbered findings record, read-only; empty when it cannot be read."""
     try:
@@ -1045,6 +1100,7 @@ def report(loop: dict, db: Path, since: float, until: float | None = None,
             "regressions": regressions(db, repo, since, until),
             "overrides": overrides(db, repo, since, until),
             "shadows": shadow_outcomes(db, repo, since, until, tracked),
+            "shadow_found": shadow_found(db, repo, since, until, pr_state),
             "stuck": stuck(db, repo, until)}
 
 
@@ -1088,6 +1144,34 @@ def _escalations_line(escalated: dict, was_escalated: dict) -> str:
             f" · ruled {escalated['ruled']}, awaiting {escalated['awaiting']}"
             f" · by cap {by['cap']}, by dispute {by['dispute']}, by shadow {by['shadow']},"
             f" by operator {by['operator']}, unknown {by['unknown']}")
+
+
+def _shadow_lines(data: dict) -> list[str]:
+    """The digest's shadow lines: the shadow reviews beside the real ones (``shadow_outcomes``)
+    and the issues they found that were filed, per model, with how many were later fixed
+    (``shadow_found``, #914). Empty when there is neither."""
+    out = []
+    shadows = data.get("shadows")
+    if shadows:
+        paired = shadows["findings"]
+        out.append(f"shadow reviews: {shadows['shadowed']} ({shadows['paired']} beside a real "
+                   f"verdict) · verdicts agreed {shadows['agreed']}/{shadows['paired']} · "
+                   + ", ".join(f"{name} {m['agreed']}/{m['paired']}"
+                               for name, m in shadows["models"].items())
+                   + f" · findings: {paired['matched']} matched, {paired['shadow_only']} shadow "
+                     f"only, {paired['reviewer_only']} reviewer only")
+        for label, cases in (("shadow blocked, reviewer approved", shadows["blocked_approved"]),
+                             ("shadow approved, reviewer blocked", shadows["approved_blocked"])):
+            out += [f"  {label}: #{case['pr']} at {str(case['head'])[:7]}"
+                    + (f" ({case['findings'][0]})" if case["findings"] else "")
+                    for case in cases[:10]]
+    found = data.get("shadow_found")
+    if found:
+        out.append(f"shadow-found issues: {found['filed']} filed, {found['fixed']} later fixed · "
+                   + ", ".join(f"{name} {m['filed']} filed, {m['fixed']} fixed"
+                               for name, m in found["models"].items())
+                   + (" (some PRs not read)" if found["partial"] else ""))
+    return out
 
 
 def report_text(data: dict) -> str:
@@ -1146,20 +1230,7 @@ def report_text(data: dict) -> str:
         out += [f"  #{case['pr']} merged at {case['head']} over {case['seat']} ({case['model']})"
                 + (f": {', '.join(case['findings'])}" if case["findings"] else "")
                 for case in over["cases"][:10]]
-    shadows = data.get("shadows")
-    if shadows:
-        paired = shadows["findings"]
-        out.append(f"shadow reviews: {shadows['shadowed']} ({shadows['paired']} beside a real "
-                   f"verdict) · verdicts agreed {shadows['agreed']}/{shadows['paired']} · "
-                   + ", ".join(f"{name} {m['agreed']}/{m['paired']}"
-                               for name, m in shadows["models"].items())
-                   + f" · findings: {paired['matched']} matched, {paired['shadow_only']} shadow "
-                     f"only, {paired['reviewer_only']} reviewer only")
-        for label, cases in (("shadow blocked, reviewer approved", shadows["blocked_approved"]),
-                             ("shadow approved, reviewer blocked", shadows["approved_blocked"])):
-            out += [f"  {label}: #{case['pr']} at {str(case['head'])[:7]}"
-                    + (f" ({case['findings'][0]})" if case["findings"] else "")
-                    for case in cases[:10]]
+    out += _shadow_lines(data)
     fixes = data.get("fixes")
     if fixes is not None:
         got, conv, per = fixes["outcomes"], fixes["conversion"], fixes["turns_per_merged"]

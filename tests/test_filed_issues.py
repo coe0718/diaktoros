@@ -291,6 +291,74 @@ class Filing(Base):
         self.assertIn("already filed", self.send(server, title="t", body="b", labels=["bug"])["error"])
         self.assertEqual(len(self.posts), 1)
 
+    def host_filing(self, sup, seat, title, state):
+        """A host filing (#914, #1864) for a ``seat`` run on PR 7, its POST left in ``state``."""
+        sup.enqueue(f"{REPO}:7:{HEAD}:{seat}", REPO, 7, HEAD, seat)
+        with ledger.connect(self.db) as con:
+            run = con.execute("SELECT id FROM runs WHERE seat=?", (seat,)).fetchone()[0]
+        seq = sup.record_shadow_filing(run, REPO, 7, HEAD, title, 1)
+        if state != "recorded":                           # "recorded": its POST still in flight
+            sup.filed_issue_status(run, seq, state, error="POST outcome unknown: 502")
+        return run, seq
+
+    def test_a_host_filing_left_uncertain_does_not_block_the_reviewers_own(self):
+        # #1360: shadow claims, GitHub 502s, then the reviewer files the same finding.
+        sup, run_id = self.run_row()
+        shadow, seq = self.host_filing(sup, "shadow", "Same Finding", "uncertain")
+        server = self.broker(run_id)
+        answer = self.send(server, title="same  finding", body="b", labels=["bug"])
+        self.assertEqual(answer, {"ok": True, "result": {"accepted": True, "issue": 301}})
+        self.assertEqual(len(self.posts), 1)
+        with sup._connect() as con:
+            kept = con.execute("SELECT state FROM filed_issues WHERE run_id=? AND seq=?",
+                               (shadow, seq)).fetchone()[0]
+            self.assertEqual(kept, "uncertain")               # still never replayed
+            self.assertEqual(run_supervisor.write_evidence(con, shadow),
+                             "filed issue outcome unknown")
+        # The reviewer's own filing now holds the title: a retry is still refused.
+        self.assertIn("already filed",
+                      self.send(server, title="Same finding", body="b", labels=["bug"])["error"])
+        self.assertEqual(len(self.posts), 1)
+
+    def test_an_adjudicator_filing_left_uncertain_does_not_block_the_reviewers_own(self):
+        # #1360, #1864: the host files an adjudicator's issue the same way as a shadow's.
+        sup, run_id = self.run_row()
+        adjudicator, seq = self.host_filing(sup, "adjudicator", "Same finding", "uncertain")
+        answer = self.send(self.broker(run_id), title="Same finding", body="b", labels=["bug"])
+        self.assertEqual(answer, {"ok": True, "result": {"accepted": True, "issue": 301}})
+        self.assertEqual(len(self.posts), 1)
+        with sup._connect() as con:
+            kept = con.execute("SELECT state FROM filed_issues WHERE run_id=? AND seq=?",
+                               (adjudicator, seq)).fetchone()[0]
+            self.assertEqual(kept, "uncertain")               # still never replayed
+            self.assertEqual(run_supervisor.write_evidence(con, adjudicator),
+                             "filed issue outcome unknown")
+
+    def assert_in_flight_blocks(self, seat):
+        """A ``recorded`` host row is a POST that may still complete: it keeps the title."""
+        sup, run_id = self.run_row()
+        run, seq = self.host_filing(sup, seat, "Same finding", "recorded")
+        answer = self.send(self.broker(run_id), title="Same finding", body="b", labels=["bug"])
+        self.assertIn("already filed", answer.get("error", ""), answer)
+        self.assertEqual(self.posts, [])
+        with sup._connect() as con:
+            key = con.execute("SELECT title_key FROM filed_issues WHERE run_id=? AND seq=?",
+                              (run, seq)).fetchone()[0]
+        self.assertEqual(key, "same finding")
+
+    def test_a_shadow_filing_still_in_flight_blocks_the_reviewers_title(self):
+        self.assert_in_flight_blocks("shadow")
+
+    def test_an_adjudicator_filing_still_in_flight_blocks_the_reviewers_title(self):
+        self.assert_in_flight_blocks("adjudicator")
+
+    def test_a_host_filing_posted_still_blocks_the_reviewers_title(self):
+        sup, run_id = self.run_row()
+        self.host_filing(sup, "shadow", "Same finding", "posted")
+        answer = self.send(self.broker(run_id), title="Same finding", body="b", labels=["bug"])
+        self.assertIn("already filed", answer["error"])
+        self.assertEqual(self.posts, [])
+
     def test_a_lost_post_response_is_write_evidence_so_the_run_is_not_retried(self):
         sup, run_id = self.run_row()
         server = self.broker(run_id)

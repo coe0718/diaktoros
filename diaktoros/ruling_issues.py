@@ -10,9 +10,11 @@ to merge, and counts its lineage, exactly as for the reviewer's and the shadow's
 
 Not filed: a title the reviewer or a shadow review already filed from the PR (or one close to it:
 ``duplicate``); one whose run ended without a ruling (``denied``); any past
-``config.ADJUDICATOR_ISSUES_DAILY`` a day, which wait for a later sweep. A POST refused with nothing
+``config.ADJUDICATOR_ISSUES_DAILY`` a day, which wait for a later sweep (a full bound stops only the
+POSTs: the sweep still rules out the rest, #1982). A POST refused with nothing
 written is retried, up to ``shadow_issues.MAX_ATTEMPTS``; any other failure is ``uncertain`` and
-never replayed (the same rules as the shadow's, #1732).
+never replayed (the same rules as the shadow's, #1732). Each one that ends ``uncertain`` or
+``denied`` is said in the sweep's log (#1359).
 """
 from __future__ import annotations
 
@@ -46,14 +48,15 @@ def file_pending(loop: dict, db=None, now: float | None = None,
         number, head = int(row["pr"]), str(row["head"])
         if row["verdict"] is None:
             if row["run_state"] not in run_supervisor.NOT_ENDED:
-                sup.shadow_issue_status(row["run_id"], row["seq"], "denied", expect="recorded",
-                                        error="the adjudicator's run ended without a ruling")
+                shadow_issues._lost(sup, row, "denied",
+                                    "the adjudicator's run ended without a ruling", log,
+                                    what="adjudicator-found", expect="recorded")
             continue                                  # still ruling: filed once it has
         if shadow_issues._same(row["title"], sup.filed_titles(loop["repo"], number)):
             sup.shadow_issue_status(row["run_id"], row["seq"], "duplicate", expect="recorded")
             continue
         if room <= 0:
-            break
+            continue                                  # no room: later rows may still be lost
         depth = shadow_issues._lineage_depth(loop, sup, number)
         if depth is None:
             continue                                  # an unreadable PR files nothing this sweep

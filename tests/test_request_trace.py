@@ -133,15 +133,16 @@ class Trace(unittest.TestCase):
              "cached": None}])
 
     def test_the_nudged_request_is_traced_as_sent_and_a_refused_one_not_at_all(self):
-        # Review of #1813 (#1815): the host's nudge is in what the provider saw, and the next
-        # request does not carry it, so that request changed the history it was sent. A request
-        # past the turn's quota is never sent and gets no entry.
+        # Review of #1813 (#1815): the host's nudge is in what the provider saw. The next request
+        # carries it again at its own end (#1789), so the history before it changed at the
+        # agent's new item. A request past the turn's quota is never sent and gets no entry.
         cap = run_turn([responses(ASK), responses(ASK, CALL), responses(ASK, CALL, RESULT)],
                        [(10, 0), (20, 10)], quota=2, nudge_steps=6)   # nudged: the first request
         self.assertEqual(len(cap.trace.entries), 2)
         nudged, after = cap.trace.entries
         self.assertEqual(nudged["items"], 3)                 # the instructions, ASK, the nudge
         self.assertEqual((after["kept"], after["of"], after["changed"]), (2, 3, "function_call"))
+        self.assertEqual(after["items"], 4)                  # ... CALL, then the nudge again
 
     def test_a_shorter_copy_of_the_previous_request_is_a_drop(self):
         cap = run_turn([responses(ASK, CALL), responses(ASK)], [(10, 0), (10, 0)])

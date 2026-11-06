@@ -164,7 +164,7 @@ class FilePending(unittest.TestCase):
                      "reviewers": ["review"], "shadow": {"profile": "p", "file_issues": True}}
         self.n = 0
 
-    def recorded(self, title, at=None):
+    def recorded(self, title, at=None, head=HEAD):
         """A shadow run's recorded issue (its review row gives the model)."""
         self.n += 1
         run = f"s{self.n}"
@@ -172,14 +172,14 @@ class FilePending(unittest.TestCase):
         with ledger.connect(self.db) as con:
             con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,state,attempts,turn_key,"
                         "created,updated) VALUES(?,?,?,?,?,?,?,0,?,?,?)",
-                        (run, f"d{self.n}", REPO, 7, HEAD, "shadow", "succeeded", f"t{self.n}",
+                        (run, f"d{self.n}", REPO, 7, head, "shadow", "succeeded", f"t{self.n}",
                          now, now))
             con.execute("INSERT INTO shadow_reviews(run_id,repo,pr,head,model,verdict,body,"
                         "authorized,denial,held,created) VALUES(?,?,?,?,?,?,?,1,'',0,?)",
-                        (run, REPO, 7, HEAD, "deepseek-x", "APPROVE", "ok", now))
+                        (run, REPO, 7, head, "deepseek-x", "APPROVE", "ok", now))
             con.execute("INSERT INTO shadow_issues(run_id,seq,repo,pr,head,title,title_key,body,"
                         "labels,state,created,updated) VALUES(?,1,?,?,?,?,?,?,?,'recorded',?,?)",
-                        (run, REPO, 7, HEAD, title, " ".join(title.casefold().split()),
+                        (run, REPO, 7, head, title, " ".join(title.casefold().split()),
                          "evidence", json.dumps(["bug"]), now, now))
         return run
 
@@ -281,8 +281,45 @@ class FilePending(unittest.TestCase):
 
     def test_a_head_the_real_review_never_reaches_is_dropped_after_a_week(self):
         run = self.recorded("A finding", at=time.time() - shadow_issues.WAIT_S - 60)
-        self.assertEqual(self.file(reviews=[])[1], [])
+        logged = []
+        self.assertEqual(self.file(reviews=[], logged=logged)[1], [])
         self.assertEqual(self.state(run), "denied")
+        # #1359: a lost filing is said in the sweep's log, once.
+        self.assertEqual(logged, ["shadow-found issue for #7 ('A finding') denied: "
+                                  "the real review never reached its head"])
+        self.file(reviews=[], logged=logged)
+        self.assertEqual(len(logged), 1)
+
+    def test_a_full_daily_cap_still_drops_and_logs_a_later_expired_filing(self):
+        # Review of #1982, F1: the cap stops the POSTs, not the sweep. A row behind ones the cap
+        # holds back (oldest first), whose head the real review never reached, is still dropped.
+        self.loop["shadow"] = {**self.loop["shadow"], "issues_daily": 1}
+        old = time.time() - shadow_issues.WAIT_S
+        first = self.recorded("Docs miss the flag", at=old - 300)
+        held = self.recorded("Retry loops forever", at=old - 200)
+        lost = self.recorded("Lock is never freed", at=old - 100, head="f" * 40)
+        logged = []
+        filed, posts = self.file(logged=logged)
+        self.assertEqual((len(filed), len(posts)), (1, 1))          # the cap: one POST only
+        self.assertEqual([self.state(first), self.state(held), self.state(lost)],
+                         ["posted", "recorded", "denied"])
+        self.assertIn("shadow-found issue for #7 ('Lock is never freed') denied: "
+                      "the real review never reached its head", logged)
+        self.assertEqual(self.file(logged=logged)[1], [])            # the cap still holds
+        self.assertEqual(self.state(held), "recorded")
+
+    def test_an_uncertain_post_is_said_in_the_sweeps_log(self):
+        # #1359: a POST whose outcome is unknown is never replayed, so it is logged, with why.
+        run = self.recorded("A finding")
+        logged = []
+        with mock.patch.object(gh, "reviews", return_value=APPROVED), \
+                mock.patch.object(gh, "pr", return_value={"number": 7, "head": {"ref": "fix-7"}}), \
+                mock.patch.object(broker, "_write", return_value=(None, "HTTP 502")):
+            shadow_issues.file_pending(self.loop, db=self.db, log=logged.append)
+        self.assertEqual(self.state(run), "uncertain")
+        [line] = logged
+        self.assertTrue(line.startswith("shadow-found issue for #7 ('A finding') uncertain: "
+                                        "POST outcome unknown"), line)
 
     def test_an_unreadable_review_never_reads_as_one_that_never_came(self):
         run = self.recorded("A finding", at=time.time() - shadow_issues.WAIT_S - 60)

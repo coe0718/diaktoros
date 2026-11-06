@@ -11,6 +11,7 @@ review is dropped after ``WAIT_S``. A POST refused with nothing written (``broke
 reader identity, a repository mismatch, a 4xx from GitHub) leaves the issue ``recorded`` with the
 reason, and the next sweep tries again, up to ``MAX_ATTEMPTS`` refusals, after which it is
 ``denied`` with the reason (#1732); any other failure of the POST is ``uncertain``, never replayed.
+Every one that ends ``uncertain`` or ``denied`` is said in the sweep's log, with its reason (#1359).
 """
 from __future__ import annotations
 
@@ -58,14 +59,14 @@ def file_pending(loop: dict, db=None, now: float | None = None,
             continue                                  # unknown: nothing filed this sweep
         if gate.latest_effective_review_at_head(reviews, loop, head) is None:
             if now - float(row["created"]) > WAIT_S:
-                sup.shadow_issue_status(row["run_id"], row["seq"], "denied", expect="recorded",
-                                        error="the real review never reached its head")
+                _lost(sup, row, "denied", "the real review never reached its head", log,
+                      expect="recorded")
             continue                                  # the real review has not landed yet
         if _same(row["title"], sup.filed_titles(loop["repo"], number)):
             sup.shadow_issue_status(row["run_id"], row["seq"], "duplicate", expect="recorded")
             continue
         if room <= 0 and not uncapped:
-            break
+            continue                                  # no room: later rows may still be lost
         depth = _lineage_depth(loop, sup, number)
         if depth is None:
             continue                                  # an unreadable PR files nothing this sweep
@@ -87,6 +88,15 @@ def file_pending(loop: dict, db=None, now: float | None = None,
         if issue is not None:
             filed.append(issue)
     return filed
+
+
+def _lost(sup, row, state: str, why: str, log, what: str = "shadow-found",
+          expect: str | None = None) -> None:
+    """Record one issue as never to be filed (``denied``) or never replayed (``uncertain``) and
+    say so in the sweep's log, so an operator sees a lost filing, not only the filed ones (#1359).
+    With ``expect``, only from that state, and logged only when it moved."""
+    if sup.shadow_issue_status(row["run_id"], row["seq"], state, expect=expect, error=why):
+        log(f"{what} issue for #{int(row['pr'])} ({row['title']!r}) {state}: {why}")
 
 
 def _lineage_depth(loop: dict, sup, number: int) -> int | None:
@@ -127,7 +137,7 @@ def _post(loop: dict, sup, row, filing, depth: int, log, send=_send_shadow,
         return None, False
     except Exception as exc:
         why = f"POST outcome unknown: {type(exc).__name__}: {exc}"[:200]
-        sup.shadow_issue_status(row["run_id"], row["seq"], "uncertain", error=why)
+        _lost(sup, row, "uncertain", why, log, what)
         sup.filed_issue_status(row["run_id"], filing, "uncertain", error=why)
         return None, True
     sup.filed_issue_status(row["run_id"], filing, "posted", issue_number=issue)

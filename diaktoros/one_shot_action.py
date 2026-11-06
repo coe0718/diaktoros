@@ -447,15 +447,23 @@ def _drain(loop, seat):
 RECONSIDER_MAX = 2000
 
 
-def _reconsider_refusal(loop, number, pr, head, reason) -> str:
+def _gate_reviews(loop, st, number, head):
+    """The reviews the reviewer gate decides from at ``head`` (#1370): ``gh.reviews`` through
+    ``transition.effective_reviews``, so under a retarget hold only receipt-confirmed reviews
+    count. ``None`` when they (or the receipts) could not be read."""
+    return transition.effective_reviews(loop, st, number, head, gh.reviews(loop, number))
+
+
+def _reconsider_refusal(loop, st, number, pr, head, reason) -> str:
     """Why a maintainer's reconsider (#1334) cannot start here, or ``""``. One per head: a head
-    already reconsidered is refused (the ledger's turn key would keep only the first anyway)."""
+    already reconsidered is refused (the ledger's turn key would keep only the first anyway).
+    "Has a verdict" is read from the gate's own view (``_gate_reviews``, #1370)."""
     from .run_supervisor import RECONSIDER_KEY
     if not isinstance(reason, str) or not reason.strip():
         return "a reconsider needs a reason (what the head must meet)"
     if len(reason) > RECONSIDER_MAX:
         return f"the reason is longer than {RECONSIDER_MAX} characters"
-    reviews = gh.reviews(loop, number)
+    reviews = _gate_reviews(loop, st, number, head)
     if not isinstance(reviews, list):
         return "the reviews could not be read"
     if not gate.reviewed_at_head(reviews, loop, head):
@@ -525,7 +533,7 @@ def _grant_another_round(loop, args, pr, head, st, emit):
         emit(f"#{args.pr}: {author or 'its author'} is not review-only — only a review-only "
               "PR has a review cap to lift; nothing granted")
         return 1
-    reviews = gh.reviews(loop, args.pr)
+    reviews = _gate_reviews(loop, st, args.pr, head)
     if not isinstance(reviews, list):
         emit(f"#{args.pr}: the reviews could not be read — nothing granted")
         return 2
@@ -568,7 +576,7 @@ def _review(loop, args, emit=print):
     key = gate.seat_key(loop, args.pr)
     reconsider = getattr(args, "reconsider", None)
     if reconsider is not None:
-        refusal = _reconsider_refusal(loop, args.pr, pr, head, reconsider)
+        refusal = _reconsider_refusal(loop, st, args.pr, pr, head, reconsider)
         if refusal:
             emit(f"#{args.pr} @ {head[:7]}: {refusal}; nothing started")
             return 1

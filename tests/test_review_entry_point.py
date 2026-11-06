@@ -223,6 +223,21 @@ class Reconsider(Harness):
         self.assertNotIn("queued, waiting", "\n".join(result["lines"]))
         self.assertEqual(self.queued(), {})
 
+    def test_a_verdict_the_gate_does_not_count_under_a_hold_is_no_verdict(self):
+        # #1370: under a retarget hold the gate counts only receipt-confirmed reviews after the
+        # baseline. The approval below is in the baseline, so the gate sees no verdict at this
+        # head; the reconsider must agree and refuse, not hand the gate a reason it drops.
+        from diaktoros import state as state_mod
+        t.reset(prs={"7": approved()})
+        state_mod.state_for(self.loop()).transition_set(
+            7, {"head": t.HEAD_A, "from_base": "stack", "observed_stacked_head": t.HEAD_A,
+                "at": time.time(), "old_review_ids": [11]})
+        result = self.reconsider()
+        self.assertEqual(result["code"], 1, result["lines"])
+        self.assertIn("has no reviewer's verdict yet", result["lines"][0])
+        self.assertEqual(self.keys, [])
+        self.assertIsNone(state_mod.state_for(self.loop()).reconsider_get(7, t.HEAD_A))
+
     def test_no_webhook_can_reconsider_a_reviewed_head(self):
         # The reconsider is the host's argument, never a payload field: a maintainer's (or
         # anyone's) re-request at a reviewed head is still declined by the webhook gate.
