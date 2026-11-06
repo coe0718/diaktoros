@@ -12,7 +12,8 @@ from the reviewer's PAT): this module reads and decides, it writes nothing.
 * **pending**: everything left can still clear on its own — a review, the shadow, CI or a ruling
   still out, a draft, or a read that failed and will be retried.
 
-GitHub's ``blocked`` is left out only while the base may require this check (#1227): with the
+GitHub's ``blocked`` is left out only while the PR's own base (the branch it targets: a stacked
+PR's parent branch, not the loop's base) may require this check (#1227): with the
 check required, GitHub reports ``blocked`` *because* the check is not green yet, and counting that
 would keep the check from ever turning green. When the base is known not to require it,
 ``blocked`` is some other rule (required reviews, another required check), so it counts as a wait
@@ -61,21 +62,35 @@ def decide(kinds: list[tuple[str, str]], required: bool = True) -> tuple[str | N
     return state, (head + "\n\n" + "\n".join(lines))[:SUMMARY_MAX]
 
 
-def base_requires_check(loop: dict) -> bool:
-    """Whether GitHub's ``blocked`` may be the base waiting on this check (#1227): True when the
-    base requires ``diaktoros/review`` or a read of its protection did not answer; False only when
-    both reads answered and neither requires it."""
+def base_requires_check(loop: dict, base: str | None = None) -> bool:
+    """Whether GitHub's ``blocked`` may be ``base`` (the loop's base when ``None``) waiting on this
+    check (#1227): True when that branch requires ``diaktoros/review`` or a read of its protection
+    did not answer; False only when both reads answered and neither requires it."""
     from . import protection
-    found = protection.read(loop)
+    found = protection.read({**loop, "base": base} if base else loop)
     return found.required or bool(found.unread)
 
 
-def _blocked_counts(loop: dict, kinds: dict) -> bool:
-    """``decide``'s ``required`` for one refresh: the base is read only when some PR carries
-    GitHub's ``blocked``, and once for all of them."""
-    if not any(kind == ready.GITHUB for reasons in kinds.values() for kind, _ in reasons):
-        return True
-    return base_requires_check(loop)
+def _blocked_counts(loop: dict, prs: list[dict], kinds: dict,
+                    only: set[int] | None = None) -> dict[int, bool]:
+    """``decide``'s ``required`` per PR for one refresh, from the protection of the branch each PR
+    actually targets (a stacked PR targets its parent's branch, #1227). Only PRs carrying GitHub's
+    ``blocked`` (and in ``only``, when given) are looked up, and each distinct base is read once;
+    a PR left out maps to True by its caller, which ``decide`` never consults without a
+    ``blocked`` reason."""
+    out: dict[int, bool] = {}
+    by_base: dict[str, bool] = {}
+    for pr in prs:
+        number = pr.get("number")
+        if only is not None and number not in only:
+            continue
+        if not any(kind == ready.GITHUB for kind, _ in kinds.get(number) or []):
+            continue
+        base = (pr.get("base") or {}).get("ref") or str(loop.get("base") or "")
+        if base not in by_base:
+            by_base[base] = base_requires_check(loop, base or None)
+        out[number] = by_base[base]
+    return out
 
 
 def title(state: str) -> str:
@@ -178,13 +193,13 @@ def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None)
         return 0
     path = st.dir / FILE
     written = 0
-    required = _blocked_counts(loop, kinds)
+    required = _blocked_counts(loop, prs, kinds, only)
     for pr in prs:
         number = pr["number"]
         head = (pr.get("head") or {}).get("sha") or ""
         if not head or (only is not None and number not in only):
             continue
-        state, summary = decide(kinds.get(number) or [], required)
+        state, summary = decide(kinds.get(number) or [], required.get(number, True))
         if state is None:
             continue                                   # not a loop PR: no check
         digest = _digest(state, summary)

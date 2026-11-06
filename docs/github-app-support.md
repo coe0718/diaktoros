@@ -116,7 +116,8 @@ proposes posting turn state as a commit status).
 **As built (#1163 M2b):** the host posts this check with the reviewer App, on by default
 (`merge_check: auto`). It is posted as pending the moment a review is queued for a head, then written after every verdict, shadow review and ruling, and on every
 watchdog sweep, only when the head, state or summary changes; the summary lists what holds the
-head. GitHub's own `blocked` is not counted while the base requires the check (GitHub reports
+head. GitHub's own `blocked` is not counted while the PR's own base (a stacked PR's parent
+branch, not the loop's base) requires the check (GitHub reports
 `blocked` *because* the check is not green); on a base read as not requiring it, `blocked` is
 another rule and keeps the check pending (#1227). A base whose protection could not be fully read
 is taken as requiring the check. A required check that has not reported for 15 minutes after the

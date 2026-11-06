@@ -496,6 +496,46 @@ class Posting(unittest.TestCase):
             self.assertEqual(self.refresh(), 1)
         read.assert_not_called()
 
+    def stacked(self, requiring: set[str]):
+        """A blocked child #8 targeting ``parent`` beside #7 on ``main``; ``protection.read``
+        answers per requested branch, requiring the check on the branches in ``requiring``."""
+        self.loop["base"] = "main"
+        self.prs = [{"number": 7, "head": {"sha": HEAD, "ref": "parent"}, "base": {"ref": "main"}},
+                    {"number": 8, "head": {"sha": "c" * 40}, "base": {"ref": "parent"}}]
+        self.kinds = {7: [], 8: [(ready.GITHUB, "not mergeable: GitHub reports blocked")]}
+        return mock.patch.object(protection, "read", side_effect=lambda loop, login=None:
+                                 protection.Protection(
+                                     sources=[1] if loop["base"] in requiring else []))
+
+    def test_a_stacked_prs_blocked_is_judged_by_its_parent_branch_that_requires_the_check(self):
+        # Vex F1 on #1947: main optional, parent requires it -> counting blocked would deadlock.
+        with self.stacked({"parent"}) as read:
+            self.assertEqual(self.refresh(), 2)
+        self.assertEqual([c.args[0]["base"] for c in read.call_args_list], ["parent"])
+        self.assertEqual(self.memory()["8"]["state"], "success")
+
+    def test_a_stacked_prs_blocked_is_judged_by_its_parent_branch_that_does_not_require_it(self):
+        # Vex F1 on #1947: main requires it, parent does not -> blocked is another rule: a wait.
+        with self.stacked({"main"}) as read:
+            self.assertEqual(self.refresh(), 2)
+        self.assertEqual([c.args[0]["base"] for c in read.call_args_list], ["parent"])
+        self.assertEqual(self.memory()["8"]["state"], "pending")
+        self.assertEqual(self.memory()["7"]["state"], "success")
+
+    def test_each_blocked_base_is_read_once_and_an_unread_parent_is_taken_as_requiring(self):
+        self.loop["base"] = "main"
+        self.prs = [{"number": n, "head": {"sha": c * 40}, "base": {"ref": b}}
+                    for n, c, b in ((7, "a", "main"), (8, "c", "parent"), (9, "d", "parent"))]
+        self.kinds = {n: [(ready.GITHUB, "blocked")] for n in (7, 8, 9)}
+        found = {"main": protection.Protection(),
+                 "parent": protection.Protection(unread=["classic branch protection (HTTP 403)"])}
+        with mock.patch.object(protection, "read",
+                               side_effect=lambda loop, login=None: found[loop["base"]]) as read:
+            self.assertEqual(self.refresh(), 3)
+        self.assertEqual(sorted(c.args[0]["base"] for c in read.call_args_list), ["main", "parent"])
+        self.assertEqual({n: self.memory()[n]["state"] for n in ("7", "8", "9")},
+                         {"7": "pending", "8": "success", "9": "success"})
+
     def test_a_pat_loop_that_opted_in_posts_a_commit_status(self):
         self.loop.update(reviewer_seat="rev", apps={}, tokens={"rev": "/t"}, merge_check="on",
                          seats={"reviewer": {"login": "rev"}})
