@@ -91,8 +91,16 @@ def _lock_pr(fd: int, number: int, wait: bool) -> bool:
     lock (#1257). False when ``wait`` is off and another writer holds that PR. Off Linux, or on a
     filesystem without these locks, it takes the whole file instead (``flock``), so every PR's
     writers share one lock there, as before #1257: a mark then yields to a refresh posting any PR
-    (delayed to the next refresh, never lost)."""
+    (delayed to the next refresh, never lost).
+
+    Before the byte lock it takes a *shared* ``flock`` on the whole file: a writer of a version
+    before #1257 takes that file with an exclusive ``flock`` and knows nothing of byte locks, so
+    during an upgrade an old refresh still running and a new mark still exclude each other (review
+    of #1953). Shared ``flock`` locks never conflict among themselves, so new writers are only
+    scoped by the byte lock."""
     if _OFD:
+        if not _flock(fd, fcntl.LOCK_SH, wait):
+            return False                                # an old-version writer holds the file
         record = struct.pack("@hhqqi0q", fcntl.F_WRLCK, os.SEEK_SET, number, 1, 0)
         try:
             fcntl.fcntl(fd, _OFD_SETLKW if wait else _OFD_SETLK, record)
@@ -102,8 +110,15 @@ def _lock_pr(fd: int, number: int, wait: bool) -> bool:
                 return False
             if exc.errno not in (errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP):
                 raise
+        fcntl.flock(fd, fcntl.LOCK_UN)                  # no byte locks here: the whole file below
+    return _flock(fd, fcntl.LOCK_EX, wait)
+
+
+def _flock(fd: int, kind: int, wait: bool) -> bool:
+    """``flock`` ``fd`` with ``kind``; False when ``wait`` is off and another descriptor holds a
+    conflicting lock."""
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        fcntl.flock(fd, kind | (0 if wait else fcntl.LOCK_NB))
     except BlockingIOError:
         return False
     return True
