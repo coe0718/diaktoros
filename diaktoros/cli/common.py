@@ -329,7 +329,7 @@ def _install_routes(loop: dict, roles=None) -> dict:
                                           "requested review", **common)
         elif role == "fixer":
             routes.new_route(name, profile=config.seat_profile(loop, "fixer"),
-                             prompt=prompts.FIXER, events=["pull_request_review"],
+                             prompt=prompts.FIXER, events=config.hook_events(loop, "fixer"),
                              deliver="discord",
                              description=f"{loop['repo']} — wake the fixer on a changes-requested "
                                           "verdict", **common)
@@ -350,7 +350,7 @@ def _install_routes(loop: dict, roles=None) -> dict:
         # #1239: one route per App, shared by every loop it delivers for, so its profile is the
         # host's default rather than any one loop's seat (loops must not rewrite it to their own).
         routes.new_route(names["app"], profile="default", prompt=prompts.APP_EVENTS,
-                         events=["pull_request", "pull_request_review", "issues", "ping"],
+                         events=[*gate_shims.APP_EVENTS, config.CI_EVENT, "ping"],
                          script=GATE_SCRIPT["app"], deliver="discord", host=host,
                          description=f"GitHub App {loop['ingress_app']} — events for every loop "
                                      "it delivers for")
@@ -433,7 +433,7 @@ def _install_hooks(loop: dict, token_login: str | None, active: bool = False,
     # Validate every destination and secret before creating any external hook.
     hooks = []
     for seat in config.hook_roles(loop):
-        event = config.HOOK_EVENT[seat]
+        events = config.hook_events(loop, seat)
         if seats is not None and seat not in seats:
             continue
         route_name = names.get(seat, "")
@@ -441,14 +441,14 @@ def _install_hooks(loop: dict, token_login: str | None, active: bool = False,
         secret = (routes.route(route_name) or {}).get("secret", "")
         if not url or not secret:
             raise config.ConfigError(f"route {route_name!r} needs a valid webhook URL and secret before installing hooks")
-        hooks.append((event, url, secret))
+        hooks.append((events, url, secret))
     baseline = _hook_listing(loop, token_login, require_active=False)
     created = []
     try:
-        for event, url, secret in hooks:
+        for events, url, secret in hooks:
             # Created paused unless the operator asked for --arm: a loop goes live with `arm`,
             # after `doctor` and `selftest` pass, never as a side effect of writing its config.
-            body = {"name": "web", "active": active, "events": [event],
+            body = {"name": "web", "active": active, "events": events,
                     "config": {"url": url, "content_type": "json", "secret": secret,
                                "insecure_ssl": "0"}}
             result = gh.api(loop, f"/repos/{loop['repo']}/hooks", method="POST", body=body,

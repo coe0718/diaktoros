@@ -269,7 +269,7 @@ def _init_settings(args, d: dict) -> dict:
         # Each as asked, else the form's. review_only_update (host merge pushes to a review-only
         # author's branch) is also refused below unless acknowledged.
         **{key: cli_common._on_off(args, key, d[key]) for key in (
-            "review_after_ci", "fix_ci", "fixer_scope_lock", "adjudicator_approves",
+            "review_after_ci", "fix_ci", "ci_webhook", "fixer_scope_lock", "adjudicator_approves",
             "adjudicator_file_issues", "change_proof", "review_only_update")},
         # The checks CI always runs, which a fixer running only its touched tests would miss.
         "fixer_check": (d["fixer_check"] if getattr(args, "fixer_check", None) is None
@@ -319,7 +319,7 @@ def _init_hooks_preview(loop: dict, args) -> list[str]:
     if not hooked:
         return ["would create no repo hooks: events arrive through the GitHub App's webhook"]
     armed = getattr(args, "arm", False)
-    kinds = ", ".join(f"{role}: {config.HOOK_EVENT[role]}" for role in hooked)
+    kinds = ", ".join(f"{role}: {' + '.join(config.hook_events(loop, role))}" for role in hooked)
     state = "armed (--arm)" if armed else "paused until `arm`"
     return [f"would create {len(hooked)} repo hooks, one per role ({kinds}), {state}",
             _hook_editor_line(loop, args.admin_token, armed, True)]
@@ -916,6 +916,8 @@ def _init_switch_flags(init, d) -> None:  # noqa: ANN001
                                   "hour)"),
             ("--fix-ci", "hand a failed required check on a fixer's PR to the fixer, one turn per "
                          "head; needs unattended fixer pushes"),
+            ("--ci-webhook", "act on a finished CI run when GitHub reports it: the fixer's hook "
+                             "also carries check_suite"),
             ("--fixer-scope-lock", "hold a fix round that changes files its findings do not name "
                                    "for a maintainer; needs unattended fixer pushes"),
             ("--adjudicator-approves", "on an ACCEPT ruling with green checks, approve as the "

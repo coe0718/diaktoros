@@ -329,6 +329,11 @@ config_schema:
     type: bool
     default: false
     description: "On: a review waits while the head's checks are still running (up to an hour), then starts with their results. Off: it starts at once, and the reviewer sees whatever CI has finished so far."
+  ci_webhook:
+    label: "Act on CI when it finishes"
+    type: bool
+    default: false
+    description: "On: a finished CI run is acted on when GitHub reports it: a red required check on a fixer's PR gets its notice and CI-fix turn, and a red base its notice, without waiting for the next watchdog sweep. Needs the fixer's route and repo hook to carry check_suite (`hermes dk apply --hooks` after turning it on). Off: the sweep acts on CI."
   fix_ci:
     label: "Fix a failed CI check"
     type: bool

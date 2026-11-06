@@ -34,8 +34,8 @@ def gate_for(payload: dict) -> tuple[str, str]:
         return "", "a comment event, not one the loop acts on"
     if not isinstance(payload.get("repository"), dict):
         return "", "no repository (an installation event)"
-    if isinstance(payload.get("review"), dict):
-        return "gate_fixer", ""
+    if isinstance(payload.get("review"), dict) or isinstance(payload.get("check_suite"), dict):
+        return "gate_fixer", ""                 # a finished CI run is the fixer gate's (#681)
     if isinstance(payload.get("pull_request"), dict):
         return "gate_reviewer", ""
     if isinstance(payload.get("issue"), dict):
@@ -143,11 +143,13 @@ def set_paused(st, value: bool) -> None:
         st.kv_set_strict(st.dir / FILE, memory)
 
 
-# The events an App's webhook must subscribe to for a loop: triage's only when it is on.
+# The events an App's webhook must subscribe to for a loop: triage's only when it is on, and a
+# finished CI run's only with ``ci_webhook`` (#681).
 def events_needed(loop: dict) -> tuple[str, ...]:
     from . import config
-    return ("pull_request", "pull_request_review") + (("issues",) if config.triage_enabled(loop)
-                                                      else ())
+    return (("pull_request", "pull_request_review")
+            + (("issues",) if config.triage_enabled(loop) else ())
+            + ((config.CI_EVENT,) if config.ci_webhook(loop) else ()))
 
 
 def webhook_state(loop: dict) -> dict:

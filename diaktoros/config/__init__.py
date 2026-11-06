@@ -82,6 +82,9 @@ ROUTED_ROLES = (*ROUTE_ROLES, "triage")
 # The GitHub event each hooked role's repo hook delivers (#213). The adjudicator has a route but no
 # repo hook (the loop wakes it itself), so it is not here.
 HOOK_EVENT = {"reviewer": "pull_request", "fixer": "pull_request_review", "triage": "issues"}
+# A finished CI run (#681), carried by the fixer's route and hook when ``ci_webhook`` is on: a
+# CI-fix turn is the fixer's, and its gate hands this payload to ``ci_event``.
+CI_EVENT = "check_suite"
 # Gate scripts an older release of *this* plugin installed for a role. Before the dedicated
 # adjudicator gate (PR #21) the breach route ran gate_reviewer.py. Such a route is still ours —
 # its prompt proves it — so ``apply`` rebinds it in place instead of refusing it as foreign, and
@@ -245,6 +248,7 @@ DEFAULTS: dict = {
     "ingress": "repo-hooks",   # where events arrive: repo-hooks|app-webhook (#1239)
     "ingress_app": "",         # with app-webhook: the App whose webhook delivers (its bot login)
     "fix_ci": False,          # hand a red required check on a fixer's PR to the fixer (#306)
+    "ci_webhook": False,      # act on a finished CI run when it lands, not at the sweep (#681)
     "fixer_check": "",        # one command fixer turns always run before publishing; "" = none
     "required_checks": [],    # the checks that gate an approval (#368); [] = every check gates
     "human_paths": [],        # globs whose changes only a human may approve (#478)
@@ -763,6 +767,12 @@ def maintainers(loop: dict) -> set[str]:
     same authority. Empty without either."""
     names = (loop.get("triage") or {}).get("maintainers") or []
     return {str(name).strip().lower() for name in names if str(name).strip()} | operator_agents(loop)
+
+
+def hook_events(loop: dict, role: str) -> list[str]:
+    """The events a role's route and repo hook carry: its gate's event (``HOOK_EVENT``), and for
+    the fixer the finished CI run too when ``ci_webhook`` is on (#681)."""
+    return [HOOK_EVENT[role]] + ([CI_EVENT] if role == "fixer" and ci_webhook(loop) else [])
 
 
 def hook_roles(loop: dict) -> tuple[str, ...]:
@@ -1392,3 +1402,9 @@ def merge_check_on(loop: dict) -> bool:
 def review_after_ci(loop: dict) -> bool:
     """Whether a review waits for the head's checks to finish (#241). Off unless set."""
     return loop.get("review_after_ci") is True
+
+
+def ci_webhook(loop: dict) -> bool:
+    """Whether a finished CI run is acted on when GitHub says so (#681): ``check_suite`` on the
+    fixer's route and hook (or the App's subscription). Off unless set; the sweep acts either way."""
+    return loop.get("ci_webhook") is True

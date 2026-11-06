@@ -363,6 +363,12 @@
         "default": false,
         "description": "On: a failed required check on a fixer's PR becomes one fixer turn per head (needs unattended fixer pushes on). Off: a red check is only reported."
       },
+      "ci_webhook": {
+        "label": "Act on CI when it finishes",
+        "type": "bool",
+        "default": false,
+        "description": "On: a finished CI run is acted on when GitHub reports it: a red required check on a fixer's PR gets its notice and CI-fix turn, and a red base its notice, without waiting for the next watchdog sweep. Needs the fixer's route and repo hook to carry check_suite (`hermes dk apply --hooks` after turning it on). Off: the sweep acts on CI."
+      },
       "fixer_scope_lock": {
         "label": "Hold fixes outside the findings' files",
         "type": "bool",
@@ -461,6 +467,7 @@
       "merge_check": "",
       "review_after_ci": false,
       "fix_ci": false,
+      "ci_webhook": false,
       "fixer_scope_lock": false,
       "adjudicator_approves": false,
       "adjudicator_file_issues": false,
@@ -529,6 +536,7 @@
       "merge_check": "default",
       "review_after_ci": "default",
       "fix_ci": "default",
+      "ci_webhook": "default",
       "fixer_scope_lock": "default",
       "adjudicator_approves": "default",
       "adjudicator_file_issues": "default",
