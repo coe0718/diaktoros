@@ -224,6 +224,30 @@ class ObserverSafetyTests(unittest.TestCase):
                 self.assertEqual((entry["status"], entry["attempts"]),
                                  (status, attempts + sent))
 
+    def test_a_stale_digest_claim_at_the_cap_leaves_its_members_settleable(self):
+        # #1320: a digest's pre-POST claim already on its last attempt is not resent, so the
+        # sweep must not leave its members `digesting`, which nothing can settle.
+        digest = "private:-::digest:m1"
+        members = {m: {"status": "digesting", "event": "approved", "number": 7, "head": "a" * 40,
+                       "message": f"{m} #7", "attempts": 0, "at": time.time()}
+                   for m in ("m1", "m2")}
+        self.state.observations.write_text(json.dumps({"entries": {**members, digest: {
+            "status": "pending", "event": observer.DIGEST_EVENT, "number": "", "head": "",
+            "message": "2 transitions", "url": "", "batch": ["m1", "m2"], "delivery": "d-1",
+            "attempts": observer.MAX_ATTEMPTS, "error": "",
+            "at": time.time() - observer.STALE_CLAIM_S - 5}}}))
+        with patch.object(routes, "fire") as fire:
+            self.assertEqual(observer.retry(self.loop, self.state), 0)
+            fire.assert_not_called()
+        entries = observer._read(self.state.observations)["entries"]
+        self.assertEqual([entries[k]["status"] for k in (digest, "m1", "m2")],
+                         ["uncertain"] * 3)
+        self.assertIn(digest, [k for k, _ in observer.owed_entries(self.state)])
+        observer.settle(self.state, digest, delivered=False)
+        entries = observer._read(self.state.observations)["entries"]
+        self.assertEqual([entries[k]["status"] for k in (digest, "m1", "m2")],
+                         ["failed", "digesting", "digesting"])
+
     def test_a_claim_that_reached_its_post_stays_uncertain(self):
         key = self.stale_claim(posting_at=time.time() - observer.STALE_CLAIM_S)
         with patch.object(routes, "fire") as fire:

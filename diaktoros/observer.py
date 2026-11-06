@@ -905,7 +905,9 @@ def retry(loop: dict, st) -> int:
                         and int(entry.get("attempts") or 0) < MAX_ATTEMPTS):
                     pending.append((key, dict(entry)))
                 elif (status == "pending" and now - float(entry.get("at") or 0) > STALE_CLAIM_S
-                        and not entry.get("posting_at")):
+                        and not entry.get("posting_at")
+                        and (int(entry.get("attempts") or 0) < MAX_ATTEMPTS
+                             or not entry.get("batch"))):
                     # #1314: the sender stopped before the POST began (no posting mark), so the
                     # gateway never saw it: a definite pre-POST failure, resent like one.
                     # `attempts` counts POSTs and `_receipt` counts the resend's, so the sweep
@@ -916,8 +918,13 @@ def retry(loop: dict, st) -> int:
                     if int(entry.get("attempts") or 0) < MAX_ATTEMPTS:
                         pending.append((key, dict(entry)))
                 elif status == "pending" and now - float(entry.get("at") or 0) > STALE_CLAIM_S:
+                    # #1320: this also takes a digest's pre-POST claim already at the cap. It is
+                    # not resent, so its members must not stay `digesting`: claim and members
+                    # become `uncertain`, the one state `settle` accepts and `owed_entries` lists.
                     entry["status"] = "uncertain"
-                    entry["error"] = "sender died before receipt; POST outcome unknown; reconcile manually"
+                    entry["error"] = ("sender died before receipt; POST outcome unknown; reconcile manually"
+                                      if entry.get("posting_at") else
+                                      "sender stopped before the POST on its last attempt; settle it")
                     for member in entry.get("batch") or []:
                         record = data["entries"].get(member)
                         if isinstance(record, dict) and record.get("status") == "digesting":

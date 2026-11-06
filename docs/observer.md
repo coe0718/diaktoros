@@ -144,7 +144,7 @@ retry so the gateway can also deduplicate a logical send.
 | `failed` with proven pre-POST failure | Route/secret/destination unavailable before send | Fix route; bounded watchdog retry |
 | `uncertain` | POST may have landed: the sender died after its POST started, before the receipt | Inspect chat/gateway logs manually; never blind replay |
 
-Only definite pre-POST failures retry automatically, up to three attempts, including a sender that stopped before its POST began (#1314). A timeout,
+Only definite pre-POST failures retry automatically, up to three attempts, including a sender that stopped before its POST began (#1314). A digest claim that stopped before its POST on its last attempt is not resent: it and its batch members become `uncertain`, so `settle` can resend it once or record it (#1320). A timeout,
 5xx or other unconfirmed POST may have sent the message and is quarantined rather than
 replayed. Legacy failure receipts without proof of pre-POST failure become uncertain.
 These failures never consume a review seat or block PR admission, but may prevent an
