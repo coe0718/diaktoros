@@ -37,7 +37,7 @@ from diaktoros import (  # noqa: E402
 from diaktoros.util import log, silence  # noqa: E402
 
 # The breach outcomes that leave the head parked for a ruling (``stale`` parks nothing).
-PARKED = ("new", "retry", "already")
+PARKED = gate.BREACH_PARKED
 
 
 def _take_pending_escalation(loop: dict, st, number: int, pr_head: str, prior: int,
