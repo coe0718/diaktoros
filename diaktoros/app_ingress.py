@@ -48,11 +48,18 @@ def woken_by_repo_hook() -> bool:
     own script is ``__main__``. The App dispatcher (``gate_app.py`` is ``__main__``), the CLI's
     in-process runs (``hermes dk review``) and a watchdog re-drive (its environment mark) are not.
     For a loop on its App's webhook such a wake is a leftover repo hook (#1239): acting on it would
-    run the gate twice, and act while ``arm --pause`` says the loop is paused."""
-    from . import gate_failures
+    run the gate twice, and act while ``arm --pause`` says the loop is paused.
+
+    When ``__main__`` has no script file (an embedded interpreter, ``python -c``, a REPL) the
+    process cannot say how it was started, so the wake is treated as a leftover and dropped
+    (#1289): fail closed. An in-process gate call (``util.gate_call``: the CLI's and the
+    Desktop's reviews) says how it was started itself, so it is never dropped here."""
+    from . import gate_failures, util
+    if os.environ.get(gate_failures.REDRIVE_ENV) or util.in_gate_call():
+        return False
     main = sys.modules.get("__main__")
     stem = pathlib.Path(getattr(main, "__file__", "") or "").stem
-    return stem in GATES and not os.environ.get(gate_failures.REDRIVE_ENV)
+    return not stem or stem in GATES
 
 
 def paused(st) -> bool:

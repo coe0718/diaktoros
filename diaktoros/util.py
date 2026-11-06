@@ -147,6 +147,11 @@ def gate_call():
         _GATE_CALL.reset(token)
 
 
+def in_gate_call() -> bool:
+    """Whether this code runs inside a ``gate_call`` (an in-process gate, #1046)."""
+    return _GATE_CALL.get() is not None
+
+
 def set_decision_recorder(recorder) -> None:
     """Record every later ``silence(reason)``: for this gate call when one is running, for the
     whole process otherwise (a gate script)."""

@@ -161,7 +161,9 @@ An existing loop moves over with `hermes dk set --ingress app-webhook --ingress-
 which installs the App's route, then `app-webhook --set`. Its repo hooks are not deleted for you:
 until you delete them, a gate the gateway runs straight from one of them drops the delivery
 (only the App's dispatcher, `hermes dk review` and a watchdog re-drive reach an App loop's
-gates), so nothing runs twice and `arm --pause` holds. `doctor`'s `hooks` line names each
+gates), so nothing runs twice and `arm --pause` holds. A gate whose process has no script file
+as `__main__` (an embedded interpreter, `python -c`) cannot tell how it was woken, so it drops
+the delivery too (#1289). `doctor`'s `hooks` line names each
 leftover hook by id.
 
 ## Recommendation: go, with a host-delivered handoff
