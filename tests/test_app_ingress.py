@@ -74,6 +74,25 @@ class Flow(app_cli.Base):
                 if status == doctor.MISMATCH:
                     self.assertIn("hermes dk app-webhook --loop widgets --set", check.fix)
 
+    def test_a_wrong_url_does_not_hide_a_wrong_content_type(self):
+        # #1294: doctor and arm name both defects at once, not the URL first and the content
+        # type only on the next run.
+        from diaktoros.doctor import hook_checks
+        self.run_cli(["arm", "--loop", "widgets", "--pause"])
+        self.webhook.update(url="https://example.com/dk-spike", content_type="form")
+        check = hook_checks.check_app_webhook(self.loop(), offline=False)
+        self.assertIn("posts to https://example.com/dk-spike, not the route's", check.detail)
+        self.assertIn("content type is form, not json", check.detail)
+        rc, out = self.run_cli(["arm", "--loop", "widgets"])
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("posts to https://example.com/dk-spike, not the route's", out)
+        self.assertIn("content type is form, not json", out)
+        # `app-webhook --set` writes json too, so a wrong content type alone names that fix.
+        self.webhook["url"] = routes.target("dk-app-acme-reader", "https://gateway.example")[0]
+        rc, out = self.run_cli(["app-webhook", "--loop", "widgets"])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("fix: hermes dk app-webhook --loop widgets --set", out)
+
     def test_doctor_and_explain_carry_the_apps_lines(self):
         from diaktoros import doctor
         from diaktoros.doctor import hook_checks
