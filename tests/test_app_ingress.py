@@ -389,6 +389,27 @@ class Switch(app_cli.Base):
         self.assertIn("app-webhook --loop widgets --set", out)
         self.assertIn("the gates now drop what they deliver", out)
 
+    def test_set_refuses_the_apps_route_when_a_sharing_loop_has_no_host(self):
+        # #1298: another loop on the same App's route with an empty host is a host mismatch.
+        rc, out = self.run_cli(self.app_argv(
+            reader=READ_APP, tokens=[(tfs.FIX, self.pats["fix"])],
+            apps=[(app_cli.BOT_REV, 5416187, self.key("rev")), (READ_APP, 5416115, self.key("read"))]))
+        self.assertEqual(rc, 0, out)
+        self.addCleanup(lambda: routes.restore_entries({"dk-app-acme-reader": None}))
+        loop = config.load_id("widgets")
+        hostless = {**loop, "id": "gadgets", "repo": "acme/gadgets", "host": "",
+                    "ingress": "app-webhook", "ingress_app": READ_APP,
+                    "state_dir": str(Path(loop["state_dir"]).parent / "gadgets"),
+                    "seats": {seat: {**cfg, "route": cfg["route"].replace("widgets", "gadgets")}
+                              for seat, cfg in loop["seats"].items()}}
+        self.assertEqual(config.app_route(hostless), "dk-app-acme-reader")
+        cli_common._write_config(config.normalize(hostless))
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--ingress", "app-webhook",
+                                "--ingress-app", READ_APP])
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("shared with loops on no host", out)
+        self.assertIsNone(routes.route("dk-app-acme-reader"))
+
 
 class InitHooks(app_cli.Base):
     def test_init_hooks_on_an_app_loop_promises_no_hooks(self):
