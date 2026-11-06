@@ -243,8 +243,10 @@ for step in (["cargo", "--version"], ["cargo", "test", "--offline"]):
         user namespaces or a cargo step that ran out of time after the boundary checks passed."""
         if "Creating new namespace failed" in result.stderr:
             self.skipTest("user namespaces disabled by host")
-        if result.returncode == 77 and "boundary: ok\n" in result.stdout:
-            timeout = [line for line in result.stdout.splitlines() if line.startswith("cargo timeout: ")]
+        lines = result.stdout.splitlines()
+        if result.returncode == 77 and "boundary: ok" in lines:
+            after = lines[lines.index("boundary: ok") + 1:]       # only what cargo's steps printed
+            timeout = [line for line in after if line.startswith("cargo timeout: ")]
             if timeout:
                 self.skipTest(timeout[-1])
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -306,6 +308,28 @@ for step in (["cargo", "--version"], ["cargo", "test", "--offline"]):
         if "Creating new namespace failed" in result.stderr:
             self.skipTest("user namespaces disabled by host")
         self._assert_red(result)
+
+    def test_only_a_timeout_after_the_boundary_checks_is_a_skip(self):
+        """Review on #1977: each condition of the skip on its own. Exit 77, ``boundary: ok`` and
+        a timeout line together skip; without any one of them the verdict is red."""
+        ok, line = "boundary: ok\n", "cargo timeout: cargo test --offline did not finish in 240 s on this runner\n"
+
+        def probe(code, stdout, stderr=""):
+            return subprocess.CompletedProcess([], code, stdout, stderr)
+
+        with self.assertRaises(unittest.SkipTest) as skipped:
+            self._rust_verdict(probe(77, ok + "cargo 1.0\n" + line))
+        self.assertEqual(str(skipped.exception), line.strip())
+        cases = {
+            "a boundary failure with a timeout line": probe(77, line, "AssertionError: host path readable"),
+            "a cargo failure after the checks": probe(101, ok + line, "error: test failed"),
+            "exit 77 with no timeout line": probe(77, ok + "cargo 1.0\n"),
+            "a timeout line printed before the checks passed": probe(77, line + ok),
+        }
+        for name, result in cases.items():
+            with self.subTest(name):
+                self._assert_red(result)
+
 
 if __name__ == "__main__":
     unittest.main()
