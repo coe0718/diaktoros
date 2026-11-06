@@ -310,6 +310,68 @@ class Ledger(unittest.TestCase):
         data = stats.fix_outcomes(self.db, REPO, NOW - 7 * DAY, NOW, lambda number: "open")
         self.assertEqual(data["steps_from"], NOW - 3500)
 
+    def shadow_issue(self, pr, model, issue, state, created, seat="shadow", repo=REPO):
+        """One issue a ``seat`` run on ``pr`` asked for (#914), in ``state``, filed as ``issue``;
+        a shadow run's review records ``model``."""
+        run_id = self.turn(pr, seat, created, repo=repo)
+        with ledger.connect(self.db) as con:
+            if seat == "shadow":
+                con.execute("INSERT INTO shadow_reviews(run_id,repo,pr,head,model,verdict,body,"
+                            "authorized,created) VALUES(?,?,?,?,?,?,?,?,?)",
+                            (run_id, repo, pr, "a" * 40, model, "REQUEST_CHANGES", "", 0, created))
+            con.execute("INSERT INTO shadow_issues(run_id,seq,repo,pr,head,title,title_key,body,"
+                        "labels,state,issue_number,created,updated) "
+                        "VALUES(?,1,?,?,?,?,?,?,?,?,?,?,?)",
+                        (run_id, repo, pr, "a" * 40, f"t{issue}", f"t{issue}", "b", "[]", state,
+                         issue, created, created))
+
+    def test_the_weekly_report_counts_shadow_found_issues_per_model_and_later_fixed(self):
+        # #1358 (#914's "Visible"): filed shadow issues per model, and how many a merged
+        # issue-fix PR later fixed, read through the weekly report's own entry point.
+        self.shadow_issue(10, "m-a", 501, "posted", NOW - 5000)       # fixed: its PR merged
+        self.shadow_issue(11, "m-a", 502, "unlabelled", NOW - 4000)   # filed; its fix is open
+        self.shadow_issue(12, "m-b", 503, "posted", NOW - 3000)       # filed, no fix yet
+        self.shadow_issue(13, "m-b", None, "duplicate", NOW - 2500)   # never filed
+        self.shadow_issue(14, "m-b", 504, "posted", NOW - 30 * DAY)   # outside the window
+        self.shadow_issue(15, "", 505, "posted", NOW - 2000, seat="adjudicator")  # not a shadow
+        self.shadow_issue(16, "m-a", 506, "posted", NOW - 1900, repo="other/repo")
+        self.proposal(501, "pr", 601, NOW - 1000)
+        self.proposal(502, "pr", 602, NOW - 900)
+        self.proposal(503, "comment", None, NOW - 800)               # explained, no PR
+        states = {601: "merged", 602: "open"}
+        data = stats.report({"repo": REPO, "id": "w"}, self.db, NOW - 7 * DAY, NOW, breaches={},
+                            pr_state=lambda n: states.get(n))
+        self.assertEqual(data["shadow_found"], {
+            "filed": 3, "fixed": 1, "partial": False,
+            "models": {"m-a": {"filed": 2, "fixed": 1}, "m-b": {"filed": 1, "fixed": 0}}})
+        self.assertIn("shadow-found issues: 3 filed, 1 later fixed · m-a 2 filed, 1 fixed, "
+                      "m-b 1 filed, 0 fixed", stats.report_text(data))
+        none = stats.report({"repo": REPO, "id": "w"}, self.db, NOW - 60 * DAY, NOW - 40 * DAY,
+                            breaches={}, pr_state=lambda n: None)
+        self.assertEqual(none["shadow_found"], {})
+        self.assertNotIn("shadow-found issues", stats.report_text(none))
+
+    def test_shadow_found_pr_reads_are_bounded_and_marked_partial(self):
+        # The shadow-found count reads its fix PRs under the same FIX_READS_MAX cap as the
+        # issue fixes: past it a PR is left unread, the count says partial, and the text says so.
+        for n in range(3):
+            self.shadow_issue(20 + n, "m-a", 520 + n, "posted", NOW - 5000 + n)
+            self.proposal(520 + n, "pr", 620 + n, NOW - 1000 + n)
+        read = []
+
+        def pr_state(number):
+            read.append(number)
+            return "merged"
+        with mock.patch.object(stats, "FIX_READS_MAX", 2):
+            found = stats.shadow_found(self.db, REPO, NOW - 7 * DAY, NOW, pr_state)
+            self.assertEqual(sorted(read), [620, 621])
+            self.assertEqual((found["filed"], found["fixed"], found["partial"]), (3, 2, True))
+            data = stats.report({"repo": REPO, "id": "w"}, self.db, NOW - 7 * DAY, NOW,
+                                breaches={}, pr_state=pr_state)
+        self.assertEqual(data["shadow_found"], found)
+        self.assertIn("shadow-found issues: 3 filed, 2 later fixed · m-a 3 filed, 2 fixed "
+                      "(some PRs not read)", stats.report_text(data))
+
     def reviewed(self, pr, head, model):
         run_id = self.turn(pr, "reviewer", NOW - 5000)
         with ledger.connect(self.db) as con:

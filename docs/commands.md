@@ -333,8 +333,13 @@ The same report can go to the observer feed once a week: see
 head, with verdict agreement per shadow model, the PRs where they disagreed (the shadow blocked
 what the reviewer approved, or the reverse), and findings matched by cited file and line (within 10
 lines; a citation with no line matches the file). A shadow whose head has no real verdict yet is
-counted, not compared. Request → verdict is measured from the review run's creation to its
-receipt.
+counted, not compared. Shadow-found issues (#914, with `shadow.file_issues` on): the issues the
+sweep filed for shadow reviews whose request was recorded in the window, per shadow model, and how
+many were later fixed, meaning an issue-fix PR the loop proposed for the issue has merged (read
+now, as the issue fixes' PRs are). A fix made outside the loop is not counted as fixed; one not
+filed (duplicate, denied, waiting) is not counted at all, and the adjudicator's `adjudicator-found`
+issues are not in it. With `file_issues` off, the line never appears. Request → verdict is
+measured from the review run's creation to its receipt.
 
 Human overrides (#220, first step): a PR merged over a standing changes-requested. The watchdog
 sweep reads the repository's recently merged PRs (the last 30 updated, merged within 7 days, by an
