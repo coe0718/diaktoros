@@ -549,6 +549,30 @@ class Pending(Base):
         self.assertEqual(escalate_pending.prune(self.st, [7]), [8])  # 8 is no longer open
         self.assertIsNotNone(escalate_pending.get(self.st, 7))
 
+    def test_a_failed_prune_write_is_not_logged_as_dropped_by_the_sweep(self):
+        # #1283: prune is strict like record/take; the watchdog sweep must not say a record
+        # was dropped when its removal never reached disk, and the record stays for a retry.
+        from types import SimpleNamespace
+        from scripts import watchdog
+        escalate_pending.record(self.st, 8, reason="r", head=HEAD)
+        c = SimpleNamespace(loop=self.loop, st=self.st, prs=[{"number": 7}],
+                            watch=self.st.watch())
+        lines: list = []
+        with mock.patch.object(watchdog.ci_fix, "sweep"), \
+                mock.patch.object(watchdog.stale_approval, "sweep"), \
+                mock.patch.object(watchdog.ruled_approval, "sweep"), \
+                mock.patch.object(watchdog.main_check, "sweep"), \
+                mock.patch.object(watchdog.ready, "sweep"), \
+                mock.patch.object(watchdog.merge_check, "refresh"), \
+                mock.patch.object(watchdog.conflict_person, "prune"), \
+                mock.patch.object(watchdog, "log", side_effect=lines.append), \
+                mock.patch.object(state_mod, "log"), \
+                mock.patch.object(self.st, "_save_strict", side_effect=OSError("disk full")):
+            watchdog._best_effort_sweeps(c)
+        self.assertFalse([ln for ln in lines if "pending escalation dropped" in ln], lines)
+        self.assertIn("pending escalation prune failed: OSError: disk full", lines)
+        self.assertIn("8", json.loads((self.st.dir / escalate_pending.FILE).read_text()))
+
     def test_reading_it_writes_nothing(self):
         # explain is read-only (the harness hashes every file): get() and a no-op take() never
         # create a lock or touch the store.
