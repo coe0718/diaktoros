@@ -1609,6 +1609,12 @@ head is refused, and a new head gets its own review. It's the host operator's al
 or GitHub comment can start one, so a re-request on GitHub still gets "head already has a
 reviewer's verdict". It can't be combined with `--another-round`, and it's refused at a head
 that has no verdict yet (a plain `review` asks for one) or that is escalated to adjudication.
+A reconsider has to be queued as a turn while you wait. If the gate can only hold it in the
+reviewer queue (for example, when the isolated worker runtime is unavailable), nothing replays
+it: the queue entry keeps no turn key, and a later delivery or drain at the reviewed head only
+gets "head already has a reviewer's verdict". So the command doesn't report "queued, waiting".
+It prints `reconsider NOT queued — <why>`, drops that hold and exits 2. Run it again once the
+cause is fixed. A dispute re-review held the same way has the same gap and isn't covered here.
 
 <!-- flags:review -->
 | flag | value | default | what it does |

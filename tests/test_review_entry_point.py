@@ -209,6 +209,20 @@ class Reconsider(Harness):
         self.assertIn("has no reviewer's verdict yet", result["lines"][0])
         self.assertEqual(self.keys, [])
 
+    def test_a_reconsider_held_for_a_missing_runtime_says_it_was_not_queued(self):
+        # #1369: with no worker runtime the gate holds the turn in the seat queue, which keeps
+        # no turn key, and nothing replays a reconsider: the command must not say "queued,
+        # waiting", and must leave no hold that a drain would turn into "already reviewed".
+        t.reset(prs={"7": approved()})
+        with mock.patch("diaktoros.gate.enqueue_isolated",
+                        side_effect=RuntimeError("no private runtime")):
+            result = self.reconsider()
+        self.assertEqual(result["code"], 2, result["lines"])
+        self.assertIn("reconsider NOT queued", result["lines"][-1])
+        self.assertIn("isolated worker unavailable", result["lines"][-1])
+        self.assertNotIn("queued, waiting", "\n".join(result["lines"]))
+        self.assertEqual(self.queued(), {})
+
     def test_no_webhook_can_reconsider_a_reviewed_head(self):
         # The reconsider is the host's argument, never a payload field: a maintainer's (or
         # anyone's) re-request at a reviewed head is still declined by the webhook gate.
