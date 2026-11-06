@@ -204,6 +204,32 @@ class ObserverSafetyTests(unittest.TestCase):
         self.assertEqual(observer._read(self.state.observations)["entries"][key]["status"],
                          "delivered")
 
+    def test_an_unmarked_retryable_failure_reclaimed_and_killed_is_resent(self):
+        # #1319 review: a retryable failure written before the marker existed carries none. The
+        # sweep's re-claim must add it, or a sweep killed before its POST leaves a claim the next
+        # sweep can only quarantine as uncertain instead of resending.
+        self.loop["host"] = "https://owner.example"
+        key = "diaktoros:7:" + "a" * 40 + ":approved:1"
+        self.state.observations.write_text(json.dumps({"entries": {key: {
+            "status": "failed", "retryable": True, "attempts": 1, "error": "no route",
+            "event": "approved", "number": 7, "head": "a" * 40, "message": "approved #7",
+            "url": "https://github.com/owner/private/pull/7", "delivery": "approved-7-x",
+            "at": time.time()}}}))
+        with patch.object(observer, "_mark_posting", side_effect=SystemExit(1)), \
+                self.assertRaises(SystemExit):
+            observer.retry(self.loop, self.state)
+        data = observer._read(self.state.observations)
+        entry = data["entries"][key]
+        self.assertEqual((entry["status"], entry.get("posting_at"), entry.get("posting_marked")),
+                         ("pending", None, True))
+        entry["at"] = time.time() - observer.STALE_CLAIM_S - 5
+        observer._save(self.state.observations, data)
+        with patch.object(routes, "fire", return_value=True) as fire:
+            self.assertEqual(observer.retry(self.loop, self.state), 1)
+            fire.assert_called_once()
+        self.assertEqual(observer._read(self.state.observations)["entries"][key]["status"],
+                         "delivered")
+
     def test_a_claim_that_never_reached_its_post_is_sent_by_the_sweep(self):
         key = self.stale_claim()
         with patch.object(routes, "fire", return_value=True) as fire:
