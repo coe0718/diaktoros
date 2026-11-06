@@ -153,13 +153,17 @@ def refuse_in_flight(loop: dict, seat: str) -> bool:
 
 
 def set_moves_busy_identity(loop: dict, tokens: dict, apps: dict, adj_before: str,
-                            adj_after: str, read_changed: bool) -> bool:
+                            adj_after: str, read_changed: bool, args=None) -> bool:
     """``set``'s identity guard (#1293): True, after printing the refusal, when ``set`` would move
     the reader or the adjudicator's login while that identity has a run in flight.
 
     The same rule ``identity`` enforces, through ``refuse_in_flight``: the reader waits for any run
     of the loop, the adjudicator for its own. The adjudicator moves when its login changes or that
-    login's credential is remapped; mapping an unrelated login (a hook admin) moves neither."""
+    login's credential is remapped; mapping an unrelated login (a hook admin) moves neither.
+    ``--adjudicator off`` (in ``args``) on a loop with a route drops the adjudicator's login, so it
+    counts as moving that login to ``""`` whatever ``--adjudicator-login`` says (#1960 review F3)."""
+    if getattr(args, "adjudicator", None) == "off" and (loop.get("adjudicator") or {}).get("route"):
+        adj_after = ""
     mapped = {"tokens": tokens, "apps": apps}
     adj_moved = adj_after != adj_before or bool(
         adj_before and cli_common._credential_label(mapped, adj_before)

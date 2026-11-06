@@ -718,7 +718,9 @@ working-seat credential or the current reader without explicitly naming that rea
 An empty adjudicator login removes only PR-comment attribution; it does not disable adjudication.
 Moving the reader or the adjudicator's login (or remapping its credential) is refused while that
 identity has a run in flight, exactly as [`identity`](#identity) refuses it: any run of the loop
-for the reader (shadows included), an adjudicator run for the adjudicator. The check runs before
+for the reader (shadows included), an adjudicator run for the adjudicator. `--adjudicator off`
+drops the adjudicator's login, so it counts as moving that login (even alongside
+`--adjudicator-login` naming the same one). The check runs before
 anything is written, so a refused `set` changes nothing, `--adjudicator off`/`--adjudicator-profile`
 included. Other settings are not held up.
 Blank clone/base strings are ignored, not deletion requests. Seat concurrency/budget flags

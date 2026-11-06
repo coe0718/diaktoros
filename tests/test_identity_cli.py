@@ -213,6 +213,30 @@ class Identity(app_cli.Base):
         rc, out = self.run_cli(["set", "--loop", "widgets", "--token", f"judge={old}"])
         self.assertEqual(rc, 0, out)
 
+    def test_set_adjudicator_off_counts_as_moving_a_busy_adjudicators_login(self):
+        # #1293 (review F3): `--adjudicator off` drops the adjudicator's login, so it waits for an
+        # adjudicator run even when `--adjudicator-login` names the same login, and writes nothing.
+        import json
+        from diaktoros import routes
+        data = json.loads(self.loop_file().read_text())
+        data["adjudicator"] = {"route": "widgets-adjudicate", "profile": "default"}
+        self.loop_file().write_text(json.dumps(data))
+        judge = self.pat("judge")
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-login", "judge",
+                                "--token", f"judge={judge}"])
+        self.assertEqual(rc, 0, out)
+        self.busy("adjudicator")
+        route_before = routes.route("widgets-adjudicate")
+        before = self.loop_file().read_bytes()
+        for argv in (["--adjudicator", "off", "--adjudicator-login", "judge"],
+                     ["--adjudicator", "off"]):
+            rc, out = self.run_cli(["set", "--loop", "widgets", *argv])
+            self.assertEqual(rc, 2, out)
+            self.assertIn("1 run(s) acting as the adjudicator identity are in flight", out)
+            self.assertNotIn("adjudication off", out)
+            self.assertEqual(self.loop_file().read_bytes(), before)
+            self.assertEqual(routes.route("widgets-adjudicate"), route_before)
+
     def test_the_adjudicator_moves_and_only_seats_keep_an_allowlisted_login(self):
         import json
         from diaktoros import config

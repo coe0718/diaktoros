@@ -331,7 +331,7 @@ def _refuse_busy_identity(args, loop: dict) -> None:
     moves."""
     tokens, apps, adj_before, adj_after, _, _, _, read_changed = _credentials(args, loop)
     if identity_command.set_moves_busy_identity(loop, tokens, apps, adj_before, adj_after,
-                                                read_changed):
+                                                read_changed, args):
         raise _Refused
 
 
