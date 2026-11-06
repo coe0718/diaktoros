@@ -476,6 +476,8 @@ class Posting(unittest.TestCase):
 
     def test_blocked_on_a_base_that_does_not_require_the_check_keeps_it_pending(self):
         # #1227: the refresh reads the base; blocked there is another rule, so no green check.
+        self.loop["base"] = "main"
+        self.prs = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
         self.kinds = {7: [(ready.GITHUB, "not mergeable: GitHub reports blocked")]}
         with self.base() as read:
             self.assertEqual(self.refresh(), 1)
@@ -535,6 +537,19 @@ class Posting(unittest.TestCase):
         self.assertEqual(sorted(c.args[0]["base"] for c in read.call_args_list), ["main", "parent"])
         self.assertEqual({n: self.memory()[n]["state"] for n in ("7", "8", "9")},
                          {"7": "pending", "8": "success", "9": "success"})
+
+    def test_a_blocked_pr_with_no_readable_base_ref_is_taken_as_requiring_the_check(self):
+        # Vex F1 round 2 on #1947: main is optional, but a PR whose base ref is missing or
+        # malformed may target a branch that requires the check; it is never judged by main.
+        self.loop["base"] = "main"
+        self.kinds = {7: [(ready.GITHUB, "not mergeable: GitHub reports blocked")]}
+        for base in (None, {}, {"ref": ""}, {"ref": None}, {"ref": 5}, "main"):
+            with self.subTest(base=base), self.base() as read:
+                self.st.kv_set(self.st.dir / merge_check.FILE, {})
+                self.prs = [{**CLEAN, "head": {"sha": HEAD}, "base": base}]
+                self.assertEqual(self.refresh(), 1)
+                read.assert_not_called()
+                self.assertEqual(self.memory()["7"]["state"], "success")
 
     def test_a_pat_loop_that_opted_in_posts_a_commit_status(self):
         self.loop.update(reviewer_seat="rev", apps={}, tokens={"rev": "/t"}, merge_check="on",

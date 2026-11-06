@@ -19,8 +19,9 @@ would keep the check from ever turning green. When the base is known not to requ
 ``blocked`` is some other rule (required reviews, another required check), so it counts as a wait
 (pending), as ``ready`` excludes the PR for it, instead of reading success while the merge button
 refuses. A base whose protection could not be fully read (the classic protection read needs admin
-access) is taken as requiring the check: guessing wrong that way only reads green early, the other
-way deadlocks. (GitHub's other verdicts always count: a conflict or ``behind`` needs a change, an
+access), or a PR whose base ref is missing from the listing, is taken as requiring the check:
+guessing wrong that way only reads green early, the other way deadlocks. (GitHub's other verdicts
+always count: a conflict or ``behind`` needs a change, an
 uncomputed state is pending.) The per-PR reasons come from ``ready.build_kinds``, stacking
 included. A PR outside the loop gets no check at all.
 """
@@ -75,9 +76,10 @@ def _blocked_counts(loop: dict, prs: list[dict], kinds: dict,
                     only: set[int] | None = None) -> dict[int, bool]:
     """``decide``'s ``required`` per PR for one refresh, from the protection of the branch each PR
     actually targets (a stacked PR targets its parent's branch, #1227). Only PRs carrying GitHub's
-    ``blocked`` (and in ``only``, when given) are looked up, and each distinct base is read once;
-    a PR left out maps to True by its caller, which ``decide`` never consults without a
-    ``blocked`` reason."""
+    ``blocked`` (and in ``only``, when given) are looked up, and each distinct base is read once.
+    A PR whose base ref is missing or malformed has an unknown base: True, with no read (never the
+    loop's base, which may differ in what it requires). A PR left out maps to True by its caller,
+    which ``decide`` never consults without a ``blocked`` reason."""
     out: dict[int, bool] = {}
     by_base: dict[str, bool] = {}
     for pr in prs:
@@ -86,9 +88,14 @@ def _blocked_counts(loop: dict, prs: list[dict], kinds: dict,
             continue
         if not any(kind == ready.GITHUB for kind, _ in kinds.get(number) or []):
             continue
-        base = (pr.get("base") or {}).get("ref") or str(loop.get("base") or "")
+        base = (pr.get("base") if isinstance(pr.get("base"), dict) else {}).get("ref")
+        if not isinstance(base, str) or not base.strip():
+            # Vex F1 round 2 on #1947: a missing or malformed base ref is an unknown base, never
+            # the loop's: taken as requiring the check (no read), as an unread base is.
+            out[number] = True
+            continue
         if base not in by_base:
-            by_base[base] = base_requires_check(loop, base or None)
+            by_base[base] = base_requires_check(loop, base)
         out[number] = by_base[base]
     return out
 
