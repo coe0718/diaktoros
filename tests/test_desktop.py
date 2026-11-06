@@ -32,14 +32,157 @@ NOW = 1_800_000_000.0
 SECRET = "/home/someone/.hermes/tokens/x.pat exploded"
 PLUGIN_JS = ROOT / "desktop" / "plugin.js"
 
-# One left-to-right scan, so a `//` inside a block comment (or a `/*` inside a line comment) is
-# consumed by whichever comment starts first. The lookbehind keeps `https://` in a string.
-_JS_COMMENT = re.compile(r"/\*.*?\*/|(?<![:\w])//[^\n]*", re.S)
+# One left-to-right scan over the JS tokens that can hold a comment marker without being a comment:
+# string literals ('...', "..."), template literals (`...`, with each `${...}` scanned as code, so
+# a template nested in one is a template too) and regex literals (/.../flags). They are kept
+# verbatim, so a `/*`, `//` or quote inside one opens nothing and cannot hide the code after it
+# (#1313), and a quote inside a regex literal cannot pair with one in a later comment (#1965).
+# Only `//` line comments and `/* ... */` blocks are removed; whichever starts first wins, so a
+# `//` inside a block comment (or a `/*` inside a line comment) is part of that comment.
+# Not a full tokenizer: whether a `/` opens a regex is read from the token before it. After
+# punctuation that cannot end an expression, or a keyword such as `return`, it is a regex; after a
+# name, number, literal or `]`, a division. After `)`, `}`, `++` or `--` it can be either
+# (`if (x) /re/` vs `(a) / b`, a block vs `{} / a`), so both readings are scanned: where they keep
+# the same text the scan goes on, and where they differ it raises AmbiguousSlash rather than
+# guess, so a guard built on it fails closed instead of passing on code it never saw (#1965).
+# A quoted string or regex ends at a newline, and an unclosed one is kept as plain code.
+_REGEX_AFTER = set("(,=:[!&|?{;+-*%<>~^")
+_REGEX_AFTER_WORDS = {"return", "typeof", "instanceof", "in", "of", "new", "delete", "void",
+                      "throw", "case", "do", "else", "yield", "await"}
+_EITHER_AFTER = (")", "}", "++", "--")
+_LAST_WORD = re.compile(r"[\w$]+$")
+
+
+class AmbiguousSlash(ValueError):
+    """A `/` that reads as a regex or as a division, where the two readings strip differently."""
+
+
+def _kept_tail(out: list[str]) -> str:
+    """The end of the code kept so far, trailing blanks dropped: enough to see the token before a
+    `/`, however many one-character chunks and blank lines precede it."""
+    tail = ""
+    for chunk in reversed(out):
+        tail = chunk + tail
+        if len(tail.strip()) >= 16:
+            break
+    return tail.rstrip()
+
+
+def _slash_reading(tail: str) -> str:
+    """How a `/` after the kept code ``tail`` reads: ``"regex"``, ``"division"`` or ``"either"``
+    (the token before it can end an expression or a statement)."""
+    if tail.endswith(_EITHER_AFTER):
+        return "either"
+    if not tail or tail[-1] in _REGEX_AFTER:
+        return "regex"
+    word = _LAST_WORD.search(tail)
+    return "regex" if word is not None and word.group() in _REGEX_AFTER_WORDS else "division"
+
+
+def _literal_end(source: str, i: int) -> int:
+    """The index just past the quoted string or regex literal opening at ``source[i]``, or -1 when
+    it does not close before a newline or the end."""
+    quote, in_class, j = source[i], False, i + 1
+    while j < len(source):
+        c = source[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == "\n":
+            return -1
+        if quote == "/" and c in "[]":
+            in_class = c == "["
+        elif c == quote and not in_class:
+            j += 1
+            while quote == "/" and j < len(source) and (source[j].isalnum() or source[j] == "_"):
+                j += 1   # the regex's flags
+            return j
+        j += 1
+    return -1
+
+
+def _template_end(source: str, i: int) -> int:
+    """From inside a template literal at ``source[i]``: the index just past its closing backtick
+    or past the `${` that opens an expression (the caller scans that as code), or the end."""
+    while i < len(source):
+        if source[i] == "\\":
+            i += 2
+        elif source[i] == "`":
+            return i + 1
+        elif source.startswith("${", i):
+            return i + 2
+        else:
+            i += 1
+    return len(source)
+
+
+def _either_slash_end(source: str, i: int, depths: list[int], out: list[str]) -> int:
+    """The index just past a `/` at ``source[i]`` that may open a regex or divide.
+
+    With no regex closing on its line, it is a division (one character). Otherwise the text up to
+    the regex's end is scanned again as division code: if that keeps it all, ends right there and
+    leaves the `${` depths alone, the two readings agree and the regex span is kept. If not, the
+    file's meaning depends on parsing this scanner does not do, so it raises AmbiguousSlash."""
+    end = _literal_end(source, i)
+    if end < 0:
+        out.append("/")
+        return i + 1
+    division, divided_depths = [_kept_tail(out), "/"], list(depths)
+    stop = _scan(source, i + 1, divided_depths, division, end)
+    if stop != end or "".join(division[1:]) != source[i:end] or divided_depths != depths:
+        line = source.count("\n", 0, i) + 1
+        raise AmbiguousSlash(f"line {line}: `/` at {source[i:end]!r} reads as a regex or a "
+                             "division, and the two strip differently")
+    out.append(source[i:end])
+    return end
+
+
+def _scan(source: str, i: int, depths: list[int], out: list[str], stop: int) -> int:
+    """Scan ``source`` from ``i`` as code, appending what is kept to ``out``, until ``stop`` or
+    past it (a comment or literal that crosses it is taken whole); returns where it stopped.
+    ``depths`` holds, per open `${`, the `{` depth inside it."""
+    while i < stop:
+        c = source[i]
+        if source.startswith("/*", i):
+            end = source.find("*/", i + 2)
+            if end < 0:
+                out.append(source[i:])
+                return len(source)
+            i = end + 2
+        elif source.startswith("//", i):
+            end = source.find("\n", i)
+            i = len(source) if end < 0 else end
+        elif c == "`" or (c == "}" and depths and depths[-1] == 0):
+            if c == "}":
+                depths.pop()                          # back in the template the `${` opened
+            end = _template_end(source, i + 1)
+            if source[end - 2:end] == "${":
+                depths.append(0)
+            out.append(source[i:end])
+            i = end
+        elif c == "/" and _slash_reading(_kept_tail(out)) == "either":
+            i = _either_slash_end(source, i, depths, out)
+        elif c in "'\"" or (c == "/" and _slash_reading(_kept_tail(out)) == "regex"):
+            end = _literal_end(source, i)
+            end = i + 1 if end < 0 else end
+            out.append(source[i:end])
+            i = end
+        else:
+            if depths and c in "{}":
+                depths[-1] += 1 if c == "{" else -1
+            out.append(c)
+            i += 1
+    return i
 
 
 def strip_js_comments(source: str) -> str:
-    """The JS that runs: `//` line comments and `/* ... */` / `/** ... */` blocks removed."""
-    return _JS_COMMENT.sub("", source)
+    """The JS that runs: `//` line comments and `/* ... */` / `/** ... */` blocks removed.
+
+    String, template and regex literals are kept verbatim, comment markers inside them included.
+    Raises AmbiguousSlash where a `/` may be a regex or a division and the readings differ."""
+    out: list[str] = []
+    _scan(source, 0, [], out, len(source))
+    return "".join(out)
 
 
 class Now(unittest.TestCase):
@@ -736,6 +879,75 @@ class Package(unittest.TestCase):
         self.assertEqual(strip_js_comments(multi).strip(), "const b = `lit`;")
         url = "const u = 'https://example.test/a'; // `tail`\n"
         self.assertEqual(strip_js_comments(url).strip(), "const u = 'https://example.test/a';")
+
+    def test_comment_stripper_ignores_comment_markers_in_strings_1313(self):
+        # A `/*` in a string opens no comment, so it cannot swallow the code (and its backtick)
+        # up to a later `*/`.
+        src = 'const hint = "scale /* x";\nconst t = `backtick in code`;\n// note */\nconst u = 1;\n'
+        code = strip_js_comments(src)
+        self.assertIn("const t = `backtick in code`;", code)
+        self.assertIn('const hint = "scale /* x";', code)
+        self.assertNotIn("note", code)
+        self.assertIn("`", code)   # the first-render guard's check would see the code backtick
+        quoted = "const s = 'a // b'; const r = \"it\\'s /* \"; /* gone */ const k = 2;\n"
+        self.assertEqual(strip_js_comments(quoted).strip(),
+                         "const s = 'a // b'; const r = \"it\\'s /* \";  const k = 2;")
+
+    def test_comment_stripper_keeps_regex_literals_whole_1965(self):
+        # A quote in a regex literal opens no string, so it cannot pair with a quote in a later
+        # block comment and turn that comment's `//` into a line comment that hides the code after.
+        src = "const r = /'/; /* it's // prose */ const t = `backtick`;\n"
+        self.assertEqual(strip_js_comments(src), "const r = /'/;  const t = `backtick`;\n")
+        # ...so the first-render guard (no backtick in code) still fails on that code backtick.
+        self.assertIn("`", strip_js_comments(src))
+        # A `/*` or `//` in a regex (character class included) is the regex's, not a comment.
+        regex = "const a = x.replace(/\\/*[/*]/g, ''); // gone\nreturn /\"/.test(s) // it's\n"
+        self.assertEqual(strip_js_comments(regex),
+                         "const a = x.replace(/\\/*[/*]/g, ''); \nreturn /\"/.test(s) \n")
+        # Division is not a regex: the `//` after it is still a comment.
+        self.assertEqual(strip_js_comments("const h = (a) / 2 / b; // it's\n"),
+                         "const h = (a) / 2 / b; \n")
+        # A template's `${...}` is code: a nested template, and a comment, are seen as such.
+        tpl = "const m = `a ${f(`b`) /* `c` */} d`;\n"
+        self.assertEqual(strip_js_comments(tpl), "const m = `a ${f(`b`) } d`;\n")
+
+    def test_comment_stripper_keeps_a_comment_marker_in_a_regex_as_code_1965(self):
+        # A `/*` in a regex literal opens no block comment, so it cannot swallow the code (and
+        # its backtick) up to a later `*/`. The merge-base stripper loses `const t`'s backtick.
+        src = "const a = s.replace(/\\/*/g, ''); const t = `b`; // */\n"
+        self.assertEqual(strip_js_comments(src), "const a = s.replace(/\\/*/g, ''); const t = `b`; \n")
+
+    def test_comment_stripper_fails_closed_on_an_ambiguous_slash_1965(self):
+        # After `)`, `}`, `++` or `--` a `/` may be a regex or a division. Where the readings
+        # strip differently the stripper raises rather than guess, so neither a division read as
+        # a regex nor a regex read as a division can hide the code backtick after it.
+        division_after_object = "const x = {} / a; /* it's // prose */ const t = `backtick`;\n"
+        regex_after_control = "if (x) /'/ .test(y); /* it's // prose */ const t = `backtick`;\n"
+        after_increment = "n = a++ / b; /* it's // p */ const t = `b`;\n"
+        for src in (division_after_object, regex_after_control, after_increment):
+            with self.subTest(src=src), self.assertRaises(AmbiguousSlash):
+                strip_js_comments(src)
+        # Where both readings keep the same text there is nothing to guess: it strips as usual.
+        self.assertEqual(strip_js_comments("const h = (a) / 2 / b; // it's\n"),
+                         "const h = (a) / 2 / b; \n")
+        self.assertEqual(strip_js_comments("f(x) / 2;\ng(); /* `c` */\n"), "f(x) / 2;\ng(); \n")
+
+    def test_guards_fail_on_an_ambiguous_slash_in_plugin_js_1965(self):
+        # Through the guards themselves: a plugin.js whose stripped code depends on how a `/`
+        # reads makes the first-render and surface guards fail, never pass on code unseen.
+        temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
+        self.addCleanup(temp.cleanup)
+        plugin = pathlib.Path(temp.name) / "plugin.js"
+        # The first line holds the code the guards must see; the second carries what the
+        # first-render test also checks in the raw source, so only the stripped code decides it.
+        plugin.write_text("const x = {} / a; /* it's // prose */ document.title = `x`;\n"
+                          "// otherStates(s) 'other' cleanLine(counts, checks.length)\n")
+        for case in (Package("test_first_render_findings_641"),
+                     Surface("test_stays_inside_the_sdk_surface")):
+            with self.subTest(case=case.id()), mock.patch(f"{__name__}.PLUGIN_JS", plugin):
+                result = unittest.TestResult()
+                case.run(result)
+                self.assertFalse(result.wasSuccessful())
 
     def test_first_render_findings_641(self):
         source = PLUGIN_JS.read_text()

@@ -146,6 +146,97 @@ class Identity(app_cli.Base):
         self.assertEqual(rc, 2, out)
         self.assertIn("1 uncertain: settle each with `hermes dk retry --loop widgets --pr N`", out)
 
+    def test_set_moving_the_reader_or_adjudicator_waits_for_runs_in_flight(self):
+        # #1293: `set --read-token` / `--adjudicator-login` move an identity too, so they hold the
+        # same in-flight rule `identity` does, through the same ledger query.
+        import json
+        data = json.loads(self.loop_file().read_text())
+        data["adjudicator"] = {"route": "widgets-adjudicate", "profile": "default"}
+        self.loop_file().write_text(json.dumps(data))
+        new = self.pat("new-reader")
+        judge = self.pat("judge")
+        self.busy("shadow")                            # any run reads as the reader
+        before = self.loop_file().read_bytes()
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--read-token", "new-reader",
+                                "--token", f"new-reader={new}"])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("1 run(s) acting as the read identity are in flight", out)
+        self.assertEqual(self.loop_file().read_bytes(), before)
+        # The adjudicator waits only for its own runs: a shadow run does not hold it up.
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-login", "judge",
+                                "--token", f"judge={judge}"])
+        self.assertEqual(rc, 0, out)
+        self.busy("adjudicator")
+        before = self.loop_file().read_bytes()
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-login", ""])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("acting as the adjudicator identity are in flight", out)
+        self.assertEqual(self.loop_file().read_bytes(), before)
+        # A setting that moves no identity is not held up by a run in flight.
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--cap", "4"])
+        self.assertEqual(rc, 0, out)
+
+    def test_a_refused_set_writes_nothing_even_with_an_adjudication_change(self):
+        # #1293 (review F1): the in-flight refusal comes before `--adjudicator off` commits its
+        # config and route, so a mixed command refused for a busy reader leaves the loop as it was.
+        import json
+        data = json.loads(self.loop_file().read_text())
+        data["adjudicator"] = {"route": "widgets-adjudicate", "profile": "default"}
+        self.loop_file().write_text(json.dumps(data))
+        new = self.pat("new-reader")
+        self.busy("shadow")
+        before = self.loop_file().read_bytes()
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator", "off",
+                                "--read-token", "new-reader", "--token", f"new-reader={new}"])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("1 run(s) acting as the read identity are in flight", out)
+        self.assertNotIn("adjudication off", out)
+        self.assertEqual(self.loop_file().read_bytes(), before)
+
+    def test_set_remapping_the_adjudicators_credential_waits_for_its_runs(self):
+        # #1293 (review F2): the same login with a new token file still moves the adjudicator.
+        import json
+        data = json.loads(self.loop_file().read_text())
+        data["adjudicator"] = {"route": "widgets-adjudicate", "profile": "default"}
+        self.loop_file().write_text(json.dumps(data))
+        old, new = self.pat("judge-old"), self.pat("judge-new")
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-login", "judge",
+                                "--token", f"judge={old}"])
+        self.assertEqual(rc, 0, out)
+        self.busy("adjudicator")
+        before = self.loop_file().read_bytes()
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--token", f"judge={new}"])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("1 run(s) acting as the adjudicator identity are in flight", out)
+        self.assertEqual(self.loop_file().read_bytes(), before)
+        # Re-mapping the same file moves nothing, so it is not held up.
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--token", f"judge={old}"])
+        self.assertEqual(rc, 0, out)
+
+    def test_set_adjudicator_off_counts_as_moving_a_busy_adjudicators_login(self):
+        # #1293 (review F3): `--adjudicator off` drops the adjudicator's login, so it waits for an
+        # adjudicator run even when `--adjudicator-login` names the same login, and writes nothing.
+        import json
+        from diaktoros import routes
+        data = json.loads(self.loop_file().read_text())
+        data["adjudicator"] = {"route": "widgets-adjudicate", "profile": "default"}
+        self.loop_file().write_text(json.dumps(data))
+        judge = self.pat("judge")
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-login", "judge",
+                                "--token", f"judge={judge}"])
+        self.assertEqual(rc, 0, out)
+        self.busy("adjudicator")
+        route_before = routes.route("widgets-adjudicate")
+        before = self.loop_file().read_bytes()
+        for argv in (["--adjudicator", "off", "--adjudicator-login", "judge"],
+                     ["--adjudicator", "off"]):
+            rc, out = self.run_cli(["set", "--loop", "widgets", *argv])
+            self.assertEqual(rc, 2, out)
+            self.assertIn("1 run(s) acting as the adjudicator identity are in flight", out)
+            self.assertNotIn("adjudication off", out)
+            self.assertEqual(self.loop_file().read_bytes(), before)
+            self.assertEqual(routes.route("widgets-adjudicate"), route_before)
+
     def test_the_adjudicator_moves_and_only_seats_keep_an_allowlisted_login(self):
         import json
         from diaktoros import config

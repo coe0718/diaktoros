@@ -139,12 +139,15 @@ retry so the gateway can also deduplicate a logical send.
 | --- | --- | --- |
 | `queued` | Waiting for a digest window/sweep | Check watchdog and batching |
 | `digesting` | Member attached to an in-progress batch | Inspect batch receipt, do not send member again |
-| `pending` | Sender claimed delivery; `posting_at` is set the moment its POST starts | Wait. A stale claim that never reached its POST is resent (it provably never left the host); one that did becomes uncertain |
+| `pending` | Sender claimed delivery; `posting_at` is set the moment its POST starts | Wait. A stale claim that never reached its POST is resent (it provably never left the host); one that did, or a legacy claim with no `posting_marked`, becomes uncertain |
 | `delivered` | Delivery success recorded | Check intended destination if not visible |
 | `failed` with proven pre-POST failure | Route/secret/destination unavailable before send | Fix route; bounded watchdog retry |
 | `uncertain` | POST may have landed: the sender died after its POST started, before the receipt | Inspect chat/gateway logs manually; never blind replay |
 
-Only definite pre-POST failures retry automatically, up to three attempts, including a sender that stopped before its POST began (#1314). A timeout,
+Only definite pre-POST failures retry automatically, up to three attempts, including a sender that stopped before its POST began (#1314). That proof needs
+the claim's `posting_marked` field, which every current sender writes with the claim: a `pending`
+claim left by a sender from before #1314 has neither field, whether or not its POST ran, so after an
+upgrade it becomes `uncertain` like any claim that reached its POST, never resent (#1319). A timeout,
 5xx or other unconfirmed POST may have sent the message and is quarantined rather than
 replayed. Legacy failure receipts without proof of pre-POST failure become uncertain.
 These failures never consume a review seat or block PR admission, but may prevent an

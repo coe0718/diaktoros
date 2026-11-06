@@ -156,8 +156,9 @@ so it needs no PAT at all. The Hermes gateway runs a route's script with the pay
 the event name), so the App's route runs `gate_app.py`, which reads the event from the payload's
 shape and runs that loop's own gate in the same process, under the gate's own name. One App's
 webhook has one URL for every repository it is installed on, so its route is shared by every loop
-it delivers for. GitHub cannot pause an App's webhook for one repository: pausing such a loop is a
-flag the gate reads. `hermes dk app-webhook --set` writes the URL and secret onto the App.
+it delivers for, and every one of those loops must name the same `--host`: writing the route is
+refused while another loop on it names a different host or none at all. GitHub cannot pause an
+App's webhook for one repository: pausing such a loop is a flag the gate reads. `hermes dk app-webhook --set` writes the URL and secret onto the App.
 `doctor`'s `app-webhook` line reads that webhook with the App's own key, and `arm` refuses
 "armed" until it posts to the route with every event the loop needs (`init` names the step).
 

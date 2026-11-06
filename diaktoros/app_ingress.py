@@ -107,24 +107,25 @@ def held_drop(exc: BaseException) -> bool:
 
 
 def paused(st) -> bool:
-    """Whether this loop's App deliveries are dropped (``arm --pause``). Lock-free and read-only;
-    an unreadable flag is armed, the same answer as a missing one."""
-    try:
-        path = st.dir / FILE
-        if not path.exists():
-            return False
-        data = json.loads(path.read_text())
-    except Exception:
-        return False
-    return isinstance(data, dict) and data.get("paused") is True
+    """Whether this loop's App deliveries are dropped (``arm --pause``). Lock-free and read-only.
+    Fails closed (#1295): only a flag that reads as armed (``pause_flag`` is ``False``: a missing
+    file, or ``{"paused": false}``) delivers; an unreadable or malformed one drops, as the repo-hook
+    path's "start nothing unless armed" callers do with an unreadable hook list."""
+    return pause_flag(st) is not False
 
 
 def pause_flag(st) -> bool | None:
     """Like ``paused`` but ``None`` when the flag cannot be read or is malformed: a missing file is
-    armed (``False``), a corrupt one is unknown, never a guess (#1599)."""
+    armed (``False``), a corrupt one is unknown, never a guess (#1599).
+
+    "Missing" is only an entry that is not there at all (``lstat`` raises ``FileNotFoundError``).
+    ``Path.exists`` follows symlinks, so a dangling flag symlink would read as missing and so as
+    armed; that entry exists and cannot be read, which is unknown (#1295 review, F2)."""
     try:
         path = st.dir / FILE
-        if not path.exists():
+        try:
+            path.lstat()
+        except FileNotFoundError:
             return False
         data = json.loads(path.read_text())
     except Exception:
