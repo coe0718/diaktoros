@@ -137,7 +137,7 @@ def webhook_problem(state: dict) -> str:
     if state["url"] != state["want_url"]:
         problems.append(f"it posts to {state['url'] or '(nowhere)'}, not the route's "
                         f"{state['want_url'] or '(no route installed)'}")
-    elif state["content_type"] != "json":
+    if state["content_type"] != "json":         # its own defect: named even beside a wrong URL
         problems.append(f"its content type is {state['content_type'] or '(none)'}, not json")
     if state["missing_events"]:
         problems.append(f"it does not subscribe to {', '.join(state['missing_events'])}")

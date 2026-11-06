@@ -284,7 +284,7 @@ def cmd_app_webhook(args) -> int:
           + (f" — missing {', '.join(state['missing_events'])}: subscribe to "
              f"{'it' if len(state['missing_events']) == 1 else 'them'} in the App's settings "
              "(Permissions & events → Subscribe to events)" if state["missing_events"] else ""))
-    if state["url"] != state["want_url"] and not args.set:
+    if (state["url"] != state["want_url"] or state["content_type"] != "json") and not args.set:
         print(f"  fix: hermes dk app-webhook --loop {lid} --set")
     return 0 if ok else 1
 
