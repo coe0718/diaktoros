@@ -410,6 +410,32 @@ class Sweep(_ruling.Base):
         self.assertEqual(issues[0]["labels"], ["adjudicator-found"])
         self.assertTrue(issues[0]["body"].startswith("Follow-up to #7"))
 
+    def test_the_watchdog_sweep_logs_a_follow_up_it_drops(self):
+        # #1359: a filing that will never be made is said in the sweep's log, not only filed ones.
+        import sqlite3
+        from contextlib import closing
+        from scripts import watchdog
+        self.loop = {**self.loop, "adjudicator_file_issues": True}
+        now = time.time()
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,state,attempts,turn_key,"
+                        "created,updated) VALUES('adj','dadj',?,7,?,'adjudicator','failed',0,"
+                        "'breach:1',?,?)", (REPO_SWEEP, HEAD_SWEEP, now, now))
+            con.execute("INSERT INTO shadow_issues(run_id,seq,repo,pr,head,title,title_key,body,"
+                        "labels,state,created,updated) VALUES('adj',1,?,7,?,'Lock leaks',"
+                        "'lock leaks','evidence','[]','recorded',?,?)",
+                        (REPO_SWEEP, HEAD_SWEEP, now, now))
+        logged = []
+        with mock.patch.object(watchdog, "log", side_effect=logged.append), \
+                mock.patch.object(broker, "_write") as write, \
+                mock.patch.object(broker, "_audit"):
+            self.sweep()                     # the first sweep only snapshots the heads
+            self.sweep()
+        write.assert_not_called()
+        self.assertTrue(any("adjudicator-found issue for #7 ('Lock leaks') denied: the "
+                            "adjudicator's run ended without a ruling" in line
+                            for line in logged), logged)
+
 
 REPO_SWEEP, HEAD_SWEEP = _ruling.fg.REPO, _ruling.fg.HEAD
 

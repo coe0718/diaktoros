@@ -281,8 +281,27 @@ class FilePending(unittest.TestCase):
 
     def test_a_head_the_real_review_never_reaches_is_dropped_after_a_week(self):
         run = self.recorded("A finding", at=time.time() - shadow_issues.WAIT_S - 60)
-        self.assertEqual(self.file(reviews=[])[1], [])
+        logged = []
+        self.assertEqual(self.file(reviews=[], logged=logged)[1], [])
         self.assertEqual(self.state(run), "denied")
+        # #1359: a lost filing is said in the sweep's log, once.
+        self.assertEqual(logged, ["shadow-found issue for #7 ('A finding') denied: "
+                                  "the real review never reached its head"])
+        self.file(reviews=[], logged=logged)
+        self.assertEqual(len(logged), 1)
+
+    def test_an_uncertain_post_is_said_in_the_sweeps_log(self):
+        # #1359: a POST whose outcome is unknown is never replayed, so it is logged, with why.
+        run = self.recorded("A finding")
+        logged = []
+        with mock.patch.object(gh, "reviews", return_value=APPROVED), \
+                mock.patch.object(gh, "pr", return_value={"number": 7, "head": {"ref": "fix-7"}}), \
+                mock.patch.object(broker, "_write", return_value=(None, "HTTP 502")):
+            shadow_issues.file_pending(self.loop, db=self.db, log=logged.append)
+        self.assertEqual(self.state(run), "uncertain")
+        [line] = logged
+        self.assertTrue(line.startswith("shadow-found issue for #7 ('A finding') uncertain: "
+                                        "POST outcome unknown"), line)
 
     def test_an_unreadable_review_never_reads_as_one_that_never_came(self):
         run = self.recorded("A finding", at=time.time() - shadow_issues.WAIT_S - 60)
