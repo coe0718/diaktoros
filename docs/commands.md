@@ -874,6 +874,13 @@ adjudicator is an App (moved there with [`identity`](#identity)) and the form st
 another login for it, `apply` refuses and says so. Fix the form, or pass
 `--identity-from-form` to let the form's login win.
 
+As with `identity --pat`'s old login, `--identity-from-form` leaves the App's `apps` entry and
+its login on the allowlist in place (open PRs keep their verdicts and authorship), and `apply`
+says so; `doctor` still checks that App's key until you remove them. A reviewer moved off its
+App also turns `merge_check: auto` off, so the `diaktoros/review` check stops being posted:
+`apply` says so, and names `protect --remove` (if `protect`'s ruleset requires the check) and
+`set --merge-check on` (to keep posting it).
+
 ```bash
 hermes dk apply --loop "<loop-id>" --dry-run
 hermes dk apply --loop "<loop-id>"

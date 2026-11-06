@@ -271,6 +271,60 @@ class Identity(app_cli.Base):
                                settings={"reviewer_login": tfs.REV, "fixer_login": tfs.FIX})
         self.assertNotIn("GitHub App", out)            # a form that matches a PAT loop is fine
 
+    def test_identity_from_form_says_what_stays_and_that_the_merge_check_is_off(self):
+        # #1307: the bypass keeps the App mapped and on the allowlist (as `identity` does) and,
+        # for a reviewer, turns `merge_check: auto` off; apply says both, naming the ways out.
+        rc, out = self.identity("--seat", "reviewer", "--app", f"{BOT_REV}=5416187:{self.key('rev')}")
+        self.assertEqual(rc, 0, out)
+        form = {"reviewer_login": tfs.REV, "reviewer_profile": "critic"}
+        rc, out = self.run_cli(["apply", "--loop", "widgets", "--identity-from-form"], settings=form)
+        loop = self.loop_json()
+        self.assertEqual(loop["seats"]["reviewer"]["login"], tfs.REV, out)
+        self.assertIn(BOT_REV, loop["apps"])                         # the App stays mapped
+        self.assertIn(f"the reviewer moves from the GitHub App '{BOT_REV}' to '{tfs.REV}'", out)
+        self.assertIn("its 'apps' entry and its login on 'reviewers' stay", out)
+        self.assertIn("the diaktoros/review merge check is now off", out)
+        self.assertIn("hermes dk protect --loop widgets --admin-token LOGIN --remove", out)
+        self.assertIn("hermes dk set --loop widgets --merge-check on", out)
+
+    def test_identity_from_form_on_a_fixer_says_nothing_of_the_merge_check(self):
+        rc, out = self.identity("--seat", "fixer", "--app", f"{BOT_FIX}=7:{self.key('fix')}")
+        self.assertEqual(rc, 0, out)
+        rc, out = self.run_cli(["apply", "--loop", "widgets", "--identity-from-form"],
+                               settings={"fixer_login": tfs.FIX})
+        self.assertEqual(self.loop_json()["seats"]["fixer"]["login"], tfs.FIX, out)
+        self.assertIn(f"the fixer moves from the GitHub App '{BOT_FIX}' to '{tfs.FIX}'", out)
+        self.assertNotIn("merge check", out)
+
+    def test_a_stale_form_never_moves_a_fixer_app_back(self):
+        # #1307: the #1296 guard covers every seat, not only the reviewer.
+        rc, out = self.identity("--seat", "fixer", "--app", f"{BOT_FIX}=7:{self.key('fix')}")
+        self.assertEqual(rc, 0, out)
+        before = self.loop_file().read_bytes()
+        rc, out = self.run_cli(["apply", "--loop", "widgets"], settings={"fixer_login": tfs.FIX})
+        self.assertEqual(rc, 2, out)
+        self.assertIn(f"this loop's fixer is the GitHub App '{BOT_FIX}'", out)
+        self.assertEqual(self.loop_file().read_bytes(), before)
+
+    def test_a_stale_form_never_moves_an_adjudicator_app_back(self):
+        import json
+        data = json.loads(self.loop_file().read_text())
+        data["adjudicator"] = {"route": "widgets-adjudicate", "profile": "default"}
+        self.loop_file().write_text(json.dumps(data))
+        judge = "acme-judge[bot]"
+        rc, out = self.identity("--seat", "adjudicator", "--app", f"{judge}=9:{self.key('adj')}")
+        self.assertEqual(rc, 0, out)
+        # The form's login has its own PAT, so only the #1296 guard can refuse this push.
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--token",
+                                f"judge-person={self.pat('judge-person')}"])
+        self.assertEqual(rc, 0, out)
+        before = self.loop_file().read_bytes()
+        rc, out = self.run_cli(["apply", "--loop", "widgets"],
+                               settings={"adjudicator_login": "judge-person"})
+        self.assertEqual(rc, 2, out)
+        self.assertIn(f"this loop's adjudicator is the GitHub App '{judge}'", out)
+        self.assertEqual(self.loop_file().read_bytes(), before)
+
     def test_a_form_still_moves_a_pat_seat(self):
         # Only a seat on a GitHub App is guarded: the form moving one PAT login to another is the
         # push apply has always been.

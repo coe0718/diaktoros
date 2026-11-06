@@ -77,6 +77,27 @@ def _app_reverts(before: dict, after: dict) -> list[tuple[str, str, str]]:
     return out
 
 
+def _app_revert_notes(loop: dict, updated: dict, reverts: list) -> None:
+    """What ``--identity-from-form`` leaves behind when it moves a seat off its App (#1307).
+
+    As with ``identity``, the App's ``apps`` entry and its login on the allowlist stay, so open PRs
+    keep their verdicts and authorship; ``doctor`` still checks that key until it is unmapped. A
+    reviewer moved off its App also turns ``merge_check: auto`` off, while ``protect``'s ruleset
+    may still require the ``diaktoros/review`` check: say so, and name both ways out."""
+    lid = loop["id"]
+    for role, old, new in reverts:
+        allow = {"reviewer": "reviewers", "fixer": "fixers"}.get(role)
+        kept = f"its 'apps' entry{' and its login on ' + repr(allow) if allow else ''}"
+        print(f"  --identity-from-form: the {role} moves from the GitHub App {old!r} to {new!r}; "
+              f"{kept} stay (doctor still checks its key) — remove them once no open PR needs them")
+    if (any(role == "reviewer" for role, _, _ in reverts)
+            and config.merge_check_on(loop) and not config.merge_check_on(updated)):
+        print(f"  the diaktoros/review merge check is now off (merge_check: auto follows an App "
+              f"reviewer): if `protect` required it, run `hermes dk protect --loop {lid} "
+              f"--admin-token LOGIN --remove`, or keep it with `hermes dk set --loop {lid} "
+              "--merge-check on`")
+
+
 def _apply(args) -> int:
     """Make a loop match the plugin settings — one push, with the diff printed.
 
@@ -318,6 +339,7 @@ def _identity_refusal(args, loop: dict, updated: dict) -> bool:
         print("fix: put the App's login in the settings form (or blank that login field), or pass "
               "--identity-from-form to move the identity back to what the form names")
         return True
+    _app_revert_notes(loop, updated, reverts)
 
     # The four-identity rule holds for the config apply would leave behind, whether or not this
     # push moves an identity: "nothing changed" must not endorse a reader that is also a seat.
