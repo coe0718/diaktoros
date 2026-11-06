@@ -74,6 +74,16 @@ def paused_reason(loop: dict) -> str:
     return f"{loop['id']} is paused: the App's delivery is dropped (`hermes dk arm` resumes)"
 
 
+def redrive_held(loop: dict, st) -> bool:
+    """Whether this process is a watchdog re-drive of an App delivery for a loop that is paused
+    (#1297). The dispatcher (``gate_app.py``) never sees a re-drive, so the gate drops it itself
+    (``gate.context``), and nothing the gate does on its way out acts either (the reviewer's
+    declined-head merge-check refresh, ``scripts/gate_reviewer.refresh_declined``). The
+    operator's in-process runs (``hermes dk review``) are not re-drives and still act."""
+    from . import config
+    return bool(config.app_ingress(loop)) and redriven() and paused(st)
+
+
 def paused(st) -> bool:
     """Whether this loop's App deliveries are dropped (``arm --pause``). Lock-free and read-only;
     an unreadable flag is armed, the same answer as a missing one."""
