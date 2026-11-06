@@ -146,6 +146,36 @@ class Identity(app_cli.Base):
         self.assertEqual(rc, 2, out)
         self.assertIn("1 uncertain: settle each with `hermes dk retry --loop widgets --pr N`", out)
 
+    def test_set_moving_the_reader_or_adjudicator_waits_for_runs_in_flight(self):
+        # #1293: `set --read-token` / `--adjudicator-login` move an identity too, so they hold the
+        # same in-flight rule `identity` does, through the same ledger query.
+        import json
+        data = json.loads(self.loop_file().read_text())
+        data["adjudicator"] = {"route": "widgets-adjudicate", "profile": "default"}
+        self.loop_file().write_text(json.dumps(data))
+        new = self.pat("new-reader")
+        judge = self.pat("judge")
+        self.busy("shadow")                            # any run reads as the reader
+        before = self.loop_file().read_bytes()
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--read-token", "new-reader",
+                                "--token", f"new-reader={new}"])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("1 run(s) acting as the read identity are in flight", out)
+        self.assertEqual(self.loop_file().read_bytes(), before)
+        # The adjudicator waits only for its own runs: a shadow run does not hold it up.
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-login", "judge",
+                                "--token", f"judge={judge}"])
+        self.assertEqual(rc, 0, out)
+        self.busy("adjudicator")
+        before = self.loop_file().read_bytes()
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-login", ""])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("acting as the adjudicator identity are in flight", out)
+        self.assertEqual(self.loop_file().read_bytes(), before)
+        # A setting that moves no identity is not held up by a run in flight.
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--cap", "4"])
+        self.assertEqual(rc, 0, out)
+
     def test_the_adjudicator_moves_and_only_seats_keep_an_allowlisted_login(self):
         import json
         from diaktoros import config

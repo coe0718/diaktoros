@@ -716,6 +716,10 @@ checks changed reader/adjudicator credentials and observer destinations. `--toke
 map an extra hook-admin account, despite the narrower generated help; it cannot rotate a
 working-seat credential or the current reader without explicitly naming that reader.
 An empty adjudicator login removes only PR-comment attribution; it does not disable adjudication.
+Moving the reader or the adjudicator's login (or remapping its credential) is refused while that
+identity has a run in flight, exactly as [`identity`](#identity) refuses it: any run of the loop
+for the reader (shadows included), an adjudicator run for the adjudicator. Other settings are
+not held up.
 Blank clone/base strings are ignored, not deletion requests. Seat concurrency/budget flags
 pin overrides; changing the loop default afterwards does not remove those pins.
 Observer destination/host changes refuse unsettled notices; see [Observer](observer.md).
@@ -836,7 +840,7 @@ hermes dk identity --loop "<loop-id>" --seat reviewer --pat "rev-account=/abs/re
 - **It's refused while that identity has a turn in flight**, so no run finishes as the old login
   on the new mapping. Triage counts for the reviewer when it labels as the reviewer's login, and
   any run counts for the reader. An `uncertain` run never settles by itself: `retry` settles it.
-  Another identity is unaffected.
+  Another identity is unaffected. `set --read-token` / `--adjudicator-login` run the same check.
 - **A seat's old login stays on the allowlist** (`reviewers`/`fixers`), so open PRs keep the verdicts
   and authorship it earned, and its credential stays mapped. Remove them once no open PR needs
   them.

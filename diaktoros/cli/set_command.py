@@ -16,6 +16,7 @@ from .. import (
     util,
 )
 from . import common as cli_common
+from . import identity_command
 from . import set_adjudication
 from . import triage_command
 from ..config import credentials
@@ -753,6 +754,10 @@ def _set(args) -> int:
 
     (tokens, apps, adj_before, adj_after, read_before, read_after, adj_changed,
      read_changed) = _credentials(args, loop)
+    # #1293: moving the reader or the adjudicator waits for its runs, as `identity` does.
+    if identity_command.set_moves_busy_identity(loop, tokens, apps, adj_before, adj_after,
+                                                read_changed):
+        raise _Refused
     _seat_capacity(args, loop, seats, seat_changes, adj_before, adj_after)
     budget_changes = _seat_budgets(args, loop, seats, changes)
     observer_cfg = _observer_block(args, loop)
