@@ -596,10 +596,123 @@ class Posting(unittest.TestCase):
         self.assertEqual([c[1] for c in self.calls], ["POST"])          # one run, not two
         self.assertEqual(self.memory()["7"]["run_id"], 55)
 
+    def test_a_gate_mark_for_another_pr_during_a_refresh_still_posts(self):
+        # #1257: the writer lock was one per loop, so a review armed for #8 while a refresh was
+        # posting #7 left #8 without its pending check until the next refresh.
+        marked = []
+        real_post = merge_check.post
+
+        def post_while_the_gate_fires(loop, number, *args, **kwargs):
+            if number == 7:
+                with mock.patch.object(gate, "enqueue_isolated", return_value="enqueued"), \
+                        mock.patch("sys.stdout", new_callable=__import__("io").StringIO), \
+                        self.assertRaises(SystemExit):
+                    gate.block_pr_agent(self.loop, self.st, "reviewer", 8, "c" * 40)
+                marked.append(merge_check.has_head(self.st, 8, "c" * 40))
+            return real_post(loop, number, *args, **kwargs)
+        with mock.patch.object(merge_check, "post", side_effect=post_while_the_gate_fires):
+            self.assertEqual(self.refresh(), 1)
+        self.assertEqual(marked, [True])                     # #8's mark posted mid-refresh
+        self.assertEqual(sorted(self.memory()), ["7", "8"])
+        self.assertEqual([(c[1], (c[2] or {}).get("head_sha")) for c in self.calls],
+                         [("POST", "c" * 40), ("POST", HEAD)])
+
+    def test_the_writer_lock_is_per_pr_and_exclusive_within_one(self):
+        with merge_check._writer(self.st, 7, wait=False) as mine:
+            self.assertTrue(mine)
+            with merge_check._writer(self.st, 7, wait=False) as again:
+                self.assertFalse(again)                       # same PR: one writer
+            with merge_check._writer(self.st, 8, wait=False) as other:
+                self.assertTrue(other)                        # another PR: not held off
+        self.assertEqual((self.st.dir / merge_check.LOCK).stat().st_size, 0)   # backup: litter
+
+    def old_writer(self, wait=False):
+        """A descriptor locked the way a writer before #1257 locks it: ``flock`` on the whole
+        file, exclusive. None when that is held off."""
+        import fcntl
+        import os
+        self.st.dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.st.dir / merge_check.LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        except BlockingIOError:
+            os.close(fd)
+            return None
+        return fd
+
+    def test_a_mark_yields_to_an_old_version_refresh_still_posting(self):
+        # Review of #1953: during an upgrade an old refresh holds the whole-file flock while it
+        # posts; a new gate's mark for that PR must not create a second run for the head.
+        import os
+        fd = self.old_writer()
+        self.assertIsNotNone(fd)
+        try:
+            self.assertFalse(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "x"))
+            with merge_check._writer(self.st, 8, wait=False) as mine:
+                self.assertFalse(mine)                        # any PR: the old lock is per loop
+        finally:
+            os.close(fd)
+        self.assertEqual(self.calls, [])                       # no POST beside the old one
+        self.assertTrue(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "x"))
+
+    def test_an_old_version_writer_waits_for_a_refresh_posting(self):
+        import os
+        held_off = []
+        real_post = merge_check.post
+
+        def post_while_an_old_writer_tries(*args, **kwargs):
+            held_off.append(self.old_writer() is None)       # held off by the shared flock
+            return real_post(*args, **kwargs)
+        with mock.patch.object(merge_check, "post", side_effect=post_while_an_old_writer_tries):
+            self.assertEqual(self.refresh(), 1)
+        self.assertEqual(held_off, [True])
+        fd = self.old_writer()
+        self.assertIsNotNone(fd)                               # released with the descriptor
+        os.close(fd)
+
+    def assert_the_whole_file_fallback(self):
+        with merge_check._writer(self.st, 7, wait=False) as mine:
+            self.assertTrue(mine)
+            with merge_check._writer(self.st, 7, wait=False) as again:
+                self.assertFalse(again)                        # same PR: one writer
+            with merge_check._writer(self.st, 8, wait=False) as other:
+                self.assertFalse(other)                        # documented: any PR yields
+            self.assertFalse(merge_check.mark_pending(self.loop, self.st, 8, "c" * 40, "x"))
+            self.assertIsNone(self.old_writer())               # an old writer is held off too
+        self.assertEqual(self.calls, [])
+        with merge_check._writer(self.st, 8, wait=False) as mine:
+            self.assertTrue(mine)                              # released on close
+        self.assertTrue(merge_check.mark_pending(self.loop, self.st, 8, "c" * 40, "x"))
+        self.assertEqual((self.st.dir / merge_check.LOCK).stat().st_size, 0)
+
+    def test_off_linux_the_writer_lock_is_the_whole_file(self):
+        with mock.patch.object(merge_check, "_OFD", False), \
+                mock.patch.object(merge_check.fcntl, "fcntl",
+                                  side_effect=AssertionError("no byte lock off Linux")):
+            self.assert_the_whole_file_fallback()
+
+    def test_a_filesystem_without_byte_locks_falls_back_to_the_whole_file(self):
+        import errno
+        for code in (errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP):
+            with self.subTest(errno=errno.errorcode[code]), \
+                    mock.patch.object(merge_check.fcntl, "fcntl",
+                                      side_effect=OSError(code, "unsupported")) as byte_lock:
+                self.calls.clear()
+                self.st.kv_set(self.st.dir / merge_check.FILE, {})
+                self.assert_the_whole_file_fallback()
+                self.assertTrue(byte_lock.called)
+
+    def test_another_byte_lock_error_is_not_swallowed_as_a_fallback(self):
+        import errno
+        with mock.patch.object(merge_check.fcntl, "fcntl", side_effect=OSError(errno.EBADF, "x")), \
+                self.assertRaises(OSError):
+            with merge_check._writer(self.st, 7):
+                pass
+
     def test_the_writer_lock_is_free_again_after_each_writer(self):
         self.assertEqual(self.refresh(), 1)
         self.assertTrue(merge_check.mark_pending(self.loop, self.st, 8, "b" * 40, "review queued"))
-        with merge_check._writer(self.st, wait=False) as mine:
+        with merge_check._writer(self.st, 9, wait=False) as mine:
             self.assertTrue(mine)
             self.assertFalse(merge_check.mark_pending(self.loop, self.st, 9, "c" * 40, "x"))
 
