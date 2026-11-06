@@ -69,7 +69,7 @@ def context(payload: dict):
     # watchdog re-drive of one it took before ``arm --pause`` skips the dispatcher, so the same
     # flag is read here (#1297). The operator's in-process runs (``hermes dk review``) still act.
     if app_ingress.redrive_held(loop, st):
-        silence(app_ingress.paused_reason(loop))
+        app_ingress.drop_held_redrive(loop)
     return loop, st
 
 

@@ -49,14 +49,15 @@ def refreshes_declined_head(decide_fn):
     ready (a review-only author's push, a kick declined at the cap or by another hold), instead
     of at the next sweep. A head ``merge-check.json`` already holds spends nothing. Never changes
     the gate's answer. A paused App loop's watchdog re-drive, which ``gate.context`` drops, posts
-    nothing either (#1297): while paused nothing acts, as with the dispatcher's own drop.
+    nothing either (#1297): its exit carries that drop (``app_ingress.held_drop``), so the pause
+    flag is not read again (an ``arm`` in between would let the dropped delivery act).
     """
     @functools.wraps(decide_fn)
     def wrapper(payload: dict, *args, **kwargs):
         try:
             return decide_fn(payload, *args, **kwargs)
         except SystemExit as exc:
-            if exc.code in (None, 0):
+            if exc.code in (None, 0) and not app_ingress.held_drop(exc):
                 refresh_declined(payload)
             raise
     return wrapper
@@ -75,12 +76,8 @@ def refresh_declined(payload: dict) -> None:
         author = ((pr.get("user") or {}).get("login") or "").lower()
         # A PR outside the loop gets no check: don't spend reads on its events. The base is not
         # asked: the sweep judges a stacked child too (ready.py), so its push gets a check now.
-        if not (loop and number and head and author in config.reviewed_authors(loop)):
-            return
-        st = state_mod.state_for(loop)
-        if app_ingress.redrive_held(loop, st):
-            return              # #1297: gate.context dropped the paused loop's re-drive: nothing acts
-        merge_check.refresh_new_head(loop, st, int(number), head)
+        if loop and number and head and author in config.reviewed_authors(loop):
+            merge_check.refresh_new_head(loop, state_mod.state_for(loop), int(number), head)
     except Exception as exc:  # noqa: BLE001 - the gate's answer is already decided
         log(f"merge check not refreshed for a declined event: {type(exc).__name__}: {exc}")
 

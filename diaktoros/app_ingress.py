@@ -78,10 +78,32 @@ def redrive_held(loop: dict, st) -> bool:
     """Whether this process is a watchdog re-drive of an App delivery for a loop that is paused
     (#1297). The dispatcher (``gate_app.py``) never sees a re-drive, so the gate drops it itself
     (``gate.context``), and nothing the gate does on its way out acts either (the reviewer's
-    declined-head merge-check refresh, ``scripts/gate_reviewer.refresh_declined``). The
-    operator's in-process runs (``hermes dk review``) are not re-drives and still act."""
+    declined-head merge-check refresh sees the drop's mark, ``held_drop``, and does not ask this
+    again). The operator's in-process runs (``hermes dk review``) are not re-drives and still
+    act."""
     from . import config
     return bool(config.app_ingress(loop)) and redriven() and paused(st)
+
+
+_HELD_MARK = "diaktoros_paused_redrive"
+
+
+def drop_held_redrive(loop: dict):
+    """End a re-drive ``redrive_held`` held (#1297): ``silence`` with ``paused_reason``, its
+    ``SystemExit`` marked as this drop so the gate's exit (the reviewer's declined-head refresh,
+    ``scripts/gate_reviewer.refreshes_declined_head``) knows nothing may act, without reading
+    the pause flag again: an ``arm`` between two reads would let a dropped delivery act."""
+    from .util import silence
+    try:
+        silence(paused_reason(loop))
+    except SystemExit as exc:
+        setattr(exc, _HELD_MARK, True)
+        raise
+
+
+def held_drop(exc: BaseException) -> bool:
+    """Whether this exit is a held re-drive's drop (``drop_held_redrive``): nothing acts on it."""
+    return bool(getattr(exc, _HELD_MARK, False))
 
 
 def paused(st) -> bool:
