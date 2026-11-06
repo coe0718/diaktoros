@@ -56,16 +56,11 @@ def woken_by_repo_hook() -> bool:
 
 
 def paused(st) -> bool:
-    """Whether this loop's App deliveries are dropped (``arm --pause``). Lock-free and read-only;
-    an unreadable flag is armed, the same answer as a missing one."""
-    try:
-        path = st.dir / FILE
-        if not path.exists():
-            return False
-        data = json.loads(path.read_text())
-    except Exception:
-        return False
-    return isinstance(data, dict) and data.get("paused") is True
+    """Whether this loop's App deliveries are dropped (``arm --pause``). Lock-free and read-only.
+    Fails closed (#1295): only a flag that reads as armed (``pause_flag`` is ``False``: a missing
+    file, or ``{"paused": false}``) delivers; an unreadable or malformed one drops, as the repo-hook
+    path's "start nothing unless armed" callers do with an unreadable hook list."""
+    return pause_flag(st) is not False
 
 
 def pause_flag(st) -> bool | None:

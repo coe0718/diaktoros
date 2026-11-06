@@ -404,6 +404,36 @@ class Dispatch(unittest.TestCase):
         self.assertEqual(run.call_args.args[0], "gate_reviewer")
         self.assertTrue(sys.argv[0].endswith("gate_reviewer.py"))   # decisions name the real gate
 
+    def test_a_corrupt_pause_flag_drops_the_delivery_and_reads_unknown(self):
+        """#1295: an unreadable or malformed pause flag fails closed at the dispatcher, and the
+        loop's armed state is unknown (not armed, not "paused") for the watchdog and explain."""
+        import tempfile
+        from diaktoros import explain, gate
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        payload = {"action": "opened", "pull_request": {"number": 7},
+                   "repository": {"full_name": "acme/widgets"}}
+        loop = {"id": "w", "repo": "acme/widgets", "ingress": "app-webhook", "ingress_app": READ_APP,
+                "state_dir": tmp.name}
+        flag = state_mod.state_for(loop).dir / app_ingress.FILE
+        flag.parent.mkdir(parents=True, exist_ok=True)
+        for bad in ("{not json", "[]", "{}", json.dumps({"paused": "no"}),
+                    json.dumps({"paused": None})):
+            with self.subTest(flag=bad):
+                flag.write_text(bad)
+                self.assertTrue(app_ingress.paused(state_mod.state_for(loop)))
+                run, out = self.run_dispatch(payload, {**loop, "_paused": True})
+                run.assert_not_called()
+                self.assertIn("[SILENT]", out)
+                armed, why = gate.hooks_read(loop)
+                self.assertIsNone(armed)
+                self.assertIn("cannot be read or is malformed", why)
+                self.assertTrue(explain._explain_app_ingress(loop, armed).startswith("unknown"))
+        flag.write_text(json.dumps({"paused": False}))
+        run, out = self.run_dispatch(payload, loop)
+        run.assert_called_once()
+        self.assertEqual(gate.hooks_read(loop)[0], True)
+
 
 if __name__ == "__main__":
     unittest.main()
