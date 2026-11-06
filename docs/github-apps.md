@@ -20,7 +20,7 @@ plugin first.
 | Events | One repo hook per seat route, made with an admin token | The reader App's own webhook, one route for every loop it serves (`ingress: app-webhook`) |
 | Asking for a review | Request the reviewer on GitHub | GitHub can't request an App, so the host hands the fixer's request to the reviewer itself. By hand: `hermes dk review --loop ID --pr N` |
 | Merge protection | GitHub counts the reviewer's approval | GitHub never counts an App's approval. The loop posts the `diaktoros/review` check instead, and `protect` requires it |
-| Pausing | `arm --pause` pauses the repo hooks | `arm --pause` sets the loop's own flag; the dispatcher drops its deliveries |
+| Pausing | `arm --pause` pauses the repo hooks | `arm --pause` sets the loop's own flag; the dispatcher drops its deliveries, and the watchdog's re-drive of one it took earlier is dropped too |
 
 What App bots can and can't do on GitHub is in [GitHub App support](github-app-support.md).
 

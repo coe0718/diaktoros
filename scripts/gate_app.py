@@ -69,7 +69,7 @@ def main() -> None:
     flag = app_ingress.pause_flag(st)
     if flag is not False:
         # Fail closed (#1295): an unreadable or malformed flag is unknown, and unknown drops.
-        reason = (f"{loop['id']} is paused: the App's delivery is dropped (`hermes dk arm` resumes)"
+        reason = (app_ingress.paused_reason(loop)
                   if flag else
                   f"⚠️ {loop['id']}'s pause flag ({app_ingress.FILE}) cannot be read or is "
                   f"malformed: the App's delivery is dropped, not guessed armed "
