@@ -271,6 +271,44 @@ class Gates(fg.Base):
         self.assertIn("another round granted", out)
         self.assertTrue(self.st.review_cap_granted(7, HEAD, cap))
 
+    def hold_at_head(self, old_review_ids):
+        """A retarget hold at HEAD (#1370): the gate then counts only receipt-confirmed reviews
+        from after the baseline ``old_review_ids``."""
+        self.st.transition_set(7, {"head": HEAD, "from_base": "stack",
+                                   "observed_stacked_head": HEAD, "at": time.time(),
+                                   "old_review_ids": old_review_ids})
+
+    def test_another_round_under_a_hold_counts_only_the_verdicts_the_gate_counts(self):
+        # #1370: the cap's verdicts are all in the hold's baseline, so the gate's effective view
+        # holds none and the gate reviews this head without a grant. --another-round must read
+        # the same view: the cap is not reached there, so nothing is granted (raw reviews would
+        # spend a grant on verdicts the gate no longer counts).
+        cap = self.loop["cap"]
+        reviews = self.verdicts(cap, "c" * 40)
+        self.hold_at_head([r["id"] for r in reviews])
+        with mock.patch.object(cli_operations, "_reviewer_runs", return_value=0):
+            code, out, _ = self.review_cmd(reviews)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"0 of {cap} verdicts spent", out)
+        self.assertNotIn("another round granted", out)
+        self.assertFalse(self.st.review_cap_granted(7, HEAD, cap))
+        self.assertFalse(self.st.review_cap_granted(7, HEAD, 0))
+        block, breach = self.reviewer_gate(OWNER, rounds=cap)   # the gate agrees: reviewed
+        block.assert_called_once()
+        breach.assert_not_called()
+
+    def test_another_round_under_a_hold_with_unreadable_receipts_grants_nothing(self):
+        # #1370: an unreadable receipt ledger makes the gate's view unknown, never "all reviews".
+        cap = self.loop["cap"]
+        self.hold_at_head([])
+        with mock.patch("diaktoros.transition.read_receipts", side_effect=OSError("locked")), \
+             mock.patch.object(cli_operations, "_reviewer_runs", return_value=0):
+            code, out, run = self.review_cmd(self.verdicts(cap, "c" * 40))
+        self.assertEqual(code, 2, out)
+        self.assertIn("the reviews could not be read — nothing granted", out)
+        self.assertFalse(self.st.review_cap_granted(7, HEAD, cap))
+        run.assert_not_called()
+
     def test_an_unlisted_author_is_not_reviewed(self):
         block, _ = self.reviewer_gate("outsider", author="outsider")
         block.assert_not_called()
