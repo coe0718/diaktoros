@@ -131,6 +131,47 @@ def _runs_in_flight(loop: dict, seat: str) -> tuple[int, int]:
     return len(rows), sum(1 for (state,) in rows if state == "uncertain")
 
 
+def refuse_in_flight(loop: dict, seat: str) -> bool:
+    """Print the refusal and return True while ``seat``'s identity has a run in flight (or the
+    ledger cannot be read). The one guard every command that moves an identity runs: ``identity``
+    and ``set --read-token`` / ``--adjudicator-login`` (#1293)."""
+    lid = loop["id"]
+    try:
+        busy, uncertain = _runs_in_flight(loop, seat)
+    except Exception as exc:
+        print(f"refused: the run ledger cannot be read, so a run in flight cannot be ruled out "
+              f"({type(exc).__name__}: {exc})")
+        return True
+    if busy:
+        # An uncertain run never settles by itself: only `retry` moves it.
+        settle = (f" ({uncertain} uncertain: settle each with `hermes dk retry --loop {lid} --pr N`, "
+                  "`hermes dk explain` names them)" if uncertain else "")
+        print(f"refused: {busy} run(s) acting as the {seat} identity are in flight on {lid}; "
+              f"switch once they finish{settle}")
+        return True
+    return False
+
+
+def set_moves_busy_identity(loop: dict, tokens: dict, apps: dict, adj_before: str,
+                            adj_after: str, read_changed: bool, args=None) -> bool:
+    """``set``'s identity guard (#1293): True, after printing the refusal, when ``set`` would move
+    the reader or the adjudicator's login while that identity has a run in flight.
+
+    The same rule ``identity`` enforces, through ``refuse_in_flight``: the reader waits for any run
+    of the loop, the adjudicator for its own. The adjudicator moves when its login changes or that
+    login's credential is remapped; mapping an unrelated login (a hook admin) moves neither.
+    ``--adjudicator off`` (in ``args``) on a loop with a route drops the adjudicator's login, so it
+    counts as moving that login to ``""`` whatever ``--adjudicator-login`` says (#1960 review F3)."""
+    if getattr(args, "adjudicator", None) == "off" and (loop.get("adjudicator") or {}).get("route"):
+        adj_after = ""
+    mapped = {"tokens": tokens, "apps": apps}
+    adj_moved = adj_after != adj_before or bool(
+        adj_before and cli_common._credential_label(mapped, adj_before)
+        != cli_common._credential_label(loop, adj_before))
+    return any(moved and refuse_in_flight(loop, seat)
+               for seat, moved in (("read", read_changed), ("adjudicator", adj_moved)))
+
+
 def cmd_identity(args) -> int:
     """Move one identity of a loop to a GitHub App, or back to a PAT (#1163 step 6).
 
@@ -174,18 +215,7 @@ def cmd_identity(args) -> int:
     old = (str(loop.get("read_token") or "") if seat == "read" else
            config.adjudicator_login(loop) if seat == "adjudicator" else config.seat_login(loop, seat))
     # Refuse while this identity is acting: a run would finish as the old login on a new mapping.
-    try:
-        busy, uncertain = _runs_in_flight(loop, seat)
-    except Exception as exc:
-        print(f"refused: the run ledger cannot be read, so a run in flight cannot be ruled out "
-              f"({type(exc).__name__}: {exc})")
-        return 2
-    if busy:
-        # An uncertain run never settles by itself: only `retry` moves it.
-        settle = (f" ({uncertain} uncertain: settle each with `hermes dk retry --loop {lid} --pr N`, "
-                  "`hermes dk explain` names them)" if uncertain else "")
-        print(f"refused: {busy} run(s) acting as the {seat} identity are in flight on {lid}; "
-              f"switch once they finish{settle}")
+    if refuse_in_flight(loop, seat):
         return 2
     raw = json.loads(json.dumps(loop))
     tokens = {k: v for k, v in (raw.get("tokens") or {}).items()

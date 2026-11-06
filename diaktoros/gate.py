@@ -1032,13 +1032,18 @@ def hooks_read(loop: dict) -> tuple[bool | None, str]:
     the other direction — "the loop is paused" is a claim, and it needs the hooks to prove it.
 
     A loop whose events arrive through a GitHub App's webhook (#1239) has no repo hooks: it is
-    armed unless its own pause flag is set (``app_ingress``), which is what its dispatcher reads.
+    armed unless its own pause flag is set (``app_ingress``), which is what its dispatcher reads;
+    an unreadable or malformed flag is ``None`` (unknown) here: the dispatcher drops on it and the
+    watchdog's sweep starts nothing for it (#1295).
     """
     if config.app_ingress(loop):
         from . import app_ingress
-        paused = app_ingress.paused(state_mod.state_for(loop))
-        return not paused, ("paused (the App's deliveries for this loop are dropped)"
-                            if paused else "")
+        flag = app_ingress.pause_flag(state_mod.state_for(loop))
+        if flag is None:    # #1295: the dispatcher drops on it, but "paused" is not claimed
+            return None, (f"the pause flag ({app_ingress.FILE}) cannot be read or is malformed; "
+                          "the App's deliveries for this loop are dropped until `arm` rewrites it")
+        return not flag, ("paused (the App's deliveries for this loop are dropped)"
+                          if flag else "")
     hooks, error = gh.hooks_read(loop)      # every page: a full first page is not the whole list
     if error or not isinstance(hooks, list):
         return None, error or "GitHub returned no hook list"
@@ -1207,6 +1212,11 @@ def breach_authors(loop: dict, escalated: dict | None) -> set[str]:
     return (config.reviewed_authors(loop)
             if (escalated or {}).get("by") in {SHADOW_ESCALATION, OPERATOR_ESCALATION}
             else set(loop["fixers"]))
+
+
+# The ``breach`` outcomes that leave the head parked for a ruling; ``stale`` (the head moved
+# under the breach lock) parks nothing, so a gate must not log a handover for it (#1273).
+BREACH_PARKED = ("new", "retry", "already")
 
 
 def breach(loop: dict, st: state_mod.LoopState, number: int, head: str, rounds: int,

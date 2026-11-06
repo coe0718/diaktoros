@@ -85,7 +85,11 @@ def take(st, number: int) -> dict | None:
 
 
 def prune(st, open_numbers) -> list[int]:
-    """Drop records for PRs no longer open, and lapsed ones; the PR numbers dropped."""
+    """Drop records for PRs no longer open, and lapsed ones; the PR numbers dropped.
+
+    Strict like ``record`` and ``take`` (#1283): the watchdog logs each number returned as
+    dropped, so a write that did not land raises (the sweep logs the failure) instead of
+    returning numbers whose records are still on disk. The next sweep retries it."""
     keep = {str(n) for n in open_numbers}
     now = time.time()
     if not _read(st):
@@ -96,5 +100,5 @@ def prune(st, open_numbers) -> list[int]:
             return []
         dropped = [k for k, v in memory.items() if k not in keep or not _live(v, now)]
         if dropped:
-            st.kv_set(_path(st), {k: v for k, v in memory.items() if k not in dropped})
+            st.kv_set_strict(_path(st), {k: v for k, v in memory.items() if k not in dropped})
     return [int(k) for k in dropped if k.isdigit()]

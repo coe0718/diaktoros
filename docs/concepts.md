@@ -148,6 +148,18 @@ at most three issues; title 256 bytes and body 8,000 bytes; the 20 newest mainta
 4,000 bytes each and 16 KiB in total. Anyone else's comment is not shown. Maintainers' comments
 on the PR itself are read too, so a deferral can live there (#666).
 
+Every other issue or pull request the PR names by number (`deferred to #N`, `Follow-up to #N`,
+any `#N` in its description or in any maintainer's comment on it, including those older than
+the 20 shown) is shown too, under "Referenced
+issues", with its live state alone (#1783): whether it is an issue or a pull request; open, closed
+with GitHub's reason, or merged; and its title and labels, quoted. Its body is not shown. The seats
+have no network, so without this a reviewer could only list such a state as not verified. A
+`deferred to #N` that names anything but an open issue is flagged. An issue the host can't read is
+said to be unknown, never taken as open, and when the PR's comments can't be read the section says
+so, so an issue named only there is known to be missing. Bounds: the first ten numbers, one reader call each (the
+reader's ETag cache makes a repeat free); the rest are counted. This applies whether or not the PR
+closes an issue; `owner/repo#N` (another repository) is not read.
+
 A review of such a PR must contain a `Requirements` section with one line per requirement, each
 marked:
 

@@ -75,8 +75,8 @@ def act_on_conflicts(loop: dict, st: state_mod.LoopState,
         person = conflict_person.get(st, number, head) if resolving and not review_only else ""
         owed = ""
         if person:
-            # #1154: this head's conflict was already handed to a person; a new base tip does
-            # not change that (a new push does), so no turn and no repeated failure notice.
+            # #1154: this head's conflict was already handed to a person until a new push (or,
+            # for a whole-file one, a day: #1271), so no turn and no repeated failure notice.
             log(f"#{number} @ {head[:7]} conflict needs a person ({person}): not requeued")
         elif resolving and not review_only and re.fullmatch(r"[0-9a-f]{40}", base_sha):
             owed = _queue_turn(loop, st, number, head, base_sha)

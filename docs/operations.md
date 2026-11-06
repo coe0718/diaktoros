@@ -636,7 +636,12 @@ The loop does not resolve, and hands to you instead (the run ends `failed` with
 Merge the base into the branch yourself, then `hermes dk review --pr N`. The loop remembers the
 refusal for that head: later merges to the base queue no new conflict turn and send no new
 failure notice for it (#1154: each merge used to start the same refused turn again). A push to
-the PR, yours included, is a new head and clears it.
+the PR, yours included, is a new head and clears it. A workflow-files refusal is remembered until
+then; a whole-file one only for a day (#1271), because a later base can fix it (the base deletes
+the same file, or re-adds it as a content conflict). After that day the next new base tip gets one
+more conflict turn, which resolves it or hands it back again: at most about one notice a day.
+A whole-file refusal recorded before this lapse existed (it has no `until`) is recognized by its
+reason and lapses a day after it was recorded, the same way.
 
 ## Publishing stats
 

@@ -60,7 +60,8 @@ Setup performs these steps in order:
 2. Show an `init` dry run, confirm installation and create configuration/routes (and paused hooks if a hook admin was named).
 3. Install the shared watchdog job if missing.
 4. Run `doctor` and `selftest --no-model`. Failure stops before arming; already completed steps are kept. When the [onboarding record](commands.md#onboard) says `identities`, `loop` and `model` already passed (or `model` was skipped) and nothing they depend on has changed, a re-run skips this step and says so; after a change it starts over at the stale stage.
-5. Ask whether to arm. It defaults to **no**, and it is skipped when the record shows the hooks armed and unchanged. Setup does not enable fixer pushes, adjudication or issue automation.
+5. Offer to require the `diaktoros/review` merge check on the base, when the loop posts it ([`protect`](commands.md#protect); defaults to **no**). A loop that does not post it gets one line saying there is nothing to require.
+6. Ask whether to arm. It defaults to **no**, and it is skipped when the record shows the hooks armed and unchanged. Setup does not enable fixer pushes, adjudication or issue automation.
 
 Setup ends by printing the `onboard` summary: each stage's status and the next command to run. If setup stops partway, fix what it names and run the same command again; it resumes at the stage that is not done.
 

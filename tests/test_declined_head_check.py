@@ -35,8 +35,10 @@ class DeclinedHead(fg.Base):
         self.live = {**fg.LIVE, "user": {"login": OWNER}, "head": {"sha": NEW, "ref": "w-7"}}
         self.posts = []
 
-    def event(self, action: str, rounds: int, sender: str = OWNER, pr: dict | None = None):
-        """Run the gate on one ``pull_request`` event at NEW; ``rounds`` verdicts sit on OLD."""
+    def event(self, action: str, rounds: int, sender: str = OWNER, pr: dict | None = None,
+              also_open: tuple = ()):
+        """Run the gate on one ``pull_request`` event at NEW; ``rounds`` verdicts sit on OLD.
+        ``also_open``: more PRs the open listing holds beside this one (a stacked PR's parent)."""
         live = pr or self.live
         reviews = [fg.verdict(rid) | {"commit_id": OLD} for rid in range(5, 5 + rounds)]
         payload = {"action": action, "number": 7, "pull_request": live,
@@ -50,7 +52,7 @@ class DeclinedHead(fg.Base):
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
                 mock.patch.object(gh, "pr", return_value=live), \
                 mock.patch.object(gh, "api", side_effect=api), \
-                mock.patch.object(gh, "open_prs_read", return_value=([live], "")), \
+                mock.patch.object(gh, "open_prs_read", return_value=([live, *also_open], "")), \
                 mock.patch.object(gh, "reviews_read", return_value=(reviews, "")), \
                 mock.patch.object(gh, "fetch", return_value=({
                     "number": 7, "state": "open", "mergeable": True, "mergeable_state": "clean",
@@ -104,8 +106,10 @@ class DeclinedHead(fg.Base):
         self.assertEqual(self.posts, [])
 
     def test_a_stacked_childs_push_posts_the_check_the_sweep_would(self):
+        # The parent is open: a base that is no open PR's branch is #1228's failure instead.
+        parent = {**self.live, "number": 6, "head": {"sha": "e" * 40, "ref": "w-6"}}
         stacked = {**self.live, "base": {"ref": "w-6"}}
-        self.event("synchronize", rounds=1, pr=stacked)
+        self.event("synchronize", rounds=1, pr=stacked, also_open=(parent,))
         [(_path, body)] = self.statuses()
         self.assertEqual((body["state"], body["context"]), ("pending", "diaktoros/review"))
 

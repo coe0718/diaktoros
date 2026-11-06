@@ -169,8 +169,66 @@ class ObserverSafetyTests(unittest.TestCase):
         self.state.observations.write_text(json.dumps({"entries": {key: {
             "status": "pending", "attempts": 0, "error": "", "event": "approved", "number": 7,
             "head": "a" * 40, "message": "approved #7", "url": "https://github.com/owner/private/pull/7",
-            "delivery": "approved-7-x", "at": time.time() - observer.STALE_CLAIM_S - 5, **extra}}}))
+            "delivery": "approved-7-x", "at": time.time() - observer.STALE_CLAIM_S - 5,
+            "posting_marked": True, **extra}}}))
         return key
+
+    def test_a_legacy_claim_without_the_writer_marker_stays_uncertain(self):
+        # #1319: a pre-#1314 sender wrote neither `posting_at` nor the marker, so the missing
+        # mark proves nothing: its POST may have landed. The sweep must not resend it.
+        key = self.stale_claim()
+        data = observer._read(self.state.observations)
+        del data["entries"][key]["posting_marked"]
+        self.state.observations.write_text(json.dumps(data))
+        with patch.object(routes, "fire") as fire:
+            self.assertEqual(observer.retry(self.loop, self.state), 0)
+            fire.assert_not_called()
+        entry = observer._read(self.state.observations)["entries"][key]
+        self.assertEqual(entry["status"], "uncertain")
+
+    def test_a_sender_killed_before_its_post_is_resent_by_the_sweep(self):
+        # The real path: notify writes the claim (with the marker) and dies before the mark,
+        # so the sweep can prove it never left the host and sends it.
+        self.loop["host"] = "https://owner.example"
+        with patch.object(observer, "_mark_posting", side_effect=SystemExit(1)), \
+                self.assertRaises(SystemExit):
+            observer.notify(self.loop, self.state, "opened", 7, "a" * 40)
+        data = observer._read(self.state.observations)
+        [(key, entry)] = list(data["entries"].items())
+        self.assertEqual((entry["status"], entry.get("posting_at")), ("pending", None))
+        entry["at"] = time.time() - observer.STALE_CLAIM_S - 5
+        observer._save(self.state.observations, data)
+        with patch.object(routes, "fire", return_value=True) as fire:
+            self.assertEqual(observer.retry(self.loop, self.state), 1)
+            fire.assert_called_once()
+        self.assertEqual(observer._read(self.state.observations)["entries"][key]["status"],
+                         "delivered")
+
+    def test_an_unmarked_retryable_failure_reclaimed_and_killed_is_resent(self):
+        # #1319 review: a retryable failure written before the marker existed carries none. The
+        # sweep's re-claim must add it, or a sweep killed before its POST leaves a claim the next
+        # sweep can only quarantine as uncertain instead of resending.
+        self.loop["host"] = "https://owner.example"
+        key = "diaktoros:7:" + "a" * 40 + ":approved:1"
+        self.state.observations.write_text(json.dumps({"entries": {key: {
+            "status": "failed", "retryable": True, "attempts": 1, "error": "no route",
+            "event": "approved", "number": 7, "head": "a" * 40, "message": "approved #7",
+            "url": "https://github.com/owner/private/pull/7", "delivery": "approved-7-x",
+            "at": time.time()}}}))
+        with patch.object(observer, "_mark_posting", side_effect=SystemExit(1)), \
+                self.assertRaises(SystemExit):
+            observer.retry(self.loop, self.state)
+        data = observer._read(self.state.observations)
+        entry = data["entries"][key]
+        self.assertEqual((entry["status"], entry.get("posting_at"), entry.get("posting_marked")),
+                         ("pending", None, True))
+        entry["at"] = time.time() - observer.STALE_CLAIM_S - 5
+        observer._save(self.state.observations, data)
+        with patch.object(routes, "fire", return_value=True) as fire:
+            self.assertEqual(observer.retry(self.loop, self.state), 1)
+            fire.assert_called_once()
+        self.assertEqual(observer._read(self.state.observations)["entries"][key]["status"],
+                         "delivered")
 
     def test_a_claim_that_never_reached_its_post_is_sent_by_the_sweep(self):
         key = self.stale_claim()
@@ -287,17 +345,20 @@ class ObserverSafetyTests(unittest.TestCase):
         self.stale_claim()
         [resent] = killed(lambda: observer.retry(self.loop, self.state))
         self.assertTrue(resent.get("posting_at"), "retry")
+        self.assertIs(resent.get("posting_marked"), True, "retry")
 
         self.state.observations.write_text(json.dumps({"entries": {}}))
         self.loop["observer"]["digest_min"] = 30
         observer.notify(self.loop, self.state, "opened", 7, "a" * 40)
         [digest] = killed(lambda: observer.flush(self.loop, self.state, wait_s=0))
         self.assertTrue(digest.get("posting_at"), "digest")
+        self.assertIs(digest.get("posting_marked"), True, "digest")
 
         self.state.observations.write_text(json.dumps({"entries": {}}))
         [report] = killed(lambda: observer.send_report(self.loop, self.state, "2026-10-26",
                                                        "the week"))
         self.assertTrue(report.get("posting_at"), "report")
+        self.assertIs(report.get("posting_marked"), True, "report")
 
 
 if __name__ == "__main__":

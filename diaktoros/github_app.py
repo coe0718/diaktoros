@@ -65,7 +65,11 @@ def entry(loop: dict, login: str | None) -> dict | None:
 
 
 def is_app(loop: dict, login: str | None) -> bool:
-    return entry(loop, login) is not None
+    """Whether ``login`` is a GitHub App identity: ``config.is_app``, the one rule (#1254). A
+    login mapped in ``tokens`` is a PAT even if ``apps`` maps it too (normalize refuses such a
+    loop), so every caller classifies one login the same way; ``entry`` still finds its App."""
+    from . import config
+    return config.is_app(loop, login or "")
 
 
 def key_path(loop: dict, login: str | None) -> Path | None:

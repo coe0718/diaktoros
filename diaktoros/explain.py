@@ -220,6 +220,10 @@ def _explain_app_ingress(loop: dict, armed) -> str:
     if armed is False:
         return (f"PAUSED — {via}, and the loop's pause flag drops them "
                 f"(`hermes dk arm --loop {loop['id']}` resumes)")
+    if armed is None:   # #1295: the dispatcher drops on an unreadable flag; "paused" is not claimed
+        return (f"unknown — {via}, but the loop's pause flag cannot be read or is malformed, so "
+                f"the dispatcher drops them and the watchdog starts nothing "
+                f"(`hermes dk arm --loop {loop['id']}` rewrites it)")
     return f"armed — {via} (`hermes dk doctor` reads that webhook)"
 
 

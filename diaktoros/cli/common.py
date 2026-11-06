@@ -273,9 +273,12 @@ def _verify_routes(loop: dict, roles) -> None:
                 "loop its own route name (the registry is shared by every plugin)")
         if role == "app":
             # One App webhook, one URL: every loop sharing its route must name the same gateway.
-            hosts = sorted({str(other.get("host") or "").removesuffix("/") for other in other_loops
-                            if other["id"] != loop["id"] and _routes_of(other).get("app") == name}
-                           - {str(loop.get("host") or "").removesuffix("/")} - {""})
+            # A sharing loop with no host fails closed (#1298): its routes would resolve against
+            # some other base at install time, so "no host" is a mismatch, never a match.
+            own = str(loop.get("host") or "").removesuffix("/")
+            sharing = {str(other.get("host") or "").removesuffix("/") for other in other_loops
+                       if other["id"] != loop["id"] and _routes_of(other).get("app") == name}
+            hosts = sorted(host or "no host" for host in sharing if not host or host != own)
             if hosts:
                 raise config.ConfigError(
                     f"route {name!r} is {loop.get('ingress_app')}'s, shared with loops on "

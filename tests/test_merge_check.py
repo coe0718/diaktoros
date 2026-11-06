@@ -15,7 +15,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from diaktoros import ci, explain, gate, gh, merge_check, ready, state as state_mod  # noqa: E402
+from diaktoros import ci, explain, gate, gh, merge_check, protection, ready, state as state_mod  # noqa: E402
 
 HEAD = "a" * 40
 CLEAN = {"mergeable": True, "mergeable_state": "clean", "number": 7, "state": "open",
@@ -203,6 +203,18 @@ class Stacked(KindsBase):
         self.assertEqual({e["number"]: e["why"] for e in excluded}[2],
                          ["stacked on #1, which is not ready"])
 
+    def test_a_stacked_pr_on_a_gone_base_needs_a_person(self):
+        """#1228: a base that is no open PR's branch (its parent merged or closed) never clears
+        on its own, so the merge check fails instead of waiting."""
+        child = {**self.pr, "number": 2, "base": {"ref": "gone"}, "head": {"sha": HEAD, "ref": "b2"}}
+        reads = {2: {"reviews": [review("APPROVED")], "ci": ci.CIState(passed=["tests"]),
+                     "detail": {**CLEAN, "number": 2, "base": {"ref": "gone"}}, "files": ["b"]}}
+        out, kinds = ready.build_kinds(self.loop, self.st, [child], reads)
+        self.assertEqual(out, [])
+        self.assertEqual(kinds[2], [(ready.FAILURE, "stacked on gone, which is not an open PR "
+                                                    "branch: base unverified")])
+        self.assertEqual(merge_check.decide(kinds[2])[0], merge_check.FAILURE)
+
 
 class OnePR(KindsBase):
     """#1645: a refresh for one PR reads that PR (and any PR it is stacked on), not every open one."""
@@ -316,6 +328,16 @@ class Decide(unittest.TestCase):
         state, _ = merge_check.decide([(ready.GITHUB, "not mergeable: GitHub reports blocked")])
         self.assertEqual(state, merge_check.SUCCESS)
 
+    def test_githubs_blocked_waits_when_the_check_is_not_required(self):
+        # #1227: then blocked is another rule (required reviews, another check), as ready says.
+        state, summary = merge_check.decide(
+            [(ready.GITHUB, "not mergeable: GitHub reports blocked")], required=False)
+        self.assertEqual(state, merge_check.PENDING)
+        self.assertIn("GitHub reports blocked", summary)
+        state, _ = merge_check.decide([(ready.GITHUB, "blocked"), (ready.FAILURE, "red CI")],
+                                      required=False)
+        self.assertEqual(state, merge_check.FAILURE)
+
     def test_any_failure_fails_and_lists_the_rest_as_waiting(self):
         state, summary = merge_check.decide([(ready.PENDING, "CI unreadable"),
                                              (ready.FAILURE, "not approved at head aaaaaaa")])
@@ -393,6 +415,9 @@ class Posting(unittest.TestCase):
             return {"context": body["context"]}
         for patch in (mock.patch.object(gh, "api", side_effect=api),
                       mock.patch.object(gh, "last_error", return_value="HTTP 403"),
+                      # #1227: the base requires the check unless a test says otherwise.
+                      mock.patch.object(protection, "read",
+                                        return_value=protection.Protection(sources=[1])),
                       mock.patch.object(ready, "collect_kinds",
                                         side_effect=lambda *a: (self.prs, self.kinds, ""))):
             patch.start()
@@ -456,6 +481,87 @@ class Posting(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         self.kinds = {7: [(ready.PENDING, "review not yet posted"), (ready.GITHUB, "blocked")]}
         self.assertEqual(self.refresh(), 0)           # GitHub's blocked does not count
+
+    def base(self, sources=(), unread=()):
+        found = protection.Protection(sources=list(sources), unread=list(unread))
+        return mock.patch.object(protection, "read", return_value=found)
+
+    def test_blocked_on_a_base_that_does_not_require_the_check_keeps_it_pending(self):
+        # #1227: the refresh reads the base; blocked there is another rule, so no green check.
+        self.loop["base"] = "main"
+        self.prs = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+        self.kinds = {7: [(ready.GITHUB, "not mergeable: GitHub reports blocked")]}
+        with self.base() as read:
+            self.assertEqual(self.refresh(), 1)
+        read.assert_called_once()
+        self.assertEqual(self.memory()["7"]["state"], "pending")
+        self.assertIn("GitHub reports blocked", self.calls[0][2]["output"]["summary"])
+
+    def test_blocked_on_a_base_that_requires_the_check_or_is_unread_is_left_out(self):
+        self.kinds = {7: [(ready.GITHUB, "not mergeable: GitHub reports blocked")]}
+        for found in ({"sources": [1]}, {"unread": ["classic branch protection (HTTP 403)"]}):
+            with self.subTest(found), self.base(**found):
+                self.st.kv_set(self.st.dir / merge_check.FILE, {})
+                self.assertEqual(self.refresh(), 1)
+                self.assertEqual(self.memory()["7"]["state"], "success")
+
+    def test_the_base_is_not_read_when_no_pr_is_blocked(self):
+        with self.base() as read:
+            self.assertEqual(self.refresh(), 1)
+        read.assert_not_called()
+
+    def stacked(self, requiring: set[str]):
+        """A blocked child #8 targeting ``parent`` beside #7 on ``main``; ``protection.read``
+        answers per requested branch, requiring the check on the branches in ``requiring``."""
+        self.loop["base"] = "main"
+        self.prs = [{"number": 7, "head": {"sha": HEAD, "ref": "parent"}, "base": {"ref": "main"}},
+                    {"number": 8, "head": {"sha": "c" * 40}, "base": {"ref": "parent"}}]
+        self.kinds = {7: [], 8: [(ready.GITHUB, "not mergeable: GitHub reports blocked")]}
+        return mock.patch.object(protection, "read", side_effect=lambda loop, login=None:
+                                 protection.Protection(
+                                     sources=[1] if loop["base"] in requiring else []))
+
+    def test_a_stacked_prs_blocked_is_judged_by_its_parent_branch_that_requires_the_check(self):
+        # Vex F1 on #1947: main optional, parent requires it -> counting blocked would deadlock.
+        with self.stacked({"parent"}) as read:
+            self.assertEqual(self.refresh(), 2)
+        self.assertEqual([c.args[0]["base"] for c in read.call_args_list], ["parent"])
+        self.assertEqual(self.memory()["8"]["state"], "success")
+
+    def test_a_stacked_prs_blocked_is_judged_by_its_parent_branch_that_does_not_require_it(self):
+        # Vex F1 on #1947: main requires it, parent does not -> blocked is another rule: a wait.
+        with self.stacked({"main"}) as read:
+            self.assertEqual(self.refresh(), 2)
+        self.assertEqual([c.args[0]["base"] for c in read.call_args_list], ["parent"])
+        self.assertEqual(self.memory()["8"]["state"], "pending")
+        self.assertEqual(self.memory()["7"]["state"], "success")
+
+    def test_each_blocked_base_is_read_once_and_an_unread_parent_is_taken_as_requiring(self):
+        self.loop["base"] = "main"
+        self.prs = [{"number": n, "head": {"sha": c * 40}, "base": {"ref": b}}
+                    for n, c, b in ((7, "a", "main"), (8, "c", "parent"), (9, "d", "parent"))]
+        self.kinds = {n: [(ready.GITHUB, "blocked")] for n in (7, 8, 9)}
+        found = {"main": protection.Protection(),
+                 "parent": protection.Protection(unread=["classic branch protection (HTTP 403)"])}
+        with mock.patch.object(protection, "read",
+                               side_effect=lambda loop, login=None: found[loop["base"]]) as read:
+            self.assertEqual(self.refresh(), 3)
+        self.assertEqual(sorted(c.args[0]["base"] for c in read.call_args_list), ["main", "parent"])
+        self.assertEqual({n: self.memory()[n]["state"] for n in ("7", "8", "9")},
+                         {"7": "pending", "8": "success", "9": "success"})
+
+    def test_a_blocked_pr_with_no_readable_base_ref_is_taken_as_requiring_the_check(self):
+        # Vex F1 round 2 on #1947: main is optional, but a PR whose base ref is missing or
+        # malformed may target a branch that requires the check; it is never judged by main.
+        self.loop["base"] = "main"
+        self.kinds = {7: [(ready.GITHUB, "not mergeable: GitHub reports blocked")]}
+        for base in (None, {}, {"ref": ""}, {"ref": None}, {"ref": 5}, "main"):
+            with self.subTest(base=base), self.base() as read:
+                self.st.kv_set(self.st.dir / merge_check.FILE, {})
+                self.prs = [{**CLEAN, "head": {"sha": HEAD}, "base": base}]
+                self.assertEqual(self.refresh(), 1)
+                read.assert_not_called()
+                self.assertEqual(self.memory()["7"]["state"], "success")
 
     def test_a_pat_loop_that_opted_in_posts_a_commit_status(self):
         self.loop.update(reviewer_seat="rev", apps={}, tokens={"rev": "/t"}, merge_check="on",
@@ -584,10 +690,123 @@ class Posting(unittest.TestCase):
         self.assertEqual([c[1] for c in self.calls], ["POST"])          # one run, not two
         self.assertEqual(self.memory()["7"]["run_id"], 55)
 
+    def test_a_gate_mark_for_another_pr_during_a_refresh_still_posts(self):
+        # #1257: the writer lock was one per loop, so a review armed for #8 while a refresh was
+        # posting #7 left #8 without its pending check until the next refresh.
+        marked = []
+        real_post = merge_check.post
+
+        def post_while_the_gate_fires(loop, number, *args, **kwargs):
+            if number == 7:
+                with mock.patch.object(gate, "enqueue_isolated", return_value="enqueued"), \
+                        mock.patch("sys.stdout", new_callable=__import__("io").StringIO), \
+                        self.assertRaises(SystemExit):
+                    gate.block_pr_agent(self.loop, self.st, "reviewer", 8, "c" * 40)
+                marked.append(merge_check.has_head(self.st, 8, "c" * 40))
+            return real_post(loop, number, *args, **kwargs)
+        with mock.patch.object(merge_check, "post", side_effect=post_while_the_gate_fires):
+            self.assertEqual(self.refresh(), 1)
+        self.assertEqual(marked, [True])                     # #8's mark posted mid-refresh
+        self.assertEqual(sorted(self.memory()), ["7", "8"])
+        self.assertEqual([(c[1], (c[2] or {}).get("head_sha")) for c in self.calls],
+                         [("POST", "c" * 40), ("POST", HEAD)])
+
+    def test_the_writer_lock_is_per_pr_and_exclusive_within_one(self):
+        with merge_check._writer(self.st, 7, wait=False) as mine:
+            self.assertTrue(mine)
+            with merge_check._writer(self.st, 7, wait=False) as again:
+                self.assertFalse(again)                       # same PR: one writer
+            with merge_check._writer(self.st, 8, wait=False) as other:
+                self.assertTrue(other)                        # another PR: not held off
+        self.assertEqual((self.st.dir / merge_check.LOCK).stat().st_size, 0)   # backup: litter
+
+    def old_writer(self, wait=False):
+        """A descriptor locked the way a writer before #1257 locks it: ``flock`` on the whole
+        file, exclusive. None when that is held off."""
+        import fcntl
+        import os
+        self.st.dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.st.dir / merge_check.LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        except BlockingIOError:
+            os.close(fd)
+            return None
+        return fd
+
+    def test_a_mark_yields_to_an_old_version_refresh_still_posting(self):
+        # Review of #1953: during an upgrade an old refresh holds the whole-file flock while it
+        # posts; a new gate's mark for that PR must not create a second run for the head.
+        import os
+        fd = self.old_writer()
+        self.assertIsNotNone(fd)
+        try:
+            self.assertFalse(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "x"))
+            with merge_check._writer(self.st, 8, wait=False) as mine:
+                self.assertFalse(mine)                        # any PR: the old lock is per loop
+        finally:
+            os.close(fd)
+        self.assertEqual(self.calls, [])                       # no POST beside the old one
+        self.assertTrue(merge_check.mark_pending(self.loop, self.st, 7, HEAD, "x"))
+
+    def test_an_old_version_writer_waits_for_a_refresh_posting(self):
+        import os
+        held_off = []
+        real_post = merge_check.post
+
+        def post_while_an_old_writer_tries(*args, **kwargs):
+            held_off.append(self.old_writer() is None)       # held off by the shared flock
+            return real_post(*args, **kwargs)
+        with mock.patch.object(merge_check, "post", side_effect=post_while_an_old_writer_tries):
+            self.assertEqual(self.refresh(), 1)
+        self.assertEqual(held_off, [True])
+        fd = self.old_writer()
+        self.assertIsNotNone(fd)                               # released with the descriptor
+        os.close(fd)
+
+    def assert_the_whole_file_fallback(self):
+        with merge_check._writer(self.st, 7, wait=False) as mine:
+            self.assertTrue(mine)
+            with merge_check._writer(self.st, 7, wait=False) as again:
+                self.assertFalse(again)                        # same PR: one writer
+            with merge_check._writer(self.st, 8, wait=False) as other:
+                self.assertFalse(other)                        # documented: any PR yields
+            self.assertFalse(merge_check.mark_pending(self.loop, self.st, 8, "c" * 40, "x"))
+            self.assertIsNone(self.old_writer())               # an old writer is held off too
+        self.assertEqual(self.calls, [])
+        with merge_check._writer(self.st, 8, wait=False) as mine:
+            self.assertTrue(mine)                              # released on close
+        self.assertTrue(merge_check.mark_pending(self.loop, self.st, 8, "c" * 40, "x"))
+        self.assertEqual((self.st.dir / merge_check.LOCK).stat().st_size, 0)
+
+    def test_off_linux_the_writer_lock_is_the_whole_file(self):
+        with mock.patch.object(merge_check, "_OFD", False), \
+                mock.patch.object(merge_check.fcntl, "fcntl",
+                                  side_effect=AssertionError("no byte lock off Linux")):
+            self.assert_the_whole_file_fallback()
+
+    def test_a_filesystem_without_byte_locks_falls_back_to_the_whole_file(self):
+        import errno
+        for code in (errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP):
+            with self.subTest(errno=errno.errorcode[code]), \
+                    mock.patch.object(merge_check.fcntl, "fcntl",
+                                      side_effect=OSError(code, "unsupported")) as byte_lock:
+                self.calls.clear()
+                self.st.kv_set(self.st.dir / merge_check.FILE, {})
+                self.assert_the_whole_file_fallback()
+                self.assertTrue(byte_lock.called)
+
+    def test_another_byte_lock_error_is_not_swallowed_as_a_fallback(self):
+        import errno
+        with mock.patch.object(merge_check.fcntl, "fcntl", side_effect=OSError(errno.EBADF, "x")), \
+                self.assertRaises(OSError):
+            with merge_check._writer(self.st, 7):
+                pass
+
     def test_the_writer_lock_is_free_again_after_each_writer(self):
         self.assertEqual(self.refresh(), 1)
         self.assertTrue(merge_check.mark_pending(self.loop, self.st, 8, "b" * 40, "review queued"))
-        with merge_check._writer(self.st, wait=False) as mine:
+        with merge_check._writer(self.st, 9, wait=False) as mine:
             self.assertTrue(mine)
             self.assertFalse(merge_check.mark_pending(self.loop, self.st, 9, "c" * 40, "x"))
 
@@ -598,11 +817,11 @@ class Posting(unittest.TestCase):
         self.kinds[8] = []
         real_decide, decided = merge_check.decide, []
 
-        def decide(kinds):
+        def decide(kinds, *rest):
             decided.append(kinds)
             if len(decided) == 2:         # after PR 7's record, before PR 8 takes the lock
                 self.assertTrue(merge_check.mark_pending(self.loop, self.st, 9, "d" * 40, "x"))
-            return real_decide(kinds)
+            return real_decide(kinds, *rest)
         with mock.patch.object(merge_check, "decide", side_effect=decide):
             self.refresh()
         self.assertEqual(sorted(self.memory()), ["7", "8", "9"])
@@ -627,12 +846,12 @@ class Posting(unittest.TestCase):
         self.kinds[8] = []
         real_decide, decided = merge_check.decide, []
 
-        def decide(kinds):
+        def decide(kinds, *rest):
             decided.append(kinds)
             if len(decided) == 2:         # after PR 7's record, before PR 8 takes the lock
                 with mock.patch("time.time", return_value=1000.0):   # the clock stepped back
                     self.assertTrue(merge_check.mark_pending(self.loop, self.st, 9, "d" * 40, "x"))
-            return real_decide(kinds)
+            return real_decide(kinds, *rest)
         with mock.patch.object(merge_check, "decide", side_effect=decide):
             self.refresh()
         self.assertEqual(sorted(self.memory()), ["7", "8", "9"])

@@ -207,7 +207,7 @@ def perform(loop: dict, active: bool, token_login: str | None = None, *,
             app_ingress.set_paused(st, not active)
         except OSError as exc:
             return [f"the pause flag could not be written ({exc}): nothing changed"], False
-        done = app_ingress.paused(st) is (not active)
+        done = app_ingress.pause_flag(st) is (not active)
         return [(f"{'armed' if active else 'paused'}: events arrive through "
                  f"{loop.get('ingress_app')}'s webhook, so its deliveries for this loop are "
                  f"{'acted on' if active else 'dropped before any gate runs'} (read back)")

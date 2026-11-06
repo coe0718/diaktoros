@@ -101,6 +101,20 @@ def main() -> None:
     decide(json.load(sys.stdin))
 
 
+def breach_at_cap(loop: dict, st, number: int, head: str, rounds: int) -> None:
+    """The review cap is spent: park the PR for a ruling; always ends the gate with ``silence``.
+
+    Only a parked outcome is logged as a handover (#1273): a ``stale`` breach (the head moved
+    under the breach lock) parked nothing, and the next cap event tries the breach again."""
+    outcome = gate.breach(loop, st, number, head, rounds,
+                          f"review cap reached — {loop['cap']} verdicts, no approval; another "
+                          f"review would loop forever")
+    if outcome not in gate.BREACH_PARKED:
+        silence(f"cap reached on #{number} — but the breach was {outcome}: nothing parked, "
+                "no review queued; the next cap event tries again")
+    silence(f"cap reached on #{number} — handed to adjudication")
+
+
 @refreshes_declined_head
 def decide(payload: dict, reconsider: str | None = None) -> None:
     """The gate itself, on one payload: queue the review, or ``silence`` with the reason.
@@ -271,10 +285,7 @@ def decide(payload: dict, reconsider: str | None = None) -> None:
             silence(f"review cap reached on #{number} ({rounds} verdicts) — no further review "
                     "until a maintainer grants another round")
     elif rounds >= loop["cap"]:
-        gate.breach(loop, st, number, head, rounds,
-                    f"review cap reached — {loop['cap']} verdicts, no approval; another review "
-                    f"would loop forever")
-        silence(f"cap reached on #{number} — handed to adjudication")
+        breach_at_cap(loop, st, number, head, rounds)
 
     # A request *is* the handoff: the fixer pushes, then asks. That is the only signal that means
     # the fixer is finished with this PR, so it is what frees the fixer's slot. A review must never

@@ -48,32 +48,40 @@ def woken_by_repo_hook() -> bool:
     own script is ``__main__``. The App dispatcher (``gate_app.py`` is ``__main__``), the CLI's
     in-process runs (``hermes dk review``) and a watchdog re-drive (its environment mark) are not.
     For a loop on its App's webhook such a wake is a leftover repo hook (#1239): acting on it would
-    run the gate twice, and act while ``arm --pause`` says the loop is paused."""
-    from . import gate_failures
+    run the gate twice, and act while ``arm --pause`` says the loop is paused.
+
+    When ``__main__`` has no script file (an embedded interpreter, ``python -c``, a REPL) the
+    process cannot say how it was started, so the wake is treated as a leftover and dropped
+    (#1289): fail closed. An in-process gate call (``util.gate_call``: the CLI's and the
+    Desktop's reviews) says how it was started itself, so it is never dropped here."""
+    from . import gate_failures, util
+    if os.environ.get(gate_failures.REDRIVE_ENV) or util.in_gate_call():
+        return False
     main = sys.modules.get("__main__")
     stem = pathlib.Path(getattr(main, "__file__", "") or "").stem
-    return stem in GATES and not os.environ.get(gate_failures.REDRIVE_ENV)
+    return not stem or stem in GATES
 
 
 def paused(st) -> bool:
-    """Whether this loop's App deliveries are dropped (``arm --pause``). Lock-free and read-only;
-    an unreadable flag is armed, the same answer as a missing one."""
-    try:
-        path = st.dir / FILE
-        if not path.exists():
-            return False
-        data = json.loads(path.read_text())
-    except Exception:
-        return False
-    return isinstance(data, dict) and data.get("paused") is True
+    """Whether this loop's App deliveries are dropped (``arm --pause``). Lock-free and read-only.
+    Fails closed (#1295): only a flag that reads as armed (``pause_flag`` is ``False``: a missing
+    file, or ``{"paused": false}``) delivers; an unreadable or malformed one drops, as the repo-hook
+    path's "start nothing unless armed" callers do with an unreadable hook list."""
+    return pause_flag(st) is not False
 
 
 def pause_flag(st) -> bool | None:
     """Like ``paused`` but ``None`` when the flag cannot be read or is malformed: a missing file is
-    armed (``False``), a corrupt one is unknown, never a guess (#1599)."""
+    armed (``False``), a corrupt one is unknown, never a guess (#1599).
+
+    "Missing" is only an entry that is not there at all (``lstat`` raises ``FileNotFoundError``).
+    ``Path.exists`` follows symlinks, so a dangling flag symlink would read as missing and so as
+    armed; that entry exists and cannot be read, which is unknown (#1295 review, F2)."""
     try:
         path = st.dir / FILE
-        if not path.exists():
+        try:
+            path.lstat()
+        except FileNotFoundError:
             return False
         data = json.loads(path.read_text())
     except Exception:
@@ -130,7 +138,7 @@ def webhook_problem(state: dict) -> str:
     if state["url"] != state["want_url"]:
         problems.append(f"it posts to {state['url'] or '(nowhere)'}, not the route's "
                         f"{state['want_url'] or '(no route installed)'}")
-    elif state["content_type"] != "json":
+    if state["content_type"] != "json":         # its own defect: named even beside a wrong URL
         problems.append(f"its content type is {state['content_type'] or '(none)'}, not json")
     if state["missing_events"]:
         problems.append(f"it does not subscribe to {', '.join(state['missing_events'])}")
