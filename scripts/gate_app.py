@@ -10,7 +10,8 @@ name the real gate.
 
 Before any gate: a loop that still uses repo hooks is not woken from here (its own hooks deliver
 the same event), and a paused loop's delivery is dropped (GitHub cannot pause an App webhook for
-one repository; ``arm --pause`` sets the loop's flag instead).
+one repository; ``arm --pause`` sets the loop's flag instead). An unreadable or malformed flag
+drops too, logged as such (#1295): only a flag that reads as armed delivers.
 
 stdin : a GitHub webhook payload
 stdout: ``[SILENT]``
@@ -65,8 +66,14 @@ def main() -> None:
         # Its repo hooks deliver the same event: acting here too would run every gate twice.
         _quiet(f"app events: {loop['id']} uses repo hooks, not this App's webhook")
     st = state_mod.state_for(loop)
-    if app_ingress.paused(st):
-        reason = f"{loop['id']} is paused: the App's delivery is dropped (`hermes dk arm` resumes)"
+    flag = app_ingress.pause_flag(st)
+    if flag is not False:
+        # Fail closed (#1295): an unreadable or malformed flag is unknown, and unknown drops.
+        reason = (f"{loop['id']} is paused: the App's delivery is dropped (`hermes dk arm` resumes)"
+                  if flag else
+                  f"⚠️ {loop['id']}'s pause flag ({app_ingress.FILE}) cannot be read or is "
+                  f"malformed: the App's delivery is dropped, not guessed armed "
+                  f"(`hermes dk arm --loop {loop['id']}` rewrites it)")
         try:
             gate_decisions.record(loop, name, payload, "declined", reason)
         except Exception:

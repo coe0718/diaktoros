@@ -454,6 +454,145 @@ class Dispatch(unittest.TestCase):
         self.assertEqual(run.call_args.args[0], "gate_reviewer")
         self.assertTrue(sys.argv[0].endswith("gate_reviewer.py"))   # decisions name the real gate
 
+    def test_a_corrupt_pause_flag_drops_the_delivery_and_reads_unknown(self):
+        """#1295: an unreadable or malformed pause flag fails closed at the dispatcher, and the
+        loop's armed state is unknown (not armed, not "paused") for the watchdog and explain."""
+        import tempfile
+        from diaktoros import explain, gate
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        payload = {"action": "opened", "pull_request": {"number": 7},
+                   "repository": {"full_name": "acme/widgets"}}
+        loop = {"id": "w", "repo": "acme/widgets", "ingress": "app-webhook", "ingress_app": READ_APP,
+                "state_dir": tmp.name}
+        flag = state_mod.state_for(loop).dir / app_ingress.FILE
+        flag.parent.mkdir(parents=True, exist_ok=True)
+        for bad in ("{not json", "[]", "{}", json.dumps({"paused": "no"}),
+                    json.dumps({"paused": None})):
+            with self.subTest(flag=bad):
+                flag.write_text(bad)
+                self.assertTrue(app_ingress.paused(state_mod.state_for(loop)))
+                run, out = self.run_dispatch(payload, {**loop, "_paused": True})
+                run.assert_not_called()
+                self.assertIn("[SILENT]", out)
+                armed, why = gate.hooks_read(loop)
+                self.assertIsNone(armed)
+                self.assertIn("cannot be read or is malformed", why)
+                self.assertTrue(explain._explain_app_ingress(loop, armed).startswith("unknown"))
+        flag.write_text(json.dumps({"paused": False}))
+        run, out = self.run_dispatch(payload, loop)
+        run.assert_called_once()
+        self.assertEqual(gate.hooks_read(loop)[0], True)
+
+    def app_loop(self) -> dict:
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        loop = {"id": "w", "repo": "acme/widgets", "ingress": "app-webhook", "ingress_app": READ_APP,
+                "state_dir": tmp.name}
+        state_mod.state_for(loop).dir.mkdir(parents=True, exist_ok=True)
+        return loop
+
+    PR_OPENED = {"action": "opened", "pull_request": {"number": 7},
+                 "repository": {"full_name": "acme/widgets"}}
+
+    def test_a_dangling_flag_symlink_is_unknown_and_a_missing_flag_is_armed(self):
+        """#1295 review F2: an entry at the flag's path that cannot be read is not "missing"."""
+        from diaktoros import gate
+        loop = self.app_loop()
+        st = state_mod.state_for(loop)
+        flag = st.dir / app_ingress.FILE
+        self.assertIs(app_ingress.pause_flag(st), False)          # missing: armed, delivers
+        run, _ = self.run_dispatch(self.PR_OPENED, loop)
+        run.assert_called_once()
+        flag.symlink_to(st.dir / "nowhere.json")
+        self.assertFalse(flag.exists())
+        self.assertIsNone(app_ingress.pause_flag(st))
+        self.assertIsNone(gate.hooks_read(loop)[0])
+        run, out = self.run_dispatch(self.PR_OPENED, {**loop, "_paused": True})
+        run.assert_not_called()
+        self.assertIn("[SILENT]", out)
+
+    def dispatch_logged(self, loop) -> list[str]:
+        """The dispatcher's drop, with what it logged."""
+        from scripts import gate_app
+        with mock.patch.object(gate_app, "log") as log:
+            run, _ = self.run_dispatch(self.PR_OPENED, {**loop, "_paused": True})
+        run.assert_not_called()
+        return [c.args[0] for c in log.call_args_list]
+
+    def test_the_dispatcher_says_unknown_apart_from_paused(self):
+        """#1295 review F4: a damaged flag's drop is logged and recorded as unknown, with the
+        repair, and a real pause still as an ordinary pause."""
+        from diaktoros import gate_decisions
+        loop = self.app_loop()
+        st = state_mod.state_for(loop)
+        (st.dir / app_ingress.FILE).write_text("{not json")
+        logged = self.dispatch_logged(loop)
+        recorded = gate_decisions.read(loop)[-1]
+        for said in (logged[-1], recorded["reason"]):
+            self.assertIn("pause flag (app-ingress.json) cannot be read or is malformed", said)
+            self.assertIn("`hermes dk arm --loop w` rewrites it", said)
+            self.assertNotIn("is paused", said)
+        self.assertEqual(recorded["decision"], "declined")
+        app_ingress.set_paused(st, True)
+        logged = self.dispatch_logged(loop)
+        recorded = gate_decisions.read(loop)[-1]
+        for said in (logged[-1], recorded["reason"]):
+            self.assertIn("w is paused: the App's delivery is dropped", said)
+            self.assertNotIn("malformed", said)
+
+    def test_arm_pause_does_not_confirm_a_damaged_read_back(self):
+        """#1295 review F3: a pause write whose read-back is damaged is "state unknown"."""
+        from diaktoros import arm_action
+        loop = self.app_loop()
+        st = state_mod.state_for(loop)
+
+        def damaged(state, value):
+            (state.dir / app_ingress.FILE).write_text(json.dumps({"paused": "yes"}))
+        with mock.patch.object(app_ingress, "set_paused", side_effect=damaged):
+            lines, ok = arm_action.perform(loop, False)
+        self.assertFalse(ok, lines)
+        self.assertEqual(lines, ["the pause flag did not read back: state unknown"])
+        lines, ok = arm_action.perform(loop, False)      # control: a real pause reads back
+        self.assertTrue(ok, lines)
+        self.assertIs(app_ingress.pause_flag(st), True)
+
+    def sweep(self, loop):
+        """One real watchdog sweep (``watch_mode.TEST`` off, so it reads ``gate.hooks_read``),
+        with GitHub's listing and probe stubbed: ``open_prs`` is called only by a sweep that
+        goes on to recover, re-drive and drain."""
+        from diaktoros import gh, watch_mode
+        from scripts import watchdog
+        with mock.patch.object(watch_mode, "TEST", False), \
+                mock.patch.object(watchdog.gh, "auth_probe",
+                                  return_value=gh.Response({"login": "rev"}, "", 200, {})), \
+                mock.patch.object(watchdog.gh, "open_prs", return_value=None) as listing, \
+                mock.patch.object(watchdog, "drain_queued") as drain, \
+                mock.patch.object(watchdog, "_recover") as recover:
+            lines = watchdog.sweep_loop(loop, state_mod.state_for(loop))
+        return lines, listing, drain, recover
+
+    def test_the_watchdog_starts_nothing_on_a_damaged_flag(self):
+        """#1295 review F1: through the sweep itself, a damaged flag stops it before the listing,
+        heal, re-drive, recovery and drain; it is said as unknown, not as a pause."""
+        loop = self.app_loop()
+        st = state_mod.state_for(loop)
+        (st.dir / app_ingress.FILE).write_text("{not json")
+        lines, listing, drain, recover = self.sweep(loop)
+        listing.assert_not_called()
+        drain.assert_not_called()
+        recover.assert_not_called()
+        self.assertTrue(any("armed state unknown" in line and "nothing started" in line
+                            for line in lines), lines)
+        self.assertFalse(any("sweeping anyway" in line for line in lines), lines)
+        lines, *_ = self.sweep(loop)              # said once per cooldown, not every sweep
+        self.assertFalse(any("armed state unknown" in line for line in lines), lines)
+        app_ingress.set_paused(st, False)          # control: confirmed armed, the sweep goes on
+        lines, listing, _, _ = self.sweep(loop)
+        listing.assert_called()
+        self.assertFalse(any("armed state unknown" in line for line in lines), lines)
+
 
 if __name__ == "__main__":
     unittest.main()

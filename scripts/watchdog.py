@@ -299,12 +299,38 @@ def _hooks_armed(c: _Sweep) -> bool:
                 held="not re-driven while the loop's hooks are paused; `hermes dk arm "
                      f"--loop {loop['id']}` resumes it, or re-deliver it from GitHub"))
         return False
+    if c.armed is None and config.app_ingress(loop):
+        return _app_flag_unknown(c)
     # Armed, or unknown because the hook list could not be read. Unknown is not paused: sweep
     # normally and warn once per cooldown — never silence.
     if c.armed is None and watch_mode.alert_due(c.watch, "hooks:unknown", c.now, c.cooldown):
         c.lines.append(f"⚠️ Diaktoros [{loop['id']}] {loop['repo']}: hook state unreadable: "
                        f"{gh.one_line(c.armed_error or 'no reason given', 200)} — sweeping anyway")
     return True
+
+
+def _app_flag_unknown(c: _Sweep) -> bool:
+    """An App-ingress loop whose pause flag cannot be read or is malformed (#1295 review, F1).
+
+    Its dispatcher drops every delivery on it, so the sweep starts nothing either: no recovery,
+    re-drive or queue drain until ``arm`` rewrites the flag. That is not a confirmed pause, so it
+    is said once per cooldown (stamped and saved here, since the sweep stops), never silenced.
+    Unlike a repo-hooks loop's unreadable hook list (a GitHub read that may just have failed),
+    this is a local file that stays damaged until it is rewritten. Returns False: stop the sweep.
+    """
+    loop = c.loop
+    if watch_mode.alert_due(c.watch, "hooks:unknown", c.now, c.cooldown):
+        c.lines.append(f"⚠️ Diaktoros [{loop['id']}] {loop['repo']}: armed state unknown: "
+                       f"{gh.one_line(c.armed_error or 'no reason given', 200)} — nothing started "
+                       f"(`hermes dk arm --loop {loop['id']}` rewrites the flag)")
+        c.st.watch_save(c.watch)
+    if loop.get("state_dir"):
+        c.lines.extend(sweep_gate_failures(
+            gate_failures.loop_ledger(loop), f"[{loop['id']}] {loop['repo']}", c.cooldown,
+            may_redrive=False,
+            held="not re-driven while the loop's pause flag cannot be read; `hermes dk arm "
+                 f"--loop {loop['id']}` rewrites it, or re-deliver it from GitHub"))
+    return False
 
 
 def _read_listing(c: _Sweep) -> None:
