@@ -127,7 +127,7 @@ status, which branch protection cannot pin to one identity. To make it the block
 own that requires `diaktoros/review`, pinned to the reviewer App, with no bypass. `doctor`'s
 `merge-check` line says whether the base requires the check and from which App, and flags a base
 that still requires approvals (an App's never count, so each PR would need a person's), and one
-that requires the check while the loop does not post it, or from an App that is not the reviewer (a PAT reviewer's commit status never satisfies a pinned check): every PR would stay blocked. A base it could only half read is never reported as verified.
+that requires the check while the loop does not post it, or from an App that is not the reviewer (a PAT reviewer's commit status never satisfies a pinned check): every PR would stay blocked. A base it could only half read is never reported as verified. For a loop that does not post the check, a half-read base is silent unless the half that answered requires other status checks: then `merge-check` is ⚠️, since the unread half (usually classic protection, which needs admin access to read) may require `diaktoros/review` too. A half-read base whose readable half requires no checks stays silent, so a requirement in the unread half goes unreported there; give the reader the access named in the fix, or check repo settings → rules by hand.
 
 ## An App as the hook admin (#1196)
 

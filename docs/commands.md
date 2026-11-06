@@ -430,7 +430,8 @@ using the same code as the command named in it:
 5. **The merge check.** Only when the loop posts `diaktoros/review` (an App reviewer, or
    `merge_check` `on`) and the base does not require it yet: it offers [`protect`](#protect)
    (the question defaults to no; `--protect` says yes). Declining keeps going: the check is
-   posted, but the merge button ignores it until it is required.
+   posted, but the merge button ignores it until it is required. A loop that does not post it
+   gets one line instead: `5. The merge check — not posted by this loop, nothing to require`.
 6. **Arm.** Only after a clean pass, and only if you say yes (the question defaults to no).
    Skipped, with a line saying so, when the record has `armed` `passed` and the hooks are still
    as recorded (`--arm` included); a stale `armed` stage asks again.
