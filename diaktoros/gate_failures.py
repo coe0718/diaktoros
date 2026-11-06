@@ -56,7 +56,7 @@ import traceback
 from collections.abc import Callable
 
 from . import config, gh
-from .util import iso_at, log, register_lock
+from .util import flock_held, iso_at, log, register_lock
 from . import envnames
 
 LEDGER = "gate-failures.json"
@@ -162,6 +162,50 @@ def gateway_hosts(home: pathlib.Path | None = None) -> list[tuple[str, pathlib.P
         return [(f"profile {name}'s standalone gateway", home)]
     return [(f"profile {name}'s own gateway (if it runs one)", home),
             (f"host gateway multiplexing profile {name}", root)]
+
+
+def _lock_holder_pid(lock: pathlib.Path) -> int | None:
+    """The ``pid`` a Hermes ``gateway.lock`` record names (``gateway/runtime_ownership.py``
+    writes ``{"pid": ..., "hermes_home": ..., ...}``, older ones a bare PID); ``None`` when unreadable."""
+    try:
+        raw = lock.read_text(encoding="utf-8").strip()
+        record = json.loads(raw) if raw else None
+    except (OSError, ValueError):
+        return None
+    if isinstance(record, int) and not isinstance(record, bool):
+        return record
+    pid = record.get("pid") if isinstance(record, dict) else None
+    return pid if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0 else None
+
+
+def profile_gateway_runs(home: pathlib.Path, root: pathlib.Path) -> tuple[bool | None, str]:
+    """Does profile ``home`` run a gateway of its own, beside the host gateway at ``root`` (#1362)?
+
+    ``(True|False|None, why)``; ``None`` when it cannot be told. Read from the profile's
+    ``gateway.lock`` as Hermes keeps it (``gateway/runtime_ownership.py``): every gateway holds a
+    ``flock`` on the lock of each home it serves and writes its PID into it. So no lock file, or
+    one nobody holds, is no gateway; one held under the same PID as the host's lock is the host
+    gateway multiplexing the profile; one held by any other PID is the profile's own gateway.
+    Never waits (``util.flock_held``)."""
+    lock = home / "gateway.lock"
+    try:
+        held = flock_held(lock)
+    except FileNotFoundError:
+        return False, f"no {lock}"
+    if held is None:
+        return None, f"cannot probe the flock on {lock}"
+    if not held:
+        return False, f"nobody holds {lock}"
+    pid = _lock_holder_pid(lock)
+    if pid is None:
+        return None, f"{lock} is held but names no PID"
+    host_lock = root / "gateway.lock"
+    host_pid = _lock_holder_pid(host_lock)
+    if host_pid == pid:
+        return False, f"{lock} is held by the host gateway (pid {pid})"
+    if host_pid is None and host_lock.exists():
+        return None, f"{lock} is held by pid {pid}, and {host_lock} names no PID to tell it apart"
+    return True, f"{lock} is held by pid {pid}"
 
 
 def effective_timeout(home: pathlib.Path | None = None) -> tuple[int | None, list[tuple]]:
