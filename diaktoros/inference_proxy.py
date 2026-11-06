@@ -32,10 +32,10 @@ an upstream 401). Only the access token and host-chosen headers ever reach this 
 tokens stay in the host's Hermes auth store (see ``seat_model``).
 
 One thing it adds instead of forwarding: when the capability is created with the seat's step cap
-(``nudge_steps``), the model request five steps before that cap carries one extra host-written
-message telling the agent to submit what it has verified now (#554). It is appended to that one
-request only, so a turn that finishes early never sees it and the agent's own history never
-contains it.
+(``nudge_steps``), every model request from five steps before that cap carries one extra
+host-written message telling the agent to submit what it has verified now (#554). The host
+appends it to each of those requests itself, since the agent's own history never contains it
+(#1789), so a turn that finishes early never sees it.
 """
 from __future__ import annotations
 
@@ -537,16 +537,18 @@ def bounded_request(body: bytes, model: str, contract: Contract,
 
 # A turn that spends its step cap without publishing loses everything it did and is retried from
 # scratch (#536). The proxy sees every model request of the turn, so the host can spend the turn's
-# last stretch telling the agent to submit what it has. This is host policy text, appended to the
-# one request named below — the agent's own history never carries it, so a turn that finishes
-# early never sees it.
+# last stretch telling the agent to submit what it has. This is host policy text, appended to each
+# request from the one named below to the cap. The agent's own history never carries it, so a
+# message on that one request alone was gone by the next: four shadow turns read it, made another
+# tool call and ran out of steps unsubmitted (#1789). A turn that finishes early never sees it.
 NUDGE_LEAD = 5
 NUDGE = ("You are near the end of this turn's steps. Submit now through the broker with what you "
          "have verified, and put the rest under `Not verified:`.")
 
 
 def nudge_request_at(steps: int) -> int:
-    """The (1-based) model request of a ``steps``-step turn that carries the nudge (#554).
+    """The (1-based) model request of a ``steps``-step turn from which every request carries
+    the nudge (#554, #1789).
 
     Five steps before the cap, so five more steps still run after it — and the smallest seat
     setting (8 steps, ``config.MAX_STEPS_RANGE``) is nudged on its third request, three steps
@@ -821,9 +823,9 @@ class InferenceCapability:
         self.model = model
         self.quota = quota
         # The seat's step cap when this turn gets the submit-now nudge (#554), else None: only
-        # the writing seats are nudged, and only once per turn (``nudged``).
+        # the writing seats are nudged. ``nudged`` counts the requests it was on.
         self.nudge_steps = nudge_steps
-        self.nudged = False
+        self.nudged = 0
         self.used = 0
         self.lock = threading.Lock()
         self.directory = Path(socket_dir)
@@ -873,22 +875,21 @@ class InferenceCapability:
                 self.thinking = thinking_level(body, self.contract)
 
     def maybe_nudge(self, body: bytes) -> bytes:
-        """``body`` with the submit-now nudge appended when this request is the turn's nudge
-        request, else unchanged (#554).
+        """``body`` with the submit-now nudge appended when this request is at or past the
+        turn's nudge request, else unchanged (#554).
 
-        Once per turn: the flag is set only when the message really was appended, so a request
-        shape this module cannot edit does not spend the turn's one nudge. A turn that never
-        reaches the request named by ``nudge_request_at`` — one that finished early — never gets
-        it.
+        Every request from there to the cap carries it (#1789): the agent's history never does,
+        so a nudge on one request alone is gone from the next. A request shape this module
+        cannot edit is forwarded unchanged and not counted. A turn that never reaches the request
+        named by ``nudge_request_at`` (one that finished early) never gets it.
         """
         with self.lock:
-            if (self.nudged or self.nudge_steps is None
-                    or self.used < nudge_request_at(self.nudge_steps)):
+            if self.nudge_steps is None or self.used < nudge_request_at(self.nudge_steps):
                 return body
             nudged = nudge_body(body, self.contract)
             if nudged is None:
                 return body
-            self.nudged = True
+            self.nudged += 1
             return nudged
 
     def add_usage(self, meter: 'UsageMeter') -> None:
