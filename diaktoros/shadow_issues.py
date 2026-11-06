@@ -66,7 +66,7 @@ def file_pending(loop: dict, db=None, now: float | None = None,
             sup.shadow_issue_status(row["run_id"], row["seq"], "duplicate", expect="recorded")
             continue
         if room <= 0 and not uncapped:
-            break
+            continue                                  # no room: later rows may still be lost
         depth = _lineage_depth(loop, sup, number)
         if depth is None:
             continue                                  # an unreadable PR files nothing this sweep

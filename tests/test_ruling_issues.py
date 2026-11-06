@@ -339,6 +339,27 @@ class FilePending(unittest.TestCase):
             self.assertEqual(self.file(), ([], []))            # the fourth waits for room
         self.assertEqual(self.state(runs[3]), "recorded")
 
+    def test_a_full_daily_bound_still_drops_and_logs_a_later_unruled_follow_up(self):
+        # Review of #1982, F1: the bound stops the POSTs, not the sweep. A follow-up behind ones
+        # it holds back, from a run that ended without a ruling, is still denied and logged.
+        first = self.recorded("Docs miss the flag")
+        held = self.recorded("Retry loops forever")
+        lost = self.recorded("Never ruled", verdict=None, run_state="failed")
+        logged = []
+        pr = {"number": 7, "head": {"sha": HEAD, "ref": "fix-7"}}
+        with mock.patch.object(config, "ADJUDICATOR_ISSUES_DAILY", 1), \
+                mock.patch.object(gh, "pr", return_value=pr), \
+                mock.patch.object(broker, "_write", return_value=(
+                    {"number": 201, "labels": [{"name": "bug"}, {"name": "adjudicator-found"}]},
+                    "")) as write, \
+                mock.patch.object(broker, "_audit"):
+            filed = ruling_issues.file_pending(self.loop, db=self.db, log=logged.append)
+        self.assertEqual((filed, write.call_count), ([201], 1))     # the bound: one POST only
+        self.assertEqual([self.state(first), self.state(held), self.state(lost)],
+                         ["posted", "recorded", "denied"])
+        self.assertIn("adjudicator-found issue for #7 ('Never ruled') denied: the adjudicator's "
+                      "run ended without a ruling", logged)
+
 
 class EveryPath(unittest.TestCase):
     """init (form and flag), set, show and setup (#323), with test_shadow.Cli's harness."""
