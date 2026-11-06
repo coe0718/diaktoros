@@ -39,9 +39,11 @@ SIGN_TIMEOUT_S = 20
 
 # Run by the Hermes runtime's Python: the key path is an argument, the bytes to sign arrive on
 # stdin, the signature leaves on stdout. Nothing else is read or printed.
-_SIGN = ("import sys\n"
-         "from cryptography.hazmat.primitives import hashes, serialization\n"
-         "from cryptography.hazmat.primitives.asymmetric import padding\n"
+# What signing imports, and so what the probe must import: a bare ``import cryptography`` passes on
+# an install whose hazmat layer (its native bindings) is broken, and then every mint fails.
+_PROBE = ("from cryptography.hazmat.primitives import hashes, serialization\n"
+          "from cryptography.hazmat.primitives.asymmetric import padding\n")
+_SIGN = ("import sys\n" + _PROBE +
          "with open(sys.argv[1], 'rb') as fh:\n"
          "    key = serialization.load_pem_private_key(fh.read(), password=None)\n"
          "sys.stdout.buffer.write(key.sign(sys.stdin.buffer.read(), padding.PKCS1v15(), "
@@ -118,7 +120,7 @@ def signer() -> tuple[str, Path | None]:
     python = _runtime_python()
     if python is not None:
         try:
-            done = subprocess.run([str(python), "-I", "-c", "import cryptography"],
+            done = subprocess.run([str(python), "-I", "-c", _PROBE],
                                   capture_output=True, timeout=_sign_timeout("the signer probe"),
                                   env={"PATH": "/usr/bin:/bin"})
             if done.returncode == 0:
@@ -128,8 +130,8 @@ def signer() -> tuple[str, Path | None]:
         except (OSError, subprocess.SubprocessError):
             pass
     if not found[0]:
-        openssl = shutil.which("openssl", path="/usr/bin:/bin:/usr/local/bin")
-        found = ("openssl", Path(openssl)) if openssl else ("", None)
+        openssl = _openssl()
+        found = ("openssl", openssl) if openssl else ("", None)
     if not cut_short:
         # A probe a tight gate budget cut short is not cached: it would answer "no signer" for
         # the process's life on a host whose runtime Python has cryptography (#1278).
@@ -137,9 +139,29 @@ def signer() -> tuple[str, Path | None]:
     return found
 
 
+def _openssl() -> Path | None:
+    found = shutil.which("openssl", path="/usr/bin:/bin:/usr/local/bin")
+    return Path(found) if found else None
+
+
 def sign(key_file: Path, data: bytes) -> bytes:
-    """RS256 (PKCS#1 v1.5 over SHA-256) of ``data`` with the PEM key at ``key_file``."""
+    """RS256 (PKCS#1 v1.5 over SHA-256) of ``data`` with the PEM key at ``key_file``. A
+    ``cryptography`` signing that fails falls back to ``openssl`` once, and a fallback that signs
+    becomes this process's signer: a probe can pass where signing still fails."""
+    global _signer
     kind, tool = signer()
+    try:
+        return _sign_with(kind, tool, key_file, data)
+    except AppError:
+        fallback = _openssl() if kind == "cryptography" else None
+        if fallback is None:
+            raise
+    signed = _sign_with("openssl", fallback, key_file, data)
+    _signer = ("openssl", fallback)
+    return signed
+
+
+def _sign_with(kind: str, tool: Path | None, key_file: Path, data: bytes) -> bytes:
     if kind == "cryptography":
         argv = [str(tool), "-I", "-c", _SIGN, str(key_file)]
     elif kind == "openssl":

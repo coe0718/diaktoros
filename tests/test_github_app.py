@@ -193,7 +193,7 @@ class Signing(Base):
         with mock.patch.object(github_app, "_runtime_python", return_value=Path(sys.executable)), \
                 mock.patch.object(subprocess, "run", wraps=subprocess.run) as run:
             kind, tool = github_app.signer()
-        has = subprocess.run([sys.executable, "-I", "-c", "import cryptography"],
+        has = subprocess.run([sys.executable, "-I", "-c", github_app._PROBE],
                              capture_output=True).returncode == 0
         self.assertEqual(kind, "cryptography" if has else "openssl")
         if has:
@@ -209,6 +209,34 @@ class Signing(Base):
             github_app.jwt(self.loop, BOT)
         self.assertNotIn("SECRETSTUFF", str(caught.exception))
         self.assertIn("signing failed", str(caught.exception))
+
+    def _half_broken_python(self) -> Path:
+        """A runtime Python whose ``import cryptography`` works and whose hazmat layer does not."""
+        fake = self.root / "python"
+        fake.write_text('#!/bin/sh\ncase "$*" in *hazmat*) exit 1;; esac\nexit 0\n')
+        fake.chmod(0o700)
+        return fake
+
+    def test_a_cryptography_whose_hazmat_layer_is_broken_is_not_chosen(self):
+        with mock.patch.object(github_app, "_runtime_python",
+                               return_value=self._half_broken_python()):
+            self.assertEqual(github_app.signer(), ("openssl", Path(OPENSSL)))
+
+    def test_a_failing_cryptography_signing_falls_back_to_openssl_and_keeps_it(self):
+        broken = ("cryptography", self._half_broken_python())
+        with mock.patch.object(github_app, "signer", return_value=broken):
+            token = github_app.jwt(self.loop, BOT, now=1_800_000_000)
+        self.assertEqual(len(token.split(".")), 3)
+        self.assertEqual(github_app._signer, ("openssl", Path(OPENSSL)))
+
+    def test_a_bad_key_still_fails_after_the_fallback_without_echoing_it(self):
+        self.key.write_text("-----BEGIN RSA PRIVATE KEY-----\nSECRETSTUFF\n")
+        broken = ("cryptography", self._half_broken_python())
+        with mock.patch.object(github_app, "signer", return_value=broken), \
+                self.assertRaises(github_app.AppError) as caught:
+            github_app.jwt(self.loop, BOT)
+        self.assertNotIn("SECRETSTUFF", str(caught.exception))
+        self.assertIn("openssl exit", str(caught.exception))
 
     def test_no_signer_says_so(self):
         with mock.patch.object(github_app, "signer", return_value=("", None)), \
