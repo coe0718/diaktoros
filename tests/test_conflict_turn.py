@@ -209,6 +209,13 @@ class Worker(sm.Worker):
                     self.assertEqual(recorded, "")
                 else:
                     self.assertIn(words.replace("conflict needs a person: ", ""), recorded)
+                    # #1271: only the whole-file refusal lapses (a later base can fix it).
+                    entry = st.kv_get(st.dir / conflict_person.FILE, {})["7"]
+                    if label == "whole-file":
+                        self.assertAlmostEqual(entry["until"] - entry["at"],
+                                               conflict_person.WHOLE_FILE_RETRY_S)
+                    else:
+                        self.assertNotIn("until", entry)
                 (st.dir / conflict_person.FILE).unlink(missing_ok=True)
 
     def test_a_change_request_since_the_claim_holds_the_launch_and_merges_nothing(self):

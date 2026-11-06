@@ -378,7 +378,8 @@ def conflict_merge(loop: dict, row, branch: str) -> dict:
                                        base_ref=loop['base'], base_sha=base_sha,
                                        login=loop['read_token'])
     except safe_push.NeedsPerson as exc:
-        _needs_person(loop, row, str(exc))
+        # A whole-file conflict: a later base can fix it (#1271), so the record lapses.
+        _needs_person(loop, row, str(exc), lapses=True)
         raise ValueError(f"conflict needs a person: {exc}") from None
     except broker.BrokerDenied as exc:
         if str(exc) in ('fetched PR branch moved', 'base commit is not on the base branch'):
@@ -394,12 +395,15 @@ def conflict_merge(loop: dict, row, branch: str) -> dict:
     return merged
 
 
-def _needs_person(loop: dict, row, why: str) -> None:
-    """Record that this head's conflict is a person's (#1154's notices): no later base fixes it
-    for this head, so the watchdog must not queue it again on every merge. Best effort."""
+def _needs_person(loop: dict, row, why: str, *, lapses: bool = False) -> None:
+    """Record that this head's conflict is a person's (#1154's notices), so the watchdog does not
+    queue it again on every merge. ``lapses``: a later base may fix it (a whole-file conflict,
+    #1271), so the record holds for ``conflict_person.WHOLE_FILE_RETRY_S`` only; otherwise (the
+    workflow-scope refusal) it holds until a new head. Best effort."""
     try:
         from .. import conflict_person, state as state_mod
-        conflict_person.record(state_mod.state_for(loop), int(row['pr']), str(row['head']), why)
+        conflict_person.record(state_mod.state_for(loop), int(row['pr']), str(row['head']), why,
+                               lapse_s=conflict_person.WHOLE_FILE_RETRY_S if lapses else None)
     except Exception:
         pass
 
