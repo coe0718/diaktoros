@@ -18,6 +18,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import broker, gh, gate, isolation
 
+# Seconds each cargo step of the namespace probe may take: room for a cold build on a slow hosted
+# runner. A step past it is a skip that names the step, never a red main (#1778).
+CARGO_BOUND = 240
+
 
 class BoundaryTests(unittest.TestCase):
     def setUp(self):
@@ -181,11 +185,9 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(len(logged), 1, logged)
         self.assertIn("cannot tell whether", logged[0])
 
-    @unittest.skipUnless(shutil.which("bwrap"), "bubblewrap unavailable")
-    def test_credentialless_rust_namespace_probe(self):
-        stable = _home_guard.RUST
-        if not (stable / "bin/cargo").exists():
-            self.skipTest("stable Rust toolchain unavailable")
+    def _rust_probe(self, toolchain, binds=(), cargo_bound=CARGO_BOUND):
+        """Runs the probe in a fresh namespace with ``toolchain`` at /opt/rust. The boundary checks
+        come first; each cargo step then has ``cargo_bound`` seconds (#1778)."""
         workspace = self.root / "work"
         (workspace / "src").mkdir(parents=True)
         (workspace / "Cargo.toml").write_text('[package]\nname="boundary_probe"\nversion="0.1.0"\nedition="2021"\n')
@@ -193,7 +195,7 @@ class BoundaryTests(unittest.TestCase):
         secret = self.root / "seat.pat"
         secret.write_text("dummy-seat-token")
         probe = self.root / "probe.py"
-        probe.write_text('''import os, subprocess
+        probe.write_text('''import os, subprocess, sys
 assert not os.path.exists(os.environ["HOST_PAT"])
 for candidate in (os.environ["HOST_PAT"], "/work/../../" + os.environ["HOST_PAT"].lstrip("/"),
                   "/proc/self/root" + os.environ["HOST_PAT"], os.environ["HOST_ENV"]):
@@ -204,32 +206,106 @@ for candidate in (os.environ["HOST_PAT"], "/work/../../" + os.environ["HOST_PAT"
     else:
         raise AssertionError("host path readable: " + candidate)
 for path in ("/bin/sh", "/usr/bin/python3"):
-    subprocess.run([path, "-c", "test ! -r $HOST_PAT" if path.endswith("sh") else "import os; assert not os.path.exists(os.environ['HOST_PAT'])"], check=True)
+    subprocess.run([path, "-c", "test ! -r $HOST_PAT" if path.endswith("sh") else "import os; assert not os.path.exists(os.environ['HOST_PAT'])"], check=True, timeout=30)
 p = subprocess.run(["git", "credential", "fill"], input="protocol=https\\nhost=github.com\\n\\n", text=True, capture_output=True, timeout=5)
 assert "dummy-seat-token" not in (p.stdout + p.stderr)
-subprocess.run(["cargo", "--version"], check=True)
-subprocess.run(["cargo", "test", "--offline"], cwd="/work", check=True)
+print("boundary: ok", flush=True)
+bound = int(os.environ["CARGO_BOUND"])
+for step in (["cargo", "--version"], ["cargo", "test", "--offline"]):
+    try:
+        subprocess.run(step, cwd="/work", check=True, timeout=bound)
+    except subprocess.TimeoutExpired:
+        print("cargo timeout: %s did not finish in %d s on this runner" % (" ".join(step), bound), flush=True)
+        sys.exit(77)
 ''')
         cmd = ["bwrap", "--unshare-all", "--die-with-parent", "--ro-bind", "/usr", "/usr",
                "--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib",
                "--ro-bind-try", "/lib64", "/lib64", "--ro-bind-try", "/etc/alternatives", "/etc/alternatives",
                "--proc", "/proc", "--dev", "/dev",
                "--tmpfs", "/tmp", "--dir", "/home", "--dir", "/opt",
-               "--ro-bind", str(stable), "/opt/rust", "--bind", str(workspace), "/work",
-               "--ro-bind", str(probe), "/probe.py", "--setenv", "HOME", "/tmp",
+               "--ro-bind", str(toolchain), "/opt/rust", "--bind", str(workspace), "/work",
+               "--ro-bind", str(probe), "/probe.py", *binds, "--setenv", "HOME", "/tmp",
                "--setenv", "CARGO_HOME", "/tmp/cargo", "--setenv", "RUSTUP_HOME", "/tmp/rustup",
                "--setenv", "HOST_PAT", str(secret),
                "--setenv", "HOST_ENV", str(_home_guard.USER_HOME / ".hermes/.env"),
+               "--setenv", "CARGO_BOUND", str(cargo_bound),
                "--setenv", "PATH", "/opt/rust/bin:/usr/bin:/bin", "--chdir", "/work",
                "--", "/usr/bin/python3", "/probe.py"]
-        result = subprocess.run(cmd, text=True, capture_output=True, timeout=120,
-                                env={"PATH": "/usr/bin:/bin", "HOME": str(self.root)})
+        overall = 2 * cargo_bound + 60
+        try:
+            return subprocess.run(cmd, text=True, capture_output=True, timeout=overall,
+                                  env={"PATH": "/usr/bin:/bin", "HOME": str(self.root)})
+        except subprocess.TimeoutExpired as late:
+            self.fail(f"the probe did not finish in {overall} s; its output so far: {late.stdout!r}")
+
+    def _rust_verdict(self, result):
+        """Red for a boundary or cargo failure; a skip, with its reason, only for a host without
+        user namespaces or a cargo step that ran out of time after the boundary checks passed."""
         if "Creating new namespace failed" in result.stderr:
             self.skipTest("user namespaces disabled by host")
+        if result.returncode == 77 and "boundary: ok\n" in result.stdout:
+            timeout = [line for line in result.stdout.splitlines() if line.startswith("cargo timeout: ")]
+            if timeout:
+                self.skipTest(timeout[-1])
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("boundary: ok", result.stdout)
         self.assertIn("cargo ", result.stdout)
         self.assertIn("test result: ok", result.stdout)
 
+    def _stuck_cargo(self, behaviour):
+        """A toolchain whose ``cargo --version`` answers and whose ``cargo test`` does ``behaviour``."""
+        toolchain = self.root / "stuck-rust"
+        (toolchain / "bin").mkdir(parents=True)
+        cargo = toolchain / "bin/cargo"
+        cargo.write_text('#!/bin/sh\nif [ "$1" = --version ]; then echo "cargo 0.0.0 (stub)"; exit 0; fi\n'
+                         + behaviour + "\n")
+        cargo.chmod(0o755)
+        return toolchain
+
+    def _assert_red(self, result):
+        """The verdict fails: a skip here would hide the failure, so it fails this test too."""
+        try:
+            self._rust_verdict(result)
+        except unittest.SkipTest as skipped:
+            self.fail(f"skipped, not red: {skipped}")
+        except self.failureException:
+            return
+        self.fail("passed, not red")
+
+    @unittest.skipUnless(shutil.which("bwrap"), "bubblewrap unavailable")
+    def test_credentialless_rust_namespace_probe(self):
+        stable = _home_guard.RUST
+        if not (stable / "bin/cargo").exists():
+            self.skipTest("stable Rust toolchain unavailable")
+        self._rust_verdict(self._rust_probe(stable))
+
+    @unittest.skipUnless(shutil.which("bwrap"), "bubblewrap unavailable")
+    def test_a_cargo_step_out_of_time_is_a_skip_with_its_reason(self):
+        """#1778: a slow runner's cargo is no regression; it skips, saying which step and bound."""
+        result = self._rust_probe(self._stuck_cargo("exec sleep 600"), cargo_bound=2)
+        if "Creating new namespace failed" in result.stderr:
+            self.skipTest("user namespaces disabled by host")
+        with self.assertRaises(unittest.SkipTest) as skipped:
+            self._rust_verdict(result)
+        self.assertEqual(str(skipped.exception),
+                         "cargo timeout: cargo test --offline did not finish in 2 s on this runner")
+
+    @unittest.skipUnless(shutil.which("bwrap"), "bubblewrap unavailable")
+    def test_a_readable_host_path_is_red_even_when_cargo_would_stall(self):
+        result = self._rust_probe(self._stuck_cargo("exec sleep 600"), cargo_bound=2,
+                                  binds=("--ro-bind", str(self.root), str(self.root)))
+        if "Creating new namespace failed" in result.stderr:
+            self.skipTest("user namespaces disabled by host")
+        self.assertIn("AssertionError", result.stderr)     # the seat token is visible
+        self.assertNotIn("boundary: ok", result.stdout)
+        self._assert_red(result)
+
+    @unittest.skipUnless(shutil.which("bwrap"), "bubblewrap unavailable")
+    def test_a_failing_cargo_test_is_red_not_a_skip(self):
+        result = self._rust_probe(self._stuck_cargo("echo 'test result: FAILED'; exit 101"))
+        if "Creating new namespace failed" in result.stderr:
+            self.skipTest("user namespaces disabled by host")
+        self._assert_red(result)
 
 if __name__ == "__main__":
     unittest.main()
