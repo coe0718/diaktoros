@@ -154,7 +154,8 @@ issues", with its live state alone (#1783): whether it is an issue or a pull req
 with GitHub's reason, or merged; and its title and labels, quoted. Its body is not shown. The seats
 have no network, so without this a reviewer could only list such a state as not verified. A
 `deferred to #N` that names anything but an open issue is flagged. An issue the host can't read is
-said to be unknown, never taken as open. Bounds: the first ten numbers, one reader call each (the
+said to be unknown, never taken as open, and when the PR's comments can't be read the section says
+so, so an issue named only there is known to be missing. Bounds: the first ten numbers, one reader call each (the
 reader's ETag cache makes a repeat free); the rest are counted. This applies whether or not the PR
 closes an issue; `owner/repo#N` (another repository) is not read.
 

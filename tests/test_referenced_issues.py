@@ -137,6 +137,48 @@ class Referenced(unittest.TestCase):
         self.assertNotIn("\n## Host note", text)
 
 
+class Unreadable(Referenced):
+    """Review on #1948: what the section could not read, and what it must never choke on."""
+
+    def unread(self, github):
+        github.comments = lambda loop, number: (None, "HTTP 502")
+        return self.section(github)
+
+    def test_unread_pr_comments_are_said_with_no_reference_in_the_body(self):
+        text = self.unread(GitHub("no references"))
+        self.assertIn("## Referenced issues", text)
+        self.assertIn("The maintainers' comments on the PR could not be read for this turn", text)
+
+    def test_unread_pr_comments_are_said_beside_the_bodys_references(self):
+        text = self.unread(GitHub("named #20", {20: issue(20)}))
+        self.assertIn("- #20 (named): issue, open", text)
+        self.assertIn("an issue named only there is not listed", text)
+
+    def test_unread_pr_comments_are_said_beside_a_closing_issue(self):
+        text = self.unread(GitHub("Closes #5", {5: issue(5)}))
+        self.assertIn("BODY5", text)
+        self.assertIn("an issue named only there is not listed", text)
+
+    def test_an_oversized_number_is_no_reference_and_breaks_nothing(self):
+        huge = "#" + "9" * 5000
+        github = GitHub(f"{huge} deferred to {huge} Follow-up to {huge} Closes {huge} and #20",
+                        {20: issue(20)})
+        text = self.section(github)
+        self.assertIn("- #20 (named): issue, open", text)
+        self.assertNotIn("9" * 11, text)
+        with mock.patch.object(gh, "api", side_effect=github.api):
+            self.assertEqual(issue_facts.closing_numbers(LOOP, 7), [])
+        closing = GitHub("Closes #5", {5: issue(5)})
+        with mock.patch.object(gh, "api", side_effect=closing.api):
+            refusal = issue_facts.check(LOOP, 7, "APPROVE",
+                                        f"## Requirements\n- x: deferred to {huge}\n")
+        self.assertIn("has no item marked", refusal)   # refused as unmarked, never a raise
+
+
+for _name in [n for n in dir(Referenced) if n.startswith("test_")]:
+    setattr(Unreadable, _name, None)            # Referenced's own tests run once, in it
+
+
 class InThePrompt(unittest.TestCase):
     def test_the_reviewer_sees_them_before_the_host_section(self):
         github = GitHub("Follow-up to #20", {20: issue(20, "closed", "completed")})
