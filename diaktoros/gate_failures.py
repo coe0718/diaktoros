@@ -164,18 +164,24 @@ def gateway_hosts(home: pathlib.Path | None = None) -> list[tuple[str, pathlib.P
             (f"host gateway multiplexing profile {name}", root)]
 
 
-def _lock_holder_pid(lock: pathlib.Path) -> int | None:
+def _lock_holder(lock: pathlib.Path) -> tuple[int | None, str | None]:
     """The ``pid`` a Hermes ``gateway.lock`` record names (``gateway/runtime_ownership.py``
-    writes ``{"pid": ..., "hermes_home": ..., ...}``, older ones a bare PID); ``None`` when unreadable."""
+    writes ``{"pid": ..., "hermes_home": ..., ...}``, older ones a bare PID), ``None`` when
+    unreadable; and the record's maintenance ``purpose``, ``None`` when it has none. Hermes marks a
+    short maintenance reservation (``exclusive_maintenance``) with a ``purpose``, and such a holder
+    is never a gateway (``live_runtime_owner``)."""
     try:
         raw = lock.read_text(encoding="utf-8").strip()
         record = json.loads(raw) if raw else None
     except (OSError, ValueError):
-        return None
+        return None, None
     if isinstance(record, int) and not isinstance(record, bool):
-        return record
-    pid = record.get("pid") if isinstance(record, dict) else None
-    return pid if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0 else None
+        return (record if record > 0 else None), None
+    if not isinstance(record, dict):
+        return None, None
+    pid, purpose = record.get("pid"), record.get("purpose")
+    return (pid if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0 else None,
+            str(purpose) if purpose else None)
 
 
 def profile_gateway_runs(home: pathlib.Path, root: pathlib.Path) -> tuple[bool | None, str]:
@@ -188,7 +194,10 @@ def profile_gateway_runs(home: pathlib.Path, root: pathlib.Path) -> tuple[bool |
     gateway multiplexing the profile; one held by any other PID is the profile's own gateway.
     The host's PID is trusted only while the host's lock is itself held: a stale record left by a
     host gateway that has stopped may name a PID the system has since given to the profile's own
-    gateway. Never waits (``util.flock_held``)."""
+    gateway. A lock held for maintenance (a ``purpose`` in its record, as Hermes's
+    ``live_runtime_owner`` reads it) is no gateway, and does not say which gateway serves the
+    profile once it ends; nor does a host lock held for maintenance, so both give ``None`` (#1988).
+    Never waits (``util.flock_held``)."""
     lock = home / "gateway.lock"
     try:
         held = flock_held(lock)
@@ -198,9 +207,11 @@ def profile_gateway_runs(home: pathlib.Path, root: pathlib.Path) -> tuple[bool |
         return None, f"cannot probe the flock on {lock}"
     if not held:
         return False, f"nobody holds {lock}"
-    pid = _lock_holder_pid(lock)
+    pid, purpose = _lock_holder(lock)
     if pid is None:
         return None, f"{lock} is held but names no PID"
+    if purpose:            # maintenance, not a gateway: who serves the profile after it is unknown
+        return None, f"{lock} is held by pid {pid} for maintenance ({purpose}), not by a gateway"
     host_lock = root / "gateway.lock"
     try:
         host_held = flock_held(host_lock)
@@ -211,7 +222,10 @@ def profile_gateway_runs(home: pathlib.Path, root: pathlib.Path) -> tuple[bool |
                       "probed to tell it apart")
     if not host_held:      # a stale host record: its PID proves nothing (#1988)
         return True, f"{lock} is held by pid {pid}, and nobody holds {host_lock}"
-    host_pid = _lock_holder_pid(host_lock)
+    host_pid, host_purpose = _lock_holder(host_lock)
+    if host_purpose:       # its PID is a maintenance holder's, not the host gateway's
+        return None, (f"{lock} is held by pid {pid}, and {host_lock} is held for maintenance "
+                      f"({host_purpose}), so it cannot be told apart")
     if host_pid == pid:
         return False, f"{lock} is held by the host gateway (pid {pid})"
     if host_pid is None and host_lock.exists():

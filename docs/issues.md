@@ -407,7 +407,9 @@ minute) can therefore lose triage turns. Two things cover it:
   nothing, and the profile's gateway is then judged as running. When the profile's lock is held
   but cannot be told apart from the host's (no PID in it or in the host's, or a lock that cannot
   be probed), the profile's gateway is still judged and its label says it cannot tell whether it
-  runs; that note stays in the result even when another gateway's limit cannot be read.
+  runs; that note stays in the result even when another gateway's limit cannot be read. A lock
+  held for Hermes maintenance (a `purpose` in its record) is not a gateway, so it is treated the
+  same way: cannot tell, and both the profile's and the host's gateway are judged.
 
 A dropped review or fix wake (a burst of PR events) has no such backstop yet: only the doctor
 warning covers it.

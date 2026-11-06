@@ -189,6 +189,37 @@ class ProfileGatewayNotRunning(unittest.TestCase):
         self.assertIn("profile vex's own gateway (cannot tell whether it runs:", check.detail)
         self.assertIn("names no PID", check.detail)
 
+    def test_a_profile_lock_held_for_maintenance_is_not_a_running_gateway(self):
+        """#1988 F4: Hermes holds the profile's lock for a short maintenance reservation (a
+        ``purpose`` in the record, another PID). That is no gateway: the host, at 30/min, may
+        serve the profile once it ends, so it stays judged and the check is not VERIFIED."""
+        vex = self.home / "profiles" / "vex"
+        self.config_at(self.home, {"platforms": {"webhook": {"extra": {"rate_limit": 30}}}})
+        self.config_at(vex, {"platforms": {"webhook": {"extra": {"rate_limit": 120}}}})
+        self.hold(self.home, {"pid": 4242})
+        self.hold(vex, {"pid": 202, "purpose": "browse-reconcile"})
+        self.assertIs(gate_failures.profile_gateway_runs(vex, self.home)[0], None)
+        check = doctor.check_gateway_rate_limit(self.loop)
+        self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
+        self.assertNotIn("(running)", check.detail)
+        self.assertIn("profile vex's own gateway (cannot tell whether it runs:", check.detail)
+        self.assertIn("for maintenance (browse-reconcile)", check.detail)
+        self.assertIn("host gateway multiplexing profile vex: 30/min", check.detail)
+        self.assertIn(f"in {self.home / 'config.yaml'}", check.fix)
+
+    def test_a_host_lock_held_for_maintenance_does_not_vouch_for_the_profile_lock(self):
+        """#1988 F4: one maintenance reservation holding both locks under one PID is not the
+        host gateway multiplexing the profile; whether the profile's gateway runs is unknown."""
+        vex = self.home / "profiles" / "vex"
+        self.hold(self.home, {"pid": 202, "purpose": "browse-reconcile"})
+        self.hold(vex, {"pid": 202})
+        runs, why = gate_failures.profile_gateway_runs(vex, self.home)
+        self.assertIsNone(runs, why)
+        self.assertIn("held for maintenance (browse-reconcile)", why)
+        check = doctor.check_gateway_rate_limit(self.loop)
+        self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
+        self.assertIn("profile vex's own gateway (cannot tell whether it runs:", check.detail)
+
     @staticmethod
     def config_at(home: pathlib.Path, data) -> None:
         (home / "config.yaml").write_text(json.dumps(data))   # JSON is valid YAML
