@@ -585,6 +585,37 @@ class Pending(Base):
         self.assertIn("the breach was stale: nothing parked", err)
         self.assertNotIn("handed to adjudication", err)
 
+    def reviewer_cap_gate(self, breach_outcome):
+        """Drive the reviewer gate on a review request with the cap spent; (stderr, breach)."""
+        payload = {"action": "review_requested", "number": 7, "pull_request": fg.LIVE,
+                   "repository": {"full_name": fg.REPO}, "sender": {"login": "fixer"},
+                   "requested_reviewer": {"login": "reviewer"}}
+        reviews = [verdict(rid, head=OTHER) for rid in range(1, self.loop["cap"] + 1)]
+        with mock.patch.object(gate_reviewer.sys, "stdin", io.StringIO(json.dumps(payload))), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as err, \
+                mock.patch.object(gate_reviewer.gh, "pr", return_value=fg.LIVE), \
+                mock.patch.object(gate_reviewer.gate, "fetch_reviews", return_value=reviews), \
+                mock.patch.object(gate_reviewer.gate, "block_pr_agent") as block, \
+                mock.patch.object(gate, "breach", return_value=breach_outcome) as breach, \
+                mock.patch.object(gate_reviewer.observer, "notify"):
+            with self.assertRaises(SystemExit):
+                gate_reviewer.main()
+        block.assert_not_called()
+        return err.getvalue(), breach
+
+    def test_a_stale_reviewer_cap_breach_does_not_claim_a_handover(self):
+        # #1273: the reviewer gate's cap breach parked nothing, so it must not say it handed over.
+        err, breach = self.reviewer_cap_gate("stale")
+        breach.assert_called_once()
+        self.assertIn("the breach was stale: nothing parked", err)
+        self.assertNotIn("handed to adjudication", err)
+        for outcome in gate.BREACH_PARKED:
+            with self.subTest(outcome=outcome):
+                err, _ = self.reviewer_cap_gate(outcome)
+                self.assertIn("handed to adjudication", err)
+                self.assertNotIn("nothing parked", err)
+
     def test_explain_shows_it_beside_an_older_marker(self):
         # #1264: a marker from a ruled or superseded head no longer hides the pending request.
         self.st.breach.parent.mkdir(parents=True, exist_ok=True)

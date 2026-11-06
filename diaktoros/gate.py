@@ -1209,6 +1209,11 @@ def breach_authors(loop: dict, escalated: dict | None) -> set[str]:
             else set(loop["fixers"]))
 
 
+# The ``breach`` outcomes that leave the head parked for a ruling; ``stale`` (the head moved
+# under the breach lock) parks nothing, so a gate must not log a handover for it (#1273).
+BREACH_PARKED = ("new", "retry", "already")
+
+
 def breach(loop: dict, st: state_mod.LoopState, number: int, head: str, rounds: int,
            reason: str, *, escalated: dict | None = None) -> str:
     """Park the PR at ``head`` for a ruling and wake the adjudicator; the marker's outcome.
