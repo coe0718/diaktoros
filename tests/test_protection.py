@@ -200,6 +200,24 @@ class Doctor(Fake):
         self.rules, self.classic = None, {"required_status_checks": {"contexts": ["tests"]}}
         self.assertEqual(self.check(pat_loop()).status, doctor.UNKNOWN)   # the other half
 
+    def test_a_classic_check_listed_only_under_checks_counts_as_another_check(self):
+        # #1950 review: classic protection may list a check only in `checks` (with its app_id),
+        # not in `contexts`; that is another required check all the same.
+        self.rules = None                                     # rulesets unread
+        self.classic = {"required_status_checks": {"contexts": [],
+                                                   "checks": [{"context": "tests", "app_id": 7}]}}
+        self.assertTrue(protection.read(pat_loop()).other_checks)
+        c = self.check(pat_loop())
+        self.assertEqual(c.status, doctor.UNKNOWN)
+        self.assertIn("requires other status checks", c.detail)
+        # The merge check itself, listed only under `checks`, is not "another" check.
+        self.classic = {"required_status_checks": {
+            "contexts": [], "checks": [{"context": ci.MERGE_CHECK, "app_id": 7}]}}
+        found = protection.read(pat_loop())
+        self.assertFalse(found.other_checks)
+        self.assertEqual(found.sources, [7])
+        self.assertNotIn("requires other status checks", self.check(pat_loop()).detail)
+
     def test_an_unread_half_never_claims_the_base_does_not_require_it(self):
         # #1240: rulesets unread, classic 404.
         self.rules, self.classic = None, None
