@@ -351,6 +351,27 @@ class Ledger(unittest.TestCase):
         self.assertEqual(none["shadow_found"], {})
         self.assertNotIn("shadow-found issues", stats.report_text(none))
 
+    def test_shadow_found_pr_reads_are_bounded_and_marked_partial(self):
+        # The shadow-found count reads its fix PRs under the same FIX_READS_MAX cap as the
+        # issue fixes: past it a PR is left unread, the count says partial, and the text says so.
+        for n in range(3):
+            self.shadow_issue(20 + n, "m-a", 520 + n, "posted", NOW - 5000 + n)
+            self.proposal(520 + n, "pr", 620 + n, NOW - 1000 + n)
+        read = []
+
+        def pr_state(number):
+            read.append(number)
+            return "merged"
+        with mock.patch.object(stats, "FIX_READS_MAX", 2):
+            found = stats.shadow_found(self.db, REPO, NOW - 7 * DAY, NOW, pr_state)
+            self.assertEqual(sorted(read), [620, 621])
+            self.assertEqual((found["filed"], found["fixed"], found["partial"]), (3, 2, True))
+            data = stats.report({"repo": REPO, "id": "w"}, self.db, NOW - 7 * DAY, NOW,
+                                breaches={}, pr_state=pr_state)
+        self.assertEqual(data["shadow_found"], found)
+        self.assertIn("shadow-found issues: 3 filed, 2 later fixed · m-a 3 filed, 2 fixed "
+                      "(some PRs not read)", stats.report_text(data))
+
     def reviewed(self, pr, head, model):
         run_id = self.turn(pr, "reviewer", NOW - 5000)
         with ledger.connect(self.db) as con:
