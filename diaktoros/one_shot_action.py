@@ -24,7 +24,7 @@ import time
 from types import SimpleNamespace
 from typing import cast
 
-from . import config, gate, gh, review_asks, run_supervisor, state as state_mod, transition
+from . import cancel_action, config, gate, gh, review_asks, run_supervisor, state as state_mod, transition
 from .run_supervisor import views
 from .ledger import read_only
 from .util import logged, now_iso
@@ -33,7 +33,9 @@ _LOCK = threading.RLock()
 _SECRET = secrets.token_bytes(32)
 _ACTIONS = ("review", "escalate", "drain", "cancel")
 # The seats a confirmed cancel may name (#1148); the other actions take reviewer or fixer only.
-_CANCEL_SEATS = ("reviewer", "fixer", "adjudicator", "triage", "issue_fixer", "shadow")
+# The cancel command's own list, never a copy: the Desktop route's shape check reads this same
+# constant, so the route and the plan cannot disagree about a seat (#1371).
+CANCEL_SEATS = cancel_action.SEATS
 
 
 def _identity(loop, action, pr, seat, snapshot):
@@ -75,7 +77,7 @@ def plan(loop, action, pr=None, seat=None):
     A host restart invalidates outstanding confirmations. CLI-only grant, reason and
     whole-seat drain semantics are intentionally not expanded into Desktop authority.
     """
-    seats = _CANCEL_SEATS if action == "cancel" else ("reviewer", "fixer")
+    seats = CANCEL_SEATS if action == "cancel" else ("reviewer", "fixer")
     out = {"action": action if action in _ACTIONS else "unknown", "pr": None,
            "seat": seat if seat in seats else None, "eligible": False,
            "head": "", "reason": "invalid action target", "confirmation": ""}
@@ -143,7 +145,7 @@ def _cancel_plan(loop, pr, seat, out):
     """The confirmed cancel's offer: the exact runs it would stop, bound into the confirmation.
     A run that starts, ends or appears after the preview makes the confirmation stale."""
     from . import cancel_action
-    if type(pr) is not int or pr <= 0 or (seat is not None and seat not in _CANCEL_SEATS):
+    if type(pr) is not int or pr <= 0 or (seat is not None and seat not in CANCEL_SEATS):
         return out
     out["pr"] = pr
     try:
@@ -185,6 +187,11 @@ def _cancel_perform(loop, pr, seat, proposal):
                        head=head)
     if all(state == "cancelled" for state in states):
         return _result("verified", "cancelled; only a retry re-arms them", ok=True, head=head)
+    if "uncertain" in states:
+        # Quarantined, not stopping: it may already have written, so it is never replayed (#1376).
+        also = "; stop requested for a running turn" if "stopping" in states else ""
+        return _result("unknown", "stopped, but it may have written; inspect and reconcile" + also,
+                       head=head)
     return _result("partial", "stop requested; the worker stops the running turn", head=head)
 
 
@@ -469,7 +476,7 @@ def _reconsider_refusal(loop, st, number, pr, head, reason) -> str:
                 "--reconsider) asks for one")
     if _reviewer_runs(loop["repo"], number, head, RECONSIDER_KEY):
         return "this head was already reconsidered (one per head) — a new head gets its own review"
-    return ""
+    return review_asks.reconsider_cap_refusal(loop, st, number, pr, head, reviews)
 
 
 def _reviewer_runs(repo: str, number: int, head: str, turn_key: str | None = None) -> int:

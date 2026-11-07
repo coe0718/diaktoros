@@ -74,6 +74,22 @@ class Boundary(unittest.TestCase):
                     desktop_api.action_view('one', action, pr, seat)
         plan.assert_not_called()
 
+    def test_cancel_route_and_plan_share_one_seat_list(self):
+        """The route's shape check reads the list the plan enforces (#1371): a seat added to or
+        dropped from it is accepted or refused by both, never by one alone."""
+        from diaktoros import cancel_action
+        self.assertIs(actions.CANCEL_SEATS, cancel_action.SEATS)
+        offer = dict(action='cancel', pr=7, seat='newseat', eligible=False, head='',
+                     reason='nothing open to cancel', confirmation='')
+        with mock.patch.object(actions, 'CANCEL_SEATS', actions.CANCEL_SEATS + ('newseat',)), \
+                mock.patch.object(actions, 'plan', return_value=offer) as plan:
+            desktop_api.action_view('one', 'cancel', 7, 'newseat')
+        plan.assert_called_once_with(LOOP, 'cancel', pr=7, seat='newseat')
+        with mock.patch.object(actions, 'CANCEL_SEATS', ('reviewer',)), \
+                mock.patch.object(actions, 'plan') as plan, self.assertRaises(desktop_api.BadRequest):
+            desktop_api.action_view('one', 'cancel', 7, 'fixer')
+        plan.assert_not_called()
+
     def test_malformed_confirmation_is_not_normalized(self):
         with mock.patch.object(actions, 'confirmed_perform') as perform:
             for token in (None, '', ' ' + TOKEN, TOKEN.upper(), 'c' * 63, 12):

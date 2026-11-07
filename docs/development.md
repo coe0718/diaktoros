@@ -47,6 +47,12 @@ because an agent reads them too. That's not a reason to delete them: shrink the 
 
 `python3 tests/file_sizes.py` on its own lists anything over its limit.
 
+`python3 tests/file_sizes.py --snapshot` is not the routine command: it writes a first baseline
+from today's sizes (#1349), so it can add and raise entries, loosening the ratchet. Once
+`tests/file_sizes_baseline.json` exists it refuses and changes nothing; `--snapshot --force`
+rewrites it anyway. That is a one-shot, reviewed change (re-founding the baseline), never a way to
+pass the check: to follow a shrink, use `--write`.
+
 ## Offline test lanes
 
 “Offline” here means no live GitHub/model service or real credential is required during the test run. It does not mean fixture tests create no sockets/processes: local HTTP servers, Unix sockets, SQLite files and disposable Git repositories are deliberately exercised. Installing Python, Git, bubblewrap, Hermes dependencies or Rust can itself require network access beforehand.

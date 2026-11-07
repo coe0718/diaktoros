@@ -98,6 +98,50 @@ class Rules(unittest.TestCase):
         self.assertEqual(out, {"files": {"big.py": 1990}, "functions": {}})
 
 
+class Snapshot(unittest.TestCase):
+    """#1388: --snapshot can add and raise entries, so it refuses over an existing baseline."""
+    MEASURED = ({"big.py": 2100, "new.py": fs.FILE_MAX + 1}, {"big.py::f": 130})
+
+    def run_main(self, argv, baseline):
+        import contextlib
+        import io
+        from unittest import mock
+        real_write = fs.write
+        # write() binds its default path at definition: redirect it too, so no run of main()
+        # (with or without the fix) can touch the real baseline.
+        with mock.patch.object(fs, "measure", return_value=self.MEASURED), \
+                mock.patch.object(fs, "BASELINE", baseline), \
+                mock.patch.object(fs, "write", lambda data, path=None: real_write(data, baseline)), \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = fs.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_snapshot_refuses_to_overwrite_an_existing_baseline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = pathlib.Path(tmp) / "file_sizes_baseline.json"
+            fs.write(Rules.BASE, baseline)
+            before = baseline.read_text()
+            code, _, err = self.run_main(["--snapshot"], baseline)
+            self.assertEqual(code, 2)
+            self.assertIn("--force", err)
+            self.assertIn("--write", err)
+            self.assertEqual(baseline.read_text(), before)
+
+    def test_snapshot_force_rewrites_and_a_first_snapshot_needs_no_force(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = pathlib.Path(tmp) / "file_sizes_baseline.json"
+            code, out, _ = self.run_main(["--snapshot"], baseline)
+            self.assertEqual(code, 0)
+            self.assertIn("raise", out)
+            expected = fs.snapshot(*self.MEASURED)
+            self.assertEqual(fs.load_baseline(baseline), expected)
+            fs.write(Rules.BASE, baseline)
+            code, _, _ = self.run_main(["--snapshot", "--force"], baseline)
+            self.assertEqual(code, 0)
+            self.assertEqual(fs.load_baseline(baseline), expected)
+
+
 class Measuring(unittest.TestCase):
     def test_functions_are_named_by_qualified_name_without_decorators(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -130,6 +174,22 @@ class Measuring(unittest.TestCase):
         # From the def line on: the decorator is not part of the function's size.
         self.assertEqual(functions["diaktoros/m.py::top"],
                          fs.size("def top():\n    def inner():\n        return 1\n    return inner"))
+
+    def test_a_line_break_only_splitlines_knows_does_not_shift_later_functions(self):
+        # #1443: \f, \v, \x85, U+2028 and the like are line breaks to str.splitlines() but not
+        # to ast; one in an earlier string must not shift a later function's slice.
+        g = ("def g():\n"
+             + "".join(f"    x{i} = {i}\n" for i in range(6))
+             + "    return x0 + x1 + x2 + x3 + x4 + x5 + " + "z" * 120 + "\n")
+        for char in ("\x0c", "\x0b", "\x1c", "\x85", "\u2028", "\u2029"):
+            with self.subTest(char=repr(char)), tempfile.TemporaryDirectory() as tmp:
+                root = pathlib.Path(tmp)
+                (root / "diaktoros").mkdir()
+                (root / "scripts").mkdir()
+                source = f'def f():\n    """page break:{char} inside a docstring"""\n    return 1\n\n\n' + g
+                (root / "diaktoros" / "m.py").write_text(source, encoding="utf-8")
+                _, functions = fs.measure(root)
+                self.assertEqual(functions["diaktoros/m.py::g"], fs.size(g))
 
     def test_layout_never_moves_a_size_and_text_always_does(self):
         # The reason the ratchet measures characters (#1349): a fix turn once joined lines to

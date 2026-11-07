@@ -101,8 +101,11 @@ def _action_target(loop_id, action, pr, seat):
     if action not in ('review', 'escalate', 'drain', 'cancel') or not isinstance(action, str):
         raise BadRequest('Action must be review, escalate, drain or cancel.')
     if action == 'cancel':
-        # Any seat, or none for every open run at the PR's head (#1148).
-        if type(pr) is not int or pr <= 0 or (seat is not None and seat not in retry_action.SEATS):
+        # Any seat, or none for every open run at the PR's head (#1148). The seat list is the one
+        # the shared plan enforces, so the route never accepts what the plan refuses (#1371).
+        from . import one_shot_action
+        if type(pr) is not int or pr <= 0 or (seat is not None
+                                              and seat not in one_shot_action.CANCEL_SEATS):
             raise BadRequest('Cancel requires a positive PR number and, optionally, a seat.')
     elif action == 'drain':
         if pr is not None or seat not in ('reviewer', 'fixer'):

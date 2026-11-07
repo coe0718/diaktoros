@@ -215,6 +215,40 @@ class Reconsider(Harness):
         self.assertIn("has no reviewer's verdict yet", result["lines"][0])
         self.assertEqual(self.keys, [])
 
+    def test_a_reconsider_at_the_spent_verdict_cap_is_refused_not_escalated(self):
+        # #1453: a head at the cap with an approval (a cap lowered after it). The gate's cap
+        # branch would park the PR for adjudication; a reconsider must refuse before it.
+        from diaktoros import state as state_mod
+        pr = approved()
+        pr["reviews"] = [t.review(t.REVIEWER, head=t.HEAD_A, rid=20 + i)
+                         for i in range(6)] + pr["reviews"]
+        t.reset(prs={"7": pr})
+        self.assertGreaterEqual(6, self.loop()["cap"])
+        result = self.reconsider()
+        self.assertEqual(result["code"], 1, result["lines"])
+        self.assertIn("the verdict cap is reached", result["lines"][0])
+        self.assertNotIn("adjudication —", "\n".join(result["lines"]))
+        st = state_mod.state_for(self.loop())
+        self.assertFalse(st.breach_get(7), "a reconsider must never write a breach marker")
+        self.assertIsNone(st.reconsider_get(7, t.HEAD_A))
+        self.assertEqual(self.keys, [])
+
+    def test_a_reconsider_at_a_review_only_cap_is_refused(self):
+        # #1453: the same rule for a review-only PR's own cap (gate.review_cap_hit).
+        import json
+        from diaktoros import state as state_mod
+        pr = t.pr(7, author="owner")
+        pr["reviews"] = [t.review(t.REVIEWER, head=t.HEAD_A, rid=20 + i) for i in range(6)]
+        pr["reviews"].append(t.review(t.REVIEWER, "APPROVED", head=t.HEAD_A, rid=11))
+        t.reset(prs={"7": pr})
+        path = config.config_dir() / "widgets.json"
+        path.write_text(json.dumps(dict(json.loads(path.read_text()), review_only=["owner"])))
+        result = self.reconsider()
+        self.assertEqual(result["code"], 1, result["lines"])
+        self.assertIn("the review cap is reached (6 verdicts)", result["lines"][0])
+        self.assertIsNone(state_mod.state_for(self.loop()).reconsider_get(7, t.HEAD_A))
+        self.assertEqual(self.keys, [])
+
     def test_a_reconsider_held_for_a_missing_runtime_says_it_was_not_queued(self):
         # #1369: with no worker runtime the gate holds the turn in the seat queue, which keeps
         # no turn key, and nothing replays a reconsider: the command must not say "queued,

@@ -17,6 +17,9 @@ physical lines until a fix turn joined lines to pass the check, which made the c
 * When a baselined file (over the ceiling) or function shrinks, the baseline is lowered with it,
   and an entry that is back under the cap is removed: ``python3 tests/file_sizes.py --write``
   does both. It never raises an entry or adds one: those are a reviewed edit of the JSON.
+* ``--snapshot`` writes a first baseline from today's sizes, and so can add and raise entries.
+  Once a baseline exists it refuses without ``--force`` (#1388): a forced snapshot loosens the
+  ratchet and is a reviewed change, never routine.
 
 Covers ``diaktoros/`` and ``scripts/`` (not ``tests/``). A function is named by its file and its
 qualified name (``Class.method``, ``outer.inner``), and measured from its ``def`` line to its
@@ -60,7 +63,10 @@ def measure(root: Path = ROOT) -> tuple[dict[str, int], dict[str, int]]:
         rel = path.relative_to(root).as_posix()
         text = path.read_text(encoding="utf-8")
         files[rel] = size(text)
-        lines = text.splitlines()
+        # Real newlines only, as ast numbers lines: ``splitlines()`` also breaks on \f, \v,
+        # \x1c-\x1e, \x85, U+2028 and U+2029, which would shift every later slice (#1443).
+        # (``read_text`` has already turned \r\n and \r into \n.)
+        lines = text.split("\n")
         seen: dict[str, int] = {}
 
         def visit(node, prefix=""):
@@ -148,17 +154,29 @@ def write(data: dict, path: Path = BASELINE) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
+def _snapshot(files: dict, functions: dict, *, force: bool) -> int:
+    """``--snapshot``: write a first baseline from today's sizes (#1349). Unlike ``--write`` it
+    can add and raise entries, so it loosens the ratchet; once a baseline exists it refuses
+    without ``--force`` (#1388), and a forced snapshot is a reviewed change, never routine."""
+    if BASELINE.exists() and not force:
+        print(f"{BASELINE.name} already exists: --snapshot would add and raise entries, "
+              "loosening the ratchet. To lower it, run python3 tests/file_sizes.py --write; "
+              "to rewrite it anyway (a reviewed change), add --force", file=sys.stderr)
+        return 2
+    write(snapshot(files, functions), BASELINE)
+    print(f"{BASELINE.name}: written from today's sizes — may add and raise entries; "
+          "review the diff")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     files, functions = measure()
     if argv == ["--write"]:
         write(tightened(files, functions, load_baseline()))
         print(f"{BASELINE.name}: lowered and cleared; nothing raised or added")
         return 0
-    if argv == ["--snapshot"]:
-        # Only for creating the first baseline (#1349); a reviewed change, never routine.
-        write(snapshot(files, functions))
-        print(f"{BASELINE.name}: written from today's sizes")
-        return 0
+    if argv in (["--snapshot"], ["--snapshot", "--force"]):
+        return _snapshot(files, functions, force="--force" in argv)
     found = problems(files, functions, load_baseline())
     print("\n".join(found) if found else "every file and function is within the ratchet")
     return 1 if found else 0

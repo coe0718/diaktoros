@@ -638,6 +638,7 @@ def _stall_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, review
     # (parked_kind), and it is never "no escalation marker" while it is young (#98).
     parked = parked_kind(loop, marker, number, head, c.marker_grace) if holds else None
     # A review-only PR has no fixer and no adjudication: changes requested is back with its author (#191).
+    # Its verdicts still have a cap (review_only_cap): at it, the next move is a maintainer's.
     review_only = author in config.review_only(loop)
     if parked is not None:
         kind = parked

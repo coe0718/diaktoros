@@ -94,6 +94,28 @@ class IsolatedConcurrency(unittest.TestCase):
         for row in rows:
             self.assertIn("runtime file", row)
 
+    def test_doctor_clone_check_names_the_runtime_file_exception(self):
+        """doctor's clone check says no clone is needed above 1 once the runtime file exists (#1412)."""
+        from diaktoros import doctor
+        loop = config.normalize(loop_with(1))
+        without = doctor.check_clone(loop)
+        self.assertEqual(without.status, doctor.VERIFIED)
+        self.assertIn("checkout they find", without.detail)
+        self.write_runtime()
+        with_runtime = doctor.check_clone(loop)
+        self.assertEqual(with_runtime.status, doctor.VERIFIED)
+        self.assertIn("exact-head export", with_runtime.detail)
+        self.assertIn("needs no clone", with_runtime.detail)
+
+    def test_show_clone_note_names_the_runtime_file_exception(self):
+        """`show`'s unset-clone note agrees with normalize: the runtime file lifts the need (#1412)."""
+        from diaktoros import show
+        rows = [r for r in show._rows(config.normalize(loop_with(1))) if r.name == "clone"]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("unless the runtime file exists", rows[0].note)
+        cloned = config.normalize(loop_with(1, clone=str(self.home / "clone")))
+        self.assertEqual([r.note for r in show._rows(cloned) if r.name == "clone"], [""])
+
     def test_shared_checkout_path_still_queues_an_unisolatable_parallel_run(self):
         """take_seat (the legacy shared-clone path) never starts an unisolated run above 1."""
         self.write_runtime()

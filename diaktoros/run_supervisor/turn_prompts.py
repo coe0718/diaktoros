@@ -18,7 +18,8 @@ def conflict_prompt(loop: dict, row, merged: dict) -> str:
                                    url=gh.pr_url(loop, row['pr']), head=row['head'],
                                    base=loop['base'], base_short=base_sha[:7])
     files = "\n".join(f"- `{path}`" for path in merged['conflicted'])
-    return (text + prompts.fixer_check_section(loop) + prompts.registry_section(None)
+    return (text + prompts.fixer_check_section(loop, summary=True)
+            + prompts.registry_section(None)
             + "\n\n" + run_supervisor.CONFLICT_SIDES_NOTE + "\n\n"
             + files + "\n\n" + merged.get('sides', ''))
 
@@ -380,7 +381,8 @@ LABEL_MEANING_MAX = 200
 
 def label_meanings(loop: dict, names) -> str:
     """What each triage label means, from its GitHub description (written by the repository's
-    maintainers): one bounded line per label in ``names``. A label with no description, or a
+    maintainers): one bounded line per label in ``names``. A label with no description, a label
+    that is not on the repository at all (the fact ``doctor``'s labels check reports, #1463), or a
     label list that cannot be read, says so; triage then goes by the names alone."""
     from .. import gh
     # Every page (#1411 review): a later page's label is never reported as undescribed, and an
@@ -397,7 +399,11 @@ def label_meanings(loop: dict, names) -> str:
                  for item in found if isinstance(item, dict)}
     lines = []
     for name in names:
-        meaning = described.get(str(name).casefold(), '')[:LABEL_MEANING_MAX]
+        key = str(name).casefold()
+        if key not in described:   # missing on the repo, not undescribed (#1463)
+            lines.append(f"- `{name}`: (not on this repository)")
+            continue
+        meaning = described[key][:LABEL_MEANING_MAX]
         lines.append(f"- `{name}`: {meaning or '(no description)'}")
     return head + '\n'.join(lines)
 
