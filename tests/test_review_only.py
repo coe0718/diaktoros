@@ -104,6 +104,29 @@ class DocsMatchTheCap(unittest.TestCase):
             self.assertNotIn("no cap", rows[0], name)
             self.assertIn("review_only_cap", rows[0], name)
 
+    # The code comments that state the same rule (#1464): where each starts, and the file.
+    COMMENTS = (("scripts/gate_fixer.py", "the fixer never touches a review-only author's PR"),
+                ("scripts/gate_reviewer.py", "spends no fixer rounds and is never adjudicated"),
+                ("scripts/watchdog.py", "A review-only PR has no fixer and no adjudication"))
+
+    def test_review_only_code_comments_name_the_cap(self):
+        root = pathlib.Path(__file__).resolve().parent.parent
+        blocks = {"diaktoros/gate.py: review_cap_hit": gate.review_cap_hit.__doc__ or ""}
+        for path, anchor in self.COMMENTS:
+            lines = (root / path).read_text().splitlines()
+            starts = [i for i, line in enumerate(lines) if anchor in line]
+            self.assertEqual(len(starts), 1, path)
+            # The comment lines of the block: the anchor's and those within the next few lines
+            # (a block may be split by the line of code it explains, as in gate_reviewer).
+            window = lines[starts[0]:starts[0] + 6]
+            blocks[path] = " ".join(line.strip() for line in window
+                                    if line.strip().startswith("#"))
+        for where, text in blocks.items():
+            with self.subTest(where):
+                self.assertNotIn("no verdict cap", text)
+                self.assertNotIn("no cap", text)
+                self.assertIn("review_only_cap", text)
+
 
 class Gates(fg.Base):
     """Both gates end to end, with GitHub, the worker spawn and the observer mocked."""
