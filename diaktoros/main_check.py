@@ -109,11 +109,17 @@ def sweep(loop: dict, st, log=lambda _msg: None) -> bool:
     path = st.dir / FILE
     memory = st.kv_get(path, {})
     memory = memory if isinstance(memory, dict) else {}
-    if head in (memory.get("notified"), memory.get("green")):
-        return False                                  # this head is already judged
+    if head == memory.get("green"):
+        return False                                  # this head is already judged green
     view = ci.gating(ci.read(loop, head), config.required_checks(loop))
     if view is None:
         return False                                  # unreadable CI is no notice
+    if head == memory.get("notified"):
+        # Said red once; a re-run that turns it green is recorded (#681), so the next red
+        # names the merges since this head, not since an older green one.
+        if view.green:
+            _remember(st, path, "green", head)
+        return False
     if not view.failed:
         if view.green:
             _remember(st, path, "green", head)

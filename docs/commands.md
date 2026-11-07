@@ -526,6 +526,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour) (default: the plugin setting, off) |
 | `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer (default: the plugin setting, off) |
+| `--ci-webhook` | `on` \| `off` |  | act on a finished CI run when GitHub reports it: the fixer's hook also carries check_suite (default: the plugin setting, off) |
 | `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name for a maintainer (default: the plugin setting, off) |
 | `--adjudicator-approves` | `on` \| `off` |  | on an ACCEPT ruling with green checks, approve as the adjudicator login and dismiss the change request it overruled (default: the plugin setting, off) |
 | `--adjudicator-file-issues` | `on` \| `off` |  | file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found (default: the plugin setting, off) |
@@ -641,6 +642,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour) (default off) |
 | `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer, one turn per head; needs unattended fixer pushes (default off) |
+| `--ci-webhook` | `on` \| `off` |  | act on a finished CI run when GitHub reports it: the fixer's hook also carries check_suite (default off) |
 | `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name for a maintainer; needs unattended fixer pushes (default off) |
 | `--adjudicator-approves` | `on` \| `off` |  | on an ACCEPT ruling with green checks, approve as the adjudicator login and dismiss the change request it overruled (default off) |
 | `--adjudicator-file-issues` | `on` \| `off` |  | file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found (default off) |
@@ -756,6 +758,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--review-only-update` | `on` \| `off` |  | push a clean merge of the base into a review-only author's PR branch (same repository only), or stop; turning it on needs --acknowledge-branch-push |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour), or start at once |
 | `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer (needs unattended fixer pushes), or stop |
+| `--ci-webhook` | `on` \| `off` |  | act on a finished CI run when GitHub reports it, not at the next sweep (then `apply --hooks` adds check_suite to the fixer's hook), or stop |
 | `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name (other than their tests and docs) for a maintainer, or stop; needs unattended fixer pushes |
 | `--adjudicator-approves` | `on` \| `off` |  | on an ACCEPT ruling with green checks, approve as the adjudicator login and dismiss the change request it overruled, or stop; needs the adjudicator comment login |
 | `--adjudicator-file-issues` | `on` \| `off` |  | file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found, or stop |
@@ -1473,8 +1476,8 @@ not necessarily failure; exit 0 is not proof every gateway delivery was observed
 
 Shows, or with `--set` writes, the webhook of the GitHub App that delivers an `app-webhook` loop's
 events (#1239): its URL against the App's route (`dk-app-<slug>`), its content type, and the
-events it subscribes to against what the loop needs (`pull_request`, `pull_request_review`, and
-`issues` with triage on).
+events it subscribes to against what the loop needs (`pull_request`, `pull_request_review`,
+`issues` with triage on, and `check_suite` with `ci_webhook` on).
 
 ```bash
 hermes dk app-webhook --loop "<loop-id>"

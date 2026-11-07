@@ -222,7 +222,7 @@ def _setup_setting_argv(args, d: dict, interactive: bool) -> list[str]:
     agents = (args.operator_agent if getattr(args, "operator_agent", None) is not None else
               [name for name in str(d["operator_agents"]).split(",") if name.strip()])
     argv += [f"--operator-agent={name.strip()}" for name in agents]
-    argv += _given(args, ("review_only_update", "fixer_scope_lock", "adjudicator_approves",
+    argv += _given(args, ("review_only_update", "ci_webhook", "fixer_scope_lock", "adjudicator_approves",
                           "adjudicator_file_issues", "change_proof"))
     if getattr(args, "acknowledge_branch_push", False):
         argv.append("--acknowledge-branch-push")
@@ -620,6 +620,8 @@ def _setup_switch_flags(first) -> None:  # noqa: ANN001
             ("--review-after-ci", "start each review after the head's checks finish (up to an "
                                   "hour)", "off"),
             ("--fix-ci", "hand a failed required check on a fixer's PR to the fixer", "off"),
+            ("--ci-webhook", "act on a finished CI run when GitHub reports it: the fixer's hook "
+                             "also carries check_suite", "off"),
             ("--fixer-scope-lock", "hold a fix round that changes files its findings do not name "
                                    "for a maintainer", "off"),
             ("--adjudicator-approves", "on an ACCEPT ruling with green checks, approve as the "

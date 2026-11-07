@@ -41,7 +41,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from diaktoros import conflict_person  # noqa: E402
+from diaktoros import ci_event, conflict_person  # noqa: E402
 from diaktoros import escalate_pending  # noqa: E402
 from diaktoros import merge_check  # noqa: E402
 from diaktoros import push_settle  # noqa: E402
@@ -208,7 +208,7 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
     ``st.watch()`` until the last save. A sweep that finds it held skips the loop (no retry)."""
     lines = [] if lines is None else lines
     hostdirs.ensure(st.dir)
-    fd = os.open(st.dir / "sweep.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    fd = os.open(st.dir / ci_event.SWEEP_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -218,6 +218,10 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
         try:
             return _sweep_loop_locked(loop, st, lines)
         finally:
+            try:                    # #681: suites that finished while this sweep held the lock
+                ci_event.drain(loop, st, log)
+            except Exception as exc:
+                log(f"noted CI suites not acted on: {type(exc).__name__}: {exc}")
             fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
         os.close(fd)

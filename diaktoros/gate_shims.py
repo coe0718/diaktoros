@@ -206,7 +206,8 @@ def contract_drift(loop: dict, role: str, entry: dict) -> list[str]:
     if entry.get("prompt") != route_intent.ROUTE_PROMPT[role]:
         wrong.append("prompt")
     events = entry.get("events")
-    needed = APP_EVENTS if role == "app" else (_GATE_EVENT[role],)
+    needed = (APP_EVENTS if role == "app" else (_GATE_EVENT[role],)) + (
+        (config.CI_EVENT,) if role in ("app", "fixer") and config.ci_webhook(loop) else ())
     if not isinstance(events, list) or any(event not in events for event in needed):
         wrong.append("events")
     if entry.get("deliver_only"):

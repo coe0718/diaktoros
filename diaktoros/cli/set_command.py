@@ -76,14 +76,10 @@ def _flag_changes(args, loop: dict, host: str | None) -> dict:
               "inflight_ttl_min": args.inflight_ttl_min, "host": host,
               "turn_budget_s": getattr(args, "turn_budget", None),
               "attribution": cli_common._attribution_arg(args, None),
-              "review_after_ci": cli_common._on_off(args, "review_after_ci", None),
-              "fix_ci": cli_common._on_off(args, "fix_ci", None),
-              "fixer_scope_lock": cli_common._on_off(args, "fixer_scope_lock", None),
-              "adjudicator_approves": cli_common._on_off(args, "adjudicator_approves", None),
-              "adjudicator_file_issues": cli_common._on_off(args, "adjudicator_file_issues",
-                                                            None),
-              "change_proof": cli_common._on_off(args, "change_proof", None),
-              "review_only_update": cli_common._on_off(args, "review_only_update", None)}
+              **{key: cli_common._on_off(args, key, None) for key in (
+                  "review_after_ci", "fix_ci", "ci_webhook", "fixer_scope_lock",
+                  "adjudicator_approves", "adjudicator_file_issues", "change_proof",
+                  "review_only_update")}}
     if (wanted["review_only_update"] and not loop.get("review_only_update")
             and not getattr(args, "acknowledge_branch_push", False)):
         print(BRANCH_PUSH_REFUSAL)

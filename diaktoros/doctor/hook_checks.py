@@ -323,12 +323,13 @@ def split_route_hooks(loop: dict, listing: list, names, *,
     return own, other
 
 
+def posted_url(hook: dict) -> str:
+    cfg = hook.get("config")
+    return str(cfg.get("url") or "") if isinstance(cfg, dict) else ""
+
+
 def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> doctor.Check:
     event = doctor.GATE_EVENT[seat]
-    def posted_url(hook: dict) -> str:
-        cfg = hook.get("config")
-        return str(cfg.get("url") or "") if isinstance(cfg, dict) else ""
-
     exact = [hook for hook in hooks if same_hook_url(posted_url(hook), url)]
     # A wrong origin/profile/path for the same webhook route is a mismatch (reported with its
     # cause), not an absent hook — "the same route" is the exact segment, never a substring.
@@ -376,6 +377,7 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> docto
                             f"`hermes dk apply --loop {loop['id']}` repoints hook {hook_id} at "
                             "the exact URL (or edit its URL on GitHub to drop the trailing slash)")
     events = [str(item) for item in (match.get("events") or [])]
+    event = next((e for e in config.hook_events(loop, seat) if e not in events), event)
     if event not in events:
         return doctor.Check(f"hook:{name}", doctor.MISMATCH,
                             f"hook {hook_id} subscribes to {events or '(no events)'}, not {event!r}",

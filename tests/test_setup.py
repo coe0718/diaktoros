@@ -252,6 +252,23 @@ class Setup(unittest.TestCase):
         # init's own next steps no longer tell the operator to hand-write the runtime file.
         self.assertNotIn("create the runtime file", out)
 
+    def ci_webhook_install(self, value: str, form: bool):
+        """Review on #1992 (F3): ``setup --ci-webhook`` reaches the loop it writes over the
+        settings form's value, and the fixer's route carries ``check_suite`` exactly when on."""
+        from diaktoros import routes
+        rc, out = self.setup_cli(*self.flags(f"--ci-webhook={value}"),
+                                 settings={"ci_webhook": form})
+        self.assertEqual(rc, 0, out)
+        loop = config.load_id(LOOP_ID)
+        return loop["ci_webhook"], routes.route(loop["seats"]["fixer"]["route"])["events"]
+
+    def test_setup_forwards_ci_webhook_on(self):
+        self.assertEqual(self.ci_webhook_install("on", form=False),
+                         (True, ["pull_request_review", "check_suite"]))
+
+    def test_setup_forwards_ci_webhook_off_over_a_form_that_turns_it_on(self):
+        self.assertEqual(self.ci_webhook_install("off", form=True), (False, ["pull_request_review"]))
+
     def test_a_re_run_reports_and_changes_nothing(self):
         self.assertEqual(self.setup_cli(*self.flags())[0], 0)
         before = (LOOP_FILE.read_bytes(), self.runtime_file.read_bytes(), self.hermes.jobs)

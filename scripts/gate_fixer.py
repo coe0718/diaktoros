@@ -63,9 +63,22 @@ def _take_pending_escalation(loop: dict, st, number: int, pr_head: str, prior: i
             "handed to adjudication instead of a fix", "accepted")
 
 
+def _author(loop: dict, pr: dict) -> str:
+    """The PR's author, lowercased: one whose PRs the loop reviews, or the gate silences."""
+    user = pr.get("user")
+    author = user.get("login") if isinstance(user, dict) else None
+    author = author.lower() if isinstance(author, str) else ""
+    if author not in config.reviewed_authors(loop):
+        silence(f"PR author {author or 'unknown'} is not an authorized fixer or review-only author")
+    return author
+
+
 def main() -> None:
     payload = json.load(sys.stdin)
     loop, st = gate.context(payload)
+    if isinstance(payload.get("check_suite"), dict):   # #681: a finished CI run, on its own path
+        from diaktoros import ci_event
+        ci_event.gate(loop, st, payload)
     pr = gate.pr_of(payload)
     review = payload.get("review")
     if not isinstance(review, dict):
@@ -80,11 +93,7 @@ def main() -> None:
     if gate.reviewer_login(review) not in set(loop["reviewers"]):
         silence(f"verdict author {gate.reviewer_login(review) or 'unknown'} is not a reviewer")
 
-    user = pr.get("user")
-    author = user.get("login") if isinstance(user, dict) else None
-    author = author.lower() if isinstance(author, str) else ""
-    if author not in config.reviewed_authors(loop):
-        silence(f"PR author {author or 'unknown'} is not an authorized fixer or review-only author")
+    author = _author(loop, pr)
     review_only = author in config.review_only(loop)
 
     seat = "fixer"

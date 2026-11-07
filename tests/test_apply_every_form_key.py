@@ -85,6 +85,7 @@ PUSHES = {
     "ingress": "app-webhook",
     "ingress_app": "events-app[bot]",
     "fix_ci": True,
+    "ci_webhook": True,
     "fixer_scope_lock": True,
     "adjudicator_approves": True,
     "adjudicator_file_issues": True,

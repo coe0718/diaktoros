@@ -32,9 +32,13 @@ def _entry(gate: str, payload: dict, decision: str, reason: str) -> dict:
     obj = next((payload[k] for k in ("pull_request", "issue") if isinstance(payload.get(k), dict)), {})
     number = obj.get("number") or payload.get("number")
     head = (obj.get("head") or {}).get("sha") if isinstance(obj.get("head"), dict) else ""
+    suite = payload.get("check_suite")
+    if isinstance(suite, dict):          # #681: a suite names its commit, not one PR
+        head = suite.get("head_sha") or ""
     sender = (payload.get("sender") or {}).get("login") if isinstance(payload.get("sender"), dict) else ""
     event = ("pull_request_review" if isinstance(payload.get("review"), dict)
-             else "issues" if isinstance(payload.get("issue"), dict) else "pull_request")
+             else "issues" if isinstance(payload.get("issue"), dict)
+             else "check_suite" if isinstance(suite, dict) else "pull_request")
     return {"time": util.now_iso(), "gate": _clip(gate, 40), "event": event,
             "action": _clip(payload.get("action"), 40),
             "number": number if type(number) is int else None,

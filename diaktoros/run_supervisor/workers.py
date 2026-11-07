@@ -590,6 +590,22 @@ class WorkerLifecycle:
             con.execute("COMMIT")
         return cancelled
 
+    def release_ci_holds(self, repo: str, pr: int, head: str) -> int:
+        """Make this head's reviewer turns held for CI due now (#681): a finished suite is the
+        read their poll waits for. Only the due time moves; the claim reads CI again and holds
+        a turn whose checks still run. How many rows were released."""
+        with self._connect() as con:
+            return con.execute("UPDATE runs SET retry_at=?, updated=? WHERE repo=? AND pr=? AND "
+                               "head=? AND seat='reviewer' AND state='waiting' AND error LIKE ?",
+                               (time.time(), time.time(), repo, pr, head,
+                                run_supervisor.CI_HOLD + '%')).rowcount
+
+    def has_turn(self, repo: str, pr: int, head: str, seat: str) -> bool:
+        """Whether this head has any ``seat`` turn, in any state."""
+        with self._connect() as con:
+            return con.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
+                               "LIMIT 1", (repo, pr, head, seat)).fetchone() is not None
+
     def linger_for_ci(self, sleep=time.sleep) -> None:
         """After holding a review for CI, or backing a claim off after a failed GitHub read,
         stay (no seat, no turn) until the next read is due, then schedule it: GitHub sends this

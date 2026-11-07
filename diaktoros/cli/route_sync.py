@@ -251,7 +251,7 @@ def _ensure_hooks(loop: dict, token_login: str | None, dry_run: bool,
     Per hook role, hooks are matched by route name and one is kept by #106's ``_keep_one`` (active
     first). A role with none gets one created, paused until ``arm``. The kept hook is repointed at
     the route's exact URL with ``_patch_hook_url`` (full config: the route's secret, the hook's own
-    TLS setting, json), and given the gate's event if it lacks it. Extra hooks are only named. The
+    TLS setting, json), and given any of its events it lacks. Extra hooks are only named. The
     listing is read first and nothing is written if it cannot be trusted; returns an exit code.
     """
     names = cli_common._routes_of(loop)
@@ -260,7 +260,7 @@ def _ensure_hooks(loop: dict, token_login: str | None, dry_run: bool,
         listing = cli_common._hook_listing(loop, token_login)
         plans, missing = [], []
         for seat in config.hook_roles(loop):
-            event = config.HOOK_EVENT[seat]
+            events = config.hook_events(loop, seat)
             name = names.get(seat, "")
             url = routes.url_for(name, host) if name else None
             if not url or not (routes.route(name) or {}).get("secret"):
@@ -275,9 +275,10 @@ def _ensure_hooks(loop: dict, token_login: str | None, dry_run: bool,
             if (not routes.serves_route_url(keep["config"]["url"], url)
                     or keep["config"].get("content_type") != "json"):
                 todo.append("config")
-            if event not in (keep.get("events") or []):
+            events = [e for e in events if e not in (keep.get("events") or [])]
+            if events:
                 todo.append("event")
-            plans.append((seat, event, url, keep, rest, todo))
+            plans.append((seat, events, url, keep, rest, todo))
     except config.ConfigError as exc:
         print(f"refused: repo hooks not reconciled: {exc}")
         print(f"  fix: re-run with --admin-token <login> ({cli_common.hook_write_need(loop, token_login)})")
@@ -288,11 +289,11 @@ def _ensure_hooks(loop: dict, token_login: str | None, dry_run: bool,
     verb = "would " if dry_run else ""
     for seat, url in missing:
         print(f"  hook for {names[seat]}: {verb}create → {url} (paused until `arm`)")
-    for seat, event, url, keep, rest, todo in plans:
+    for seat, events, url, keep, rest, todo in plans:
         if "config" in todo:
             print(f"  hook {keep['id']}: {verb}repoint → {url} (json, secret and TLS kept)")
         if "event" in todo:
-            print(f"  hook {keep['id']}: {verb}add event {event!r}")
+            print(f"  hook {keep['id']}: {verb}add events {events}")
         for hook in rest:
             print(f"  {_redundant_hook_line(loop, hook, keep)}")
     redundant = any(rest for *_ignored, rest, _todo in plans)
@@ -303,24 +304,30 @@ def _ensure_hooks(loop: dict, token_login: str | None, dry_run: bool,
         if missing:
             for line in cli_common._install_hooks(loop, token_login, seats=[seat for seat, _ in missing]):
                 print(f"  {line}")
-        for seat, event, url, keep, rest, todo in plans:
+        for seat, events, url, keep, rest, todo in plans:
             if "config" in todo:
                 cli_common._patch_hook_url(loop, keep["id"], url, token_login,
                                 insecure_ssl=keep["config"].get("insecure_ssl"))
                 print(f"  hook {keep['id']} → {url}")
             if "event" in todo:
-                path = f"/repos/{loop['repo']}/hooks/{keep['id']}"
-                gh.api(loop, path, method="PATCH", body={"add_events": [event]}, login=login)
-                actual = gh.api(loop, path, login=login)
-                if not isinstance(actual, dict) or event not in (actual.get("events") or []):
-                    raise config.ConfigError(f"hook {keep['id']} event {event!r} not confirmed — "
-                                             f"{cli_common.hook_write_need(loop, token_login)}")
-                print(f"  hook {keep['id']} now subscribes to {event!r}")
+                _add_events(loop, keep["id"], events, token_login, login)
+                print(f"  hook {keep['id']} now subscribes to {events}")
     except config.ConfigError as exc:
         print(f"repo hooks NOT fully reconciled: {exc}")
         print(f"  fix: re-run with --admin-token <login> ({cli_common.hook_write_need(loop, token_login)})")
         return 2
     return 1 if redundant else 0
+
+
+def _add_events(loop: dict, hook_id: int, events: list[str], token_login: str | None,
+                login: str | None) -> None:
+    """Add ``events`` to a hook and read it back: a ``ConfigError`` unless all of them are there."""
+    path = f"/repos/{loop['repo']}/hooks/{hook_id}"
+    gh.api(loop, path, method="PATCH", body={"add_events": events}, login=login)
+    actual = gh.api(loop, path, login=login)
+    if not isinstance(actual, dict) or set(events) - set(actual.get("events") or []):
+        raise config.ConfigError(f"hook {hook_id} events {events!r} not confirmed — "
+                                 f"{cli_common.hook_write_need(loop, token_login)}")
 
 
 def _redundant_hook_line(loop: dict, hook: dict, keep: dict) -> str:

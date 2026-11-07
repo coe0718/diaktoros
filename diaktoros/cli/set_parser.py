@@ -64,6 +64,9 @@ def _set_switch_flags(change) -> None:  # noqa: ANN001
                                   "hour), or start at once"),
             ("--fix-ci", "hand a failed required check on a fixer's PR to the fixer (needs "
                          "unattended fixer pushes), or stop"),
+            ("--ci-webhook", "act on a finished CI run when GitHub reports it, not at the next "
+                             "sweep (then `apply --hooks` adds check_suite to the fixer's hook), "
+                             "or stop"),
             ("--fixer-scope-lock", "hold a fix round that changes files its findings do not name "
                                    "(other than their tests and docs) for a maintainer, or stop; "
                                    "needs unattended fixer pushes"),

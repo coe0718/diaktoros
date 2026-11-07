@@ -182,10 +182,11 @@ def check_route(loop: dict, data: dict, seat: str) -> doctor.Check:
     if not isinstance(events, list) or any(not isinstance(event, str) for event in events):
         return doctor.Check(f"route:{name}", doctor.MISMATCH, "events must be a list of event names",
                             _apply_fix(loop, f"rewrite it with the {seat} gate's event"))
-    if doctor.GATE_EVENT[seat] not in events:
+    want = next((event for event in config.hook_events(loop, seat) if event not in events), "")
+    if want:
         return doctor.Check(f"route:{name}", doctor.MISMATCH,
-                            f"events {events or '(none)'} do not include {doctor.GATE_EVENT[seat]!r}",
-                            _apply_fix(loop, f"rewrite it with {doctor.GATE_EVENT[seat]!r}: the gateway only "
+                            f"events {events or '(none)'} do not include {want!r}",
+                            _apply_fix(loop, f"rewrite it with {want!r}: the gateway only "
                                        "routes the events a route subscribes to"))
     host = str(loop.get("host") or "")
     try:
