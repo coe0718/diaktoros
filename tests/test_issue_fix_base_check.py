@@ -56,7 +56,8 @@ class BaseCheck(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", return_value=big), \
                 mock.patch("diaktoros.gh.token", return_value="t"), \
                 mock.patch("diaktoros.config.host_guards.guard_network"), \
-                self.assertRaises(trusted_fetch.FetchDenied):
+                self.assertRaisesRegex(trusted_fetch.FetchDenied,
+                                       "^GitHub response exceeds bounds$"):
             trusted_fetch._base_head(LOOP, "o/r", HEAD, "reader")
 
 
