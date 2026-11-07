@@ -500,6 +500,38 @@ class Cli(Base):
         self.assertEqual(code, 2)
         self.assertIn('not cancelled: run is succeeded', out)
 
+    def test_the_command_waits_for_a_running_turn_and_prints_how_it_ended(self):
+        # #1460: cmd_cancel's bounded wait (cancel_action._final) reads the worker's end back.
+        sup = self.sup()
+        worker = self.running(sup)
+        [pid] = self.launched()
+        code, out = self.run_cli('pr', 1)
+        worker.join(10)
+        self.assertEqual(code, 0)
+        self.assertIn(f'[loop] reviewer #1 @ {HEAD[:7]} cancelled (was running); re-arm it on '
+                      'purpose: hermes dk retry --loop loop --pr 1 --seat reviewer', out)
+        self.assertNotIn('stop requested', out)
+        self.assertEqual(sup.get('d')['state'], 'cancelled')
+        self.assertFalse(alive(pid), 'the turn\'s process was stopped')
+
+    def test_the_wait_is_bounded_when_the_worker_never_stops_the_turn(self):
+        # #1460: a running run with no worker to stop it stays `stopping`; the wait still ends.
+        sup = self.sup()
+        sup.submit('d', REPO, 1, HEAD, 'reviewer')
+        self.set_state('d', 'running')
+        with patch.object(cancel_action, 'STOP_WAIT_S', 1.0):
+            started = time.monotonic()
+            code, out = self.run_cli('pr', 1)
+            elapsed = time.monotonic() - started
+        # It waited (cmd_cancel passes STOP_WAIT_S), and the wait ended at its bound.
+        self.assertGreaterEqual(elapsed, 1.0)
+        self.assertLess(elapsed, 10)
+        self.assertEqual(code, 0)
+        self.assertIn(f'[loop] reviewer #1 @ {HEAD[:7]} stop requested (was running): the worker '
+                      'has not stopped the turn yet; `hermes dk explain --loop loop --pr 1` '
+                      'follows it', out)
+        self.assertEqual(sup.get('d')['state'], 'running')
+
     def test_the_parser_has_cancel(self):
         import argparse
         from diaktoros.cli import operations
