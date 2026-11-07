@@ -148,14 +148,25 @@ _GATE_CALL: contextvars.ContextVar = contextvars.ContextVar("diaktoros_gate_call
 def gate_call():
     """Run a gate's code as a call (#1046): within it, ``log`` lines are collected (not written
     to stderr), ``silence`` prints nothing, and ``set_decision_recorder`` binds only this call.
-    Yields ``{"logs": [...], "recorder": None}``. Context-local, so concurrent calls on other
-    threads each have their own."""
-    call = {"logs": [], "recorder": None}
+    Yields ``{"logs": [...], "recorder": None, "holds": [...]}``. Context-local, so concurrent
+    calls on other threads each have their own."""
+    call = {"logs": [], "recorder": None, "holds": []}
     token = _GATE_CALL.set(call)
     try:
         yield call
     finally:
         _GATE_CALL.reset(token)
+
+
+def note_gate_hold(seat: str, key: str, entry: dict | None, reason: str) -> None:
+    """Note that a gate call held its turn instead of queuing it (#1369), in the call's
+    ``holds`` as ``{"seat", "key", "entry", "reason"}``. ``entry`` is the queue row this call
+    wrote, or ``None`` when a newer row (another event's) was there and was left alone, so the
+    in-process caller only ever removes its own row. Outside a gate call nothing is kept."""
+    call = _GATE_CALL.get()
+    if call is not None:
+        call["holds"].append({"seat": seat, "key": key, "reason": reason,
+                              "entry": dict(entry) if isinstance(entry, dict) else None})
 
 
 def in_gate_call() -> bool:
