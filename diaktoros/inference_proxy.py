@@ -74,6 +74,8 @@ MAX_CALLS = 250
 MAX_CONNECTIONS = 8
 CLIENT_TIMEOUT = 3
 UPSTREAM_TIMEOUT = 120
+# Each resolved upstream address gets this long to connect (#1993); UPSTREAM_TIMEOUT is for reads.
+CONNECT_TIMEOUT = 10
 BRIDGE_TIMEOUT = UPSTREAM_TIMEOUT + 15
 BRIDGE_PORT = 18761
 REFRESH_SKEW = 60
@@ -657,6 +659,29 @@ def forwarded_headers(headers, contract: Contract) -> dict:
 
 # -- upstream ---------------------------------------------------------------------------------
 
+def _connect(address, timeout, source_address=None):
+    """``socket.create_connection``, but each resolved address gets at most ``CONNECT_TIMEOUT``
+    to connect; the socket then waits ``timeout`` for reads (#1993). Otherwise a host whose
+    IPv6 route is dead spends the whole read timeout on each IPv6 address before IPv4 is tried,
+    and every request fails while the provider is fine."""
+    host, port = address
+    error = None
+    for family, kind, proto, _name, sockaddr in socket.getaddrinfo(host, port, 0,
+                                                                    socket.SOCK_STREAM):
+        sock = socket.socket(family, kind, proto)
+        try:
+            sock.settimeout(min(CONNECT_TIMEOUT, timeout))
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+            sock.settimeout(timeout)
+            return sock
+        except OSError as exc:
+            error = exc
+            sock.close()
+    raise error or OSError(f'no address for {host}')
+
+
 class _NoRedirectConnection:
     """Open a fresh connection to the one trusted endpoint per request."""
 
@@ -680,6 +705,7 @@ class _NoRedirectConnection:
         guard_network(self.url.geturl())
         cls = http.client.HTTPSConnection if self.url.scheme == 'https' else http.client.HTTPConnection
         conn = cls(self.url.hostname or '', self.url.port, timeout=UPSTREAM_TIMEOUT)
+        conn._create_connection = _connect
         try:
             conn.request('POST', self.url.path, body=body, headers=headers)
             response = conn.getresponse()
@@ -974,7 +1000,7 @@ class InferenceCapability:
                 try:
                     status, content_type, data = capability.forward(body, self.headers)
                 except (OSError, ProxyError, http.client.HTTPException) as exc:
-                    capability.last_error = f'upstream unreachable: {type(exc).__name__}'
+                    capability.last_error = f'upstream unreachable: {type(exc).__name__}: {exc}'[:300]
                     self.send_error(502)
                     return
                 if not (content_type.startswith('application/json') or _is_stream(content_type)):
