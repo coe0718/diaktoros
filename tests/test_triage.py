@@ -252,7 +252,8 @@ class Worker(Base):
         self.assertIn("- `docs`: " + "x" * turn_prompts.LABEL_MEANING_MAX + "\n", meanings)
         self.assertIn("- `P1`: High priority", meanings)        # matched whatever its case
         self.assertIn("- `P2`: (no description)", meanings)
-        self.assertIn("- `feature`: (no description)", meanings)          # absent on GitHub
+        self.assertIn("- `feature`: (not on this repository)", meanings)  # absent on GitHub (#1463)
+        self.assertNotIn("- `feature`: (no description)", meanings)
         self.assertNotIn("wontfix", meanings)                               # not triage's to apply
         self.assertIn("go by it", text)
 
