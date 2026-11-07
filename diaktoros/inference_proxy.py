@@ -668,8 +668,9 @@ def _connect(address, timeout, source_address=None):
     error = None
     for family, kind, proto, _name, sockaddr in socket.getaddrinfo(host, port, 0,
                                                                     socket.SOCK_STREAM):
-        sock = socket.socket(family, kind, proto)
+        sock = None
         try:
+            sock = socket.socket(family, kind, proto)   # inside: a family the kernel lacks falls through
             sock.settimeout(min(CONNECT_TIMEOUT, timeout))
             if source_address:
                 sock.bind(source_address)
@@ -678,7 +679,8 @@ def _connect(address, timeout, source_address=None):
             return sock
         except OSError as exc:
             error = exc
-            sock.close()
+            if sock is not None:
+                sock.close()
     raise error or OSError(f'no address for {host}')
 
 
