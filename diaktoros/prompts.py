@@ -530,6 +530,9 @@ What to do:
    change anything else — this turn is a merge, not a fix.
 2. Verify it: run the tests these files touch (and the always-run check, if one follows this
    message). If a test fails because of the merge, fix it in the conflicted files.
+""" + size_limit_rule("   ", "   ", "When a file is over its limit, still publish the "
+                          "resolution, and say in your summary which file is over which "
+                          "limit.") + """\
 3. Publish the resolution through the broker's push (command below), naming **every**
    conflicted file. The host refuses the push if a marker is left or a conflicted file is not
    in it, and commits it as a merge of `{base}` into the PR (both parents), only if the branch
@@ -695,7 +698,7 @@ def registry_section(diff: str | None) -> str:
             + "\n".join(f"- {text}" for _, text in rows))
 
 
-def fixer_check_section(loop: dict, ci_fix: bool = False) -> str:
+def fixer_check_section(loop: dict, ci_fix: bool = False, summary: bool = False) -> str:
     """The loop's always-run check, as an instruction from the operator (#338 follow-up): the
     repository checks CI runs on every change, which a fixer running only its touched tests would
     otherwise miss. Empty when the loop names none. Appended after the rendered template, so a
@@ -703,10 +706,17 @@ def fixer_check_section(loop: dict, ci_fix: bool = False) -> str:
 
     ``ci_fix``: the CI-fix turn, whose prompt says not to push when a file over a size limit is
     the only failure (``size_limit_rule``; a function over one it splits); publish-anyway keeps that one exception there, so the two
-    never contradict each other (#1436 review)."""
+    never contradict each other (#1436 review).
+
+    ``summary``: a turn that writes neither answers nor a PR description (the conflict
+    resolution; the CI-fix turn always), so the check's gaps go in its summary, the one place
+    it reports (#1448)."""
     command = str(loop.get("fixer_check") or "").strip()
     if not command:
         return ""
+    summary = summary or ci_fix
+    where = "your summary" if summary else "your answers or PR description"
+    modules_where = "your summary" if summary else "the PR description"
     return ("\n\n## Always-run check (set by the loop's operator)\n\n"
             "CI runs this on every change. Before you publish, run it from `/work` and make it "
             "pass, along with the tests you touched. Set `CHANGED` to every path you changed, "
@@ -714,15 +724,16 @@ def fixer_check_section(loop: dict, ci_fix: bool = False) -> str:
             "publish), so the check can pick the tests that depend on them (#362):\n\n"
             "```sh\nCHANGED=\"path/one.py path/two.py\" sh -c '<the check below>'\n```\n\n"
             "If it fails, fix what it found and run it again. If it still fails, or it is cut "
-            "off before it finishes, **publish anyway** and say in your answers or PR "
-            "description exactly what did not pass or did not run: work you do not publish is "
+            "off before it finishes, **publish anyway** and say in " + where + " exactly what "
+            "did not pass or did not run: work you do not publish is "
             "lost, and a PR that states its gaps is still reviewed. Never end the turn "
             "unpublished because the check did not pass (#542). "
             + ("The one exception, in this CI-fix turn: when all that fails is a file over a "
                "size limit the repository enforces, don't publish (step 2 above). "
                if ci_fix else "")
-            + "If it cannot run in this sandbox, say so in your answers or PR description. If it "
+            + "If it cannot run in this sandbox, say so in " + where + ". If it "
             "passes but its output reports modules it did not run (for example `not run (past "
             "the ... budget; CI runs them): ...`), the zero exit code does not mean those tests "
-            "ran: name those modules in the PR description and note that CI will catch them.\n\n"
+            "ran: name those modules in " + modules_where + " and note that CI will catch "
+            "them.\n\n"
             "```sh\n" + command + "\n```")

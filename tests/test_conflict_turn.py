@@ -187,6 +187,22 @@ class Worker(sm.Worker):
         self.assertIn("What the PR changed", prompt)
         self.assertLess(prompt.index("Conflicted files"), prompt.index("What the PR changed"))
 
+    def test_the_conflict_prompt_has_the_size_limit_rule_and_reports_in_its_summary(self):
+        # #1448: the merge turn writes code and its always-run check says "publish anyway", so
+        # it gets the size-limit rule too; it writes no answers and no PR description, so the
+        # check's gaps go in its summary.
+        self.loop = {**self.loop, "fixer_check": "python3 tests/file_sizes.py"}
+        seen, row, _, _ = self.conflict_run()
+        self.assertEqual(row[0], "succeeded")
+        text = " ".join(seen["prompt"].split())
+        self.assertIn("**Don't squeeze code under a size limit.**", text)
+        self.assertIn("When a file is over its limit, still publish the resolution, and say in "
+                      "your summary which file is over which limit.", text)
+        self.assertIn("**publish anyway** and say in your summary exactly what", text)
+        self.assertIn("If it cannot run in this sandbox, say so in your summary.", text)
+        self.assertNotIn("answers or PR description", text)
+        self.assertNotIn("the PR description", text)
+
     def test_a_person_gets_it_when_the_loop_should_not_resolve_it(self):
         for label, kwargs, words in (
                 ("whole-file", {"merge_error": safe_push.NeedsPerson(
