@@ -1643,6 +1643,11 @@ head is refused, and a new head gets its own review. It's the host operator's al
 or GitHub comment can start one, so a re-request on GitHub still gets "head already has a
 reviewer's verdict". It can't be combined with `--another-round`, and it's refused at a head
 that has no verdict yet (a plain `review` asks for one) or that is escalated to adjudication.
+It's also refused when the verdict cap is spent (#1453): at a fixer PR with `cap` or more
+changes-requested verdicts (say, a cap lowered after the approval) the gate would park the PR for
+adjudication instead of reviewing it, so a reconsider never reaches the gate there and never
+escalates a PR (`escalate` asks for a ruling). A review-only PR at its `review_only_cap` is
+refused too; `--another-round` is the way past that cap.
 A reconsider has to be queued as a turn while you wait. If the gate can only hold it in the
 reviewer queue (for example, when the isolated worker runtime is unavailable), nothing replays
 it: the queue entry keeps no turn key, and a later delivery or drain at the reviewed head only

@@ -68,3 +68,21 @@ def reconsider_held(emit, st, hold, args, head, loop) -> int:
          f"never replayed ({log_reason}), so run `hermes dk review --loop {loop['id']} --pr "
          f"{args.pr} --reconsider ...` again once that is resolved")
     return 2
+
+
+def reconsider_cap_refusal(loop, st, number, pr, head, reviews) -> str:
+    """Why the verdict cap stops a reconsider (#1453), or ``""``: the reviewer gate's own cap
+    rule, read before the gate runs. At a fixer PR's spent cap the gate parks the head for
+    adjudication instead of reviewing it, so a reconsider (a request for a review) must never
+    reach the gate there; a review-only PR at its cap (``gate.review_cap_hit``) is declined by
+    the gate, and only ``--another-round`` (which a reconsider can't be combined with) lifts it."""
+    rounds = len(gate.verdicts(reviews, loop))
+    author = ((pr.get("user") or {}).get("login") or "").lower()
+    if author in config.review_only(loop):
+        if gate.review_cap_hit(loop, st, number, head, rounds, author):
+            return (f"the review cap is reached ({rounds} verdicts) — a reconsider can't lift "
+                    "it; `--another-round` grants one more verdict")
+    elif rounds >= loop["cap"]:
+        return (f"the verdict cap is reached ({rounds} of {loop['cap']}) — a reconsider never "
+                "hands a PR to adjudication; `hermes dk escalate` asks for a ruling")
+    return ""

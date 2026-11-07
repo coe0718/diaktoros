@@ -476,7 +476,7 @@ def _reconsider_refusal(loop, st, number, pr, head, reason) -> str:
                 "--reconsider) asks for one")
     if _reviewer_runs(loop["repo"], number, head, RECONSIDER_KEY):
         return "this head was already reconsidered (one per head) — a new head gets its own review"
-    return ""
+    return review_asks.reconsider_cap_refusal(loop, st, number, pr, head, reviews)
 
 
 def _reviewer_runs(repo: str, number: int, head: str, turn_key: str | None = None) -> int:
