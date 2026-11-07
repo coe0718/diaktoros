@@ -68,3 +68,23 @@ def reconsider_held(emit, st, hold, args, head, loop) -> int:
          f"never replayed ({log_reason}), so run `hermes dk review --loop {loop['id']} --pr "
          f"{args.pr} --reconsider ...` again once that is resolved")
     return 2
+
+
+def reconsider_ask(st, number, head, reason, ask, reconsider_runs) -> int:
+    """Ask the gate for a reconsider (#1334) with ``ask()``, and return its exit code. The
+    reason goes with the turn into the reviewer's prompt, so it is written first: the worker
+    the gate arms may claim the turn before the gate returns. Once the gate has answered (#1384),
+    it is kept only if the run ledger holds a reconsider turn at this head
+    (``reconsider_runs()``, a count), so a reconsider the gate refused, held or declined, or that
+    crashed, leaves no reason behind. Only this call's own entry is taken back
+    (``reconsider_forget``): a newer reconsider's stays. A ledger that cannot be read keeps the
+    reason, since a turn may exist."""
+    written = st.reconsider_record(number, head, reason)
+    try:
+        return ask()
+    finally:
+        try:
+            if not reconsider_runs():
+                st.reconsider_forget(number, *written)
+        except Exception:  # noqa: BLE001 - the command's answer stands; the prompt never reads it
+            pass

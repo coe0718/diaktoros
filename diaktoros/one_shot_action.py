@@ -540,9 +540,19 @@ def _review(loop, args, emit=print):
     payload = {"action": "ready_for_review", "number": args.pr, "pull_request": pr,
                "repository": {"full_name": loop["repo"]},
                "sender": {"login": loop.get("read_token") or "operator"}}
-    if reconsider is not None:
-        # The reason goes with the turn into the reviewer's prompt (#1334); written first.
-        st.reconsider_record(args.pr, head, reconsider)
+    if reconsider is None:
+        return _ask_gate(loop, args, st, key, head, before, queued, payload, emit)
+    return review_asks.reconsider_ask(
+        st, args.pr, head, reconsider,
+        lambda: _ask_gate(loop, args, st, key, head, before, queued, payload, emit),
+        lambda: _reviewer_runs(loop["repo"], args.pr, head, run_supervisor.RECONSIDER_KEY))
+
+
+def _ask_gate(loop, args, st, key, head, before, queued, payload, emit) -> int:
+    """``_review``'s gate step: run the reviewer gate on ``payload`` and say what it did (the
+    exit code). A gate that crashed, refused its input or ran out of budget is reported by
+    ``_gate_unfinished``; any other answer by ``_review_outcome``."""
+    reconsider = getattr(args, "reconsider", None)
     started = time.monotonic()
     holds = []          # the turns the gate held instead of queuing, with its own rows (#1369)
     try:

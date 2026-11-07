@@ -1650,6 +1650,9 @@ gets "head already has a reviewer's verdict". So the command doesn't report "que
 It prints `reconsider NOT queued — <why>`, drops the hold row it wrote itself (a row another
 event wrote to the reviewer queue meanwhile is left alone) and exits 2. Run it again once the
 cause is fixed. A dispute re-review held the same way has the same gap and isn't covered here.
+Your reason is stored for the turn's prompt only while that turn exists: when the gate queues no
+reconsider turn (refused, held, declined or crashed), the reason is taken back, so a reconsider
+that started nothing leaves nothing behind.
 
 <!-- flags:review -->
 | flag | value | default | what it does |
