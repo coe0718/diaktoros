@@ -620,6 +620,25 @@ class Desktop(Base):
         self.assertEqual(result['status'], 'partial')
         self.assertIsNotNone(sup.get('r')['cancel_requested'])
 
+    def test_a_quarantined_run_is_not_reported_as_a_stop_request(self):
+        # A not-started run holding a write-ahead record ends uncertain at once: no turn is
+        # running and no stop was requested (#1376).
+        from diaktoros import one_shot_action
+        sup = self.sup()
+        sup.submit('r', REPO, 1, HEAD, 'reviewer')
+        run_id = sup.get('r')['id']
+        self.set_state('r', 'waiting')
+        with ledger.connect(self.db) as con:
+            con.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,created) "
+                        "VALUES(?,?,?,?,?)", (run_id, 'confirmed', 'g', 1, 0))
+        offer = one_shot_action.plan(LOOP, 'cancel', pr=1)
+        result = one_shot_action.confirmed_perform(LOOP, 'cancel', offer['confirmation'], pr=1)
+        self.assertEqual(sup.get('r')['state'], 'uncertain')
+        self.assertEqual(result['status'], 'unknown', result)
+        self.assertFalse(result['ok'])
+        self.assertNotIn('stop requested', result['reason'])
+        self.assertIn('may have written; inspect and reconcile', result['reason'])
+
     def test_nothing_open_offers_nothing(self):
         from diaktoros import one_shot_action
         sup = self.sup()
