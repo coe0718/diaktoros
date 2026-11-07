@@ -187,6 +187,11 @@ def _cancel_perform(loop, pr, seat, proposal):
                        head=head)
     if all(state == "cancelled" for state in states):
         return _result("verified", "cancelled; only a retry re-arms them", ok=True, head=head)
+    if "uncertain" in states:
+        # Quarantined, not stopping: it may already have written, so it is never replayed (#1376).
+        also = "; stop requested for a running turn" if "stopping" in states else ""
+        return _result("unknown", "stopped, but it may have written; inspect and reconcile" + also,
+                       head=head)
     return _result("partial", "stop requested; the worker stops the running turn", head=head)
 
 
