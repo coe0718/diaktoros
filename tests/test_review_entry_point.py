@@ -255,6 +255,29 @@ class Reconsider(Harness):
         self.assertEqual(self.queued().get("reason"), "newer unrelated hold")
         self.assertEqual(self.operator_actions(), [])
 
+    def test_a_declined_reconsider_never_claims_another_events_queue_row(self):
+        # #1369 review F3: the ledger declines the reconsider (``duplicate completed``), so the
+        # gate holds nothing, while another delivery adds a reviewer row at this head. That row
+        # is not this reconsider's: it must not be reported as "queued, waiting" or recorded as
+        # an operator step, and it must stay in the queue.
+        from diaktoros import gate, state as state_mod
+        t.reset(prs={"7": approved()})
+        loop = self.loop()
+        st = state_mod.state_for(loop)
+        key = gate.seat_key(loop, 7)
+
+        def enqueue(*_a, **_kw):
+            st.queue_add("reviewer", key, t.HEAD_A, "u", "newer unrelated hold")
+            return "duplicate completed"
+        with mock.patch("diaktoros.gate.enqueue_isolated", side_effect=enqueue):
+            result = self.reconsider()
+        self.assertEqual(result["code"], 1, result["lines"])
+        self.assertIn("no review started — reviewer turn duplicate completed",
+                      result["lines"][-1])
+        self.assertNotIn("queued, waiting", "\n".join(result["lines"]))
+        self.assertEqual(self.queued().get("reason"), "newer unrelated hold")
+        self.assertEqual(self.operator_actions(), [])
+
     def test_a_verdict_the_gate_does_not_count_under_a_hold_is_no_verdict(self):
         # #1370: under a retarget hold the gate counts only receipt-confirmed reviews after the
         # baseline. The approval below is in the baseline, so the gate sees no verdict at this
