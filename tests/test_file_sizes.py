@@ -98,6 +98,50 @@ class Rules(unittest.TestCase):
         self.assertEqual(out, {"files": {"big.py": 1990}, "functions": {}})
 
 
+class Snapshot(unittest.TestCase):
+    """#1388: --snapshot can add and raise entries, so it refuses over an existing baseline."""
+    MEASURED = ({"big.py": 2100, "new.py": fs.FILE_MAX + 1}, {"big.py::f": 130})
+
+    def run_main(self, argv, baseline):
+        import contextlib
+        import io
+        from unittest import mock
+        real_write = fs.write
+        # write() binds its default path at definition: redirect it too, so no run of main()
+        # (with or without the fix) can touch the real baseline.
+        with mock.patch.object(fs, "measure", return_value=self.MEASURED), \
+                mock.patch.object(fs, "BASELINE", baseline), \
+                mock.patch.object(fs, "write", lambda data, path=None: real_write(data, baseline)), \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = fs.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_snapshot_refuses_to_overwrite_an_existing_baseline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = pathlib.Path(tmp) / "file_sizes_baseline.json"
+            fs.write(Rules.BASE, baseline)
+            before = baseline.read_text()
+            code, _, err = self.run_main(["--snapshot"], baseline)
+            self.assertEqual(code, 2)
+            self.assertIn("--force", err)
+            self.assertIn("--write", err)
+            self.assertEqual(baseline.read_text(), before)
+
+    def test_snapshot_force_rewrites_and_a_first_snapshot_needs_no_force(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = pathlib.Path(tmp) / "file_sizes_baseline.json"
+            code, out, _ = self.run_main(["--snapshot"], baseline)
+            self.assertEqual(code, 0)
+            self.assertIn("raise", out)
+            expected = fs.snapshot(*self.MEASURED)
+            self.assertEqual(fs.load_baseline(baseline), expected)
+            fs.write(Rules.BASE, baseline)
+            code, _, _ = self.run_main(["--snapshot", "--force"], baseline)
+            self.assertEqual(code, 0)
+            self.assertEqual(fs.load_baseline(baseline), expected)
+
+
 class Measuring(unittest.TestCase):
     def test_functions_are_named_by_qualified_name_without_decorators(self):
         with tempfile.TemporaryDirectory() as tmp:
