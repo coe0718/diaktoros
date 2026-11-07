@@ -63,7 +63,10 @@ def measure(root: Path = ROOT) -> tuple[dict[str, int], dict[str, int]]:
         rel = path.relative_to(root).as_posix()
         text = path.read_text(encoding="utf-8")
         files[rel] = size(text)
-        lines = text.splitlines()
+        # Real newlines only, as ast numbers lines: ``splitlines()`` also breaks on \f, \v,
+        # \x1c-\x1e, \x85, U+2028 and U+2029, which would shift every later slice (#1443).
+        # (``read_text`` has already turned \r\n and \r into \n.)
+        lines = text.split("\n")
         seen: dict[str, int] = {}
 
         def visit(node, prefix=""):

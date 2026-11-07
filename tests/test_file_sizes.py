@@ -175,6 +175,22 @@ class Measuring(unittest.TestCase):
         self.assertEqual(functions["diaktoros/m.py::top"],
                          fs.size("def top():\n    def inner():\n        return 1\n    return inner"))
 
+    def test_a_line_break_only_splitlines_knows_does_not_shift_later_functions(self):
+        # #1443: \f, \v, \x85, U+2028 and the like are line breaks to str.splitlines() but not
+        # to ast; one in an earlier string must not shift a later function's slice.
+        g = ("def g():\n"
+             + "".join(f"    x{i} = {i}\n" for i in range(6))
+             + "    return x0 + x1 + x2 + x3 + x4 + x5 + " + "z" * 120 + "\n")
+        for char in ("\x0c", "\x0b", "\x1c", "\x85", "\u2028", "\u2029"):
+            with self.subTest(char=repr(char)), tempfile.TemporaryDirectory() as tmp:
+                root = pathlib.Path(tmp)
+                (root / "diaktoros").mkdir()
+                (root / "scripts").mkdir()
+                source = f'def f():\n    """page break:{char} inside a docstring"""\n    return 1\n\n\n' + g
+                (root / "diaktoros" / "m.py").write_text(source, encoding="utf-8")
+                _, functions = fs.measure(root)
+                self.assertEqual(functions["diaktoros/m.py::g"], fs.size(g))
+
     def test_layout_never_moves_a_size_and_text_always_does(self):
         # The reason the ratchet measures characters (#1349): a fix turn once joined lines to
         # pass it. Joined, wrapped or re-indented, the same code is the same size.
