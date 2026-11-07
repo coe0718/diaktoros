@@ -380,7 +380,8 @@ LABEL_MEANING_MAX = 200
 
 def label_meanings(loop: dict, names) -> str:
     """What each triage label means, from its GitHub description (written by the repository's
-    maintainers): one bounded line per label in ``names``. A label with no description, or a
+    maintainers): one bounded line per label in ``names``. A label with no description, a label
+    that is not on the repository at all (the fact ``doctor``'s labels check reports, #1463), or a
     label list that cannot be read, says so; triage then goes by the names alone."""
     from .. import gh
     # Every page (#1411 review): a later page's label is never reported as undescribed, and an
@@ -397,7 +398,11 @@ def label_meanings(loop: dict, names) -> str:
                  for item in found if isinstance(item, dict)}
     lines = []
     for name in names:
-        meaning = described.get(str(name).casefold(), '')[:LABEL_MEANING_MAX]
+        key = str(name).casefold()
+        if key not in described:   # missing on the repo, not undescribed (#1463)
+            lines.append(f"- `{name}`: (not on this repository)")
+            continue
+        meaning = described[key][:LABEL_MEANING_MAX]
         lines.append(f"- `{name}`: {meaning or '(no description)'}")
     return head + '\n'.join(lines)
 
