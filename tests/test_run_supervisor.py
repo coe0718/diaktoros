@@ -114,6 +114,23 @@ class Lifecycle(unittest.TestCase):
         self.assertFalse(marker.exists(), "the worker imported the decoy package")
         self.assertEqual(self.launches(), ["launched"])
 
+    def test_a_relative_ledger_path_names_the_same_ledger_in_the_worker(self):
+        # #1382: the worker runs in the plugin root (#1373). A relative ledger path names the
+        # ledger in the caller's directory, so the worker must open the one the host opened.
+        previous = os.getcwd()
+        os.chdir(self.root)
+        try:
+            sup = Supervisor(Path(self.db.name), fixture_mode=True,
+                             fixture_command=[sys.executable, str(self.child),
+                                              str(self.events), "0.05", "0"])
+            self.assertTrue(sup.db.is_absolute())
+            self.assertTrue(os.path.samefile(sup.db, self.db))
+            sup.enqueue("d", "o/r", 1, "sha", "reviewer")
+            self.wait(sup, "d", "succeeded")
+        finally:
+            os.chdir(previous)
+        self.assertEqual(self.launches(), ["launched"])
+
     def test_production_blocks_without_agent_fallback(self):
         sup = Supervisor(self.db)
         self.assertEqual(sup.enqueue("d", "o/r", 1, "sha", "reviewer"), SILENT)

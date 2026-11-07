@@ -261,6 +261,31 @@ def _canonical(path) -> str:
     return os.path.realpath(os.path.expanduser(str(path)))
 
 
+def _report_lost_ledger(db: Path, presence) -> tuple[bool, Path | None]:
+    """A host open's check, before it creates anything: did ``db`` vanish, or is it empty?
+
+    ``presence`` defaults to ``presence_marker()`` for the production ledger. A ledger that is
+    gone or empty while its beside-ledger marker or ``presence`` records it has vanished: one
+    stderr line says so. An empty file nobody recorded gets its own line, so it is never
+    adopted silently. Returns whether it vanished, and the ``presence`` marker path to use.
+    """
+    empty = db.is_file() and db.stat().st_size == 0
+    if presence is None and _canonical(db) == _canonical(production_ledger()):
+        presence = presence_marker()
+    presence = Path(presence) if presence is not None else None
+    vanished = (not db.is_file() or empty) and (ledger_marker(db).is_file()
+                                                or _names(presence, db))
+    if vanished:
+        print(f"diaktoros: run ledger {db} vanished since it was last opened; creating "
+              f"a fresh, empty ledger. Earlier runs, holds and notices are not in it.",
+              file=sys.stderr)
+    elif empty:
+        # SQLite treats an empty file as a new database; say so, never adopt it silently.
+        print(f"diaktoros: run ledger {db} was an empty file; initializing it as a "
+              f"new, empty ledger", file=sys.stderr)
+    return vanished, presence
+
+
 def _names(presence: Path | None, db: Path) -> bool:
     """Does the config-dir marker record the ledger ``db`` is (by file, not spelling)?"""
     try:
@@ -579,26 +604,15 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch, notices.OperatorNo
         beside-ledger marker alone unless one is passed.
         """
         # A literal '~/…' (unexpanded by any shell) names the home's ledger, never ./~ here.
-        db = Path(os.path.expanduser(str(db)))
+        # Absolute from here on (#1382): the worker runs in the plugin root (#1373), so a
+        # relative path handed to it would name a different, missing ledger there.
+        db = Path(os.path.abspath(os.path.expanduser(str(db))))
         # First, before any other check: no ledger at all is a quiet exit, not an error.
         if (not create or existing_only) and not _has_content(db):
             raise LedgerMissing(f"run ledger {db} is gone, empty or not SQLite")
         vanished = False
         if create and not existing_only:
-            empty = db.is_file() and db.stat().st_size == 0
-            if presence is None and _canonical(db) == _canonical(production_ledger()):
-                presence = presence_marker()
-            presence = Path(presence) if presence is not None else None
-            vanished = (not db.is_file() or empty) and (ledger_marker(db).is_file()
-                                                        or _names(presence, db))
-            if vanished:
-                print(f"diaktoros: run ledger {db} vanished since it was last opened; creating "
-                      f"a fresh, empty ledger. Earlier runs, holds and notices are not in it.",
-                      file=sys.stderr)
-            elif empty:
-                # SQLite treats an empty file as a new database; say so, never adopt it silently.
-                print(f"diaktoros: run ledger {db} was an empty file; initializing it as a "
-                      f"new, empty ledger", file=sys.stderr)
+            vanished, presence = _report_lost_ledger(db, presence)
         if fixture_mode and production_config is not None:
             raise ValueError("fixture and production modes are exclusive")
         if production_config is not None and hermes_home is None:
