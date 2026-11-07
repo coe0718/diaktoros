@@ -266,6 +266,39 @@ class RunsInFlightUnreadable(fg.Base):
         with mock.patch.object(config, "host_path", return_value=path):
             self.assertEqual(migrate.runs_in_flight(), 0)
 
+    def _runs_ledger(self, schema: str) -> Path:
+        """A real ledger (rollback journal, not WAL) whose ``runs`` table has ``schema``."""
+        path = self._ledger(b"")
+        con = migrate.sqlite3.connect(path)
+        con.execute(f"CREATE TABLE runs ({schema})")
+        con.commit()
+        con.close()
+        return path
+
+    def test_only_a_missing_table_reads_as_zero_not_a_missing_column(self):
+        # #1465: _active_runs swallows "no such table" only. A runs table without a repo column
+        # raises "no such column: repo"; a widened except would read it as 0 runs in flight.
+        path = self._runs_ledger("id INTEGER, state TEXT")
+        with self.assertRaises(migrate.RunsUnknown) as caught:
+            migrate.busy_runs(path, OLD)
+        self.assertIn("no such column", str(caught.exception))
+        with self.assertRaisesRegex(migrate.sqlite3.OperationalError, "no such column"):
+            migrate._move_ledger(path, OLD, NEW, dry_run=False)
+
+    def test_a_ledger_locked_at_query_time_is_not_zero_runs(self):
+        # #1465: "database is locked" raised by the SELECT inside _active_runs must fail closed.
+        path = self._runs_ledger("id INTEGER, repo TEXT, state TEXT")
+        holder = migrate.sqlite3.connect(path, isolation_level=None)
+        try:
+            holder.execute("BEGIN EXCLUSIVE")
+            with mock.patch.object(migrate, "LOCK_WAIT_S", 0), \
+                 self.assertRaises(migrate.RunsUnknown) as caught:
+                migrate.busy_runs(path, OLD)
+            self.assertIn("locked", str(caught.exception))
+        finally:
+            holder.execute("ROLLBACK")
+            holder.close()
+
     def test_restore_refuses_and_replaces_nothing(self):
         path = self._ledger(b"garbage" * 100)
         args = argparse.Namespace(file="x.tgz", dry_run=False, force=True)
