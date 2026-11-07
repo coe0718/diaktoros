@@ -903,8 +903,9 @@ def verdicts(reviews: list, loop: dict, exclude_id=None) -> list:
 
 
 def review_cap_hit(loop: dict, st, number: int, head: str, rounds: int, author: str) -> bool:
-    """Whether a review-only author's PR (#191) has spent its verdict cap with no maintainer
-    grant for this head: the one rule the reviewer gate, ``explain`` and the merge check share."""
+    """Whether a review-only author's PR (#191) has spent its verdict cap (review_only_cap) with
+    no maintainer grant for this head: the one rule the reviewer gate, ``explain`` and the merge
+    check share."""
     return (author in config.review_only(loop) and rounds >= config.review_only_cap(loop)
             and not st.review_cap_granted(number, head, rounds))
 
