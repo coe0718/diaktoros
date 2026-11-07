@@ -32,7 +32,7 @@ import sys
 import time
 
 from . import config, gh, isolation, observer, stale_approval, state as state_mod
-from .util import log, now_iso, silence
+from .util import log, note_gate_hold, now_iso, silence
 from . import envnames
 
 
@@ -759,6 +759,21 @@ def fixer_push_off_notice(loop: dict) -> str:
     return f"{notice} — {denial}" if denial else notice
 
 
+def _hold_for_missing_runtime(loop: dict, st: state_mod.LoopState, seat: str, number: int,
+                              head: str, queued, exc: Exception) -> tuple[str, str]:
+    """``block_pr_agent``'s hold when the isolated enqueue raised (no runtime, say): the seat
+    queue keeps the turn, unless a newer event replaced the row ``queued`` it observed. The
+    in-process caller is told which row, if any, this call wrote (``note_gate_hold``, #1369), so
+    it never takes another event's row for its own. Returns the ``silence`` answer."""
+    key = seat_key(loop, number)
+    reason = f"isolated worker unavailable: {type(exc).__name__}: {exc}"
+    written: list = []
+    st.queue_replace_if(seat, key, queued, head, pr_url(loop, number), reason, written=written)
+    note_gate_hold(seat, key, written[0] if written else None, reason)
+    log(f"#{number} @ {head[:7]} {seat} held: {reason}")
+    return (f"{seat} turn held: {reason}", "held")
+
+
 def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
                    number: int, head: str, on_queued=None, *, turn_key: str = '',
                    on_push_off=None) -> None:
@@ -807,10 +822,7 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
         except FixerPushDisabled:
             push_off = True  # the policy changed under the admission lock: same hold
         except Exception as exc:
-            reason = f"isolated worker unavailable: {type(exc).__name__}: {exc}"
-            st.queue_replace_if(seat, key, queued, head, pr_url(loop, number), reason)
-            log(f"#{number} @ {head[:7]} {seat} held: {reason}")
-            final = (f"{seat} turn held: {reason}", "held")
+            final = _hold_for_missing_runtime(loop, st, seat, number, head, queued, exc)
     if push_off:
         # Checked before the runtime: a turn that could never publish is not worth a worker.
         # The hold reason keeps the exact enable command at its front (#81) — every surface

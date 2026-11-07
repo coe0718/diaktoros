@@ -47,17 +47,23 @@ def grant_another_round(loop, args, pr, head, st, emit):
     return None
 
 
-def reconsider_held(emit, st, key, waiting, args, head, loop) -> int:
+def reconsider_held(emit, st, hold, args, head, loop) -> int:
     """A reconsider (#1334) the gate held in the seat queue instead of queuing a turn (#1369):
     no worker runtime, say. The queue entry keeps no turn key and no webhook carries a
     reconsider, so nothing replays it: a drain or a later delivery at this reviewed head only
-    finds "already has a reviewer's verdict". Say it was not queued, drop the gate's hold so no
-    surface shows it as waiting (the exact entry only; a newer one stays), and ask again."""
-    if st.queue_pop_if("reviewer", key, waiting):
+    finds "already has a reviewer's verdict". Say it was not queued, and drop the gate's hold so
+    no surface shows it as waiting. ``hold`` is what this call's gate noted
+    (``util.note_gate_hold``): only the row it wrote itself (``hold["entry"]``) is removed, and
+    only while it is still that exact row. A row another event wrote — before the gate's
+    compare-and-swap, which then left it alone, or after it — is never this call's to drop."""
+    entry = hold.get("entry")
+    if isinstance(entry, dict) and st.queue_pop_if("reviewer", hold["key"], entry):
         log_reason = "the hold was dropped"
-    else:
+    elif isinstance(entry, dict):
         log_reason = "a newer queue entry was kept"
-    reason = waiting.get("reason") or "held in the seat queue"
+    else:
+        log_reason = "another event's queue entry was kept"
+    reason = hold.get("reason") or "held in the seat queue"
     emit(f"#{args.pr} @ {head[:7]}: reconsider NOT queued — {reason}; a held reconsider is "
          f"never replayed ({log_reason}), so run `hermes dk review --loop {loop['id']} --pr "
          f"{args.pr} --reconsider ...` again once that is resolved")

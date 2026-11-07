@@ -243,9 +243,11 @@ def _script(name):
     return module
 
 
-def _run_reviewer(payload, reconsider=None) -> list[str]:
+def _run_reviewer(payload, reconsider=None, holds=None) -> list[str]:
     """The unchanged webhook gate's decision on one payload, as a call (#1046): it owns every
-    eligibility rule. Returns the lines it logged.
+    eligibility rule. Returns the lines it logged. ``holds``, when given, gets the turns this
+    call's gate held instead of queuing (``util.note_gate_hold``, #1369), each with the queue row
+    it wrote itself, so the caller never mistakes another event's row for its own.
 
     Nothing process-wide changes: no stdin or stdout swap, no signal handler or timer, no
     process budget or decision recorder. The GitHub budget, the failed-read flag and the
@@ -269,6 +271,9 @@ def _run_reviewer(payload, reconsider=None) -> list[str]:
         except SystemExit as exc:
             if exc.code not in (None, 0):
                 raise
+        finally:
+            if holds is not None:
+                holds.extend(call["holds"])
     return list(call["logs"])
 
 
@@ -539,9 +544,10 @@ def _review(loop, args, emit=print):
         # The reason goes with the turn into the reviewer's prompt (#1334); written first.
         st.reconsider_record(args.pr, head, reconsider)
     started = time.monotonic()
+    holds = []          # the turns the gate held instead of queuing, with its own rows (#1369)
     try:
-        gate_lines = _run_reviewer(payload, reconsider=reconsider) if reconsider is not None \
-            else _run_reviewer(payload)
+        gate_lines = _run_reviewer(payload, reconsider=reconsider, holds=holds) \
+            if reconsider is not None else _run_reviewer(payload)
     except SystemExit as exc:
         if exc.code not in (None, 0):
             return _gate_unfinished(emit, args, payload, exc, started, "no answer")
@@ -554,6 +560,15 @@ def _review(loop, args, emit=print):
     from . import gate_failures
     gate_failures.resolve_in_process("gate_reviewer", payload, started)
     reasons = logged(gate_lines if isinstance(gate_lines, list) else [])
+    return _review_outcome(loop, args, st, key, head, before, queued, holds, reasons, emit)
+
+
+def _review_outcome(loop, args, st, key, head, before, queued, holds, reasons, emit) -> int:
+    """What ``_review`` says once the gate has answered, and its exit code: a turn the ledger
+    committed, a reconsider the gate held instead (#1369: only the row this call's gate wrote,
+    from ``holds``, is ever touched), a plain review waiting in the seat queue, or a decline.
+    ``before`` is the ledger count and queue row read before the gate ran."""
+    reconsider = getattr(args, "reconsider", None)
     committed = _reviewer_runs(loop["repo"], args.pr, head) > before[0]
     if committed and reasons and "turn held:" in reasons[-1]:
         emit(f"#{args.pr} @ {head[:7]}: review not verified — {reasons[-1]}")
@@ -565,10 +580,11 @@ def _review(loop, args, emit=print):
         emit(f"#{args.pr} @ {head[:7]}: review queued for the isolated worker "
               f"(`hermes dk explain --loop {loop['id']} --pr {args.pr}` follows it)")
         return 0
+    held = [h for h in holds if h.get("seat") == "reviewer" and h.get("key") == key]
+    if reconsider is not None and held:          # held, so never replayed (#1369)
+        return review_asks.reconsider_held(emit, st, held[-1], args, head, loop)
     waiting = queued()
-    if waiting and waiting != before[1]:
-        if reconsider is not None:                # held, so never replayed (#1369)
-            return review_asks.reconsider_held(emit, st, key, waiting, args, head, loop)
+    if reconsider is None and waiting and waiting != before[1]:
         from .run_supervisor import record_operator_action
         record_operator_action(loop["repo"], args.pr, "review")
         reason = waiting.get("reason") or "the reviewer seat is busy"

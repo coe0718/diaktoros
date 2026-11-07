@@ -1644,7 +1644,8 @@ A reconsider has to be queued as a turn while you wait. If the gate can only hol
 reviewer queue (for example, when the isolated worker runtime is unavailable), nothing replays
 it: the queue entry keeps no turn key, and a later delivery or drain at the reviewed head only
 gets "head already has a reviewer's verdict". So the command doesn't report "queued, waiting".
-It prints `reconsider NOT queued — <why>`, drops that hold and exits 2. Run it again once the
+It prints `reconsider NOT queued — <why>`, drops the hold row it wrote itself (a row another
+event wrote to the reviewer queue meanwhile is left alone) and exits 2. Run it again once the
 cause is fixed. A dispute re-review held the same way has the same gap and isn't covered here.
 
 <!-- flags:review -->

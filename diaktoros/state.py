@@ -530,15 +530,22 @@ class LoopState:
             self._save_queue(data)
 
     def queue_replace_if(self, seat: str, key: str, expected: dict | None,
-                         head: str, url: str, reason: str) -> bool:
-        """Record a failed dispatch only if no newer event replaced its queue entry."""
+                         head: str, url: str, reason: str, *,
+                         written: list | None = None) -> bool:
+        """Record a failed dispatch only if no newer event replaced its queue entry.
+
+        ``written``, when given, gets a copy of the entry this call wrote (#1369): with its
+        ``id`` the writer can later tell its own row from one another event put there."""
         with self._queue_lock():
             data = _mapping(self._load(self.pending, {}))
             if _seat_read(data, seat).get(key) != expected:
                 return False
-            _seat(data, seat)[key] = {"at": time.time(), "head": head, "url": url,
-                                      "reason": reason, "id": uuid.uuid4().hex}
+            entry = {"at": time.time(), "head": head, "url": url,
+                     "reason": reason, "id": uuid.uuid4().hex}
+            _seat(data, seat)[key] = entry
             self._save_queue(data)
+            if written is not None:
+                written.append(dict(entry))
             return True
 
     def queue_swap_if(self, seat: str, key: str, expected: dict, new: dict) -> bool:

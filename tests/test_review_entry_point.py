@@ -222,6 +222,38 @@ class Reconsider(Harness):
         self.assertIn("isolated worker unavailable", result["lines"][-1])
         self.assertNotIn("queued, waiting", "\n".join(result["lines"]))
         self.assertEqual(self.queued(), {})
+        # A held reconsider is no operator step (#1369 review F2): nothing was queued.
+        self.assertEqual(self.operator_actions(), [])
+
+    def operator_actions(self):
+        from diaktoros import ledger, run_supervisor
+        path = run_supervisor.production_ledger()
+        if not pathlib.Path(path).exists():
+            return []              # nothing was ever recorded: no ledger was created
+        with ledger.connect(path) as con:
+            return con.execute("SELECT action FROM operator_actions WHERE pr=7").fetchall()
+
+    def test_a_held_reconsider_never_drops_another_events_queue_row(self):
+        # #1369 review F1: another delivery replaces the reviewer's queue row while the
+        # enqueue runs. The gate's compare-and-swap leaves that newer row alone, so it is not
+        # this reconsider's: it must stay, and its reason must not be reported as ours.
+        from diaktoros import gate, state as state_mod
+        t.reset(prs={"7": approved()})
+        loop = self.loop()
+        st = state_mod.state_for(loop)
+        key = gate.seat_key(loop, 7)
+
+        def enqueue(*_a, **_kw):
+            st.queue_add("reviewer", key, t.HEAD_A, "u", "newer unrelated hold")
+            raise RuntimeError("no private runtime")
+        with mock.patch("diaktoros.gate.enqueue_isolated", side_effect=enqueue):
+            result = self.reconsider()
+        self.assertEqual(result["code"], 2, result["lines"])
+        self.assertIn("reconsider NOT queued — isolated worker unavailable", result["lines"][-1])
+        self.assertNotIn("newer unrelated hold", result["lines"][-1])
+        self.assertIn("another event's queue entry was kept", result["lines"][-1])
+        self.assertEqual(self.queued().get("reason"), "newer unrelated hold")
+        self.assertEqual(self.operator_actions(), [])
 
     def test_a_verdict_the_gate_does_not_count_under_a_hold_is_no_verdict(self):
         # #1370: under a retarget hold the gate counts only receipt-confirmed reviews after the
