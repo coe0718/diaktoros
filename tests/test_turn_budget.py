@@ -36,6 +36,7 @@ from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 import test_selftest  # noqa: E402
+import worker_wait  # noqa: E402  the shared detached-worker reaper (#108, #110)
 
 HEAD = "a" * 40
 
@@ -659,6 +660,10 @@ class LedgerAndWorker(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = pathlib.Path(temp.name)
+        # Cleanups run last in, first out: the detached worker ``enqueue`` spawned has exited
+        # before the temp dir goes. A test returns once the row is terminal, while the worker
+        # may still be writing its log or the ledger there (#1432: "Directory not empty").
+        self.addCleanup(worker_wait.wait_for_workers, self.root)
         self.db = self.root / "ledger.sqlite"
         self.seen = self.root / "seen"
         self.child = self.root / "child.py"
@@ -723,6 +728,28 @@ class LedgerAndWorker(unittest.TestCase):
         with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("UPDATE runs SET budget=NULL")
         self.assertEqual(sup.budget_of(sup.get("d4")["id"]), 77)
+
+    def test_cleanup_waits_for_a_worker_still_writing_in_the_temp_dir(self):
+        # #1432: a worker outliving the test's assertions must be gone before the temp dir is
+        # removed. Drive this class's own setUp and cleanups around a stand-in worker (its
+        # command line names the root, as every real worker's does) that writes there late.
+        case = type(self)("test_bad_budgets_are_refused_at_enqueue")
+        case.setUp()
+        late = subprocess.Popen([sys.executable, "-c",
+                                 "import sys,time,pathlib; time.sleep(1.5); "
+                                 "pathlib.Path(sys.argv[1], 'late.log').write_text('x')",
+                                 str(case.root)],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True)
+        try:
+            case.doCleanups()
+            self.assertIsNotNone(late.poll(), "the temp dir was removed under a live worker")
+            self.assertEqual(late.returncode, 0)
+            self.assertFalse(case.root.exists())
+        finally:
+            if late.poll() is None:
+                late.kill()
+            late.wait()
 
     def test_bad_budgets_are_refused_at_enqueue(self):
         sup = self.sup(0)
