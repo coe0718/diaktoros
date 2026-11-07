@@ -24,7 +24,7 @@ import time
 from types import SimpleNamespace
 from typing import cast
 
-from . import config, gate, gh, review_asks, run_supervisor, state as state_mod, transition
+from . import cancel_action, config, gate, gh, review_asks, run_supervisor, state as state_mod, transition
 from .run_supervisor import views
 from .ledger import read_only
 from .util import logged, now_iso
@@ -33,7 +33,9 @@ _LOCK = threading.RLock()
 _SECRET = secrets.token_bytes(32)
 _ACTIONS = ("review", "escalate", "drain", "cancel")
 # The seats a confirmed cancel may name (#1148); the other actions take reviewer or fixer only.
-_CANCEL_SEATS = ("reviewer", "fixer", "adjudicator", "triage", "issue_fixer", "shadow")
+# The cancel command's own list, never a copy: the Desktop route's shape check reads this same
+# constant, so the route and the plan cannot disagree about a seat (#1371).
+CANCEL_SEATS = cancel_action.SEATS
 
 
 def _identity(loop, action, pr, seat, snapshot):
@@ -75,7 +77,7 @@ def plan(loop, action, pr=None, seat=None):
     A host restart invalidates outstanding confirmations. CLI-only grant, reason and
     whole-seat drain semantics are intentionally not expanded into Desktop authority.
     """
-    seats = _CANCEL_SEATS if action == "cancel" else ("reviewer", "fixer")
+    seats = CANCEL_SEATS if action == "cancel" else ("reviewer", "fixer")
     out = {"action": action if action in _ACTIONS else "unknown", "pr": None,
            "seat": seat if seat in seats else None, "eligible": False,
            "head": "", "reason": "invalid action target", "confirmation": ""}
@@ -143,7 +145,7 @@ def _cancel_plan(loop, pr, seat, out):
     """The confirmed cancel's offer: the exact runs it would stop, bound into the confirmation.
     A run that starts, ends or appears after the preview makes the confirmation stale."""
     from . import cancel_action
-    if type(pr) is not int or pr <= 0 or (seat is not None and seat not in _CANCEL_SEATS):
+    if type(pr) is not int or pr <= 0 or (seat is not None and seat not in CANCEL_SEATS):
         return out
     out["pr"] = pr
     try:
