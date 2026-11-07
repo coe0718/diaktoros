@@ -373,6 +373,37 @@ class TrustedFetchTests(unittest.TestCase):
             self.stage(callback=lambda loop, path, login, limit, accept:
                 b'{"sha":"bad"}' if "/git/commits/" in path else self.response(loop, path, login, limit, accept))
 
+    def stage_issue_fix(self, status):
+        """Stage as the issue fixer with GitHub's compare answering ``status`` (#214, #1456)."""
+        self.compares = []
+
+        def compare(loop, path, login, limit, accept):
+            if "/compare/" not in path:
+                return None
+            self.compares.append(path)
+            return json.dumps({"status": status, "files": [], "commits": []}).encode()
+        return self.stage(compare, role="issue_fixer")
+
+    def test_an_issue_fix_stages_only_a_head_still_on_the_base(self):
+        # The enforcing entry point: _stage asks base...head before, during and after the export.
+        for status in ("behind", "identical"):
+            with self.subTest(status=status):
+                self.kw["sandbox_root"] = self.root / f"sandbox-{status}"
+                result = self.stage_issue_fix(status)
+                self.assertEqual((result / "hello.txt").read_bytes(), self.blob)
+                self.assertEqual(set(self.compares),
+                                 {f"/repos/acme/widgets/compare/main...{self.head}"})
+                self.assertGreaterEqual(len(self.compares), 2)
+        for status in ("ahead", "diverged", None):
+            with self.subTest(status=status):
+                self.kw["sandbox_root"] = self.root / f"sandbox-{status}"
+                with self.assertRaisesRegex(trusted_fetch.FetchDenied,
+                                            "base commit is no longer on the base branch"):
+                    self.stage_issue_fix(status)
+                self.assertEqual(self.compares,
+                                 [f"/repos/acme/widgets/compare/main...{self.head}"])
+                self.assertFalse(self.kw["sandbox_root"].exists())
+
     def test_a_turn_costs_a_small_bounded_number_of_api_calls(self):
         # #66: one tarball call for the whole head, so the count does not grow with the file
         # count. A tree of 50 files still costs the same handful of metadata reads + 1 tarball.
