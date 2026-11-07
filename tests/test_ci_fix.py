@@ -149,6 +149,17 @@ class Worker(sm.Worker):
         self.assertIn(exception, text)
         self.assertLess(text.index("**publish anyway**"), text.index(exception))
 
+    def test_the_always_run_check_reports_in_the_summary_not_answers(self):
+        # #1448: a CI-fix turn writes no answers and no PR description; its summary is where it
+        # reports, as its size-limit rule already says.
+        seen, row, _ = self.fix_run(RED, {"fixer_check": "python3 tests/file_sizes.py"})
+        self.assertEqual(row[0], "succeeded")
+        text = " ".join(seen["prompt"].split())
+        self.assertIn("**publish anyway** and say in your summary exactly what", text)
+        self.assertIn("If it cannot run in this sandbox, say so in your summary.", text)
+        self.assertIn("name those modules in your summary", text)
+        self.assertNotIn("answers or PR description", text)
+
     def test_a_head_that_went_green_is_not_fixed(self):
         seen, row, _ = self.fix_run(ci.CIState(passed=["tests (3.11)"]))
         self.assertEqual((seen, row[0]), ({}, "failed"))

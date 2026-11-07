@@ -18,7 +18,8 @@ def conflict_prompt(loop: dict, row, merged: dict) -> str:
                                    url=gh.pr_url(loop, row['pr']), head=row['head'],
                                    base=loop['base'], base_short=base_sha[:7])
     files = "\n".join(f"- `{path}`" for path in merged['conflicted'])
-    return (text + prompts.fixer_check_section(loop) + prompts.registry_section(None)
+    return (text + prompts.fixer_check_section(loop, summary=True)
+            + prompts.registry_section(None)
             + "\n\n" + run_supervisor.CONFLICT_SIDES_NOTE + "\n\n"
             + files + "\n\n" + merged.get('sides', ''))
 

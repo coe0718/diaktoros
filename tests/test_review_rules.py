@@ -48,7 +48,8 @@ class FixerRules(unittest.TestCase):
         # and say so, a CI fix with nothing else red doesn't push. Before that a function's
         # growth stopped the CI fix too, and the PR sat red for a maintainer (#1707, #1717).
         rule = "**Don't squeeze code under a size limit.**"
-        for name in ("ISOLATED_FIXER", "ISOLATED_ISSUE_FIX", "ISOLATED_CI_FIX"):
+        for name in ("ISOLATED_FIXER", "ISOLATED_ISSUE_FIX", "ISOLATED_CI_FIX",
+                     "ISOLATED_CONFLICT"):      # the merge turn writes code too (#1448)
             with self.subTest(prompt=name):
                 text = flat(getattr(prompts, name))
                 self.assertIn(rule, text)
