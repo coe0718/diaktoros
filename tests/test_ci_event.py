@@ -20,7 +20,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_main_check import FakeState  # noqa: E402
 from diaktoros import (app_ingress, ci, ci_event, ci_fix, config, gate_decisions, gh, ledger,  # noqa: E402
-                       main_check, observer)
+                       main_check, observer, review_kick)
 from diaktoros.run_supervisor import CI_HOLD, Supervisor  # noqa: E402
 
 HEAD, OLD, MAIN = "a" * 40, "b" * 40, "c" * 40
@@ -62,7 +62,7 @@ class Handler(unittest.TestCase):
         self.prs = {7: pr()}
         self.main_head, self.state = MAIN, RED
         self.sup = Supervisor(Path(tmp.name) / "ledger.sqlite")
-        self.woken = []
+        self.woken, self.fixes, self.kicks = [], [], []
 
     def deliver(self, payload, loop=None):
         """One delivery through ``ci_event.gate``: ``(reason, decision)`` of its silence."""
@@ -75,7 +75,8 @@ class Handler(unittest.TestCase):
             return self.prs.get(number)
 
         def rows(_repo, _number, _db=None):   # the ledger: what this test queued so far
-            return [{"head": a[3], "state": "pending"} for a, _kw in self.queued]
+            return self.fixes + [{"head": a[3], "state": "pending", "push_confirmed": None}
+                                 for a, _kw in self.queued]
 
         with mock.patch.object(ci_event, "silence", side_effect=silenced), \
              mock.patch.object(gh, "api", side_effect=api), \
@@ -90,7 +91,9 @@ class Handler(unittest.TestCase):
              mock.patch("diaktoros.gate.enqueue_isolated",
                         side_effect=lambda *a, **kw: self.queued.append((a, kw)) or "enqueued"), \
              mock.patch("diaktoros.run_supervisor.production_ledger", return_value=self.sup.db), \
-             mock.patch("diaktoros.gate.resume_isolated", side_effect=self.woken.append):
+             mock.patch("diaktoros.gate.resume_isolated", side_effect=self.woken.append), \
+             mock.patch.object(review_kick, "kick", side_effect=lambda _l, p, h, sender, tag:
+                               self.kicks.append((p["number"], h, sender, tag)) or True):
             if payload is None:                       # the watchdog's sweep, as its last step
                 return ci_event.drain(loop or LOOP, self.st)
             with self.assertRaises(Silenced) as ended:
@@ -243,6 +246,62 @@ class Handler(unittest.TestCase):
         self.assertEqual((self.due(held), self.due(other), self.due(stale)), (True, False, False))
         self.assertEqual(len(self.woken), 1)
         self.assertEqual(self.queued, [])           # green: no CI fix
+
+    def test_a_suite_noted_while_the_drain_acts_is_acted_on_by_that_drain(self):
+        """Review on #1992 (F4): a suite noted after the drain took the notes, whose handler then
+        stopped waiting for the lock, is taken by the same drain, not left for the next sweep."""
+        self.prs = {7: pr(), 9: pr(number=9, head=OLD)}
+        act = ci_event.act
+
+        def acting(loop, st, head, numbers):
+            if head == HEAD:                        # a late delivery, noted mid-act
+                ci_event.note(st, OLD, [9])
+            return act(loop, st, head, numbers)
+        ci_event.note(self.st, HEAD, [7])
+        with mock.patch.object(ci_event, "act", side_effect=acting):
+            acted = self.deliver(None)
+        self.assertEqual(sorted(a[2] for a, _ in self.queued), [7, 9])
+        self.assertEqual(acted, ["CI read for #7", "CI read for #9"])
+        self.assertEqual(self.st.kv_get(self.st.dir / ci_event.NUDGES, None), [])
+
+    def requested(self):
+        """A green suite on #7's head, after a confirmed CI fix pushed from ``OLD``, with the
+        reviewer seat still requested: the case a lost review request leaves."""
+        self.state = ci.CIState(passed=["tests (3.11)"])
+        self.fixes = [{"head": OLD, "state": "succeeded", "push_confirmed": time.time()}]
+        self.prs = {7: {**pr(), "requested_reviewers": [{"login": "rev"}]}}
+        return {**LOOP, "reviewer_seat": "rev"}
+
+    def test_green_after_a_ci_fix_with_no_review_turn_requests_the_review(self):
+        """Review on #1992 (F1): no reviewer row at the head at all (the request's delivery was
+        lost), so there is nothing to wake: the review request goes to the reviewer gate. The
+        review of the head before the fix is no review of this one."""
+        loop = self.requested()
+        self.held_review(head=OLD)
+        reason, decision = self.deliver(suite(), loop)
+        self.assertEqual(decision, "accepted")
+        self.assertIn("review requested for #7", reason)
+        self.assertEqual(self.kicks, [(7, HEAD, "fix", "ci-review-7")])
+        self.assertEqual(self.queued, [])
+
+    def test_no_review_is_requested_without_every_condition(self):
+        loop = self.requested()
+        cases = (("no CI fix before this head", lambda: setattr(self, "fixes", [])),
+                 ("the fix's push not confirmed", lambda: setattr(
+                     self, "fixes", [{"head": OLD, "state": "failed", "push_confirmed": None}])),
+                 ("red", lambda: setattr(self, "state", RED)),
+                 ("required check still running", lambda: setattr(
+                     self, "state", ci.CIState(passed=["tests (3.11)"], pending=["lint"]))),
+                 ("the reviewer seat no longer requested", lambda: self.prs[7].update(
+                     requested_reviewers=[])),
+                 ("a review turn already at this head", self.held_review))
+        for why, change in cases:
+            with self.subTest(why=why):
+                self.requested()
+                change()
+                self.kicks = []
+                self.deliver(suite(), loop)
+                self.assertEqual(self.kicks, [])
 
     def test_nothing_held_wakes_no_worker(self):
         self.state = ci.CIState(passed=["tests (3.11)"])

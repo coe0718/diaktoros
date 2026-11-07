@@ -600,6 +600,12 @@ class WorkerLifecycle:
                                (time.time(), time.time(), repo, pr, head,
                                 run_supervisor.CI_HOLD + '%')).rowcount
 
+    def has_turn(self, repo: str, pr: int, head: str, seat: str) -> bool:
+        """Whether this head has any ``seat`` turn, in any state."""
+        with self._connect() as con:
+            return con.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
+                               "LIMIT 1", (repo, pr, head, seat)).fetchone() is not None
+
     def linger_for_ci(self, sleep=time.sleep) -> None:
         """After holding a review for CI, or backing a claim off after a failed GitHub read,
         stay (no seat, no turn) until the next read is due, then schedule it: GitHub sends this
