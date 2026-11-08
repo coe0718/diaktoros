@@ -8,15 +8,19 @@ format or apply a stricter rule on purpose are named in ``DIFFERENT``.
 
 Code shipped as source to another interpreter keeps its own parser: ``seat_resolver.RESOLVER`` runs
 in Hermes' python with ``-c`` and cannot import the plugin. The scan reads the AST, so it does not
-reach into such strings.
+reach into such strings. It reads every ``*.py`` in the repository but the suite's
+(``_sources.python_sources``), so ``dashboard/``, ``tools/`` and ``docs/site/`` are held to it too
+(#1489); the standalone scripts there that keep their own parser are named in ``DIFFERENT``.
 """
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import ast
+import importlib.util
 import os
 import pathlib
 import sys
+import tempfile
 import time
 import unittest
 from unittest import mock
@@ -24,6 +28,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import util  # noqa: E402
+import _sources  # noqa: E402  every *.py the scans read (#1489)
 
 NOON = 1793361600.0              # 2026-10-30T12:00:00Z
 # The parsers that differ on purpose, by function: another format, or a stricter rule.
@@ -34,6 +39,11 @@ DIFFERENT = {
     "diaktoros/gh.py::parse_token_expiry":
         "GitHub's token-expiry header: '2026-10-01 12:00:00 UTC', not ISO-8601",
     "diaktoros/stats.py::parse_since": "a --since day ('2026-10-30'), not a timestamp",
+    # Outside the plugin (#1489): standalone, standard-library-only scripts that never import it.
+    "tools/github_app_spike.py::epoch":
+        "a standalone script that does not import the plugin; reads a zoneless stamp as UTC too",
+    "docs/site/build-data.py::_rel_time":
+        "the Pages build's standalone script; GitHub's stamps all carry a zone",
 }
 
 
@@ -112,12 +122,46 @@ class OneHome(unittest.TestCase):
         visit(ast.parse(source), "")
         return found
 
+    @classmethod
+    def own_parsers(cls, root: pathlib.Path) -> list[str]:
+        """``rel func:line`` for each parser in the Python under ``root`` that ``DIFFERENT``
+        does not name: what the scan refuses."""
+        found = []
+        for path in _sources.python_sources(root):
+            rel = path.relative_to(root).as_posix()
+            found += [f"{rel} {func}:{line}" for func, line in cls.parsers(path.read_text())
+                      if f"{rel}::{func}" not in DIFFERENT]
+        return found
+
     def test_no_module_parses_a_timestamp_on_its_own(self):
-        for path in sorted([*(ROOT / "diaktoros").rglob("*.py"), *(ROOT / "scripts").rglob("*.py")]):
-            rel = path.relative_to(ROOT).as_posix()
-            with self.subTest(rel):
-                self.assertEqual([f"{func}:{line}" for func, line in self.parsers(path.read_text())
-                                  if f"{rel}::{func}" not in DIFFERENT], [])
+        self.assertEqual(self.own_parsers(ROOT), [])
+
+    def test_the_scan_reads_every_python_file_but_the_suite(self):
+        # #1489: the scan walked diaktoros/ and scripts/ only, so these passed it.
+        parse = "from datetime import datetime\ndef when(s):\n    return datetime.fromisoformat(s)\n"
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            for rel in ("dashboard/plugin_api.py", "tools/spike.py", "docs/site/build.py",
+                        "__init__.py", "tests/test_x.py", "tools/__pycache__/spike.py"):
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text(parse)
+            self.assertEqual(self.own_parsers(root), [
+                "__init__.py when:3", "dashboard/plugin_api.py when:3", "docs/site/build.py when:3",
+                "tools/spike.py when:3"])
+
+    def test_the_app_spike_reads_a_stamp_with_no_zone_as_utc(self):
+        # #1489: the spike's own parser read a zoneless stamp as the host's local time.
+        spec = importlib.util.spec_from_file_location("spike", ROOT / "tools/github_app_spike.py")
+        spike = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(spike)
+        self.addCleanup(time.tzset)               # after patch.dict below restores TZ
+        with mock.patch.dict(os.environ, {"TZ": "America/New_York"}):
+            time.tzset()
+            for stamp in ("2026-10-30T12:00:00", "2026-10-30T12:00:00Z",
+                          "2026-10-30T17:00:00+05:00"):
+                with self.subTest(stamp):
+                    self.assertEqual(spike.epoch(stamp), NOON)
+                    self.assertEqual(spike.epoch(stamp), util.iso_epoch(stamp))
 
     def test_every_exception_still_parses_and_has_its_reason(self):
         for key, why in DIFFERENT.items():

@@ -16,6 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diaktoros import ledger, review_receipt, run_supervisor  # noqa: E402
+import _sources  # noqa: E402  every *.py the scans read (#1489)
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -154,13 +155,28 @@ class ReadOnly(unittest.TestCase):
         return [site for site in self.uri_sites(source) if site[1] not in allowed]
 
     def test_no_read_only_uri_is_written_outside_ledger_read_only(self):
-        for path in [*(ROOT / "diaktoros").rglob("*.py"), *(ROOT / "scripts").glob("*.py")]:
-            with self.subTest(path.relative_to(ROOT).as_posix()):
-                self.assertEqual(self.stray(path, path.read_text()), [])
+        self.assertEqual(self.strays(ROOT), [])
         # The exemption is the helper, not its file (#1471 review).
         ledger_py = ROOT / "diaktoros" / "ledger.py"
         extra = ledger_py.read_text() + '\n\ndef another(path):\n    return f"file:{path}?mode=ro"\n'
         self.assertEqual([func for _, func in self.stray(ledger_py, extra)], ["another"])
+
+    def strays(self, root: Path) -> list[str]:
+        """``rel:line`` for each stray read-only URI in the Python under ``root``."""
+        return [f"{path.relative_to(root).as_posix()}:{line}"
+                for path in _sources.python_sources(root)
+                for line, _ in self.stray(path, path.read_text())]
+
+    def test_the_scan_reads_every_python_file_but_the_suite(self):
+        # #1489: the scan walked diaktoros/ and scripts/ only, so these passed it.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for rel in ("dashboard/plugin_api.py", "tools/spike.py", "docs/site/build.py",
+                        "tests/test_x.py"):
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text('URI = "file:runs.sqlite?mode=ro"\n')
+            self.assertEqual(self.strays(root), ["dashboard/plugin_api.py:1",
+                                                 "docs/site/build.py:1", "tools/spike.py:1"])
 
 
 class LockTimeouts(unittest.TestCase):
