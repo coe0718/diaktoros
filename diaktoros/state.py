@@ -195,6 +195,30 @@ def _seat_read(data: dict, seat: str) -> dict:
     return items if isinstance(items, dict) else {}
 
 
+def read_record(st, name: str, unreadable: Callable[[str], None] | None = None) -> dict:
+    """The JSON object a module keeps as ``name`` in ``st``'s state dir, read without a lock or a
+    write: its writes are atomic replaces, so a reader sees a whole file or none.
+
+    Absent (the file or the state dir) is ``{}``, silently. Anything else that leaves no object
+    (permissions, bad JSON, not a JSON object, an ``st`` with no dir) is ``{}`` too, and is passed
+    to ``unreadable``, when given, as why: a caller that must not take an unreadable store for a
+    missing one says so there (``conflict_person``).
+    """
+    try:
+        data = json.loads((st.dir / name).read_text())
+    except (FileNotFoundError, NotADirectoryError):
+        return {}
+    except Exception as exc:
+        if unreadable is not None:
+            unreadable(f"exists but is unreadable ({type(exc).__name__}: {exc})")
+        return {}
+    if not isinstance(data, dict):
+        if unreadable is not None:
+            unreadable("does not hold a JSON object")
+        return {}
+    return data
+
+
 class LoopState:
     def __init__(self, loop: dict):
         self.loop = loop

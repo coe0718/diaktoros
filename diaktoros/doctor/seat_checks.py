@@ -19,7 +19,7 @@ def _check_profile(name: str, seat: str) -> doctor.Check:
     if not name:
         return doctor.Check(f"profile:{seat}", doctor.ABSENT, "no profile named for this seat",
                             f"set {seat}_profile in the plugin settings to an existing profile, then run `hermes dk apply --loop <id>`")
-    path = doctor.profile_dir(name)
+    path = config.profile_dir(name)
     if path.is_dir():
         return doctor.Check(f"profile:{seat}", doctor.VERIFIED, f"{name} → {path}")
     return doctor.Check(f"profile:{seat}", doctor.ABSENT, f"no profile home at {path}",
