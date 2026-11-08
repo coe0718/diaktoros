@@ -501,7 +501,9 @@ What to do:
    host has a sandbox; only Python `unittest` ids are run.
 3. If you cannot fix it (the issue is unclear, too large, or needs a decision), do not open a PR.
    Write why to a file and post it with the broker's `issue_comment` command instead, so a person
-   can pick it up. Never open a PR that does not fix the issue.
+   can pick it up. Never open a PR that does not fix the issue. A maintainer's reply to that
+   comment starts your next turn: if you commented on this issue before, act on the newest
+   maintainer comment after your own.
 4. You get one write: `open_pr` or `issue_comment`. If the broker refuses it, that refusal is
    final: do not retry it, and say plainly in your summary that nothing was published — unless
    its reply says the outcome is **uncertain** or **unknown**: then say exactly that.

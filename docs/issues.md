@@ -180,6 +180,25 @@ ask blocks another until it is answered.
 - After the reply, the watchdog sweep queues a fresh fix turn from the base branch. Until then,
   `status` and `explain` say the issue is waiting for a maintainer.
 
+### When the fixer commented instead of fixing
+
+A turn whose one write was a plain comment (a "could not fix", "needs a decision", or a claim
+that does not hold) waits for a maintainer's reply too (#663). At each watchdog sweep, the issue
+gets one new fix turn, from the base branch's current commit, when all of these hold:
+
+- the fixer's comment is the latest issue-fix write on it (a later PR ends the wait), made in
+  the last 14 days;
+- no issue-fix turn for it is queued or running;
+- it is open and still carries `triage.fix_label` (an auto-offer label is not enough);
+- a maintainer (`triage.maintainers`) commented after that turn was queued. The fixer's,
+  reviewer's or triage account's own comments never count, even when listed as maintainers.
+
+A reply written while the turn ran wakes the next one, and several replies before a sweep are
+one turn. The new turn reads the issue's comments, so it sees the reply, and its prompt tells it
+to act on the newest maintainer comment after its own. It is a maintainer's hand-off, so
+`auto_fix_daily` does not count it. Until a reply comes, `status` and `explain` say the issue is
+waiting for one. An ask (above) is resumed by its own rules instead.
+
 An issue is **plan-first** when it carries the `plan-first` label or its body is longer than
 4,000 characters. It must have an approved plan before any PR: the broker refuses `open_pr` until
 a maintainer posts `/loop approve`, and the fixer's prompt says so. The approval is remembered per
