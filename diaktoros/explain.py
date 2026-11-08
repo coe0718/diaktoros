@@ -1071,9 +1071,9 @@ def _next_escalation(c) -> tuple[str, str] | None:
             # Escalate's own rule: a run on any head, or one of unknown outcome, holds it. A
             # ledger it cannot read makes that unknown, never a crash (#1481 review).
             import sqlite3
-            from . import one_shot_action
+            from . import escalate_action
             try:
-                busy, unknown = one_shot_action.escalation_blockers(c.loop, c.number)
+                busy, unknown = escalate_action.escalation_blockers(c.loop, c.number)
                 wait = (f"{busy} run(s) for this PR are in flight; once they end, " if busy else
                         "a run's outcome is unknown; once it is reconciled, " if unknown else "")
             except (sqlite3.Error, OSError) as exc:

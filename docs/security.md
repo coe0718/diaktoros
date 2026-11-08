@@ -119,7 +119,8 @@ not a global stop, drain, rollback or merge permission. Diaktoros never merges.
 credential selection and returns only a per-target offer. `POST /actions` accepts exactly
 `{loop, action, pr, seat, confirmation}`, never a token, path, arbitrary reason, grant or command.
 Both use gateway auth, not the local-only probe restriction. `one_shot_action` owns selection
-and execution for CLI and Desktop; CLI commands are I/O wrappers, not a second rulebook.
+and execution for CLI and Desktop (escalation's in `escalate_action`); CLI commands are I/O
+wrappers, not a second rulebook.
 Currently only escalation is offered: the confirmation names the exact head being parked
 against further reviews/fixes and the adjudicator turn being spent. Its process-local HMAC
 binds config, PR, effective reviews, marker and ledger identity; a backend restart invalidates

@@ -61,9 +61,11 @@ class Waits(unittest.TestCase):
                                     path.read_text()))
         names = {path.relative_to(ROOT / "diaktoros").with_suffix("").as_posix() for path in paths}
         # #644: the ledger reads the escalation selector needs moved with it from cli/operations
-        # to the shared one_shot_action owner, so the enumerated set moved too.
+        # to the shared one_shot_action owner, so the enumerated set moved too; then (#1349) to
+        # escalate_action, with one_shot_action keeping its own reviewer-run count.
         self.assertLessEqual({"run_supervisor/__init__", "ci_fix", "review_receipt", "stats", "migrate",
-                              "backup", "trace", "ledger", "one_shot_action"}, names)
+                              "backup", "trace", "ledger", "one_shot_action",
+                              "escalate_action"}, names)
         for path in paths:
             name = path.relative_to(ROOT / "diaktoros").with_suffix("").as_posix()
             source = path.read_text()
