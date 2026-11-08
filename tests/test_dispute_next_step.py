@@ -261,7 +261,7 @@ class CapStep(fg.Base):
     def test_a_run_on_an_old_head_holds_escalate_as_it_does_explain(self):
         # #1481 review: escalate counts every run of the PR, on any head; with one in flight it
         # only records the request for the next verdict. explain must not promise a ruling then.
-        from diaktoros import one_shot_action
+        from diaktoros import escalate_action
         self.set_push(True)
         old = "b" * 40
         sup = run_supervisor.Supervisor(run_supervisor.production_ledger())
@@ -273,20 +273,20 @@ class CapStep(fg.Base):
         self.assertEqual(step["kind"], "release")
         self.assertTrue(step["action"].startswith("1 run(s) for this PR are in flight; once they end"))
         with mock.patch.object(gh, "reviews", return_value=[fg.verdict(rid) for rid in (1, 2, 3)]):
-            decision = one_shot_action._escalation_decision(self.loop, 7, live=fg.LIVE)
+            decision = escalate_action._escalation_decision(self.loop, 7, live=fg.LIVE)
         self.assertIn("1 run(s) for this PR are in flight", decision["reason"])
 
     def test_a_run_of_unknown_outcome_or_an_unreadable_ledger_holds_it_too(self):
         # #1481 review: a quarantined run is in flight nowhere, yet escalate refuses until it is
         # reconciled; a ledger escalate cannot read leaves it unknown, and explain says so.
-        from diaktoros import one_shot_action
+        from diaktoros import escalate_action
         self.set_push(True)
         sup = run_supervisor.Supervisor(run_supervisor.production_ledger())
         with mock.patch.object(sup, "_spawn"):
             sup.enqueue("lost", fg.REPO, 7, "b" * 40, "fixer")
         with closing(sqlite3.connect(sup.db)) as con, con:
             con.execute("UPDATE runs SET state='quarantined' WHERE delivery='lost'")
-        self.assertEqual(one_shot_action.escalation_blockers(self.loop, 7), (0, True))
+        self.assertEqual(escalate_action.escalation_blockers(self.loop, 7), (0, True))
         step = self.explain(False)
         self.assertEqual(step["kind"], "release")
         self.assertTrue(step["action"].startswith("a run's outcome is unknown; once it is reconciled"))

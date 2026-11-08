@@ -1,5 +1,6 @@
 """Real UDS mount, host-only dummy key and whole-process Hermes turn."""
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import errno
 import http.client
 import http.server
 import json
@@ -770,3 +771,108 @@ class SubmitNowNudge(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+DEAD = '192.0.2.1'   # stands in for a blackholed (IPv6) address: its connect hangs to the timeout
+NO_FAMILY = '::1'    # an IPv6 address on a host whose kernel has IPv6 off: no socket can be made
+
+
+class UpstreamConnect(unittest.TestCase):
+    """#1993: a dead address costs ``CONNECT_TIMEOUT``, not the read timeout. With IPv6 routed
+    nowhere, every request spent 120 s per IPv6 address and the turn's client gave up first."""
+
+    def setUp(self):
+        self.delay = 0.0
+        test = self
+
+        class Upstream(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                time.sleep(test.delay)
+                body = b'{"choices": []}'
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        upstream = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
+        thread = threading.Thread(target=upstream.serve_forever)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(upstream.server_close)
+        self.addCleanup(upstream.shutdown)
+        self.url = f'http://localhost:{upstream.server_port}{PATH}'
+        for name, value in (('CONNECT_TIMEOUT', 0.2), ('UPSTREAM_TIMEOUT', 3)):
+            patcher = mock.patch.object(inference_proxy, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def resolving(self, *addresses):
+        """``localhost`` resolves to ``addresses``, in order; a connect to ``DEAD`` hangs until
+        the socket's timeout, as one over a dead route does, and a socket for ``NO_FAMILY``
+        cannot be made, as on a host booted with ``ipv6.disable=1``."""
+        real_info = socket.getaddrinfo
+
+        class Socket(socket.socket):
+            def __init__(self, family=-1, *args, **kwargs):
+                if family == socket.AF_INET6:
+                    raise OSError(errno.EAFNOSUPPORT, 'Address family not supported by protocol')
+                super().__init__(family, *args, **kwargs)
+
+            def connect(self, address):
+                if address[0] == DEAD:
+                    time.sleep(self.gettimeout())
+                    raise TimeoutError('timed out')
+                return super().connect(address)
+
+        def info(host, port, *args, **kwargs):
+            if host != 'localhost':
+                return real_info(host, port, *args, **kwargs)
+            return [(socket.AF_INET6, socket.SOCK_STREAM, 6, '', (ip, port, 0, 0)) if ip == NO_FAMILY
+                    else (socket.AF_INET, socket.SOCK_STREAM, 6, '', (ip, port)) for ip in addresses]
+        return mock.patch.multiple(socket, getaddrinfo=info, socket=Socket)
+
+    def post(self):
+        """One request straight to the upstream: ``(status, seconds taken)``."""
+        started = time.monotonic()
+        status, _type, chunks = inference_proxy._NoRedirectConnection(self.url).post(
+            b'{}', {'Content-Type': 'application/json'})
+        b''.join(chunks)
+        return status, time.monotonic() - started
+
+    def test_a_dead_first_address_costs_the_connect_timeout_then_the_next_one_answers(self):
+        with self.resolving(DEAD, '127.0.0.1'):
+            status, took = self.post()
+        self.assertEqual(status, 200)
+        self.assertLess(took, 1.5)              # 0.2 s for the dead one, not the 3 s read timeout
+
+    def test_an_address_family_the_kernel_lacks_falls_through_to_the_next_address(self):
+        with self.resolving(NO_FAMILY, '127.0.0.1'):
+            self.assertEqual(self.post()[0], 200)
+
+    def test_a_connected_upstream_still_gets_the_read_timeout_to_answer(self):
+        """The short bound is for connecting only: a model that takes longer than it to send
+        its first byte (a long prefill) is not cut off."""
+        self.delay = 0.6
+        with self.resolving('127.0.0.1'):
+            self.assertEqual(self.post()[0], 200)
+
+    def test_an_upstream_with_no_live_address_is_a_502_that_says_unreachable(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as d, \
+                self.resolving(DEAD, DEAD), \
+                InferenceCapability(Path(d) / 'cap', self.url, 'DUMMY_KEY', model='m',
+                                    quota=1) as cap:
+            started = time.monotonic()
+            conn = _UnixHTTP(str(cap.socket_path))
+            conn.request('POST', PATH, body=json.dumps({'messages': [
+                {'role': 'user', 'content': 'hi'}]}).encode())
+            status = conn.getresponse().status
+            conn.close()
+            took = time.monotonic() - started
+            error = settled(lambda: cap.last_error, bool)
+        self.assertEqual(status, 502)
+        self.assertLess(took, 1.5)
+        self.assertEqual(error, 'upstream unreachable: TimeoutError: timed out')

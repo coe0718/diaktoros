@@ -94,6 +94,8 @@ def status_lines(loop: dict, st) -> list[str]:
     lines = [f"issue #{issue_no} fix waits for PR #{origin} to merge"
              for issue_no, origin in sorted(st.fix_holds().items())]
     lines += [ask_line(issue_no, ask) for issue_no, ask in sorted(st.fix_ask_open().items())]
+    from . import fix_reply
+    lines += fix_reply.status_lines(st)
     declared = st.issue_deps()
     for issue_no in st.dep_waits():
         names = ", ".join(f"#{a}" for a in sorted(declared.get(issue_no) or {})) or "?"
@@ -102,6 +104,16 @@ def status_lines(loop: dict, st) -> list[str]:
     lines += [fix_declined.line(loop, issue_no, entry)
               for issue_no, entry in sorted(fix_declined.entries(st).items())]
     return lines
+
+
+def explain_lines(st, number: int) -> list[str]:
+    """``explain``'s lines when ``number`` is an issue waiting on a maintainer: an open ask, or a
+    reply to the fixer's comment (#663)."""
+    from . import fix_reply
+    ask = st.fix_ask_open().get(number)
+    waiting = st.kv_get(st.dir / fix_reply.WAITING, {})
+    return ([ask_line(number, ask)] if ask else []) + (
+        [fix_reply.line(number)] if isinstance(waiting, dict) and str(number) in waiting else [])
 
 
 def check_ask(st, number: int) -> None:
@@ -199,6 +211,8 @@ def sweep(loop: dict, st) -> list[str]:
     if not config.issue_fixes_enabled(loop):
         return lines
     sweep_asks(loop, st, lines)
+    from . import fix_reply
+    fix_reply.sweep(loop, st, lines)            # #663: a reply to the fixer's comment
     for number, pr in sorted(st.fix_holds().items()):
         state = pr_state(loop, pr)
         if state is None:

@@ -817,9 +817,8 @@ def cmd_explain(args) -> int:
             if origin == args.pr:
                 print(f"  {'held:':<12}issue #{issue_no} fix waits for this PR to merge")
         from .. import fix_hold
-        ask = st.fix_ask_open().get(args.pr)   # the number may be an issue waiting on a maintainer
-        if ask:
-            print(f"  {'held:':<12}{fix_hold.ask_line(args.pr, ask)}")
+        for line in fix_hold.explain_lines(st, args.pr):   # the number may be an issue
+            print(f"  {'held:':<12}{line}")
         if report['chain']['status'] != 'direct':
             print(f"  {'chain:':<12}{report['chain']['status']} · "
                   f"parents {report['chain']['parents']} · {report['chain']['reason']}")
