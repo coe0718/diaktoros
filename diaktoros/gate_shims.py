@@ -180,9 +180,10 @@ _GATE_EVENT = {"reviewer": "pull_request", "fixer": "pull_request_review",
                "adjudicator": "pull_request", "triage": "issues"}
 # An App's route (#1239) carries every event its loops act on.
 APP_EVENTS = ("pull_request", "pull_request_review", "issues")
-# What the App's route is written with: those, and the events a loop turns on (#681, #680), whose
-# gates silence them for a loop that has them off.
-APP_ROUTE_EVENTS = (*APP_EVENTS, config.CI_EVENT, config.COMMENT_EVENT, "ping")
+# What the App's route is written with: those, and the events a loop turns on (#681, #680, #683),
+# whose gates silence them for a loop that has them off.
+APP_ROUTE_EVENTS = (*APP_EVENTS, config.CI_EVENT, config.COMMENT_EVENT, *config.PROTECTION_EVENTS,
+                    "ping")
 
 
 def contract_drift(loop: dict, role: str, entry: dict) -> list[str]:
@@ -211,7 +212,9 @@ def contract_drift(loop: dict, role: str, entry: dict) -> list[str]:
     events = entry.get("events")
     needed = (APP_EVENTS if role == "app" else (_GATE_EVENT[role],)) + (
         (config.CI_EVENT,) if role in ("app", "fixer") and config.ci_webhook(loop) else ()) + (
-        (config.COMMENT_EVENT,) if role in ("app", "triage") and config.comment_webhook(loop) else ())
+        (config.COMMENT_EVENT,) if role in ("app", "triage") and config.comment_webhook(loop) else ()) + (
+        config.PROTECTION_EVENTS if role in ("app", "reviewer") and config.protection_webhook(loop)
+        else ())
     if not isinstance(events, list) or any(event not in events for event in needed):
         wrong.append("events")
     if entry.get("deliver_only"):

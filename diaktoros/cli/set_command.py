@@ -77,7 +77,8 @@ def _flag_changes(args, loop: dict, host: str | None) -> dict:
               "turn_budget_s": getattr(args, "turn_budget", None),
               "attribution": cli_common._attribution_arg(args, None),
               **{key: cli_common._on_off(args, key, None) for key in (
-                  "review_after_ci", "fix_ci", "ci_webhook", "comment_webhook", "fixer_scope_lock",
+                  "review_after_ci", "fix_ci", "ci_webhook", "comment_webhook", "protection_webhook",
+                  "fixer_scope_lock",
                   "adjudicator_approves", "adjudicator_file_issues", "change_proof",
                   "review_only_update")}}
     if (wanted["review_only_update"] and not loop.get("review_only_update")

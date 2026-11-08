@@ -282,6 +282,22 @@ class Setup(unittest.TestCase):
     def test_setup_forwards_comment_webhook_off_over_a_form_that_turns_it_on(self):
         self.assertIs(self.comment_webhook_install("off", form=True), False)
 
+    def protection_webhook_install(self, value: str, form: bool) -> tuple[bool, list]:
+        """#683: ``setup --protection-webhook`` reaches the loop it writes over the form's value,
+        and the reviewer's repo hook carries the protection events only when on."""
+        rc, out = self.setup_cli(*self.flags(f"--protection-webhook={value}"),
+                                 settings={"protection_webhook": form})
+        self.assertEqual(rc, 0, out)
+        loop = config.load_id(LOOP_ID)
+        return loop["protection_webhook"], config.hook_events(loop, "reviewer")
+
+    def test_setup_forwards_protection_webhook_on(self):
+        self.assertEqual(self.protection_webhook_install("on", form=False),
+                         (True, ["pull_request", *config.PROTECTION_EVENTS]))
+
+    def test_setup_forwards_protection_webhook_off_over_a_form_that_turns_it_on(self):
+        self.assertEqual(self.protection_webhook_install("off", form=True), (False, ["pull_request"]))
+
     def test_a_re_run_reports_and_changes_nothing(self):
         self.assertEqual(self.setup_cli(*self.flags())[0], 0)
         before = (LOOP_FILE.read_bytes(), self.runtime_file.read_bytes(), self.hermes.jobs)
