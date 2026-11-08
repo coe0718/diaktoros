@@ -250,7 +250,7 @@ def _set_observer_flags(change) -> None:  # noqa: ANN001
     change.add_argument("--observer-events", default=None,
                         help="comma-separated transitions to send, from "
                              "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                             "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection "
+                             "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined "
                              "(blank = all)")
     change.add_argument("--observer-digest-min", type=int, default=None,
                         help="batch the feed into one message per N minutes (0 = per "

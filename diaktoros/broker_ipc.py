@@ -34,7 +34,7 @@ import stat
 import threading
 from dataclasses import dataclass
 
-from . import broker, config, contained, fixer_answers, safe_push
+from . import broker, ci_decline, config, contained, fixer_answers, safe_push
 from . import broker_issues   # RunBroker's issue writes: broker_issues.IssueWrites, inherited
 
 MAX_REQUEST = 16 * 1024
@@ -569,10 +569,11 @@ class RunBroker(broker_issues.IssueWrites):
         # are published and the dispute recorded; no review is requested.
         dispute = (operation == "request_review" and verdict == "DISPUTE"
                    and not self._pushed_head)
-        if dispute:
+        decline = self._decline_kind(operation, verdict)     # #1526: a CI fix that won't push
+        if dispute or decline:
             verdict = ""
         answers_only = (operation == "request_review" and not self._pushed_head
-                        and (bool(self._partial_view()) or dispute))
+                        and (bool(self._partial_view()) or dispute or bool(decline)))
         if (operation == "request_review" and self.require_push and not self._pushed_head
                 and not answers_only):
             raise ProtocolError("fixer must publish a confirmed push first")
@@ -699,29 +700,7 @@ class RunBroker(broker_issues.IssueWrites):
             if operation == 'review' and self.require_receipt:
                 raise ProtocolError('host review claim required')
             if answers_only:
-                # Nothing was pushed, so nothing new to review: the answers comment at the head
-                # the fixer was given is the whole write. It must actually land.
-                if dispute:
-                    # Durable intent first (#401): the operator notice exists before the public
-                    # comment POST, so a crash after the POST cannot lose the dispute.
-                    from .run_supervisor import Supervisor
-                    try:
-                        Supervisor(self.scope.ledger_db, create=False).record_dispute(
-                            self.scope.run_id, self.scope.repo, self.scope.number, head, body)
-                    except Exception as persistence_error:
-                        raise ProtocolError("dispute persistence failed") from persistence_error
-                self.answers_outcome = self._publish_answers(head, body, dispute=dispute)
-                if dispute and self.answers_outcome in ("posted", "uncertain", "denied"):
-                    try:
-                        Supervisor(self.scope.ledger_db, create=False).dispute_comment(
-                            self.scope.run_id, self.answers_outcome,
-                            comment_id=self._answers_comment_id, error=self._answers_error)
-                    except Exception:
-                        pass  # stays 'posting'; a finished run's notice then says uncertain
-                if self.answers_outcome not in ("posted", "uncertain"):
-                    raise ProtocolError(f"answers comment {self.answers_outcome}")
-                self.completed = True
-                return {"answers": self.answers_outcome}
+                return self._answers_only(head, body, dispute, decline)
             if answers:
                 # Before the request: the request is what wakes the reviewer, whose record is
                 # read from GitHub, so the answers must already be there. Whatever the comment's
@@ -847,6 +826,53 @@ class RunBroker(broker_issues.IssueWrites):
         return policy_hold_reason(self._loop, run_id=self.scope.run_id,
                                   repo=self.scope.repo, number=self.scope.number,
                                   head=self.scope.head, ledger_db=self.scope.ledger_db)
+
+    def _decline_kind(self, operation: str, verdict: object) -> str:
+        """The kind a fixer's request declines a CI fix with (#1526), ``""`` for none. Only a
+        CI-fix turn that pushed nothing may decline; any other use is refused before anything is
+        read or spent."""
+        if operation != "request_review":
+            return ""
+        try:
+            name = ci_decline.kind(verdict)
+        except ValueError as exc:
+            raise ProtocolError(f"{exc}; nothing was written, resubmit") from None
+        if name and (not self.scope.ci_fix or self._pushed_head):
+            raise ProtocolError("only a CI-fix turn that pushed nothing may decline")
+        return name
+
+    def _answers_only(self, head: str, body: str, dispute: bool, decline: str) -> dict:
+        """The fixer's one write when nothing was pushed, so nothing new to review: its answers
+        comment at the head it was given. It must actually land. A dispute (#401) and a CI fix's
+        decline (#1526) are recorded first, so a crash after the POST cannot lose them."""
+        from .run_supervisor import Supervisor
+        try:
+            if dispute:
+                Supervisor(self.scope.ledger_db, create=False).record_dispute(
+                    self.scope.run_id, self.scope.repo, self.scope.number, head, body)
+            elif decline:
+                ci_decline.record(self.scope.ledger_db, self.scope.run_id, self.scope.repo,
+                                  self.scope.number, head, decline, body)
+        except Exception as persistence_error:
+            what = "dispute" if dispute else "decline"
+            raise ProtocolError(f"{what} persistence failed") from persistence_error
+        # A decline answers at the head it was given with nothing pushed, as a dispute does.
+        self.answers_outcome = self._publish_answers(
+            head, ci_decline.comment(decline, body) if decline else body,
+            dispute=dispute or bool(decline))
+        if dispute and self.answers_outcome in ("posted", "uncertain", "denied"):
+            try:
+                Supervisor(self.scope.ledger_db, create=False).dispute_comment(
+                    self.scope.run_id, self.answers_outcome,
+                    comment_id=self._answers_comment_id, error=self._answers_error)
+            except Exception:
+                pass  # stays 'posting'; a finished run's notice then says uncertain
+        if decline:
+            ci_decline.notify(self._loop, self.scope.number, head, self.scope.run_id, decline, body)
+        if self.answers_outcome not in ("posted", "uncertain"):
+            raise ProtocolError(f"answers comment {self.answers_outcome}")
+        self.completed = True
+        return {"answers": self.answers_outcome}
 
     def _publish_answers(self, head: str, text: str, dispute: bool = False) -> str:
         """Post the fixer's answers as ONE PR comment by the fixer identity; return the outcome.

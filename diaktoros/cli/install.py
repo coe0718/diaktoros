@@ -878,7 +878,7 @@ def _init_route_flags(init) -> None:  # noqa: ANN001
     init.add_argument("--observer-events", default="",
                       help="comma-separated transitions to send, from "
                            "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                           "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection "
+                           "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined "
                            "(default: all)")
     init.add_argument("--observer-digest-min", type=int, default=0,
                       help="batch the feed into one message per this many minutes "

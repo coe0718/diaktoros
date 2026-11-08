@@ -54,6 +54,26 @@ def size_limit_rule(first: str, indent: str, then: str) -> str:
     return textwrap.fill(text, width=99, initial_indent=first, subsequent_indent=indent) + "\n"
 
 
+DECLINE = ("`python -P -m diaktoros.broker_client request_review --answers-file /tmp/why.md "
+           "--decline {kind}`")
+
+
+def decline_rule(indent: str) -> str:
+    """How a CI-fix turn ends when no push of this PR fixes the failure (#1526): through the
+    broker, not its summary, which nothing publishes. One text for the CI-fix prompt."""
+    import textwrap
+    text = ("**Declining.** When no push fixes the failure, don't push and don't just say so in "
+            "your summary: nothing publishes it, and the turn would be retried as a failure. Write "
+            "a few sentences to `/tmp/why.md` (which check failed, why no push of this PR fixes "
+            "it, with evidence: for a size limit, which file is over which limit) and end with "
+            + DECLINE.format(kind="not-this-pr") + " (a flaky job, an outage, a workflow problem) "
+            "or " + DECLINE.format(kind="size-limit") + " (only a file over its size limit "
+            "fails). The host posts it once on the PR as your answers and tells a maintainer, and "
+            "the turn ends: it is never retried. Only this turn may decline, and only with "
+            "nothing pushed.")
+    return textwrap.fill(text, width=99, initial_indent=indent, subsequent_indent=indent) + "\n"
+
+
 def code_rules(what: str, where: str) -> str:
     """The fixer's rules for the code it writes (#512), one text for every fixer prompt:
     ``what`` is the work ("fix", "issue"), ``where`` where it reports ("your answers")."""
@@ -563,9 +583,11 @@ What to do:
    command). A log tail may start mid-way; read the files.
 2. Fix the cause in the code. Do not weaken, skip or delete a test to make it pass, and do not
    touch `.github/`: the broker refuses workflow files. If the failure is not in this PR's code
-   (a flaky job, an outage, a workflow problem), do not push: say so in your summary.
+   (a flaky job, an outage, a workflow problem), do not push: decline it as `not-this-pr`
+   (below).
 """ + size_limit_rule("   ", "   ", "When a file over its limit is the only failure, do not "
-                          "push: say in your summary which file is over which limit.") + """\
+                          "push: decline it as `size-limit` (below), naming which file is over "
+                          "which limit.") + decline_rule("   ") + """\
 3. Verify the fix: run what failed, and the always-run check if one follows this message. Only
    the touched tests, never the whole suite: CI reruns everything on the new head. If the failing
    check caught a real defect only indirectly, add a test that fails without your fix and name
@@ -731,7 +753,7 @@ def fixer_check_section(loop: dict, ci_fix: bool = False, summary: bool = False)
             "lost, and a PR that states its gaps is still reviewed. Never end the turn "
             "unpublished because the check did not pass (#542). "
             + ("The one exception, in this CI-fix turn: when all that fails is a file over a "
-               "size limit the repository enforces, don't publish (step 2 above). "
+               "size limit the repository enforces, don't publish: decline it (step 2 above). "
                if ci_fix else "")
             + "If it cannot run in this sandbox, say so in " + where + ". If it "
             "passes but its output reports modules it did not run (for example `not run (past "
