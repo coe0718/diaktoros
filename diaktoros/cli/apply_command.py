@@ -428,7 +428,7 @@ def _form_changes(loop: dict, updated: dict) -> list:
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci", "merge_check",
                 "ingress", "ingress_app",
-                "fix_ci", "ci_webhook", "comment_webhook", "fixer_scope_lock", "adjudicator_approves", "adjudicator_file_issues", "change_proof", "change_proof_max", "ci_fix_cap", "review_only_update", "required_checks", "human_paths",
+                "fix_ci", "ci_webhook", "comment_webhook", "protection_webhook", "fixer_scope_lock", "adjudicator_approves", "adjudicator_file_issues", "change_proof", "change_proof_max", "ci_fix_cap", "review_only_update", "required_checks", "human_paths",
                 "generated", "ci_coverage", "prices", "review_only", "operator_agents", "review_only_cap",
                 "review_only_daily", "shadow"):
         if updated.get(key) != loop.get(key):

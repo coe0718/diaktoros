@@ -375,6 +375,12 @@
         "default": false,
         "description": "On: a maintainer's reply on an issue the fixer commented on or asked about queues its next fix turn when GitHub reports the comment, without waiting for the next watchdog sweep. Needs the triage route and repo hook to carry issue_comment (`hermes dk apply --hooks` after turning it on). Off: the sweep wakes it."
       },
+      "protection_webhook": {
+        "label": "Re-check protection when it changes",
+        "type": "bool",
+        "default": false,
+        "description": "On: when the repository's branch protection or rulesets change, the base's protection is checked at once, and a notice names any required check the base no longer requires. Needs the reviewer's route and repo hook to carry branch_protection_rule and repository_ruleset (`hermes dk apply --hooks` after turning it on). Off: `hermes dk doctor` checks it."
+      },
       "fixer_scope_lock": {
         "label": "Hold fixes outside the findings' files",
         "type": "bool",
@@ -475,6 +481,7 @@
       "fix_ci": false,
       "ci_webhook": false,
       "comment_webhook": false,
+      "protection_webhook": false,
       "fixer_scope_lock": false,
       "adjudicator_approves": false,
       "adjudicator_file_issues": false,
@@ -545,6 +552,7 @@
       "fix_ci": "default",
       "ci_webhook": "default",
       "comment_webhook": "default",
+      "protection_webhook": "default",
       "fixer_scope_lock": "default",
       "adjudicator_approves": "default",
       "adjudicator_file_issues": "default",

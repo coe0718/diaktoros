@@ -39,6 +39,8 @@ def _entry(gate: str, payload: dict, decision: str, reason: str) -> dict:
     event = ("pull_request_review" if isinstance(payload.get("review"), dict)
              else "issue_comment" if "comment" in payload and isinstance(payload.get("issue"), dict)
              else "issues" if isinstance(payload.get("issue"), dict)
+             else "branch_protection_rule" if isinstance(payload.get("rule"), dict)
+             else "repository_ruleset" if isinstance(payload.get("repository_ruleset"), dict)
              else "check_suite" if isinstance(suite, dict) else "pull_request")
     return {"time": util.now_iso(), "gate": _clip(gate, 40), "event": event,
             "action": _clip(payload.get("action"), 40),

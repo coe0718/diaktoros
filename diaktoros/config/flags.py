@@ -15,6 +15,7 @@ _BOOLEANS = {
     "fix_ci": " (true hands a failed required check on a fixer's PR to the fixer)",
     "ci_webhook": " (true acts on a finished CI run when GitHub reports it, not at the next sweep)",
     "comment_webhook": " (true wakes the issue fixer on a maintainer's reply when GitHub reports it)",
+    "protection_webhook": " (true re-runs the protection check when the base's rules change)",
     "attribution": " (true signs what the loop posts; false turns it off)",
 }
 

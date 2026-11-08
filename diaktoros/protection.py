@@ -26,11 +26,13 @@ class Protection:
     id it is pinned to, ``None`` for any source. ``approvals``: the most approving reviews any rule
     requires. ``unread``: the reads that did not answer (both unread: nothing is known).
     ``other_checks``: a read that answered requires some status check besides the merge check
-    (#1240: then the unread half may well require the merge check too)."""
+    (#1240: then the unread half may well require the merge check too). ``checks``: every status
+    check a read that answered requires, the merge check among them (#683)."""
     sources: list = field(default_factory=list)
     approvals: int = 0
     unread: list = field(default_factory=list)
     other_checks: bool = False
+    checks: set = field(default_factory=set)
 
     @property
     def known(self) -> bool:
@@ -81,6 +83,7 @@ def read(loop: dict, login: str | None = None) -> Protection:
                 found.sources += [c.get("integration_id") for c in listed
                                   if c.get("context") == ci.MERGE_CHECK]
                 found.other_checks |= any(c.get("context") != ci.MERGE_CHECK for c in listed)
+                found.checks |= {str(c["context"]) for c in listed if c.get("context")}
             elif rule.get("type") == "pull_request":
                 found.approvals = max(found.approvals,
                                       _count(params.get("required_approving_review_count")))
@@ -98,6 +101,7 @@ def read(loop: dict, login: str | None = None) -> Protection:
                 found.sources.append(None)
             found.other_checks |= any(c != ci.MERGE_CHECK for c in contexts) or any(
                 c.get("context") != ci.MERGE_CHECK for c in listed)
+            found.checks |= set(contexts) | {str(c["context"]) for c in listed if c.get("context")}
         reviews = classic.data.get("required_pull_request_reviews")
         if isinstance(reviews, dict):
             found.approvals = max(found.approvals,

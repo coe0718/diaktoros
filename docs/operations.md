@@ -289,6 +289,13 @@ Likewise a maintainer's reply to the issue fixer's comment or ask waits for the 
 unless `comment_webhook` is on (#680): then GitHub's `issue_comment` event queues the next fix
 turn when the reply is posted, on the same terms. The sweep stays the backstop.
 
+A change to the base's protection is otherwise seen only by `doctor`. With `protection_webhook`
+on (#683), GitHub's `branch_protection_rule` and `repository_ruleset` events re-read the base's
+protection when a rule changes, and an urgent `protection` notice names any check the loop
+expects that the base no longer requires: a check in `required_checks`, or `diaktoros/review`
+when the loop posts it. A rule on another branch reads nothing. `doctor` stays the check of
+record, for organization rulesets too, which may send no repository event.
+
 CI fixes have their own budget, `ci_fix_cap` CI-fix turns per PR (default 3, across its
 heads), outside the reviewer's verdict cap (#539). A red head goes to the fixer first,
 whether or not `review_after_ci` is on (#579): the reviewer's turn is held and its CI-fix turn queued at once, so no

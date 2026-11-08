@@ -528,6 +528,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer (default: the plugin setting, off) |
 | `--ci-webhook` | `on` \| `off` |  | act on a finished CI run when GitHub reports it: the fixer's hook also carries check_suite (default: the plugin setting, off) |
 | `--comment-webhook` | `on` \| `off` |  | wake the issue fixer on a maintainer's issue reply when GitHub reports it: the triage hook also carries issue_comment (default: the plugin setting, off) |
+| `--protection-webhook` | `on` \| `off` |  | re-check the base's protection when its rules change: the reviewer's hook also carries branch_protection_rule and repository_ruleset (default: the plugin setting, off) |
 | `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name for a maintainer (default: the plugin setting, off) |
 | `--adjudicator-approves` | `on` \| `off` |  | on an ACCEPT ruling with green checks, approve as the adjudicator login and dismiss the change request it overruled (default: the plugin setting, off) |
 | `--adjudicator-file-issues` | `on` \| `off` |  | file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found (default: the plugin setting, off) |
@@ -629,7 +630,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--observer-route` | `OBSERVER_ROUTE` |  | route name for the read-only observer feed (default: <id>-observe) |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | Hermes profile the observer feed belongs to (its chat) — naming one switches the feed on |
 | `--observer-deliver` | `OBSERVER_DELIVER` | `telegram` | where the gateway delivers the feed (telegram, discord, ...); the feed never wakes an agent |
-| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set (default: all) |
+| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection (default: all) |
 | `--observer-digest-min` | `OBSERVER_DIGEST_MIN` |  | batch the feed into one message per this many minutes (0 = one notice per transition) |
 | `--observer-weekly-report` | `OBSERVER_WEEKLY_REPORT` |  | send the week's report to the feed once a week, at a weekday and UTC time like 'mon 09:00' (default: none) |
 | `--observer-urgent-route` | `OBSERVER_URGENT_ROUTE` |  | second route for urgent notices (failed, held, escalation, ruling, stall, conflict, uncertain); routine ones keep the main feed |
@@ -645,6 +646,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer, one turn per head; needs unattended fixer pushes (default off) |
 | `--ci-webhook` | `on` \| `off` |  | act on a finished CI run when GitHub reports it: the fixer's hook also carries check_suite (default off) |
 | `--comment-webhook` | `on` \| `off` |  | wake the issue fixer on a maintainer's issue reply when GitHub reports it: the triage hook also carries issue_comment (default off) |
+| `--protection-webhook` | `on` \| `off` |  | re-check the base's protection when its rules change: the reviewer's hook also carries branch_protection_rule and repository_ruleset (default off) |
 | `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name for a maintainer; needs unattended fixer pushes (default off) |
 | `--adjudicator-approves` | `on` \| `off` |  | on an ACCEPT ruling with green checks, approve as the adjudicator login and dismiss the change request it overruled (default off) |
 | `--adjudicator-file-issues` | `on` \| `off` |  | file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found (default off) |
@@ -762,6 +764,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer (needs unattended fixer pushes), or stop |
 | `--ci-webhook` | `on` \| `off` |  | act on a finished CI run when GitHub reports it, not at the next sweep (then `apply --hooks` adds check_suite to the fixer's hook), or stop |
 | `--comment-webhook` | `on` \| `off` |  | wake the issue fixer on a maintainer's issue reply when GitHub reports it, not at the next sweep (then `apply --hooks` adds issue_comment to the triage hook), or stop |
+| `--protection-webhook` | `on` \| `off` |  | re-check the base's protection when its rules change, not only at `doctor` (then `apply --hooks` adds branch_protection_rule and repository_ruleset to the reviewer's hook), or stop |
 | `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name (other than their tests and docs) for a maintainer, or stop; needs unattended fixer pushes |
 | `--adjudicator-approves` | `on` \| `off` |  | on an ACCEPT ruling with green checks, approve as the adjudicator login and dismiss the change request it overruled, or stop; needs the adjudicator comment login |
 | `--adjudicator-file-issues` | `on` \| `off` |  | file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found, or stop |
@@ -822,7 +825,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--observer-route` | `OBSERVER_ROUTE` |  | route the observer feed delivers through |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | profile that owns the observer destination |
 | `--observer-deliver` | `OBSERVER_DELIVER` |  | where the gateway delivers the feed (telegram, discord, ...) |
-| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set (blank = all) |
+| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection (blank = all) |
 | `--observer-digest-min` | `OBSERVER_DIGEST_MIN` |  | batch the feed into one message per N minutes (0 = per transition) |
 | `--observer-weekly-report` | `OBSERVER_WEEKLY_REPORT` |  | the week's report once a week at a weekday and UTC time like 'mon 09:00' (blank = none) |
 | `--observer-urgent-route` | `OBSERVER_URGENT_ROUTE` |  | route for urgent notices only (blank = one feed for everything) |
@@ -1480,8 +1483,9 @@ not necessarily failure; exit 0 is not proof every gateway delivery was observed
 Shows, or with `--set` writes, the webhook of the GitHub App that delivers an `app-webhook` loop's
 events (#1239): its URL against the App's route (`dk-app-<slug>`), its content type, and the
 events it subscribes to against what the loop needs (`pull_request`, `pull_request_review`,
-`issues` with triage on, `check_suite` with `ci_webhook` on, and `issue_comment` with
-`comment_webhook` on).
+`issues` with triage on, `check_suite` with `ci_webhook` on, `issue_comment` with
+`comment_webhook` on, and `branch_protection_rule` and `repository_ruleset` with
+`protection_webhook` on).
 
 ```bash
 hermes dk app-webhook --loop "<loop-id>"

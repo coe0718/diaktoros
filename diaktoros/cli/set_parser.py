@@ -70,6 +70,10 @@ def _set_switch_flags(change) -> None:  # noqa: ANN001
             ("--comment-webhook", "wake the issue fixer on a maintainer's issue reply when GitHub "
                                   "reports it, not at the next sweep (then `apply --hooks` adds "
                                   "issue_comment to the triage hook), or stop"),
+            ("--protection-webhook", "re-check the base's protection when its rules change, not "
+                                     "only at `doctor` (then `apply --hooks` adds "
+                                     "branch_protection_rule and repository_ruleset to the "
+                                     "reviewer's hook), or stop"),
             ("--fixer-scope-lock", "hold a fix round that changes files its findings do not name "
                                    "(other than their tests and docs) for a maintainer, or stop; "
                                    "needs unattended fixer pushes"),
@@ -246,7 +250,7 @@ def _set_observer_flags(change) -> None:  # noqa: ANN001
     change.add_argument("--observer-events", default=None,
                         help="comma-separated transitions to send, from "
                              "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                             "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set "
+                             "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection "
                              "(blank = all)")
     change.add_argument("--observer-digest-min", type=int, default=None,
                         help="batch the feed into one message per N minutes (0 = per "

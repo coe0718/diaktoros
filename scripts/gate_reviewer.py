@@ -101,7 +101,12 @@ def loop_worked_on(loop: dict, st, number: int, pr: dict) -> bool:
 
 
 def main() -> None:
-    decide(json.load(sys.stdin))
+    payload = json.load(sys.stdin)
+    if isinstance(payload, dict) and (isinstance(payload.get("rule"), dict)
+                                      or isinstance(payload.get("repository_ruleset"), dict)):
+        from diaktoros import protection_event         # #683: the base's protection changed
+        protection_event.gate(*gate.context(payload), payload)
+    decide(payload)
 
 
 def breach_at_cap(loop: dict, st, number: int, head: str, rounds: int) -> None:
