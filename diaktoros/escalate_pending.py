@@ -13,10 +13,9 @@ watchdog drops it once the PR is no longer open.
 """
 from __future__ import annotations
 
-import json
 import time
 
-from . import gate
+from . import gate, state as state_mod
 
 FILE = "escalate-pending.json"
 TTL_S = 24 * 3600
@@ -35,15 +34,8 @@ def _live(entry, now: float) -> bool:
 def _read(st) -> dict:
     """The records, read without a lock or a write (writes are atomic replaces): ``explain`` stays
     read-only, and a gate on a PR with nothing pending touches nothing. Unreadable is empty, so
-    the loop then behaves as it did before #1246."""
-    try:
-        path = _path(st)
-        if not path.exists():
-            return {}
-        data = json.loads(path.read_text())
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
+    the loop then behaves as it did before #1246. ``state.read_record`` does the read."""
+    return state_mod.read_record(st, FILE)
 
 
 def get(st, number: int) -> dict | None:

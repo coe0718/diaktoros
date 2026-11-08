@@ -99,17 +99,6 @@ def scripts_dir() -> pathlib.Path:
     return plugin_root() / "scripts"
 
 
-def profile_dir(name: str) -> pathlib.Path:
-    """A seat profile's home: the root itself for ``default``, else ``profiles/<name>``.
-
-    That is the layout the gateway uses, so "does this profile exist" is answerable offline and
-    without asking the gateway anything.
-    """
-    if not name or name == "default":
-        return config.home()
-    return config.home() / "profiles" / name
-
-
 SHARED_JOB_NAME = "diaktoros watchdog"  # one shared job runs the shim (#60); see watchdog_job_name
 
 

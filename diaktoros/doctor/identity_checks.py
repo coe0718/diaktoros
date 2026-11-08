@@ -127,7 +127,7 @@ def check_credential(loop: dict, seat: str) -> doctor.Check:
                                     "is a shared credential")
             return doctor.Check(f"credential:{seat}", doctor.VERIFIED,
                                 f"{login} → {facts}, nonempty (identity and API access not checked)")
-    env = doctor.profile_dir(str(loop["seats"][seat].get("profile") or "")) / ".env"
+    env = config.profile_dir(str(loop["seats"][seat].get("profile") or "")) / ".env"
     if "GH_TOKEN" in doctor._env_keys(env):
         return doctor.Check(f"credential:{seat}", doctor.ABSENT,
                             f"nonempty GH_TOKEN in {env}, but no mapped token file for "
