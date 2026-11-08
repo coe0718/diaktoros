@@ -301,6 +301,32 @@ def _verify_routes(loop: dict, roles) -> None:
                 "verified; pick another route name")
 
 
+# A hooked seat's route: its prompt, and what it wakes the seat for (after the repo).
+_SEAT_ROUTES = {
+    "reviewer": (prompts.REVIEWER, "wake the reviewer for a new or requested review"),
+    "fixer": (prompts.FIXER, "wake the fixer on a changes-requested verdict"),
+    "triage": (prompts.TRIAGE, "triage a new issue from an allowlisted author"),
+}
+
+
+def _write_seat_route(loop: dict, role: str, name: str, common: dict) -> None:
+    """One seat's route. A hooked seat's events are its repo hook's (``config.hook_events``: the
+    gate's event plus each webhook this loop switched on, #681 #680 #683), so the route and the
+    hook never disagree; the adjudicator has no repo hook and wakes on ``pull_request``."""
+    if role in _SEAT_ROUTES:
+        prompt, wakes = _SEAT_ROUTES[role]
+        routes.new_route(name, profile=config.seat_profile(loop, role), prompt=prompt,
+                         events=config.hook_events(loop, role), deliver="discord",
+                         description=f"{loop['repo']} — {wakes}", **common)
+        return
+    adjudicator = loop.get("adjudicator") or {}
+    routes.new_route(name, profile=config.seat_profile(loop, "adjudicator"),
+                     prompt=prompts.ADJUDICATOR, events=["pull_request"],
+                     deliver=adjudicator.get("deliver", "telegram"),
+                     description=f"{loop['repo']} — adjudicate a loop that spent its budget",
+                     **common)
+
+
 def _install_routes(loop: dict, roles=None) -> dict:
     """Write (or rewrite) the loop's routes; return only the roles actually written.
 
@@ -321,30 +347,7 @@ def _install_routes(loop: dict, roles=None) -> dict:
         name = names[role]
         common = {"script": GATE_SCRIPT[role], "host": host,
                   "skills": [skill] if skill else []}
-        if role == "reviewer":
-            routes.new_route(name, profile=config.seat_profile(loop, "reviewer"),
-                             prompt=prompts.REVIEWER, events=["pull_request"],
-                             deliver="discord",
-                             description=f"{loop['repo']} — wake the reviewer for a new or "
-                                          "requested review", **common)
-        elif role == "fixer":
-            routes.new_route(name, profile=config.seat_profile(loop, "fixer"),
-                             prompt=prompts.FIXER, events=config.hook_events(loop, "fixer"),
-                             deliver="discord",
-                             description=f"{loop['repo']} — wake the fixer on a changes-requested "
-                                          "verdict", **common)
-        elif role == "triage":
-            routes.new_route(name, profile=config.seat_profile(loop, "triage"),
-                             prompt=prompts.TRIAGE, events=["issues"], deliver="discord",
-                             description=f"{loop['repo']} — triage a new issue from an "
-                                          "allowlisted author", **common)
-        else:
-            adjudicator = loop.get("adjudicator") or {}
-            routes.new_route(name, profile=config.seat_profile(loop, "adjudicator"),
-                             prompt=prompts.ADJUDICATOR, events=["pull_request"],
-                             deliver=adjudicator.get("deliver", "telegram"),
-                             description=f"{loop['repo']} — adjudicate a loop that spent its "
-                                          "budget", **common)
+        _write_seat_route(loop, role, name, common)
         written[role] = name
     if "app" in wanted and "app" in names:
         # #1239: one route per App, shared by every loop it delivers for, so its profile is the
