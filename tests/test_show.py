@@ -205,15 +205,39 @@ class ShowTests(_Base):
     @staticmethod
     def hand_spelled(source: str) -> list[int]:
         """Lines of strings in ``source`` naming ``dk fixer-push``, docstrings aside: a hint the
-        operator would type, which must come from ``config.fixer_push_enable_command``."""
+        operator would type, which must come from ``config.fixer_push_enable_command``.
+
+        Besides each string constant, the text of every ``+`` chain and every f-string is
+        joined before matching (#1480). Any part that is not a string (a placeholder, a name)
+        becomes a marker that may stand in for ``dk``, so ``"hermes dk " + "fixer-push"`` and
+        ``f"hermes {cmd} " f"fixer-push"`` count as hand-spelled too."""
         import ast
+        import re
+        marker = "\x00"
+
+        def text(node) -> str:
+            """The string ``node`` builds, with a marker for each part not known here."""
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                return node.value
+            if isinstance(node, ast.JoinedStr):
+                return "".join(text(part) for part in node.values)
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+                return text(node.left) + text(node.right)
+            return marker
+
+        def built(node) -> bool:
+            """Whether ``node`` builds a string: a constant, an f-string or a ``+`` chain."""
+            return (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    or isinstance(node, ast.JoinedStr)
+                    or isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add))
+
         tree = ast.parse(source)
         docs = {id(node.body[0].value) for node in ast.walk(tree)
                 if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
                 and node.body and isinstance(node.body[0], ast.Expr)}
-        return [node.lineno for node in ast.walk(tree)
-                if isinstance(node, ast.Constant) and isinstance(node.value, str)
-                and id(node) not in docs and "dk fixer-push" in node.value]
+        pattern = re.compile(f"(?:dk|{marker})[\\s{marker}]*fixer-push")
+        return sorted({node.lineno for node in ast.walk(tree)
+                       if built(node) and id(node) not in docs and pattern.search(text(node))})
 
     def test_no_hint_spells_the_fixer_push_command_by_hand(self):
         import pathlib
@@ -225,7 +249,10 @@ class ShowTests(_Base):
                     self.assertEqual(self.hand_spelled(path.read_text()), [])
         # #1477 review: the bare command was one of the broken hints; a docstring is not a hint.
         for hint in ('"(hermes dk fixer-push)"', 'f"run `hermes dk fixer-push --loop {x} --enable`"',
-                     '"hermes dk " "fixer-push --enable"'):
+                     '"hermes dk " "fixer-push --enable"',
+                     # #1480: a `+` chain, and an f-string split around a placeholder.
+                     '"hermes dk " + "fixer-push --enable"',
+                     'f"hermes {cmd} " f"fixer-push --loop {x}"'):
             with self.subTest(hint):
                 self.assertEqual(self.hand_spelled(f'"""``hermes dk fixer-push``."""\nnote = {hint}\n'), [2])
 
