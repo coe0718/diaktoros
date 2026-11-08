@@ -174,7 +174,11 @@ class Reconsider(Harness):
         plain = actions.review(self.loop(), 7)
         self.assertIn("already has a reviewer's verdict", plain["lines"][-1])
         self.assertEqual(self.keys, [])
-        self.reconsider()
+        # The ledger holds the reconsider turn once the (mocked) enqueue ran, as a real one would.
+        with mock.patch.object(actions, "_reviewer_runs",
+                               side_effect=lambda repo, n, head, key=None: int(
+                                   bool(key and self.keys))):
+            self.reconsider()
         self.assertEqual(self.keys, [("reviewer", 7, t.HEAD_A, RECONSIDER_KEY)])
         from diaktoros import state as state_mod
         entry = state_mod.state_for(self.loop()).reconsider_get(7, t.HEAD_A)
@@ -183,7 +187,9 @@ class Reconsider(Harness):
     def test_a_queued_reconsider_is_recorded_as_an_operator_step(self):
         from diaktoros import ledger, run_supervisor
         t.reset(prs={"7": approved()})
-        counts = iter([0, 0, 1])   # the reconsider check, the count before the gate, after it
+        # The reconsider check, the count before the gate, after it, and the reconsider turn the
+        # reason is kept for (#1384).
+        counts = iter([0, 0, 1, 1])
         with mock.patch.object(actions, "_reviewer_runs", side_effect=lambda *a: next(counts)):
             result = self.reconsider()
         self.assertEqual(result["code"], 0, result["lines"])
@@ -258,6 +264,55 @@ class Reconsider(Harness):
         self.assertEqual(self.queued(), {})
         # A held reconsider is no operator step (#1369 review F2): nothing was queued.
         self.assertEqual(self.operator_actions(), [])
+
+    def reason_stored(self):
+        from diaktoros import state as state_mod
+        return state_mod.state_for(self.loop()).reconsider_get(7, t.HEAD_A)
+
+    def test_a_reconsider_the_gate_refuses_leaves_no_reason_behind(self):
+        # #1384: the gate's own refusals (escalated head, review out, human hold, review cap)
+        # run after the reason is written; a reconsider that started nothing must not keep it.
+        from diaktoros import state as state_mod
+        t.reset(prs={"7": approved()})
+        state_mod.state_for(self.loop()).human_hold_set(7, t.HEAD_A, "touches human_paths")
+        result = self.reconsider()
+        self.assertEqual(result["code"], 1, result["lines"])
+        self.assertIn("waits for a person's approval", result["lines"][-1])
+        self.assertEqual(self.keys, [])
+        self.assertIsNone(self.reason_stored())
+
+    def test_a_reconsider_with_a_review_out_leaves_no_reason_behind(self):
+        from diaktoros import state as state_mod
+        t.reset(prs={"7": approved()})
+        state_mod.state_for(self.loop()).inflight(f"review:7:{t.HEAD_A}", record=True)
+        result = self.reconsider()
+        self.assertEqual(result["code"], 1, result["lines"])
+        self.assertIn("is already out", result["lines"][-1])
+        self.assertIsNone(self.reason_stored())
+
+    def test_a_held_reconsider_leaves_no_reason_behind(self):
+        t.reset(prs={"7": approved()})
+        with mock.patch("diaktoros.gate.enqueue_isolated",
+                        side_effect=RuntimeError("no private runtime")):
+            result = self.reconsider()
+        self.assertEqual(result["code"], 2, result["lines"])
+        self.assertIsNone(self.reason_stored())
+
+    def test_a_refused_reconsider_keeps_a_newer_reason(self):
+        # Only this call's own entry is taken back: one another reconsider wrote meanwhile stays.
+        from diaktoros import state as state_mod
+        t.reset(prs={"7": approved()})
+        st = state_mod.state_for(self.loop())
+        st.human_hold_set(7, t.HEAD_A, "touches human_paths")
+        real = actions._ask_gate
+
+        def ask(*a, **kw):
+            code = real(*a, **kw)
+            st.reconsider_record(7, t.HEAD_A, "a newer reason")
+            return code
+        with mock.patch.object(actions, "_ask_gate", side_effect=ask):
+            self.reconsider()
+        self.assertEqual(self.reason_stored()["reason"], "a newer reason")
 
     def operator_actions(self):
         from diaktoros import ledger, run_supervisor

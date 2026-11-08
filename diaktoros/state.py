@@ -1265,16 +1265,37 @@ class LoopState:
 
     RECONSIDER_REASON_MAX = 2000
 
-    def reconsider_record(self, number: int, head: str, reason: str) -> None:
+    def reconsider_record(self, number: int, head: str, reason: str) -> tuple[dict, dict | None]:
         """A maintainer's reason for one fresh review at ``head`` (``review --reconsider``), for
-        that turn's prompt. Written before the gate queues the turn; the latest head's wins."""
+        that turn's prompt. Written before the gate queues the turn (the worker it arms may claim
+        the turn at once); the latest head's wins. Returns ``(written, previous)``, for
+        ``reconsider_forget`` when the gate then queues no turn (#1384)."""
         with self.locked():
             path = self.dir / "reconsider.json"
             data = self._load(path, {})
             data = data if isinstance(data, dict) else {}
-            data[str(number)] = {"head": head, "reason": str(reason)[:self.RECONSIDER_REASON_MAX],
-                                 "at": time.time()}
+            previous = data.get(str(number))
+            written = {"head": head, "reason": str(reason)[:self.RECONSIDER_REASON_MAX],
+                       "at": time.time()}
+            data[str(number)] = written
             self._save_strict(path, data)
+            return written, previous if isinstance(previous, dict) else None
+
+    def reconsider_forget(self, number: int, written: dict, previous: dict | None) -> bool:
+        """Undo ``reconsider_record`` for a reconsider that queued no turn (#1384): put back
+        ``previous``, or drop the entry, but only while the stored entry is still ``written``,
+        so a later reconsider's reason is never removed. Returns whether it was undone."""
+        with self.locked():
+            path = self.dir / "reconsider.json"
+            data = self._load(path, {})
+            if not isinstance(data, dict) or data.get(str(number)) != written:
+                return False
+            if previous is None:
+                del data[str(number)]
+            else:
+                data[str(number)] = previous
+            self._save_strict(path, data)
+            return True
 
     def reconsider_get(self, number: int, head: str) -> dict | None:
         """The maintainer's reconsider of this PR at ``head``, or None."""
