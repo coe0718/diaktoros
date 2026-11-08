@@ -596,6 +596,24 @@ class LedgerRecords:
                                (repo, number)).fetchall()
         return [row[0] for row in rows]
 
+    def issue_fix_comment_waits(self, repo: str, since: float) -> list[dict]:
+        """The issues whose latest issue-fix write is a comment posted since ``since`` (#663):
+        ``{number, comment_id, began, active}``, where ``began`` is when the issue's newest
+        issue-fix run was queued and ``active`` whether one has not ended."""
+        ended = ",".join("?" * len(run_supervisor.NOT_ENDED))
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT f.number, f.comment_id, MAX(r.created), "
+                f"SUM(r.state IN ({ended})) FROM issue_fixes f "
+                "JOIN runs r ON r.repo=f.repo AND r.pr=f.number AND r.seat='issue_fixer' "
+                "WHERE f.repo=? AND f.kind='comment' AND f.state='posted' "
+                "AND f.comment_id IS NOT NULL AND f.created>=? AND f.created=("
+                "SELECT MAX(g.created) FROM issue_fixes g WHERE g.repo=f.repo "
+                "AND g.number=f.number AND g.state!='denied') GROUP BY f.number, f.comment_id",
+                (*run_supervisor.NOT_ENDED, repo, since)).fetchall()
+        return [{"number": number, "comment_id": comment_id, "began": began, "active": bool(active)}
+                for number, comment_id, began, active in rows]
+
     def issue_fix_result(self, run_id: str) -> dict | None:
         with self._connect() as con:
             row = con.execute('SELECT * FROM issue_fixes WHERE run_id=?', (run_id,)).fetchone()
