@@ -15,6 +15,7 @@ from .. import config, onboarding, util
 from . import checks as cli_checks
 from . import common as cli_common
 from . import install as cli_install
+from . import seat_flags
 from ..config import lists
 from ..config import prices
 from ..config import settings_form
@@ -228,10 +229,8 @@ def _setup_setting_argv(args, d: dict, interactive: bool) -> list[str]:
                           "adjudicator_file_issues", "change_proof"))
     if getattr(args, "acknowledge_branch_push", False):
         argv.append("--acknowledge-branch-push")
-    argv += _given(args, ("reviewer_max_steps", "fixer_max_steps", "reviewer_daily_tokens",
-                          "fixer_daily_tokens", "shadow_daily_tokens", "fix_daily_turns",
-                          "shadow_concurrency", "triage_concurrency",
-                          "review_only_cap", "review_only_daily", "ci_fix_cap", "change_proof_max"))
+    argv += _given(args, seat_flags.forwarded())
+    argv += _given(args, ("fix_daily_turns", "review_only_cap", "review_only_daily", "ci_fix_cap", "change_proof_max"))
     return argv
 
 def _setup_check_argv(args, d: dict, interactive: bool) -> list[str]:
@@ -525,8 +524,6 @@ def _setup_run_flags(first) -> None:  # noqa: ANN001
     first.add_argument("--arm", action="store_true",
                        help="arm the hooks after a clean doctor and selftest")
     for flag, what in (("reviewer", "reviewer GitHub login"), ("fixer", "fixer GitHub login"),
-                       ("reviewer-profile", "reviewer's Hermes profile"),
-                       ("fixer-profile", "fixer's Hermes profile"),
                        ("reviewer-token", "reviewer's token file"),
                        ("fixer-token", "fixer's token file"),
                        ("read-token", "reader login (its own account)"),
@@ -642,28 +639,9 @@ def _setup_switch_flags(first) -> None:  # noqa: ANN001
 
 
 def _setup_turn_flags(first) -> None:  # noqa: ANN001
-    """``setup``: each seat's steps, daily tokens and turns, and the shadow and triage capacity."""
-    first.add_argument("--reviewer-max-steps", type=int, default=None,
-                       help="agent steps one reviewer turn may take, 8-200 (0 = default 60) "
-                            "(default: the plugin setting)")
-    first.add_argument("--fixer-max-steps", type=int, default=None,
-                       help="agent steps one fixer or issue-fix turn may take, 8-200 "
-                            "(0 = default 80) (default: the plugin setting)")
-    first.add_argument("--reviewer-daily-tokens", type=int, default=None,
-                       help="most tokens the reviewer may spend per day; once spent the next "
-                            "turn waits for midnight (0 = none) (default: the plugin setting)")
-    first.add_argument("--shadow-daily-tokens", type=int, default=None,
-                      help="most tokens shadow reviews may spend per day; once spent the next waits "
-                           "for midnight (0 = none) (default: the plugin setting)")
-    first.add_argument("--shadow-concurrency", type=int, default=None,
-                       help="shadow reviews that may run at once, >= 1 (default: the plugin "
-                            "setting, else 1)")
-    first.add_argument("--triage-concurrency", type=int, default=None,
-                       help="issue triages that may run at once, >= 1 (default: the plugin "
-                            "setting, else 1)")
-    first.add_argument("--fixer-daily-tokens", type=int, default=None,
-                       help="most tokens the fixer (and issue fixes) may spend per day "
-                            "(0 = none) (default: the plugin setting)")
+    """``setup``: the per-seat table shared with ``init`` and ``set`` (#1484): profiles, steps,
+    daily tokens, and the shadow and triage capacity; and the runtime paths."""
+    seat_flags.add(first, "setup")
     first.add_argument("--fix-daily-turns", type=int, default=None,
                        help="issue-fix turns per day: refused here, a new loop has no "
                             "triage block; set it with `triage --enable ... --fix-daily-turns N` "
