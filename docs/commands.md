@@ -630,7 +630,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--observer-route` | `OBSERVER_ROUTE` |  | route name for the read-only observer feed (default: <id>-observe) |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | Hermes profile the observer feed belongs to (its chat) — naming one switches the feed on |
 | `--observer-deliver` | `OBSERVER_DELIVER` | `telegram` | where the gateway delivers the feed (telegram, discord, ...); the feed never wakes an agent |
-| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection (default: all) |
+| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined (default: all) |
 | `--observer-digest-min` | `OBSERVER_DIGEST_MIN` |  | batch the feed into one message per this many minutes (0 = one notice per transition) |
 | `--observer-weekly-report` | `OBSERVER_WEEKLY_REPORT` |  | send the week's report to the feed once a week, at a weekday and UTC time like 'mon 09:00' (default: none) |
 | `--observer-urgent-route` | `OBSERVER_URGENT_ROUTE` |  | second route for urgent notices (failed, held, escalation, ruling, stall, conflict, uncertain); routine ones keep the main feed |
@@ -825,7 +825,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--observer-route` | `OBSERVER_ROUTE` |  | route the observer feed delivers through |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | profile that owns the observer destination |
 | `--observer-deliver` | `OBSERVER_DELIVER` |  | where the gateway delivers the feed (telegram, discord, ...) |
-| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection (blank = all) |
+| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined (blank = all) |
 | `--observer-digest-min` | `OBSERVER_DIGEST_MIN` |  | batch the feed into one message per N minutes (0 = per transition) |
 | `--observer-weekly-report` | `OBSERVER_WEEKLY_REPORT` |  | the week's report once a week at a weekday and UTC time like 'mon 09:00' (blank = none) |
 | `--observer-urgent-route` | `OBSERVER_URGENT_ROUTE` |  | route for urgent notices only (blank = one feed for everything) |

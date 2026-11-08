@@ -32,6 +32,7 @@ import stat
 
 SOCKET = '/run/review-loop/broker/broker.sock'
 TRIAGE_COMMENT_MAX = 1000          # run_supervisor.issue_inputs.TRIAGE_COMMENT_MAX; runs standalone
+DECLINE_KINDS = ('size-limit', 'not-this-pr')   # ci_decline.KINDS (#1526); runs standalone
 MAX_FRAME = 768 * 1024           # broker_ipc.MAX_PUSH_REQUEST
 # A push or review is several GitHub calls plus git fetch/push (each up to 90s), all
 # host-side. Wait for the answer instead of timing out mid-write; the turn deadline is
@@ -339,6 +340,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument('--dispute', action='store_true',
                         help='request_review, with --answers-file and no push: every finding is '
                              'not a defect (cite commands run and output); no re-review is asked')
+    parser.add_argument('--decline', choices=DECLINE_KINDS,
+                        help='request_review, on a CI-fix turn, with --answers-file and no push: '
+                             'no push of this PR fixes the failure (size-limit: only a file over '
+                             'its size limit fails; not-this-pr: a flaky job, an outage, a '
+                             'workflow problem). Posted once; the turn ends, never retried')
     parser.add_argument('--title', help='open_pr: the PR title; file_issue: the issue title '
                                         '(one line)')
     parser.add_argument('--repro', nargs='+', default=[],
@@ -414,7 +420,8 @@ def _request_review(parser, args):
             body = read_answers(args.answers_file)
         except (ManifestError, OSError, UnicodeError) as exc:
             parser.error(f'request_review refused before sending (your request is unspent): {exc}')
-    extra = {'verdict': 'DISPUTE'} if args.dispute else {}
+    extra = ({'verdict': 'DISPUTE'} if args.dispute else
+             {'verdict': f'DECLINE:{args.decline}'} if args.decline else {})
     return lambda: call('request_review', body=body, **extra)
 
 
@@ -425,6 +432,10 @@ def main() -> None:
         parser.error('--answers-file is a request_review option')
     if args.dispute and (args.operation != 'request_review' or not args.answers_file):
         parser.error('--dispute is a request_review option and needs --answers-file')
+    if args.decline and (args.operation != 'request_review' or not args.answers_file
+                         or args.dispute):
+        parser.error('--decline is a request_review option, needs --answers-file, and is not a '
+                     '--dispute')
     if args.comment_file and args.operation != 'triage':
         parser.error('--comment-file is a triage option')
     if args.label and args.operation not in ('triage', 'file_issue'):

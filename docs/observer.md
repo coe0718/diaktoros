@@ -83,6 +83,7 @@ and a PR link. It does not contain the diff, review body, GitHub credentials or 
 | `ready_set` | The set `hermes dk ready` lists changed (a PR became ready or stopped being, the order changed, or nothing is ready now), once per change (#654). Found by the watchdog sweep, which reads GitHub for it only while the feed subscribes to this event; the first sweep records the set silently. Routine tier, so a digest batches it | You merge the listed PRs |
 | `human_paths` | The reviewer would approve, but the PR's diff touches a `human_paths` glob (#478) or is too large to list, so the approval is left to a person and the head is held, once per PR and head, naming the paths. Urgent tier | A person has looked at those paths: a human must approve the PR |
 | `protection` | A classic branch protection rule or a repository ruleset that may cover the base changed, and the base no longer requires a check the loop expects (each of `required_checks`, and `diaktoros/review` when the loop posts it), naming them, once per set of lost checks (#683). Only with `protection_webhook` on; `doctor` finds the same without it. Urgent tier | You restore the requirement, or change `required_checks` to match |
+| `ci_declined` | A CI-fix turn declined to push (#1526): only a file over a size limit fails (`size-limit`), or the failure is not in the PR's code (`not-this-pr`). Once per run, with the fixer's reason; the same reason is the fixer's PR comment. The run ends succeeded and nothing retries it. Urgent tier | A maintainer splits the file or raises its baseline, or re-runs the failed job; a new head gets a CI fix again |
 
 The later events (the last rows of the table) were added after the first eight. A feed with an explicit `events` list
 does not get them until they are added to it (`set --observer-events …`); a feed with no list
@@ -179,7 +180,7 @@ The tier is fixed per event in `diaktoros/observer.py` (`URGENT_EVENTS`):
 
 | Tier | Events | With a digest set |
 | --- | --- | --- |
-| Urgent | `failed` (first attempt and final), `held`, `escalation`, `ruling`, `stall`, `conflict`, `main_red`, `stale_approval`, `human_paths`, `protection`, and any notice whose outcome is `uncertain` | Sent immediately, never batched |
+| Urgent | `failed` (first attempt and final), `held`, `escalation`, `ruling`, `stall`, `conflict`, `main_red`, `stale_approval`, `human_paths`, `protection`, `ci_declined`, and any notice whose outcome is `uncertain` | Sent immediately, never batched |
 | Routine | `opened`, `handoff`, `verdict`, `approved`, `triaged`, `fixing`, `fixed`, `ci_failed`, `closed`, `updated`, `ready_set` | Queued for the digest |
 
 With no `digest_min`, nothing changes: every event is sent at once. With

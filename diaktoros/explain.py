@@ -602,6 +602,11 @@ def _blockers(c) -> None:
             _read_blockers(c)
             _gate_blockers(c)
             _run_blockers(c)
+            from . import ci_decline        # a CI fix the fixer declined at this head (#1526)
+            declined = c.head and ci_decline.line(config.host_path("ledger"), c.repo, c.number,
+                                                  c.head, c.short)
+            if declined:
+                c.blockers.append(declined)
 
 
 def _read_blockers(c) -> None:

@@ -276,6 +276,16 @@ The fixer may propose a scoped patch through the normal broker; the loop does no
 GitHub Actions, modify `.github/` workflow files or merge the PR. A green result on a later
 head ends the repair path naturally.
 
+Some failures are not the fixer's to push a fix for: a flaky job, an outage or a workflow
+problem (`not-this-pr`), or a file over a size limit the repository enforces, which is a
+maintainer's split (`size-limit`). The CI-fix turn then **declines** (#1526):
+`request_review --answers-file F --decline KIND`, accepted only on a CI-fix turn that pushed
+nothing. The host records it in the ledger's `declines` table, posts the reason once on the PR as
+the fixer's answers, and sends one urgent `ci_declined` notice naming your move (split the file or
+raise its baseline; re-run the job). The run ends succeeded, so nothing retries it, and `explain`
+names the decline at that head. A redelivery or `retry` does not re-run it: a new head gets a CI
+fix again. A turn that ends without any broker call is still unpublished and retried once.
+
 By default the watchdog sweep notices a red check, so a CI-fix turn or a `main_red` notice
 can wait up to a sweep interval. With `ci_webhook` on (#681), GitHub's `check_suite` event
 does it when the run finishes: the host re-reads that commit's checks and runs the sweep's own

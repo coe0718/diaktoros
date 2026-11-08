@@ -145,7 +145,8 @@ class Worker(sm.Worker):
         self.assertIn("## Always-run check (set by the loop's operator)", text)
         self.assertIn("**publish anyway**", text)
         exception = ("The one exception, in this CI-fix turn: when all that fails is a file over "
-                     "a size limit the repository enforces, don't publish (step 2 above).")
+                     "a size limit the repository enforces, don't publish: decline it (step 2 "
+                     "above).")
         self.assertIn(exception, text)
         self.assertLess(text.index("**publish anyway**"), text.index(exception))
 

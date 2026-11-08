@@ -358,6 +358,7 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `human_paths` | The reviewer would approve, but the diff touches a `human_paths` glob (or is too large to list), so the approval is left to a person: once per PR and head. Urgent tier. |
 | `ready_set` | The set `hermes dk ready` lists changed (including becoming empty): once per change, found by the watchdog sweep; the first sweep records it silently. Routine tier. |
 | `protection` | A branch protection rule or ruleset that may cover the base changed, and the base no longer requires a check the loop expects (`required_checks`, and `diaktoros/review` when posted): once per set of lost checks, naming them. Only with `protection_webhook` on (#683). Urgent tier. |
+| `ci_declined` | A CI-fix turn declined to push because no push of this PR fixes the failure (a file over a size limit, or a failure outside the PR), naming the kind, the fixer's reason and the maintainer's move: once per run (#1526). Urgent tier. |
 
 ```bash
 hermes dk set --loop "<loop-id>" --observer-profile "<observer-profile>"

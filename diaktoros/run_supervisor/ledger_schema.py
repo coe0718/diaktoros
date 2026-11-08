@@ -54,6 +54,12 @@ CREATE TABLE IF NOT EXISTS disputes (
  notice TEXT NOT NULL DEFAULT 'pending', notice_delivered REAL,
  comment TEXT NOT NULL DEFAULT 'posting', comment_id INTEGER, comment_error TEXT
 );
+-- A CI-fix turn's decline (#1526): no push fixes this failure (a file over a size limit, or a
+-- failure outside the PR). Recorded before its answers comment; one per run (``ci_decline``).
+CREATE TABLE IF NOT EXISTS declines (
+ run_id TEXT PRIMARY KEY REFERENCES runs(id), repo TEXT NOT NULL, pr INTEGER NOT NULL,
+ head TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL, created REAL NOT NULL
+);
 -- One issue triage per run (#213), recorded BEFORE the labels or comment are written. state:
 -- recorded → posting → posted | uncertain (sent, outcome unknown: never replayed), or skipped
 -- (a person labelled it first) / denied (authorization failed) / nothing (no label applied).
