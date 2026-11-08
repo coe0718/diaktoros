@@ -158,6 +158,13 @@ If a fix is possible, the broker:
 2. Pushes one commit to new branch `diaktoros/issue-N` from the captured base SHA.
    The branch must be absent; an existing branch is never overwritten.
 3. Opens a PR against the configured base, with `Fixes #N` in its description.
+   Right after, it labels the PR, as the fixer, with the issue's labels as the host re-reads
+   them at write time (never labels the model chose): type, priority, `maintainer`, area and
+   provenance labels (`shadow-found`, `adjudicator-found`) are copied as they are; the fix label,
+   every `auto_fix_labels` entry and `diaktoros:hold` are left off, so no label on a PR reads
+   as a hand-off. This is one best-effort write: if it fails (for example a missing label
+   scope for the fixer's token), it is logged and audited as `labels_failed`, and the PR, the
+   review request and the ledger's state are unaffected. Later heads are never relabeled.
 4. Requests the configured reviewer. The opened PR then follows the regular review loop.
 
 The file-write boundary adds/replaces whole files; no deletes, renames or `.github/`
