@@ -3,6 +3,7 @@
 """
 from __future__ import annotations
 
+from . import seat_flags
 from . import set_command
 from ..config import prices
 
@@ -25,20 +26,11 @@ def add_set(sub) -> None:  # noqa: ANN001
 
 
 def _set_capacity_flags(change) -> None:  # noqa: ANN001
-    """``set``: how many PRs each seat works at once, and the verdict cap."""
+    """``set``: how many PRs a seat works at once by default, and the verdict cap (each seat's
+    own capacity is ``seat_flags``', added with the turn flags)."""
     change.add_argument("--concurrency", type=int,
                         help="default PRs per seat at once (1 = serialized; above 1 needs a "
                              "clone unless the isolated worker's runtime file exists, since each run gets its own)")
-    change.add_argument("--reviewer-concurrency", type=int, default=None,
-                        help="how many PRs the reviewer may work at once")
-    change.add_argument("--fixer-concurrency", type=int, default=None,
-                        help="how many PRs the fixer may work at once")
-    change.add_argument("--shadow-concurrency", type=int, default=None,
-                        help="how many shadow reviews may run at once (>= 1; only the shadow "
-                             "seat's own value: the loop default does not reach it)")
-    change.add_argument("--triage-concurrency", type=int, default=None,
-                        help="how many issue triages may run at once (>= 1; only the triage "
-                             "seat's own value: the loop default does not reach it)")
     change.add_argument("--cap", type=int, help="verdicts allowed before adjudication")
 
 
@@ -181,36 +173,9 @@ def _set_ingress_flags(change) -> None:  # noqa: ANN001
 
 
 def _set_turn_flags(change) -> None:  # noqa: ANN001
-    """``set``: each seat's turn budget, steps, and daily tokens and turns."""
-    change.add_argument("--reviewer-turn-budget", type=int, default=None,
-                        help="the reviewer seat's own turn budget in seconds")
-    change.add_argument("--fixer-turn-budget", type=int, default=None,
-                        help="the fixer seat's own turn budget in seconds")
-    change.add_argument("--reviewer-daily-turns", type=int, default=None,
-                        help="most reviewer turns per day on this loop; later ones wait for "
-                             "midnight (0 removes the cap)")
-    change.add_argument("--fixer-daily-turns", type=int, default=None,
-                        help="most fixer turns per day on this loop (0 removes the cap)")
-    change.add_argument("--reviewer-daily-tokens", type=int, default=None,
-                        help="most tokens (in + out) the reviewer may spend per day on this "
-                             "loop; once spent, the next turn waits for midnight (0 removes it)")
-    change.add_argument("--fixer-daily-tokens", type=int, default=None,
-                        help="most tokens the fixer (and issue fixes) may spend per day on "
-                             "this loop (0 removes it)")
-    change.add_argument("--shadow-daily-tokens", type=int, default=None,
-                        help="most tokens shadow reviews may spend per day on this loop; once "
-                             "spent, the next waits for midnight (0 removes it)")
-    change.add_argument("--shadow-daily-turns", type=int, default=None,
-                        help="most shadow reviews per day on this loop (0 removes the cap)")
-    change.add_argument("--shadow-turn-budget", type=int, default=None,
-                        help="a shadow review's own turn budget in seconds (0 = the loop's)")
-    change.add_argument("--shadow-max-steps", type=int, default=None,
-                        help="agent steps one shadow review may take, 8-200 (0 = default 100)")
-    change.add_argument("--reviewer-max-steps", type=int, default=None,
-                        help="agent steps one reviewer turn may take, 8-200 (0 = default 60)")
-    change.add_argument("--fixer-max-steps", type=int, default=None,
-                        help="agent steps one fixer or issue-fix turn may take, 8-200 "
-                             "(0 = default 80)")
+    """``set``: each seat's capacity, turn budget, steps, and daily tokens and turns, from the
+    per-seat table shared with ``init`` and ``setup`` (#1484)."""
+    seat_flags.add(change, "set")
 
 
 def _set_identity_flags(change) -> None:  # noqa: ANN001
