@@ -56,7 +56,10 @@ CALLERS = {
     "diaktoros/runtime_detect.py::write", "diaktoros/state.py::_atomic_publish",
     "diaktoros/state.py::LoopState._transition_write",
 }
-BY_HAND = {"os.replace", "os.rename", "tempfile.mkstemp", "tempfile.NamedTemporaryFile"}
+BY_HAND = {"os.replace", "os.rename", "tempfile.mkstemp", "tempfile.NamedTemporaryFile",
+           "shutil.move"}
+# ``Path.replace(tmp, target)`` / ``Path.rename(tmp, target)``: the unbound two-argument form.
+PATH_CLASS = {"pathlib.Path", "Path"}
 
 
 def sources(root: Path) -> list[Path]:
@@ -78,14 +81,45 @@ def calls(source: str):
     return found
 
 
+def aliases(tree: ast.AST) -> dict[str, str]:
+    """Each name the module's imports bind, anywhere in it, mapped to what it names.
+
+    ``import os as o`` binds ``o`` to ``os``; ``from os import replace as r`` binds ``r`` to
+    ``os.replace``. A plain ``import os`` binds ``os`` to itself.
+    """
+    bound = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    bound[alias.asname] = alias.name
+                else:
+                    head = alias.name.split(".")[0]
+                    bound[head] = head
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            for alias in node.names:
+                bound[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return bound
+
+
+def resolved(func: ast.expr, bound: dict[str, str]) -> str:
+    """The call target ``func`` spelled through the module's import aliases."""
+    named = ast.unparse(func)
+    head, dot, rest = named.partition(".")
+    return bound.get(head, head) + dot + rest
+
+
 def renames(source: str) -> dict[str, Counter]:
     """Each function's rename-publish operations, counted, by qualified name."""
     found = {}
+    bound = aliases(ast.parse(source))
     for func, _, node in calls(source):
-        named = ast.unparse(node.func)
-        # Path.replace / Path.rename onto another path (str.replace takes two args).
-        path_move = isinstance(node.func, ast.Attribute) and node.func.attr in ("replace", "rename") \
-            and len(node.args) == 1
+        named = resolved(node.func, bound)
+        is_move = isinstance(node.func, ast.Attribute) and node.func.attr in ("replace", "rename")
+        # Path.replace / Path.rename onto another path (str.replace takes two args), or the
+        # unbound ``Path.replace(tmp, target)``.
+        path_move = is_move and (len(node.args) == 1 or (
+            len(node.args) == 2 and named.rpartition(".")[0] in PATH_CLASS))
         if named in BY_HAND or path_move:
             found.setdefault(func, Counter())[named] += 1
     return found
@@ -184,6 +218,28 @@ class OneHome(unittest.TestCase):
             nested.parent.mkdir(parents=True)
             nested.write_text(rogue)
             self.assertEqual(sources(Path(temp)), [nested])
+
+    def test_aliased_and_from_imports_shutil_move_and_unbound_path_replace_are_caught(self):
+        # #1490: the scan matched literal spellings only, so any of these bypassed it.
+        spellings = {
+            "from os import replace": ("from os import replace\n", "replace(a, b)"),
+            "from os import rename as r": ("from os import rename as r\n", "r(a, b)"),
+            "import os as o": ("import os as o\n", "o.replace(a, b)"),
+            "from tempfile import mkstemp": ("from tempfile import mkstemp\n", "mkstemp()"),
+            "import tempfile as tf": ("import tempfile as tf\n", "tf.NamedTemporaryFile()"),
+            "shutil.move": ("import shutil\n", "shutil.move(a, b)"),
+            "from shutil import move": ("from shutil import move\n", "move(a, b)"),
+            "Path.replace(tmp, target)": ("from pathlib import Path\n", "Path.replace(a, b)"),
+            "pathlib.Path.rename(tmp, target)": ("import pathlib\n",
+                                                 "pathlib.Path.rename(a, b)"),
+        }
+        for case, (imports, rogue) in spellings.items():
+            with self.subTest(case):
+                source = f"{imports}\n\ndef rogue(a, b):\n    {rogue}\n"
+                self.assertEqual(len(by_hand("diaktoros/rogue.py", source)), 1, source)
+        # str.replace and other two-argument replaces stay out.
+        self.assertEqual(by_hand("diaktoros/x.py", "import os\n\ndef f(s):\n"
+                                 "    return s.replace('a', 'b')\n"), [])
 
     def test_every_exception_is_exactly_the_operations_its_function_has(self):
         for key, (why, ops) in DIFFERENT.items():
