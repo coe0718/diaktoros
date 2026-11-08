@@ -6,7 +6,7 @@ import unittest
 from unittest import mock
 
 import test_escalate as fixtures
-from diaktoros import gate, gh, one_shot_action as actions
+from diaktoros import config, escalate_action, gate, gh, one_shot_action as actions
 
 
 class ConfirmedActions(fixtures.Base):
@@ -175,7 +175,7 @@ class ConfirmedActions(fixtures.Base):
                                 if change == "reviews":
                                     self.reviews.append(fixtures.verdict(rid=6))
                                 elif change == "config":
-                                    path = actions.config.config_dir() / "one.json"
+                                    path = config.config_dir() / "one.json"
                                     data = json.loads(path.read_text())
                                     data["cap"] = 99
                                     path.write_text(json.dumps(data))
@@ -194,7 +194,7 @@ class ConfirmedActions(fixtures.Base):
                         calls += 1
                         return list(rows)
                     with mock.patch.object(gate, "breach", side_effect=race), \
-                            mock.patch.object(actions, "_ledger_rows", side_effect=ledger_rows):
+                            mock.patch.object(escalate_action, "_ledger_rows", side_effect=ledger_rows):
                         result = actions.confirmed_perform(self.loop, "escalate", preview["confirmation"], pr=7)
                 self.assertFalse(result["ok"], result)
                 wake.assert_not_called()
@@ -262,7 +262,7 @@ class ConfirmedActions(fixtures.Base):
         self.assertEqual(result["code"], 2)
 
     def test_plan_and_cli_use_the_same_escalation_selector(self):
-        with self.github(), mock.patch.object(actions, "_escalation_decision", wraps=actions._escalation_decision) as select:
+        with self.github(), mock.patch.object(escalate_action, "_escalation_decision", wraps=escalate_action._escalation_decision) as select:
             preview = actions.plan(self.loop, "escalate", pr=7)
             self.assertTrue(preview["eligible"])
             result = actions.perform_escalate(self.loop, 7)
