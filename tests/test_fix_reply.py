@@ -190,12 +190,169 @@ class Replies(base.Gate):
                       " ".join(prompts.ISOLATED_ISSUE_FIX.split()))
 
 
+class Delivery(Replies):
+    """#680: with ``comment_webhook`` on, a maintainer's ``issue_comment`` wakes the fixer at once
+    (``fix_reply.on_comment``, from the triage gate). Everything but the sender and the number
+    is read again, as the sweep reads it; the sender is filtered before any read."""
+
+    def setUp(self):
+        super().setUp()
+        self.loop = {**self.loop, "comment_webhook": True}
+        self.github_reads = 0
+        api = gh.api
+
+        def counted(*args, **kwargs):
+            self.github_reads += 1
+            return api(*args, **kwargs)
+        patch = mock.patch.object(gh, "api", counted)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def comment(self, action="created", sender="Jeremy", on_pr=False):
+        body = {**issue(), **({"pull_request": {"url": "x"}} if on_pr else {})}
+        return {"action": action, "comment": {"id": 201, "user": {"login": sender}, "body": "B"},
+                "issue": body, "sender": {"login": sender}, "repository": {"full_name": REPO}}
+
+    def deliver(self, payload):
+        from diaktoros import util
+        recorded = []
+        with mock.patch.object(util, "_DECISION_RECORDER",
+                               lambda reason, decision: recorded.append((decision, reason))), \
+                self.assertRaises(SystemExit):
+            fix_reply.on_comment(self.loop, payload)
+        return recorded[-1]
+
+    def test_a_maintainers_reply_queues_one_turn_within_one_delivery(self):
+        self.reply(201, "jeremy")
+        decision, reason = self.deliver(self.comment())
+        self.assertEqual(decision, "accepted", reason)
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:reply201")])
+        self.deliver(self.comment())                   # redelivered: the queued turn answers it
+        self.assertEqual(len(self.enqueued), 1)
+
+    def test_what_is_not_a_maintainers_new_issue_reply_reads_nothing(self):
+        self.reply(201, "jeremy")                      # a reply is there to find, if it looked
+        self.loop = {**self.loop, "triage": {**self.loop["triage"],
+                                             "maintainers": ["jeremy", "fix"]}}
+        for name, payload in (("edited", self.comment(action="edited")),
+                              ("deleted", self.comment(action="deleted")),
+                              ("a stranger", self.comment(sender="stranger")),
+                              ("the fixer seat, though listed", self.comment(sender="fix")),
+                              ("on a PR", self.comment(on_pr=True))):
+            with self.subTest(name):
+                decision, reason = self.deliver(payload)
+                self.assertEqual(decision, "declined", reason)
+                self.assertEqual((self.github_reads, self.reads, self.enqueued), (0, 0, []))
+
+    def test_an_answer_to_an_ask_resumes_it_at_once_and_no_other_issues(self):
+        self.st.fix_ask_set(12, "question", 100, "Which API shape?")
+        self.st.fix_ask_set(13, "question", 100, "And this one?")   # answered too, by the sweep's
+        self.reply(201, "jeremy")
+        with mock.patch("diaktoros.run_supervisor.issue_inputs.issue_fix_issue",
+                        lambda loop, n: issue(number=n)):
+            decision, reason = self.deliver(self.comment())
+        self.assertEqual(decision, "accepted", reason)
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:ask1")])
+        self.assertEqual(list(self.st.fix_ask_open()), [13])
+
+    def test_a_reply_while_a_turn_runs_waits_for_it_to_end(self):
+        self.comment_turn(at=TURN + 900, state="running", key="issue-fix:again")
+        self.reply(201, "jeremy", at=TURN + 1200)
+        self.assertEqual(self.deliver(self.comment())[0], "declined")
+        self.assertEqual(self.enqueued, [])
+
+    def test_with_the_event_off_the_delivery_does_nothing_and_the_sweep_covers_it(self):
+        self.loop = {**self.loop, "comment_webhook": False}
+        self.reply(201, "jeremy")
+        self.assertEqual(self.deliver(self.comment())[0], "declined")
+        self.assertEqual((self.github_reads, self.enqueued), (0, []))
+        self.sweep()
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:reply201")])
+
+    def test_no_comment_of_the_fixers_waiting_queues_nothing(self):
+        with ledger.connect(self.db) as con:
+            con.execute("DELETE FROM issue_fixes")
+        self.reply(201, "jeremy")
+        self.assertEqual(self.deliver(self.comment())[0], "declined")
+        self.assertEqual(self.enqueued, [])
+
+
+class Routing(unittest.TestCase):
+    LOOP = {"id": "widgets", "comment_webhook": True}
+
+    def test_the_triage_route_and_hook_carry_issue_comment_only_when_on(self):
+        from diaktoros import config
+        self.assertEqual(config.hook_events(self.LOOP, "triage"), ["issues", "issue_comment"])
+        self.assertEqual(config.hook_events({}, "triage"), ["issues"])
+        self.assertEqual(config.hook_events(self.LOOP, "fixer"), ["pull_request_review"])
+
+    def test_a_triage_route_without_the_event_is_drift_only_when_on(self):
+        from diaktoros import gate_shims, route_intent
+        entry = {"prompt": route_intent.ROUTE_PROMPT["triage"], "events": ["issues"]}
+        self.assertIn("events", gate_shims.contract_drift(self.LOOP, "triage", entry))
+        self.assertNotIn("events", gate_shims.contract_drift({}, "triage", entry))
+        entry["events"] = ["issues", "issue_comment"]
+        self.assertNotIn("events", gate_shims.contract_drift(self.LOOP, "triage", entry))
+
+    def test_an_apps_issue_comment_goes_to_triage_and_is_needed_only_when_on(self):
+        from diaktoros import app_ingress, config, gate_shims
+        comment = {"action": "created", "comment": {}, "issue": {"number": 12},
+                   "repository": {"full_name": REPO}}
+        self.assertEqual(app_ingress.gate_for(comment), ("gate_triage", ""))
+        self.assertIn("issue_comment", gate_shims.APP_ROUTE_EVENTS)
+        with mock.patch.object(config, "triage_enabled", return_value=True):
+            self.assertIn("issue_comment", app_ingress.events_needed(self.LOOP))
+            self.assertNotIn("issue_comment", app_ingress.events_needed({}))
+
+    def test_the_decision_record_names_the_event(self):
+        from diaktoros import gate_decisions
+        entry = gate_decisions._entry("gate_triage", {"action": "created", "comment": {},
+                                                      "issue": {"number": 12}}, "accepted", "x")
+        self.assertEqual((entry["event"], entry["number"]), ("issue_comment", 12))
+
+    def test_the_triage_gate_hands_a_comment_to_the_handler(self):
+        import importlib.util
+        import io
+        import json
+        path = Path(__file__).resolve().parents[1] / "scripts/gate_triage.py"
+        spec = importlib.util.spec_from_file_location("gate_triage_680", path)
+        gate_triage = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate_triage)
+        loop = {"id": "widgets", "triage": {"route": "widgets-triage"}}
+        handled = []
+        payload = {"action": "created", "comment": {}, "issue": {"number": 12}}
+        with mock.patch.object(gate_triage.sys, "stdin", io.StringIO(json.dumps(payload))), \
+                mock.patch.object(gate_triage.gate, "context", return_value=(loop, None)), \
+                mock.patch.object(fix_reply, "on_comment", side_effect=lambda *a: handled.append(a)
+                                  or (_ for _ in ()).throw(SystemExit(0))), \
+                self.assertRaises(SystemExit):
+            gate_triage.main()
+        self.assertEqual(handled, [(loop, payload)])
+
+
+import test_gate_shims as gs  # noqa: E402
+
+
+class SetPath(gs.Base):
+    def test_set_turns_it_on_and_off_and_show_names_it(self):
+        from diaktoros import config, show
+        self.install()
+        for value, want in (("on", True), ("off", False)):
+            rc, out = self.run_cli(["set", "--loop", "widgets", "--comment-webhook", value])
+            self.assertEqual(rc, 0, out)
+            self.assertIs(config.load_id("widgets")["comment_webhook"], want)
+        rows = {row.name: row for row in show._rows(config.load_id("widgets"))}
+        self.assertEqual(rows["comment_webhook"].off,
+                         "the watchdog sweep acts on a maintainer's issue reply")
+
+
 def load_tests(loader, tests, pattern):
     """Only this module's own tests: the borrowed fixtures' classes run in test_issue_fix."""
     suite = unittest.TestSuite()
-    for name in sorted(vars(Replies)):
-        if name.startswith("test_"):
-            suite.addTest(Replies(name))
+    for cls in (Replies, Delivery, Routing, SetPath):
+        for name in sorted(vars(cls)):
+            if name.startswith("test_"):
+                suite.addTest(cls(name))
     return suite
 
 

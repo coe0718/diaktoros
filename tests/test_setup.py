@@ -269,6 +269,19 @@ class Setup(unittest.TestCase):
     def test_setup_forwards_ci_webhook_off_over_a_form_that_turns_it_on(self):
         self.assertEqual(self.ci_webhook_install("off", form=True), (False, ["pull_request_review"]))
 
+    def comment_webhook_install(self, value: str, form: bool) -> bool:
+        """#680: ``setup --comment-webhook`` reaches the loop it writes over the form's value."""
+        rc, out = self.setup_cli(*self.flags(f"--comment-webhook={value}"),
+                                 settings={"comment_webhook": form})
+        self.assertEqual(rc, 0, out)
+        return config.load_id(LOOP_ID)["comment_webhook"]
+
+    def test_setup_forwards_comment_webhook_on(self):
+        self.assertIs(self.comment_webhook_install("on", form=False), True)
+
+    def test_setup_forwards_comment_webhook_off_over_a_form_that_turns_it_on(self):
+        self.assertIs(self.comment_webhook_install("off", form=True), False)
+
     def test_a_re_run_reports_and_changes_nothing(self):
         self.assertEqual(self.setup_cli(*self.flags())[0], 0)
         before = (LOOP_FILE.read_bytes(), self.runtime_file.read_bytes(), self.hermes.jobs)

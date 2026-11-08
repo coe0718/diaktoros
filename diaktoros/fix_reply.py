@@ -16,13 +16,19 @@ A turn is queued only when all of these hold:
 
 The new turn reads the issue's comments (#511), so it sees the reply. It is a maintainer's
 hand-off, so ``auto_fix_daily`` does not count it.
+
+With ``comment_webhook`` on, the triage route and hook carry ``issue_comment`` and a maintainer's
+comment does the same at once (``on_comment``, #680), for an ask too. The delivery is a nudge,
+never the truth (#679): only the sender and the issue number are taken from it, the sender is
+filtered before any read, and the rest is read again exactly as the sweep reads it. The sweep
+stays the backstop for a delivery that never arrives.
 """
 from __future__ import annotations
 
 import time
 
 from . import config, fix_hold, gate, gh
-from .util import epoch, log
+from .util import epoch, log, silence
 
 WAIT_DAYS = 14          # a comment older than this no longer waits for a reply
 WAITING = "fix-replies.json"    # the issues waiting for a reply at the last sweep, for ``status``
@@ -88,12 +94,55 @@ def wake(loop: dict, st, row: dict) -> str:
     return "queued"
 
 
-def newest_reply(loop: dict, comments: list, since: float) -> dict | None:
-    """The newest maintainer comment written after ``since``, else ``None``. A seat's own
-    comment never counts, even from a login that is also a maintainer."""
+def on_comment(loop: dict, payload: dict) -> None:
+    """The triage gate's path for an ``issue_comment`` delivery (#680). Always ends in a silence."""
+    from . import state as state_mod
+    if not config.comment_webhook(loop):
+        silence(f"issue_comment: comment_webhook is off for {loop['id']}; the watchdog sweep "
+                "reads replies")
+    if payload.get("action") != "created":
+        silence(f"issue_comment {payload.get('action')!r}: only a new comment is acted on")
+    sender = payload.get("sender")
+    login = str(sender.get("login") or "").lower() if isinstance(sender, dict) else ""
+    if login not in repliers(loop):
+        silence(f"issue_comment by {login or 'an unknown login'}: not a maintainer's reply")
+    issue = payload.get("issue")
+    number = issue.get("number") if isinstance(issue, dict) else None
+    if type(number) is not int or number < 1:
+        silence("issue_comment: payload has no issue number")
+    if "pull_request" in issue:
+        silence(f"#{number}: a comment on a PR; the seats read it in their next turn (#666)")
+    st = state_mod.state_for(loop)
+    if number in st.fix_ask_open():                 # an ask (#483) resumes by its own rules
+        lines: list[str] = []
+        fix_hold.sweep_asks(loop, st, lines, only=number)
+        if number in st.fix_ask_open():
+            silence(f"issue #{number}: the ask is still open " + " ".join(lines))
+        silence(f"issue #{number}: {login} answered the fixer's ask; fix turn resumed", "accepted")
+    rows = [row for row in gate.isolated_supervisor(loop).issue_fix_comment_waits(
+        loop["repo"], time.time() - WAIT_DAYS * 86400) if row["number"] == number]
+    if not rows or rows[0]["active"]:
+        silence(f"issue #{number}: no fixer comment waits for a reply")
+    try:
+        outcome = wake(loop, st, rows[0])
+    except Exception as exc:                        # the sweep retries it
+        silence(f"issue #{number}: reply seen, fix not queued: {type(exc).__name__}: {exc}")
+    if outcome != "queued":
+        silence(f"issue #{number}: no fix turn queued ({outcome})")
+    silence(f"issue #{number}: {login} replied; fix turn queued", "accepted")
+
+
+def repliers(loop: dict) -> set[str]:
+    """The logins whose comment wakes the fixer: the maintainers, never a seat's own login, even
+    one that is also listed as a maintainer."""
     seats = {config.seat_login(loop, "fixer").lower(), config.seat_login(loop, "reviewer").lower(),
              config.triage_login(loop)} - {""}
-    allowed = config.maintainers(loop) - seats
+    return config.maintainers(loop) - seats
+
+
+def newest_reply(loop: dict, comments: list, since: float) -> dict | None:
+    """The newest maintainer comment written after ``since`` (``repliers``), else ``None``."""
+    allowed = repliers(loop)
     found = None
     for comment in comments:
         user = comment.get("user") if isinstance(comment, dict) else None

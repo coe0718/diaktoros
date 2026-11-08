@@ -334,6 +334,11 @@ config_schema:
     type: bool
     default: false
     description: "On: a finished CI run is acted on when GitHub reports it: a red required check on a fixer's PR gets its notice and CI-fix turn, and a red base its notice, without waiting for the next watchdog sweep. Needs the fixer's route and repo hook to carry check_suite (`hermes dk apply --hooks` after turning it on). Off: the sweep acts on CI."
+  comment_webhook:
+    label: "Wake the fixer on an issue reply"
+    type: bool
+    default: false
+    description: "On: a maintainer's reply on an issue the fixer commented on or asked about queues its next fix turn when GitHub reports the comment, without waiting for the next watchdog sweep. Needs the triage route and repo hook to carry issue_comment (`hermes dk apply --hooks` after turning it on). Off: the sweep wakes it."
   fix_ci:
     label: "Fix a failed CI check"
     type: bool

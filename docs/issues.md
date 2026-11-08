@@ -199,6 +199,9 @@ to act on the newest maintainer comment after its own. It is a maintainer's hand
 `auto_fix_daily` does not count it. Until a reply comes, `status` and `explain` say the issue is
 waiting for one. An ask (above) is resumed by its own rules instead.
 
+With `comment_webhook` on (#680), the reply wakes it, or resumes an ask, when it is posted
+instead of at the next sweep.
+
 An issue is **plan-first** when it carries the `plan-first` label or its body is longer than
 4,000 characters. It must have an approved plan before any PR: the broker refuses `open_pr` until
 a maintainer posts `/loop approve`, and the fixer's prompt says so. The approval is remembered per
