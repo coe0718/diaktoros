@@ -530,7 +530,8 @@ class Dispatch(unittest.TestCase):
                 ({"action": "opened", "pull_request": pr, "repository": repo}, "gate_reviewer"),
                 ({"action": "opened", "issue": {}, "repository": repo}, "gate_triage"),
                 ({"zen": "Keep it simple.", "hook_id": 1}, ""),
-                ({"action": "created", "comment": {}, "issue": {}, "repository": repo}, ""),
+                ({"action": "created", "comment": {}, "issue": {}, "repository": repo}, "gate_triage"),
+                ({"action": "created", "comment": {}, "pull_request": pr, "repository": repo}, ""),
                 ({"action": "created", "installation": {}}, ""),
                 ({"ref": "refs/heads/main", "repository": repo}, "")):
             with self.subTest(want=want, keys=sorted(payload)):

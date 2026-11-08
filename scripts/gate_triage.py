@@ -114,6 +114,9 @@ def main() -> None:
     triage = loop.get("triage") or {}
     if not triage.get("route"):
         silence("issue triage is off for this loop")
+    if "comment" in payload:
+        from diaktoros import fix_reply
+        fix_reply.on_comment(loop, payload)         # issue_comment (#680): always silences
     if payload.get("action") == "labeled":
         fix(loop, payload)
     _resolve_declined(loop, payload)

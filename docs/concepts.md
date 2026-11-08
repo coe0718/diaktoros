@@ -39,7 +39,7 @@ A basic PR loop does not create the initial code or PR for you. You or your codi
 
 ## Event path: hook → route → gate → worker
 
-1. A **repository hook** on GitHub sends `pull_request` events to the reviewer route or `pull_request_review` events to the fixer route. Issue automation adds an issues hook. With `ci_webhook` on, the fixer's hook also carries `check_suite`, so a finished CI run is acted on at once (#681). Newly created hooks are paused unless explicitly armed.
+1. A **repository hook** on GitHub sends `pull_request` events to the reviewer route or `pull_request_review` events to the fixer route. Issue automation adds an issues hook. With `ci_webhook` on, the fixer's hook also carries `check_suite`, so a finished CI run is acted on at once (#681). With `comment_webhook` on, the issues hook also carries `issue_comment`, so a maintainer's reply to the issue fixer wakes its next turn at once (#680). Newly created hooks are paused unless explicitly armed.
 2. A **gateway route** binds the webhook URL/secret, serving profile and gate script. The public origin belongs to your gateway; its profile-qualified URL is part of seat identity.
 3. A **gate** reads live GitHub facts, checks eligibility and either holds/declines the event or queues an isolated turn.
 4. A host **worker** claims the queued turn, rechecks the live PR, prepares an exact-head snapshot and launches the seat inside bubblewrap.

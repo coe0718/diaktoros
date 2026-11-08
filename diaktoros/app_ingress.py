@@ -19,8 +19,8 @@ import sys
 FILE = "app-ingress.json"
 
 # The gate each event shape belongs to. A review payload also carries ``pull_request``, so it is
-# tested first; comment events (``issue_comment``, ``pull_request_review_comment``) carry a
-# ``comment`` and are not loop events.
+# tested first. A comment on an issue or PR (``issue_comment``, #680) is triage's; a review comment
+# (``pull_request_review_comment``) carries a ``comment`` and is not a loop event.
 GATES = ("gate_fixer", "gate_reviewer", "gate_triage")
 
 
@@ -30,10 +30,12 @@ def gate_for(payload: dict) -> tuple[str, str]:
         return "", "payload is not an object"
     if "zen" in payload:
         return "", "ping"
-    if "comment" in payload:
-        return "", "a comment event, not one the loop acts on"
     if not isinstance(payload.get("repository"), dict):
         return "", "no repository (an installation event)"
+    if "comment" in payload:
+        if isinstance(payload.get("issue"), dict):
+            return "gate_triage", ""            # a maintainer's reply may wake the fixer (#680)
+        return "", "a review comment, not one the loop acts on"
     if isinstance(payload.get("review"), dict) or isinstance(payload.get("check_suite"), dict):
         return "gate_fixer", ""                 # a finished CI run is the fixer gate's (#681)
     if isinstance(payload.get("pull_request"), dict):
@@ -144,12 +146,14 @@ def set_paused(st, value: bool) -> None:
 
 
 # The events an App's webhook must subscribe to for a loop: triage's only when it is on, and a
-# finished CI run's only with ``ci_webhook`` (#681).
+# finished CI run's only with ``ci_webhook`` (#681), and a comment's only with ``comment_webhook``
+# (#680).
 def events_needed(loop: dict) -> tuple[str, ...]:
     from . import config
     return (("pull_request", "pull_request_review")
             + (("issues",) if config.triage_enabled(loop) else ())
-            + ((config.CI_EVENT,) if config.ci_webhook(loop) else ()))
+            + ((config.CI_EVENT,) if config.ci_webhook(loop) else ())
+            + ((config.COMMENT_EVENT,) if config.comment_webhook(loop) else ()))
 
 
 def webhook_state(loop: dict) -> dict:

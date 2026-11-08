@@ -14,6 +14,7 @@ _BOOLEANS = {
     "change_proof": " (true runs a reviewed head's changed tests on its merge base and at the head)",
     "fix_ci": " (true hands a failed required check on a fixer's PR to the fixer)",
     "ci_webhook": " (true acts on a finished CI run when GitHub reports it, not at the next sweep)",
+    "comment_webhook": " (true wakes the issue fixer on a maintainer's reply when GitHub reports it)",
     "attribution": " (true signs what the loop posts; false turns it off)",
 }
 

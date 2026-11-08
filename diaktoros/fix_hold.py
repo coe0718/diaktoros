@@ -143,10 +143,13 @@ def reply_to(loop: dict, ask: dict, comments: list) -> tuple[str, str] | None:
     return None
 
 
-def sweep_asks(loop: dict, st, lines: list[str]) -> None:
-    """Resume each open ask a maintainer answered: save the handoff, queue a fresh turn."""
+def sweep_asks(loop: dict, st, lines: list[str], only: int | None = None) -> None:
+    """Resume each open ask a maintainer answered: save the handoff, queue a fresh turn. ``only``:
+    that issue's ask alone (a maintainer's comment on it, #680)."""
     from .run_supervisor import issue_inputs
     for number, ask in sorted(st.fix_ask_open().items()):
+        if only is not None and number != only:
+            continue
         comments, error = gh.issue_comments_read(loop, number)
         if comments is None:
             log(f"issue #{number}: replies unreadable, ask stays open: {error}")

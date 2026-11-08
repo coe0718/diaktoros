@@ -285,6 +285,10 @@ reviewer gate, as the sweep does for one that started no review. A suite that fi
 a sweep is running is noted, and that sweep acts on it before it ends, including one noted
 while it is acting. The sweep stays the backstop for a delivery that never arrives.
 
+Likewise a maintainer's reply to the issue fixer's comment or ask waits for the sweep (#663)
+unless `comment_webhook` is on (#680): then GitHub's `issue_comment` event queues the next fix
+turn when the reply is posted, on the same terms. The sweep stays the backstop.
+
 CI fixes have their own budget, `ci_fix_cap` CI-fix turns per PR (default 3, across its
 heads), outside the reviewer's verdict cap (#539). A red head goes to the fixer first,
 whether or not `review_after_ci` is on (#579): the reviewer's turn is held and its CI-fix turn queued at once, so no

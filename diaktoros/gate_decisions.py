@@ -37,6 +37,7 @@ def _entry(gate: str, payload: dict, decision: str, reason: str) -> dict:
         head = suite.get("head_sha") or ""
     sender = (payload.get("sender") or {}).get("login") if isinstance(payload.get("sender"), dict) else ""
     event = ("pull_request_review" if isinstance(payload.get("review"), dict)
+             else "issue_comment" if "comment" in payload and isinstance(payload.get("issue"), dict)
              else "issues" if isinstance(payload.get("issue"), dict)
              else "check_suite" if isinstance(suite, dict) else "pull_request")
     return {"time": util.now_iso(), "gate": _clip(gate, 40), "event": event,

@@ -348,6 +348,14 @@ SETTINGS_SCHEMA: dict = {
                                   "watchdog sweep. Needs the fixer's route and repo hook to carry "
                                   "check_suite (`hermes dk apply --hooks` after turning it on). "
                                   "Off: the sweep acts on CI."},
+    "comment_webhook": {"label": "Wake the fixer on an issue reply", "type": "bool",
+                        "default": False,
+                        "description": "On: a maintainer's reply on an issue the fixer commented "
+                                       "on or asked about queues its next fix turn when GitHub "
+                                       "reports the comment, without waiting for the next "
+                                       "watchdog sweep. Needs the triage route and repo hook to "
+                                       "carry issue_comment (`hermes dk apply --hooks` after "
+                                       "turning it on). Off: the sweep wakes it."},
     "fixer_scope_lock": {"label": "Hold fixes outside the findings' files", "type": "bool",
                          "default": False,
                          "description": "On: a fix round that changes files the open findings do "
@@ -592,8 +600,8 @@ def _apply_capacity(seats: dict, loop_raw: dict, d: dict, settings: dict | None)
 def _apply_switches(overlaid, d, settings) -> None:  # noqa: ANN001
     """``apply_settings``: the on/off and named settings, and the review-only and CI-fix limits."""
     # The on/off knobs, attribution (#197) among them, move only when the form names them.
-    for key in ("attribution", "review_after_ci", "fix_ci", "ci_webhook", "fixer_scope_lock",
-                "adjudicator_approves", "adjudicator_file_issues", "change_proof",
+    for key in ("attribution", "review_after_ci", "fix_ci", "ci_webhook", "comment_webhook",
+                "fixer_scope_lock", "adjudicator_approves", "adjudicator_file_issues", "change_proof",
                 "review_only_update"):
         if _form_value(settings, key) is not None:
             overlaid[key] = d[key]

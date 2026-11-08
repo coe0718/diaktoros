@@ -67,6 +67,9 @@ def _set_switch_flags(change) -> None:  # noqa: ANN001
             ("--ci-webhook", "act on a finished CI run when GitHub reports it, not at the next "
                              "sweep (then `apply --hooks` adds check_suite to the fixer's hook), "
                              "or stop"),
+            ("--comment-webhook", "wake the issue fixer on a maintainer's issue reply when GitHub "
+                                  "reports it, not at the next sweep (then `apply --hooks` adds "
+                                  "issue_comment to the triage hook), or stop"),
             ("--fixer-scope-lock", "hold a fix round that changes files its findings do not name "
                                    "(other than their tests and docs) for a maintainer, or stop; "
                                    "needs unattended fixer pushes"),

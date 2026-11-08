@@ -269,7 +269,8 @@ def _init_settings(args, d: dict) -> dict:
         # Each as asked, else the form's. review_only_update (host merge pushes to a review-only
         # author's branch) is also refused below unless acknowledged.
         **{key: cli_common._on_off(args, key, d[key]) for key in (
-            "review_after_ci", "fix_ci", "ci_webhook", "fixer_scope_lock", "adjudicator_approves",
+            "review_after_ci", "fix_ci", "ci_webhook", "comment_webhook", "fixer_scope_lock",
+            "adjudicator_approves",
             "adjudicator_file_issues", "change_proof", "review_only_update")},
         # The checks CI always runs, which a fixer running only its touched tests would miss.
         "fixer_check": (d["fixer_check"] if getattr(args, "fixer_check", None) is None
@@ -918,6 +919,8 @@ def _init_switch_flags(init, d) -> None:  # noqa: ANN001
                          "head; needs unattended fixer pushes"),
             ("--ci-webhook", "act on a finished CI run when GitHub reports it: the fixer's hook "
                              "also carries check_suite"),
+            ("--comment-webhook", "wake the issue fixer on a maintainer's issue reply when GitHub "
+                                  "reports it: the triage hook also carries issue_comment"),
             ("--fixer-scope-lock", "hold a fix round that changes files its findings do not name "
                                    "for a maintainer; needs unattended fixer pushes"),
             ("--adjudicator-approves", "on an ACCEPT ruling with green checks, approve as the "

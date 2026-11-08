@@ -350,7 +350,7 @@ def _install_routes(loop: dict, roles=None) -> dict:
         # #1239: one route per App, shared by every loop it delivers for, so its profile is the
         # host's default rather than any one loop's seat (loops must not rewrite it to their own).
         routes.new_route(names["app"], profile="default", prompt=prompts.APP_EVENTS,
-                         events=[*gate_shims.APP_EVENTS, config.CI_EVENT, "ping"],
+                         events=list(gate_shims.APP_ROUTE_EVENTS),
                          script=GATE_SCRIPT["app"], deliver="discord", host=host,
                          description=f"GitHub App {loop['ingress_app']} — events for every loop "
                                      "it delivers for")

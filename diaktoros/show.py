@@ -75,6 +75,7 @@ def _switches(loop: dict, schema, rows: list, enable: str) -> None:
             ("review_after_ci", "a review starts at once, with whatever CI has finished", ""),
             ("fix_ci", "red CI on fixer PRs waits for a review", pushes),
             ("ci_webhook", "the watchdog sweep acts on finished CI", ""),
+            ("comment_webhook", "the watchdog sweep acts on a maintainer's issue reply", ""),
             ("fixer_scope_lock", "a fix round may change any file", pushes),
             ("adjudicator_approves", "an ACCEPT ruling is left to you", login),
             ("adjudicator_file_issues", "a ruling's follow-ups stay in its comment", ""),
