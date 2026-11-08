@@ -470,7 +470,48 @@ def open_issue_pr(loop: dict, *, repo: str, number: int, branch: str, title: str
             or (result.get("head") or {}).get("ref") != branch):
         raise _denied("GitHub PR create did not return a successful response", why)
     _audit(loop, repo, result["number"], "", branch, "issue_fixer", "open_pr", login)
+    label_issue_pr(loop, repo=repo, number=number, pr=result["number"], login=login)
     return result["number"]
+
+
+def issue_pr_labels(loop: dict, issue: dict) -> list[str]:
+    """The labels an issue fix's PR copies from its issue (#2031): every label on the issue the
+    host re-read, minus the ones that hand work to the loop — ``triage.fix_label``, every
+    ``triage.auto_fix_labels`` entry (set or not in force) and the hold label — so that no label
+    on a PR ever reads as a hand-off. Type, priority, area and provenance labels go as they are."""
+    from . import pr_hold
+    triage = loop.get("triage") or {}
+    triggers = {str(x).casefold() for x in triage.get("auto_fix_labels") or []}
+    triggers |= {str(triage.get("fix_label") or "").casefold(), pr_hold.LABEL.casefold()}
+    names = [str((label or {}).get("name") or "") for label in issue.get("labels") or []
+             if isinstance(label, dict)]
+    return [name for name in names if name and name.casefold() not in triggers]
+
+
+def label_issue_pr(loop: dict, *, repo: str, number: int, pr: int, login: str) -> None:
+    """Label the issue fix's new PR like its issue (#2031), as the fixer: one write, right after
+    the PR exists. The labels come from the host's own re-read of the issue
+    (``issue_fix_issue``), never from the model. Best effort: a failure is logged and audited
+    (``labels_failed``) and never raised, so the PR open, the review request and the ledger's
+    ``opened`` state stand."""
+    from .run_supervisor import issue_inputs
+    from .util import log
+    try:
+        labels = issue_pr_labels(loop, issue_inputs.issue_fix_issue(loop, number))
+        if not labels:
+            return
+        result, why = _write(loop, f"/repos/{repo}/issues/{pr}/labels", method="POST",
+                             body={"labels": labels}, login=login)
+        if not isinstance(result, list):
+            raise _denied("GitHub label write did not return a successful response", why)
+        _audit(loop, repo, pr, "", "", "issue_fixer", "labels", login)
+    except Exception as exc:  # noqa: BLE001 - the PR is open: its outcome stands
+        log(f"PR #{pr} (fix of #{number}) not labeled like its issue: "
+            f"{type(exc).__name__}: {exc}")
+        try:
+            _audit(loop, repo, pr, "", "", "issue_fixer", "labels_failed", login)
+        except Exception as audit_exc:  # noqa: BLE001
+            log(f"audit record labels_failed not written for PR #{pr}: {audit_exc}")
 
 
 def request_issue_pr_review(loop: dict, *, repo: str, pr: int, login: str) -> None:

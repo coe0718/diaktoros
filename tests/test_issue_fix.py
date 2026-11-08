@@ -813,6 +813,51 @@ class BrokerWrite(Base):
             self.server._dispatch(json.dumps({"operation": "issue_comment",
                                               "body": "x"}).encode())
 
+    def labeled_issue(self, fail=False):
+        """The live issue carries type, priority, fix and area labels (#2031); the label write
+        answers with the PR's labels, or fails when ``fail``."""
+        self.live = issue(labels=("bug", "P2", LABEL, "webhooks"))
+        real = gh.api.side_effect
+
+        def api(loop, path, method="GET", body=None, login=None):
+            if path == f"/repos/{REPO}/issues/40/labels" and method == "POST":
+                self.calls.append((path, method, body, login))
+                if fail:
+                    raise OSError("label write lost")
+                return [{"name": name} for name in body["labels"]]
+            return real(loop, path, method, body, login)
+        gh.api.side_effect = api
+
+    def test_the_pr_is_labeled_like_its_issue_without_the_fix_label(self):
+        self.labeled_issue()
+        self.server._dispatch(self.open_pr())
+        pr, labels, request = self.posts()
+        self.assertEqual(pr[0], f"/repos/{REPO}/pulls")
+        self.assertEqual(labels, (f"/repos/{REPO}/issues/40/labels",
+                                  {"labels": ["bug", "P2", "webhooks"]}))
+        self.assertEqual(request[0], f"/repos/{REPO}/pulls/40/requested_reviewers")
+        self.assertEqual([c[3] for c in self.calls if c[0].endswith("/40/labels")], ["fix"])
+        self.assertEqual(self.sup.issue_fix_result(self.run_id)["state"], "requested")
+
+    def test_auto_fix_labels_are_not_copied_to_the_pr(self):
+        self.loop = {**self.loop, "triage": {**self.loop["triage"],
+                                             "auto_fix_labels": ["webhooks"]}}
+        self.labeled_issue()
+        self.server._dispatch(self.open_pr())
+        _, labels, _ = self.posts()
+        self.assertEqual(labels[1], {"labels": ["bug", "P2"]})
+
+    def test_a_failed_label_write_still_opens_the_pr_and_requests_review(self):
+        self.labeled_issue(fail=True)
+        self.server._dispatch(self.open_pr())
+        paths = [path for path, _ in self.posts()]
+        self.assertEqual(paths, [f"/repos/{REPO}/pulls", f"/repos/{REPO}/issues/40/labels",
+                                 f"/repos/{REPO}/pulls/40/requested_reviewers"])
+        result = self.sup.issue_fix_result(self.run_id)
+        self.assertEqual((result["state"], result["pr_number"]), ("requested", 40))
+        audit = (Path(self.loop["state_dir"]) / "broker-audit.jsonl").read_text()
+        self.assertIn('"operation": "labels_failed"', audit)
+
     def test_bad_requests_are_refused_before_the_write_is_spent(self):
         for raw in (self.open_pr(title=""), self.open_pr(title="two\nlines"),
                     self.open_pr(body=""), self.open_pr(manifest={"base_head": BASE}),
