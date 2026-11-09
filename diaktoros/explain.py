@@ -761,6 +761,28 @@ def _run_blockers(c) -> None:
                           f"fixer asks again")
 
 
+def _queue_blockers(c, declined: bool) -> None:
+    """The queue entry's blocker: a declined entry, a capacity wait, or a full seat. A hold or a
+    declined fixer entry already named above adds nothing; one a started turn's push-off blocker
+    displaced is still named declined, never capacity (#1613, #1614)."""
+    # A push-off blocker above for a started turn (a lock, mark or ledger row) names that turn,
+    # not the declined entry, so the entry gets its own line below (#1614).
+    started = c.push_off and (c.fixer_ended or c.fix_live) and not c.ruling
+    if c.fixer_queue_hold or (declined and not started):
+        pass  # a hold or a declined entry is no capacity wait: no freed slot starts it (#1613)
+    elif c.queued_seat and gate.is_declined_hold({"reason": c.queued_reason}):
+        # A declined entry is never capacity, whatever lock or mark stands beside it (#1614):
+        # the gate answered, the drain leaves it, and only a retry or a new head moves it.
+        c.blockers.append(f"declined: the gate declined the {c.queued_seat} turn for head "
+                          f"{c.short} ({c.queued_reason}) — not capacity; nothing restarts it "
+                          "by itself")
+    elif c.queued_seat:
+        c.blockers.append(f"no capacity: queued with the {c.queued_seat} seat — {c.queued_reason}")
+    elif c.full_seat:
+        c.blockers.append(f"no capacity: {c.needed_seat} seat at capacity {c.used}/{c.limit} "
+                          "on other PRs — this PR has no queue entry yet")
+
+
 def _next_step(c) -> tuple[str, str]:
     """The single next event as ``(kind, action)``: the first branch below that applies."""
     # -- the single next event ---------------------------------------------------------------
