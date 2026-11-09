@@ -555,8 +555,10 @@ hermes dk retry --loop "<loop-id>" --pr "<pr-number>" --seat reviewer
 `--seat` restricts candidates; omitted, it considers eligible problem runs at the newest
 offerable ledgered head. Retry resets automatic retry accounting, uses the current seat
 budget, and requests worker recovery. It only re-arms `failed`/`waiting` pre-write runs or the supported fixer push-policy
-cancellations; superseded cancellations are refused. Any review receipt, push intent or
-confirmation, ruling, triage result or issue-fix record prohibits retry, as does current
+cancellations; superseded cancellations are refused. Any write-ahead record (a review
+receipt, a push intent or confirmation, a ruling, a dispute, a CI-fix decline, a triage
+result, an issue fix, or a
+reviewer-filed issue whose outcome is unknown) prohibits retry, as does current
 uncertainty or an operator-reconciliation/post-write quarantine history. It is not webhook replay.
 Even a broker record marked denied or nothing is a record, not permission to re-arm.
 
