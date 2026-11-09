@@ -159,6 +159,16 @@ def _decoded(value) -> str:
     if isinstance(value, bytes):
         return value.decode(errors="replace")
     return value or ""
+
+
+def _kept(value, stream: str) -> str:
+    """The end of a turn's ``stream`` ('stdout' or 'stderr') worth keeping for ``runs.detail``:
+    at least as many characters as ``run_supervisor.output_detail`` stores bytes of it (#1658),
+    so the split is named once, in ``run_supervisor``. ``output_detail`` makes the final cut."""
+    from . import run_supervisor
+    limit = (run_supervisor.DETAIL_STDOUT_BYTES if stream == 'stdout'
+             else run_supervisor.DETAIL_STDERR_BYTES)
+    return _decoded(value)[-limit:]
 # After the sandbox is gone, a broker request already in flight (a push is several GitHub calls
 # plus git fetch/push, each bounded at 90s) is let finish instead of abandoned: abandoning it
 # leaves the push intent unresolved and quarantines the run. The worker's heartbeat keeps the
@@ -872,9 +882,9 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                         observed['thinking'] = getattr(inference, 'thinking', None)
                         observed.update(usage_of(inference))
                         observed.update(
-                            stdout=_decoded(exc.output)[-4000:]
+                            stdout=_kept(exc.output, 'stdout')
                             + (f"\n[last agent activity before the stop] {doing}" if doing else ""),
-                            stderr=_decoded(exc.stderr)[-4000:])
+                            stderr=_kept(exc.stderr, 'stderr'))
                     raise
                 except subprocess.TimeoutExpired as exc:
                     # contained.run has already SIGKILLed the sandbox's process group. Keep what
@@ -885,10 +895,10 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                         observed['thinking'] = getattr(inference, 'thinking', None)
                         observed.update(usage_of(inference))
                         observed.update(
-                            stdout=_decoded(exc.output)[-4000:]
+                            stdout=_kept(exc.output, 'stdout')
                             + (f"\n[last agent activity before the kill] {doing}" if doing else "")
                             + _provider_note(inference),
-                            stderr=_decoded(exc.stderr)[-4000:])
+                            stderr=_kept(exc.stderr, 'stderr'))
                     raise TurnBudgetExceeded(exc.cmd, timeout, grace) from None
                 if observed is not None:
                     observed['thinking'] = getattr(inference, 'thinking', None)
@@ -896,9 +906,9 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                     observed.update(returncode=result.returncode,
                                     # A failed turn names the provider's own error (#281: Hermes
                                     # reported only "HTTP 400 — Error response").
-                                    stdout=result.stdout[-4000:]
+                                    stdout=_kept(result.stdout, 'stdout')
                                     + (_provider_note(inference) if result.returncode else ''),
-                                    stderr=result.stderr[-4000:],
+                                    stderr=_kept(result.stderr, 'stderr'),
                                     submissions=[dict(entry) for entry in broker.recorded],
                                     # The provider 429'd this turn: when its window reopens (#219).
                                     rate_limited_until=getattr(inference, 'rate_limited_until',
