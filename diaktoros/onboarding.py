@@ -5,7 +5,8 @@ Only the record lives here. The checks stay where they are (``selftest``, ``doct
 ``arm_action``); this module stores what they found, one entry per stage, in
 ``<state_dir>/onboarding.json`` (0600, ``util.atomic_write``). Each entry holds the status
 (``passed``/``failed``/``skipped``), the time, the command that produced it, a redacted one-line
-summary, the required checks' outcomes, and a *fingerprint* of the stage's inputs.
+summary, the outcomes of the checks that decided the status (``deciding_checks``), and a
+*fingerprint* of the stage's inputs.
 
 A fingerprint is a SHA-256 over facts, never a secret: logins and file paths (not file contents),
 a hash of the runtime file, the seats' ``SeatInference.identity()`` (hashed again, because that
@@ -116,6 +117,20 @@ def report_checks(results) -> list:
     return [(result[1], result[2]) for result in results]
 
 
+def deciding_checks(stage: str, seen: dict, loop: dict | None = None) -> tuple:
+    """The names whose outcomes decide ``stage``'s status, given ``seen`` (``normalize_checks``).
+
+    Every required check (seen or not), every ``TROUBLE_CHECKS`` name that was seen, and every
+    other seen check of the stage's ``FAILURE_SCOPE`` that FAILED. ``stage_status`` judges these
+    and ``record`` stores the seen ones, so a ``failed`` entry always lists what failed it.
+    """
+    names = list(required_checks(stage, loop))
+    names += [name for name in TROUBLE_CHECKS.get(stage, ()) if name in seen and name not in names]
+    names += [name for name, (outcome, _) in seen.items()
+              if outcome == "fail" and name.startswith(FAILURE_SCOPE[stage]) and name not in names]
+    return tuple(names)
+
+
 def stage_status(stage: str, requested: str, checks, *, loop: dict | None = None,
                  completions: int | None = None) -> str:
     """What ``requested`` may honestly be given the required checks' outcomes.
@@ -131,11 +146,8 @@ def stage_status(stage: str, requested: str, checks, *, loop: dict | None = None
     if requested != PASSED or checks is None:
         return requested
     seen = normalize_checks(checks)
-    names = required_checks(stage, loop) + tuple(
-        name for name in TROUBLE_CHECKS.get(stage, ()) if name in seen)
-    outcomes = [seen[name][0] if name in seen else "skip" for name in names]
-    outcomes += [outcome for name, (outcome, _) in seen.items()
-                 if outcome == "fail" and name.startswith(FAILURE_SCOPE[stage])]
+    outcomes = [seen[name][0] if name in seen else "skip"
+                for name in deciding_checks(stage, seen, loop)]
     if stage == "model" and completions and seen.get("model:completion", (0, 0))[1] < completions:
         outcomes.append("skip")
     if "fail" in outcomes or "warn" in outcomes:
@@ -356,13 +368,13 @@ def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
     distinct = len({found.identity() for found in seats.values() if found is not None})
     if stage == "model" and not distinct and status == PASSED:
         status = FAILED         # no seat resolves: nothing was shown to work
-    kept = required_checks(stage, loop)
+    seen = normalize_checks(checks or {})
+    kept = deciding_checks(stage, seen, loop)
     entry = {"status": stage_status(stage, status, checks, loop=loop, completions=distinct),
              "at": util.now_iso(),
              "command": _one_line(command, redact, withheld),
              "summary": _one_line(summary, redact, withheld),
-             "checks": {name: outcome for name, (outcome, _) in normalize_checks(checks or {}).items()
-                        if name in kept},
+             "checks": {name: outcome for name, (outcome, _) in seen.items() if name in kept},
              "fingerprint": prints}
     if pr:
         entry["pr"] = int(pr[0])

@@ -21,7 +21,8 @@ from . import gh, onboarding
 PASS, FAIL, SKIP = "pass", "fail", "skip"      # selftest's status words
 TURN_CHECK = "turn:reviewer"                   # reported only once a turn has started
 _STAGE_OF = {"identities": ("github:",), "loop": onboarding.FAILURE_SCOPE["loop"],
-             "model": onboarding.FAILURE_SCOPE["model"]}
+             "model": onboarding.FAILURE_SCOPE["model"],
+             "live_turn": onboarding.FAILURE_SCOPE["live_turn"]}
 
 
 def attempt(say, loop: dict, stage: str, *args, **kwargs) -> bool:

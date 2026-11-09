@@ -333,6 +333,40 @@ class Review1(Fixture):
             entry = self.record("identities", checks=ok + [(extra, "fail")])
             self.assertEqual(entry["status"], "failed", extra)
 
+    def test_the_stored_checks_name_the_out_of_scope_check_that_failed_the_stage(self):   # 1688
+        ok = [(name, "pass") for name in onboarding.REQUIRED_CHECKS["identities"]]
+        entry = self.record("identities", checks=ok + [("github:distinct-files", "fail"),
+                                                       ("github:other", "pass"),
+                                                       ("runtime:file", "fail")])
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["checks"]["github:distinct-files"], "fail")
+        self.assertNotIn("github:other", entry["checks"])      # passed: decided nothing
+        self.assertNotIn("runtime:file", entry["checks"])      # another stage's check
+        stored = json.loads(onboarding.path(self.loop).read_text())["stages"]["identities"]
+        self.assertEqual(stored["checks"]["github:distinct-files"], "fail")
+
+    def test_the_stored_checks_keep_a_trouble_check_that_was_seen(self):                 # 1688
+        ok = [(name, "pass") for name in onboarding.required_checks("loop", self.loop)]
+        entry = self.record("loop", checks=ok + [("sandbox:containment", "skip")])
+        self.assertEqual(entry["status"], "skipped")
+        self.assertEqual(entry["checks"]["sandbox:containment"], "skip")
+
+    def test_the_live_turn_summary_counts_only_its_own_checks(self):                     # 1688
+        from diaktoros import onboarding_record, selftest
+        report = selftest.Report(out=io.StringIO())
+        for name in ("runtime:file", "hooks:installed", "github:read"):
+            report.add("other", name, "fail", "broken")
+        for name in onboarding.REQUIRED_CHECKS["live_turn"]:
+            report.add("live", name, "pass", "ok")
+        written = onboarding_record.record_selftest(
+            self.loop, report, say=lambda text: None, pr=12,
+            live_pr={"number": 12, "head": {"sha": self.head}}, model=True, live_turn=True,
+            seats=None, runtime_file=self.runtime, resolver=self.resolver)
+        self.assertIn("live_turn", written)
+        stored = json.loads(onboarding.path(self.loop).read_text())["stages"]["live_turn"]
+        self.assertEqual(stored["summary"], "4 checks")
+        self.assertEqual(stored["status"], "passed")
+
     def test_a_configured_adjudicator_is_required_and_an_unconfigured_one_is_not(self):    # F5
         ok = [(name, "pass") for name in onboarding.REQUIRED_CHECKS["identities"]]
         self.assertEqual(onboarding.stage_status("identities", "passed", ok, loop=self.loop),
@@ -555,13 +589,19 @@ class ModelNeedsASeat(Fixture):
         raise seat_model.SeatModelError("profile unreadable")
 
     def test_read_never_returns_passed_for_model_with_an_unresolved_seat(self):
-        self.record("model")
+        # Recorded with every seat resolving, so the stored fingerprint is a real one: only the
+        # seat that fails to resolve at read time can make it stale (#1688).
+        entry = self.record("model")
+        self.assertNotEqual(entry["fingerprint"], "")
         self.assertEqual(self.read()["model"], "passed")
-        onboarding.record(self.loop, "model", "passed", "dk selftest", "ok",
-                          runtime_file=self.runtime, resolver=self._failing)
-        for resolver in (self.resolver, self._failing):
+
+        def half(profile, seat, settings):
+            if seat == "fixer":
+                raise seat_model.SeatModelError("profile unreadable")
+            return self.resolver(profile, seat, settings)
+        for resolver in (self._failing, half):
             got = onboarding.read(self.loop, runtime_file=self.runtime, resolver=resolver)
-            self.assertNotEqual(got["model"], "passed")
+            self.assertEqual(got["model"], "stale", resolver)
 
     def test_an_unresolved_seat_never_fingerprints_as_matching(self):
         entry = self.record("model")
