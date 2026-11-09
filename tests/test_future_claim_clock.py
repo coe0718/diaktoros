@@ -64,7 +64,7 @@ class SweepClock(fg.Base):
         def slow_reads():
             clock.offset = 0.0                        # ... its reads take those five minutes
             self.claim_at(time.time())                # and a gate claims the seat meanwhile
-        with mock.patch.object(watchdog, "time", clock):
+        with mock.patch.object(watch_mode, "time", clock):
             self.sweep(lambda: None)                  # the first sweep only snapshots heads
             text = self.sweep(slow_reads)
         self.assertIn(KEY, self.st.live_locks("reviewer"))      # the claim reached the check

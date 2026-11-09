@@ -34,7 +34,7 @@ def sweep_budget_spent(loop: dict, st: state_mod.LoopState, budget: float,
     time"), and said like any failure short of a 401/403: after ``READ_FAILURE_SWEEPS`` sweeps
     in a row, then once per cooldown (alert key ``read:slow``). Its end is said once by the
     health check ("GitHub reads work again")."""
-    now = time.time()
+    now = watch_mode.now()
     watch = st.watch()
     record = watch.get("github_read") if isinstance(watch.get("github_read"), dict) else {}
     sweeps = record["sweeps"] + 1 if type(record.get("sweeps")) is int else 1

@@ -202,7 +202,7 @@ def cmd_arm(args) -> int:
         if not ok:
             failed.append(loop["id"])
         onboarding_record.record_arm(
-            loop, pause=args.pause, ok=ok,
+            loop, pause=args.pause, ok=ok, login=args.admin_token or None,
             say=lambda text, lid=loop["id"]: print(f"[{lid}] {text.strip()}"))
     if failed:
         print(f"{'pause' if args.pause else 'arm'} NOT confirmed for: {', '.join(failed)} "

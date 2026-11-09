@@ -183,7 +183,9 @@ ask blocks another until it is answered.
 
 - A **question** resumes on the first comment after it from a loop maintainer
   (`triage.maintainers`). Anyone else's reply is ignored.
-- A **plan** resumes only on a comment that is exactly `/loop approve` (case-insensitive).
+- A **plan** resumes only on a comment that is exactly `/loop approve` (case-insensitive). The
+  broker ends the posted plan comment with a line saying so (#2047); a question gets no such
+  line, and the fixer's own text (what `status` and the next turn see) is kept without it.
 - After the reply, the watchdog sweep queues a fresh fix turn from the base branch. Until then,
   `status` and `explain` say the issue is waiting for a maintainer.
 

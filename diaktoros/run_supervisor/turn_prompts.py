@@ -66,7 +66,7 @@ def ruling_issues_section(loop: dict) -> str:
     """The adjudicator's follow-ups (#1864), only where the loop files them: how to ask for one
     issue per finding it rules valid but not blocking. The same for every ruling of the loop, so
     it sits with the prompt's cached part (#1649)."""
-    from .. import broker, config
+    from .. import broker_filing, config
     if not config.adjudicator_file_issues(loop):
         return ''
     return (
@@ -77,7 +77,7 @@ def ruling_issues_section(loop: dict) -> str:
         '`/tmp` (what is wrong, the `file:line`, your evidence, and what would fix it) and run '
         '`python -P -m diaktoros.broker_client file_issue --title "..." --body-file /tmp/issue1.md '
         '--label bug --label P3`, with a one-line title of at most 120 characters and labels '
-        f'from {issue_labels_fact(loop)}. At most {broker.FILED_ISSUES_MAX}. Asking costs your '
+        f'from {issue_labels_fact(loop)}. At most {broker_filing.FILED_ISSUES_MAX}. Asking costs your '
         'ruling nothing, and nothing is filed until you rule; the host then files them as the '
         'loop\'s reader, as follow-ups to this PR, and leaves out any the reviewer already filed. '
         'Name each in your ruling.')

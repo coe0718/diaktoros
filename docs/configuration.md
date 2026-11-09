@@ -347,7 +347,7 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `closed` | PR merged or abandoned and cleanup attempted; sent only for PRs this loop worked on (reviewed author, or breach, transition, queue or observer-ledger state). |
 | `triaged` | Issue triage ended (labels, none fit, skipped, denied, uncertain). Links the issue. |
 | `fixing` | Fix label handed an issue to the fixer, or the handoff was held. Links the issue. |
-| `fixed` | Issue-fix write ended: PR opened/review requested, could-not-fix comment, or uncertain. Links the issue. |
+| `fixed` | Issue-fix write ended: PR opened/review requested, a posted plan or question (waits for a maintainer; next: you), could-not-fix comment, or uncertain. Links the issue. |
 | `failed` | Any isolated run's first failed attempt and its terminal failed/uncertain state. Links the issue for triage and issue-fix runs. |
 | `held` | A run waiting on its seat's daily cap, its provider's usage window, or an unavailable provider (#1325): when it resumes, and how to run it sooner. Once per hold. |
 | `conflict` | A loop PR no longer merges into its base (GitHub reports a merge conflict): once per head. Urgent tier. |
@@ -445,7 +445,7 @@ A shadow review runs a second reviewer model on a head the real reviewer was que
 - Set them with `hermes dk set --loop ID --shadow-profile P [--shadow-every N] [--shadow-always-path GLOB ...] [--shadow-never-path GLOB ...]` (`--no-shadow` turns it off; `--no-shadow-always-paths` and `--no-shadow-never-paths` clear a list), with the same flags on `init` and `setup`, or with the settings form's *Shadow review profile*, *Shadow one in N reviews*, *Always shadow these paths* and *No shadow when only these change* (`apply` pushes them; `off` as the profile turns it off).
 - `seats.shadow`: the seat's limits, like any seat's: `daily_turns`, `daily_tokens`, `turn_budget_s` (default: the loop's), `concurrency` (default 1, never the loop's) and `max_steps` (default 100, not the reviewer's 60: another model may explore more before it submits). There is no route, login or token: a shadow never writes.
 
-A shadow turn gets the reviewer's prompt and change view at that head, minus any review posted after it was queued (the real one included).
+A shadow turn gets the reviewer's prompt and change view at that head, minus any review posted after it was queued (the real one included). GitHub stamps reviews to the whole second, so a review from the second the shadow was queued in, or with no readable time, is left out too (#1684).
 
 **It runs only on a head its reviewer turn approved (#1647).** The shadow's row is queued with its reviewer turn, on a findings snapshot taken before that turn's row exists. When the shadow is claimed, it reads from the run ledger, with no GitHub read, what that same reviewer turn decided (same PR, head and turn key):
 - **A confirmed APPROVE:** it runs.
@@ -520,8 +520,10 @@ each one once the real review exists at that head:
 - **Its labels:** GitHub silently drops the labels a new issue is created with when the token
   can't set them (push access), so any it drops are added right after, with the labels endpoint.
   If they still don't land, the issue stays filed (never again), the watchdog log names the
-  labels and the missing permission, the broker audit records the gap, and its `shadow_issues`
-  row is `unlabelled`, not `posted`.
+  labels and why, the broker audit records the gap, and its `shadow_issues` row is `unlabelled`,
+  not `posted`. Only a 403 (not a rate limit) from the labels endpoint is reported as the reader
+  needing permission to label issues; a write that got no answer (a timeout) is reported as an
+  unknown outcome (check the issue's labels), and any other failure is named as it is.
 - **A refusal with nothing written:** if the broker refuses it before sending anything (no reader
   identity, a repository mismatch, a reader token file that is missing or unreadable), or GitHub answers the POST with a 4xx other than 408 (a reader App without
   Issues write gets 403; the status is the response's own, never one named in an error text), no issue exists, so it stays `recorded` with the reason in its `error`,
@@ -618,7 +620,7 @@ hermes dk apply --loop "<loop-id>" --while-busy
 
 ### Identity changes are staged
 
-Installation/application checks profiles, allowlist membership, identity/file distinctness, credentials, and route ownership before writing. Profile existence/allowlist checks can be scoped to the roles being changed for legacy compatibility; do not mistake a successful numeric-only update for a full installation audit. `apply` checks the resulting reader separation even when it did not move the reader.
+Installation/application checks profiles, allowlist membership, identity/file distinctness, credentials, and route ownership before writing. An installed route is the loop's to rewrite when it runs one of its role's gates (an older release's included) and either carries this version's gate prompt or is held by the loop's `route-intent.json` with the live route's gate, profile and secret — so a release that rewords a prompt does not lock `apply` out of the loop's own routes, even when the seat's profile has moved in the config since the route was written, while a route re-created under a recorded name with another secret is still refused. Profile existence/allowlist checks can be scoped to the roles being changed for legacy compatibility; do not mistake a successful numeric-only update for a full installation audit. `apply` checks the resulting reader separation even when it did not move the reader.
 
 Moving a profile changes its webhook path (`/p/<profile>/webhooks/<route>`), so `apply` first reads repository hooks, snapshots owned routes, rebinds and reads routes back, updates and reads matching hooks back, then writes loop config. Failed writes/readbacks attempt rollback; incomplete rollback is reported for manual repair. Other loops' routes/secrets are not rewritten. `init` also restores previous owned state after partial route-installation failure.
 

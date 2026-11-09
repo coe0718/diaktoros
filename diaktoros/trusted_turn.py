@@ -25,8 +25,9 @@ import sys
 import tempfile
 import time
 
-from . import (broker, broker_client, broker_ipc, config, contained, deps, gh, hostdirs,
-               inference_proxy, prompts, repro_proof, runtime_detect, safe_push, trusted_fetch, util)
+from . import (broker, broker_client, broker_filing, broker_ipc, config, contained, deps, gh,
+               hostdirs, inference_proxy, prompts, repro_proof, runtime_detect, safe_push,
+               trusted_fetch, util)
 
 
 def dependency_cache(loop: dict) -> Path | None:
@@ -159,6 +160,16 @@ def _decoded(value) -> str:
     if isinstance(value, bytes):
         return value.decode(errors="replace")
     return value or ""
+
+
+def _kept(value, stream: str) -> str:
+    """The end of a turn's ``stream`` ('stdout' or 'stderr') worth keeping for ``runs.detail``:
+    at least as many characters as ``run_supervisor.output_detail`` stores bytes of it (#1658),
+    so the split is named once, in ``run_supervisor``. ``output_detail`` makes the final cut."""
+    from . import run_supervisor
+    limit = (run_supervisor.DETAIL_STDOUT_BYTES if stream == 'stdout'
+             else run_supervisor.DETAIL_STDERR_BYTES)
+    return _decoded(value)[-limit:]
 # After the sandbox is gone, a broker request already in flight (a push is several GitHub calls
 # plus git fetch/push, each bounded at 90s) is let finish instead of abandoned: abandoning it
 # leaves the push intent unresolved and quarantines the run. The worker's heartbeat keeps the
@@ -532,7 +543,7 @@ TOOLS = {
                  'given, otherwise what the list line in your instructions says to send (a type '
                  'label is one that is not P0, P1, …; a priority label only if the cap leaves '
                  'room beside the type); '
-                 f'at most {broker.FILED_ISSUES_MAX} per review). It files as your account '
+                 f'at most {broker_filing.FILED_ISSUES_MAX} per review). It files as your account '
                  'and answers with the issue number; a title already filed from this PR is '
                  'refused. A blocking finding is never an issue: it is REQUEST_CHANGES. '),
     'fixer': ('To publish, name the files you changed and write a commit message: '
@@ -872,9 +883,9 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                         observed['thinking'] = getattr(inference, 'thinking', None)
                         observed.update(usage_of(inference))
                         observed.update(
-                            stdout=_decoded(exc.output)[-4000:]
+                            stdout=_kept(exc.output, 'stdout')
                             + (f"\n[last agent activity before the stop] {doing}" if doing else ""),
-                            stderr=_decoded(exc.stderr)[-4000:])
+                            stderr=_kept(exc.stderr, 'stderr'))
                     raise
                 except subprocess.TimeoutExpired as exc:
                     # contained.run has already SIGKILLed the sandbox's process group. Keep what
@@ -885,10 +896,10 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                         observed['thinking'] = getattr(inference, 'thinking', None)
                         observed.update(usage_of(inference))
                         observed.update(
-                            stdout=_decoded(exc.output)[-4000:]
+                            stdout=_kept(exc.output, 'stdout')
                             + (f"\n[last agent activity before the kill] {doing}" if doing else "")
                             + _provider_note(inference),
-                            stderr=_decoded(exc.stderr)[-4000:])
+                            stderr=_kept(exc.stderr, 'stderr'))
                     raise TurnBudgetExceeded(exc.cmd, timeout, grace) from None
                 if observed is not None:
                     observed['thinking'] = getattr(inference, 'thinking', None)
@@ -896,9 +907,9 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                     observed.update(returncode=result.returncode,
                                     # A failed turn names the provider's own error (#281: Hermes
                                     # reported only "HTTP 400 — Error response").
-                                    stdout=result.stdout[-4000:]
+                                    stdout=_kept(result.stdout, 'stdout')
                                     + (_provider_note(inference) if result.returncode else ''),
-                                    stderr=result.stderr[-4000:],
+                                    stderr=_kept(result.stderr, 'stderr'),
                                     submissions=[dict(entry) for entry in broker.recorded],
                                     # The provider 429'd this turn: when its window reopens (#219).
                                     rate_limited_until=getattr(inference, 'rate_limited_until',

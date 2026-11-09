@@ -21,7 +21,8 @@ from . import gh, onboarding
 PASS, FAIL, SKIP = "pass", "fail", "skip"      # selftest's status words
 TURN_CHECK = "turn:reviewer"                   # reported only once a turn has started
 _STAGE_OF = {"identities": ("github:",), "loop": onboarding.FAILURE_SCOPE["loop"],
-             "model": onboarding.FAILURE_SCOPE["model"]}
+             "model": onboarding.FAILURE_SCOPE["model"],
+             "live_turn": onboarding.FAILURE_SCOPE["live_turn"]}
 
 
 def attempt(say, loop: dict, stage: str, *args, **kwargs) -> bool:
@@ -92,22 +93,28 @@ def record_selftest(loop: dict, report, *, say, pr: int | None, live_pr: dict | 
     return written
 
 
-def record_arm(loop: dict, *, say, pause: bool, ok: bool) -> bool:
+def record_arm(loop: dict, *, say, pause: bool, ok: bool, login: str | None = None) -> bool:
     """Record ``armed`` after ``arm`` for one loop; True when written.
 
     Only for a confirmed arm: not ``--pause``, ``perform`` ok, and a fresh plan whose state is
-    ``armed`` (which is also the ``hook_state`` stored). Nothing is recorded otherwise.
+    ``armed`` (which is also the ``hook_state`` stored). The plan reads the hooks as ``login``
+    (``arm --admin-token``), else as the reader. Nothing is recorded otherwise; a confirmed arm
+    whose fresh plan is not ``armed`` says why.
     """
     if pause or not ok:
         return False
     try:
         from . import arm_action
-        state = str(arm_action.plan(loop).get("state") or "unknown")
+        fresh = arm_action.plan(loop, login or None)
+        state = str(fresh.get("state") or "unknown")
     except Exception as exc:       # noqa: BLE001
         say(f"  (onboarding: the armed stage could not be recorded: {type(exc).__name__}: {exc}; "
             "the result above stands)")
         return False
     if state != "armed":
+        say(f"  (onboarding: the armed stage was not recorded: a fresh read of the hooks says "
+            f"{state!r}, not 'armed' ({fresh.get('reason') or 'no reason given'}); "
+            "the result above stands)")
         return False
     return attempt(say, loop, "armed", onboarding.PASSED, f"hermes dk arm --loop {loop['id']}",
                    "GitHub confirmed every loop hook active (read back)",

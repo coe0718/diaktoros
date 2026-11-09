@@ -964,8 +964,9 @@ _DENIAL_FIX = {
     "PR base branch mismatch": "the PR must target the loop's base branch",
     "PR base repository mismatch": "the PR must be in the loop's repository",
     "fork head not permitted for credentialed writes": "use a PR whose head branch is in the repository itself, not a fork",
-    "seat token principal cannot be verified": "see the identities step",
-    "read, reviewer and fixer tokens resolve to same principal": "see the identities step",
+    # broker._verify_identities' wording, with the names ``authorize`` passes it (#1497).
+    "token principal cannot be verified": "see the identities step",
+    "read, reviewer and fixer tokens resolve to the same principal": "see the identities step",
     "cannot verify live PR": "check the PR number and that the read token can see it",
 }
 

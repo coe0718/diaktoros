@@ -468,6 +468,24 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual([(r["verdict"], r["model"], r["body"]) for r in got],
                          [("REQUEST_CHANGES", "grok-x", "F1: a.py:1: x")])
 
+    def test_a_review_in_the_second_the_shadow_was_queued_is_not_shown_to_it(self):
+        # #1684: `submitted_at` has whole seconds, `created` has fractions. A review posted later
+        # in the queueing second (stamped T, queued at T + 0.4) may be the real verdict: hidden.
+        # One from the second before is shown; an unreadable stamp fails closed.
+        t = 1_700_000_000
+        stamp = lambda s: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(s))
+        earlier = {"id": 1, "state": "COMMENTED", "submitted_at": stamp(t - 1),
+                   "commit_id": "b" * 40, "user": {"login": "reviewer"}, "body": "old round"}
+        same = {"id": 2, "state": "APPROVED", "submitted_at": stamp(t),
+                "commit_id": HEAD, "user": {"login": "reviewer"}, "body": "the real verdict"}
+        undated = {"id": 3, "state": "APPROVED", "submitted_at": "not a time",
+                   "commit_id": HEAD, "user": {"login": "reviewer"}, "body": "undated"}
+        sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok", "authorized": True,
+                                     "denial": ""}], reviews=[earlier, same, undated],
+                                   created=t + 0.4)
+        self.assertEqual(row["state"], "succeeded", row)
+        self.assertEqual([r["id"] for r in self.seen["reviews"]], [1])
+
     def test_the_broker_scope_names_the_shadows_own_turn_key(self):
         # #1139: a shadow is judged on the findings snapshot kept for its own reviewer turn, so
         # the scope the broker is built from carries the row's turn key (it reads the snapshot
@@ -618,6 +636,40 @@ class ProductionTurn(unittest.TestCase):
         self.assertTrue(row["error"].startswith(f"{run_supervisor.VERDICT_HOLD} at {HEAD[:7]} — "),
                         row["error"])
 
+    def test_a_verdict_held_shadow_ends_when_the_pr_closes_or_the_head_moves(self):
+        # #1776: the hold returns before any GitHub read, so the end the docs promise is the
+        # claim's: the held row falls due, recover() re-arms it, and _claim_read_shadow (never
+        # _ci_poll's reviewer-only fast path) cancels it before _shadow_ci_gate runs again.
+        closed = {"number": 8, "state": "closed", "draft": False, "head": {"sha": HEAD}}
+        moved = {"number": 8, "state": "open", "draft": False, "head": {"sha": "b" * 40}}
+        for name, state, pr in (("failed, closed", "failed", closed),
+                                ("failed, moved", "failed", moved),
+                                ("uncertain, closed", "uncertain", closed),
+                                ("uncertain, moved", "uncertain", moved)):
+            with self.subTest(name):
+                self.setUp()
+                sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok"}],
+                                           reviewer=None, reviewer_state=state)
+                self.assertEqual(row["state"], "waiting")
+                self.assertIn("waiting for the reviewer's verdict", row["error"])
+                with closing(sqlite3.connect(sup.db)) as con, con:
+                    con.execute("UPDATE runs SET retry_at=? WHERE id=?",
+                                (time.time() - 1, row["id"]))
+                sup.recover()
+                key = f"acme/widgets:8:{HEAD}:shadow"
+                self.assertEqual(sup.get(key)["state"], "pending")
+                with mock.patch.object(config, "by_repo", return_value=self.loop), \
+                        mock.patch.object(gh, "api", return_value=pr), \
+                        mock.patch.object(claims, "claim_seat",
+                                          side_effect=AssertionError("a shadow claims no seat")), \
+                        mock.patch.object(sup, "_spawn"):
+                    sup._claim()
+                row = sup.get(key)
+                self.assertEqual(row["state"], "cancelled", row["error"])
+                self.assertEqual(row["error"], "shadow review superseded: PR closed or head moved")
+                # No longer open, so its findings snapshot is evictable again.
+                self.assertNotIn((8, HEAD), gate.shadow_open_heads("acme/widgets", sup.db))
+
     def kinds(self):
         pr = {"number": 8, "draft": False, "user": {"login": "fixer"}, "base": {"ref": "main"},
               "head": {"sha": HEAD, "ref": "fix-8"}}
@@ -648,6 +700,46 @@ class ProductionTurn(unittest.TestCase):
         sup, row = self.claim_shadow(sup, approve)
         self.assertEqual((self.seen["role"], row["state"]), ("reviewer", "succeeded"), row)
         self.assertEqual([w for _k, w in self.kinds() if w.startswith("shadow review")], [])
+
+    def escalating(self):
+        self.loop = config.normalize({**RAW, "state_dir": str(self.home / "state"),
+                                      "required_checks": ["tests"],
+                                      "shadow": {"profile": "grok", "every": 1, "escalate": True}})
+
+    def test_the_reviewers_row_is_never_visible_without_its_shadow(self):
+        # #1682: the shadow's row was a second submit after the reviewer's, so an APPROVE posted
+        # in between, or that submit failing for good, found no shadow and nothing to wait for.
+        self.escalating()
+        seen = []
+
+        def second_submit(loop, supervisor, number, head, **kw):
+            # What a reviewer that already approved finds, the moment its own row exists ...
+            seen.append(gate.shadow_state(self.loop, 8, HEAD, supervisor.db))
+            return "error"                 # ... and the old second submit failing outright
+        with mock.patch.object(gate, "enqueue_shadow", side_effect=second_submit):
+            sup = self.queue_shadow()
+        self.assertEqual([kind for kind, _hold, _note in seen], ["pending"], seen)
+        self.reviewer_is(sup, ("confirmed", "APPROVED"), "succeeded")
+        self.assertEqual(merge_check.decide(self.kinds())[0], merge_check.PENDING)
+        self.assertEqual(sup.get(f"acme/widgets:8:{HEAD}:shadow")["state"], "pending")
+
+    def test_a_shadow_row_that_cannot_be_written_queues_no_reviewer_either(self):
+        # #1682: one transaction. A reviewer row without its owed shadow would go green.
+        self.escalating()
+        budget = config.turn_budget
+        with mock.patch.object(config, "turn_budget",
+                               side_effect=lambda loop, seat: 0 if seat == "shadow"
+                               else budget(loop, seat)), \
+                mock.patch.object(Supervisor, "_spawn"), \
+                mock.patch.object(config, "by_repo", return_value=self.loop):
+            with self.assertRaisesRegex(ValueError, "shadow row"):
+                gate.enqueue_isolated(self.loop, "reviewer", 8, HEAD)
+        sup = Supervisor(self.home / "state" / "diaktoros-runs.sqlite")
+        self.assertIsNone(sup.get(f"acme/widgets:8:{HEAD}:reviewer"))
+        self.assertIsNone(sup.get(f"acme/widgets:8:{HEAD}:shadow"))
+        # The redelivery that follows queues both.
+        sup = self.queue_shadow()
+        self.assertEqual(sup.get(f"acme/widgets:8:{HEAD}:reviewer")["state"], "pending")
 
     def test_escalate_with_always_paths_holds_their_heads_and_not_the_others(self):
         # #1788 (review of #1852, F3): escalate with every > 1 is allowed only beside always

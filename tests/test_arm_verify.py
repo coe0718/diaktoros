@@ -711,6 +711,22 @@ class ArmRecordsOnboardingTests(unittest.TestCase):
             rc, out = self.arm(FakeGitHub(hooks(False)))
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.stored(), {})
+        self.assertIn("the armed stage was not recorded", out)
+        self.assertIn("'unknown'", out)
+
+    def test_admin_token_arm_records_armed_when_the_reader_cannot_read_hooks(self):    # #1689
+        fake = FakeGitHub(hooks(False))
+        real = fake.fetch
+
+        def fetch(loop, path, method="GET", body=None, login=None):
+            if path.endswith("/hooks?per_page=100") and login in (None, "reader"):
+                fake.calls.append((method, path, login))
+                return None, "HTTP 404 Not Found"
+            return real(loop, path, method=method, body=body, login=login)
+        fake.fetch = fetch
+        rc, out = self.arm(fake, admin_token="owner")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.stored()["armed"]["status"], "passed", out)
 
     def test_a_failed_record_write_keeps_the_exit_code_and_says_so(self):
         from diaktoros import onboarding
