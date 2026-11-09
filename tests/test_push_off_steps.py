@@ -388,6 +388,36 @@ class AfterEnabling(Steps):
                 self.assertNotIn("declined the fixer turn", step["action"])
                 self.assertNotIn("starts the fix run", step["action"])
 
+    def test_a_declined_queue_entry_is_never_reported_as_a_capacity_wait(self):
+        # #1610: a declined entry is a terminal answer the drain leaves (gate.is_declined_hold);
+        # outside the push-off branch (pushes on, or a reviewer entry) it read as "no capacity",
+        # and the next step promised a freed slot would start it.
+        for push, seat in ((True, "fixer"), (True, "reviewer"), (False, "reviewer")):
+            with self.subTest(push=push, seat=seat):
+                self.set_push(push)
+                report = self.report(queued=gate.declined_reason(seat, "duplicate failed"), seat=seat)
+                self.assertFalse([b for b in report["blockers"] if "no capacity" in b], report["blockers"])
+                self.assertTrue(any(f"the gate declined the {seat} turn" in b
+                                    for b in report["blockers"]), report["blockers"])
+                if push:   # with pushes off, the push-off step for the verdict comes first
+                    self.assertNotIn("slot frees", report["next"]["action"])
+                    self.assertIn(f"the gate declined the {seat} turn", report["next"]["action"])
+                    self.assertIn("nothing to re-arm", report["next"]["action"])
+        # A real capacity entry still reads as one.
+        self.set_push(True)
+        report = self.report(queued="waiting for a slot")
+        self.assertTrue(any("no capacity" in b for b in report["blockers"]), report["blockers"])
+        self.assertIn("slot frees", report["next"]["action"])
+
+    def test_a_declined_fixer_turn_retry_would_rearm_is_named_with_pushes_on(self):
+        # #1610: the step names the same retry the ledger's plan offers, as with pushes off.
+        self.set_push(True)
+        sup, declined = self.ledgered("failed")
+        report = self.report(queued=declined)
+        self.assertFalse([b for b in report["blockers"] if "no capacity" in b], report["blockers"])
+        self.assertIn(self.retry(), report["next"]["action"])
+        self.assertNotIn("slot frees", report["next"]["action"])
+
 
 if __name__ == "__main__":
     unittest.main()
