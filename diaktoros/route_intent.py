@@ -113,9 +113,13 @@ def recorded_ours(loop: dict, role: str, name: str, entry, intent) -> bool:
     The prompt's wording changes between versions, so after a reword it no longer proves
     anything; the record is the plugin's own. It vouches for the live entry when it holds
     ``name`` with the live entry's script (this role's gate or one it once installed, see
-    ``plugin_gate``), the loop's configured profile for the role, and the live entry's secret —
-    a foreign route re-created under a recorded name carries another secret, and the repo hook
-    could not reach it anyway.
+    ``plugin_gate``), the live entry's profile, and the live entry's secret — a foreign route
+    re-created under a recorded name carries another secret, and the repo hook could not reach
+    it anyway.
+
+    The record is compared with the *live* entry, not with the config: after the seat's profile
+    moves in the config, its route (and the record) stay on the old profile until ``apply``
+    rebinds them, and that is exactly the route ``apply`` must be allowed to rebind (#2052 F1).
     """
     want = intent.get(name) if isinstance(intent, dict) else None
     if not isinstance(want, dict) or not isinstance(entry, dict):
@@ -123,7 +127,8 @@ def recorded_ours(loop: dict, role: str, name: str, entry, intent) -> bool:
     script = entry.get("script")
     secret = entry.get("secret")
     return (plugin_gate(role, script) and want.get("script") == script
-            and routes.route_profile(want) == config.seat_profile(loop, role)
+            and routes.route_profile(want) is not None
+            and routes.route_profile(want) == routes.route_profile(entry)
             and bool(secret) and want.get("secret") == secret)
 
 

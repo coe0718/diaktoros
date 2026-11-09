@@ -302,12 +302,12 @@ def _verify_installed(loop: dict, role: str, name: str, entry, intent: dict) -> 
         raise config.ConfigError(
             f"route {name!r} runs {script!r}, not {GATE_SCRIPT[role]!r} — it belongs to "
             "something else; pick another route name")
-    # A route the loop's intent record holds (same gate, the configured profile, the live
-    # secret) is ours even when a release reworded its prompt (#1451).
+    # A route the loop's intent record holds (the live entry's gate, profile and secret) is
+    # ours even when a release reworded its prompt (#1451).
     if not route_intent.provably_ours(loop, role, name, entry, intent):
         raise config.ConfigError(
             f"route {name!r} does not have this {role} gate's prompt, and this loop's route "
-            f"record does not hold it with this gate, the {role} profile and its secret — "
+            f"record does not hold it with this gate, its profile and its secret — "
             "ownership cannot be verified; pick another route name")
 
 

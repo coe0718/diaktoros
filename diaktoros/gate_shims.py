@@ -314,8 +314,9 @@ def _owned_fix(loop: dict, role: str, name: str, entry: dict, intent: dict, rest
         recorded = intent.get(name) if isinstance(intent, dict) else None
         if (isinstance(recorded, dict) and recorded.get("script") == GATE_SCRIPT[role]
                 and entry.get("secret") and recorded.get("secret") == entry.get("secret")):
-            # The record holds it, but for the profile the config had before: the repair
-            # upgrades its prompt (``route_intent._upgrade_prompts``), then apply may rebind it.
+            # The record holds it with this gate and secret but another profile than the live
+            # entry: the repair restores the recorded route (and upgrades its prompt,
+            # ``route_intent._upgrade_prompts``), then apply may rebind it.
             return (f"{repair}, then `hermes dk apply --loop {lid}` (rebinds the route to the "
                     "config)")
         return (f"remove that entry (neither its gate and prompt nor this loop's route record "

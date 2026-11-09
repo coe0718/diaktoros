@@ -56,20 +56,59 @@ class RecordedRouteOwnership(Base):
         self.assertEqual(route_intent.load(loop)["widgets-review"]["prompt"], prompts.REVIEWER)
 
     def test_a_profile_change_is_not_refused_over_a_recorded_reworded_route(self):
-        # Drives ``_verify_routes`` through apply: the seat's profile moves, so the route is
-        # rebound, and the rail must accept the record's route (same gate, profile, secret).
+        # The state right after the operator moves a seat's profile in the config: the live route
+        # and its record both still carry the old profile (critic) and the old prompt. Doctor
+        # names a command for it, and that command must work (#2052 F1): ``_verify_routes`` must
+        # accept the record's route (same gate, profile and secret as the live entry).
         self.full_install()
         secret = self.reworded("widgets-review", prompt=OLD_REVIEWER)
         self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="default"))
         loop = config.load_id("widgets")
-        route_intent.record(loop, {"widgets-review": dict(
-            route_intent.load(loop)["widgets-review"], profile="default")})
+        self.assertEqual(routes.route_profile(route_intent.load(loop)["widgets-review"]), "critic")
+        checks = {c.name: c for c in doctor.check_loop(loop, offline=True)}
+        named = checks["route:widgets-review"]
+        self.assertEqual(named.status, doctor.MISMATCH)
+        self.assertIn("hermes dk apply --loop widgets", named.fix)
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertNotIn("ownership cannot be verified", out)
         self.assertEqual(rc, 0, out)
         live = routes.route("widgets-review")
         self.assertEqual((live["profile"], live["prompt"], live["secret"]),
                          ("default", prompts.REVIEWER, secret))
+
+    def test_doctor_does_not_name_apply_for_a_moved_route_apply_refuses(self):
+        # The same profile move, but the live route carries another secret than the record: apply
+        # refuses it, so doctor must not name apply first; it names the repair (which restores
+        # the recorded route), and after it apply works.
+        self.full_install()
+        secret = self.reworded("widgets-review", prompt=OLD_REVIEWER)
+        self.edit_registry(lambda data: data["widgets-review"].update(secret="someone-elses"))
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="default"))
+        loop = config.load_id("widgets")
+        fix = {c.name: c for c in doctor.check_loop(loop, offline=True)}["route:widgets-review"].fix
+        self.assertNotIn("to rebind it to default", fix)
+        self.assertIn("--repair", fix)
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 2, out)
+        rc, out = self.run_cli(["doctor", "--loop", "widgets", "--repair", "--offline"])
+        self.assertIn("widgets-review", out)
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        live = routes.route("widgets-review")
+        self.assertEqual((live["profile"], live["prompt"], live["secret"]),
+                         ("default", prompts.REVIEWER, secret))
+
+    def test_doctor_names_recreate_not_repair_for_a_reworded_route_with_another_secret(self):
+        # Gate and profile match the config and the record, only the prompt is stale and the live
+        # secret is not the recorded one: the record does not vouch for it (maintainer, #1451),
+        # so doctor's fix is not ``--repair`` (#2052 F2).
+        self.full_install()
+        self.reworded("widgets-review", prompt=OLD_REVIEWER)
+        self.edit_registry(lambda data: data["widgets-review"].update(secret="someone-elses"))
+        loop = config.load_id("widgets")
+        fix = gate_shims.divergence(loop, contract=True)["widgets-review"][1]
+        self.assertNotIn("--repair", fix)
+        self.assertIn("--recreate-routes", fix)
 
     def test_apply_refuses_a_reworded_route_the_record_holds_with_another_secret(self):
         # A route re-created under a recorded name is not adopted (maintainer, #1451).
@@ -91,6 +130,11 @@ class RecordedRouteOwnership(Base):
         route_intent.forget(loop, ["widgets-review"])
         self.edit_registry(lambda data: data["widgets-review"].update(prompt=OLD_REVIEWER))
         self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="default"))
+        loop = config.load_id("widgets")
+        # Doctor's profile check must not name the apply that refuses it (#2052 F1).
+        fix = {c.name: c for c in doctor.check_loop(loop, offline=True)}["route:widgets-review"].fix
+        self.assertNotIn("to rebind it to default", fix)
+        self.assertIn("--recreate-routes", fix)
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual(rc, 2, out)
         self.assertIn("ownership cannot be verified", out)
