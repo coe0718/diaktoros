@@ -1655,7 +1655,8 @@ as a failed turn's output tail, is cut to its last part (`…/state.json`). A pa
 before it with it. `--offline` leaves GitHub out and
 lists what that leaves missing. It exits `2` when no loop can be chosen, or when it gets neither
 or both of `--pr` and `--since`, or `--since` without `--out`, or when `--out` cannot be written
-(it names a file, say).
+(it names a file, say). A file that fails to write stops the export there: the listing names it and
+says the export is partial, the files before it are kept, and it exits `2`.
 
 <!-- flags:history -->
 | flag | value | default | what it does |
