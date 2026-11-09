@@ -124,3 +124,18 @@ def github_events(loop: dict, number: int, github: dict, events: list) -> list:
                     "link": str(item.get("html_url") or ""),
                     "text": f"comment: {excerpt(item.get('body'))}"})
     return out
+
+
+def wait_events(db, repo: str, number: int, runs: list) -> list:
+    """Each logged wait (#2080) as an event: why the run waited and until when. The log keeps a
+    short head; the run's own row gives the full one. Logs from before #2080 hold none."""
+    from .run_supervisor import waits
+    heads = {str(run["id"]): run["head"] for run in runs}
+    out = []
+    for wait in waits.read(db, repo, number):
+        until = wait["retry_at"][11:16] if wait["retry_at"] != "-" else "no time set"
+        out.append({"at": stats._iso(wait["at"]) or 0.0, "kind": "wait", "who": wait["seat"],
+                    "head": heads.get(wait["run"]) or "", "link": "",
+                    "text": f"waiting (retry {wait['retries']}) until {until}: "
+                            f"{excerpt(wait['reason'])}"})
+    return out

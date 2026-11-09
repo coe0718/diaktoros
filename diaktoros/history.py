@@ -2,7 +2,8 @@
 
 Everything a cycle leaves is already recorded, spread over three stores: the run ledger (turns,
 receipts, answers, disputes, rulings, shadow reviews, filed issues, ...), the loop's state dir
-(``findings.json``, ``broker-audit.jsonl``) and GitHub (review bodies, commits, comments). This
+(``findings.json``, ``broker-audit.jsonl``) and GitHub (review bodies, commits, comments), plus
+the waits the worker log keeps (#2080). This
 joins them into one structure, rounds grouped by head, that ``history_render`` prints as text or
 Markdown and ``--format json`` prints as is. It writes nothing, infers nothing: an unreadable
 store or a turn with no write on record is shown as a gap. Every free text passes ``redact``.
@@ -14,7 +15,8 @@ import sqlite3
 from pathlib import Path
 
 from . import findings as findings_mod, history_summary, stats
-from .history_sources import audit_writes, excerpt, github_reads, github_events, tracked_findings
+from .history_sources import (audit_writes, excerpt, github_reads, github_events,
+                              tracked_findings, wait_events)
 from .run_supervisor import NOT_ENDED, views
 
 # What each ledger table adds to the timeline: its event kind and the columns it is read with.
@@ -61,7 +63,7 @@ def collect(loop: dict, db: Path, number: int, offline: bool, redact) -> dict:
                            "the PR's commits", "the PR's comments", "whether it merged"]
     events += github_events(loop, number, github, events)
     _mark_writeless(runs, events)
-    events += [_turn_event(run) for run in runs]
+    events += [_turn_event(run) for run in runs] + wait_events(db, loop["repo"], number, runs)
     for event in events:
         event["text"] = _PATH.sub(_path_tail, redact(event.get("text") or ""))
     data["rounds"] = _rounds([e for e in events if e.get("shown", True)])

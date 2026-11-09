@@ -530,7 +530,13 @@ redelivery, and check for ambiguous runs/writes. See
 The host commits durable work and launch intent before spawning. Unique
 repo/number/head/seat/turn keys deduplicate deliveries. The supervisor SQLite ledger is
 `$HERMES_HOME/state/diaktoros-runs.sqlite`; **it is safety state, not disposable cache**.
-Worker stderr is beside it in `.workers.log`, with bounded rotation.
+Worker stderr is beside it in `.workers.log`, with bounded rotation. Each time a run is parked
+in `waiting`, the worker adds one line there saying when, which run (repo, PR, short head, seat,
+id), its retry count, until when (`retry_at`) and why, for example
+`2026-11-09T17:40:00Z wait repo=o/r pr=12 head=abc1234 seat=reviewer run=55 retries=0
+retry_at=2026-11-09T17:41:30Z reason=ci: …`. A CI hold re-polled with the same reason adds no
+line, so the log keeps why a run waited after its row has moved on.
+[`history --pr N`](commands.md#history) shows these lines as the PR's waits.
 
 | State | Meaning | Action |
 | --- | --- | --- |

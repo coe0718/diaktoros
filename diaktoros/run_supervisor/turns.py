@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from .. import ledger, run_supervisor, util
-from . import claims, pr_facts, turn_prompts
+from . import claims, pr_facts, turn_prompts, waits
 
 
 @dataclass
@@ -191,6 +191,7 @@ class ClaimAndLaunch:
         for row in claims.claim_order(candidates):
             if (self.production_config and row['seat'] in self.capacity
                     and self._ci_poll(row)):
+                waits.note(self, row['id'])     # why it waits, once per reason (#2080)
                 continue        # still held for CI: the light poll re-timed it (#1648)
             read = _ClaimRead()
             if self.production_config and row['seat'] == 'reviewer':
@@ -204,6 +205,7 @@ class ClaimAndLaunch:
             claimed = self._claim_commit(row, read)
             if claimed is not None:
                 return claimed
+            waits.note(self, row['id'])         # a claim read that failed backs off (#2080)
         return None
 
     def _claim_read_shadow(self, row, read: _ClaimRead) -> None:
@@ -1223,6 +1225,7 @@ class ClaimAndLaunch:
             run_id, owner, turn.rc, turn.error, stopped=turn.stopped, retry=turn.retry,
             detail=run_supervisor.output_detail(observed.get('stdout'), observed.get('stderr')),
             paced_until=turn.paced_until, cancel=turn.cancel)
+        waits.note(self, run_id)               # a paced, held or backed-off turn (#2080)
         if turn.breach is not None and state in ('waiting', 'failed', 'cancelled'):
             # This run marked the breach 'adjudicating' and made no ruling: hand the
             # marker back so its retry (or a re-arm) can claim it again.
