@@ -82,11 +82,13 @@ def listing(result: dict, out: Path, offline: bool) -> str:
     for row in result["skipped"]:
         lines.append(f"skipped #{row['pr']}: not merged ({row['why']})")
     failed = result.get("failed")
-    if failed:
+    if failed:                                  # #2213: true with none written before it too
+        kept = "the files above were kept" if result["written"] else "none was written before it"
         lines.append(f"could not write {failed['file']} (#{failed['pr']}): {failed['why']}; "
-                     "stopped there, so this export is partial (the files above were kept)")
+                     f"stopped there, so this export is partial ({kept})")
     if offline and result["written"]:
         lines.append("--offline: merge state not read, so every PR with a turn was written")
-    lines.append(f"{len(result['written'])} cycle(s) written to {out}" if result["written"]
+    lines.append(f"{len(result['written'])} cycle(s) written to {out}"
+                 if result["written"] or failed
                  else "no merged PR with a turn in that window: nothing written")
     return "\n".join(lines)

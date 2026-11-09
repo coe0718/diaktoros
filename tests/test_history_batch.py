@@ -131,6 +131,15 @@ class Batch(fg.Base):
         self.assertIn("stopped there, so this export is partial (the files above were kept)", out)
         self.assertIn("1 cycle(s) written", out)
         self.assertTrue((self.out / "pr-7.md").is_file())
+        (self.out / "pr-7.md").unlink()
+        (self.out / "pr-7.md").mkdir()                       # #2213: the first write fails
+        rc, out = self.run_cli("--since", SINCE, "--out", str(self.out), "--format", "markdown",
+                               "--offline")
+        self.assertEqual(rc, 2)
+        self.assertIn("could not write pr-7.md (#7): ", out)
+        self.assertIn("this export is partial (none was written before it)", out)
+        self.assertIn("0 cycle(s) written", out)
+        self.assertNotIn("nothing written", out)
 
 
 if __name__ == "__main__":
