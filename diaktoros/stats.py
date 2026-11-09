@@ -636,24 +636,7 @@ def finding_outcomes(db: Path, repo: str, since: float, until: float,
                 continue
             if not since <= at < until:
                 continue
-            state = item.get("state")
-            # A ruling decides the findings still open when it runs, whatever head it judged. The
-            # record keeps each finding's latest state, so only one still open now was open at
-            # every ruling since it was raised; a fixed or withdrawn one keeps its own outcome.
-            ruled = (next((r["verdict"] for r in rulings if r["pr"] == pr and r["created"] >= at),
-                          None) if state not in ("fixed", "withdrawn") else None)
-            if ruled == "REJECT":
-                outcome = "upheld"
-            elif ruled == "ACCEPT":
-                outcome = "overruled"
-            elif ruled == "RESPEC":
-                outcome = "respecified"
-            elif state in ("fixed", "withdrawn"):
-                outcome = state
-            elif any(d["pr"] == pr and d["created"] >= at for d in disputes):
-                outcome = "disputed"
-            else:
-                outcome = "open"
+            outcome = finding_outcome(item, pr, rulings, disputes)
             counts[outcome] += 1
             name = models.get((pr, item.get("head"))) or "unknown"
             by_model.setdefault(name, Counter())[outcome] += 1
@@ -664,6 +647,37 @@ def finding_outcomes(db: Path, repo: str, since: float, until: float,
                                     "ruled": c["overruled"] + c["upheld"]}}
     return {**shaped(counts), "undated": undated,
             "models": {name: shaped(c) for name, c in sorted(by_model.items())}}
+
+
+def deciding_ruling(item: dict, pr: int, rulings) -> dict | None:
+    """The ruling that decided finding ``item`` of PR ``pr`` (#660), or None: the first ruling on
+    that PR at or after the finding was raised, while the finding is still open. A ruling decides
+    the findings still open when it runs, whatever head it judged; the record keeps each finding's
+    latest state, so only one still open now was open at every ruling since it was raised, and a
+    fixed or withdrawn one keeps its own outcome. ``rulings`` are rows in creation order."""
+    at = item.get("at")
+    if item.get("state") in ("fixed", "withdrawn") or not isinstance(at, (int, float)):
+        return None
+    return next((r for r in rulings if r["pr"] == pr and r["created"] >= at), None)
+
+
+def finding_outcome(item: dict, pr: int, rulings, disputes) -> str:
+    """One finding's outcome, one of ``FINDING_OUTCOMES``; the rules are ``finding_outcomes``'s.
+    ``hermes dk history`` shows it per finding, so the two cannot disagree (#1657)."""
+    ruled = deciding_ruling(item, pr, rulings)
+    verdict = ruled["verdict"] if ruled else None
+    if verdict in _RULED:
+        return _RULED[verdict]
+    state, at = item.get("state"), item.get("at")
+    if state in ("fixed", "withdrawn"):
+        return state
+    if isinstance(at, (int, float)) and any(d["pr"] == pr and d["created"] >= at
+                                            for d in disputes):
+        return "disputed"
+    return "open"
+
+
+_RULED = {"REJECT": "upheld", "ACCEPT": "overruled", "RESPEC": "respecified"}
 
 
 def regressions(db: Path, repo: str, since: float, until: float) -> dict | None:
