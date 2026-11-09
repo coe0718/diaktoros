@@ -70,7 +70,7 @@ While it runs, the turn's progress line reads `proving the changed tests`.
    kept in the run ledger (table `change_proofs`) for that exact head. The first proof for a head
    stands. A shadow review or a re-review of the same head reads it instead of running it again.
 
-Two cases skip the run:
+Three cases skip the run:
 
 - **An issue fix whose fixer named its reproduction tests.** That head already carries the host's
   reproduction proof (#484), so the change proof leaves it alone.
