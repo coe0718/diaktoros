@@ -692,24 +692,6 @@ def _ended_rearm(c) -> str:
     return "a redelivered verdict is a duplicate the ledger refuses"
 
 
-def _queue_blockers(c, declined: bool) -> None:
-    """The queue entry's or the seat's capacity blocker: none for a push-off hold or a declined
-    fixer entry (the blockers above tell it), a declined entry of another seat never reads as
-    "no capacity" since the drain leaves it, else the capacity wait itself."""
-    if c.fixer_queue_hold or (declined and not c.ruling):
-        pass  # a hold or a declined entry is no capacity wait: no freed slot starts it (#1613)
-    elif c.queued_declined:
-        # Never "no capacity": the drain leaves a declined entry, so no freed slot starts it (#1610).
-        c.blockers.append(f"the gate declined the {c.queued_seat} turn for head {c.short} "
-                          f"({c.queued_reason}) — the drain leaves it, so no freed slot starts it "
-                          f"and nothing restarts it by itself")
-    elif c.queued_seat:
-        c.blockers.append(f"no capacity: queued with the {c.queued_seat} seat — {c.queued_reason}")
-    elif c.full_seat:
-        c.blockers.append(f"no capacity: {c.needed_seat} seat at capacity {c.used}/{c.limit} "
-                          "on other PRs — this PR has no queue entry yet")
-
-
 def _run_blockers(c) -> None:
     """Guards on the runs: push-off, capacity, stale queues and locks, a missing run."""
     declined = c.queued_seat == "fixer" and c.queued_declined
