@@ -74,7 +74,7 @@
     "diaktoros/seat_model.py::resolve_profile": 93,
     "diaktoros/selftest.py::check_build": 87,
     "diaktoros/selftest.py::check_bwrap": 148,
-    "diaktoros/selftest.py::check_identities": 101,
+    "diaktoros/selftest.py::check_identities": 100,
     "diaktoros/selftest.py::check_runtime": 107,
     "diaktoros/stats.py::fix_outcomes": 89,
     "diaktoros/stats.py::report_text": 126,

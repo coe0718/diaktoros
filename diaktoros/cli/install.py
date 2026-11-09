@@ -184,7 +184,9 @@ def _stale_hooks_refusal(loop: dict, admin: str | None) -> str:
     create: GitHub never returns a hook's secret, so nothing can prove whose they are or which of
     several is current, and an adopted hook keeps its old ``active`` state — an armed leftover
     would arm a loop that has not passed doctor/selftest. Refusing writes nothing, and the fix is
-    one pasteable command per hook (or ``uninstall`` for a loop that is still configured).
+    one pasteable command per hook. ``uninstall`` is no route here: init gets this far only when
+    the loop has no config, and uninstall needs one. The commands run as the operator's own ``gh``
+    login, so they say which login needs hook access: a GitHub App key cannot stand in for it.
     """
     hooks, foreign, error = cli_common._classify_hooks(loop, admin)
     if hooks is None:
@@ -202,8 +204,9 @@ def _stale_hooks_refusal(loop: dict, admin: str | None) -> str:
              f"{', '.join(str(i) for i in ids)} — "
              f"{sum(1 for h in hooks if h.get('active'))} active. They were created by a previous "
              "install and sign with its secret, which the routes this init writes will not hold.",
-             "nothing written. Delete them (a token with `admin:repo_hook` or classic `repo`), "
-             "then re-run this init:"]
+             "nothing written. Delete them, then re-run this init. These commands run as your own "
+             "`gh` login, which needs `admin:repo_hook` or classic `repo` on the repo (a GitHub "
+             "App key can't run them):"]
     lines += [f"  {command}" for command in cli_common._hook_delete_commands(loop, ids)]
     return "\n".join(lines)
 
@@ -791,7 +794,10 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
     init.add_argument("--hooks", action="store_true", help="create the GitHub hooks too, paused until `arm`")
     init.add_argument("--arm", action="store_true",
                       help="with --hooks: create them armed (live at once) instead of paused")
-    init.add_argument("--admin-token", default="", help="login whose token can create hooks")
+    init.add_argument("--admin-token", default="",
+                      help="login whose credential can create hooks: a token with "
+                           "admin:repo_hook or repo, or a GitHub App with Webhooks: Read "
+                           "and write")
     init.add_argument("--schedule", default="", help="e.g. 15m — install the watchdog cron job")
     init.add_argument("--watchdog-deliver", default="local", help="cron delivery target for watchdog alerts")
     init.add_argument("--dry-run", action="store_true",

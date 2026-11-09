@@ -700,7 +700,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day: refused here, a new loop has no triage block; set it with `triage --enable ... --fix-daily-turns N` (0 = ignore) |
 | `--hooks` |  |  | create the GitHub hooks too, paused until `arm` |
 | `--arm` |  |  | with --hooks: create them armed (live at once) instead of paused |
-| `--admin-token` | `ADMIN_TOKEN` |  | login whose token can create hooks |
+| `--admin-token` | `ADMIN_TOKEN` |  | login whose credential can create hooks: a token with admin:repo_hook or repo, or a GitHub App with Webhooks: Read and write |
 | `--schedule` | `SCHEDULE` |  | e.g. 15m — install the watchdog cron job |
 | `--watchdog-deliver` | `WATCHDOG_DELIVER` | `local` | cron delivery target for watchdog alerts |
 | `--dry-run` |  |  | print the seat mapping and what would be written, write nothing |

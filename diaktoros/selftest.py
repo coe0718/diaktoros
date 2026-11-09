@@ -50,6 +50,7 @@ import tempfile
 from urllib.parse import urlsplit
 
 from . import config, doctor, envnames, gh, onboarding_record, util
+from .config import credentials
 from .doctor import cron_checks, hook_checks, identity_checks
 
 PASS, FAIL, WARN, SKIP = "pass", "fail", "warn", "skip"
@@ -861,8 +862,7 @@ def check_identities(report: Report, loop: dict) -> bool:
         if not login:
             ok = False
             report.add(step, name, FAIL, f"no login configured for the {role} identity",
-                       f"hermes dk set --loop {loop.get('id') or '<id>'} --read-token "
-                       "LOGIN --token LOGIN=/path/to/pat" if role == "read" else
+                       credentials.reader_fix(loop, "LOGIN") if role == "read" else
                        f"name the {role} login: reviewer_login/fixer_login in the plugin settings, "
                        f"then `hermes dk apply --loop {loop.get('id') or '<id>'}` (a new "
                        "loop takes them from `init --reviewer/--reviewer-seat/--fixer`)")

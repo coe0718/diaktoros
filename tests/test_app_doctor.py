@@ -362,6 +362,14 @@ class Selftest(AppLoop):
         self.assertNotIn("no token file mapped", rows["github:fixer"][3])
         self.assertEqual(rows["github:fixer"][2], selftest.PASS, rows["github:fixer"])
 
+    def test_a_reader_with_no_login_is_told_both_credential_kinds(self):
+        # #2183: the same reader fix every refusal prints, not a PAT-only one.
+        self.loop["read_token"] = ""
+        ok, rows = self.identities(lambda login: {"login": login, "id": 7, "type": "Bot", "app_id": 9})
+        self.assertFalse(ok)
+        self.assertEqual(rows["github:read"][4], credentials.reader_fix(self.loop, "LOGIN"))
+        self.assertIn("--app LOGIN=APP_ID:/abs/key.pem", rows["github:read"][4])
+
     def test_app_identities_resolve_to_their_bots_without_user(self):
         ids = {BOT_REV: 346013884, BOT_READ: 346012008}
         ok, rows = self.identities(lambda login: {"login": login, "id": ids[login],
