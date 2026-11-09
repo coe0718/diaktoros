@@ -284,6 +284,10 @@ class OperatorNotices:
                 if flag:
                     outcome += (f" · to run it sooner, raise the cap (`{flag}`), then `retry "
                                 f"--pr {row['pr']} --seat {row['seat']}`")
+                elif run_supervisor.account_hold(str(row["error"] or "")):
+                    # A closed account (#619): reopened by hand once it is usable again.
+                    outcome += (f" · to run it sooner once the account is usable again, "
+                                f"`retry --seat {row['seat']} --clear-hold`")
             elif state == "waiting":
                 if (row["retries"] or 0) != 1:
                     return               # a later retry: the first one was already reported
