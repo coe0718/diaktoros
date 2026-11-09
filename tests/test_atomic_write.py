@@ -21,6 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diaktoros import util  # noqa: E402
+import _sources  # noqa: E402  every *.py the scans read (#1489)
 
 ROOT = Path(__file__).resolve().parents[1]
 # The renames that publish on their own, each for a reason the helper does not cover: the exact
@@ -63,7 +64,8 @@ PATH_CLASS = {"pathlib.Path", "Path"}
 
 
 def sources(root: Path) -> list[Path]:
-    return sorted([*(root / "diaktoros").rglob("*.py"), *(root / "scripts").rglob("*.py")])
+    """The Python the scans read: every ``*.py`` but the suite's (``_sources``, #1489)."""
+    return _sources.python_sources(root)
 
 
 def calls(source: str):
@@ -240,6 +242,20 @@ class OneHome(unittest.TestCase):
         # str.replace and other two-argument replaces stay out.
         self.assertEqual(by_hand("diaktoros/x.py", "import os\n\ndef f(s):\n"
                                  "    return s.replace('a', 'b')\n"), [])
+
+    def test_the_scan_reads_every_python_file_but_the_suite(self):
+        # #1489: the scan walked diaktoros/ and scripts/ only, so these passed it.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for rel in ("dashboard/plugin_api.py", "tools/spike.py", "docs/site/build.py",
+                        "tests/test_x.py"):
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text("import os\nos.replace('a', 'b')\n")
+            found = [line for path in sources(root)
+                     for line in by_hand(path.relative_to(root).as_posix(), path.read_text())]
+            self.assertEqual(found, [f"{rel} os.replace ×1 in <module>" for rel in
+                                     ("dashboard/plugin_api.py", "docs/site/build.py",
+                                      "tools/spike.py")])
 
     def test_every_exception_is_exactly_the_operations_its_function_has(self):
         for key, (why, ops) in DIFFERENT.items():

@@ -265,30 +265,41 @@ def ruled_approvals(db: str | Path, repo: str, pr: int, head: str) -> tuple[list
             return [], ""                  # a ledger from before #905: nothing acted on
         return [], f"{type(exc).__name__}: {exc}"
 
-def dependency_view(db: str | Path, repo: str, pr: int | None = None,
-                    limit: int = 5) -> list[dict] | None:
-    """The newest runs that recorded a dependency prefetch, for ``status``/``explain`` (#51).
+def _recorded_runs(db: str | Path, repo: str, pr: int | None, limit: int, column: str,
+                   recorded: str) -> list[dict] | None:
+    """The newest runs (at most ``limit``, clamped to 1–20) of ``repo``, and of ``pr`` when
+    given, where ``recorded`` holds, as ``id,repo,pr,head,seat,state,<column>,updated`` rows.
 
-    Read-only; None when the ledger is absent or unreadable, [] when nothing was recorded.
+    The shared read of ``dependency_view`` and ``view_view``: read-only; None when the ledger is
+    absent or unreadable, [] when the ledger predates ``column`` or no row matches.
     """
     try:
         con = read_only_connect(db)
         if con is None:
             return None
         try:
-            if 'deps' not in {c[1] for c in con.execute('PRAGMA table_info(runs)')}:
+            if column not in {c[1] for c in con.execute('PRAGMA table_info(runs)')}:
                 return []
-            where, args = "repo=? AND deps IS NOT NULL", [repo]
+            where, args = "repo=? AND " + recorded, [repo]
             if pr is not None:
                 where += " AND pr=?"
                 args.append(pr)
             return [dict(row) for row in con.execute(
-                "SELECT id,repo,pr,head,seat,state,deps,updated FROM runs WHERE " + where
+                f"SELECT id,repo,pr,head,seat,state,{column},updated FROM runs WHERE " + where
                 + " ORDER BY updated DESC, id LIMIT ?", (*args, max(1, min(limit, 20))))]
         finally:
             con.close()
     except sqlite3.Error:
         return None
+
+
+def dependency_view(db: str | Path, repo: str, pr: int | None = None,
+                    limit: int = 5) -> list[dict] | None:
+    """The newest runs that recorded a dependency prefetch, for ``status``/``explain`` (#51).
+
+    Read-only; None when the ledger is absent or unreadable, [] when nothing was recorded.
+    """
+    return _recorded_runs(db, repo, pr, limit, 'deps', "deps IS NOT NULL")
 
 
 # The reason a turn killed at its budget records (#49); ``next_step`` keys on it.
@@ -408,24 +419,8 @@ def view_view(db: str | Path, repo: str, pr: int | None = None,
 
     Read-only; None when the ledger is absent or unreadable, [] when every recorded view was whole.
     """
-    try:
-        con = read_only_connect(db)
-        if con is None:
-            return None
-        try:
-            if 'partial_view' not in {c[1] for c in con.execute('PRAGMA table_info(runs)')}:
-                return []
-            where, args = "repo=? AND partial_view IS NOT NULL AND partial_view != ''", [repo]
-            if pr is not None:
-                where += " AND pr=?"
-                args.append(pr)
-            return [dict(row) for row in con.execute(
-                "SELECT id,repo,pr,head,seat,state,partial_view,updated FROM runs WHERE " + where
-                + " ORDER BY updated DESC, id LIMIT ?", (*args, max(1, min(limit, 20))))]
-        finally:
-            con.close()
-    except sqlite3.Error:
-        return None
+    return _recorded_runs(db, repo, pr, limit, 'partial_view',
+                          "partial_view IS NOT NULL AND partial_view != ''")
 
 
 def describe_view(row: dict) -> str:

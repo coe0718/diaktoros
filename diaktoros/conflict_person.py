@@ -16,9 +16,9 @@ one a day per head instead of one per merge.
 """
 from __future__ import annotations
 
-import json
 import time
 
+from diaktoros import state as state_mod
 from diaktoros.util import log
 
 FILE = "conflict-person.json"
@@ -34,25 +34,18 @@ def _path(st):
     return st.dir / FILE
 
 
+def _unreadable(why: str) -> None:
+    """Log a store that exists and cannot be read (permissions on the file or an unsearchable
+    parent, bad JSON, ...): without the record every base merge requeues the refused conflict
+    turn again (#1154), and nothing else would say why."""
+    log(f"{FILE} {why}; treating it as empty, so conflict turns requeue on every base merge "
+        f"until it is fixed")
+
+
 def _read(st) -> dict:
-    """Lock-free (writes are atomic replaces); unreadable is empty, i.e. the old behaviour, but a
-    file that exists and cannot be read is logged: without the record every base merge requeues
-    the refused conflict turn again (#1154), and nothing else would say why."""
-    try:
-        data = json.loads(_path(st).read_text())
-    except (FileNotFoundError, NotADirectoryError):
-        return {}          # genuinely absent: the normal case, silent
-    except Exception as exc:
-        # Anything else (permissions on the file or an unsearchable parent, bad JSON, ...) is a
-        # store we cannot tell from an absent one: say so rather than treating it as missing.
-        log(f"{FILE} exists but is unreadable ({type(exc).__name__}: {exc}); treating it as "
-            f"empty, so conflict turns requeue on every base merge until it is fixed")
-        return {}
-    if not isinstance(data, dict):
-        log(f"{FILE} does not hold a JSON object; treating it as empty, so conflict turns "
-            f"requeue on every base merge until it is fixed")
-        return {}
-    return data
+    """Lock-free (``state.read_record``); unreadable is empty, i.e. the old behaviour, but a file
+    that exists and cannot be read is logged (``_unreadable``); a missing one is silent."""
+    return state_mod.read_record(st, FILE, _unreadable)
 
 
 def get(st, number: int, head: str) -> str:

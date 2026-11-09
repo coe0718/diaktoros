@@ -486,8 +486,6 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--arm` |  |  | arm the hooks after a clean doctor and selftest |
 | `--reviewer` | `REVIEWER` |  | reviewer GitHub login |
 | `--fixer` | `FIXER` |  | fixer GitHub login |
-| `--reviewer-profile` | `REVIEWER_PROFILE` |  | reviewer's Hermes profile |
-| `--fixer-profile` | `FIXER_PROFILE` |  | fixer's Hermes profile |
 | `--reviewer-token` | `REVIEWER_TOKEN` |  | reviewer's token file |
 | `--fixer-token` | `FIXER_TOKEN` |  | fixer's token file |
 | `--read-token` | `READ_TOKEN` |  | reader login (its own account) |
@@ -534,13 +532,15 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--adjudicator-file-issues` | `on` \| `off` |  | file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found (default: the plugin setting, off) |
 | `--change-proof` | `on` \| `off` |  | run each reviewed head's changed tests on its merge base and at the head, and show the reviewer (default: the plugin setting, off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default: the plugin setting, on) |
+| `--reviewer-profile` | `REVIEWER_PROFILE` |  | Hermes profile for the reviewer seat (default: the plugin setting) |
+| `--fixer-profile` | `FIXER_PROFILE` |  | Hermes profile for the fixer seat (default: the plugin setting) |
+| `--shadow-concurrency` | `SHADOW_CONCURRENCY` |  | shadow reviews that may run at once, >= 1 (the shadow seat's own value: the loop's --concurrency does not reach it) (default: the plugin setting, else 1) |
+| `--triage-concurrency` | `TRIAGE_CONCURRENCY` |  | issue triages that may run at once, >= 1 (the triage seat's own value: the loop's --concurrency does not reach it) (default: the plugin setting, else 1) |
+| `--reviewer-daily-tokens` | `REVIEWER_DAILY_TOKENS` |  | most tokens (in + out) the reviewer may spend per day on this loop; once spent, the next turn waits for midnight (0 = none) (default: the plugin setting) |
+| `--fixer-daily-tokens` | `FIXER_DAILY_TOKENS` |  | most tokens the fixer (and issue fixes) may spend per day on this loop (0 = none) (default: the plugin setting) |
+| `--shadow-daily-tokens` | `SHADOW_DAILY_TOKENS` |  | most tokens shadow reviews may spend per day on this loop; once spent, the next waits for midnight (0 = none) (default: the plugin setting) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
-| `--reviewer-daily-tokens` | `REVIEWER_DAILY_TOKENS` |  | most tokens the reviewer may spend per day; once spent the next turn waits for midnight (0 = none) (default: the plugin setting) |
-| `--shadow-daily-tokens` | `SHADOW_DAILY_TOKENS` |  | most tokens shadow reviews may spend per day; once spent the next waits for midnight (0 = none) (default: the plugin setting) |
-| `--shadow-concurrency` | `SHADOW_CONCURRENCY` |  | shadow reviews that may run at once, >= 1 (default: the plugin setting, else 1) |
-| `--triage-concurrency` | `TRIAGE_CONCURRENCY` |  | issue triages that may run at once, >= 1 (default: the plugin setting, else 1) |
-| `--fixer-daily-tokens` | `FIXER_DAILY_TOKENS` |  | most tokens the fixer (and issue fixes) may spend per day (0 = none) (default: the plugin setting) |
 | `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day: refused here, a new loop has no triage block; set it with `triage --enable ... --fix-daily-turns N` (0 = ignore) |
 | `--source` | `SOURCE` |  | runtime file's source path (default: detected) |
 | `--venv` | `VENV` |  | runtime file's venv path (default: detected) |
@@ -606,16 +606,23 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--fixer` | `FIXER` (repeatable) |  | GitHub login that pushes (repeatable; default: the plugin setting) |
 | `--reviewer` | `REVIEWER` (repeatable) |  | GitHub login that may review (repeatable; default: the plugin setting) |
 | `--reviewer-seat` | `REVIEWER_SEAT` |  | the login the reviewer route serves |
-| `--reviewer-profile` | `REVIEWER_PROFILE` |  | Hermes profile for the reviewer seat (default: the plugin setting) |
-| `--fixer-profile` | `FIXER_PROFILE` |  | Hermes profile for the fixer seat (default: the plugin setting) |
 | `--reviewer-agent` | `REVIEWER_AGENT` |  | display name for the reviewer (default: profile) |
 | `--fixer-agent` | `FIXER_AGENT` |  | display name for the fixer |
 | `--cap` | `CAP` | `3` | verdicts allowed before adjudication |
 | `--concurrency` | `CONCURRENCY` |  | default PRs per seat at once: 1 = serialized (default: 1, from the plugin settings). Above 1 needs --clone unless the isolated worker's runtime file exists, because each run then gets its own clone or sandbox. Override per seat with --reviewer-concurrency / --fixer-concurrency. |
-| `--reviewer-concurrency` | `REVIEWER_CONCURRENCY` |  | PRs the reviewer may work at once (overrides --concurrency; default: the loop's, settings 1) |
-| `--fixer-concurrency` | `FIXER_CONCURRENCY` |  | PRs the fixer may work at once (overrides --concurrency; default: the loop's, settings 1) |
-| `--shadow-concurrency` | `SHADOW_CONCURRENCY` |  | shadow reviews that may run at once, >= 1 (the shadow seat's own value: --concurrency does not reach it) (default: the plugin setting, else 1) |
-| `--triage-concurrency` | `TRIAGE_CONCURRENCY` |  | issue triages that may run at once, >= 1 (the triage seat's own value: --concurrency does not reach it) (default: the plugin setting, else 1) |
+| `--reviewer-profile` | `REVIEWER_PROFILE` |  | Hermes profile for the reviewer seat (default: the plugin setting) |
+| `--fixer-profile` | `FIXER_PROFILE` |  | Hermes profile for the fixer seat (default: the plugin setting) |
+| `--reviewer-concurrency` | `REVIEWER_CONCURRENCY` |  | PRs the reviewer may work at once (overrides the loop's --concurrency) (default: the loop's, settings 1) |
+| `--fixer-concurrency` | `FIXER_CONCURRENCY` |  | PRs the fixer may work at once (overrides the loop's --concurrency) (default: the loop's, settings 1) |
+| `--shadow-concurrency` | `SHADOW_CONCURRENCY` |  | shadow reviews that may run at once, >= 1 (the shadow seat's own value: the loop's --concurrency does not reach it) (default: the plugin setting, else 1) |
+| `--triage-concurrency` | `TRIAGE_CONCURRENCY` |  | issue triages that may run at once, >= 1 (the triage seat's own value: the loop's --concurrency does not reach it) (default: the plugin setting, else 1) |
+| `--reviewer-turn-budget` | `REVIEWER_TURN_BUDGET` |  | the reviewer seat's own turn budget in seconds (overrides the loop's --turn-budget) |
+| `--fixer-turn-budget` | `FIXER_TURN_BUDGET` |  | the fixer seat's own turn budget in seconds (overrides the loop's --turn-budget) |
+| `--reviewer-daily-tokens` | `REVIEWER_DAILY_TOKENS` |  | most tokens (in + out) the reviewer may spend per day on this loop; once spent, the next turn waits for midnight (0 = none) (default: the plugin setting) |
+| `--fixer-daily-tokens` | `FIXER_DAILY_TOKENS` |  | most tokens the fixer (and issue fixes) may spend per day on this loop (0 = none) (default: the plugin setting) |
+| `--shadow-daily-tokens` | `SHADOW_DAILY_TOKENS` |  | most tokens shadow reviews may spend per day on this loop; once spent, the next waits for midnight (0 = none) (default: the plugin setting) |
+| `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
+| `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
 | `--base` | `BASE` | `main` | the branch PRs target; only PRs against it are reviewed |
 | `--clone` | `CLONE` |  | local clone the runs may use |
 | `--root` | `ROOT` (repeatable) |  | a directory reviews may clean (repeatable) |
@@ -675,13 +682,6 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--merge-check` | `auto` \| `on` \| `off` |  | post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting) |
 | `--turn-budget` | `TURN_BUDGET` | `900` | seconds one isolated seat turn may run, build and tests included (default 900; the sandbox is killed past it) |
-| `--reviewer-turn-budget` | `REVIEWER_TURN_BUDGET` |  | the reviewer seat's own turn budget in seconds (overrides --turn-budget) |
-| `--fixer-turn-budget` | `FIXER_TURN_BUDGET` |  | the fixer seat's own turn budget in seconds (overrides --turn-budget) |
-| `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
-| `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
-| `--reviewer-daily-tokens` | `REVIEWER_DAILY_TOKENS` |  | most tokens the reviewer may spend per day; once spent the next turn waits for midnight (0 = none) (default: the plugin setting) |
-| `--shadow-daily-tokens` | `SHADOW_DAILY_TOKENS` |  | most tokens shadow reviews may spend per day; once spent the next waits for midnight (0 = none) (default: the plugin setting) |
-| `--fixer-daily-tokens` | `FIXER_DAILY_TOKENS` |  | most tokens the fixer (and issue fixes) may spend per day (0 = none) (default: the plugin setting) |
 | `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day: refused here, a new loop has no triage block; set it with `triage --enable ... --fix-daily-turns N` (0 = ignore) |
 | `--hooks` |  |  | create the GitHub hooks too, paused until `arm` |
 | `--arm` |  |  | with --hooks: create them armed (live at once) instead of paused |
@@ -746,10 +746,6 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
 | `--concurrency` | `CONCURRENCY` |  | default PRs per seat at once (1 = serialized; above 1 needs a clone unless the isolated worker's runtime file exists, since each run gets its own) |
-| `--reviewer-concurrency` | `REVIEWER_CONCURRENCY` |  | how many PRs the reviewer may work at once |
-| `--fixer-concurrency` | `FIXER_CONCURRENCY` |  | how many PRs the fixer may work at once |
-| `--shadow-concurrency` | `SHADOW_CONCURRENCY` |  | how many shadow reviews may run at once (>= 1; only the shadow seat's own value: the loop default does not reach it) |
-| `--triage-concurrency` | `TRIAGE_CONCURRENCY` |  | how many issue triages may run at once (>= 1; only the triage seat's own value: the loop default does not reach it) |
 | `--cap` | `CAP` |  | verdicts allowed before adjudication |
 | `--clone` | `CLONE` |  | local clone the runs isolate from |
 | `--base` | `BASE` |  | base branch the loop watches |
@@ -802,18 +798,22 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--ingress-app` | `INGRESS_APP` |  | with --ingress app-webhook: the bot login of the GitHub App whose webhook delivers (mapped with --app) |
 | `--merge-check` | `auto` \| `on` \| `off` |  | post the diaktoros/review merge check: auto (on when the reviewer is a GitHub App), on (a PAT loop gets a commit status) or off |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) |
-| `--reviewer-turn-budget` | `REVIEWER_TURN_BUDGET` |  | the reviewer seat's own turn budget in seconds |
-| `--fixer-turn-budget` | `FIXER_TURN_BUDGET` |  | the fixer seat's own turn budget in seconds |
+| `--reviewer-concurrency` | `REVIEWER_CONCURRENCY` |  | PRs the reviewer may work at once (overrides the loop's --concurrency) |
+| `--fixer-concurrency` | `FIXER_CONCURRENCY` |  | PRs the fixer may work at once (overrides the loop's --concurrency) |
+| `--shadow-concurrency` | `SHADOW_CONCURRENCY` |  | shadow reviews that may run at once, >= 1 (the shadow seat's own value: the loop's --concurrency does not reach it) |
+| `--triage-concurrency` | `TRIAGE_CONCURRENCY` |  | issue triages that may run at once, >= 1 (the triage seat's own value: the loop's --concurrency does not reach it) |
+| `--reviewer-turn-budget` | `REVIEWER_TURN_BUDGET` |  | the reviewer seat's own turn budget in seconds (overrides the loop's --turn-budget) |
+| `--fixer-turn-budget` | `FIXER_TURN_BUDGET` |  | the fixer seat's own turn budget in seconds (overrides the loop's --turn-budget) |
+| `--shadow-turn-budget` | `SHADOW_TURN_BUDGET` |  | a shadow review's own turn budget in seconds (0 = the loop's) |
 | `--reviewer-daily-turns` | `REVIEWER_DAILY_TURNS` |  | most reviewer turns per day on this loop; later ones wait for midnight (0 removes the cap) |
 | `--fixer-daily-turns` | `FIXER_DAILY_TURNS` |  | most fixer turns per day on this loop (0 removes the cap) |
-| `--reviewer-daily-tokens` | `REVIEWER_DAILY_TOKENS` |  | most tokens (in + out) the reviewer may spend per day on this loop; once spent, the next turn waits for midnight (0 removes it) |
-| `--fixer-daily-tokens` | `FIXER_DAILY_TOKENS` |  | most tokens the fixer (and issue fixes) may spend per day on this loop (0 removes it) |
-| `--shadow-daily-tokens` | `SHADOW_DAILY_TOKENS` |  | most tokens shadow reviews may spend per day on this loop; once spent, the next waits for midnight (0 removes it) |
 | `--shadow-daily-turns` | `SHADOW_DAILY_TURNS` |  | most shadow reviews per day on this loop (0 removes the cap) |
-| `--shadow-turn-budget` | `SHADOW_TURN_BUDGET` |  | a shadow review's own turn budget in seconds (0 = the loop's) |
-| `--shadow-max-steps` | `SHADOW_MAX_STEPS` |  | agent steps one shadow review may take, 8-200 (0 = default 100) |
+| `--reviewer-daily-tokens` | `REVIEWER_DAILY_TOKENS` |  | most tokens (in + out) the reviewer may spend per day on this loop; once spent, the next turn waits for midnight (0 = none) |
+| `--fixer-daily-tokens` | `FIXER_DAILY_TOKENS` |  | most tokens the fixer (and issue fixes) may spend per day on this loop (0 = none) |
+| `--shadow-daily-tokens` | `SHADOW_DAILY_TOKENS` |  | most tokens shadow reviews may spend per day on this loop; once spent, the next waits for midnight (0 = none) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) |
+| `--shadow-max-steps` | `SHADOW_MAX_STEPS` |  | agent steps one shadow review may take, 8-200 (0 = default 100) |
 | `--host` | `HOST` |  | gateway webhook host |
 | `--adjudicator-login` | `ADJUDICATOR_LOGIN` |  | optional fourth GitHub account the ruling is also posted as; "" clears it (rulings go to the operator only) |
 | `--adjudicator-profile` | `ADJUDICATOR_PROFILE` |  | turn adjudication on: the Hermes profile that rules when the verdict cap is spent; creates the <id>-breach route and its shim |

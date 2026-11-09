@@ -20,6 +20,7 @@ from .. import (
     util,
 )
 from . import common as cli_common
+from . import seat_flags
 from ..config import credentials
 from ..config import lists
 from ..config import prices
@@ -791,16 +792,13 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
 
 
 def _init_seat_flags(init, d) -> None:  # noqa: ANN001
-    """``init``: the logins and profiles of the two working seats, and the verdict cap."""
+    """``init``: the logins of the two working seats, and the verdict cap (their profiles are
+    ``seat_flags``', added with the capacity flags)."""
     init.add_argument("--fixer", action="append", default=[],
                       help="GitHub login that pushes (repeatable; default: the plugin setting)")
     init.add_argument("--reviewer", action="append", default=[],
                       help="GitHub login that may review (repeatable; default: the plugin setting)")
     init.add_argument("--reviewer-seat", help="the login the reviewer route serves")
-    init.add_argument("--reviewer-profile", default=d["reviewer_profile"],
-                      help="Hermes profile for the reviewer seat (default: the plugin setting)")
-    init.add_argument("--fixer-profile", default=d["fixer_profile"],
-                      help="Hermes profile for the fixer seat (default: the plugin setting)")
     init.add_argument("--reviewer-agent", default="", help="display name for the reviewer (default: profile)")
     init.add_argument("--fixer-agent", default="", help="display name for the fixer")
     init.add_argument("--cap", type=int, default=d["cap"],
@@ -808,7 +806,8 @@ def _init_seat_flags(init, d) -> None:  # noqa: ANN001
 
 
 def _init_capacity_flags(init, d, both) -> None:  # noqa: ANN001
-    """``init``: how many PRs each seat works at once."""
+    """``init``: how many PRs each seat works at once, and the rest of the per-seat table shared
+    with ``setup`` and ``set`` (#1484): profiles, turn budgets, steps and daily tokens."""
     # None, not the settings value: a flag nobody passed must not be written as a seat
     # override, or the loop default is dead for that seat forever (#76). cmd_init fills in the
     # settings form's values at read time.
@@ -818,20 +817,8 @@ def _init_capacity_flags(init, d, both) -> None:  # noqa: ANN001
                            "isolated worker's runtime file exists, because each "
                            "run then gets its own clone or sandbox. Override per seat with "
                            "--reviewer-concurrency / --fixer-concurrency.")
-    init.add_argument("--reviewer-concurrency", type=int, default=None,
-                      help="PRs the reviewer may work at once (overrides --concurrency; "
-                           f"default: the loop's, settings {d['reviewer_concurrency']})")
-    init.add_argument("--fixer-concurrency", type=int, default=None,
-                      help="PRs the fixer may work at once (overrides --concurrency; "
-                           f"default: the loop's, settings {d['fixer_concurrency']})")
-    init.add_argument("--shadow-concurrency", type=int, default=None,
-                      help="shadow reviews that may run at once, >= 1 (the shadow seat's own "
-                           "value: --concurrency does not reach it) (default: the plugin "
-                           "setting, else 1)")
-    init.add_argument("--triage-concurrency", type=int, default=None,
-                      help="issue triages that may run at once, >= 1 (the triage seat's own "
-                           "value: --concurrency does not reach it) (default: the plugin "
-                           "setting, else 1)")
+    seat_flags.add(init, "init", d)
+
 
 
 def _init_place_flags(init, d) -> None:  # noqa: ANN001
@@ -997,29 +984,11 @@ def _init_ingress_flags(init) -> None:  # noqa: ANN001
 
 
 def _init_turn_flags(init, d) -> None:  # noqa: ANN001
-    """``init``: each seat's turn budget, steps, and daily tokens and turns."""
+    """``init``: the loop's turn budget, and the issue-fix daily cap ``init`` refuses (each seat's
+    own knobs are ``seat_flags``')."""
     init.add_argument("--turn-budget", type=int, default=d["turn_budget_s"],
                       help="seconds one isolated seat turn may run, build and tests included "
                            f"(default {d['turn_budget_s']}; the sandbox is killed past it)")
-    init.add_argument("--reviewer-turn-budget", type=int, default=None,
-                      help="the reviewer seat's own turn budget in seconds (overrides --turn-budget)")
-    init.add_argument("--fixer-turn-budget", type=int, default=None,
-                      help="the fixer seat's own turn budget in seconds (overrides --turn-budget)")
-    init.add_argument("--reviewer-max-steps", type=int, default=None,
-                      help="agent steps one reviewer turn may take, 8-200 (0 = default 60) "
-                           "(default: the plugin setting)")
-    init.add_argument("--fixer-max-steps", type=int, default=None,
-                      help="agent steps one fixer or issue-fix turn may take, 8-200 "
-                           "(0 = default 80) (default: the plugin setting)")
-    init.add_argument("--reviewer-daily-tokens", type=int, default=None,
-                      help="most tokens the reviewer may spend per day; once spent the next "
-                           "turn waits for midnight (0 = none) (default: the plugin setting)")
-    init.add_argument("--shadow-daily-tokens", type=int, default=None,
-                     help="most tokens shadow reviews may spend per day; once spent the next waits "
-                          "for midnight (0 = none) (default: the plugin setting)")
-    init.add_argument("--fixer-daily-tokens", type=int, default=None,
-                      help="most tokens the fixer (and issue fixes) may spend per day "
-                           "(0 = none) (default: the plugin setting)")
     init.add_argument("--fix-daily-turns", type=int, default=None,
                       help="issue-fix turns per day: refused here, a new loop has no "
                            "triage block; set it with `triage --enable ... --fix-daily-turns N` "
