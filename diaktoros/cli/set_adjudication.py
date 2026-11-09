@@ -14,17 +14,17 @@ from ..config import credentials
 from ..config import settings_form
 
 
-def _set_adjudication(args, loop: dict) -> int:
-    """``set --adjudicator-profile P`` / ``--adjudicator-route NAME`` / ``--adjudicator off``.
+def _check(args, loop: dict):
+    """``set --adjudicator-profile P`` / ``--adjudicator-route NAME`` / ``--adjudicator off``,
+    checked and not yet written (#1972): ``set`` writes it with ``_commit`` only once its other
+    flags have passed their checks, so a refused ``set`` writes nothing.
 
-    On: the route is written the way ``init --adjudicator-route`` writes it (ownership check,
-    intent record, shim) and the ``adjudicator`` block with it. Off: the route, its intent record
-    and its shim go, and so does the block; the ledger's breach markers and rulings stay.
-    A failed route write puts the config and the registry back.
+    Returns 2 when refused and 0 when there is nothing to change (both said here), or the
+    plan ``_commit`` writes: its ``updated`` is the loop as the change leaves it.
     """
-    path = config.config_dir() / f"{loop['id']}.json"
     current = dict(loop.get("adjudicator") or {})
     old_route = str(current.get("route") or "")
+    plan = {"loop": loop, "old_route": old_route}
     if getattr(args, "adjudicator", None) == "off":
         if getattr(args, "adjudicator_profile", None) or getattr(args, "adjudicator_route", None):
             print("refused: --adjudicator off cannot be combined with --adjudicator-profile "
@@ -43,7 +43,42 @@ def _set_adjudication(args, loop: dict) -> int:
         except config.ConfigError as exc:
             print(f"refused: {exc}")
             return 2
-        previous_config = path.read_bytes()
+        return {**plan, "off": True, "updated": updated}
+
+    d = settings_form.settings_defaults(cli_common._SETTINGS)
+    profile = (str(getattr(args, "adjudicator_profile", None) or "").strip()
+               or str(current.get("profile") or "") or d["adjudicator_profile"] or "default")
+    route = (str(getattr(args, "adjudicator_route", None) or "").strip() or old_route
+             or cli_common.routes_for(loop)["adjudicator"])
+    try:
+        updated = config.normalize({**loop, "adjudicator": {**current, "route": route,
+                                                            "profile": profile}})
+        config.webhook_host(updated.get("host"), required=True)
+        credentials.verify_seats(updated, {"adjudicator"})
+        cli_common._verify_routes(updated, {"adjudicator"})
+        gate_shims.install(updated, dry_run=True, report=False)
+    except config.ConfigError as exc:
+        print(f"refused: {exc}")
+        return 2
+    if (updated.get("adjudicator") or {}) == current and routes.route(route):
+        print(f"[{loop['id']}] adjudication already on (route {route}, profile {profile})")
+        return 0
+    return {**plan, "off": False, "updated": updated, "route": route, "profile": profile}
+
+
+def _commit(plan) -> int:
+    """Write a plan from ``_check`` (0 or None: nothing to change). On: the route is written
+    the way ``init --adjudicator-route`` writes it (ownership check, intent record, shim) and the
+    ``adjudicator`` block with it. Off: the route, its intent record and its shim go, and so does
+    the block; the ledger's breach markers and rulings stay. A failed route write puts the
+    config and the registry back.
+    """
+    if not isinstance(plan, dict):
+        return plan or 0    # None: no adjudication flag
+    loop, updated, old_route = plan["loop"], plan["updated"], plan["old_route"]
+    path = config.config_dir() / f"{loop['id']}.json"
+    previous_config = path.read_bytes()
+    if plan["off"]:
         previous_route = routes.route(old_route)
         try:
             cli_common._write_config(updated)
@@ -67,25 +102,7 @@ def _set_adjudication(args, loop: dict) -> int:
             print(f"  {line}")
         return 0
 
-    d = settings_form.settings_defaults(cli_common._SETTINGS)
-    profile = (str(getattr(args, "adjudicator_profile", None) or "").strip()
-               or str(current.get("profile") or "") or d["adjudicator_profile"] or "default")
-    route = (str(getattr(args, "adjudicator_route", None) or "").strip() or old_route
-             or cli_common.routes_for(loop)["adjudicator"])
-    try:
-        updated = config.normalize({**loop, "adjudicator": {**current, "route": route,
-                                                            "profile": profile}})
-        config.webhook_host(updated.get("host"), required=True)
-        credentials.verify_seats(updated, {"adjudicator"})
-        cli_common._verify_routes(updated, {"adjudicator"})
-        gate_shims.install(updated, dry_run=True, report=False)
-    except config.ConfigError as exc:
-        print(f"refused: {exc}")
-        return 2
-    if (updated.get("adjudicator") or {}) == current and routes.route(route):
-        print(f"[{loop['id']}] adjudication already on (route {route}, profile {profile})")
-        return 0
-    previous_config = path.read_bytes()
+    route, profile = plan["route"], plan["profile"]
     names = {route, *([old_route] if old_route else [])}
     previous_routes = {name: routes.route(name) for name in names}
     try:

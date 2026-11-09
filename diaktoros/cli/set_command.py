@@ -326,9 +326,8 @@ def _refuse_busy_identity(args, loop: dict) -> None:
     """Raise ``_Refused``, after ``identity``'s refusal is printed, when this ``set`` would move
     the reader or the adjudicator of ``loop`` while that identity has a run in flight (#1293).
 
-    Judged on the loop as it stands before ``set`` writes anything, so ``_set`` runs it before
-    ``_set_adjudication``; the same ``_credentials`` reading ``_set`` uses later decides what
-    moves."""
+    Judged on the loop as it stands; the same ``_credentials`` reading ``_set`` uses later
+    decides what moves."""
     tokens, apps, adj_before, adj_after, _, _, _, read_changed = _credentials(args, loop)
     if identity_command.set_moves_busy_identity(loop, tokens, apps, adj_before, adj_after,
                                                 read_changed, args):
@@ -521,8 +520,9 @@ def _validated(loop: dict, changes: dict, seats: dict, observer_cfg: dict, token
 
 
 def _observer_move(loop: dict, updated: dict) -> tuple:
-    """Whether the observer's destinations move, refused while notices are unsettled; marks a
-    disabled feed's tombstone. Returns (before, after, destination_changed, urgent_changed)."""
+    """Whether the observer's destinations move, refused while notices are unsettled or when a
+    new route would replace another (checked here, before any write: #1972); marks a disabled
+    feed's tombstone. Returns (before, after, destination_changed, urgent_changed)."""
     before = loop.get("observer") or {}
     after = updated.get("observer") or {}
     # Disabling stops new notices and removes the route, but leaves the outbox intact.
@@ -551,6 +551,20 @@ def _observer_move(loop: dict, updated: dict) -> tuple:
             print(f"refused: {outstanding} observer notice(s) are unsettled; retry/resolve "
                   "them before changing the route, profile, delivery or host")
             raise _Refused
+    reserved = {cfg.get("route") for cfg in [*loop["seats"].values(), loop.get("adjudicator") or {}]}
+    name, urgent = after.get("route"), after.get("urgent_route")
+    if destination_changed and after:
+        if name in reserved:
+            print("refused: observer route must not replace a seat or adjudicator route")
+            raise _Refused
+        if routes.route(name) and name != before.get("route"):
+            print(f"refused: route {name!r} already exists and is not this observer's route")
+            raise _Refused
+    if urgent_changed and urgent and (urgent in reserved | {name} or (
+            routes.route(urgent) and urgent != before.get("urgent_route"))):
+        print(f"refused: route {urgent!r} is already in use and is not this observer's "
+              "urgent route")
+        raise _Refused
     if after:
         updated.pop("observer_disabled", None)
     elif before:
@@ -565,15 +579,7 @@ def _observer_route(loop: dict, updated: dict, before: dict, after: dict,
     shims_ok = True
     if destination_changed and after:
         name = after["route"]
-        reserved = {cfg.get("route") for cfg in loop["seats"].values()}
-        reserved.add((loop.get("adjudicator") or {}).get("route"))
-        if name in reserved:
-            print("refused: observer route must not replace a seat or adjudicator route")
-            raise _Refused
         existing = routes.route(name)
-        if existing and name != before.get("route"):
-            print(f"refused: route {name!r} already exists and is not this observer's route")
-            raise _Refused
         try:
             host = config.webhook_host(updated.get("host"), required=True)
             written = routes.new_route(name, profile=config.seat_profile(updated, "observer"),
@@ -603,13 +609,6 @@ def _urgent_route(loop: dict, updated: dict, before: dict, after: dict, urgent_c
     """Write the observer's urgent route when it changes."""
     if urgent_changed and after.get("urgent_route"):
         urgent = after["urgent_route"]
-        reserved = {cfg.get("route") for cfg in loop["seats"].values()}
-        reserved |= {(loop.get("adjudicator") or {}).get("route"), after.get("route")}
-        existing = routes.route(urgent)
-        if urgent in reserved or (existing and urgent != before.get("urgent_route")):
-            print(f"refused: route {urgent!r} is already in use and is not this observer's "
-                  "urgent route")
-            raise _Refused
         try:
             host = config.webhook_host(updated.get("host"), required=True)
             written = routes.new_route(
@@ -748,18 +747,17 @@ def cmd_set(args) -> int:
 def _set(args) -> int:
     """``cmd_set``'s steps, in order; a step that refuses raises ``_Refused``."""
     loop = _load_loop(args)
-    # #1293: moving the reader or the adjudicator waits for its runs, as `identity` does. It runs
-    # before every step that writes (the adjudication change commits its own config and route),
-    # so a refused `set` leaves the loop as it was, whatever other flags it carries.
+    # #1293: moving the reader or the adjudicator waits for its runs, as `identity` does.
     _refuse_busy_identity(args, loop)
-    adj_done = False
+    # #1972: the steps below check the loop as the adjudication change leaves it, and that change
+    # is written only after the last of them can refuse, so a refused `set` writes nothing.
+    adj = None
     if (getattr(args, "adjudicator_profile", None) or getattr(args, "adjudicator_route", None)
             or getattr(args, "adjudicator", None)):
-        rc = set_adjudication._set_adjudication(args, loop)
-        if rc:
-            return rc
-        adj_done = True
-        loop = config.load_id(args.loop)
+        adj = set_adjudication._check(args, loop)
+        if adj == 2:
+            return 2
+        loop = adj["updated"] if adj else loop
 
     host = _host_arg(args)
     changes = _flag_changes(args, loop, host)
@@ -778,8 +776,8 @@ def _set(args) -> int:
     if (not changes and not seat_changes and not budget_changes and not adj_changed
             and not read_changed
             and observer_cfg == (loop.get("observer") or {})):
-        if adj_done:
-            return 0
+        if adj is not None:
+            return set_adjudication._commit(adj)
         print("nothing to change — pass at least one setting "
               "(--concurrency, --reviewer-concurrency, --fixer-concurrency, "
               "--shadow-concurrency, --triage-concurrency, --cap, --clone, "
@@ -790,6 +788,8 @@ def _set(args) -> int:
     updated, app_route = _validated(loop, changes, seats, observer_cfg, tokens, apps, read_after,
                                     read_changed, adj_changed)
     before, after, destination_changed, urgent_changed = _observer_move(loop, updated)
+    if (rc := set_adjudication._commit(adj)):
+        return rc
     shims_ok = _observer_route(loop, updated, before, after, destination_changed)
     shims_ok = _urgent_route(loop, updated, before, after, urgent_changed, shims_ok)
     shim_lines = _app_route(loop, updated, app_route)
