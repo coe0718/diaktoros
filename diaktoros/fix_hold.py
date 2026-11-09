@@ -87,6 +87,16 @@ def _ask_wants(ask: dict) -> str:
             else "an answer to its question")
 
 
+def posted_ask(kind: str | None, body: str) -> str:
+    """The comment the broker posts for the fixer's ``body``: a plan gets one host-written line
+    saying how a maintainer approves it, worded from ``APPROVE`` so it matches ``reply_to``
+    (#2047). A question or a plain comment is posted as written."""
+    if kind != "plan":
+        return body
+    return (f"{body.rstrip()}\n\nTo go ahead, a maintainer replies with exactly `{APPROVE}`. Any "
+            "other reply is read by the next turn but does not start it.")
+
+
 def ask_line(number: int, ask: dict) -> str:
     """The one sentence ``status`` and ``explain`` use for an issue waiting on a maintainer."""
     return (f"issue #{number} fix waits for a maintainer: {_ask_wants(ask)}; "

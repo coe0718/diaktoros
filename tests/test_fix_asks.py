@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_issue_fix as base  # noqa: E402
 BASE, REPO, issue = base.BASE, base.REPO, base.issue
 
-from diaktoros import broker_ipc, explain, fix_hold, gh  # noqa: E402
+from diaktoros import attribution, broker_ipc, explain, fix_hold, gh  # noqa: E402
 from diaktoros import state as state_mod  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 
@@ -36,6 +36,20 @@ class Asking(base.BrokerWrite):
         self.assertEqual(self.st.fix_ask_open()[12]["kind"], "question")
         self.assertEqual(self.sup.issue_fix_result(self.run_id)["state"], "posted")
         self.assertEqual(self.pushed, [])
+
+    def test_a_posted_plan_says_how_to_approve_it(self):
+        self.server._dispatch(ask("plan", "1. do a\n2. do b"))
+        (_path, body), = self.posts()
+        posted = attribution.unsign(body["body"])          # the words, without the seat footer
+        self.assertTrue(posted.startswith("1. do a\n2. do b\n\n"))
+        last = posted.rstrip().splitlines()[-1]
+        self.assertIn(f"replies with exactly `{fix_hold.APPROVE}`", last)
+        self.assertEqual(self.st.fix_ask_open()[12]["text"], "1. do a\n2. do b")  # fixer's own text
+
+    def test_a_posted_question_has_no_approve_line(self):
+        self.server._dispatch(ask())
+        (_path, body), = self.posts()
+        self.assertEqual(attribution.unsign(body["body"]), "Which API shape do you want?")
 
     def test_a_plain_comment_opens_no_ask(self):
         self.server._dispatch(json.dumps({"operation": "issue_comment", "body": "cannot"}).encode())

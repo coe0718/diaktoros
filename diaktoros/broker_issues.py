@@ -320,7 +320,7 @@ class IssueWrites:
         return {"accepted": True, "issue": issue}
 
     def _issue_comment(self, loop: dict, supervisor, body: str, kind: str | None = None) -> object:
-        from . import state as state_mod
+        from . import fix_hold, state as state_mod
         run_id = self.scope.run_id
         try:
             login = broker.authorize_issue_fix(loop, repo=self.scope.repo, number=self.scope.number)
@@ -329,7 +329,8 @@ class IssueWrites:
             raise
         try:
             comment = broker.post_issue_comment(loop, repo=self.scope.repo,
-                                                number=self.scope.number, login=login, body=body)
+                                                number=self.scope.number, login=login,
+                                                body=fix_hold.posted_ask(kind, body))
         except Exception as exc:
             supervisor.issue_fix_status(run_id, "uncertain",
                                         error=f"POST outcome unknown: {broker_ipc._why(exc)}")
