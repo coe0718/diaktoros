@@ -111,6 +111,14 @@ class Batch(fg.Base):
             self.assertEqual(rc, 2, argv)
         self.assertIn("use 7d, 24h or a date", out)
 
+    def test_an_out_that_is_a_file_exits_2(self):
+        """#2175: a clean refusal, not a traceback, like the command's other refusals."""
+        self.cycle()
+        self.out.write_text("not a directory")
+        rc, out = self.run_cli("--since", SINCE, "--out", str(self.out))
+        self.assertEqual(rc, 2)
+        self.assertIn(f"cannot write to {self.out}: ", out)
+
 
 if __name__ == "__main__":
     unittest.main()

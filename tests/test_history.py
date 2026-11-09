@@ -153,6 +153,8 @@ class History(fg.Base):
         self.assertIn("(https://example.test/r101)", md)
         self.assertIn(f"https://github.com/{fg.REPO}/pull/7#issuecomment-55", md)
         self.assertIn(f"https://github.com/{fg.REPO}/issues/1651", md)
+        data["merged"]["by"] = "Coe0718"                    # #2152: a login keeps its case
+        self.assertIn("Merged 09-21 14:23 by Coe0718.", history_render.markdown(data))
 
     def test_offline_reads_no_github_and_says_what_is_missing(self):
         self.cycle()

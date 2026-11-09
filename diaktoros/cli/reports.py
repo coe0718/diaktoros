@@ -189,8 +189,12 @@ def cmd_history(args) -> int:
             print(str(exc))
             return 2
         out = pathlib.Path(args.out).expanduser()
-        result = history_batch.export(loop, run_supervisor.production_ledger(), since, out,
-                                      args.format, args.offline, selftest.redactor_for(loop))
+        try:
+            result = history_batch.export(loop, run_supervisor.production_ledger(), since, out,
+                                          args.format, args.offline, selftest.redactor_for(loop))
+        except OSError as exc:                     # --out names a file, or is not writable
+            print(f"cannot write to {out}: {exc.strerror or type(exc).__name__}")
+            return 2
         print(history_batch.listing(result, out, args.offline))
         return 0
     data = history.collect(loop, run_supervisor.production_ledger(), args.pr, args.offline,

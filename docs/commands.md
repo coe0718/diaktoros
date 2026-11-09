@@ -1654,7 +1654,8 @@ a `file://` URL in a free text, such as a failed turn's output tail, is cut to i
 (`…/state.json`). A path may hold spaces, so the cut goes to its last `/` and can take a few words
 before it with it. `--offline` leaves GitHub out and
 lists what that leaves missing. It exits `2` when no loop can be chosen, or when it gets neither
-or both of `--pr` and `--since`, or `--since` without `--out`.
+or both of `--pr` and `--since`, or `--since` without `--out`, or when `--out` cannot be written
+(it names a file, say).
 
 <!-- flags:history -->
 | flag | value | default | what it does |
