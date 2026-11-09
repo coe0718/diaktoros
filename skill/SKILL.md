@@ -207,11 +207,12 @@ grade findings P0–P3, end the body with `Not verified:`. What differs is what 
   same head has recorded since, which you were never shown.
 * **Where your verdict goes.** The host records it in the run ledger (the `shadow_reviews` table:
   run, head, model, verdict, body, whether it was authorized), once per run. Nothing is posted on
-  the PR. `hermes dk stats` sets it beside the real review at the same head, and `hermes dk explain`
-  lists it. By default nothing in the loop decides from it. With `shadow.escalate` on, the PR is
-  held while your review runs or after it requested changes, and an adjudicator is asked to rule
-  when you block what the reviewer approved; the fixer is sent your findings only if the adjudicator
-  upholds them. An issue you ask to file is recorded too; the host files it later (labelled
+  the PR. `hermes dk report` and the weekly report set it beside the real review at the same head,
+  and `hermes dk explain` lists it; `hermes dk stats` leaves it out. By default nothing in the loop
+  decides from it. With `shadow.escalate` on, the PR is held while your review runs or after it
+  requested changes, and an adjudicator is asked to rule when you block what the reviewer approved;
+  the fixer is sent your findings only if the adjudicator upholds them. An issue you ask to file is
+  recorded too; the host files it later (labelled
   `shadow-found`) only when `shadow.file_issues` is on and the real review did not file it.
 * **You are not part of the round.** You do not count against the cap, claim the PR or mark the
   head in flight, and a failed shadow turn is not retried automatically. An operator can re-arm
