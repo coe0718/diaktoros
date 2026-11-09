@@ -5,6 +5,7 @@ fixer's comment is a recorded, posted issue-fix write, and each queued turn is a
 "once per reply" and "not while a turn is queued" are the ledger's own answers.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import json
 import sys
 import time
 import unittest
@@ -184,6 +185,13 @@ class Replies(base.Gate):
         self.sweep()
         self.assertNotIn(fix_reply.line(12), fix_hold.status_lines(self.loop, self.st))
         self.assertEqual(fix_hold.explain_lines(self.st, 12), [])
+
+    def test_a_key_that_is_not_a_number_is_skipped_not_a_crash(self):
+        # #2020: the key=int sort ran before the isdigit filter, so status raised ValueError.
+        self.st.dir.mkdir(parents=True, exist_ok=True)
+        (self.st.dir / fix_reply.WAITING).write_text(
+            json.dumps({"12": 1, "oops": 1, "3": 1, "²": 1}))
+        self.assertEqual(fix_reply.status_lines(self.st), [fix_reply.line(3), fix_reply.line(12)])
 
     def test_the_prompt_tells_the_fixer_to_act_on_the_reply(self):
         self.assertIn("act on the newest maintainer comment after your own",

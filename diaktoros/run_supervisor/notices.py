@@ -77,7 +77,7 @@ class OperatorNotices:
                 f"seat={row['seat']} head={row['head']} run={row['id']}. "
                 f"Reason: {current['error'] or 'worker outcome unavailable'}.")
         if current['detail']:
-            head += f"\nTurn output (tail):\n{run_supervisor.tail(current['detail'], 1200)}\n"
+            head += f"\nTurn output (tail):\n{run_supervisor.tail(current['detail'], run_supervisor.DETAIL_SHOWN_BYTES)}\n"
         if str(current['error'] or '').startswith(run_supervisor.REVIEWED_PR_INELIGIBLE):
             return (head + " The review exists on GitHub and the PR changed under it; it is not "
                     "counted as a clean verdict and this run is final (never retried or "

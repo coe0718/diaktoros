@@ -459,6 +459,16 @@ class ProductionClassification(unittest.TestCase):
         self.assertTrue(all(run_supervisor.retryable(e) for e in yes))
         self.assertFalse(any(run_supervisor.retryable(e) for e in no))
 
+    def test_stored_detail_keeps_8kb_of_stdout_redacted(self):
+        # #1658: the stored detail keeps the last 8 KB of stdout, with tokens redacted.
+        token = 'ghp_' + 'A1b2C3d4' * 4
+        stdout = 'start ' + 'x' * 20000 + ' ' + 'y' * 7000 + f' {token} end'
+        detail = run_supervisor.output_detail(stdout, 'err')
+        self.assertIn('y' * 7000, detail)
+        self.assertGreaterEqual(len(detail.encode()), 8000)
+        self.assertNotIn(token, detail)
+        self.assertIn('[REDACTED]', detail)
+
     def test_tail_is_bounded_and_printable(self):
         text = run_supervisor.tail('a\x1b[31m' + 'z' * 5000)
         self.assertLessEqual(len(text.encode()), run_supervisor.DETAIL_BYTES + 10)

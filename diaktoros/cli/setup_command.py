@@ -359,7 +359,8 @@ def _setup_watchdog(args, loop_id: str, interactive: bool) -> tuple[int | None, 
 
 def _resume_rows(loop: dict) -> dict:
     """``onboarding.inspect``: every stage's status (``stale`` when its inputs changed) and why.
-    A record that cannot be read resumes nothing: ``{}``, so every step runs."""
+    No record, or one that cannot be read, resumes nothing: every stage reads
+    ``not_attempted``, so every step runs."""
     try:
         return onboarding.inspect(loop)
     except Exception:          # noqa: BLE001 - an unreadable record only means: run the step
@@ -404,8 +405,12 @@ def _setup_checks(repo: str, loop_id: str, scheduled: bool,
     print("\n4. Checks")
     rows = _resume_rows(config.load_id(loop_id))
     first = _first_uncovered(rows)
-    if rows:
+    if any(_status(rows, stage) != onboarding.NOT_ATTEMPTED for stage in onboarding.STAGES):
         _say_checks(rows, first)
+    else:
+        # ``inspect`` returns a row per stage even with no record, so ``rows`` alone never
+        # tells a first install from a resume (#1712).
+        print("   no onboarding record yet: running every check")
     doctor_rc = selftest_rc = 0
     if first:
         doctor_rc = _verb("doctor", f"--loop={loop_id}")

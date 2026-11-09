@@ -76,7 +76,7 @@ Every capability below is on `main` and driven by the command named beside it. R
 | **Issue triage** | New issues are classified; small ones are fixed | `hermes dk triage` |
 | **CI repair** | Red CI goes to the fixer before the reviewer spends a verdict | `hermes dk set` |
 | **Affected tests** | The fixer runs only the tests its change touches | `hermes dk set` |
-| **Change proof** | Off until turned on: before each review, the host runs the PR's changed tests on its merge base and at the head, and tells the reviewer whether they fail without the change ([Change proof](docs/change-proof.md)) | `hermes dk set --change-proof on` |
+| **Change proof** | Off until turned on: before each review the host runs the PR's new or changed Python `unittest` tests on its merge base, where they should fail, and at the head, where they should pass, and tells the reviewer which it found ([Change proof](docs/change-proof.md)) | `hermes dk set --change-proof on` |
 | **Rounds and the cap** | Verdicts are counted; at the cap the PR escalates | built in |
 | **Adjudication** | A dispute goes to an adjudicator for a ruling | `hermes dk escalate` |
 | **Shadow review** | Off until a shadow profile is set: a second model reviews the same head in no-write mode and posts nothing; where it disagrees with the real review is recorded | `hermes dk set --shadow-profile`, then `hermes dk report` |
@@ -99,9 +99,9 @@ Every capability below is on `main` and driven by the command named beside it. R
 - Linux with working bubblewrap (`bwrap`) and unprivileged user namespaces. Native macOS turns are not supported; run Hermes and the plugin inside Linux instead.
 - Hermes **>=0.21.5** (manifest requirement), a Hermes Git checkout and working virtualenv, Python runtime and Rust toolchain for the isolated runtime. A version number alone does not prove sandbox/provider compatibility: run `selftest`.
 - Your own HTTPS-reachable Hermes gateway, and a repository whose hooks you can administer.
-- Separate reviewer and fixer Hermes profiles; three distinct GitHub accounts and token files: reader, reviewer and fixer. An adjudicator comment account is optional and must be distinct too.
+- Separate reviewer and fixer Hermes profiles; three distinct GitHub accounts and token files: reader, reviewer and fixer. An adjudicator comment account is optional and must be distinct too. Or run each role as a GitHub App, with no personal account or PAT: see [Getting started with GitHub Apps](docs/github-apps.md).
 
-[Accounts and permissions](docs/accounts.md) explains which token each role needs, and [GitHub Apps](docs/github-apps.md) covers running the seats as Apps instead. See the [Hermes documentation](https://hermes-agent.nousresearch.com/docs) for Hermes installation, profiles, model authentication and gateway setup.
+[Accounts and permissions](docs/accounts.md) explains which token each role needs. See the [Hermes documentation](https://hermes-agent.nousresearch.com/docs) for Hermes installation, profiles, model authentication and gateway setup.
 
 ## Install
 

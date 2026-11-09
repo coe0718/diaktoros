@@ -29,12 +29,13 @@ To set a loop up with Apps, see [Getting started with GitHub Apps](github-apps.m
   has no Administration permission). What it does and does not repeat:
   - Row 6 needs a person's token (a personal access token with write access to the repository)
     in the variable named by `--person-token-env` (default `SPIKE_PERSON_TOKEN`): the harness
-    opens a PR as that person, has the reviewer App approve it, pushes as the person, and prints
-    `reviewDecision`, `mergeStateStatus` and the App's reviews again. Without the token the
-    `stale_approval` step prints `skipped` and row 6 is not reproduced. The same re-check is
-    printed after the fixer's own `git push` (`git_push`). After a push it waits 6 seconds and
-    asks again while GitHub still answers `UNKNOWN` (at most 5 asks); if it is still unsettled
-    the printed value says so.
+    opens a PR as that person, has the reviewer App approve it, commits to the branch as that
+    person (contents API), and prints `reviewDecision`, `mergeStateStatus` and the App's reviews
+    again. The person's `git push` is not repeated: only the commit through the contents API is.
+    Without the token the `stale_approval` step prints `skipped` and row 6 is not reproduced.
+    The same re-check is printed after the fixer's own `git push` (`git_push`). After the App's
+    approval and after each push or commit it waits 6 seconds and asks again while GitHub still
+    answers `UNKNOWN` (at most 5 asks); if it is still unsettled the printed value says so.
   - A request the run cannot go on without (an App's identity, the `main` ref, creating a branch,
     reading or committing `app.py`, opening a PR, reading a commit) that is refused or answers
     without the field the next step needs ends the run: the last JSON line is

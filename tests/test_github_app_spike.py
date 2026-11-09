@@ -60,7 +60,9 @@ class FakeSpike(spike.Spike):
             return 200, {"login": path[7:], "id": {"reviewer-app[bot]": 22}.get(path[7:], 9),
                          "type": "Bot"}
         if path.endswith("/reviews?per_page=100"):
-            return 200, [{"state": "APPROVED", "commit_id": SHA, "user": {"id": 22}}]
+            # The reviewer bot (id 22) and someone else (id 9): only the bot's review counts.
+            return 200, [{"state": "APPROVED", "commit_id": SHA, "user": {"id": 22}},
+                         {"state": "CHANGES_REQUESTED", "commit_id": "f" * 40, "user": {"id": 9}}]
         if method == "GET" and "/git/ref/" in path:
             return 200, {"object": {"sha": SHA}}
         if method == "GET" and "/contents/" in path:
@@ -142,6 +144,15 @@ class StaleApproval(unittest.TestCase):
         order = [(r, m) for r, m, p, _ in fake.requests
                  if p.endswith("/pulls/12/reviews") or (r == "person" and m == "PUT")]
         self.assertEqual(order, [("person", "PUT"), ("reviewer", "POST"), ("person", "PUT")])
+
+    def test_reviews_after_push_holds_only_the_reviewer_apps_reviews(self):
+        """The fake's reviews list has the bot's approval and another user's review: the printed
+        ``reviews_after_push`` means 'the App's approval', so only the bot's is kept."""
+        for fake, name in ((FakeSpike(person_token="pat"), "stale_approval"),
+                           (FakeSpike(), "git_push")):
+            with self.subTest(step=name):
+                got = step(run_quietly(fake), name)["reviews_after_push"]
+                self.assertEqual(got, [["APPROVED", SHA[:7]]])
 
     def test_without_a_person_token_the_step_says_skipped(self):
         fake = FakeSpike()
@@ -260,6 +271,17 @@ class PostPushWait(unittest.TestCase):
         self.assertEqual(step(lines, "stale_approval")["protection_after_push"]["mergeStateStatus"],
                          "BLOCKED")
 
+    def test_stale_approval_waits_for_a_settled_state_after_the_approval(self):
+        """The pre-push read (``protection_after_approve``) is the observation row 6 compares
+        against: an UNKNOWN right after the App's APPROVE must be asked again, not printed."""
+        fake = ApprovalUnknown(person_token="pat")
+        lines = run_quietly(fake)
+        approve = fake.events.index(("reviewer", "POST", "/repos/o/r/pulls/12/reviews"))
+        tail = fake.events[approve + 1:]
+        self.assertEqual(tail[:6], [("sleep", spike.POST_PUSH_WAIT), ("graphql", 12)] * 3)
+        got = step(lines, "stale_approval")["protection_after_approve"]
+        self.assertEqual(got["mergeStateStatus"], "BLOCKED")
+
     def test_a_late_github_is_printed_as_unsettled_after_the_bounded_asks(self):
         fake = FakeSpike()
         fake.unknown_left = 99
@@ -267,6 +289,16 @@ class PostPushWait(unittest.TestCase):
             got = fake.settled_protection(11)
         self.assertEqual(got["mergeStateStatus"], "UNKNOWN")
         self.assertEqual(sleep.call_args_list, [mock.call(6)] * 5)
+
+
+class ApprovalUnknown(FakeSpike):
+    """GitHub answers UNKNOWN twice right after the reviewer App approves the person's PR."""
+
+    def gh(self, role, method, path, body=None):
+        got = super().gh(role, method, path, body)
+        if (role, method) == ("reviewer", "POST") and path.endswith("/pulls/12/reviews"):
+            self.unknown_left = 2
+        return got
 
 
 class CheckSpike(FakeSpike):
@@ -606,6 +638,19 @@ class DocsAgree(unittest.TestCase):
         doc = (ROOT / "docs" / "github-app-support.md").read_text()
         for word in ("read_status", "detail_status"):
             self.assertIn(word, doc)
+
+    def test_q3_comment_claims_no_human_request_the_loop_does_not_make(self):
+        src = (ROOT / "tools" / "github_app_spike.py").read_text()
+        q3 = next(line for line in src.splitlines() if "# Q3:" in line)
+        self.assertNotIn("human for contrast", q3)
+        self.assertNotIn("human for contrast", src)
+
+    def test_docs_say_the_persons_row_6_change_is_a_contents_api_commit(self):
+        doc = (ROOT / "docs" / "github-app-support.md").read_text()
+        flat = " ".join(doc.split())
+        self.assertNotIn("pushes as the person", flat)
+        self.assertIn("commits to the branch as that person (contents API)", flat)
+        self.assertIn("The person's `git push` is not repeated", flat)
 
     def test_docs_name_the_flags_the_harness_has(self):
         doc = (ROOT / "docs" / "github-app-support.md").read_text()

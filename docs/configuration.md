@@ -445,7 +445,7 @@ A shadow review runs a second reviewer model on a head the real reviewer was que
 - Set them with `hermes dk set --loop ID --shadow-profile P [--shadow-every N] [--shadow-always-path GLOB ...] [--shadow-never-path GLOB ...]` (`--no-shadow` turns it off; `--no-shadow-always-paths` and `--no-shadow-never-paths` clear a list), with the same flags on `init` and `setup`, or with the settings form's *Shadow review profile*, *Shadow one in N reviews*, *Always shadow these paths* and *No shadow when only these change* (`apply` pushes them; `off` as the profile turns it off).
 - `seats.shadow`: the seat's limits, like any seat's: `daily_turns`, `daily_tokens`, `turn_budget_s` (default: the loop's), `concurrency` (default 1, never the loop's) and `max_steps` (default 100, not the reviewer's 60: another model may explore more before it submits). There is no route, login or token: a shadow never writes.
 
-A shadow turn gets the reviewer's prompt and change view at that head, minus any review posted after it was queued (the real one included).
+A shadow turn gets the reviewer's prompt and change view at that head, minus any review posted after it was queued (the real one included). GitHub stamps reviews to the whole second, so a review from the second the shadow was queued in, or with no readable time, is left out too (#1684).
 
 **It runs only on a head its reviewer turn approved (#1647).** The shadow's row is queued with its reviewer turn, on a findings snapshot taken before that turn's row exists. When the shadow is claimed, it reads from the run ledger, with no GitHub read, what that same reviewer turn decided (same PR, head and turn key):
 - **A confirmed APPROVE:** it runs.
