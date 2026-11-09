@@ -124,6 +124,20 @@ def _host_fixes(loop: dict) -> tuple[str, str]:
     return both, both
 
 
+def _profile_mismatch(loop: dict, role: str, name: str, entry: dict, detail: str,
+                      what: str) -> doctor.Check:
+    """The check for a route on another profile than the config. ``apply`` rebinds it (secret
+    kept), but only a route it accepts as the loop's (``route_intent.provably_ours``, the rule
+    its ``_verify_routes`` enforces, #1451). For any other route the fix is the one ``apply``
+    itself prints (``gate_shims.divergence``), so doctor never names a command that refuses."""
+    intent = route_intent.load_or_empty(loop)
+    if route_intent.provably_ours(loop, role, name, entry, intent):
+        fix = _apply_fix(loop, what)
+    else:
+        fix = _prompt_fix(loop, name)
+    return doctor.Check(f"route:{name}", doctor.MISMATCH, detail, fix)
+
+
 def _prompt_fix(loop: dict, name: str) -> str:
     """The remedy for a route whose prompt no longer proves it is ours: the same one apply prints
     (``gate_shims.divergence``) — repair from the record when it holds the real prompt, else
@@ -145,10 +159,10 @@ def check_route(loop: dict, data: dict, seat: str) -> doctor.Check:
         return doctor.Check(f"route:{name}", doctor.ABSENT, f"not in {routes.subs_path().name}",
                             _missing_route_fix(loop))
     if routes.route_profile(entry) != profile:
-        return doctor.Check(f"route:{name}", doctor.MISMATCH,
-                            f"wakes profile {entry.get('profile')!r}, but seats.{seat}.profile is "
-                            f"{profile!r} — the wake would run the wrong agent",
-                            _apply_fix(loop, f"rebind it to {profile or 'the configured profile'}"))
+        return _profile_mismatch(loop, seat, name, entry,
+                                 f"wakes profile {entry.get('profile')!r}, but seats.{seat}.profile "
+                                 f"is {profile!r} — the wake would run the wrong agent",
+                                 f"rebind it to {profile or 'the configured profile'}")
     if entry.get("deliver_only"):
         return doctor.Check(f"route:{name}", doctor.MISMATCH,
                             "deliver_only is set — the gateway delivers the rendered prompt and runs no "
@@ -220,11 +234,11 @@ def check_adjudicator_route(loop: dict, data: dict) -> doctor.Check | None:
                             _missing_route_fix(loop) + " — the breach marker is the only record of an "
                             "escalation nobody is woken for")
     if routes.route_profile(entry) != profile:
-        return doctor.Check(f"route:{name}", doctor.MISMATCH,
-                            f"wakes profile {entry.get('profile')!r}, but adjudicator.profile is "
-                            f"{profile!r}",
-                            _apply_fix(loop, f"rebind it to {profile}: the ruling must not happen as one "
-                                       "of the two seats that just stalled"))
+        return _profile_mismatch(loop, "adjudicator", name, entry,
+                                 f"wakes profile {entry.get('profile')!r}, but adjudicator.profile "
+                                 f"is {profile!r}",
+                                 f"rebind it to {profile}: the ruling must not happen as one of "
+                                 "the two seats that just stalled")
     if entry.get("deliver_only"):
         return doctor.Check(f"route:{name}", doctor.MISMATCH,
                             "deliver_only is set — the gateway delivers the rendered prompt and runs no "
