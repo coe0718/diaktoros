@@ -184,13 +184,14 @@ def fetch_delivery(loop: dict, delivery: str, login: str | None) -> tuple[dict, 
     """``(payload, event, route)`` of one recorded delivery to this loop's hooks.
 
     ``delivery`` is GitHub's numeric delivery id or the ``X-GitHub-Delivery`` GUID the webhook
-    page shows. Reading deliveries needs a token with hook read access (``admin:repo_hook`` or
-    ``repo``): the loop's hook admin.
+    page shows. Reading deliveries needs hook read access, a token with ``admin:repo_hook`` or
+    ``repo`` or a GitHub App with Webhooks: Read: the loop's hook admin.
     """
     hooks, error = gh.hooks_read(loop, login)
     if hooks is None:
         raise TraceError(f"cannot read the repo's hooks ({error}) — pass --admin-token LOGIN, a "
-                         "login whose token can read hooks")
+                         "login whose credential can read hooks (a token with admin:repo_hook "
+                         "or repo, or a GitHub App with Webhooks: Read)")
     names = set(route_intent.routes_of(loop).values())
     ours = [hook for hook in hooks
             if routes.route_name_of(str((hook.get("config") or {}).get("url") or "")) in names]

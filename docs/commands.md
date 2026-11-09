@@ -967,7 +967,7 @@ A dry run also previews before the live busy-seat check; it is not proof a busy 
 | `--dry-run` |  |  | show the diff without writing it |
 | `--identity-from-form` |  |  | move a seat off its GitHub App identity to the login the settings form names (refused otherwise: `identity` moves seats deliberately) |
 | `--while-busy` |  |  | rebind a seat's profile/login even while a run is in flight (that run keeps the identity it started with) |
-| `--admin-token` | `ADMIN_TOKEN` |  | login whose token can write the repo's hooks, for the hook moves and re-keys apply makes (default: the reader) |
+| `--admin-token` | `ADMIN_TOKEN` |  | login whose credential can write the repo's hooks (a token with admin:repo_hook or repo, or a GitHub App with Webhooks: Read and write), for the hook moves and re-keys apply makes (default: the reader) |
 | `--recreate-routes` |  |  | write this loop's routes the registry lost, from the loop config, with a new secret, and re-key the repo hooks that point at them (when no intent record can restore them) |
 | `--hooks` |  |  | make every repo hook this loop's routes need (reviewer, fixer, and triage's issues hook when triage is on) what they need: create a missing one (paused until arm), repoint one at the route's exact URL, add its gate's event (hook write access, see --admin-token) |
 | `--watchdog-shim` |  |  | rewrite the cron shim the watchdog job runs, pinned to this plugin's watchdog |
@@ -1080,7 +1080,7 @@ may preserve activation; do not assume every update pauses a live hook.
 | `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | at most this many issue-fix turns per day (0 = the default, 10); issue fixes are always capped |
 | `--auto-fix-label` | `AUTO_FIX_LABEL` (repeatable) |  | a triage label that hands an issue to the fixer without a maintainer (#232; repeatable; never P0-P2; '' clears the list) |
 | `--auto-fix-daily` | `AUTO_FIX_DAILY` |  | at most this many automatic issue fixes per day (0 = the default, 25) |
-| `--admin-token` | `ADMIN_TOKEN` |  | login whose token can create or delete repo hooks |
+| `--admin-token` | `ADMIN_TOKEN` |  | login whose credential can create or delete repo hooks: a token with admin:repo_hook or repo, or a GitHub App with Webhooks: Read and write |
 | `--dry-run` |  |  | show the change, write nothing |
 <!-- /flags -->
 
@@ -1211,7 +1211,7 @@ finishes what an interrupted run began.
 | --- | --- | --- | --- |
 | `--dry-run` |  |  | report every step and write nothing |
 | `--rename-loop` | `OLD=NEW` |  | also give a loop a new id: its file, default state directory, routes and the URLs its repo hooks post to (each hook is pinged before the old route goes) |
-| `--admin-token` | `LOGIN` |  | mapped login whose token may edit the repo hooks (--rename-loop) |
+| `--admin-token` | `LOGIN` |  | mapped login whose credential may edit the repo hooks: a token, or a GitHub App with Webhooks: Read and write (--rename-loop) |
 <!-- /flags -->
 
 ### backup

@@ -226,6 +226,7 @@ class Delivery(unittest.TestCase):
                 self.assertRaises(trace.TraceError) as caught:
             trace.fetch_delivery(self.loop, "1", None)
         self.assertIn("--admin-token", str(caught.exception))
+        self.assertIn("or a GitHub App with Webhooks: Read", str(caught.exception))   # #2203
         with mock.patch.object(gh, "hooks_read", return_value=([], "")), \
                 self.assertRaises(trace.TraceError):
             trace.fetch_delivery(self.loop, "nope", None)
