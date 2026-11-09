@@ -223,6 +223,8 @@ class UpdateCommand(unittest.TestCase):
         text = " ".join((ROOT / "docs" / "commands.md").read_text().split())
         self.assertNotIn("only the subject is read", text)
         self.assertIn("first nonblank line of the body", text)
+        self.assertIn("or empty when the body has none", text)         # #1854: no body, no title
+        self.assertIn("A `(#N)` inside either is dropped", text)
 
     def test_registered_on_the_real_parser(self):
         class Ctx:

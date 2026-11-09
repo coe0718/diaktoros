@@ -200,8 +200,9 @@ def _seat_identities(seats: dict) -> dict:
 
 
 def _live_head(loop: dict, number: int) -> str:
-    # Reading as an App reader mints an installation token first (POST /app/installations/...):
-    # that is authentication, not a write to the repository (maintainer's ruling on #1608).
+    # Reading as an App reader with no usable stored installation token mints one first
+    # (POST /app/installations/...; a stored one is reused, app_tokens): that is authentication,
+    # not a write to the repository (maintainer's ruling on #1608).
     from . import gh
     pr, _ = gh.fetch(loop, f"/repos/{loop['repo']}/pulls/{number}", login=loop.get("read_token"))
     return str(((pr or {}).get("head") or {}).get("sha") or "") if isinstance(pr, dict) else ""
@@ -413,7 +414,8 @@ def inspect(loop: dict, *, runtime_file: Path | None = None, resolver=None, pr_h
     which fingerprint changed (or why it cannot be compared). ``read`` is its statuses.
 
     Reads the record and, for ``live_turn`` and ``armed`` only, GitHub (repository GETs; an App
-    reader also POSTs once to mint its installation token); writes nothing.
+    reader POSTs once to mint an installation token only when no usable one is stored); writes
+    nothing.
     """
     runtime_file = Path(runtime_file or config.host_path("runtime"))
     stored = _load(loop)

@@ -85,9 +85,10 @@ def cmd_calls(args) -> int:
                   f"({limit.get('resource') or 'core'}), resets {reset}")
         for method, path, result, calls in entry["paths"][:args.top]:
             print(f"  {calls:>7,}  {method:<6} {path}  ({result})")
-    print("\nNot counted: commands that write nothing (doctor, explain, status, the Desktop), "
-          "and any call made from somewhere else with the same credential. GitHub's used figure "
-          "above that is well past this host's spent count is that.")
+    print("\nNot counted: a process that never ran a gate (the hermes dk commands other than "
+          "review, such as doctor, explain, status, stats and update; the Desktop until it runs "
+          "a review), and any call made from somewhere else with the same credential. GitHub's "
+          "used figure above that is well past this host's spent count is that.")
     return 0
 
 
