@@ -102,6 +102,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | let the fixer push on its own | [`fixer-push`](#fixer-push) |
 | label new issues automatically | [`triage`](#triage) |
 | find out why a PR is not moving | [`explain`](#explain) |
+| replay one PR's whole review cycle as a timeline | [`history`](#history) |
 | list the PRs that are safe to merge, in order | [`ready`](#ready) |
 | ask for a fresh review of a PR | [`review`](#review) |
 | send a PR to the adjudicator now | [`escalate`](#escalate) |
@@ -1575,11 +1576,56 @@ Its conclusions come from the same checks the live gates run, so it is not a sec
 exits `2` only when it cannot ask: an unknown loop, a refused loop file, or several loops and no
 `--loop`.
 
+`explain` shows where a PR stands now. For how it got there, round by round, use
+[`history`](#history).
+
 <!-- flags:explain -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
 | `--pr` | `PR` | **required** | pull request number to explain |
+<!-- /flags -->
+
+### history
+
+Replays one pull request's whole review cycle as a timeline, grouped by head (one round per head
+the loop worked at). It joins what the loop already keeps:
+
+- the run ledger: each seat turn (model, tokens, cost, how it ended), the reviewer's verdicts,
+  the fixer's answers and disputes, shadow reviews, adjudicator rulings and ruled approvals,
+  issues filed from findings, overrides and operator actions;
+- the loop's state dir: the numbered findings (`findings.json`) and every write the broker
+  journaled (`broker-audit.jsonl`), such as a fixer's push and the commit it made;
+- GitHub: the reviews' full bodies, the PR's commits and comments, and whether it merged.
+
+Under the timeline, each finding gets a one-line life: the round it was raised at, then fixed,
+withdrawn, overruled or upheld by a ruling, disputed, or still open. The outcome is the one
+[`report`](#report) counts, from the same rule.
+
+Read-only. It never claims a step that has no record: a store it cannot read, or a turn that ended
+with nothing it wrote on record, is printed as a `gap:`. Every free text (review bodies, answers,
+a failed turn's output tail) passes the loop's redactor before it is printed.
+
+```bash
+hermes dk history --loop "<loop-id>" --pr 12
+hermes dk history --loop "<loop-id>" --pr 12 --format markdown
+hermes dk history --loop "<loop-id>" --pr 12 --offline --format json
+```
+
+`--format markdown` gives the same timeline as a document, for a PR comment, a write-up or an
+archive: a findings table, a heading per round, and links to each review, commit, comment, answers
+and filed issue. `--format json` gives the same data for tools, with a `schema` number that changes only
+when a key is renamed, removed or changes meaning. No output names a local path: an absolute path in
+a free text, such as a failed turn's output tail, is cut to its last part (`…/state.json`). `--offline` leaves GitHub out and
+lists what that leaves missing. It exits `2` only when no loop can be chosen.
+
+<!-- flags:history -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
+| `--pr` | `PR` | **required** | pull request number |
+| `--offline` |  |  | leave GitHub out (review bodies, commits, comments, merge) and say what is missing |
+| `--format` | `text` \| `markdown` \| `json` | `text` | text for the terminal, markdown for a comment or archive, json for tools (default text) |
 <!-- /flags -->
 
 ### ready

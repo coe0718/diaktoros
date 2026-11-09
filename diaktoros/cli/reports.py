@@ -1,4 +1,5 @@
-"""Read-only reporting commands: ``trace``, ``stats``, ``calls``, ``report`` and ``models`` (#676).
+"""Read-only reporting commands: ``trace``, ``stats``, ``calls``, ``report``, ``history`` and
+``models`` (#676).
 
 Each answers a question from the run ledger, a gate dry run, GitHub reads or Hermes's model
 catalog, and writes nothing to the loop. ``cli`` re-exports every command here, so
@@ -166,6 +167,26 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_history(args) -> int:
+    """One PR's whole review cycle as a timeline, grouped by head (#1657): turns, verdicts,
+    answers, shadow reviews, rulings, filed issues and writes from the ledger and the state dir,
+    plus review bodies, commits and comments from GitHub unless ``--offline``. Read-only; every
+    free text passes the loop's redactor. Exit 2 only when no loop can be chosen."""
+    from .. import history, history_render, run_supervisor, selftest
+    from .operations import _one_loop
+    loop = _one_loop(args)
+    if loop is None:
+        return 2
+    data = history.collect(loop, run_supervisor.production_ledger(), args.pr, args.offline,
+                           selftest.redactor_for(loop))
+    if args.format == "json":
+        print(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False))
+    else:
+        print(history_render.markdown(data) if args.format == "markdown"
+              else history_render.text(data))
+    return 0
+
+
 def cmd_models(args) -> int:
     """Read-only: what a profile's provider offers, from Hermes's model catalog (issue #32).
 
@@ -276,6 +297,22 @@ def add_report(sub) -> None:  # noqa: ANN001
                             help="window start: 7d, 24h or a date like 2026-09-28 (default 7d)")
     report_cmd.add_argument("--json", action="store_true", help="print the data as JSON")
     report_cmd.set_defaults(func=cmd_report)
+
+
+def add_history(sub) -> None:  # noqa: ANN001
+    """The ``history`` subcommand's parser, registered by ``cli.register_cli`` (#1657)."""
+    history = sub.add_parser("history", help="One PR's whole review cycle as a timeline: turns, "
+                                             "verdicts, answers, rulings and each finding's life "
+                                             "(read-only)")
+    history.add_argument("--loop", help="loop id (default: the only configured loop)")
+    history.add_argument("--pr", type=int, required=True, help="pull request number")
+    history.add_argument("--offline", action="store_true",
+                         help="leave GitHub out (review bodies, commits, comments, merge) and say "
+                              "what is missing")
+    history.add_argument("--format", choices=("text", "markdown", "json"), default="text",
+                         help="text for the terminal, markdown for a comment or archive, json "
+                              "for tools (default text)")
+    history.set_defaults(func=cmd_history)
 
 
 def add_trace(sub) -> None:  # noqa: ANN001

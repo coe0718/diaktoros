@@ -322,7 +322,7 @@ class ReaderIdentityTests(_Loop):
         ctx.setup(parser)
         verbs = next(a for a in parser._actions
                      if isinstance(a, argparse._SubParsersAction)).choices
-        extra = {"explain": ["--pr", "1"], "fixer-push": ["--disable"],
+        extra = {"explain": ["--pr", "1"], "history": ["--pr", "1"], "fixer-push": ["--disable"],
                  "trace": ["--payload", "/nonexistent-payload.json"],
                  "models": ["--seat", "reviewer"], "retry": ["--pr", "1"], "continue": ["--run", "1"],
                  "review": ["--pr", "1"], "escalate": ["--pr", "1"],

@@ -106,7 +106,8 @@ a kill switch for a worker already running.
 | --- | --- | --- |
 | Inspect wiring and holds | `hermes dk status --loop "<loop-id>"` | Local state and recent problem rows, not a full audit |
 | Check prerequisites | `hermes dk doctor --loop "<loop-id>"` | Install checks, not proof every GitHub write will succeed |
-| Explain one PR | `hermes dk explain --loop "<loop-id>" --pr "<pr-number>"` | Live facts and `next:` recommendation |
+| Explain one PR | `hermes dk explain --loop "<loop-id>" --pr "<pr-number>"` | Live facts and `next:` recommendation; how it got there is `history`'s answer |
+| Replay one PR's review cycle | `hermes dk history --loop "<loop-id>" --pr "<pr-number>"` | Every round, turn, verdict, ruling and finding's life, from records only; `--format markdown` for a write-up |
 | Drain a queue | `hermes dk drain --loop "<loop-id>" --seat reviewer` | State-changing scheduling request with eligibility rechecks |
 | Enable and verify hooks | `hermes dk arm --loop "<loop-id>" --admin-token "<hook-admin-login>"` | Activates loop hooks and verifies signed pings |
 
