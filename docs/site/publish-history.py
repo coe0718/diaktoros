@@ -173,7 +173,7 @@ def publish(raw: dict, out: pathlib.Path = OUT) -> pathlib.Path:
     out.mkdir(parents=True, exist_ok=True)
     index_path = out / "index.json"
     index = json.loads(index_path.read_text()) if index_path.exists() else {"cycles": []}
-    old = index.get("cycles") or [] if isinstance(index, dict) else None
+    old = index.get("cycles", []) if isinstance(index, dict) else None   # #2208: "" or 0 too
     if not isinstance(old, list) or not all(               # #2198: every line a {pr, ...}
             isinstance(c, dict) and type(c.get("pr")) is int for c in old):
         raise Refused(f"{index_path.name} is not the viewer's index; fix or remove it first")
