@@ -832,6 +832,7 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
         except FixerPushDisabled:
             push_off = True  # the policy changed under the admission lock: same hold
         except Exception as exc:
+            on_queued = None   # held, not queued: no "queued" notice for it either (#1994)
             final = _hold_for_missing_runtime(loop, st, seat, number, head, queued, exc)
     if push_off:
         # Checked before the runtime: a turn that could never publish is not worth a worker.
