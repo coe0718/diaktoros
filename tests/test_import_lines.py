@@ -15,6 +15,8 @@ FILES = [ROOT / "scripts" / "watchdog.py", ROOT / "diaktoros" / "cli" / "__init_
          ROOT / "diaktoros" / "cli" / "set_command.py",   # and these since the split (#1349)
          ROOT / "diaktoros" / "cli" / "set_parser.py",
          ROOT / "diaktoros" / "cli" / "apply_command.py",
+         ROOT / "diaktoros" / "cli" / "identity_command.py",
+         ROOT / "diaktoros" / "cli" / "set_adjudication.py",
          ROOT / "diaktoros" / "cli" / "triage_command.py",
          *sorted((ROOT / "scripts").glob("gate_*.py"))]
 
