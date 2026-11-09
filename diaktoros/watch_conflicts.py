@@ -145,6 +145,9 @@ def _queue_turn(loop: dict, st: state_mod.LoopState, number: int, head: str, bas
     owed = fix_owed(loop, st, number, head)
     if owed:
         log(f"#{number} @ {head[:7]} conflict turn not queued: {owed}")
+        if owed == UNREAD:        # nothing was read: no change request, no fix turn to retry
+            return (f"{owed} at {head[:7]}, so {loop['base']} is not merged in yet; a later sweep "
+                    "re-reads them, then merges it or waits for the fixer's answer")
         return (f"the fixer answers the changes requested at {head[:7]} first ({owed}); the "
                 f"next sweep then merges {loop['base']} into the fixed head. If that fix turn "
                 f"failed, `hermes dk retry` re-arms it")

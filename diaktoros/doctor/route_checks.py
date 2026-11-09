@@ -147,6 +147,18 @@ def _prompt_fix(loop: dict, name: str) -> str:
     return found[1] if found else REPAIR_FIX
 
 
+def _prompt_mismatch(loop: dict, role: str, name: str, entry: dict, what: str) -> doctor.Check:
+    """The check for a route without this version's prompt for ``role``. Whether anything proves
+    the route is the plugin's is the intent record's to say (``route_intent.recorded_ours``,
+    #2062): it vouches for a route whose prompt is older or was edited."""
+    if route_intent.recorded_ours(loop, role, name, entry, route_intent.load_or_empty(loop)):
+        whose = ", but the loop's route record vouches for the route as this plugin's"
+    else:
+        whose = ", and nothing proves the route is this plugin's"
+    return doctor.Check(f"route:{name}", doctor.MISMATCH, f"does not carry {what}{whose}",
+                        _prompt_fix(loop, name))
+
+
 def check_route(loop: dict, data: dict, seat: str) -> doctor.Check:
     name = str(route_intent.routes_of(loop).get(seat) or "")
     profile = config.seat_profile(loop, seat)
@@ -182,10 +194,8 @@ def check_route(loop: dict, data: dict, seat: str) -> doctor.Check:
         return doctor.Check(f"route:{name}", doctor.ABSENT, "registered without a prompt",
                             _prompt_fix(loop, name))
     if entry.get("prompt") != route_intent.ROUTE_PROMPT[seat]:
-        return doctor.Check(f"route:{name}", doctor.MISMATCH,
-                            f"does not carry the {seat} gate's prompt — the wake would run an agent on "
-                            "another protocol, and nothing proves the route is this plugin's",
-                            _prompt_fix(loop, name))
+        return _prompt_mismatch(loop, seat, name, entry, f"the {seat} gate's prompt — the wake "
+                                "would run an agent on another protocol")
     script = str(entry.get("script") or "")
     if script != doctor.GATE_SCRIPT[seat]:
         return doctor.Check(f"route:{name}", doctor.MISMATCH,
@@ -258,10 +268,8 @@ def check_adjudicator_route(loop: dict, data: dict) -> doctor.Check | None:
         return doctor.Check(f"route:{name}", doctor.ABSENT, "registered without a prompt",
                             _prompt_fix(loop, name))
     if entry.get("prompt") != route_intent.ROUTE_PROMPT["adjudicator"]:
-        return doctor.Check(f"route:{name}", doctor.MISMATCH,
-                            "does not carry the adjudicator gate's prompt — the ruling would run on "
-                            "another protocol, and nothing proves the route is this plugin's",
-                            _prompt_fix(loop, name))
+        return _prompt_mismatch(loop, "adjudicator", name, entry, "the adjudicator gate's prompt "
+                                "— the ruling would run on another protocol")
     events = entry.get("events")
     if not isinstance(events, list) or any(not isinstance(event, str) for event in events):
         return doctor.Check(f"route:{name}", doctor.MISMATCH, "events must be a list of event names",

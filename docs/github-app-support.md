@@ -61,8 +61,9 @@ To set a loop up with Apps, see [Getting started with GitHub Apps](github-apps.m
     carries `read_status`, the HTTP status of `GET /app/hook/deliveries`. When it is not 200 the
     list field (`since_start` or `reader`) is `null`, not `[]`: an unread list is not "no event
     was sent", and a `null` list proves nothing about rows 3 and 5. Each event also carries
-    `detail_status`, the status of the read of its own payload; when it is not 200 the payload
-    fields (`sender`, `review_state` and the rest) are `null` because they were not read.
+    `detail_status`, the status of the read of its own payload; when it is not 200 every payload
+    field (`sender`, `review_state`, `review_commit`, `installation` and the rest) is `null`
+    because it was not read.
   - The permission probes in "The reviewer App's permissions are wider than its seat" (contents
     push, merge, title edit, adding a label, close and then reopen) are the `reviewer_permissions`
     step.

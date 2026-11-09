@@ -141,7 +141,12 @@ class WaitsForTheFix(Detection):
 
     def test_unreadable_reviews_wait_for_a_later_sweep(self):
         self.scan(None).assert_not_called()       # gh.reviews answered None: unread
-        self.assertIn("its reviews could not be read", self.conflict_notice())
+        said = self.conflict_notice()
+        self.assertIn("its reviews could not be read at aaaaaaa", said)
+        self.assertIn("a later sweep re-reads them", said)
+        # #1934: nothing was read, so no change request is claimed and no fix turn to retry.
+        self.assertNotIn("changes requested", said)
+        self.assertNotIn("retry", said)
 
 
 class ScanFilters(Detection):

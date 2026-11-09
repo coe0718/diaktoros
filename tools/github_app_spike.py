@@ -207,8 +207,9 @@ class Spike:
 
         ``events`` is ``None`` when the list read did not answer 200: an unread list is not an
         empty one, so a failed read cannot pass for "no event was sent". Each event carries the
-        ``detail_status`` of the read of its own payload; when that is not 200 its payload fields
-        are ``None`` because the payload was not read, not because it had none."""
+        ``detail_status`` of the read of its own payload; when that is not 200 its payload fields,
+        ``review_commit`` and ``installation`` included, are ``None`` because the payload was not
+        read, not because it had none."""
         status, items = self.app(role, "GET", "/app/hook/deliveries?per_page=100")
         if status != 200:
             return status, None
@@ -219,6 +220,7 @@ class Spike:
             detail_status, full = self.app(role, "GET", f"/app/hook/deliveries/{item['id']}")
             payload = ((full or {}).get("request") or {}).get("payload") or {}
             review = payload.get("review") or {}
+            read = detail_status == 200     # an unread payload is not one without these (#1894)
             out.append({"event": item["event"], "action": item.get("action"),
                         "at": item["delivered_at"], "detail_status": detail_status,
                         "sender": (payload.get("sender") or {}).get("login"),
@@ -227,8 +229,8 @@ class Spike:
                         "review_state": review.get("state"),
                         "review_user": (review.get("user") or {}).get("login"),
                         "review_user_type": (review.get("user") or {}).get("type"),
-                        "review_commit": (review.get("commit_id") or "")[:7],
-                        "installation": bool(payload.get("installation"))})
+                        "review_commit": (review.get("commit_id") or "")[:7] if read else None,
+                        "installation": bool(payload.get("installation")) if read else None})
         return status, sorted(out, key=lambda d: d["at"])
 
     # -- helpers on the repository --------------------------------------------------------------

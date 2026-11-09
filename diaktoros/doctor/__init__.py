@@ -690,7 +690,8 @@ def check_fix_ci(loop: dict) -> Check:
                  f"on — red required CI on a fixer's PR goes to the fixer first, up to {cap} "
                  "CI-fix turn(s) per PR, spending no review verdict; then the review waits for green "
                  "or a new head "
-                 f"(`hermes dk set --loop {lid} --ci-fix-cap N` to change, `--fix-ci off` to stop)")
+                 f"(`hermes dk set --loop {lid} --ci-fix-cap N` to change). With `--fix-ci off` "
+                 "a fixer's PR is still reviewed red")
 
 
 def base_requires_up_to_date(loop: dict) -> tuple[bool | None, str]:

@@ -155,6 +155,38 @@ class RecordedRouteOwnership(Base):
         checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"), offline=True)}
         self.assertEqual(checks["gateway-script:widgets-breach"].status, doctor.VERIFIED)
 
+    def prompt_check(self, name):
+        checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"), offline=True)}
+        check = checks[f"route:{name}"]
+        self.assertEqual(check.status, doctor.MISMATCH)
+        self.assertIn("gate's prompt", check.detail)
+        return check.detail
+
+    def test_doctor_says_the_record_vouches_for_a_recorded_reworded_route(self):
+        # #2062: the record holds the route (gate, profile and secret), so doctor must not say
+        # nothing proves it is the plugin's; it says the record vouches for the route.
+        self.full_install()
+        self.reworded("widgets-review", prompt=OLD_REVIEWER)
+        self.reworded("widgets-breach", prompt=OLD_ADJUDICATOR)
+        for name in ("widgets-review", "widgets-breach"):
+            with self.subTest(route=name):
+                detail = self.prompt_check(name)
+                self.assertIn("but the loop's route record vouches for the route as this plugin's",
+                              detail)
+                self.assertNotIn("nothing proves", detail)
+
+    def test_doctor_says_nothing_proves_an_unrecorded_or_unvouched_reworded_route(self):
+        self.full_install()
+        self.reworded("widgets-review", prompt=OLD_REVIEWER)
+        self.edit_registry(lambda data: data["widgets-review"].update(secret="someone-elses"))
+        route_intent.forget(config.load_id("widgets"), ["widgets-breach"])
+        self.edit_registry(lambda data: data["widgets-breach"].update(prompt=OLD_ADJUDICATOR))
+        for name in ("widgets-review", "widgets-breach"):   # another secret; no record at all
+            with self.subTest(route=name):
+                detail = self.prompt_check(name)
+                self.assertIn("and nothing proves the route is this plugin's", detail)
+                self.assertNotIn("vouches", detail)
+
     def test_doctor_names_recreate_not_apply_for_an_unrecorded_legacy_route(self):
         self.full_install()
         loop = config.load_id("widgets")
