@@ -153,6 +153,8 @@ class History(fg.Base):
         self.assertIn("(https://example.test/r101)", md)
         self.assertIn(f"https://github.com/{fg.REPO}/pull/7#issuecomment-55", md)
         self.assertIn(f"https://github.com/{fg.REPO}/issues/1651", md)
+        data["merged"]["by"] = "Coe0718"                    # #2152: a login keeps its case
+        self.assertIn("Merged 09-21 14:23 by Coe0718.", history_render.markdown(data))
 
     def test_offline_reads_no_github_and_says_what_is_missing(self):
         self.cycle()
@@ -200,7 +202,8 @@ class History(fg.Base):
 
     def test_a_token_in_a_turn_s_output_tail_is_redacted(self):
         self.run_row("fixer", A, T, state="failed",
-                      detail=f"push said {TOKEN} at /home/agent/loops/x/state.json")
+                      detail=f"push said {TOKEN} at /home/agent/loops/x/state.json, "
+                             "see file:///home/agent/My Loops/y.json")
         for form in ("text", "markdown", "json"):
             rc, out = self.run_cli("--format", form)
             self.assertEqual(rc, 0)
@@ -208,6 +211,8 @@ class History(fg.Base):
             self.assertIn("[REDACTED]", out)
             self.assertNotIn("/home/agent", out)             # #2134: no local path, only its end
             self.assertIn("…/state.json", out)
+            self.assertNotIn("My Loops", out)                # #2151: a file:// URL, a spaced path
+            self.assertIn("see …/y.json", out)
 
     def test_the_parser_drives_it_and_json_is_the_data(self):
         self.cycle()

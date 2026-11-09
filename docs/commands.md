@@ -1650,9 +1650,11 @@ to the site's run viewer at once.
 archive: a findings table, a heading per round, and links to each review, commit, comment, answers
 and filed issue. `--format json` gives the same data for tools, with a `schema` number that changes only
 when a key is renamed, removed or changes meaning. No output names a local path: an absolute path in
-a free text, such as a failed turn's output tail, is cut to its last part (`…/state.json`). `--offline` leaves GitHub out and
+a free text, such as a failed turn's output tail, is cut to its last part (`…/state.json`), a `file://`
+URL's path and a directory name with spaces included. `--offline` leaves GitHub out and
 lists what that leaves missing. It exits `2` when no loop can be chosen, or when it gets neither
-or both of `--pr` and `--since`, or `--since` without `--out`.
+or both of `--pr` and `--since`, or `--since` without `--out`, or when `--out` cannot be written
+(it names a file, say).
 
 <!-- flags:history -->
 | flag | value | default | what it does |

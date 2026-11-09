@@ -35,6 +35,11 @@ def _end(item: dict) -> str:
     return end
 
 
+def _capital(text: str) -> str:
+    """The first letter up, the rest as is: a login keeps its case (#2152)."""
+    return text[:1].upper() + text[1:]
+
+
 def _merge_line(data: dict) -> str:
     merged = data.get("merged")
     if merged:
@@ -86,7 +91,7 @@ def markdown(data: dict) -> str:
     with each review, commit, comment and ruling linked."""
     base = f"https://github.com/{data['repo']}"
     out = [f"# Review history of [{data['repo']}#{data['pr']}]({base}/pull/{data['pr']})", "",
-           f"Loop `{data['loop']}`. Times are UTC. {_merge_line(data).capitalize()}.", ""]
+           f"Loop `{data['loop']}`. Times are UTC. {_capital(_merge_line(data))}.", ""]
     if _summary(data):
         out += [f"**Summary:** {_summary(data)}", ""]
     if data["gaps"] or data["missing"]:

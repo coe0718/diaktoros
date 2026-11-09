@@ -43,8 +43,10 @@ SCHEMA = 1
 _RUN_COLUMNS = ("id", "seat", "head", "state", "created", "launch_intent", "finished", "model",
                 "tokens_in", "tokens_out", "cost", "turn_key", "detail", "error")
 # An absolute local path in a free text (a failed turn's output tail, a review body): shown as
-# its last part only, so no output names a host's layout (#2134). A URL's path is not one.
-_PATH = re.compile(r"(?<![\w.:/~-])(?:~|/)[\w.~-]*(?:/[\w.~-]+)+")
+# its last part only, so no output names a host's layout (#2134). A ``file://`` URL's path is
+# one, another URL's is not; a directory's name may hold spaces (#2151).
+_SEG = r"[\w.~-]+(?:(?: [\w.~-]+)+(?=/))?"
+_PATH = re.compile(rf"(?:\bfile://|(?<![\w.:/~-]))(?:~(?:/{_SEG})+|(?:/{_SEG}){{2,}})")
 _SEVERITY = re.compile(r"\b(P[0-4])\b")
 
 

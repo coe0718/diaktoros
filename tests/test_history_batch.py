@@ -86,6 +86,8 @@ class Batch(fg.Base):
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["pr-7.md", "pr-8.md"])
         self.assertIn("merge state not read, so every PR with a turn was written", out)
         self.assertTrue((self.out / "pr-7.md").read_text().startswith("# Review history of"))
+        rc, single = th.History.run_cli(self, "--format", "markdown", "--offline")
+        self.assertEqual((self.out / "pr-7.md").read_text(), single)       # #2174: to the byte
 
     def test_nothing_in_the_window_writes_nothing(self):
         rc, out = self.run_cli("--since", "1d", "--out", str(self.out))
@@ -101,6 +103,14 @@ class Batch(fg.Base):
             rc, out = self.run_cli(*argv)
             self.assertEqual(rc, 2, argv)
         self.assertIn("use 7d, 24h or a date", out)
+
+    def test_an_out_that_is_a_file_exits_2(self):
+        """#2175: a clean refusal, not a traceback, like the command's other refusals."""
+        self.cycle()
+        self.out.write_text("not a directory")
+        rc, out = self.run_cli("--since", SINCE, "--out", str(self.out))
+        self.assertEqual(rc, 2)
+        self.assertIn(f"cannot write to {self.out}: ", out)
 
 
 if __name__ == "__main__":

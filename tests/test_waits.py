@@ -73,6 +73,17 @@ class ClaimWaits(sm.Base):
         self.assertTrue(lines[1]["reason"].startswith(CLAIM_READ_FAILED), lines[1])
         self.assertEqual(lines[1]["retries"], "1")
 
+    def test_a_rotated_log_still_remembers_the_last_wait(self):
+        """#2185: the host rotates the log past its cap; an unchanged hold is not logged again."""
+        self.hold()
+        self.claim()
+        rotated = self.log.with_name(self.log.name + ".1")
+        self.log.rename(rotated)
+        self.log.write_text("worker stderr\n" * 8000)        # chatty, and well past 64 KiB
+        self.hold()
+        self.claim()
+        self.assertEqual((len(waits_in(rotated)), len(waits_in(self.log))), (1, 0))
+
 
 class TurnWaits(tp.ProductionBase):
     def log(self) -> Path:

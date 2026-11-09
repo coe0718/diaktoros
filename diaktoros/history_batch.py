@@ -42,8 +42,9 @@ def render(data: dict, fmt: str) -> str:
     """One cycle in ``fmt``, exactly as ``--pr N --format fmt`` prints it."""
     if fmt == "json":
         return json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    # ``print`` adds a newline to each; the markdown already ends with one, as printed (#2174).
     return (history_render.markdown(data) if fmt == "markdown"
-            else history_render.text(data) + "\n")
+            else history_render.text(data)) + "\n"
 
 
 def export(loop: dict, db: Path, since: float, out: Path, fmt: str, offline: bool,

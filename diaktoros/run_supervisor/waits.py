@@ -19,7 +19,9 @@ import time
 from pathlib import Path
 
 REASON_MAX = 300
-TAIL_BYTES = 64 * 1024
+# Read from each of the log and its one rotation (the host rotates past 256 KB): enough to hold
+# a run's last wait line however chatty the workers' stderr since.
+READ_BYTES = 1 << 20
 _LINE = re.compile(r"^(?P<at>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) wait repo=(?P<repo>\S+) "
                    r"pr=(?P<pr>\d+) head=(?P<head>\S*) seat=(?P<seat>\S+) run=(?P<run>\S+) "
                    r"retries=(?P<retries>\d+) retry_at=(?P<retry_at>\S+) reason=(?P<reason>.*)$")
@@ -42,13 +44,19 @@ def _parse(line: str) -> dict | None:
     return found.groupdict() if found else None
 
 
-def _tail(path: Path, size: int = TAIL_BYTES) -> list[str]:
+def _tail(path: Path, size: int = READ_BYTES) -> list[str]:
     try:
         with open(path, "rb") as fh:
             fh.seek(max(0, fh.seek(0, os.SEEK_END) - size))
             return fh.read().decode("utf-8", "replace").splitlines()
     except OSError:
         return []
+
+
+def _lines(db: Path) -> list[str]:
+    """The worker log's lines, oldest first: its one rotation, then the live log."""
+    path = log_path(db)
+    return _tail(path.with_name(path.name + ".1")) + _tail(path)
 
 
 def note(sup, run_id) -> None:
@@ -62,7 +70,7 @@ def note(sup, run_id) -> None:
         if row is None or row["state"] != "waiting":
             return
         reason, retries, path = _reason(row["error"]), int(row["retries"] or 0), log_path(sup.db)
-        last = next((w for w in map(_parse, reversed(_tail(path)))
+        last = next((w for w in map(_parse, reversed(_lines(sup.db)))
                      if w and w["run"] == str(row["id"])), None)
         if last and last["reason"] == reason and int(last["retries"]) == retries:
             return
@@ -83,9 +91,8 @@ def read(db: Path, repo: str, pr: int) -> list[dict]:
     """The PR's logged waits, oldest first, from the worker log and its one rotation. Lines
     written before #2080 (or by anything else) are not waits and are skipped."""
     out = []
-    for path in (log_path(db).with_name(log_path(db).name + ".1"), log_path(db)):
-        for line in _tail(path, 1 << 20):
-            wait = _parse(line)
-            if wait and wait["repo"] == repo and int(wait["pr"]) == pr:
-                out.append(wait)
+    for line in _lines(db):
+        wait = _parse(line)
+        if wait and wait["repo"] == repo and int(wait["pr"]) == pr:
+            out.append(wait)
     return out
