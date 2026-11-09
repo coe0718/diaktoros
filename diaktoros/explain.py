@@ -8,7 +8,8 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
-from . import config, gate, gate_decisions, gate_failures, gh, pr_hold, review_kick, situation, transition
+from . import config, gate, gate_decisions, gate_failures, gh, pr_hold, review_kick, run_supervisor
+from . import situation, transition
 from . import state as state_mod
 from .util import iso_at
 
@@ -33,8 +34,12 @@ from .util import iso_at
 
 # The vocabulary of ``next.kind``. The suite asserts every conclusion is one of these, so a new
 # branch cannot quietly invent a kind nobody is checking for.
-# Ledger states of an isolated turn that is still coming (queued, held, running, or in doubt).
-LIVE_TURN = ("pending", "claimed", "launching", "running", "waiting", "uncertain")
+# Ledger states of an isolated turn that was started at this head and has not ended cleanly:
+# still coming (``run_supervisor.NOT_ENDED``: queued, held, running) or in doubt (``uncertain``).
+# Only the first part is a live turn — the one answer the watchdog's ``live_turn`` also gives;
+# an uncertain turn will not push by itself, so ``fix_live`` and the sweep both read it as a
+# stall, while it still counts as started (no "the gate did not start one" blocker) (#1503).
+LIVE_TURN = (*run_supervisor.NOT_ENDED, "uncertain")
 
 EXPLAIN_KINDS = ("review-verdict", "review-request", "fixer-retry", "fixer-push", "author-push", "release",
                  "adjudication", "rearm", "ready", "retry", "wait", "operator", "none")
@@ -552,16 +557,16 @@ def _seat_needs(c) -> None:
     c.ledgered = {seat for seat, turn in turns.items() if turn in LIVE_TURN}
     c.fixer_turn = turns.get("fixer")     # any ledger state: a lock or mark with no run has none
     # Uncertain or ended with no push: not live, whatever lock or mark still stands over it.
-    c.fixer_ended = bool(c.fixer_turn) and (c.fixer_turn == "uncertain" or c.fixer_turn not in LIVE_TURN)
+    c.fixer_ended = bool(c.fixer_turn) and c.fixer_turn not in run_supervisor.NOT_ENDED
     c.fixer_rearm = _fixer_retry(c) if c.fixer_ended else ("", "", False)   # the retry plan (#1514)
     c.redeliver = c.fixer_ended and not c.cap_spent and _redelivery_rearms(c)  # intake's own rule
     # A fix for this head: a lock on an old head cannot finish it (#1481 review).
     # An uncertain fixer turn is no live fix: nothing will push, and the sweep reads it so (#1495).
     c.fix_live = (("fixer" in c.held and "fixer" not in c.stale_held) or c.inflight_fix
-                  or ("fixer" in c.ledgered and turns["fixer"] != "uncertain"))
+                  or c.fixer_turn in run_supervisor.NOT_ENDED)   # the sweep's live_turn (#1503)
     # The fixer's answer to the verdict (#894), as the sweep reads it: there an uncertain turn is
     # not a live one, so it hides no dispute (#1481 review). A verdict at head means a head.
-    c.disputed = (bool(c.at_head) and ("fixer" not in c.ledgered or turns["fixer"] == "uncertain")
+    c.disputed = (bool(c.at_head) and c.fixer_turn not in run_supervisor.NOT_ENDED
                   and views.disputed(db, c.repo, c.number, c.head, c.latest) is not None)
     # Parked for a ruling (or its delivery pending), both gates stop on purpose: no "gate did not
     # start one" line, which would read as something stuck while the ruling is the next event.

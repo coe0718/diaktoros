@@ -914,13 +914,14 @@ def _finish(c: _Sweep) -> None:
     st.note(f"run: {len(c.alerts)} alert(s), {len(c.reported)} stuck, {len(c.prs)} open PRs")
 
 
-LIVE_TURN = ("pending", "claimed", "launching", "running", "waiting")
-
-
 def live_turn(loop: dict, number: int, head: str, seat: str) -> bool:
-    """Whether ``seat``'s turn on this PR head is queued or running in the run ledger."""
+    """Whether ``seat``'s turn on this PR head is queued or running in the run ledger: one of
+    ``run_supervisor.NOT_ENDED``. An ``uncertain`` turn is not one — it will not push or post by
+    itself and someone must look, so it is a stall here, as explain's ``fix_live`` reads it (#1503).
+    """
     from diaktoros.run_supervisor import views
-    return views.turn_state(config.host_path("ledger"), loop["repo"], number, head, seat) in LIVE_TURN
+    state = views.turn_state(config.host_path("ledger"), loop["repo"], number, head, seat)
+    return state in run_supervisor.NOT_ENDED
 
 
 def stall_key(number: int, head: str, kind: str) -> str:
@@ -958,7 +959,7 @@ def parked_kind(loop: dict, marker: dict, number: int, head: str,
         return ""
     run = views.turn_state(config.host_path("ledger"), loop["repo"],
                            number, head, "adjudicator")
-    if run in LIVE_TURN:
+    if run in run_supervisor.NOT_ENDED:
         return ""
     since = marker.get("adjudicating_at") or marker.get("at")
     mins = age_min(since)

@@ -42,6 +42,15 @@ class OneHome(unittest.TestCase):
                 self.assertIn(name, gate)
                 self.assertNotIn(name, explain)
 
+    def test_no_other_module_keeps_its_own_copy_of_a_moved_name(self):
+        # #1503: scripts/watchdog.py kept a narrower LIVE_TURN of its own, one question answered
+        # two ways. The watchdog reads run_supervisor.NOT_ENDED, as explain's live part does.
+        for path in (ROOT / "scripts/watchdog.py", *sorted((ROOT / "diaktoros").rglob("*.py"))):
+            if path.name == "explain.py" and path.parent.name == "diaktoros":
+                continue
+            with self.subTest(path.relative_to(ROOT).as_posix()):
+                self.assertEqual(sorted(top_level(path) & set(MOVED)), [])
+
     def test_nothing_reaches_a_moved_name_through_gate(self):
         moved = "|".join(MOVED)
         old = re.compile(rf"(?<![\w.])gate\.({moved})\b|\bdiaktoros\.gate\.({moved})\b"
