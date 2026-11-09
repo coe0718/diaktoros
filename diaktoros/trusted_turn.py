@@ -25,8 +25,9 @@ import sys
 import tempfile
 import time
 
-from . import (broker, broker_client, broker_ipc, config, contained, deps, gh, hostdirs,
-               inference_proxy, prompts, repro_proof, runtime_detect, safe_push, trusted_fetch, util)
+from . import (broker, broker_client, broker_filing, broker_ipc, config, contained, deps, gh,
+               hostdirs, inference_proxy, prompts, repro_proof, runtime_detect, safe_push,
+               trusted_fetch, util)
 
 
 def dependency_cache(loop: dict) -> Path | None:
@@ -542,7 +543,7 @@ TOOLS = {
                  'given, otherwise what the list line in your instructions says to send (a type '
                  'label is one that is not P0, P1, …; a priority label only if the cap leaves '
                  'room beside the type); '
-                 f'at most {broker.FILED_ISSUES_MAX} per review). It files as your account '
+                 f'at most {broker_filing.FILED_ISSUES_MAX} per review). It files as your account '
                  'and answers with the issue number; a title already filed from this PR is '
                  'refused. A blocking finding is never an issue: it is REQUEST_CHANGES. '),
     'fixer': ('To publish, name the files you changed and write a commit message: '
