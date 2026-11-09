@@ -335,11 +335,13 @@ def clear_hold(loop: dict, seat: str, *, ledger=None) -> dict:
     seats = _profile_seats(loop, profile)
     now = time.time()
     with Supervisor(ledger)._connect() as con:
-        # The words ``pacing.hold_line`` writes for a closed account; a daily cap is not one.
+        # The words ``pacing.hold_line`` writes for a closed account (``pacing.closed_account``'s
+        # marks, #2220); a daily cap is not one.
+        like = pacing.closed_account_like()
         out["rearmed"] = con.execute(
             "UPDATE runs SET retry_at=?, updated=? WHERE repo=? AND state='waiting' AND seat IN "
-            f"({','.join('?' * len(seats))}) AND (error LIKE 'held: % provider unavailable%' "
-            "OR error LIKE 'held: % usage window (%')", (now, now, loop["repo"], *seats)).rowcount
+            f"({','.join('?' * len(seats))}) AND ({' OR '.join('error LIKE ?' for _ in like)})",
+            (now, now, loop["repo"], *seats, *like)).rowcount
     if out["rearmed"]:
         try:
             started = gate.resume_isolated(loop)

@@ -56,12 +56,19 @@ def stale(installed: str | None = None) -> str:
 
 def identity(installed: str | None = None) -> str:
     """The claimant, in one bounded line: PID, executable, entry script and plugin commit, with
-    the installed commit too when it differs from the loaded one."""
+    the installed commit too when it differs from the loaded one. The executable and entry are
+    each cut to their last 80 characters, so the line stays under about 220."""
     script = pathlib.PurePath(sys.argv[0]).parts[-2:] if sys.argv and sys.argv[0] else ()
     entry = "/".join(script) or "unknown"
     plugin = LOADED[:7] or "unknown"
     now = installed_commit() if installed is None else installed
     if LOADED and now and now != LOADED:
         plugin += f", installed {now[:7]}"
-    return (f"claimant pid {os.getpid()} {sys.executable or 'unknown'} {entry}, "
-            f"plugin {plugin}")[:240]
+    # Each unbounded field keeps its tail (#2218): the commit, last, is never cut off.
+    return (f"claimant pid {os.getpid()} {_tail(sys.executable or 'unknown')} {_tail(entry)}, "
+            f"plugin {plugin}")
+
+
+def _tail(text: str, limit: int = 80) -> str:
+    """``text`` cut to its last ``limit`` characters, marked with a leading ellipsis when cut."""
+    return text if len(text) <= limit else "…" + text[-(limit - 1):]

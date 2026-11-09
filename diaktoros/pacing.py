@@ -40,6 +40,11 @@ _KEEP_DAYS = 3
 REVIEW_ONLY_SEAT = "review_only"
 # A provider-unavailable hold: the first window, its cap, and how long a strike is remembered.
 UNAVAILABLE = "provider unavailable"
+# The words that mark a closed account's ``held:`` line (#2220): ``hold_line`` writes them, and
+# ``closed_account`` (status, explain, the held notice) and ``retry --clear-hold``'s SQL
+# (``closed_account_like``) match by them, so a rewording here moves all three together.
+USAGE_WINDOW = "usage window"
+CLOSED_ACCOUNT_MARKS = (f" {UNAVAILABLE}", f" {USAGE_WINDOW} (")
 UNAVAILABLE_BASE_S = 15 * 60
 UNAVAILABLE_MAX_S = 2 * 3600
 _UNAVAILABLE_FORGET_S = 6 * 3600
@@ -409,8 +414,19 @@ def clear_unavailable(key: str) -> bool:
 def hold_line(seat: str, provider: str, until: float, reason: str = "") -> str:
     """A held run's ``held:`` line for a closed account: "provider unavailable (…)" when that is
     why, else the usage window. Every path that holds an account for a run words it here."""
-    what = reason if reason.startswith(UNAVAILABLE) else f"usage window ({provider})"
+    what = reason if reason.startswith(UNAVAILABLE) else f"{USAGE_WINDOW} ({provider})"
     return f"held: {seat} {what} — resumes {when(until)}"
+
+
+def closed_account(error: str) -> bool:
+    """Whether a run's ``held:`` line is ``hold_line``'s for a closed account (a usage window or
+    an unavailable provider), which ``retry --clear-hold`` reopens; a daily cap's is not."""
+    return error.startswith("held: ") and any(mark in error for mark in CLOSED_ACCOUNT_MARKS)
+
+
+def closed_account_like() -> tuple[str, ...]:
+    """The SQL ``LIKE`` patterns of ``closed_account``, one per mark, for the run ledger."""
+    return tuple(f"held: %{mark}%" for mark in CLOSED_ACCOUNT_MARKS)
 
 
 def _today(now: float) -> str:
