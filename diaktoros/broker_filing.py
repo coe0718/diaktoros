@@ -129,19 +129,37 @@ def _shadow_labels(loop: dict, repo: str, number: int, head: str, issue: dict,
     missing = [x for x in wanted if x.casefold() not in names(issue.get("labels"))]
     if not missing:
         return ""
+    gh._LAST.status = None      # judged on this write alone, never an earlier call's answer
+    gh._LAST.unsent = False
     try:
         added, why = broker._write(loop, f"/repos/{repo}/issues/{issue['number']}/labels",
                             method="POST", body={"labels": missing}, login=login)
+        status, unsent = gh.last_status(), gh.last_unsent()
     except Exception as exc:  # noqa: BLE001 - the issue is filed: report, never raise
-        added, why = None, f"{type(exc).__name__}: {exc}"
+        added, why, status, unsent = None, f"{type(exc).__name__}: {exc}", None, False
     if isinstance(added, list):
         _audit_confirmed(loop, repo, number, head, f"{kind}_labels", login)
         missing = [x for x in missing if x.casefold() not in names(added)]
     if not missing:
         return ""
     _audit_confirmed(loop, repo, number, head, f"{kind}_labels_missing", login)
-    return (f"GitHub did not apply {', '.join(missing)} ({why or 'the label write left them off'})"
-            f": the reader {login} needs permission to label issues in {repo}")
+    return _label_gap(missing, why, status, added is None and not unsent, login, repo)
+
+
+def _label_gap(missing: list[str], why: str, status: int | None, unanswered: bool, login: str,
+               repo: str) -> str:
+    """Why a new issue still lacks ``missing`` after the labels write (#1641). Only a 403 answer
+    that is not a rate limit is a confirmed permission refusal; a write sent with no answer (a
+    timeout, a dropped connection) leaves the outcome unknown; any other failure is reported as
+    it is, without a permission claim."""
+    labels = ", ".join(missing)
+    if status == 403 and "rate limit" not in (why or "").casefold():
+        return (f"GitHub did not apply {labels} ({why or 'HTTP 403'}): the reader {login} needs "
+                f"permission to label issues in {repo}")
+    if unanswered and status is None:
+        return (f"the label write for {labels} got no answer ({why or 'no response'}): whether "
+                "GitHub applied them is unknown; check the issue's labels")
+    return f"GitHub did not apply {labels} ({why or 'the label write left them off'})"
 
 
 def _audit_confirmed(loop: dict, repo: str, number: int, head: str, operation: str,
