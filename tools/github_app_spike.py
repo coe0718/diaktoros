@@ -40,7 +40,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 
 API = "https://api.github.com"
 ROLES = ("reader", "reviewer", "fixer")
@@ -50,7 +50,10 @@ POST_PUSH_WAIT = 6
 
 
 def epoch(stamp: str) -> float:
-    return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+    """``stamp`` as epoch seconds; a stamp with no zone is UTC, as ``util.iso_epoch`` reads it,
+    never the host's local time (#1489). Standalone: the spike does not import the plugin."""
+    parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
 
 
 def b64url(data: bytes) -> str:
