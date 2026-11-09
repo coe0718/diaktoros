@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="light dark" />
   <meta name="theme-color" content="#071018" />
-  <link rel="icon" href="data:," />
+  <link rel="icon" type="image/png" sizes="32x32" href="docs/assets/favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="docs/assets/favicon-192.png" />
+  <link rel="apple-touch-icon" href="docs/assets/favicon-192.png" />
   <title>Diaktoros — Autonomous PR Review &amp; Repair for Hermes Agent</title>
   <meta name="description" content="Diaktoros coordinates Hermes agents through issue triage, code fixes, independent PR reviews, CI, and dispute resolution. Autonomous work, deterministic boundaries, human-controlled merges." />
   <link rel="canonical" href="https://coe0718.github.io/diaktoros/" />
@@ -101,6 +103,13 @@
       grid-template-columns: minmax(0, 1.1fr) minmax(280px, .9fr);
       gap: clamp(34px, 6vw, 86px);
       align-items: end;
+    }
+
+    .mast-logo {
+      display: block;
+      width: min(380px, 100%);
+      height: auto;
+      margin: 0 0 30px;
     }
 
     .kicker {
@@ -734,6 +743,7 @@
       .shell { width: min(100% - 22px, 500px); }
       h1 { font-size: clamp(42px, 15vw, 62px); }
       .mast { padding-top: 34px; }
+      .mast-logo { width: min(280px, 100%); margin-bottom: 24px; }
       .lead { font-size: 17px; }
       .actions { flex-direction: column; }
       .button { width: 100%; }
@@ -758,6 +768,7 @@
   <main>
     <section class="shell mast" aria-labelledby="hero-title">
       <div>
+        <img class="mast-logo" src="docs/assets/diaktoros-logo.png" width="1282" height="798" alt="Diaktoros" />
         <p class="kicker">Built for Hermes Agent&nbsp;·&nbsp;<span data-site="version">v0.5.0</span></p>
         <h1 id="hero-title">Your agents write the code.<br><em>Diaktoros keeps the work moving.</em></h1>
         <p class="lead">An autonomous development loop for Hermes that takes issues through implementation, independent code review, fixes, CI checks, and dispute resolution—while keeping the final merge in human hands.</p>
