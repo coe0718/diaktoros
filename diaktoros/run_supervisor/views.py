@@ -358,6 +358,27 @@ def hold_explanation(row: dict) -> dict:
             'next_eligible_start': due, 'operator_action': 'inspect', 'text': text}
 
 
+def _held_step(row: dict, loop_id: str) -> str:
+    """A pacing hold's next step (#619): when its recorded recheck falls, by the clock as well
+    as in seconds, and how to run it sooner. An account hold (a usage window or an unavailable
+    provider) is reopened by ``retry --clear-hold``; a daily cap by raising it, then ``retry``."""
+    from .. import pacing
+    error = str(row.get('error') or '')
+    due_at = row.get('retry_at')
+    due = max(0, int((due_at or 0) - time.time()))
+    at = f"at {pacing.when(due_at)} (in {due}s)" if due_at else f"in {due}s"
+    step = (f"no retry spent — recorded earliest recheck {at} on the next event or armed "
+            "watchdog sweep; a start still depends on host eligibility")
+    if run_supervisor.account_hold(error):
+        return (f"{step}; to run it sooner once the account is usable again: `hermes dk retry "
+                f"--loop {loop_id} --seat {row['seat']} --clear-hold`")
+    flag = run_supervisor.hold_remedy(row['seat'], error)
+    if flag:
+        return (f"{step}; to run it sooner, raise the cap ({flag}), then `hermes dk retry "
+                f"--loop {loop_id} --pr {row['pr']} --seat {row['seat']}`")
+    return step
+
+
 def next_step(row: dict, loop_id: str = 'LOOP') -> str:
     """What moves a failed, waiting, uncertain or push-policy-cancelled ``runs_view`` row on
     (#53)."""
@@ -368,9 +389,7 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
     if row['state'] == 'uncertain' and row.get('write') is None:
         return 'outcome uncertain — never replayed; inspect external state'
     if row['state'] == 'waiting' and str(row.get('error') or '').startswith('held: '):
-        due = max(0, int((row['retry_at'] or 0) - time.time()))
-        return (f"no retry spent — recorded earliest recheck in {due}s on the next event or "
-                "armed watchdog sweep; a start still depends on host eligibility")
+        return _held_step(row, loop_id)
     if row['state'] == 'waiting':
         due = max(0, int((row['retry_at'] or 0) - time.time()))
         return (f"attempt {(row['retries'] or 0) + 1} of {run_supervisor.MAX_RETRIES} due in {due}s "

@@ -472,6 +472,9 @@ turn's **last** provider error, so a turn that recovered from one error and then
 another reason still counts.
 To reopen an account by hand, for example after switching the seat's model, run
 `hermes dk retry --loop <id> --seat <seat> --clear-hold` (see [retry](commands.md#retry)).
+A held run's next step in `status` and `explain` gives its recorded recheck by the clock as well
+as in seconds, and names that command for a closed account, or the cap setting to raise for a
+daily cap (#619). The observer's `held` notice names the same remedy.
 Daily caps reset at local midnight; zero removes the cap. An armed scheduling path must
 still resume work. Status shows reviewer/fixer daily counts and every closed usage window held for the reviewer, fixer, adjudicator or triage profile (a triage seat's window is listed too, though triage has no daily counts there); `triage --loop` shows triage settings.
 Issue fixes have concurrency one, their own daily cap (`triage.fix_daily_turns`, default 10, and issue fixes are always capped), and the loop-wide turn budget. Raising

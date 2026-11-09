@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple
 
-from .. import ledger, run_supervisor, util
+from .. import claimant, ledger, run_supervisor, util
 from . import claims, pr_facts, turn_prompts, waits
 
 
@@ -174,6 +174,12 @@ def _before_shadow_queued(review, created) -> bool:
     return at is not None and at < math.floor(float(created))
 
 
+def _claim_read_reason(read_error: str) -> str:
+    """A failed claim-time read's recorded reason, naming the claimant (#1337): a failure from a
+    copy of the plugin older than the install names the process that made it."""
+    return f'{run_supervisor.CLAIM_READ_FAILED}: {read_error} [{claimant.identity()}]'
+
+
 class ClaimAndLaunch:
     """The claim and turn methods of :class:`~diaktoros.run_supervisor.Supervisor`."""
 
@@ -182,6 +188,11 @@ class ClaimAndLaunch:
         # pending rows wait where they are; the worker that finds nothing here exits as usual.
         from .. import migrate
         if migrate.migrating() is not None:
+            return None
+        # Code older than the install never claims (#1337): a process that loaded the plugin
+        # before a reinstall leaves the pending rows to a worker on the installed code.
+        if self.production_config and (why := claimant.stale()):
+            util.log(f"claim refused: {why} ({claimant.identity()})")
             return None
         # Snapshot candidates without taking a writer lock. A slow GitHub read
         # must not block unrelated enqueues, heartbeats, or receipt commits.
@@ -441,7 +452,7 @@ class ClaimAndLaunch:
                 # Bounded like a failed turn (#53): back off, then fail with the reason and
                 # a notice. Pre-write, so `retry` (or a new event) re-arms it.
                 retries = (current['retries'] or 0) + 1
-                reason = f'{run_supervisor.CLAIM_READ_FAILED}: {read.read_error}'
+                reason = _claim_read_reason(read.read_error)
                 if retries < run_supervisor.MAX_RETRIES:
                     self.held_for_ci = True     # this worker lingers to schedule the retry (#1302)
                     con.execute("UPDATE runs SET state='waiting', retries=?, retry_at=?, "

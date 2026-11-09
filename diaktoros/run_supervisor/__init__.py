@@ -362,6 +362,13 @@ def _file_tail(handle, limit: int) -> bytes:
     return handle.read()
 
 
+def account_hold(error: str) -> bool:
+    """Whether a ``held:`` line is a closed account's (``pacing.hold_line``: a usage window or an
+    unavailable provider), which ``retry --clear-hold`` reopens (#619), not a daily cap."""
+    return error.startswith("held: ") and (" provider unavailable" in error
+                                           or " usage window (" in error)
+
+
 def hold_remedy(seat: str, error: str) -> str:
     """The setting that lifts a daily-cap hold, or '' for a hold no cap explains (a usage
     window). The review-only cap is its own setting: on the reviewer seat it used to be given the

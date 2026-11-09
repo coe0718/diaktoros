@@ -22,7 +22,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from diaktoros import config, gate, pacing, retry_action  # noqa: E402
 from diaktoros.cli import operations  # noqa: E402
 from diaktoros.config import lists  # noqa: E402
-from diaktoros.run_supervisor import views  # noqa: E402
+from diaktoros.run_supervisor import Supervisor, views  # noqa: E402
 import test_pacing as tp  # noqa: E402
 
 DEEPSEEK = "HTTP 400: This response_format type is unavailable now"
@@ -213,6 +213,63 @@ class ClearHold(tp.ProductionBase):
                            "the reviewer runs as profile rev: not this account's to re-arm")
         resume.assert_called_once_with(loop)
         self.assertEqual(result["worker"], "started")
+
+    def test_a_held_runs_next_step_names_its_recheck_time_and_clear_hold(self):
+        """#619: status and explain say when a held run is rechecked, and how to run it now."""
+        reset = time.time() + 3 * 24 * 3600              # #618: a wrong hold, days long
+
+        def rate_limited(_loop, scope, observed=None, **kw):
+            observed.update(rate_limited_until=reset)
+            return 1
+        row = self.run_production(rate_limited)
+        self.assertTrue(row["error"].startswith("held: fixer usage window ("), row["error"])
+        step = views.next_step(row, "widgets")
+        self.assertIn(f"recorded earliest recheck at {pacing.when(row['retry_at'])} (in ", step)
+        self.assertIn("once the account is usable again: `hermes dk retry --loop widgets "
+                      "--seat fixer --clear-hold`", step)
+        self.assertIn("no retry spent", step)
+        self.assertIn("host eligibility", step)
+        self.assertIn(step, views.describe_run(row, "widgets"), "status and explain print it")
+        notices = []
+        sup = Supervisor(self.ledger)
+        with mock.patch("diaktoros.config.by_repo", return_value=self.loop), \
+                mock.patch("diaktoros.observer.notify",
+                           side_effect=lambda *a, **k: notices.append(k["outcome"])):
+            sup.failure_notice(row["id"], "waiting")
+        self.assertEqual(len(notices), 1)
+        self.assertIn("· to run it sooner once the account is usable again, `retry --seat fixer "
+                      "--clear-hold`", notices[0])
+
+    def test_a_cleared_usage_window_lets_the_held_run_launch(self):
+        """#619: the hold is gone, and the run it held launches instead of waiting it out."""
+        reset = time.time() + 3 * 24 * 3600
+
+        def rate_limited(_loop, scope, observed=None, **kw):
+            observed.update(rate_limited_until=reset)
+            return 1
+        self.run_production(rate_limited)
+        self.assertIsNotNone(pacing.held(self.account))
+        held = self.run_production(lambda *a, **k: self.fail("launched into a held account"))
+        self.assertTrue(held["error"].startswith("held: fixer usage window ("), held["error"])
+        with mock.patch.object(gate, "resume_isolated", return_value=True):
+            result = retry_action.clear_hold(self.loop, "fixer", ledger=self.ledger)
+        self.assertEqual((result["cleared"], result["rearmed"]), ([self.account], 1))
+        self.assertIsNone(pacing.held(self.account))
+        self.assertAlmostEqual(self.rows()["fixer"]["retry_at"], time.time(), delta=5)
+        launched = []
+        row = self.run_production(lambda *a, **k: launched.append(1) or 1)
+        self.assertEqual(launched, [1], "the cleared account's run launches")
+        self.assertFalse(str(row["error"] or "").startswith("held:"), row["error"])
+
+    def test_a_cap_holds_next_step_names_the_cap_not_clear_hold(self):
+        loop = config.normalize({**self.raw, "seats": {
+            **self.raw["seats"], "fixer": {"profile": "fix", "route": "f", "daily_turns": 1}}})
+        self.run_production(lambda *a, **k: 1, loop=loop)                 # spends the day's turn
+        row = self.run_production(lambda *a, **k: self.fail("over the cap"), loop=loop)
+        step = views.next_step(row, "widgets")
+        self.assertIn("raise the cap (set --fixer-daily-turns N), then `hermes dk retry --loop "
+                      "widgets --pr 8 --seat fixer`", step)
+        self.assertNotIn("--clear-hold", step)
 
     def test_a_daily_cap_hold_is_not_an_account_hold(self):
         loop = config.normalize({**self.raw, "seats": {

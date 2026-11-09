@@ -350,7 +350,7 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `fixing` | Fix label handed an issue to the fixer, or the handoff was held. Links the issue. |
 | `fixed` | Issue-fix write ended: PR opened/review requested, a posted plan or question (waits for a maintainer; next: you), could-not-fix comment, or uncertain. Links the issue. |
 | `failed` | Any isolated run's first failed attempt and its terminal failed/uncertain state. Links the issue for triage and issue-fix runs. |
-| `held` | A run waiting on its seat's daily cap, its provider's usage window, or an unavailable provider (#1325): when it resumes, and how to run it sooner. Once per hold. |
+| `held` | A run waiting on its seat's daily cap, its provider's usage window, or an unavailable provider (#1325): when it resumes, and how to run it sooner: a raised cap, or `retry --seat <seat> --clear-hold` for a closed account (#619). Once per hold. |
 | `conflict` | A loop PR no longer merges into its base (GitHub reports a merge conflict): once per head. Urgent tier. |
 | `ci_failed` | A required check is red at a loop PR's current head: once per head, naming the failed check(s) and linking the run. |
 | `updated` | With `review_only_update` on, the host merged the base into a review-only PR's branch and pushed it (clean merge only). |
