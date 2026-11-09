@@ -42,6 +42,15 @@ class SeatSections(unittest.TestCase):
         self.assertIn("hermes dk retry --loop LOOP --pr N --seat shadow", text)
         self.assertNotIn("is not retried.", text)
 
+    def test_the_general_retry_rule_excepts_the_shadow(self):
+        # #1678: the general rule ("retried ... four attempts in all") must not contradict the
+        # shadow section; turns.py sets retry False for every shadow row.
+        flat = " ".join(SKILL.split())
+        rule = re.search(r"a run that failed before it wrote anything is retried(.*?);", flat)
+        self.assertIsNotNone(rule, "the general retry rule moved")
+        tail = flat[rule.start():rule.start() + 400].split(" a provider's")[0]
+        self.assertIn("shadow turn, which gets one attempt", tail)
+
 
 if __name__ == "__main__":
     unittest.main()
