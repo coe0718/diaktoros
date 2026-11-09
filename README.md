@@ -1,10 +1,69 @@
+<p align="center"><img src="docs/banner.jpg" alt="Diaktoros" width="720"></p>
+
 # Diaktoros
 
 **Bounded, autonomous software maintenance for Hermes.**
 
-One agent reviews pull requests; another fixes what it finds. New issues are triaged and small ones fixed automatically, red CI goes to the fixer first, a watchdog reports stalls, disputes go to an adjudicator, and rounds are capped. Deterministic Python controls eligibility, capacity, retries and escalation. **The loop never merges.**
+Diaktoros is a Hermes plugin that keeps a repository moving while you're away. One agent reviews pull requests; another fixes what it finds. New issues are triaged and small ones fixed automatically, red CI goes to the fixer first, a watchdog reports stalls, disputes go to an adjudicator, and rounds are capped. Deterministic Python, not a model, controls eligibility, capacity, retries and escalation. **The loop never merges.**
 
-**Start here:** [Getting started](docs/getting-started.md) · [Documentation map](docs/README.md) · [Commands](docs/commands.md) · [Troubleshooting](docs/troubleshooting.md)
+**Start here:** [Project site](https://coe0718.github.io/diaktoros/) · [Getting started](docs/getting-started.md) · [How it works](docs/concepts.md) · [Documentation map](docs/README.md) · [Commands](docs/commands.md)
+
+## Why it exists
+
+Coding agents now open pull requests faster than people can review them, and an agent that reviews and merges its own work is a liability, not a teammate. Diaktoros puts agents to work on a repository under rules a maintainer can read and audit:
+
+- **Bounded.** Every PR gets a fixed number of review verdicts (3 by default). At the cap the PR stops and goes to an adjudicator or to you. Daily token and turn budgets cap each seat's spend.
+- **Separated.** The reviewer and the fixer are distinct GitHub accounts (or GitHub Apps) running distinct Hermes profiles, so the account that writes a fix never reviews it. No seat can merge.
+- **Contained.** Every agent turn runs in a bubblewrap sandbox with no GitHub token, no model key and no direct network. The host brokers each write and rechecks the live PR before sending it.
+- **Accountable.** Every turn and its outcome is recorded in a local run ledger. `hermes dk explain` says why a PR is stuck and what has to happen next; `hermes dk stats` says what the loop did and what it cost.
+
+## It maintains itself
+
+Diaktoros runs on its own repository. Between the v0.5.0 release (October 26, 2026) and November 9, 2026:
+
+| | |
+| --- | --- |
+| **328** pull requests merged | **229** of them opened by the loop's fixer seat ([`drey-coe1`](https://github.com/coe0718/diaktoros/pulls?q=is%3Apr+is%3Amerged+author%3Adrey-coe1)), each fixing an issue |
+| **327** of the 328 reviewed by its reviewer seat ([`vex-coe`](https://github.com/coe0718/diaktoros/pulls?q=is%3Apr+is%3Amerged+reviewed-by%3Avex-coe)) | **264** of the 439 new issues filed by the loop's own accounts (the reviewer seat and the reader) |
+
+The loop merged none of them: every merge came from the maintainer's account. The counts are GitHub search results, and the links above re-run them.
+
+### One PR, start to finish
+
+[#1988](https://github.com/coe0718/diaktoros/pull/1988) shows the whole loop. Every commit in it was written by the fixer seat:
+
+1. Issue [#1362](https://github.com/coe0718/diaktoros/issues/1362), a `P3` bug, is labelled `agent-fix`, which hands it to the fixer seat.
+2. The fixer opens #1988 from a `diaktoros/issue-1362` branch. CI goes red on a file handle a test leaked; the fixer repairs CI before the reviewer spends a verdict, and says how in a comment.
+3. The reviewer requests changes with numbered findings, each cited to a line in the diff. The fixer answers every finding and pushes a new head. That happens twice.
+4. The third change request reaches the cap (3 of 3). The adjudicator checks each finding against the code at that head, rules **ACCEPT** because the one finding left is a gap in the review's evidence rather than a defect, approves the head and dismisses the overruled request.
+5. The maintainer merges.
+
+## How it works
+
+```mermaid
+flowchart LR
+    issue[Issue labelled for a fix] --> fixer
+    hook[PR event] --> gate{Python gates:<br/>eligible? capacity?<br/>under the cap?}
+    gate -->|queue a turn| reviewer[Reviewer seat]
+    reviewer -->|changes requested| fixer[Fixer seat]
+    fixer -->|push, then ask for review| gate
+    reviewer -->|approved| human([You merge])
+    gate -->|cap reached| adjudicator[Adjudicator seat]
+    adjudicator -->|ruling| human
+```
+
+1. A GitHub webhook reaches your Hermes gateway. A **gate** script reads live GitHub state and decides, in plain Python, whether the event earns a turn. It answers `[SILENT]`, so no ordinary credential-owning Hermes agent handles the event.
+2. A host **worker** claims the queued turn, rechecks the PR at its exact head, exports that head and starts the seat in bubblewrap.
+3. The seat reads, builds and tests inside the sandbox. Model calls go through a bounded inference capability. GitHub writes go through the host **broker**, which allows each seat only its own bounded writes (the reviewer one review, the fixer one push and its answers, the adjudicator one ruling) and rechecks the PR before sending them.
+4. The **watchdog**, a scheduled job and not an agent, reports stalls, drains queued work and repairs the loop's own routes.
+
+[Concepts](docs/concepts.md) defines each piece; [Architecture](docs/architecture.md) shows how the gates, ledgers and reconciliation fit together.
+
+## Safety model
+
+> With a valid private `diaktoros-runtime.json` and hooks activated by `arm`, an eligible reviewer turn posts a real GitHub review. Gates answer `[SILENT]` so a normal credential-owning gateway agent does not handle the event. Agents run in bubblewrap without GitHub/model credentials or direct network access; host processes provide bounded inference and broker writes. Unattended fixer pushes stay **off** until the host operator explicitly runs `hermes dk fixer-push --loop ID --enable --acknowledge-pr-race`. A Git ref lease cannot atomically enforce GitHub PR metadata: the PR can close or retarget between the final API check and push. Read the [security boundary and push policy](docs/security.md) before opting in. No seat can merge; uncertain writes are not automatically replayed.
+
+Isolation is not immunity: installed plugins are trusted host code, and a kernel or bubblewrap escape would run as the host user. Offline tests do not establish provider-policy approval or live credentials. Issue triage, issue fixing and the Desktop forms have offline coverage, not a claimed live acceptance test here. See [Security](docs/security.md) and [Development](docs/development.md).
 
 ## What it does
 
@@ -17,6 +76,7 @@ Every capability below is on `main` and driven by the command named beside it. R
 | **Issue triage** | New issues are classified; small ones are fixed | `hermes dk triage` |
 | **CI repair** | Red CI goes to the fixer before the reviewer spends a verdict | `hermes dk set` |
 | **Affected tests** | The fixer runs only the tests its change touches | `hermes dk set` |
+| **Change proof** | Off until turned on: before each review, the host runs the PR's changed tests on its merge base and at the head, and tells the reviewer whether they fail without the change ([Change proof](docs/change-proof.md)) | `hermes dk set --change-proof on` |
 | **Rounds and the cap** | Verdicts are counted; at the cap the PR escalates | built in |
 | **Adjudication** | A dispute goes to an adjudicator for a ruling | `hermes dk escalate` |
 | **Shadow review** | Off until a shadow profile is set: a second model reviews the same head in no-write mode and posts nothing; where it disagrees with the real review is recorded | `hermes dk set --shadow-profile`, then `hermes dk report` |
@@ -41,7 +101,7 @@ Every capability below is on `main` and driven by the command named beside it. R
 - Your own HTTPS-reachable Hermes gateway, and a repository whose hooks you can administer.
 - Separate reviewer and fixer Hermes profiles; three distinct GitHub accounts and token files: reader, reviewer and fixer. An adjudicator comment account is optional and must be distinct too.
 
-[Accounts and permissions](docs/accounts.md) explains which token each role needs. See the [Hermes documentation](https://hermes-agent.nousresearch.com/docs) for Hermes installation, profiles, model authentication and gateway setup.
+[Accounts and permissions](docs/accounts.md) explains which token each role needs, and [GitHub Apps](docs/github-apps.md) covers running the seats as Apps instead. See the [Hermes documentation](https://hermes-agent.nousresearch.com/docs) for Hermes installation, profiles, model authentication and gateway setup.
 
 ## Install
 
@@ -52,7 +112,7 @@ hermes plugins install diaktoros
 hermes dk setup --repo "<owner>/<repository>"
 ```
 
-`hermes dk` is short for `hermes diaktoros`; either works. Diaktoros was called hermes-review-loop before v0.2.0. An existing install upgrades in a few steps; see [Upgrading from hermes-review-loop](#upgrading-from-hermes-review-loop).
+`hermes dk` is short for `hermes diaktoros`; either works. Coming from hermes-review-loop? See [Upgrading from hermes-review-loop](#upgrading-from-hermes-review-loop).
 
 The plugin is in the [Hermes plugin catalog](https://github.com/NousResearch/hermes-agent/tree/main/plugin-catalog), so `hermes plugins install diaktoros` installs the reviewed release at its pinned commit. Desktop can install it from the catalog too. Catalog updates arrive only through a reviewed pin bump.
 
@@ -101,9 +161,25 @@ hermes dk arm --loop ID
 
 `--no-model` skips inference, **not GitHub reads**. The next two selftests spend model quota; the live-turn verdict is printed, not posted. `N` must be an eligible open, non-draft, same-repository PR targeting the loop's base. `arm` activates existing matching hooks and sends a GitHub ping to every hook—a GitHub write—using the reader's token unless `--admin-token "<admin-login>"` is supplied. It exits 1 if a ping is rejected; inspect the output and hook state before continuing. Full checks and their limitations: [Verify and arm](docs/getting-started.md#verify-and-arm).
 
+### Then watch it work
+
+Open a PR from the fixer's allowlisted account, or label an issue for the fixer once [issue fixes](docs/issues.md) are on. Then:
+
+```bash
+hermes dk status --loop ID
+hermes dk explain --loop ID --pr N
+hermes dk stats --loop ID
+```
+
+`status` shows the loop's seats, routes, pacing and queued or running turns. `explain` names the gate a PR is waiting on and what happens next. `stats` totals turns, verdicts, timings and cost. Two opt-ins make each review stronger: [change proof](docs/change-proof.md), which proves a PR's tests fail without its change, and a [shadow review](docs/configuration.md#shadow-reviews) from a second model.
+
+```bash
+hermes dk set --loop ID --change-proof on
+```
+
 ## Upgrading from hermes-review-loop
 
-**Hermes knows a plugin by its name, and the name changed.** Installing Diaktoros puts it in a new folder, `diaktoros`, beside your `hermes-review-loop`. It isn't enabled until you enable it under its new name. Your loops keep running through the old plugin until `migrate` points them at the new one. Between turns:
+Diaktoros was called hermes-review-loop before v0.2.0. **Hermes knows a plugin by its name, and the name changed.** Installing Diaktoros puts it in a new folder, `diaktoros`, beside your `hermes-review-loop`. It isn't enabled until you enable it under its new name. Your loops keep running through the old plugin until `migrate` points them at the new one. Between turns:
 
 ```bash
 hermes plugins disable hermes-review-loop        # so the two don't both claim `hermes review-loop`
@@ -116,12 +192,6 @@ hermes plugins remove hermes-review-loop
 ```
 
 `hermes review-loop` keeps working, as an alias until v0.6.0, which removes it. Each use says it was renamed. [Operations](docs/operations.md#upgrading-from-hermes-review-loop) has the details.
-
-## Safety model
-
-> With a valid private `diaktoros-runtime.json` and hooks activated by `arm`, an eligible reviewer turn posts a real GitHub review. Gates answer `[SILENT]` so a normal credential-owning gateway agent does not handle the event. Agents run in bubblewrap without GitHub/model credentials or direct network access; host processes provide bounded inference and broker writes. Unattended fixer pushes stay **off** until the host operator explicitly runs `hermes dk fixer-push --loop ID --enable --acknowledge-pr-race`. A Git ref lease cannot atomically enforce GitHub PR metadata: the PR can close or retarget between the final API check and push. Read the [security boundary and push policy](docs/security.md) before opting in. No seat can merge; uncertain writes are not automatically replayed.
-
-Isolation is not immunity: installed plugins are trusted host code, and a kernel/bubblewrap escape would run as the host user. Tests do not establish provider-policy approval or live credentials. Issue triage/fixing and desktop form rendering have offline coverage, not a claimed live acceptance test here. See [security](docs/security.md) and [development](docs/development.md).
 
 ## Advanced: Claude subscription seats (DirectSDK)
 
@@ -136,11 +206,10 @@ The experimental `claude-subscription-directsdk-experimental` provider runs its 
 | Explain one stuck PR without changing it | `hermes dk explain --loop ID --pr N` |
 | Pause existing hooks | `hermes dk arm --loop ID --pause` |
 | Add issue triage or maintainer-triggered fixes | [Issues](docs/issues.md) — opt-in |
+| Prove a PR's tests fail without its change | [Change proof](docs/change-proof.md) — opt-in |
 | Receive transition notices without another agent | [Observer feed](docs/observer.md) — opt-in |
 | Change defaults, identities or limits | [Settings](docs/settings.md) and [configuration](docs/configuration.md) |
 | Operate, diagnose or contribute | [Operations](docs/operations.md), [troubleshooting](docs/troubleshooting.md), [development](docs/development.md) |
-
-The watchdog reports stalls, drains eligible queued work and repairs owned routes; it is not an agent. One shared scheduled job sweeps configured loops. A paused loop does not drain or report ordinary stalls; an unreadable GitHub state is reported as unknown, not assumed safe.
 
 ## License
 

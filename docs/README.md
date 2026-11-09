@@ -22,6 +22,7 @@
 | Run a loop day to day | [Operations](operations.md) | Wiring, watchdog, preflight, selftest, explain, trace, pacing and recovery |
 | Investigate a failure | [Troubleshooting](troubleshooting.md) | Symptom → cause → action |
 | Add issue automation | [Issues](issues.md) | Opt-in triage and maintainer-label issue fixing |
+| Prove a PR's tests fail without its change | [Change proof](change-proof.md) | Opt-in host run of a PR's changed tests on its merge base and at the head, before each review |
 | Add a notification feed | [Observer](observer.md) | Delivery-only notices, destination binding, batching and retries |
 | Evaluate trust and push risks | [Security](security.md) | Host/sandbox/broker boundary and explicit unattended-push policy |
 | Run a loop as GitHub Apps | [Getting started with GitHub Apps](github-apps.md) | Make the Apps, set up or move a loop, events through the App's webhook, the merge check |
