@@ -58,6 +58,19 @@ class Hold(sm.Base):
         self.assertIn("the review starts when they pass (re-run them on GitHub) or a new head "
                       "is pushed", why[0])
 
+    def test_a_long_held_line_is_cut_at_a_word_with_an_ellipsis(self):
+        # #1700: a bare [:WHY_MAX] slice left the red-CI hold ending in a dangling '; n'.
+        _, row = self.review(RED)
+        error = row[1] + "; and one more check, named at length"
+        self.assertGreater(len(error), stats.WHY_MAX)
+        why = stats._why("waiting", error)
+        self.assertLessEqual(len(why), stats.WHY_MAX)
+        self.assertTrue(why.endswith("…"), why)
+        cut = why[:-1]
+        self.assertTrue(error.startswith(cut), why)
+        self.assertIn(error[len(cut)], " ;,:", why)    # ends at a boundary, never mid-word
+        self.assertEqual(stats._why("waiting", "held: short"), "held: short")
+
     def test_it_outlasts_the_ci_wait(self):
         with mock.patch.object(run_supervisor, "CI_WAIT_MAX_S", 0):
             seen, row = self.review(RED)
