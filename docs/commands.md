@@ -1649,9 +1649,9 @@ to the site's run viewer at once.
 `--format markdown` gives the same timeline as a document, for a PR comment, a write-up or an
 archive: a findings table, a heading per round, and links to each review, commit, comment, answers
 and filed issue. `--format json` gives the same data for tools, with a `schema` number that changes only
-when a key is renamed, removed or changes meaning. No output names a local path: an absolute path or
-a `file://` URL in a free text, such as a failed turn's output tail, is cut to its last part
-(`…/state.json`). A path may hold spaces, so the cut goes to its last `/` and can take a few words
+when a key is renamed, removed or changes meaning. No output names a local path: an absolute path
+(`/…`, `~/…` or a Windows `C:\…`, doubled slashes included) or a `file://` URL in a free text, such
+as a failed turn's output tail, is cut to its last part (`…/state.json`). A path may hold spaces, so the cut goes to its last `/` and can take a few words
 before it with it. `--offline` leaves GitHub out and
 lists what that leaves missing. It exits `2` when no loop can be chosen, or when it gets neither
 or both of `--pr` and `--since`, or `--since` without `--out`, or when `--out` cannot be written

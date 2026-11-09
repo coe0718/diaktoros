@@ -226,6 +226,21 @@ class History(fg.Base):
             for tail in ("…/state.json,", "…/y.json and …/z.json;", "https://example.test/a/b"):
                 self.assertIn(tail, out)
 
+    def test_a_windows_path_or_a_doubled_slash_names_no_directory(self):
+        """#2188, #2189, #2191: a drive path, bare or in a file:// URL, with ``\\`` or ``/``, and a
+        path with a doubled slash are cut to their last part too."""
+        self.run_row("fixer", A, T, state="failed",
+                     detail="see file:///C:/Users/agent/x/a.json, C:\\Users\\agent\\x\\b.json, "
+                            "D:/Work/agent/c.json, /home/agent//loops/d.json and "
+                            "/srv//agent/e.json")
+        for form in ("text", "markdown", "json"):
+            rc, out = self.run_cli("--format", form)
+            self.assertEqual(rc, 0)
+            for leak in ("Users", "agent", "loops", "Work", "/srv", "C:", "D:"):
+                self.assertNotIn(leak, out)
+            for tail in ("…/a.json,", "…/b.json,", "…/c.json,", "…/d.json and …/e.json"):
+                self.assertIn(tail, out)
+
     def test_the_parser_drives_it_and_json_is_the_data(self):
         self.cycle()
         rc, out = self.run_cli("--format", "json")
