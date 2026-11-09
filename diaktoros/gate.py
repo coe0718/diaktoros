@@ -398,8 +398,10 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
     escalate was on) or only runs that ended without a review. Once an earlier turn's shadow
     exists at the head (after ``review --reconsider``), a newer turn whose shadow was never
     queued, or ended failed, cancelled or skipped without a review, does hold (``_lost_hold``,
-    #1683); only ``shadow.escalate`` off or a new head clears it. ``("", "", "")`` with escalate
-    off; ``shadow_hold`` is the ``(hold, note)`` view of it."""
+    #1683) until the active reviewer turn has a shadow review: its own, landing late, or a newer
+    turn's at the head (a dispute re-review, a dismissed verdict, a retarget) when that turn gets
+    a shadow. Failing that, ``shadow.escalate`` off or a new head clears it.
+    ``("", "", "")`` with escalate off; ``shadow_hold`` is the ``(hold, note)`` view of it."""
     if not config.shadow_escalate(loop):
         return "", "", ""
     import sqlite3
