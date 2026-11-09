@@ -156,6 +156,7 @@ class TrustedFetchTests(unittest.TestCase):
                      "tree": [{"path": "hello.txt", "mode": "100644", "type": "blob",
                                "sha": self.oid, "size": len(self.blob)}]}
         self.calls = []
+        self.ids = {"reader": 101, "reviewer": 102, "fixer": 103}
         self.pr_count = 0
         self.pr_head = self.head
         self.tarball = self._tarball({"hello.txt": self.blob})
@@ -192,7 +193,7 @@ class TrustedFetchTests(unittest.TestCase):
     def response(self, loop, path, login, limit, accept):
         self.calls.append((path, login, limit))
         if path == "/user":
-            return json.dumps({"login": login}).encode()
+            return json.dumps({"login": login, "id": self.ids.get(login, 100)}).encode()
         if path.endswith("/pulls/7"):
             self.pr_count += 1
             return json.dumps({"number": 7, "state": "open", "head": {"sha": self.pr_head,
@@ -205,6 +206,10 @@ class TrustedFetchTests(unittest.TestCase):
         if "/tarball/" in path:
             return self.tarball
         raise AssertionError(path)
+
+    def token(self, loop, login=None):
+        """The token ``stage`` hands every identity; a test replaces it to refuse one login."""
+        return "dummy-token"
 
     def stage(self, callback=None, **changes):
         # Run the tarball fetch through REAL loopback HTTP (two http.servers), so the
@@ -230,7 +235,7 @@ class TrustedFetchTests(unittest.TestCase):
                     return result
             return self.response(loop, path, login, limit, accept)
 
-        with mock.patch.object(trusted_fetch.gh, "token", return_value="dummy-token"), \
+        with mock.patch.object(trusted_fetch.gh, "token", side_effect=self.token), \
              mock.patch.object(trusted_fetch.gh, "API", api.base), \
              mock.patch.object(trusted_fetch, "_TARBALL_REDIRECT", ("http", "127.0.0.1")), \
              mock.patch.object(trusted_fetch, "_request", side_effect=mock_request):
@@ -310,13 +315,57 @@ class TrustedFetchTests(unittest.TestCase):
             if path == "/user" and login == "reader":
                 return b'{"login":"reviewer"}'
             return self.response(loop, path, login, limit, accept)
-        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "principal mismatch"):
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "principal cannot be verified"):
             self.stage(callback=mismatch)
         self.assertFalse((self.root / "sandbox").exists())
 
     def test_case_variant_logins_are_not_distinct_principals(self):
         self.loop["read_token"] = "Reviewer"
-        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "distinct read and seat"):
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "must use distinct identities"):
+            self.stage()
+        self.assertFalse((self.root / "sandbox").exists())
+
+    def test_principal_without_integer_id_is_refused(self):
+        # broker._verify_identities' rule (#1498): an account with no integer id is unverified.
+        def no_id(loop, path, login, limit, accept):
+            if path == "/user" and login == "fixer":
+                return b'{"login":"fixer","id":"103"}'
+            return self.response(loop, path, login, limit, accept)
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "principal cannot be verified"):
+            self.stage(callback=no_id)
+        self.assertFalse((self.root / "sandbox").exists())
+
+    def assert_identity_refused(self, pattern):
+        """The export is refused as this module's FetchDenied (not the broker's BrokerDenied,
+        #1498) before anything is staged."""
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, pattern):
+            self.stage()
+        self.assertFalse((self.root / "sandbox").exists())
+
+    def test_unmapped_identity_is_refused_as_fetch_denied(self):
+        del self.paths["fixer"]
+        self.assert_identity_refused("token mappings required")
+
+    def test_two_identities_sharing_a_token_file_are_refused_as_fetch_denied(self):
+        self.paths["fixer"] = self.paths["reviewer"]
+        self.assert_identity_refused("must use distinct token files")
+
+    def test_empty_token_is_refused_as_fetch_denied(self):
+        self.token = lambda loop, login=None: "" if login == "fixer" else "dummy-token"
+        self.assert_identity_refused("empty token for fixer")
+
+    def test_missing_token_is_refused_as_fetch_denied(self):
+        def token(loop, login=None):
+            if login == "fixer":
+                raise trusted_fetch.gh.GitHubError("no token file")
+            return "dummy-token"
+        self.token = token
+        self.assert_identity_refused("missing token for fixer")
+
+    def test_two_identities_resolving_to_one_principal_are_refused(self):
+        # Same rule as the broker's (#1498): the export takes it from broker._verify_identities.
+        self.ids["fixer"] = self.ids["reviewer"]
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "resolve to the same principal"):
             self.stage()
         self.assertFalse((self.root / "sandbox").exists())
 

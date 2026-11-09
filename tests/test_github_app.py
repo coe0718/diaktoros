@@ -487,7 +487,7 @@ class EveryCredentialCheck(Broker):
         def bounded(loop, path, login, limit=None):
             seen.append(path)
             if path == "/user":
-                return {"login": login}
+                return {"login": login, "id": int.from_bytes(login.encode(), "big")}
             if path == f"/users/{BOT}":       # the App seat reads its bot user through this transport
                 return {"login": BOT, "id": 346013884, "type": "Bot"}
             raise AssertionError(path)
@@ -500,7 +500,7 @@ class EveryCredentialCheck(Broker):
         def bounded(loop, path, login, limit=None):
             if path == f"/users/{BOT}":
                 raise trusted_fetch.FetchDenied("GitHub response exceeds bounds")
-            return {"login": login}
+            return {"login": login, "id": int.from_bytes(login.encode(), "big")}
         with mock.patch.object(trusted_fetch, "_json", side_effect=bounded), \
                 self.assertRaisesRegex(trusted_fetch.FetchDenied, "exceeds bounds"):
             trusted_fetch._identity(self.loop, REPO, 7, HEAD, "fix-7", "reviewer")
@@ -514,7 +514,7 @@ class EveryCredentialCheck(Broker):
         def bounded(loop, path, login, limit=None):
             if path == f"/users/{BOT}":
                 raise trusted_fetch.FetchDenied("GitHub response exceeds bounds")
-            return {"login": login}
+            return {"login": login, "id": int.from_bytes(login.encode(), "big")}
         with mock.patch.object(trusted_fetch, "_json", side_effect=bounded), \
                 self.assertRaisesRegex(trusted_fetch.FetchDenied, "exceeds bounds"):
             trusted_fetch._identity(self.loop, REPO, 7, HEAD, "fix-7", "reviewer")
@@ -557,11 +557,11 @@ class EveryCredentialCheck(Broker):
 
         def bounded(loop, path, login, limit=None):
             if path == "/user":
-                return {"login": login}
+                return {"login": login, "id": int.from_bytes(login.encode(), "big")}
             raise AssertionError(f"read past the guard: {path}")
         with mock.patch.object(trusted_fetch, "_json", side_effect=bounded), \
                 mock.patch.object(gh, "principal", side_effect=lambda loop, login, fetch=None:
-                                  {"login": login, "id": 1}), \
+                                  {"login": login, "id": int.from_bytes(login.encode(), "big")}), \
                 self.assertRaisesRegex(trusted_fetch.FetchDenied, "overlaps credential"):
             trusted_fetch._stage(self.loop, repo=REPO, number=7, head=HEAD, ref="fix-7",
                                  role="reviewer", sandbox_root=root)
