@@ -468,6 +468,24 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual([(r["verdict"], r["model"], r["body"]) for r in got],
                          [("REQUEST_CHANGES", "grok-x", "F1: a.py:1: x")])
 
+    def test_a_review_in_the_second_the_shadow_was_queued_is_not_shown_to_it(self):
+        # #1684: `submitted_at` has whole seconds, `created` has fractions. A review posted later
+        # in the queueing second (stamped T, queued at T + 0.4) may be the real verdict: hidden.
+        # One from the second before is shown; an unreadable stamp fails closed.
+        t = 1_700_000_000
+        stamp = lambda s: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(s))
+        earlier = {"id": 1, "state": "COMMENTED", "submitted_at": stamp(t - 1),
+                   "commit_id": "b" * 40, "user": {"login": "reviewer"}, "body": "old round"}
+        same = {"id": 2, "state": "APPROVED", "submitted_at": stamp(t),
+                "commit_id": HEAD, "user": {"login": "reviewer"}, "body": "the real verdict"}
+        undated = {"id": 3, "state": "APPROVED", "submitted_at": "not a time",
+                   "commit_id": HEAD, "user": {"login": "reviewer"}, "body": "undated"}
+        sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok", "authorized": True,
+                                     "denial": ""}], reviews=[earlier, same, undated],
+                                   created=t + 0.4)
+        self.assertEqual(row["state"], "succeeded", row)
+        self.assertEqual([r["id"] for r in self.seen["reviews"]], [1])
+
     def test_the_broker_scope_names_the_shadows_own_turn_key(self):
         # #1139: a shadow is judged on the findings snapshot kept for its own reviewer turn, so
         # the scope the broker is built from carries the row's turn key (it reads the snapshot
