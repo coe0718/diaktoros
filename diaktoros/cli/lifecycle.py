@@ -1037,7 +1037,8 @@ def add_migrate(sub) -> None:  # noqa: ANN001
                            "routes and the URLs its repo hooks post to (each hook is pinged "
                            "before the old route goes)")
     move.add_argument("--admin-token", default=None, metavar="LOGIN",
-                      help="mapped login whose token may edit the repo hooks (--rename-loop)")
+                      help="mapped login whose credential may edit the repo hooks: a token, "
+                           "or a GitHub App with Webhooks: Read and write (--rename-loop)")
     move.set_defaults(func=cmd_migrate)
 
 

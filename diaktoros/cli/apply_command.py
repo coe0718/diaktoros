@@ -573,8 +573,10 @@ def add_apply(sub) -> None:  # noqa: ANN001
                            help="rebind a seat's profile/login even while a run is in flight "
                                 "(that run keeps the identity it started with)")
     apply_cmd.add_argument("--admin-token", default="",
-                           help="login whose token can write the repo's hooks, for the hook "
-                                "moves and re-keys apply makes (default: the reader)")
+                           help="login whose credential can write the repo's hooks (a token "
+                                "with admin:repo_hook or repo, or a GitHub App with Webhooks: "
+                                "Read and write), for the hook moves and re-keys apply makes "
+                                "(default: the reader)")
     apply_cmd.add_argument("--recreate-routes", action="store_true",
                            help="write this loop's routes the registry lost, from the loop "
                                 "config, with a new secret, and re-key the repo hooks that "

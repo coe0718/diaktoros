@@ -820,8 +820,8 @@ It's refused while one of the loop's runs is in flight or uncertain. Then, in th
    id. The new loop file is written and the old one removed.
 4. Each old route is removed once every hook that pointed at it has answered on the new one.
 
-`--admin-token` names the mapped login whose token may edit the repo hooks, as for `apply
---hooks`. Running it again after it finished is a no-op.
+`--admin-token` names the mapped login whose credential may edit the repo hooks (a token, or a
+GitHub App with Webhooks: Read and write), as for `apply --hooks`. Running it again after it finished is a no-op.
 
 ## The Desktop page
 

@@ -348,6 +348,8 @@ def add_triage(sub) -> None:  # noqa: ANN001
                         help="at most this many automatic issue fixes per day (0 = the "
                              f"default, {config.DEFAULT_AUTO_FIX_DAILY})")
     triage.add_argument("--admin-token", default="",
-                        help="login whose token can create or delete repo hooks")
+                        help="login whose credential can create or delete repo hooks: a token "
+                             "with admin:repo_hook or repo, or a GitHub App with Webhooks: Read "
+                             "and write")
     triage.add_argument("--dry-run", action="store_true", help="show the change, write nothing")
     triage.set_defaults(func=cmd_triage)
