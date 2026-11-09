@@ -83,8 +83,12 @@ class CommandsDoc(unittest.TestCase):
         # A hang outside a GitHub call is not interrupted by any read deadline (#1529 F1).
         flat = " ".join(section.split())
         self.assertNotIn("bounded only by that read", flat)
-        self.assertIn("Only the gate's GitHub calls are deadline-limited", flat)
-        self.assertIn("a hang outside a GitHub call has no bound", flat)
+        # The drain the gate starts is bounded by the budget too (gate.drain_seat, #1673), so
+        # the doc must not say that *every* hang outside a GitHub call is unbounded.
+        self.assertNotIn("Only the gate's GitHub calls are deadline-limited", flat)
+        self.assertIn("Only the gate's GitHub calls, and the seat drain the gate starts, "
+                      "are deadline-limited", flat)
+        self.assertIn("any other hang outside a GitHub call has no bound", flat)
 
 
 if __name__ == "__main__":
