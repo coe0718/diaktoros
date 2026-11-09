@@ -13,7 +13,7 @@ from .. import (
 )
 from . import common as cli_common
 from ..config import credentials
-from .common import _ROUTE_PROMPT, GATE_SCRIPT
+from .common import GATE_SCRIPT
 
 
 def _role_summary(loop: dict, role: str) -> str:
@@ -96,15 +96,18 @@ def _drifted_routes(loop: dict) -> dict:
     """role → (route name, fields) for this loop's own routes whose registry entry differs from
     what the plugin writes (``gate_shims.contract_drift``) in a way apply can repair.
 
-    Only a route provably ours (its role's gate *and* prompt) counts; rewriting it from the config
-    keeps its secret. That covers the gateway's 403 on ``enabled: false``, an observer that lost
-    ``deliver_only`` (which would wake an agent) or its destination, and a seat off its event.
+    Only a route on its role's gate and provably ours (``route_intent.provably_ours``: this
+    version's prompt, or the loop's intent record holds it, #1451) counts; rewriting it from the
+    config keeps its secret. That covers a prompt an older release worded, the gateway's 403 on
+    ``enabled: false``, an observer that lost ``deliver_only`` (which would wake an agent) or its
+    destination, and a seat off its event.
     """
     out: dict = {}
+    intent = route_intent.load_or_empty(loop)
     for role, name in cli_common._routes_of(loop).items():
         entry = routes.route(name)
         if (isinstance(entry, dict) and entry.get("script") == GATE_SCRIPT[role]
-                and entry.get("prompt") == _ROUTE_PROMPT[role]):
+                and route_intent.provably_ours(loop, role, name, entry, intent)):
             fields = gate_shims.contract_drift(loop, role, entry)
             if fields:
                 out[role] = (name, fields)
@@ -114,17 +117,19 @@ def _drifted_routes(loop: dict) -> dict:
 def _stale_scripts(loop: dict) -> dict:
     """role → (route name, installed script) for this loop's routes still on an older gate.
 
-    Only a script this plugin itself once installed for that role counts, and only with the
-    role's own prompt: anything else is not provably ours and ``_verify_routes`` refuses it.
+    Only a script this plugin itself once installed for that role counts, and only on a route
+    provably ours (``route_intent.provably_ours``: the role's own prompt, or the loop's intent
+    record holds it, #1451): anything else ``_verify_routes`` refuses.
     """
     stale: dict = {}
+    intent = route_intent.load_or_empty(loop)
     for role, name in cli_common._routes_of(loop).items():
         entry = routes.route(name)
         if not isinstance(entry, dict):
             continue
         script = entry.get("script")
         if (script in config.LEGACY_GATE_SCRIPTS.get(role, ())
-                and entry.get("prompt") == _ROUTE_PROMPT[role]):
+                and route_intent.provably_ours(loop, role, name, entry, intent)):
             stale[role] = (name, script)
     return stale
 

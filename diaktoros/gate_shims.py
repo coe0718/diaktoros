@@ -268,13 +268,14 @@ def divergence(loop: dict, *, include_missing: bool = True, contract: bool = Fal
         if have == want:
             drift = contract_drift(loop, role, entry) if contract else []
             if drift:
-                # Without the role's prompt the route is not provably ours, so apply will not
-                # rewrite it; every other field it rewrites from the config (secret kept).
+                # Without the role's prompt the route is ours only if the intent record holds it
+                # (``route_intent.provably_ours``, the rule apply enforces); every other field
+                # apply rewrites from the config (secret kept).
                 if "prompt" not in drift:
                     fix = (f"`hermes dk apply --loop {lid}` (rewrites it from the loop "
                            "config, secret kept)")
-                elif restorable:   # the record has the loop's gate and profile (#1418 F2)
-                    fix = repair
+                elif route_intent.recorded_ours(loop, role, name, entry, intent):
+                    fix = repair    # the record holds it: gate, profile and secret (#1451)
                 else:
                     fix = (f"remove that entry (its prompt no longer proves it is this plugin's), "
                            f"then {recreate_fix(loop)}")
@@ -291,16 +292,36 @@ def divergence(loop: dict, *, include_missing: bool = True, contract: bool = Fal
                          f"remove or rename that entry (it is not this plugin's, so repair and "
                          f"apply leave it alone), then {then}", "mismatch")
             continue
-        if not want[0]:
-            fix = (f"name the {role} seat's profile (its `profile` under `seats.{role}` in the loop config, or "
-                   f"the plugin settings' {role} profile), then `hermes dk apply --loop "
-                   f"{lid}`")
-        elif restorable:
-            fix = f"{repair} — or, if the registry is right, change the config and apply"
-        else:
-            fix = f"`hermes dk apply --loop {lid}` (rebinds the route to the config)"
-        out[name] = (detail, fix, "mismatch")
+        out[name] = (detail, _owned_fix(loop, role, name, entry, intent, restorable, repair),
+                     "mismatch")
     return out
+
+
+def _owned_fix(loop: dict, role: str, name: str, entry: dict, intent: dict, restorable: bool,
+               repair: str) -> str:
+    """``divergence``'s fix for a route on one of this plugin's gates but another profile or gate
+    than the config says. ``apply`` rebinds it only when ``route_intent.provably_ours`` holds (the
+    same rule its ``_verify_routes`` enforces, #1451), so it is never named for a route it refuses.
+    """
+    lid = loop.get("id", "?")
+    if not config.seat_profile(loop, role):
+        return (f"name the {role} seat's profile (its `profile` under `seats.{role}` in the loop "
+                f"config, or the plugin settings' {role} profile), then `hermes dk apply --loop "
+                f"{lid}`")
+    if restorable:
+        return f"{repair} — or, if the registry is right, change the config and apply"
+    if not route_intent.provably_ours(loop, role, name, entry, intent):
+        recorded = intent.get(name) if isinstance(intent, dict) else None
+        if (isinstance(recorded, dict) and recorded.get("script") == GATE_SCRIPT[role]
+                and entry.get("secret") and recorded.get("secret") == entry.get("secret")):
+            # The record holds it with this gate and secret but another profile than the live
+            # entry: the repair restores the recorded route (and upgrades its prompt,
+            # ``route_intent._upgrade_prompts``), then apply may rebind it.
+            return (f"{repair}, then `hermes dk apply --loop {lid}` (rebinds the route to the "
+                    "config)")
+        return (f"remove that entry (neither its gate and prompt nor this loop's route record "
+                f"prove it is this plugin's {role} route), then {recreate_fix(loop)}")
+    return f"`hermes dk apply --loop {lid}` (rebinds the route to the config)"
 
 
 def live(loop: dict) -> set[tuple[str, str]]:

@@ -23,8 +23,11 @@ from diaktoros import cli  # noqa: E402
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "diaktoros" / "cli"
 MODULES = ("reports", "operations", "lifecycle", "install", "setup_command", "checks", "settings",
-           "set_command", "apply_command", "triage_command", "identity_command")
+           "set_command", "apply_command", "triage_command", "identity_command", "update")
 SHARED = ("common", "route_sync", "set_adjudication", "seat_flags")  # helper modules: no commands, never import cli
+# Parser-only modules (#1457): an add_* registrar and no cmd_*, so no verb of their own to check
+# in MODULES, but they import the command modules and so get the same import guard.
+PARSERS = ("set_parser",)
 
 
 def _defined(path: pathlib.Path) -> set[str]:
@@ -98,12 +101,21 @@ class Split(unittest.TestCase):
             with self.subTest(file=path.name):
                 self.assertIsNone(reach.search(path.read_text()), "use setup_command.<name>")
 
+    def test_every_cli_module_is_listed(self):
+        # A new cli module must join one of the lists above (#1457), or none of these guards
+        # ever reads it.
+        listed = set(MODULES + SHARED + PARSERS)
+        for path in sorted(PACKAGE.glob("*.py")):
+            if path.stem != "__init__":
+                with self.subTest(module=path.stem):
+                    self.assertIn(path.stem, listed, "add it to MODULES, SHARED or PARSERS")
+
     def test_no_command_module_imports_the_package(self):
         # A submodule may import its siblings (`from . import common`), never the package's own
         # names (`from . import cmd_status`, `from .. import cli`): that is the cycle back to
         # register_cli, and a second binding of whatever it imports.
-        submodules = set(MODULES + SHARED)
-        for name in MODULES + SHARED:
+        submodules = set(MODULES + SHARED + PARSERS)
+        for name in MODULES + SHARED + PARSERS:
             tree = ast.parse((PACKAGE / f"{name}.py").read_text())
             for node in ast.walk(tree):
                 if not isinstance(node, ast.ImportFrom):

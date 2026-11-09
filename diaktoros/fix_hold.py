@@ -80,11 +80,34 @@ def plan_required(st, number: int, issue: dict | None) -> bool:
     return PLAN_LABEL in labels or len(str(issue.get("body") or "")) > PLAN_BODY_MAX
 
 
+def _ask_wants(ask: dict) -> str:
+    """What an open ask waits for from a maintainer: the one wording ``ask_line`` (``status``,
+    ``explain``) and ``ask_outcome`` (the ``fixed`` notice) share."""
+    return ("approval of its plan (`/loop approve`)" if ask.get("kind") == "plan"
+            else "an answer to its question")
+
+
+def posted_ask(kind: str | None, body: str) -> str:
+    """The comment the broker posts for the fixer's ``body``: a plan gets one host-written line
+    saying how a maintainer approves it, worded from ``APPROVE`` so it matches ``reply_to``
+    (#2047). A question or a plain comment is posted as written."""
+    if kind != "plan":
+        return body
+    return (f"{body.rstrip()}\n\nTo go ahead, a maintainer replies with exactly `{APPROVE}`. Any "
+            "other reply is read by the next turn but does not start it.")
+
+
 def ask_line(number: int, ask: dict) -> str:
     """The one sentence ``status`` and ``explain`` use for an issue waiting on a maintainer."""
-    what = ("approval of its plan (`/loop approve`)" if ask.get("kind") == "plan"
-            else "an answer to its question")
-    return f"issue #{number} fix waits for a maintainer: {what}; no fix turn starts until then"
+    return (f"issue #{number} fix waits for a maintainer: {_ask_wants(ask)}; "
+            "no fix turn starts until then")
+
+
+def ask_outcome(ask: dict) -> str:
+    """The ``fixed`` notice's outcome when the fixer's one write opened this ask (#1523): the
+    turn did what it should, and the next move is the maintainer's, worded as ``ask_line``."""
+    did = "posted a plan" if ask.get("kind") == "plan" else "asked a question"
+    return f"{did} on the issue — waits for a maintainer: {_ask_wants(ask)}"
 
 
 def status_lines(loop: dict, st) -> list[str]:
