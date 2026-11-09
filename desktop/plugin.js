@@ -784,7 +784,7 @@ function Drawer({ loop, pr, onClose }) {
                             (rulingsTotal > rulings.length
                               ? 'Adjudicator rulings (newest ' + rulings.length + ' of ' + rulingsTotal + '): '
                               : 'Adjudicator rulings: ') +
-                            rulings.map(r => r.verdict + ' on ' + r.head).join(' · ')
+                            rulings.map(r => r.verdict + ' on ' + (r.head || 'unknown')).join(' · ')
                         })
                       : null,
                     jsx(Muted, {
