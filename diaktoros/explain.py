@@ -982,6 +982,13 @@ def _started_turn_step(c, enable: str) -> str:
             + rearm + "; or fix it by hand, push, and re-request review")
 
 
+def _reconcile_first(c, why: str) -> str:
+    """A fixer run that may have written (uncertain, or once quarantined): nothing re-arms it
+    until an operator reconciles it, so that is the step, never a replay (#1507)."""
+    return (f"reconcile it first, its outcome is unknown ({why}): `hermes dk status --loop "
+            f"{c.loop['id']}` names the run and its reconcile command, and only then retry")
+
+
 def _ended_turn_step(c, enable: str) -> str:
     """A ledgered fixer turn that is not live — uncertain, or ended with no push — whether or not
     a lock or an in-flight mark still stands over it (#1510 review). A redelivered verdict is
@@ -999,9 +1006,7 @@ def _ended_turn_step(c, enable: str) -> str:
                                                          "for a ruling)" if c.cap_spent else "")
                 ) + "; or fix it by hand"
     elif reconcile:
-        then = (f"reconcile it first, its outcome is unknown ({why}): `hermes dk status --loop "
-                f"{c.loop['id']}` names the run and its reconcile command, and only then retry; "
-                "or fix it by hand")
+        then = _reconcile_first(c, why) + "; or fix it by hand"
     else:
         then = f"`retry` has nothing to re-arm ({why}): fix it by hand"
     return (f"operator decision: unattended fixer pushes are off for this loop, and the fixer "
@@ -1147,6 +1152,14 @@ def _next_run(c) -> tuple[str, str]:
     elif c.inflight_fix:
         kind = "fixer-push"
         action = c.fix_push + "a fix run for this head is already marked in flight"
+    elif c.at_head and c.fixer_turn == "uncertain":
+        # The gate did start it; its outcome was never recorded, and a redelivered verdict
+        # re-arms no uncertain run (intake), so "its run did not start" would be false (#1507).
+        kind = "operator"
+        action = (f"the fixer turn at head {c.short} is uncertain, with no fix pushed — "
+                  + _reconcile_first(c, "a worker may have written")
+                  + " (retry refuses a run that may have written); or fix it by hand, push, and "
+                  "re-request review")
     elif c.at_head:
         kind = "fixer-retry"
         action = c.to_fixer + "after checking why its run did not start — no fixer is running to push a fix"
