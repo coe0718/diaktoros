@@ -795,7 +795,7 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
     A fixer turn on a loop without unattended pushes is held instead (``hold_fixer_push_off``),
     and ``on_push_off`` (when given) is the notice sent in place of ``on_queued``.
     """
-    from .run_supervisor import FixerPushDisabled
+    from .run_supervisor import RECONSIDER_KEY, FixerPushDisabled
 
     key = seat_key(loop, number)
     queued = st.queue_items(seat).get(key)
@@ -832,7 +832,8 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
         except FixerPushDisabled:
             push_off = True  # the policy changed under the admission lock: same hold
         except Exception as exc:
-            on_queued = None   # held, not queued: no "queued" notice for it either (#1994)
+            if turn_key == RECONSIDER_KEY:
+                on_queued = None   # a held reconsider is never replayed: no notice (#1994)
             final = _hold_for_missing_runtime(loop, st, seat, number, head, queued, exc)
     if push_off:
         # Checked before the runtime: a turn that could never publish is not worth a worker.
