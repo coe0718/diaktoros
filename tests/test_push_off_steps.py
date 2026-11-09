@@ -377,6 +377,36 @@ class AfterEnabling(Steps):
                     con.execute("DELETE FROM runs")
 
 
+    def test_a_declined_entry_with_pushes_on_is_no_capacity_wait(self):
+        # #1613: with pushes on, the entry the real gate declined read as "no capacity" and
+        # promised a freed fixer slot would start it; the drain leaves it as is.
+        self.set_push(True)
+        key = f"{fg.REPO}#7"
+        self.st.queue_add("fixer", key, fg.HEAD, "url", "waiting for a slot")
+        fg.GateHold.run_gate(self, outcome="duplicate failed")
+        declined = self.st.queue_items("fixer")[key]["reason"]
+        self.assertTrue(gate.is_declined_hold({"reason": declined}))
+        report = self.report(queued=declined)                  # no ledger row: a fresh delivery
+        self.assertFalse([b for b in report["blockers"] if "no capacity" in b], report["blockers"])
+        self.assertTrue(any("declined the fixer turn" in b for b in report["blockers"]))
+        self.assertNotIn("slot frees", report["next"]["action"])
+        self.assertIn("re-deliver the changes-requested review event", report["next"]["action"])
+        self.ledgered("failed")                                # a failed row: retry re-arms it
+        report = self.report(queued=declined)
+        self.assertFalse([b for b in report["blockers"] if "no capacity" in b], report["blockers"])
+        self.assertNotIn("slot frees", report["next"]["action"])
+        self.assertIn(self.retry(), report["next"]["action"])
+        started, fire = self.drain()                           # what the step says: drain leaves it
+        self.assertEqual(started, 0)
+        fire.assert_not_called()
+
+    def test_a_declined_entry_under_a_live_fix_mark_is_no_capacity_wait(self):
+        # #1613: pushes off with an in-flight fix mark (push_off_held false) took the same path.
+        self.set_push(False)
+        declined = gate.declined_reason("fixer", "duplicate failed")
+        blockers = self.report(queued=declined, inflight_fix=True)["blockers"]
+        self.assertFalse([b for b in blockers if "no capacity" in b], blockers)
+
     def test_a_reviewer_queue_entry_is_no_fixer_work_order(self):
         # Shadow review on #1510: the last queue entry read is any seat's, so a declined or
         # waiting reviewer entry was named a declined fixer turn, or a hold the drain starts.

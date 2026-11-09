@@ -693,12 +693,17 @@ def _run_blockers(c) -> None:
     elif c.push_off_held and declined and not c.ruling:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the gate declined the fixer turn for head "
                           f"{c.short} ({c.queued_reason}) — nothing restarts it by itself")
+    elif declined and not c.ruling:
+        # Pushes on, or a lock/mark over it (#1613): the drain leaves it, a freed slot too.
+        c.blockers.append(f"the gate declined the fixer turn for head {c.short} ({c.queued_reason}) "
+                          "— a freed fixer slot or a drain leaves that entry as is, so nothing "
+                          "restarts it by itself")
     elif c.push_off_held and not c.parked and not c.pending_delivery and not c.cap_spent:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the changes-requested verdict at head "
                           f"{c.short} starts no fixer turn until the loop opts in — "
                           f"`{config.fixer_push_enable_command(c.loop)}`")
-    if c.fixer_queue_hold or (declined and c.push_off_held):
-        pass  # the push-off blocker above is this queue entry's whole story (shadow: not capacity)
+    if c.fixer_queue_hold or declined:
+        pass  # a hold or a declined entry is no capacity wait: no freed slot starts it (#1613)
     elif c.queued_seat:
         c.blockers.append(f"no capacity: queued with the {c.queued_seat} seat — {c.queued_reason}")
     elif c.full_seat:
@@ -983,26 +988,48 @@ def _ended_turn_step(c, enable: str) -> str:
     named only when intake would re-arm the turn, retry only when its plan offers it (#1514
     review: the two rules differ), and a redelivery waits out a live in-flight mark, which the
     gate drops it under, while a retry does not; a run that may have written is reconciled first."""
+    return (f"operator decision: unattended fixer pushes are off for this loop, and the fixer "
+            f"turn at head {c.short} is {c.fixer_turn} with no fix pushed"
+            + ("" if c.redeliver else " — a redelivered verdict is a duplicate the ledger refuses")
+            + f". Run `{enable}`, then {_ended_turn_recovery(c)}, push, and re-request review")
+
+
+def _ended_turn_recovery(c) -> str:
+    """What re-arms an ended fixer turn at this head: retry when its plan offers it, a redelivered
+    verdict when intake would re-arm it (waiting out a live in-flight mark), a reconcile first for
+    a run that may have written, else a fix by hand. Shared by the push-off step and the step for
+    a declined fixer queue entry with pushes on (#1613), so both name the same recovery."""
     rearm, why, reconcile = c.fixer_rearm
     wait = _mark_wait(c) if c.redeliver else ""   # the gate drops it under a live mark (#1514 F3)
     redeliver = wait + c.to_fixer + "— the ledger re-arms the turn for it" if c.redeliver else ""
     if redeliver and rearm:
-        then = (f"{rearm} re-arms it now — or {redeliver}" if wait
+        return (f"{rearm} re-arms it now — or {redeliver}" if wait
                 else f"{redeliver} (or {rearm} re-arms it)") + "; or fix it by hand"
-    elif redeliver or rearm:
-        then = (redeliver or f"{rearm} re-arms it" + (" (with the cap spent, its push then goes "
+    if redeliver or rearm:
+        return (redeliver or f"{rearm} re-arms it" + (" (with the cap spent, its push then goes "
                                                          "for a ruling)" if c.cap_spent else "")
                 ) + "; or fix it by hand"
-    elif reconcile:
-        then = (f"reconcile it first, its outcome is unknown ({why}): `hermes dk status --loop "
+    if reconcile:
+        return (f"reconcile it first, its outcome is unknown ({why}): `hermes dk status --loop "
                 f"{c.loop['id']}` names the run and its reconcile command, and only then retry; "
                 "or fix it by hand")
-    else:
-        then = f"`retry` has nothing to re-arm ({why}): fix it by hand"
-    return (f"operator decision: unattended fixer pushes are off for this loop, and the fixer "
-            f"turn at head {c.short} is {c.fixer_turn} with no fix pushed"
-            + ("" if c.redeliver else " — a redelivered verdict is a duplicate the ledger refuses")
-            + f". Run `{enable}`, then {then}, push, and re-request review")
+    return f"`retry` has nothing to re-arm ({why}): fix it by hand"
+
+
+def _declined_step(c) -> tuple[str, str]:
+    """Next event for a fixer queue entry the gate declined (a duplicate of a terminal turn) once
+    no push-off step applies (#1613): drain leaves such an entry as is (drain.py), so a freed
+    fixer slot never starts it. An ended turn in the ledger gets its own recovery (retry or a
+    redelivered verdict); with no run in the ledger a fresh delivery schedules one."""
+    declined = (f"the gate declined the fixer turn for head {c.short} ({c.queued_reason}), and a "
+                "freed fixer slot or a drain leaves that entry as is")
+    if c.fix_live:
+        return "fixer-push", c.fix_push + declined + "; the fixer turn already out answers the verdict"
+    if c.fixer_ended:
+        kind = "fixer-retry" if c.fixer_rearm[0] or c.redeliver else "operator"
+        return kind, f"{declined} — {_ended_turn_recovery(c)}, push, and re-request review"
+    return "fixer-retry", (f"{declined} — no fixer run for this head is in the ledger, so "
+                           + _mark_wait(c) + c.to_fixer + "(the gate schedules a fresh turn for it)")
 
 
 def _next_push_off(c) -> tuple[str, str] | None:
@@ -1117,6 +1144,8 @@ def _next_lock(c) -> tuple[str, str] | None:
     elif "fixer" in c.held:
         kind = "fixer-push"
         action = c.fix_push + "asking is what hands the PR back, and it is what frees the fixer's slot"
+    elif c.queued_seat == "fixer" and gate.is_declined_hold({"reason": c.queued_reason}):
+        return _declined_step(c)                       # drain leaves it: no freed slot starts it
     elif c.queued_seat:
         kind = "release"
         action = (f"a {c.queued_seat} slot frees — the queued run starts then (a verdict or a handoff "
