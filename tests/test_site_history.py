@@ -124,6 +124,18 @@ class Publish(Fixture):
         self.assertTrue(proc.stderr.startswith("refused: "), proc.stderr)
         self.assertNotIn("Traceback", proc.stderr)
 
+    def test_an_index_of_the_wrong_shape_refuses_cleanly(self):
+        """#2198: a hand-edited index is refused, never a traceback, and left as it was."""
+        out = self.out()
+        export = self.exported()
+        for bad in ([], {"cycles": "oops"}, {"cycles": [7]}, {"cycles": [{"pr": "7"}]},
+                    {"cycles": [{}]}):
+            (out / "index.json").write_text(json.dumps(bad))
+            with self.assertRaises(pub.Refused):
+                pub.publish(export, out)
+            self.assertEqual(json.loads((out / "index.json").read_text()), bad)
+            self.assertFalse((out / "7.json").exists())
+
     def test_both_files_go_through_atomic_write_index_last(self):
         """#2159: a failed index write leaves the old index whole and the cycle published."""
         out = self.out()
