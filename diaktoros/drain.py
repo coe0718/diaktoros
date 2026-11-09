@@ -86,8 +86,9 @@ def drain(loop: dict, st: state_mod.LoopState, seat: str, quiet: bool = False, *
         # never sent again. No lock is held across the POST (the gate takes it to answer).
         claimed = dict(entry, drain={"at": time.time(), "id": uuid.uuid4().hex})
         if not st.queue_swap_if(seat, key, entry, claimed):
-            note(key, "left", "the entry changed since it was confirmed" if expected is not None
-                 else "the entry changed during the checks")
+            outcome, why, _ = _changed(st, seat, key, "the entry changed since it was confirmed"
+                                       if expected is not None else None)
+            note(key, outcome, why)
             continue
         if _wake(loop, st, seat, key, claimed, fire, quiet, note, give_back=entry,
                  bound=expected is not None):
@@ -138,10 +139,12 @@ def _wake(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: dict,
         st.note(f"drained {seat} for {key}")
         note(key, "sent", f"the route accepted the request for head {head[:7]} (HTTP 2xx); "
                           "whether the gate queued a run is the run ledger's (status)")
-        if current == entry:
-            st.queue_replace_if(seat, key, entry, entry["head"], entry.get("url", ""),
-                                "route delivery uncertain — manual reconciliation required")
-            # The caller must see the work left behind (#1407 review, F9), not only the 2xx.
+        # The caller must see the work left behind (#1407 review, F9), not only the 2xx — but
+        # only when the mark landed: a lost compare means the gate consumed the claim or a
+        # newer request replaced it, and this drain left nothing marked (#1450).
+        if current == entry and st.queue_replace_if(
+                seat, key, entry, entry["head"], entry.get("url", ""),
+                "route delivery uncertain — manual reconciliation required"):
             note(key, "left", "the gate left it queued: marked an unverified POST — manual "
                               "reconciliation required")
         return True
@@ -178,8 +181,9 @@ def _in_flight(st: state_mod.LoopState, seat: str, key: str, entry: dict):
     at = entry["drain"].get("at")
     if isinstance(at, (int, float)) and time.time() - at < DRAIN_CLAIM_S:
         return "left", "a confirmed drain is sending it", None
-    st.queue_replace_if(seat, key, entry, entry.get("head", ""), entry.get("url", ""),
-                        "route delivery uncertain — manual reconciliation required")
+    if not st.queue_replace_if(seat, key, entry, entry.get("head", ""), entry.get("url", ""),
+                               "route delivery uncertain — manual reconciliation required"):
+        return _changed(st, seat, key)       # the mark did not land: nothing was marked (#1450)
     log(f"drain: {key} was claimed by a drain that never answered — manual reconciliation required")
     return "left", "an unverified POST — manual reconciliation required", None
 
@@ -189,10 +193,18 @@ def _confirmed(expected: list, key: str, entry: dict) -> bool:
     return [str(key), str((entry or {}).get("head") or ""), state_mod.mark_at(entry)] in expected
 
 
-def _changed():
-    """A conditional removal lost its compare (#1407 review, F6): the entry was replaced while
-    it was being checked, so the newer request stays queued and nothing is reported dropped."""
-    return "left", "the entry changed during the checks", None
+def _changed(st: state_mod.LoopState, seat: str, key: str, why: str | None = None):
+    """A compare on the entry was lost: ``(outcome, why, None)`` for what the queue holds now.
+
+    Every conditional write here that can lose (a removal, the claim swap, the stale-claim
+    mark) answers through this one function, re-reading the queue (#1450). An entry that was
+    *replaced* while it was checked is a newer request, still queued: ``left`` (#1407 review,
+    F6; ``why`` overrides the wording). One that was *removed* — a gate took the seat and
+    consumed it — leaves nothing to retry: ``dropped``, which ``drain_confirmed`` reads as no
+    longer a request."""
+    if st.queue_items(seat).get(key) is None:
+        return "dropped", "the entry left the queue during the checks — nothing is left to retry", None
+    return "left", why or "the entry changed during the checks", None
 
 
 def _queue_number(key: str):
@@ -227,7 +239,7 @@ def _drain_check(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry
     number = _queue_number(key)
     if number is None:
         if not st.queue_pop_if(seat, key, entry):
-            return _changed()
+            return _changed(st, seat, key)
         return "dropped", "the queue key names no PR", None
     held = st.held_by_other(seat, key)
     if held:
@@ -244,7 +256,7 @@ def _drain_check(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry
         return "left", "the PR could not be read", None
     if pr.get("state") != "open":
         if not st.queue_pop_if(seat, key, entry):
-            return _changed()
+            return _changed(st, seat, key)
         log(f"drain: PR #{number} is {pr.get('state')} — dropped from queue")
         return "dropped", f"the PR is {pr.get('state')}", None
     head = (pr.get("head") or {}).get("sha") or ""
@@ -255,7 +267,7 @@ def _drain_check(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry
         # A queued event is authorization for exactly its observed head. Drop it;
         # a new webhook for the new SHA must be evaluated through the normal gate.
         if not st.queue_pop_if(seat, key, entry):
-            return _changed()
+            return _changed(st, seat, key)
         log(f"drain: PR #{number} moved since queued — stale head dropped")
         return "dropped", "the PR moved since it was queued", None
     if gate.is_declined_hold(entry):
@@ -282,13 +294,13 @@ def _pr_check(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: d
         # The exact entry, not any at that head (#1407 review, F6): a newer same-head request
         # queued meanwhile is kept for its own turn.
         if entry.get("head") != stacked.get("head") or not st.queue_pop_if(seat, key, entry):
-            return _changed()
+            return _changed(st, seat, key)
         log(f"drain: PR #{number} retargeted since stacked observation — stale request dropped")
         return "dropped", "the PR was retargeted since it was queued", None
     boundary = transition.hold(st, number, head)
     if boundary and transition.baseline_missing(boundary):
         if not st.queue_pop_if(seat, key, entry):
-            return _changed()
+            return _changed(st, seat, key)
         log(f"drain: PR #{number} same-head retarget held — {transition.MISSING_BASELINE}")
         return "dropped", "a same-head retarget hold", None
     author = ((pr.get("user") or {}).get("login") or "").lower()
@@ -296,7 +308,7 @@ def _pr_check(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: d
     served = config.reviewed_authors(loop) if seat == "reviewer" else set(loop["fixers"])
     if pr.get("draft") or base != loop["base"] or author not in served:
         if not st.queue_pop_if(seat, key, entry):
-            return _changed()
+            return _changed(st, seat, key)
         log(f"drain: PR #{number} is not a {seat}'s PR on {loop['base']} — dropped")
         return "dropped", f"not a {seat}'s PR on {loop['base']}", None
     # A held head's queue entry is post-boundary (record() dropped the old ones); its
@@ -325,7 +337,7 @@ def _verdict_check(loop: dict, st: state_mod.LoopState, seat: str, key: str, ent
             return "left", "the latest verdict at this head is unknown", None
         if gh.review_state(latest) != "CHANGES_REQUESTED":
             if not st.queue_pop_if(seat, key, entry):
-                return _changed()
+                return _changed(st, seat, key)
             log(f"drain: latest verdict at {head[:7]} of #{number} is not changes-requested — dropped")
             return "dropped", "the latest verdict is not changes-requested", None
         payload = {"repository": {"full_name": loop["repo"]}, "action": "submitted",
@@ -334,7 +346,7 @@ def _verdict_check(loop: dict, st: state_mod.LoopState, seat: str, key: str, ent
         return "", "", (number, head, "pull_request_review", payload, f"drain-fix-{number}")
     if gate.reviewed_at_head(reviews, loop, head):
         if not st.queue_pop_if(seat, key, entry):
-            return _changed()
+            return _changed(st, seat, key)
         log(f"drain: #{number} head {head[:7]} already reviewed — dropped")
         return "dropped", "this head is already reviewed", None
     payload = review_kick.review_requested(loop, short, head, loop["fixers"][0])

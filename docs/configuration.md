@@ -347,7 +347,7 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `closed` | PR merged or abandoned and cleanup attempted; sent only for PRs this loop worked on (reviewed author, or breach, transition, queue or observer-ledger state). |
 | `triaged` | Issue triage ended (labels, none fit, skipped, denied, uncertain). Links the issue. |
 | `fixing` | Fix label handed an issue to the fixer, or the handoff was held. Links the issue. |
-| `fixed` | Issue-fix write ended: PR opened/review requested, could-not-fix comment, or uncertain. Links the issue. |
+| `fixed` | Issue-fix write ended: PR opened/review requested, a posted plan or question (waits for a maintainer; next: you), could-not-fix comment, or uncertain. Links the issue. |
 | `failed` | Any isolated run's first failed attempt and its terminal failed/uncertain state. Links the issue for triage and issue-fix runs. |
 | `held` | A run waiting on its seat's daily cap, its provider's usage window, or an unavailable provider (#1325): when it resumes, and how to run it sooner. Once per hold. |
 | `conflict` | A loop PR no longer merges into its base (GitHub reports a merge conflict): once per head. Urgent tier. |
@@ -618,7 +618,7 @@ hermes dk apply --loop "<loop-id>" --while-busy
 
 ### Identity changes are staged
 
-Installation/application checks profiles, allowlist membership, identity/file distinctness, credentials, and route ownership before writing. Profile existence/allowlist checks can be scoped to the roles being changed for legacy compatibility; do not mistake a successful numeric-only update for a full installation audit. `apply` checks the resulting reader separation even when it did not move the reader.
+Installation/application checks profiles, allowlist membership, identity/file distinctness, credentials, and route ownership before writing. An installed route is the loop's to rewrite when it runs one of its role's gates (an older release's included) and either carries this version's gate prompt or is held by the loop's `route-intent.json` with the live route's gate, profile and secret — so a release that rewords a prompt does not lock `apply` out of the loop's own routes, even when the seat's profile has moved in the config since the route was written, while a route re-created under a recorded name with another secret is still refused. Profile existence/allowlist checks can be scoped to the roles being changed for legacy compatibility; do not mistake a successful numeric-only update for a full installation audit. `apply` checks the resulting reader separation even when it did not move the reader.
 
 Moving a profile changes its webhook path (`/p/<profile>/webhooks/<route>`), so `apply` first reads repository hooks, snapshots owned routes, rebinds and reads routes back, updates and reads matching hooks back, then writes loop config. Failed writes/readbacks attempt rollback; incomplete rollback is reported for manual repair. Other loops' routes/secrets are not rewritten. `init` also restores previous owned state after partial route-installation failure.
 

@@ -77,6 +77,21 @@ class LiveTurnIsNotAStall(fg.Base):
         # The other seat's live turn does not excuse it.
         self.assertIn("fixer never pushed", self.sweep(verdict, live=("reviewer", "running")))
 
+    def test_an_uncertain_turn_is_live_on_neither_path(self):
+        # #1503: the sweep and explain answer "is this turn still coming?" with one set,
+        # run_supervisor.NOT_ENDED. An uncertain fixer turn will not push by itself: the sweep
+        # raises the stall, and explain reads it as no live fix (yet as a started one).
+        from diaktoros import explain, run_supervisor
+        self.assertFalse(hasattr(watchdog, "LIVE_TURN"), "the watchdog keeps its own copy")
+        self.assertEqual(set(explain.LIVE_TURN), {*run_supervisor.NOT_ENDED, "uncertain"})
+        self.arm_long_ago()
+        verdict = [{"id": 1, "state": "CHANGES_REQUESTED", "commit_id": fg.HEAD,
+                    "submitted_at": LONG_AGO, "user": {"login": "reviewer", "id": 2}}]
+        self.assertIn("fixer never pushed", self.sweep(verdict, live=("fixer", "uncertain")))
+        self.assertIn("reviewer never posted a verdict", self.sweep([], live=("reviewer", "uncertain")))
+        for state in run_supervisor.NOT_ENDED:
+            self.assertNotIn("fixer never pushed", self.sweep(verdict, live=("fixer", state)), state)
+
     def test_stall_ages_the_newest_changes_request_not_the_last_in_rest_order(self):
         self.arm_long_ago()
         recent = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
