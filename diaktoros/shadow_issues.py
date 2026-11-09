@@ -8,9 +8,10 @@ not the reviewer, labelled ``shadow-found``, and says which model found it. Off 
 ``shadow.file_issues`` is on; at most ``config.shadow_issues_daily(loop)`` a day (0 = no cap). An
 unreadable review or ledger files nothing that sweep. A shadow issue whose head never gets a real
 review is dropped after ``WAIT_S``. A POST refused with nothing written (``broker.BrokerNotSent``: no
-reader identity, a repository mismatch, a 4xx from GitHub) leaves the issue ``recorded`` with the
-reason, and the next sweep tries again, up to ``MAX_ATTEMPTS`` refusals, after which it is
-``denied`` with the reason (#1732); any other failure of the POST is ``uncertain``, never replayed.
+reader identity, a repository mismatch, a 4xx other than 408 from GitHub) leaves the issue
+``recorded`` with the reason, and the next sweep tries again, up to ``MAX_ATTEMPTS`` refusals, after
+which it is ``denied`` with the reason (#1732); any other failure of the POST (a 408 included) is
+``uncertain``, never replayed.
 Every one that ends ``uncertain`` or ``denied`` is said in the sweep's log, with its reason (#1359).
 """
 from __future__ import annotations
@@ -36,7 +37,8 @@ def _same(title: str, filed: list[str]) -> bool:
 def file_pending(loop: dict, db=None, now: float | None = None,
                  log=lambda _msg: None) -> list[int]:
     """File what is due; the numbers of the issues filed this call. An issue GitHub filed
-    without some of its labels (#1589) is ``unlabelled``, with the gap recorded and logged."""
+    whose labels are not confirmed (#1589: not applied, or the label write got no answer) is
+    ``unlabelled``, with the gap recorded and logged."""
     from . import run_supervisor
     if not config.shadow_file_issues(loop):
         return []
@@ -127,8 +129,9 @@ def _post(loop: dict, sup, row, filing, depth: int, log, send=_send_shadow,
         issue, gap = send(loop, sup, row, depth)
     except broker.BrokerNotSent as exc:
         # Refused with nothing written (no reader identity, a repository mismatch, GitHub's
-        # 4xx): not an unknown outcome. Back to `recorded` with the reason, so a sweep after the
-        # operator fixes it files the issue; the filed_issues row is released for that retry.
+        # 4xx other than 408): not an unknown outcome. Back to `recorded` with the reason, so a
+        # sweep after the operator fixes it files the issue; the filed_issues row is released for
+        # that retry.
         # Each refusal is counted: at MAX_ATTEMPTS the issue is dropped, not retried for ever.
         sup.release_shadow_filing(row["run_id"], filing)
         state = sup.shadow_issue_refused(row["run_id"], row["seq"], str(exc), MAX_ATTEMPTS)
@@ -142,7 +145,7 @@ def _post(loop: dict, sup, row, filing, depth: int, log, send=_send_shadow,
         return None, True
     sup.filed_issue_status(row["run_id"], filing, "posted", issue_number=issue)
     # Filed either way (the hold and lineage read filed_issues); a shadow row whose labels
-    # did not land is ``unlabelled``, not ``posted`` (#1589).
+    # are not confirmed (not applied, or the write got no answer) is ``unlabelled`` (#1589).
     sup.shadow_issue_status(row["run_id"], row["seq"], "unlabelled" if gap else "posted",
                             issue_number=issue, error=f"labels: {gap}"[:200] if gap else None)
     if gap:
