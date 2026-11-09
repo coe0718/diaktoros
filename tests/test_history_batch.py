@@ -76,6 +76,15 @@ class Batch(fg.Base):
         rc, single = th.History.run_cli(self, "--format", "json")      # same as --pr 7 prints
         self.assertEqual((self.out / "pr-7.json").read_text(), single)
 
+    def test_each_file_is_byte_for_byte_what_pr_n_prints(self):
+        self.cycle()
+        for fmt, suffix in (("markdown", "md"), ("text", "txt"), ("json", "json")):
+            with self.subTest(fmt=fmt):
+                rc, _out = self.run_cli("--since", SINCE, "--out", str(self.out), "--format", fmt)
+                self.assertEqual(rc, 0)
+                rc, single = th.History.run_cli(self, "--format", fmt)
+                self.assertEqual((self.out / f"pr-7.{suffix}").read_text(), single)   # #2174
+
     def test_markdown_and_offline(self):
         self.cycle()
         self.other_pr(8, th.T + 700)
@@ -86,8 +95,6 @@ class Batch(fg.Base):
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["pr-7.md", "pr-8.md"])
         self.assertIn("merge state not read, so every PR with a turn was written", out)
         self.assertTrue((self.out / "pr-7.md").read_text().startswith("# Review history of"))
-        rc, single = th.History.run_cli(self, "--format", "markdown", "--offline")
-        self.assertEqual((self.out / "pr-7.md").read_text(), single)       # #2174: to the byte
 
     def test_nothing_in_the_window_writes_nothing(self):
         rc, out = self.run_cli("--since", "1d", "--out", str(self.out))

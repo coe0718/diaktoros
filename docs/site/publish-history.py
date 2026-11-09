@@ -15,7 +15,10 @@ credential, stops it with nothing written. A local path in any text (a review th
 ``~/.hermes/...``) is replaced with ``[path]``. What only the loop's host saw (a failed
 turn's output tail, a shadow review's text, a dispute or decline body) is withheld; the event
 stays, so the timeline never loses a step. GitHub links are kept; any other link is dropped.
-The Markdown export is the command's own renderer, run on the published data.
+The Markdown export is the command's own renderer, run on the published data. A value of the
+wrong type (a ``merged`` that is not ``{at, by}``, a time that is not a number) is refused, never
+passed to the renderer (#2158), and both files are written whole or not at all, the cycle before
+the index that lists it (#2159).
 """
 import json
 import pathlib
@@ -75,8 +78,39 @@ def _link(raw: str) -> str:
     return ""
 
 
+def _number(value, optional=False):
+    """A real number (never a bool or a string that looks like one), else TypeError."""
+    if optional and value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"expected a number, got {type(value).__name__} {value!r:.40}")
+    return value
+
+
+def _merged(raw):
+    """``None`` or ``{at, by}`` with a numeric time: anything else is not the command's (#2158)."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or not isinstance(raw.get("by", ""), str):
+        raise TypeError(f"merged is not the command's {{at, by}} (got {raw!r:.60})")
+    return {"at": _number(raw.get("at"), optional=True), "by": raw.get("by") or ""}
+
+
+def _finding(raw: dict) -> dict:
+    if not isinstance(raw, dict):
+        raise TypeError(f"a finding is not an object (got {raw!r:.60})")
+    return {"id": str(raw["id"]), "severity": str(raw.get("severity") or ""),
+            "category": str(raw.get("category") or ""), "outcome": str(raw.get("outcome") or ""),
+            "raised": _number(raw.get("raised"), optional=True),
+            "settled": _number(raw.get("settled"), optional=True),
+            "ruling": str(raw.get("ruling") or "")}
+
+
 def _event(raw: dict) -> dict:
-    event = {key: raw[key] for key in _EVENT_KEYS if raw.get(key) not in (None, "")}
+    if not isinstance(raw, dict):
+        raise TypeError(f"an event is not an object (got {raw!r:.60})")
+    event = {key: str(raw[key]) for key in _EVENT_KEYS if raw.get(key) not in (None, "")}
+    event["at"] = _number(raw.get("at") or 0)
     event.setdefault("text", "")
     event["link"] = _link(raw.get("link"))
     if event.get("kind") in HOST_ONLY and not event["link"]:
@@ -95,10 +129,11 @@ def sanitize(data: dict) -> dict:
     try:
         pr = int(data["pr"])
         out = {"schema": data["schema"], "repo": str(data["repo"]), "loop": str(data["loop"]),
-               "pr": pr, "state": str(data.get("state") or ""), "merged": data.get("merged"),
+               "pr": pr, "state": str(data.get("state") or ""),
+               "merged": _merged(data.get("merged")),
                "gaps": [str(g) for g in data.get("gaps") or []],
                "missing": [str(m) for m in data.get("missing") or []],
-               "findings": list(data.get("findings") or []),
+               "findings": [_finding(f) for f in data.get("findings") or []],
                "rounds": [{"round": int(r["round"]), "head": str(r.get("head") or ""),
                            "events": [_event(e) for e in r.get("events") or []]}
                           for r in data.get("rounds") or []]}
@@ -123,6 +158,13 @@ def entry(data: dict) -> dict:
             "findings": len(data["findings"]), "rulings": rulings}
 
 
+def _write(path: pathlib.Path, data: dict) -> None:
+    """Whole or not at all, through the repo's one publishing helper (#2159)."""
+    sys.path.insert(0, str(ROOT))
+    from diaktoros import util
+    util.atomic_write(path, json.dumps(data, indent=1) + "\n", mode=0o644)
+
+
 def publish(raw: dict, out: pathlib.Path = OUT) -> pathlib.Path:
     data = sanitize(raw)
     data["markdown"] = markdown(data)
@@ -131,12 +173,14 @@ def publish(raw: dict, out: pathlib.Path = OUT) -> pathlib.Path:
     out.mkdir(parents=True, exist_ok=True)
     index_path = out / "index.json"
     index = json.loads(index_path.read_text()) if index_path.exists() else {"cycles": []}
+    if not isinstance(index, dict):
+        raise Refused(f"{index_path.name} is not the viewer's index; fix or remove it first")
     cycles = [c for c in index.get("cycles") or [] if c.get("pr") != data["pr"]]
     cycles.append(entry(data))
     index = {"schema": 1, "cycles": sorted(cycles, key=lambda c: -c["pr"])}
     path = out / f"{data['pr']}.json"
-    path.write_text(json.dumps(data, indent=1) + "\n")
-    index_path.write_text(json.dumps(index, indent=1) + "\n")
+    _write(path, data)                         # the cycle first, then the index that lists it
+    _write(index_path, index)
     return path
 
 

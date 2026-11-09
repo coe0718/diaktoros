@@ -80,7 +80,7 @@ class Hold(sm.Base):
         self.assertTrue(why.endswith("…"), why)
         cut = why[:-1]
         self.assertTrue(error.startswith(cut), why)
-        self.assertIn(error[len(cut)], " ;,:—-", why)    # ends at a boundary, never mid-word
+        self.assertIn(error[len(cut)], stats.CLIP_TRIM, why)    # ends at a boundary, never mid-word
         return error[len(cut)]
 
     def test_it_outlasts_the_ci_wait(self):
