@@ -1609,6 +1609,12 @@ the loop worked at). It joins what the loop already keeps:
   journaled (`broker-audit.jsonl`), such as a fixer's push and the commit it made;
 - GitHub: the reviews' full bodies, the PR's commits and comments, and whether it merged.
 
+Above the timeline, one `summary:` line gives the cycle's totals: rounds, turns, tokens (and cost,
+when a provider reports one), the time from the first review to the merge, and how the findings
+ended, for example `2 rounds · 5 turns · 410k tokens · first review to merge 9m · findings: 2
+raised, 1 fixed, 1 overruled`. It counts only what is on record: a turn with no recorded tokens
+is named as unrecorded, not guessed, and with `--offline` there is no merge time to count to.
+
 Under the timeline, each finding gets a one-line life: the round it was raised at, then fixed,
 withdrawn, overruled or upheld by a ruling, disputed, or still open. The outcome is the one
 [`report`](#report) counts, from the same rule.

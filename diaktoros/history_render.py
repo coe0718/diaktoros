@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 
+from .history_summary import line as _summary
+
 def _clock(at: float) -> str:
     return time.strftime("%m-%d %H:%M", time.gmtime(at)) if at else "--:--"
 
@@ -46,6 +48,8 @@ def text(data: dict) -> str:
     """The timeline for a terminal: one block per round, then each finding's life."""
     lines = [f"[{data['loop']}] {data['repo']}#{data['pr']} — review history (times UTC; "
              "read-only)"]
+    if _summary(data):
+        lines.append(f"summary: {_summary(data)}")
     for gap in data["gaps"]:
         lines.append(f"  gap: {gap}")
     for what in data["missing"]:
@@ -83,6 +87,8 @@ def markdown(data: dict) -> str:
     base = f"https://github.com/{data['repo']}"
     out = [f"# Review history of [{data['repo']}#{data['pr']}]({base}/pull/{data['pr']})", "",
            f"Loop `{data['loop']}`. Times are UTC. {_merge_line(data).capitalize()}.", ""]
+    if _summary(data):
+        out += [f"**Summary:** {_summary(data)}", ""]
     if data["gaps"] or data["missing"]:
         out += ["**Gaps on record:**", ""]
         out += [f"- {gap}" for gap in data["gaps"]]
