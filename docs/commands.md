@@ -1622,10 +1622,21 @@ The real reviewer gate decides, fed a `ready_for_review` event built from the li
 rules are the webhook's: open, not a draft, a fixer's PR on the loop's base, no verdict or run
 already at this head, and the verdict cap. It makes no GitHub write; the review itself is the only
 write, as usual. It prints `review queued` (exit 0), or `no review started —` and the gate's own
-reason (exit 1). Exit 2 when the loop or the PR cannot be read, several loops are configured and
-no `--loop` names one, or the gate did not finish: its GitHub budget ran out (20 seconds by
-default, less when the webhook's script timeout is short), or it crashed (it prints `the gate did
-not finish — it crashed (Type)`, naming the exception type only). Only the gate's GitHub
+reason (exit 1). Exit 2 when:
+- the loop or the PR cannot be read, or several loops are configured and no `--loop` names one;
+- a migration holds the install (`a migration holds the install — nothing started; ask again
+  after it`): no gate runs while names are being moved;
+- with `--another-round`, the PR's reviews cannot be read (`the reviews could not be read —
+  nothing granted`), so no round is granted and no review is asked for;
+- the gate did not finish: it refused its input (it exited non-zero; the command prints `the
+  gate did not finish — no answer`), its GitHub budget ran out (20 seconds by default, less when
+  the webhook's script timeout is short; also `no answer`), or it crashed (it prints `the gate did
+  not finish — it crashed (Type)`, naming the exception type only);
+- the gate committed a reviewer turn but held it (for example, for CI): the command prints
+  `review not verified —` and the gate's `turn held:` line;
+- a `--reconsider` the gate could only hold (`reconsider NOT queued`, below).
+
+Only the gate's GitHub
 calls, and the seat drain the gate starts, are deadline-limited: the drain's `watchdog.py`
 process gets at most half of the budget that is left and is stopped at that timeout (logged,
 never fatal). There is no hard deadline in-process, so any other hang outside a GitHub call
@@ -1882,13 +1893,14 @@ hermes dk cancel --loop "<loop-id>" --run "<run-id>"
 ```
 
 - **Not started yet** (pending, blocked, waiting, claimed): cancelled at once, unless it already
-  holds a write-ahead record (a review receipt, a push intent, a ruling). Then it ends `uncertain`
-  instead and is never replayed, and the output says `after it may have written`. Inspect and
-  reconcile it; don't `retry` it.
+  holds any write-ahead record: a review receipt, a push intent or confirmation, a ruling, a
+  dispute, a CI-fix decline, a triage result, an issue fix, or a reviewer-filed issue whose
+  outcome is unknown. Then it ends `uncertain` instead and is never replayed, and the output
+  says `after it may have written`. Inspect and reconcile it; don't `retry` it.
 - **Launching or running:** the worker that owns the turn stops it, within a few seconds. It
   kills the sandbox the same way the turn budget does, and frees the seat. An adjudicator's
   breach marker is handed back. The command waits up to 30 seconds and prints how the run ended.
-  If the turn had already started writing (a review receipt, a push intent, a ruling), the run
+  If the turn had already started writing (any of the write-ahead records above), the run
   ends `uncertain` rather than `cancelled`. It's never replayed, so inspect and reconcile it.
   If the owning worker is already gone (its lease expired), nothing reads the request; the
   next recovery sweep (`recover()`) ends the run the same way: `cancelled` when nothing was

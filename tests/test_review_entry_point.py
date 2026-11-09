@@ -21,7 +21,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 
 from diaktoros import config, explain, gate_failures, gh, one_shot_action as actions, util  # noqa: E402
+from diaktoros.one_shot_action import RECONSIDER_MAX  # noqa: E402
 from diaktoros.run_supervisor import RECONSIDER_KEY  # noqa: E402
+import test_dispute_next_step as dn  # noqa: E402  the reviewer verdict at fg.HEAD
+import test_fixer_gating as fg  # noqa: E402  the temp-home loop the claim test runs in
 
 
 def approved(head=None):
@@ -215,6 +218,25 @@ class Reconsider(Harness):
         self.assertIn("has no reviewer's verdict yet", result["lines"][0])
         self.assertEqual(self.keys, [])
 
+    def test_a_reason_over_the_limit_is_refused(self):
+        # The state store would silently cut it to its own 2000 (#1454): the operator is told.
+        from diaktoros import state as state_mod
+        t.reset(prs={"7": approved()})
+        result = self.reconsider("x" * (RECONSIDER_MAX + 1))
+        self.assertEqual(result["code"], 1, result["lines"])
+        self.assertIn(f"the reason is longer than {RECONSIDER_MAX} characters", result["lines"][0])
+        self.assertIn("nothing started", result["lines"][0])
+        self.assertEqual(self.keys, [])
+        self.assertFalse(state_mod.state_for(self.loop()).reconsider_get(7, t.HEAD_A))
+        # A reason of exactly the limit is accepted and queued.
+        with mock.patch.object(actions, "_reviewer_runs",
+                               side_effect=lambda repo, n, head, key=None: int(
+                                   bool(key and self.keys))):
+            self.reconsider("x" * RECONSIDER_MAX)
+        self.assertEqual(self.keys, [("reviewer", 7, t.HEAD_A, RECONSIDER_KEY)])
+        entry = state_mod.state_for(self.loop()).reconsider_get(7, t.HEAD_A)
+        self.assertEqual(entry["reason"], "x" * RECONSIDER_MAX)
+
     def test_a_reconsider_at_the_spent_verdict_cap_is_refused_not_escalated(self):
         # #1453: a head at the cap with an approval (a cap lowered after it). The gate's cap
         # branch would park the PR for adjudication; a reconsider must refuse before it.
@@ -406,18 +428,37 @@ class Reconsider(Harness):
         del cli
 
 
-class ReconsiderTurn(unittest.TestCase):
-    """The queued turn: its claim is not superseded by the head's verdict, and its prompt
-    carries the maintainer's reason."""
+class ReconsiderClaim(fg.Base):
+    """The queued turn's claim (#1454): driven through ``Supervisor._claim`` at a head that
+    already has a verdict, as the dispute re-review's claim is (test_dispute_next_step)."""
 
     def test_the_claim_keeps_a_reconsider_at_a_reviewed_head(self):
-        from diaktoros.run_supervisor import turns
-        source = pathlib.Path(turns.__file__).read_text()
-        start = source.index("def _claim_read_reviewer")
-        body = source[start:source.index("def _claim_read_live")]
-        self.assertIn("run_supervisor.RECONSIDER_KEY", body)
-        exempt = body.index("startswith(('retarget:', run_supervisor.DISPUTE_KEY,")
-        self.assertLess(exempt, body.index("superseded: reviewed at this head"))
+        from diaktoros import run_supervisor
+        settings = self.root / "runtime.json"
+        settings.write_text("{}")
+        settings.chmod(0o600)
+        sup = run_supervisor.Supervisor(run_supervisor.production_ledger(),
+                                        production_config=settings, hermes_home=self.root / "home")
+        pr = {**fg.LIVE, "head": {"sha": fg.HEAD, "ref": "fix-7"}}
+
+        def claim(delivery, turn_key):
+            with mock.patch.object(sup, "_spawn"):
+                sup.enqueue(delivery, fg.REPO, 7, fg.HEAD, "reviewer", turn_key=turn_key)
+            with mock.patch.object(gh, "api", return_value=pr), \
+                    mock.patch.object(gh, "reviews", return_value=list(dn.VERDICT)), \
+                    mock.patch("diaktoros.review_receipt.generation_for", return_value="g"):
+                sup._claim()
+            return sup.get(delivery)
+        # A plain reviewer row at a reviewed head is retired ...
+        self.assertIn("reviewed at this head", str(claim("plain", "")["error"] or ""))
+        # ... a maintainer's reconsider at the same head is claimed, not superseded.
+        row = claim("reconsider", RECONSIDER_KEY)
+        self.assertEqual(row["state"], "claimed", row)
+        self.assertNotIn("reviewed at this head", str(row["error"] or ""))
+
+
+class ReconsiderTurn(unittest.TestCase):
+    """The queued turn's prompt carries the maintainer's reason."""
 
     def test_the_prompt_carries_the_reason_for_a_reconsider_only(self):
         from diaktoros.run_supervisor import turn_prompts
@@ -633,6 +674,59 @@ class RecordedFailureEpisodes(Harness):
             result = actions.review(self.loop(), 7)      # must not raise UnboundLocalError
         self.assertIn(result["code"], (0, 1))
         self.assertEqual(self.failures(), [])            # the gate did finish: settled on purpose
+
+
+def review_section() -> str:
+    """The `review` section of docs/commands.md, whitespace folded."""
+    text = (pathlib.Path(__file__).resolve().parents[1] / "docs" / "commands.md").read_text()
+    body = text.split("\n### review\n", 1)[1].split("<!-- flags:review -->", 1)[0]
+    return " ".join(body.split())
+
+
+class ExitTwoDocumented(Harness):
+    """#1669: every exit-2 cause `hermes dk review` can reach is named in docs/commands.md, by
+    the words the command prints. Each cause is driven through the entry point, so a doc phrase
+    that no longer matches the command's output turns this red too."""
+
+    def setUp(self):
+        t.reset(prs={"7": t.pr(7)})
+
+    def assert_documented(self, result, phrase):
+        self.assertEqual(result["code"], 2, result["lines"])
+        self.assertIn(phrase, result["lines"][-1])
+        self.assertIn(phrase, review_section())
+
+    def test_a_migration_hold_is_documented(self):
+        with mock.patch("diaktoros.migrate.migrating", return_value={"from": "x"}):
+            result = actions.review(self.loop(), 7)
+        self.assertEqual(result["code"], 2)
+        self.assertIn("a migration holds the install — nothing started; ask again after it",
+                      " ".join(result["lines"]))
+        self.assertIn("a migration holds the install — nothing started; ask again after it",
+                      review_section())
+
+    def test_unreadable_reviews_for_another_round_are_documented(self):
+        author = t.pr(7)["user"]["login"].lower()
+        with mock.patch("diaktoros.review_asks.config.review_only", return_value={author}), \
+                mock.patch("diaktoros.review_asks.gate_reviews", return_value=None), \
+                mock.patch.object(actions, "_run_reviewer") as gate_call:
+            result = actions.review(self.loop(), 7, another_round=True)
+        self.assert_documented(result, "the reviews could not be read — nothing granted")
+        gate_call.assert_not_called()
+
+    def test_a_gate_that_refused_its_input_is_documented(self):
+        with mock.patch.object(actions, "_run_reviewer", side_effect=SystemExit(2)):
+            result = actions.review(self.loop(), 7)
+        self.assert_documented(result, "the gate did not finish — no answer")
+        self.assertIn("it refused its input", review_section())
+
+    def test_a_held_committed_turn_is_documented(self):
+        with mock.patch.object(actions, "_run_reviewer",
+                               return_value=["[diaktoros] turn held: waiting for CI"]), \
+                mock.patch.object(actions, "_reviewer_runs", side_effect=[0, 1]):
+            result = actions.review(self.loop(), 7)
+        self.assert_documented(result, "review not verified —")
+        self.assertIn("`turn held:`", review_section())
 
 
 class Desktop(Harness):

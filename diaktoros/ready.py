@@ -265,8 +265,8 @@ def acting(loop: dict, number: int, head: str, reviews: list | None,
 def unlifted(reviews: list) -> list[str]:
     """Approved on the adjudicator's ACCEPT ruling (#905), but GitHub still counts a reviewer's
     change request until it is dismissed: the merge stays blocked, and the check (and
-    ``explain``) say why."""
-    return [f"approved on the adjudicator's ACCEPT ruling, but {gate.reviewer_login(r)}'s "
+    ``explain``) say why. A review with no login is named ``?``, as ``acting`` names it."""
+    return [f"approved on the adjudicator's ACCEPT ruling, but {gate.reviewer_login(r) or '?'}'s "
             f"changes-requested review {r.get('id')} still blocks GitHub's merge until it is "
             "dismissed" for r in gate.blocking_reviews(reviews)]
 

@@ -152,6 +152,9 @@ def sign(key_file: Path, data: bytes) -> bytes:
     kind, tool = signer()
     try:
         return _sign_with(kind, tool, key_file, data)
+    except SignTimeout:
+        raise           # a signing cut short is no answer to retry: the retry would spend the
+                        # rest of the budget and hide which signer failed (#2029)
     except AppError:
         fallback = _openssl() if kind == "cryptography" else None
         if fallback is None:
@@ -178,13 +181,17 @@ def _sign_with(kind: str, tool: Path | None, key_file: Path, data: bytes) -> byt
         if left is not None and left <= 0:
             raise gh.GateBudgetExceeded("App JWT signing did not finish within the time "
                                         "budget") from None
-        raise AppError("App JWT signing failed (TimeoutExpired)") from None
+        raise SignTimeout(f"App JWT signing failed ({kind} TimeoutExpired)") from None
     except (OSError, subprocess.SubprocessError) as exc:
         raise AppError(f"App JWT signing failed ({type(exc).__name__})") from None
     if done.returncode != 0 or not done.stdout:
         raise AppError(f"App JWT signing failed ({kind} exit {done.returncode}; check the key "
                        "file is the App's PEM private key)")
     return done.stdout
+
+
+class SignTimeout(AppError):
+    """A signing subprocess that ran out of time: reported, never retried with another signer."""
 
 
 def jwt(loop: dict, login: str, now: float | None = None) -> str:

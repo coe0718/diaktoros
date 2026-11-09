@@ -49,6 +49,24 @@ class Budget(unittest.TestCase):
             with self.assertRaises(gh.GateBudgetExceeded):
                 github_app.sign(pathlib.Path("/k.pem"), b"data")
 
+    def test_a_cryptography_signing_timeout_is_not_retried_with_openssl(self):
+        # #2029: the openssl fallback caught the timeout too, so one mint ran two signers and
+        # spent twice the wait inside the gate's budget, then reported the retry's error.
+        started = []
+
+        def run(argv, **kw):
+            started.append(argv[0])
+            raise subprocess.TimeoutExpired(argv, kw["timeout"])
+        with mock.patch.object(github_app, "signer",
+                               return_value=("cryptography", pathlib.Path("/py"))), \
+                mock.patch.object(github_app, "_openssl", return_value=pathlib.Path("/ossl")), \
+                mock.patch.object(github_app.subprocess, "run", side_effect=run):
+            gh.begin_gate(time.monotonic() + 30)
+            with self.assertRaisesRegex(github_app.AppError, "cryptography TimeoutExpired"):
+                github_app.sign(pathlib.Path("/k.pem"), b"data")
+        self.assertEqual(started, ["/py"])
+        self.assertIsNone(github_app._signer)               # a timeout keeps no fallback
+
     def test_the_apps_own_call_is_budgeted(self):
         seen = []
 

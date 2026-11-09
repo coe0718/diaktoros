@@ -109,6 +109,15 @@ class ReconciliationTest(unittest.TestCase):
         self.assertTrue(any(k.startswith("184:") for k in after["head_history"]), after)
         self.assertEqual(self.posts, [])
 
+    def test_a_frozen_watch_mode_clock_stamps_the_stack_queue(self):
+        # #1661: the stacked step moved out of the watchdog; its ``at`` stamp must still read
+        # the sweep's one clock (``watch_mode``), so a test that freezes it reaches the stamp.
+        clock = mock.Mock(wraps=time)
+        clock.time = mock.Mock(return_value=500000.0)
+        with mock.patch.object(watch_mode, "time", clock):
+            self.sweep([self.parent, self.child])
+        self.assertEqual(self.st.watch()["stacked_wait"]["184"]["at"], 500000.0)
+
     def test_missing_ambiguous_closed_and_stale_queue(self):
         self.sweep([self.parent, self.child])
         for listing, reason in (([self.child], "missing"),

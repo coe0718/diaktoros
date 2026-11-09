@@ -9,6 +9,7 @@ import contextlib
 import io
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -165,6 +166,28 @@ class NotStarted(Base):
         self.assertIn('uncertain', bullet)
         self.assertIn('write-ahead record', cancel_action.__doc__)
         self.assertIn('uncertain', cancel_action.__doc__.split('A launching', 1)[0])
+
+    def test_the_docs_name_every_write_ahead_record_kind(self):
+        # #1672: the quarantine covers every kind ``write_records`` checks, not only the three
+        # PR-seat records. A kind added there without a phrase here fails the first assert.
+        phrases = {'runs': 'a push intent or confirmation', 'review_receipts': 'a review receipt',
+                   'rulings': 'a ruling', 'disputes': 'a dispute',
+                   'declines': 'a CI-fix decline', 'triage_results': 'a triage result',
+                   'issue_fixes': 'an issue fix',
+                   'filed_issues': 'a reviewer-filed issue whose outcome is unknown'}
+        doc = run_supervisor.write_records.__doc__
+        tables = set(re.findall(r'^\s*- ``(\w+)``', doc, re.M))
+        self.assertEqual(tables, set(phrases))
+        root = Path(__file__).resolve().parents[1]
+        section = (root / 'docs' / 'commands.md').read_text().split('### cancel', 1)[1]
+        bullet = section.split('- **Launching or running:**', 1)[0]
+        retry = (root / 'docs' / 'operations.md').read_text().split('`--seat` restricts', 1)[1]
+        texts = {'commands.md': bullet, 'cancel_action': cancel_action.__doc__,
+                 'operations.md': retry.split('\n\n', 1)[0]}
+        for name, text in texts.items():
+            flat = ' '.join(text.split())
+            for phrase in phrases.values():
+                self.assertIn(phrase, flat, name)
 
     def test_a_pending_run_is_cancelled(self):
         sup = self.sup()

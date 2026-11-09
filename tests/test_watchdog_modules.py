@@ -103,6 +103,17 @@ class Split(unittest.TestCase):
             later = failed(loop, watch, 102.0, "bot", "HTTP 401", 401, "")
         self.assertFalse(later[1], later)                     # the real six-hour cooldown
 
+    def test_the_sweep_reads_the_wall_clock_only_through_watch_mode(self):
+        # #1661: a moved module that reads ``time.time()`` through its own binding is missed by
+        # a test that freezes the sweep's clock; every piece reads ``watch_mode.now()``.
+        for path in [WATCHDOG, *(ROOT / "diaktoros" / f"{m}.py" for m in MODULES
+                                 if m != "watch_mode")]:
+            for node in ast.walk(ast.parse(path.read_text())):
+                if (isinstance(node, ast.Attribute) and node.attr == "time"
+                        and isinstance(node.value, ast.Name) and node.value.id == "time"):
+                    self.fail(f"{path.relative_to(ROOT)}:{node.lineno} reads time.time(); "
+                              "read watch_mode.now()")
+
 
 if __name__ == "__main__":
     unittest.main()

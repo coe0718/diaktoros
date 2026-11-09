@@ -578,6 +578,9 @@ class Setup(unittest.TestCase):
         self.assertEqual(self.ran, ["doctor", "selftest"], out)
         self.assertNotIn("skipped", out)
         self.assertIn("next: hermes dk selftest", out)
+        # #1712: a first install has nothing to resume, so no "starting at" stage line.
+        self.assertIn("no onboarding record yet: running every check", out)
+        self.assertNotIn("starting at the identities stage (not_attempted)", out)
 
     def test_without_a_terminal_it_asks_for_yes(self):
         tty = io.StringIO()
