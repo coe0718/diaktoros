@@ -156,6 +156,7 @@ class TrustedFetchTests(unittest.TestCase):
                      "tree": [{"path": "hello.txt", "mode": "100644", "type": "blob",
                                "sha": self.oid, "size": len(self.blob)}]}
         self.calls = []
+        self.ids = {"reader": 101, "reviewer": 102, "fixer": 103}
         self.pr_count = 0
         self.pr_head = self.head
         self.tarball = self._tarball({"hello.txt": self.blob})
@@ -192,7 +193,7 @@ class TrustedFetchTests(unittest.TestCase):
     def response(self, loop, path, login, limit, accept):
         self.calls.append((path, login, limit))
         if path == "/user":
-            return json.dumps({"login": login}).encode()
+            return json.dumps({"login": login, "id": self.ids.get(login, 100)}).encode()
         if path.endswith("/pulls/7"):
             self.pr_count += 1
             return json.dumps({"number": 7, "state": "open", "head": {"sha": self.pr_head,
@@ -310,13 +311,30 @@ class TrustedFetchTests(unittest.TestCase):
             if path == "/user" and login == "reader":
                 return b'{"login":"reviewer"}'
             return self.response(loop, path, login, limit, accept)
-        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "principal mismatch"):
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "principal cannot be verified"):
             self.stage(callback=mismatch)
         self.assertFalse((self.root / "sandbox").exists())
 
     def test_case_variant_logins_are_not_distinct_principals(self):
         self.loop["read_token"] = "Reviewer"
-        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "distinct read and seat"):
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "must use distinct identities"):
+            self.stage()
+        self.assertFalse((self.root / "sandbox").exists())
+
+    def test_principal_without_integer_id_is_refused(self):
+        # broker._verify_identities' rule (#1498): an account with no integer id is unverified.
+        def no_id(loop, path, login, limit, accept):
+            if path == "/user" and login == "fixer":
+                return b'{"login":"fixer","id":"103"}'
+            return self.response(loop, path, login, limit, accept)
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "principal cannot be verified"):
+            self.stage(callback=no_id)
+        self.assertFalse((self.root / "sandbox").exists())
+
+    def test_two_identities_resolving_to_one_principal_are_refused(self):
+        # Same rule as the broker's (#1498): the export takes it from broker._verify_identities.
+        self.ids["fixer"] = self.ids["reviewer"]
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "resolve to the same principal"):
             self.stage()
         self.assertFalse((self.root / "sandbox").exists())
 

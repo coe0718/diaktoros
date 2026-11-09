@@ -66,33 +66,36 @@ def _denied(message: str, why: str) -> BrokerDenied:
 
 
 
-def _verify_identities(loop: dict, identities: tuple, names: str) -> None:
+def _verify_identities(loop: dict, identities: tuple, names: str, *,
+                       denied: type[Exception] = BrokerDenied, fetch=None) -> None:
     """The four-identity rule for the accounts a write depends on: distinct logins (in any case),
     each mapped to its own credential file, with a token that is there, resolving to that very
-    account, and no two to one principal. ``names`` says who, for the denial."""
+    account, and no two to one principal. ``names`` says who, for the denial. ``trusted_fetch``
+    shares it (#1498): ``denied`` is the exception raised, ``fetch(identity)`` the transport
+    ``gh.principal`` reads that account through (``None``: its own)."""
     if (not all(isinstance(i, str) and i for i in identities)
             or len({i.casefold() for i in identities}) != len(identities)):
-        raise BrokerDenied(f"{names} must use distinct identities")
+        raise denied(f"{names} must use distinct identities")
     mapped = [gh.credential_path(loop, identity) for identity in identities]
     if any(path is None for path in mapped):
-        raise BrokerDenied(f"{names} token mappings required")
+        raise denied(f"{names} token mappings required")
     if len({path.resolve() for path in mapped}) != len(identities):
-        raise BrokerDenied(f"{names} must use distinct token files")
+        raise denied(f"{names} must use distinct token files")
     principals = []
     for identity in identities:
         try:
             if not gh.token(loop, identity):
-                raise BrokerDenied(f"empty token for {identity}")
+                raise denied(f"empty token for {identity}")
         except gh.GitHubError as exc:
-            raise BrokerDenied(f"missing token for {identity}") from exc
-        account = gh.principal(loop, identity)
+            raise denied(f"missing token for {identity}") from exc
+        account = gh.principal(loop, identity, None if fetch is None else fetch(identity))
         if (not isinstance(account, dict) or type(account.get("id")) is not int
                 or not isinstance(account.get("login"), str)
                 or account["login"].casefold() != identity.casefold()):
-            raise BrokerDenied("token principal cannot be verified")
+            raise denied("token principal cannot be verified")
         principals.append(account["id"])
     if len(set(principals)) != len(identities):
-        raise BrokerDenied(f"{names} tokens resolve to the same principal")
+        raise denied(f"{names} tokens resolve to the same principal")
 
 
 def _live_pr(loop: dict, repo: str, number: int, head: str, branch: str) -> dict:
