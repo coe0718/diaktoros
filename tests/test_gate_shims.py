@@ -474,6 +474,62 @@ class SetAdjudication(Base):
         rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-profile", "nosuch"])
         self.assertEqual(rc, 2, out)
 
+    def assert_refused_unchanged(self, argv, refusal):
+        path = config.config_dir() / "widgets.json"
+        subs = pathlib.Path(self.env["DIAKTOROS_SUBS"])
+        before = (path.read_bytes(), subs.read_bytes())
+        rc, out = self.run_cli(argv)
+        self.assertEqual(rc, 2, out)
+        self.assertIn(refusal, out)
+        self.assertEqual((path.read_bytes(), subs.read_bytes()), before, out)
+
+    def test_a_later_refusal_leaves_adjudication_off_unwritten(self):
+        # #1972: the adjudicator was turned off and saved, then the login check refused.
+        self.full_install()
+        self.assert_refused_unchanged(
+            ["set", "--loop", "widgets", "--adjudicator", "off", "--adjudicator-login", "judge",
+             "--token", f"judge={self.pats['read']}"], "this loop has no adjudicator route")
+        self.assertEqual(config.load_id("widgets")["adjudicator"]["route"], "widgets-breach")
+
+    def test_a_later_refusal_leaves_adjudication_on_unwritten(self):
+        self.install("acme/widgets")
+        self.assert_refused_unchanged(
+            ["set", "--loop", "widgets", "--adjudicator-profile", "arbiter", "--observer-mute"],
+            "no observer feed on this loop")
+        self.assertEqual(config.load_id("widgets")["adjudicator"], {})
+        self.assertFalse((self.hermes / "profiles/arbiter/scripts/gate_adjudicator.py").exists())
+
+    def test_an_observer_route_refusal_leaves_adjudication_unwritten(self):
+        # The observer's route checks run before the adjudication change is written too.
+        self.install("acme/widgets")
+        self.assert_refused_unchanged(
+            ["set", "--loop", "widgets", "--adjudicator-profile", "arbiter",
+             "--observer-profile", "default", "--observer-route", "widgets-breach"],
+            "observer route must not replace a seat or adjudicator route")
+        self.assertEqual(config.load_id("widgets")["adjudicator"], {})
+
+    def observer_takes(self, *adjudication):
+        """One ``set`` frees the adjudicator route and gives its name to the observer (#2168
+        review: the route the plan removes is not another's)."""
+        self.install("acme/widgets")
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-profile", "arbiter"])
+        self.assertEqual(rc, 0, out)
+        rc, out = self.run_cli(["set", "--loop", "widgets", *adjudication, "--observer-profile",
+                                "default", "--observer-route", "widgets-breach"])
+        self.assertEqual(rc, 0, out)
+        loop = config.load_id("widgets")
+        self.assertEqual(loop["observer"]["route"], "widgets-breach")
+        self.assertEqual(routes.route("widgets-breach")["script"], "observe.py")
+        return loop
+
+    def test_the_observer_may_take_the_route_adjudication_turns_off(self):
+        self.assertEqual(self.observer_takes("--adjudicator", "off")["adjudicator"], {})
+
+    def test_the_observer_may_take_the_route_adjudication_renames(self):
+        loop = self.observer_takes("--adjudicator-route", "widgets-adj2")
+        self.assertEqual(loop["adjudicator"]["route"], "widgets-adj2")
+        self.assertTrue(routes.route("widgets-adj2"))
+
     def test_login_refusal_names_the_new_command(self):
         self.install("acme/widgets")
         rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-login", "bot",
