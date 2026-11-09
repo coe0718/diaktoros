@@ -18,6 +18,17 @@ from . import config
 
 MAX_ENTRIES = 4096
 MAX_CONFIG_BYTES = 1024 * 1024
+# Worker-private subtrees under a loop's state dir that no Desktop view reads: isolated seat
+# homes (tens of thousands of files while a turn runs), dependency checkouts and the CI
+# cache. Watching them only made every scan overflow, and an overflowing scan used to
+# invalidate every second. The page's own polling still covers anything left unwatched.
+PRUNED_DIRS = frozenset({"isolated-runs", "deps", "ci-cache"})
+# At most one invalidation per MIN_GAP seconds: a burst of ledger writes during a turn is
+# delivered once, on the leading edge, and anything after it on the trailing edge.
+MIN_GAP = 5.0
+# A scan that hit its cap cannot prove the unseen part is unchanged, so it still
+# invalidates — but at the polling cadence, never once per scan.
+OVERFLOW_GAP = 30.0
 
 
 def _stamp(path: Path):
@@ -34,8 +45,9 @@ class FileSnapshot:
     """Capture fixed host files and configured state roots; never follow state symlinks.
 
     Config JSON is read only to discover custom state_dir roots. Credential paths
-    mentioned there are never opened. Work is capped; overflow conservatively
-    invalidates each interval rather than claiming an incomplete scan is unchanged.
+    mentioned there are never opened. Worker-private subtrees (PRUNED_DIRS) are stamped
+    but not descended. Work is capped; overflow is reported so the watcher can still
+    invalidate at OVERFLOW_GAP rather than claim an incomplete scan is unchanged.
     """
 
     def __init__(self, home: Path, config_dir: Path):
@@ -57,7 +69,8 @@ class FileSnapshot:
                 remaining -= 1
                 stamp = _stamp(path)
                 result.append((str(path), stamp))
-                if recursive and isinstance(stamp[0], int) and stat.S_ISDIR(stamp[0]):
+                if (recursive and isinstance(stamp[0], int) and stat.S_ISDIR(stamp[0])
+                        and (path == root or path.name not in PRUNED_DIRS)):
                     try:
                         # scandir avoids materializing an unbounded directory listing.
                         import os
@@ -118,11 +131,18 @@ class FileSnapshot:
 
 
 class DesktopEvents:
-    """One scanner, max-one pending invalidation per subscriber, no idle task."""
+    """One scanner, max-one pending invalidation per subscriber, no idle task.
 
-    def __init__(self, snapshot, interval=1.0):
+    Invalidations are rate-limited: at most one per ``min_gap`` seconds (a change inside
+    the gap is held and sent when it ends, never dropped), and a capped scan with no
+    visible change invalidates once per ``overflow_gap``.
+    """
+
+    def __init__(self, snapshot, interval=1.0, min_gap=MIN_GAP, overflow_gap=OVERFLOW_GAP):
         self.snapshot = snapshot
         self.interval = interval
+        self.min_gap = min_gap
+        self.overflow_gap = overflow_gap
         self.subscribers = set()
         self.task = None
         self._lock = asyncio.Lock()
@@ -156,6 +176,10 @@ class DesktopEvents:
 
     async def _watch(self):
         previous = None
+        pending = False
+        last_sent = None
+        overflow_since = None
+        clock = asyncio.get_running_loop().time
         while True:
             try:
                 # Shield then join an in-flight scan on cancellation: reconnect must
@@ -169,7 +193,20 @@ class DesktopEvents:
                     raise
             except Exception:
                 current, overflow = ("unavailable",), False
-            if previous is not None and (current != previous or overflow):
+            now = clock()
+            if not overflow:
+                overflow_since = None
+            elif overflow_since is None:
+                overflow_since = now
+            if previous is not None:
+                if current != previous:
+                    pending = True
+                elif overflow and overflow_since is not None and now - overflow_since >= self.overflow_gap:
+                    pending = True
+                    overflow_since = now
+            if pending and (last_sent is None or now - last_sent >= self.min_gap):
+                pending = False
+                last_sent = now
                 for queue in tuple(self.subscribers):
                     if queue.empty():
                         queue.put_nowait({"event": "invalidate", "version": 1})
