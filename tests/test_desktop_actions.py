@@ -44,6 +44,31 @@ class Boundary(unittest.TestCase):
             with self.assertRaises(desktop_api.Conflict):
                 desktop_api.action_perform_view('one', 'escalate', 7, None, TOKEN)
 
+    def test_stale_cancel_detail_differs_from_an_interrupted_one(self):
+        # #1372: the page says "nothing was cancelled" only for the detail a stale or refused
+        # confirmation raises (both refused before any write). An interrupted perform raises the
+        # same 409 status with a different detail, and may have written, so it must stay distinct.
+        page = (pathlib.Path(__file__).resolve().parents[1] / 'desktop' / 'plugin.js').read_text()
+        details = set()
+        for status in ('stale', 'refused'):
+            with self.subTest(status=status), mock.patch.object(actions, 'confirmed_perform', return_value={
+                    'ok': False, 'status': status, 'reason': 'x', 'head': ''}):
+                with self.assertRaises(desktop_api.Conflict) as caught:
+                    desktop_api.action_perform_view('one', 'cancel', 7, 'shadow', TOKEN)
+                details.add(str(caught.exception))
+        self.assertEqual(len(details), 1)
+        stale = details.pop()
+        self.assertIn("'" + stale + "'", page)
+        with mock.patch.object(actions, 'confirmed_perform', side_effect=RuntimeError('boom')):
+            with self.assertRaises(desktop_api.Conflict) as caught:
+                desktop_api.action_perform_view('one', 'cancel', 7, None, TOKEN)
+        self.assertNotEqual(str(caught.exception), stale)
+
+    def test_page_cancel_seats_are_the_plans(self):
+        page = (pathlib.Path(__file__).resolve().parents[1] / 'desktop' / 'plugin.js').read_text()
+        listed = json.loads(page.split('const CANCEL_SEATS = ', 1)[1].split('\n', 1)[0].replace("'", '"'))
+        self.assertEqual(tuple(listed), actions.CANCEL_SEATS)
+
     def test_partial_and_unknown_are_not_success(self):
         for status in ('partial', 'unknown'):
             with self.subTest(status=status), mock.patch.object(actions, 'confirmed_perform', return_value={

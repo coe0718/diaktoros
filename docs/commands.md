@@ -1941,8 +1941,10 @@ and `explain` show a cancelled run as an operator's cancel, with the `retry` tha
 
 The Desktop host has the same cancel as the confirmed `cancel` action (`GET`/`POST /actions`).
 The preview names the runs it would stop. If any of them starts, ends or appears before you
-confirm, the confirmation is stale and nothing is cancelled. The page has no control for it
-yet: that's #1372.
+confirm, the confirmation is stale and nothing is cancelled. The page's **One-shot actions**
+section has the control (#1372): choose *Cancel runs*, a PR and every seat or one, preview, then
+confirm. A `partial` outcome means a running turn's stop was requested, not that it finished;
+only `retry` re-arms a cancelled run.
 
 <!-- flags:cancel -->
 | flag | value | default | what it does |
