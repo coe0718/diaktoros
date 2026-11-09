@@ -13,7 +13,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-from . import findings as findings_mod, stats
+from . import findings as findings_mod, history_summary, stats
 from .history_sources import audit_writes, excerpt, github_reads, github_events, tracked_findings
 from .run_supervisor import NOT_ENDED, views
 
@@ -51,7 +51,7 @@ _SEVERITY = re.compile(r"\b(P[0-4])\b")
 
 
 def collect(loop: dict, db: Path, number: int, offline: bool, redact) -> dict:
-    """The PR's cycle: ``{repo, pr, rounds, findings, merged, gaps, missing}``. ``rounds`` is a
+    """The PR's cycle: ``{repo, pr, summary, rounds, findings, merged, gaps, missing}``. ``rounds`` is a
     list of ``{head, events}`` in the order each head was first seen; an event is a dict with
     ``at``, ``kind``, ``who``, ``text`` and, when known, ``link`` and ``gap``."""
     data = {"schema": SCHEMA, "repo": loop["repo"], "loop": loop["id"], "pr": number,
@@ -76,6 +76,7 @@ def collect(loop: dict, db: Path, number: int, offline: bool, redact) -> dict:
                        "by": str((pr.get("merged_by") or {}).get("login") or "")}
                       if pr.get("merged_at") else None)
     data["state"] = "merged" if data["merged"] else str(pr.get("state") or "")
+    data["summary"] = history_summary.summary(runs, data)
     return data
 
 

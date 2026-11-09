@@ -332,6 +332,13 @@ class WorkerLifecycle:
             for lost in con.execute("SELECT id,pid,launch_intent FROM runs WHERE state IN "
                                     "('launching','running') AND lease<? AND cancel_requested "
                                     "IS NOT NULL AND push_intent IS NULL", (now,)).fetchall():
+                # The recorded PID is the worker's, not the sandbox's (#1769). A gone worker
+                # proves the turn gone only because the worker starts bwrap as its own direct
+                # child (in a session of its own, start_new_session=True, contained._run) with
+                # --die-with-parent and --unshare-all (contained.command): bwrap dies with the
+                # worker, and the sandbox's PID namespace with bwrap. Drop either flag, or put
+                # a process between the worker and bwrap, and this ends a run whose sandbox
+                # still runs.
                 if process_state(lost['pid'], lost['launch_intent']) != 'gone':
                     continue
                 wrote = run_supervisor.write_records(con, lost['id'])

@@ -354,6 +354,10 @@ class Setting(rac.Cli):
         detail = doctor.check_fix_ci(on).detail
         self.assertIn("the review waits for green or a new head", detail)
         self.assertNotIn("the reviewer reviews it", detail)
+        # #1847: `--fix-ci off` does not stop the wait for a review-only PR; it hands a fixer's
+        # red head back to the review, as the form and plugin.yaml say.
+        self.assertIn("With `--fix-ci off` a fixer's PR is still reviewed red", detail)
+        self.assertNotIn("to stop", detail)
         form = settings_form.SETTINGS_SCHEMA["ci_fix_cap"]["description"]
         plugin = (Path(__file__).resolve().parents[1] / "plugin.yaml").read_text()
         for text in (form, plugin):

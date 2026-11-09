@@ -1132,7 +1132,7 @@ def _wall_start(started: float) -> float:
 def record_in_process(gate: str, payload, exc: BaseException, started: float) -> str:
     """Record a gate that crashed or ran out of budget when called in-process (``hermes dk
     review``, the Desktop's review), which does not go through :func:`run`. Same ledgers, key
-    scheme and entry shape, so ``explain``, ``doctor`` and the watchdog sweep see it. It is
+    scheme and entry shape, so ``explain``, ``ready`` and the watchdog sweep see it. It is
     never re-driven: the watchdog cannot rebuild the operator's call (``--reconsider``), so the
     entry only alerts. ``started`` is a ``time.monotonic()`` reading. Returns the ledger path,
     or ``""`` when none could be written. Never raises: it runs on the failure path."""

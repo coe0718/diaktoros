@@ -27,8 +27,8 @@ class BrokerDenied(Exception):
 
 class BrokerNotSent(BrokerDenied):
     """Refused with nothing written: locally before any request (a missing credential too), or by
-    GitHub with a definite 4xx
-    rejection. The caller may try again once the cause is fixed, unlike a write whose outcome is
+    GitHub with a definite 4xx rejection other than 408 (a request timeout, whose outcome is
+    unknown). The caller may try again once the cause is fixed, unlike a write whose outcome is
     unknown (a timeout, a 5xx, an answer that is not an issue)."""
 
 

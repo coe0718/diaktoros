@@ -47,6 +47,11 @@ if mode in ('claimed', 'confirmed'):
                 "VALUES(?,?,?,?,?)", (run, mode, 'g', 1, 0))
     con.commit()
 con.close()
+if mode == 'token-at-cut':
+    # A token straddling the cut at the stored size of each stream (#2083).
+    token = 'ghp_' + 'A1b2C3d4' * 4
+    sys.stdout.write('x' * 8000 + token + ' ' + 'y' * 8169)
+    sys.stderr.write('e' * 2000 + token + ' ' + 'f' * 2025)
 if code:
     print('hermes: provider error', flush=True)
     print('upstream HTTP 429: rate limited (attempt %d)' % (n + 1), file=sys.stderr)
@@ -190,6 +195,17 @@ class PreWriteTurnFailures(Base):
         sup._run_one()
         self.assertEqual(sup.submit('again', 'o/r', 1, HEAD, 'reviewer'), 'duplicate succeeded')
         self.assertEqual(self.launches(), 1)
+
+    def test_a_token_split_at_the_fixture_tail_cut_is_redacted_whole(self):
+        # #2083: the fixture worker read exactly the stored size of each stream, so a token
+        # split by that cut reached output_detail without its prefix and was kept in part.
+        sup = self.sup(mode='token-at-cut')
+        self.assertEqual(sup.submit('d', 'o/r', 1, HEAD, 'reviewer'), 'enqueued')
+        sup._run_one()
+        detail = sup.get('d')['detail']
+        self.assertNotIn('C3d4A1b2', detail)
+        self.assertEqual(detail.count('[REDACTED]'), 2)
+        self.assertTrue(detail.endswith('[REDACTED] ' + 'y' * 8169))
 
 
 class PostWriteStaysQuarantined(Base):

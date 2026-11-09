@@ -147,7 +147,9 @@ def _openssl() -> Path | None:
 def sign(key_file: Path, data: bytes) -> bytes:
     """RS256 (PKCS#1 v1.5 over SHA-256) of ``data`` with the PEM key at ``key_file``. A
     ``cryptography`` signing that fails falls back to ``openssl`` once, and a fallback that signs
-    becomes this process's signer: a probe can pass where signing still fails."""
+    becomes this process's signer: a probe can pass where signing still fails. A signing that
+    times out is no such failure: its ``SignTimeout`` is raised as it is, never retried with
+    ``openssl`` (#2029)."""
     global _signer
     kind, tool = signer()
     try:

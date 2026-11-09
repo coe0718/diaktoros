@@ -250,7 +250,8 @@ def _init_shadow(args, d: dict) -> dict:
 def _init_limits(args, d: dict) -> dict:
     """``cmd_init``: CI-fix turns per PR (#539), changed tests proved per head (#1782), provider
     failures before the account waits (#1155) and the review-only verdict and daily caps. A flag
-    wins over the form; empty = the default. Raises
+    wins over the form; empty = unset: ``review_only_cap`` then follows the loop's ``cap``,
+    ``review_only_daily`` is no cap, and the others take their defaults. Raises
     ``config.ConfigError`` for a bad value."""
     checks = (("ci_fix_cap", lists.check_ci_fix_cap),
               ("change_proof_max", lists.check_change_proof_max),

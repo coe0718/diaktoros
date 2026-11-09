@@ -405,6 +405,9 @@ class FailedDeliveryRead(unittest.TestCase):
         self.assertEqual(lines[0]["read_status"], 200)
         self.assertEqual(event["detail_status"], 404)
         self.assertIsNone(event["sender"], "the payload was not read: say so, not that it had none")
+        # #1894: not "" and False, which read as a measured "no commit" and "no installation".
+        self.assertIsNone(event["review_commit"])
+        self.assertIsNone(event["installation"])
 
 
 class Refusing(FakeSpike):

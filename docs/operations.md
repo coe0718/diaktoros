@@ -1,5 +1,7 @@
 # Operating a loop
 
+[Documentation map](README.md) · Previous: [Getting started](getting-started.md) · [Commands](commands.md) · [Troubleshooting](troubleshooting.md)
+
 Use this guide after [getting started](getting-started.md). A queued turn is not a started turn;
 a process exit is not proof that GitHub accepted a write. The operator owns push policy,
 incident recovery, and the decision to merge.
@@ -127,8 +129,8 @@ hermes dk set --loop "<loop-id>" --review-only "<your-login>"
 The reviewer then reviews those PRs like a fixer's. A changes-requested verdict comes back
 to you, and the observer notice says so ("returned to the author"); the fixer never gets a
 turn on them. Automatic adjudication is disabled, but a person may request an advisory ruling with
-`hermes dk escalate --loop "<loop-id>" --pr N` after a verdict; the loop never pushes to or merges
-a review-only branch. There is still a verdict cap: `review_only_cap` (default: the loop's `cap`). At the cap the reviewer declines further
+`hermes dk escalate --loop "<loop-id>" --pr N` after a verdict; the loop never merges a review-only PR, and pushes to one only when
+`review_only_update` and unattended fixer pushes are both on (a clean merge of the base, under a lease). There is still a verdict cap: `review_only_cap` (default: the loop's `cap`). At the cap the reviewer declines further
 reviews of that PR with nothing spent, says so once per head, and `explain` shows
 `review cap reached`. A maintainer or the operator allows exactly one more verdict on the
 current head with `hermes dk review --loop "<loop-id>" --pr N --another-round`.
@@ -143,7 +145,7 @@ accepts that request from the PR's own review-only author. `explain` shows `next
 while a verdict waits for you (once a person has escalated the head it shows the adjudication
 next-step instead, then the ruling, as its blockers do), and the watchdog never reports a fixer
 stall on these PRs.
-`set --no-review-only` clears the list. A login can't be both review-only and a fixer.
+`set --no-review-only` clears the list. A login can't be review-only and also a fixer or a reviewer.
 
 ## Upgrading from hermes-review-loop
 
@@ -537,7 +539,7 @@ Worker stderr is beside it in `.workers.log`, with bounded rotation.
 | `waiting` | Backoff/pacing | Read deadline and reason |
 | `succeeded` | Worker completed successfully | Verify broker receipts and actual GitHub result |
 | `failed` | Error recorded | Retry only proven pre-write work |
-| `cancelled` | Superseded or policy refused | New head gets work; policy cancellations can be explicitly re-admitted |
+| `cancelled` | Superseded, policy refused, or cancelled by an operator (`hermes dk cancel`) | New head gets work; policy and operator cancellations can be explicitly re-armed with `retry` |
 | `uncertain` | Launch/worker/write result unknown | Inspect and reconcile; never blindly retry |
 
 Pre-write transient failures wait two, four and eight minutes between attempts;
@@ -569,8 +571,8 @@ hermes dk retry --loop "<loop-id>" --pr "<pr-number>" --seat reviewer
 
 `--seat` restricts candidates; omitted, it considers eligible problem runs at the newest
 offerable ledgered head. Retry resets automatic retry accounting, uses the current seat
-budget, and requests worker recovery. It only re-arms `failed`/`waiting` pre-write runs or the supported fixer push-policy
-cancellations; superseded cancellations are refused. Any write-ahead record (a review
+budget, and requests worker recovery. It only re-arms `failed`/`waiting` pre-write runs, the supported fixer push-policy
+cancellations, or a run an operator cancelled (`hermes dk cancel`); superseded cancellations are refused. Any write-ahead record (a review
 receipt, a push intent or confirmation, a ruling, a dispute, a CI-fix decline, a triage
 result, an issue fix, or a
 reviewer-filed issue whose outcome is unknown) prohibits retry, as does current
@@ -593,7 +595,7 @@ python -m diaktoros.run_supervisor reconcile "<ledger-path>" "<run-id>" --reason
 Use an environment where the module is installed, or run from the plugin checkout.
 `status`, `rulings` and `reconcile` open an existing ledger only: a missing path exits 2 and
 creates nothing (#798). `status` prints JSON for at most 100 problem rows, oldest first: failed, waiting,
-uncertain and supported push-policy cancellations, not every run. `<ledger-path>` is the SQLite file, not a directory;
+uncertain, supported push-policy cancellations and operator-cancelled runs, not every run. `<ledger-path>` is the SQLite file, not a directory;
 the next positional argument is the exact run ID. `--reason` stores your investigation (nonempty, at most 512 characters);
 `--acknowledge-no-live-worker` is mandatory and cannot replace checking the child.
 A missing launch intent also refuses reconciliation: worker identity cannot be established.
@@ -856,7 +858,7 @@ The page shows:
   gate's own decision log (#209): the gate, the event and action, who sent it, and its reason
   (`declined: issues labeled maintainer: not the fix label`), which is the answer to "why did
   nothing happen when I labelled that?". **Retry** sits on a row the host says `retry` would
-  re-arm — a failed, waiting or push-policy-cancelled run that never wrote. It always asks first,
+  re-arm — a failed, waiting, push-policy-cancelled or operator-cancelled run that never wrote. It always asks first,
   naming the loop, PR, seat and head it will re-arm, and then shows the host's own answer and the
   state it read back. A run that may have written (an uncertain run, or one with a receipt, push
   intent or ruling on record) has no button: inspect the PR and reconcile from the CLI. A moved
@@ -925,7 +927,9 @@ Its ledger write is `POST /retry` with `{loop, pr, seat, head}`, the Retry butto
 it re-reads the ledger, runs the same `retry_action` / `Supervisor.retry` path `hermes dk retry`
 runs, answers 409 with the host's own reason for anything that retry refuses (including a head
 that moved since the operator confirmed), and never calls GitHub or reads a token.
-`GET /hooks?loop=<id>` reads GitHub using `arm`'s default token resolution (the loop's
+For a loop whose events arrive through the GitHub App's webhook (`ingress: app-webhook`),
+`GET /hooks` reads the host's pause flag instead, calls no GitHub API and offers no control:
+pause or resume it on the host with `hermes dk arm`. Otherwise `GET /hooks?loop=<id>` reads GitHub using `arm`'s default token resolution (the loop's
 mapped reader login, which must have hook-admin permission), returning armed, paused or unknown. Missing, mixed or
 unreadable hooks never mean paused. Eligibility is direction-specific: a complete, verified
 owned all-active set offers **Pause** even with wrong event/content type, URL slash or route
@@ -945,15 +949,16 @@ local-only. No merge control exists.
 
 ### Confirmed one-shot actions (#644)
 
-The **One-shot actions** panel looks up a PR independently of the live-run table. Choose
-Re-review or Escalate and enter a PR number; Drain queue instead selects the reviewer/fixer
-seat (the seats the current drain core supports). Preview is read-only and returns the host's
+The **One-shot actions** panel looks up a PR independently of the live-run table. The panel
+offers **Escalate** for a PR number you enter; Re-review and Drain queue are shown as "host CLI
+only" and can't be chosen. The `/actions` route also accepts a confirmed `cancel` (a PR and an
+optional seat, #1148) that the page does not draw a control for yet. Preview is read-only and returns the host's
 per-target eligibility; the page never infers it from a run state.
 
 `GET /actions?loop=<id>&action=escalate&pr=<n>` returns an opaque confirmation bound to
 loop config, the exact live PR/head, effective verdicts, escalation marker and ledger rows.
 `POST /actions` accepts exactly `{loop, action, pr, seat, confirmation}`; `seat` is null for
-PR actions, `pr` is null for drain. A stale/unavailable offer returns 409 rather than acting on
+escalation and optional for cancel; `pr` is null for drain. A stale/unavailable offer returns 409 rather than acting on
 whatever is newest. All routes use gateway authentication. Tokens stay on the host.
 
 **Declare dependency** and **Waive dependency** (#1301) take two issue numbers: the issue that

@@ -85,9 +85,10 @@ def cmd_calls(args) -> int:
                   f"({limit.get('resource') or 'core'}), resets {reset}")
         for method, path, result, calls in entry["paths"][:args.top]:
             print(f"  {calls:>7,}  {method:<6} {path}  ({result})")
-    print("\nNot counted: commands that write nothing (doctor, explain, status, the Desktop), "
-          "and any call made from somewhere else with the same credential. GitHub's used figure "
-          "above that is well past this host's spent count is that.")
+    print("\nNot counted: a process that never ran a gate (the hermes dk commands other than "
+          "review, such as doctor, explain, status, stats and update; the Desktop until it runs "
+          "a review), and any call made from somewhere else with the same credential. GitHub's "
+          "used figure above that is well past this host's spent count is that.")
     return 0
 
 
@@ -171,12 +172,27 @@ def cmd_history(args) -> int:
     """One PR's whole review cycle as a timeline, grouped by head (#1657): turns, verdicts,
     answers, shadow reviews, rulings, filed issues and writes from the ledger and the state dir,
     plus review bodies, commits and comments from GitHub unless ``--offline``. Read-only; every
-    free text passes the loop's redactor. Exit 2 only when no loop can be chosen."""
-    from .. import history, history_render, run_supervisor, selftest
+    free text passes the loop's redactor. ``--since DATE --out DIR`` writes each merged PR's
+    cycle since then to its own file (``history_batch``). Exit 2 on a bad flag set or no loop."""
+    from .. import history, history_batch, history_render, run_supervisor, selftest, stats
     from .operations import _one_loop
+    if (args.pr is None) == (args.since is None) or (args.since is None) != (args.out is None):
+        print("pass --pr N, or --since DATE with --out DIR to write every merged PR's cycle")
+        return 2
     loop = _one_loop(args)
     if loop is None:
         return 2
+    if args.since is not None:
+        try:
+            since = stats.parse_since(args.since)
+        except ValueError as exc:
+            print(str(exc))
+            return 2
+        out = pathlib.Path(args.out).expanduser()
+        result = history_batch.export(loop, run_supervisor.production_ledger(), since, out,
+                                      args.format, args.offline, selftest.redactor_for(loop))
+        print(history_batch.listing(result, out, args.offline))
+        return 0
     data = history.collect(loop, run_supervisor.production_ledger(), args.pr, args.offline,
                            selftest.redactor_for(loop))
     if args.format == "json":
@@ -305,7 +321,11 @@ def add_history(sub) -> None:  # noqa: ANN001
                                              "verdicts, answers, rulings and each finding's life "
                                              "(read-only)")
     history.add_argument("--loop", help="loop id (default: the only configured loop)")
-    history.add_argument("--pr", type=int, required=True, help="pull request number")
+    history.add_argument("--pr", type=int, help="pull request number (or use --since)")
+    history.add_argument("--since", help="every merged PR with a turn since then: 7d, 24h or a "
+                                         "date like 2026-11-01; needs --out")
+    history.add_argument("--out", metavar="DIR", help="with --since: write one file per PR "
+                                                      "(pr-N.json, .md or .txt) to DIR")
     history.add_argument("--offline", action="store_true",
                          help="leave GitHub out (review bodies, commits, comments, merge) and say "
                               "what is missing")

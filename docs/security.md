@@ -1,6 +1,6 @@
 # Security
 
-[Documentation index](README.md) · [Architecture](architecture.md) · [Development](development.md) · [Operations](operations.md)
+[Documentation map](README.md) · [Architecture](architecture.md) · [Development](development.md) · [Operations](operations.md)
 
 ## Contents
 
@@ -125,7 +125,7 @@ reason; a reason that could carry a path, URL or token is replaced by a fixed se
 Both use gateway auth, not the local-only probe restriction. `one_shot_action` owns selection
 and execution for CLI and Desktop (escalation's in `escalate_action`); CLI commands are I/O
 wrappers, not a second rulebook.
-Currently only escalation is offered: the confirmation names the exact head being parked
+Escalation and a confirmed cancel (#1148, through `cancel_action`) are offered; review and drain are refused. For escalation, the confirmation names the exact head being parked
 against further reviews/fixes and the adjudicator turn being spent. Its process-local HMAC
 binds config, PR, effective reviews, marker and ledger identity; a backend restart invalidates
 it. Revalidation occurs again at the breach reservation under its existing lock, and a changed
@@ -164,7 +164,7 @@ Capability consumption and write-ahead records precede external writes. Invalid 
 
 Unattended fixer push is off until explicitly enabled with acknowledgement of the PR race. It must also have been admitted for that run: enabling policy later does not retroactively authorize an old worker or legacy row. The host push-policy lock spans the final policy read and ref operation; disabling policy does not return while an already-authorized push is still in progress. See [commands](commands.md) for operator syntax.
 
-`safe_push._manifest` accepts exactly `base_head`, `message` and `files`, with these restrictions:
+`safe_push._manifest` accepts exactly one of two shapes, whole files `{base_head, message, files}` or a diff `{base_head, message, patch_b64, sha256}`, with these restrictions:
 
 - 1–24 unique whole-file entries; each has exactly `path`, `content_b64` and `sha256`.
 - Either whole files (up to 64 KiB decoded each, 128 KiB in total, 24 files) or one unified diff against the scoped head (up to 512 KiB decoded, 64 changed paths); valid base64 and matching SHA-256 required.
@@ -174,7 +174,7 @@ Unattended fixer push is off until explicitly enabled with acknowledgement of th
 - No top-level `.github` content; no `.gitmodules` or `.gitattributes` segment anywhere; no root `CODEOWNERS` or `docs/CODEOWNERS` (case-insensitive).
 - No duplicate path or file/directory conflict. Tracked ancestor files/symlinks, directory replacement and nonregular-file replacement are rejected.
 
-This is an add/replace-file interface, not deletion, renaming, arbitrary Git commands, workflow editing or executable-mode creation. Existing executable regular files retain their mode; new files are plain regular files.
+Regular files may be added, changed or (through a diff) deleted. This is not renaming, arbitrary Git commands, workflow editing or executable-mode creation. Existing executable regular files retain their mode; new files are plain regular files.
 
 The host uses a fresh bare Git repository and isolated config/environment. Hooks, credential helpers, signing and unapproved transports are disabled. It fetches an advertised ref, verifies the scoped head, constructs a single direct-child commit and pushes with an exact-SHA `--force-with-lease`. A conflict resolution (#303) is the one other shape: the host merges a pinned base commit into the scoped head itself (`git merge-tree`, no worktree), re-checks that the merge is still the tree the resolving turn was given, applies only the seat's resolution on top (every changed path checked as for any push, so no control file), refuses it if a conflict marker is left in a conflicted file, and commits it with exactly the parents (head, base) under the same exact-head lease. Only content conflicts (both sides changed a text file and Git wrote marker blocks) are resolved unattended: a whole-file conflict (a modify/delete, a rename, a binary file) leaves no markers, so it is refused and left to a person, and every conflicted file must be one the seat explicitly rewrote. Changes the base itself brings in are the base's, not the seat's; a base that changed workflow files cannot be pushed by a token without the `workflow` scope, so such a PR is left to a person too. With `review_only_update` on (off by default; `--acknowledge-branch-push` to opt in) the host makes one more kind of write, to a branch the loop does not own: for a review-only author's same-repository PR it merges the base into the head in the same isolated merge and pushes the merge commit, as the account that makes host merge pushes, under an exact-head lease. Only a clean merge with no workflow change is pushed; a real conflict, a whole-file conflict, a workflow change or a fork gets a notice only, and an author push in between fails the lease and overwrites nothing. A published merge cannot be undone by the loop. The push can fire only for a PR GitHub reports as `behind`, which it does only when the base requires branches to be up to date; on a base without that setting the opt-in never pushes and only the notice applies (`doctor` notes it). Issue fixes instead require the new branch to be absent. The lease syntax is not permission to overwrite unrelated history: the old SHA and parent relation are checked.
 

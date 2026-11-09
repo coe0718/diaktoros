@@ -166,6 +166,10 @@ def unavailable() -> str:
     return ""
 
 
+# The bwrap argv below keeps --die-with-parent and --unshare-all for more than containment
+# (#1769): run_supervisor.workers' WorkerLifecycle.recover() ends a cancelled lost run once its
+# worker PID is gone, which proves the sandbox gone only because bwrap, the worker's direct
+# child (contained._run), dies with it and takes the sandbox's PID namespace along.
 def command(*, code: Path, venv: Path, runtime: Path, home: Path,
             checkout: Path, rust: Path, query: Path, entry: list[str],
             network: bool = False, inference_socket_dir: Path | None = None,

@@ -714,6 +714,32 @@ class Dispatch(unittest.TestCase):
         listing.assert_called()
         self.assertFalse(any("armed state unknown" in line for line in lines), lines)
 
+    def test_drain_names_a_damaged_flag_not_a_hook_list(self):
+        """#1969: ``--drain --loop`` on an App loop whose pause flag is damaged says so; the loop
+        has no repo hook list, so "hook list unreadable" was the wrong reason."""
+        import argparse
+        from diaktoros import migrate, watch_mode
+        from scripts import watchdog
+        loop = self.app_loop()
+        (state_mod.state_for(loop).dir / app_ingress.FILE).write_text("{not json")
+        args = argparse.Namespace(loop="w", drain=True, seat="reviewer", conflicts=False)
+        out = io.StringIO()
+        with mock.patch.object(watch_mode, "TEST", False), \
+                mock.patch.object(migrate, "migrating", return_value=None), \
+                mock.patch.object(watchdog.config, "load_id", return_value=loop), \
+                mock.patch.object(watchdog, "drain") as drain, \
+                contextlib.redirect_stdout(out):
+            watchdog.run(args, 60.0)
+        drain.assert_not_called()
+        said = out.getvalue()
+        self.assertIn("w: pause flag unreadable (the pause flag (app-ingress.json)", said)
+        self.assertIn("nothing drained", said)
+        self.assertNotIn("hook list", said)
+        repo_hooks = {"id": "w", "repo": "acme/widgets"}     # control: a repo-hook loop's wording
+        self.assertEqual(watchdog.not_drained(repo_hooks, None, "HTTP 401"),
+                         "w: hook list unreadable (HTTP 401) — nothing drained")
+        self.assertEqual(watchdog.not_drained(loop, False, ""), "w: hooks are paused — nothing drained")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,9 @@
-# Shared hold explanations — ledger slice of #674
+# Hold explanations
 
-This is **partial implementation of #674**, not the complete three-surface policy contract.
+[Documentation map](README.md) · [Development](development.md) · [Architecture](architecture.md) · [Operations](operations.md)
+
+This page is the developer contract for one shared explanation of why a ledgered run is held.
+It is a **partial implementation of #674** (the ledger slice), not the complete three-surface policy contract.
 It introduces an additive, consumed contract for ledgered stalled runs. It does not close #674.
 
 ## Owner and consumers
@@ -105,8 +108,9 @@ predicates. Retry buttons continue to depend only on the existing `retry_action`
 5. Prove all named issue scenarios using their actual policy writers across all three consumers.
    The current prose-invariance tests prove non-inference, not complete scenario acceptance.
 
-Core files owned by concurrent #1151/#1154 work are intentionally untouched. If their new contracts
-alter gate facts, integrate with those owners rather than adding another policy implementation.
+This slice left the core files of #1151 and #1154 alone while that work was in flight; both have
+since landed. If a gate fact changes, change it in its owning module rather than adding another
+policy implementation.
 
 ### Closure boundaries
 
@@ -114,7 +118,7 @@ The narrow #1159/#1161/#1166 fixes require missing-versus-empty production-route
 proof, rejection of null explanation heads against valid parent identities, visible unavailable
 explanations for unknown heads, and consistent real-ledger waiting/failed/cancelled/uncertain
 advice in CLI and Desktop. Acceptance must run at the frozen source commit, including the locked
-JavaScript runner's 212 tests (199 fixture cases and 13 named real-TanStack cases) with no skips,
+JavaScript runner's 231 tests (13 of them named real-TanStack cases) with no skips,
 the strict dependency-equipped DesktopPython lane, full harness and leakguard sweep, plus
 source-hash-bound actual React browser renders. Browser SDK fixtures are not live Electron
 acceptance. These fixes do not close #674, implement #1301, or change execution policy.

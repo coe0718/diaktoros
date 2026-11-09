@@ -1,5 +1,7 @@
 # Command reference
 
+[Documentation map](README.md) · [Configuration](configuration.md) · [Settings](settings.md) · [Troubleshooting](troubleshooting.md)
+
 Every `hermes dk` command, what it is for, what it changes, and every flag it takes.
 New to the loop? Read [How it works](concepts.md) first; the words used here (seat, route, hook,
 reader, arm) are defined there.
@@ -72,7 +74,7 @@ No setting named here is an extra CLI flag.
 | `--host` | HTTP(S) gateway origin, optional port, no path/query/fragment/userinfo | Fresh unset; `init` requires it even without hooks. HTTPS is recommended. Trailing slash stripped. `set` refuses clearing it. |
 | `--skill`, display-name options | String; fresh empty | Skill is a prompt instruction, not installed by this flag. Plugin skill identifier: `diaktoros:review-loop` (a loop that still names `hermes-review-loop:review-loop` is read as the new name). Agent display names are cosmetic, not identities. |
 | `--attribution`, `--comment` | Exactly `on` or `off` | Attribution fresh on; triage comments fresh off. Attribution signs only plugin-mediated writes. |
-| Observer events | Comma-separated `opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held`; blank = all | Unknown names remain stored without a misconfiguration warning. Unknown-only input matches no transitions, so the feed is silent; use the listed names. |
+| Observer events | Comma-separated, from `opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined`; blank = all | Unknown names remain stored without a misconfiguration warning. Unknown-only input matches no transitions, so the feed is silent; use the listed names. |
 | Observer digest | Integer minutes; non-positive = per-transition, positive = watchdog-flushed batches | Negative values silently normalize to immediate delivery, not a misconfigured feed. Hand-edited unparseable values do the same; CLI flags require integers. Muting preserves configuration; disabling removes its route but retains delivery history. |
 | Delivery targets | Gateway/Hermes delivery string; observer fresh `telegram`, watchdog fresh `local` | Parser does not enumerate or verify configured destinations. Observer sends notices to another chat; verify privacy first. |
 | `--schedule` | Hermes cron schedule string, e.g. `15m`; init omitted = no cron, setup default `15m` | Delegated to Hermes cron parsing, not independently validated by plugin argparse. One shared watchdog job is reused. |
@@ -242,9 +244,10 @@ content, so they are safe to publish: see [Publishing stats](operations.md#publi
 
 ### calls
 
-Which GitHub calls spend the rate limit. The host counts every REST call it makes, by login,
-method, path shape (`/repos/R/pulls/N/reviews?page&per_page`: numbers, SHAs, branch names and
-query values taken out) and outcome:
+Which GitHub calls spend the rate limit. The host counts the REST calls of the processes that
+make nearly all of them (listed below), by login, method, path shape
+(`/repos/R/pulls/N/reviews?page&per_page`: numbers, SHAs, branch names and query values taken
+out) and outcome:
 
 - **spent**: an answer GitHub counted;
 - **free**: a `304 Not Modified` from a conditional read (the host keeps each read's ETag and
@@ -269,9 +272,12 @@ hermes dk calls --since 24h --top 30
 Counts are kept in whole hours, in one small file per process under
 `$HERMES_HOME/state/diaktoros-gh-calls/`, for two days (a long-running process drops its own
 older hours as it writes). Only the processes that keep the read
-cache keep a count: the watchdog, the gates and the turn workers, which make nearly every call.
-Commands that promise to write nothing (`doctor`, `explain`, `status`, the Desktop) are not
-counted. Read-only. The files hold logins and path shapes only: no token, body or error text.
+cache keep a count: the watchdog, the gates and the turn workers, which make nearly every call,
+and any process that runs a gate in-process (`hermes dk review`, or a review from the Desktop),
+from the moment its gate starts until that process exits. No other process is counted: not the
+other `hermes dk` commands (`doctor`, `explain`, `status`, `stats --github`, `update` and the
+rest), and not the Desktop until it runs a review. Read-only. The files hold logins and path
+shapes only: no token, body or error text.
 
 <!-- flags:calls -->
 | flag | value | default | what it does |
@@ -312,7 +318,9 @@ reader, one read per PR, at most 100) each time the report runs. `merged`, `clos
 Merge conversion is merged over decided (merged + closed). Turns per merged fix count the
 issue-fix turn and every turn that ran on its PR after it: reviews, fixes, CI fixes, conflict
 turns and rulings. Operator steps are the explicit ones on that PR after the proposal: `retry`,
-`escalate`, `review` (a fresh review asked for) and `hold` (a maintainer's hold began). They are
+`escalate`, `review` (a fresh review asked for), `reconsider` (`review --reconsider`), `cancel`,
+`hold` (a maintainer's hold began) and `agent hold` (a hold by an operator agent, counted apart
+from a person's). They are
 recorded from this version on, so the line says when the first was; earlier work is a lower
 bound. Human overrides (#220) are not among them.
 
@@ -339,7 +347,8 @@ sweep filed for shadow reviews whose request was recorded in the window, per sha
 many were later fixed, meaning an issue-fix PR the loop proposed for the issue has merged (read
 now, as the issue fixes' PRs are). A fix made outside the loop is not counted as fixed; one not
 filed (duplicate, denied, waiting) is not counted at all, and the adjudicator's `adjudicator-found`
-issues are not in it. With `file_issues` off, the line never appears. Request → verdict is
+issues are not in it. With `file_issues` off nothing new is filed, but the line still appears for
+issues filed in the window while it was on. Request → verdict is
 measured from the review run's creation to its receipt.
 
 Human overrides (#220, first step): a PR merged over a standing changes-requested. The watchdog
@@ -347,9 +356,11 @@ sweep reads the repository's recently merged PRs (the last 30 updated, merged wi
 author the loop reviews) and their reviews; when the loop reviewer's latest live verdict at the
 merged head is changes-requested, it writes one record (PR, head, seat, the resolved model of the
 reviewer run that posted it, and the findings still open) to the run ledger. A merge after an
-approval, a dismissed review, or a verdict at an earlier head writes none; reviews that cannot be
-read or ordered are read again each sweep while the merge is within the 7 days; one never
-proved by then is not recorded. The report lists them by the day of the merge, with a
+approval, a dismissed review, or a verdict at an earlier head writes none. A merge is read again
+each sweep while it is within the 7 days when its reviews cannot be read or ordered, when no
+verdict is proved current at the merged head, or when the reviewer has a pending review there
+(GitHub shows a pending review only to its author, so the host cannot tell it from no review);
+one never proved by then is not recorded. The report lists them by the day of the merge, with a
 count per model and per category of the findings still open (each blocking finding carries one of
 `correctness`, `test`, `requirement`, `docs`, `security` or `other`, tagged by the reviewer as
 `F1 [test]: …`). Nothing changes behaviour. Not recorded yet: a dismissed review, a reversed
@@ -453,8 +464,8 @@ hermes dk setup --repo "<owner>/<repository>" --dry-run
 
 Running it again is safe: whatever is already in place is kept, so a second run only repairs what
 is missing or broken. `--dry-run` shows every step and writes nothing. `--yes` asks no questions:
-your flags and the settings form are the answers and every confirmation is yes, except arming,
-which still needs `--arm`. Without a terminal (in a script), it refuses unless you pass `--yes`.
+your flags and the settings form are the answers and every confirmation is yes, except requiring
+the merge check and arming, which still need `--protect` and `--arm`. Without a terminal (in a script), it refuses unless you pass `--yes`.
 
 Resuming reads the onboarding record, which `selftest` and `arm` write (#1617). A loop whose
 checks were never recorded (verified by hand, or before #1617) runs every step as before. The
@@ -562,7 +573,8 @@ Installs a new loop for one repository. Through a staged installation it writes:
 3. the gate shims in each seat profile's `scripts/` directory, the small files the gateway runs
    when a route is called;
 4. with `--hooks`, the two GitHub repo hooks, created **paused** (nothing happens until
-   [`arm`](#arm));
+   [`arm`](#arm)). A loop with `--ingress app-webhook` gets no repo hooks: its events arrive on the
+   App's own route, and `init` names the [`app-webhook --set`](#app-webhook) command to run next;
 5. with `--schedule`, the shared watchdog cron job, created only if it does not exist yet.
 
 Everything is checked before the first file is written: the profiles exist, the logins are in
@@ -1143,8 +1155,10 @@ update picks up, the merged PRs among them (squash `title (#N)` and `Merge pull 
 commits; only the subject identifies the PR, so a commit whose subject ends in `(#N)` counts as PR
 #N even when it is a direct push naming an issue, and a commit naming no PR counts as a commit
 only. The shown title is the subject for a squash commit, but for a `Merge pull request #N` commit
-it is the first nonblank line of the body), and the exact install line. GitHub's compare lists at
-most 250 commits, so past that the PR list says it is partial.
+it is the first nonblank line of the body, or empty when the body has none. A `(#N)` inside either
+is dropped, so `Revert "Fix a thing (#876)" (#900)` shows `Revert "Fix a thing"`), and the exact
+install line. GitHub's compare lists at most 250 commits, so past that the PR list says it is
+partial.
 
 - `--apply` runs that install line with `--ref` set to the target's commit, then
   `hermes dk doctor --loop <id>`, and reports the new commit. It refuses while any run is in
@@ -1369,9 +1383,11 @@ hermes dk onboard --loop "<loop-id>" --pr 12
   only whether unattended fixer pushes are on, and the command that turns them on.
 - To tell whether the `live_turn` and `armed` stages are still current, it reads the PR's head
   and the repo's hooks from GitHub, and only for stages that were recorded. Every request to the
-  repository is a GET. The one POST is authentication: a reader that is a GitHub App first mints
-  an installation token with `POST /app/installations/{id}/access_tokens` (a PAT reader sends no
-  POST). That mints a credential and changes nothing in the repository. If a read
+  repository is a GET. The only POST is authentication: a reader that is a GitHub App with no
+  usable stored installation token first mints one with
+  `POST /app/installations/{id}/access_tokens`. A token another host process stored is reused
+  until shortly before it expires, so often no POST is sent, and a PAT reader never sends one.
+  A mint makes a credential and changes nothing in the repository. If a read
   fails, the stage shows `stale`. The record is kept by `onboarding.py` (#1598) and written by the
   commands themselves (#1617); a loop whose commands have not run since then, or that was verified
   by hand, still shows `not_attempted`.
@@ -1467,8 +1483,8 @@ hermes dk arm --loop "<loop-id>" --pause --admin-token "<hook-admin-login>"
 Run it after `doctor` and `selftest` pass. It reads back each hook and exits `1` unless GitHub
 confirms every one is in the state you asked for. It edits the hooks as `--admin-token`'s login
 (default: the reader), which needs hook write access: for a PAT, `repository_hooks: write` (or
-classic `repo`); for a GitHub App login, the App's Webhooks: Read and write permission, with the App
-installed on the repo.
+classic `repo` or `admin:repo_hook`); for a GitHub App login, the App's Webhooks: Read and write
+permission, with the App installed on the repo.
 
 **Safety.** Omission of `--loop` affects every configured loop; prefer an exact id.
 Pause stops new hook deliveries, not already running turns. Arming is not fixer-push consent.
@@ -1598,6 +1614,12 @@ the loop worked at). It joins what the loop already keeps:
   journaled (`broker-audit.jsonl`), such as a fixer's push and the commit it made;
 - GitHub: the reviews' full bodies, the PR's commits and comments, and whether it merged.
 
+Above the timeline, one `summary:` line gives the cycle's totals: rounds, turns, tokens (and cost,
+when a provider reports one), the time from the first review to the merge, and how the findings
+ended, for example `2 rounds · 5 turns · 410k tokens · first review to merge 9m · findings: 2
+raised, 1 fixed, 1 overruled`. It counts only what is on record: a turn with no recorded tokens
+is named as unrecorded, not guessed, and with `--offline` there is no merge time to count to.
+
 Under the timeline, each finding gets a one-line life: the round it was raised at, then fixed,
 withdrawn, overruled or upheld by a ruling, disputed, or still open. The outcome is the one
 [`report`](#report) counts, from the same rule.
@@ -1610,7 +1632,16 @@ a failed turn's output tail) passes the loop's redactor before it is printed.
 hermes dk history --loop "<loop-id>" --pr 12
 hermes dk history --loop "<loop-id>" --pr 12 --format markdown
 hermes dk history --loop "<loop-id>" --pr 12 --offline --format json
+hermes dk history --loop "<loop-id>" --since 2026-11-01 --out cycles --format json
 ```
+
+`--since DATE --out DIR` (instead of `--pr`) writes every merged PR the loop took a turn on since
+`DATE` (`7d`, `24h` or `2026-11-01`) to its own file in `DIR`: `pr-N.json`, `pr-N.md` or
+`pr-N.txt`, each exactly what `--pr N` prints in that format, with the PR's whole cycle (turns
+before the date included). It lists what it wrote and which PRs it skipped as not merged. With
+`--offline` the merge is not read, so every PR with a turn in the window is written. A file of the
+same name in `DIR` is replaced; nothing is written anywhere else. Use it to publish several cycles
+to the site's run viewer at once.
 
 `--format markdown` gives the same timeline as a document, for a PR comment, a write-up or an
 archive: a findings table, a heading per round, and links to each review, commit, comment, answers
@@ -1619,13 +1650,16 @@ when a key is renamed, removed or changes meaning. No output names a local path:
 a `file://` URL in a free text, such as a failed turn's output tail, is cut to its last part
 (`…/state.json`). A path may hold spaces, so the cut goes to its last `/` and can take a few words
 before it with it. `--offline` leaves GitHub out and
-lists what that leaves missing. It exits `2` only when no loop can be chosen.
+lists what that leaves missing. It exits `2` when no loop can be chosen, or when it gets neither
+or both of `--pr` and `--since`, or `--since` without `--out`.
 
 <!-- flags:history -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
-| `--pr` | `PR` | **required** | pull request number |
+| `--pr` | `PR` |  | pull request number (or use --since) |
+| `--since` | `SINCE` |  | every merged PR with a turn since then: 7d, 24h or a date like 2026-11-01; needs --out |
+| `--out` | `DIR` |  | with --since: write one file per PR (pr-N.json, .md or .txt) to DIR |
 | `--offline` |  |  | leave GitHub out (review bodies, commits, comments, merge) and say what is missing |
 | `--format` | `text` \| `markdown` \| `json` | `text` | text for the terminal, markdown for a comment or archive, json for tools (default text) |
 <!-- /flags -->
@@ -1637,8 +1671,9 @@ left out. Read-only: the loop never merges.
 
 A PR is listed when it is approved at its head, that approval is not stale (#473), the required
 checks are green, GitHub reports it mergeable, and nothing holds it (draft, open gate failure,
-human-paths hold, escalation, issue-fix hold, shadow-review hold (with `shadow.escalate`),
-same-head retarget hold). A retarget hold blocks only while its fresh review is
+human-paths hold, escalation, shadow-review hold (with `shadow.escalate`),
+same-head retarget hold). An issue whose fix waits for this PR to merge does not hold the PR itself.
+A retarget hold blocks only while its fresh review is
 still owed; a host-receipted approval at that head lifts it. Anything unreadable
 excludes the PR and says so. A stacked PR (based on another PR's branch) comes after its parent
 and is excluded until the parent is ready. PRs changing the same files are listed one after
@@ -1681,6 +1716,8 @@ already at this head, and the verdict cap. It makes no GitHub write; the review 
 write, as usual. It prints `review queued` (exit 0), or `no review started —` and the gate's own
 reason (exit 1). Exit 2 when:
 - the loop or the PR cannot be read, or several loops are configured and no `--loop` names one;
+- `--reconsider` and `--another-round` are both given (`--reconsider and --another-round ask for
+  different things; use one`): it is refused before any gate runs;
 - a migration holds the install (`a migration holds the install — nothing started; ask again
   after it`): no gate runs while names are being moved;
 - with `--another-round`, the PR's reviews cannot be read (`the reviews could not be read —
@@ -1702,7 +1739,7 @@ budget, stop it. On any non-finish, check `explain` before asking again.
 
 A crash, a budget overrun and a non-zero exit of the gate are recorded in the same gate-failure
 ledger as a webhook delivery's (`gate-failures.json` in the loop's state directory, or the
-no-loop ledger when that is busy or unwritable), so `explain`, `doctor` and the watchdog's
+no-loop ledger when that is busy or unwritable), so `explain`, `ready` and the watchdog's
 gate-failure sweep report them. The entry is never re-driven by the watchdog (it cannot rebuild
 your command, `--reconsider` included): the sweep alerts it, and the way forward is to run
 `review` again, which resolves the entry once the gate finishes. An unbounded hang outside a
@@ -1720,8 +1757,8 @@ review requests changes, the fixer takes it as usual. An approval adds no round,
 changes-requested verdicts count toward the cap. One per head: a second reconsider of the same
 head is refused, and a new head gets its own review. It's the host operator's alone. No webhook
 or GitHub comment can start one, so a re-request on GitHub still gets "head already has a
-reviewer's verdict". It can't be combined with `--another-round`, and it's refused at a head
-that has no verdict yet (a plain `review` asks for one) or that is escalated to adjudication.
+reviewer's verdict". It can't be combined with `--another-round` (exit 2), and it's refused at a
+head that has no verdict yet (a plain `review` asks for one) or that is escalated to adjudication.
 It's also refused when the verdict cap is spent (#1453): at a fixer PR with `cap` or more
 changes-requested verdicts (say, a cap lowered after the approval) the gate would park the PR for
 adjudication instead of reviewing it, so a reconsider never reaches the gate there and never
@@ -1752,7 +1789,7 @@ that started nothing leaves nothing behind.
 Makes one issue's fix wait for another issue's implementation (#671): issue B (`--issue`) is
 not handed to the fixer until issue A (`--on`) has its implementation merged into the loop's
 base. Only you declare a dependency; the loop never reads one from issue text (#686), and a
-maintainer's comment can't declare one yet (#708).
+maintainer's comment can't declare one either (#708, closed as not planned).
 
 ```bash
 hermes dk depends --loop "<loop-id>" --issue 42 --on 41

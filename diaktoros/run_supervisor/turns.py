@@ -628,8 +628,11 @@ class ClaimAndLaunch:
         else:
             # No 429 to say when (#1325): the DirectSDK path answers a closed window with empty
             # streams. Hold the account, for every seat on it, for a short growing window.
-            detail = pacing.unavailable_signature(turn.observed.get('stdout'),
-                                                  turn.observed.get('stderr'))
+            # The same window runs.detail keeps: the capture holds DETAIL_MARGIN times more
+            # (#2083) only so redaction sees a token at the cut whole.
+            detail = pacing.unavailable_signature(
+                (turn.observed.get('stdout') or '')[-run_supervisor.DETAIL_STDOUT_BYTES:],
+                (turn.observed.get('stderr') or '')[-run_supervisor.DETAIL_STDERR_BYTES:])
             if detail is not None:
                 until = pacing.hold_unavailable(account, detail)
             elif (until := _provider_strike(turn, account)) is None:
@@ -807,8 +810,9 @@ class ClaimAndLaunch:
         spent, while the PR conflicts or a required check is running, cancelled, missing or
         unreadable; and it never reviews a red head, which it gives up (cancelled). Stricter
         than the reviewer on purpose: running checks hold it whatever ``review_after_ci`` says,
-        a red head is never reviewed (the reviewer's is, once the fixer's CI-fix budget is
-        spent), and past ``run_supervisor.CI_WAIT_MAX_S`` with CI unfinished it gives the head up rather than
+        a red head is never reviewed (the reviewer's waits for green or a new head, #1110,
+        except where CI fixes are off for a fixer's PR), and past
+        ``run_supervisor.CI_WAIT_MAX_S`` with CI unfinished it gives the head up rather than
         review it. A shadow verdict is a sample of a model, so it is taken only on code CI
         passed. Sets ``turn.error``."""
         from .. import ci, config, gh, shadow_queue

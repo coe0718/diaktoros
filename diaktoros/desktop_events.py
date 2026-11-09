@@ -18,10 +18,14 @@ from . import config
 
 MAX_ENTRIES = 4096
 MAX_CONFIG_BYTES = 1024 * 1024
-# Worker-private subtrees under a loop's state dir that no Desktop view reads: isolated seat
-# homes (tens of thousands of files while a turn runs), dependency checkouts and the CI
-# cache. Watching them only made every scan overflow, and an overflowing scan used to
-# invalidate every second. The page's own polling still covers anything left unwatched.
+# Worker-private subtrees that no Desktop view reads: isolated seat homes (tens of thousands
+# of files while a turn runs), dependency checkouts and the CI cache, which a loop keeps in
+# its state dir. The names are matched by basename wherever they appear below any scanned
+# root (the config dir, the gate_failures and seat_locks roots, every state root), not only
+# in a loop's state dir; such a directory is stamped but not descended, and a root is always
+# descended whatever its name. Watching them only made every scan overflow, and an
+# overflowing scan used to invalidate every second. The page's own polling still covers
+# anything left unwatched.
 PRUNED_DIRS = frozenset({"isolated-runs", "deps", "ci-cache"})
 # At most one invalidation per MIN_GAP seconds: a burst of ledger writes during a turn is
 # delivered once, on the leading edge, and anything after it on the trailing edge.

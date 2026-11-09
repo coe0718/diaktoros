@@ -75,11 +75,15 @@ RETRY_CAP = 3600.0
 # 8 KB of stdout (the agent's own closing text) and 2 KB of stderr are kept, redacted. The one
 # place the split is named: ``output_detail``, the fixture worker's file tail and the production
 # turn's capture (``trusted_turn``) all read these. What is *shown* stays short: an operator
-# notice and ``explain`` print only the last ``DETAIL_SHOWN_BYTES`` of it.
+# notice prints only the last ``DETAIL_SHOWN_BYTES`` of it, and ``explain`` its last 6 lines,
+# each cut to 200 characters. The fixture's file tail and the production capture hand
+# ``output_detail`` ``DETAIL_MARGIN`` times what it stores of each stream, so its redaction sees a
+# token split by the final cut whole (#2083).
 DETAIL_STDOUT_BYTES = 8192
 DETAIL_STDERR_BYTES = 2048
 DETAIL_BYTES = DETAIL_STDOUT_BYTES + DETAIL_STDERR_BYTES
 DETAIL_SHOWN_BYTES = 1200
+DETAIL_MARGIN = 4
 REARMABLE = ("failed", "cancelled")
 SEATS = ("reviewer", "fixer", "adjudicator", "triage", "issue_fixer", "shadow")
 # A second reviewer model in no-write mode (#218). It runs beside the real loop and never in it:
@@ -345,7 +349,7 @@ def output_detail(stdout: object, stderr: object) -> str | None:
     parts = []
     for name, value, limit in (('stderr', stderr, DETAIL_STDERR_BYTES),
                                ('stdout', stdout, DETAIL_STDOUT_BYTES)):
-        text = tail(redact(tail(value, 4 * limit)), limit)
+        text = tail(redact(tail(value, DETAIL_MARGIN * limit)), limit)
         if text:
             parts.append(f'{name}: {text}')
     return '\n'.join(parts) or None
@@ -1043,8 +1047,8 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch, notices.OperatorNo
                         stopped = False
             finally:
                 try:
-                    detail = output_detail(_file_tail(out, DETAIL_STDOUT_BYTES),
-                                           _file_tail(err, DETAIL_STDERR_BYTES))
+                    detail = output_detail(_file_tail(out, DETAIL_MARGIN * DETAIL_STDOUT_BYTES),
+                                           _file_tail(err, DETAIL_MARGIN * DETAIL_STDERR_BYTES))
                 except OSError:
                     detail = None
                 # A failed launch remains failed, not retryable: spawn may have occurred. A

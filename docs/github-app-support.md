@@ -1,5 +1,7 @@
 # GitHub App support
 
+[Documentation map](README.md) · [Getting started with GitHub Apps](github-apps.md) · [Accounts](accounts.md)
+
 What three GitHub App identities (reader, reviewer, fixer) can actually do on GitHub, observed on
 2026-10-21 against a throwaway repository in the M0 feasibility spike (#1164). This evidence
 shaped the App mode built in #1163, and the sections below record how each finding was answered.
@@ -61,8 +63,9 @@ To set a loop up with Apps, see [Getting started with GitHub Apps](github-apps.m
     carries `read_status`, the HTTP status of `GET /app/hook/deliveries`. When it is not 200 the
     list field (`since_start` or `reader`) is `null`, not `[]`: an unread list is not "no event
     was sent", and a `null` list proves nothing about rows 3 and 5. Each event also carries
-    `detail_status`, the status of the read of its own payload; when it is not 200 the payload
-    fields (`sender`, `review_state` and the rest) are `null` because they were not read.
+    `detail_status`, the status of the read of its own payload; when it is not 200 every payload
+    field (`sender`, `review_state`, `review_commit`, `installation` and the rest) is `null`
+    because it was not read.
   - The permission probes in "The reviewer App's permissions are wider than its seat" (contents
     push, merge, title edit, adding a label, close and then reopen) are the `reviewer_permissions`
     step.
@@ -132,7 +135,7 @@ status, which branch protection cannot pin to one identity. To make it the block
 own that requires `diaktoros/review`, pinned to the reviewer App, with no bypass. `doctor`'s
 `merge-check` line says whether the base requires the check and from which App, and flags a base
 that still requires approvals (an App's never count, so each PR would need a person's), and one
-that requires the check while the loop does not post it, or from an App that is not the reviewer (a PAT reviewer's commit status never satisfies a pinned check): every PR would stay blocked. A base it could only half read is never reported as verified. For a loop that does not post the check, a half-read base is silent unless the half that answered requires other status checks: then `merge-check` is ⚠️, since the unread half (usually classic protection, which needs admin access to read) may require `diaktoros/review` too. A half-read base whose readable half requires no checks stays silent, so a requirement in the unread half goes unreported there; give the reader the access named in the fix, or check repo settings → rules by hand.
+that requires the check while the loop does not post it, or from an App that is not the reviewer (a PAT reviewer's commit status never satisfies a pinned check): every PR would stay blocked. A base it could only half read is never reported as verified. For a loop that does not post the check, a half-read base is silent unless the half that answered requires other status checks: then `merge-check` is ⚠️, since the unread half (usually classic protection, which needs admin access to read) may require `diaktoros/review` too. A half-read base whose readable half requires no checks stays silent, so a requirement in the unread half goes unreported there; give the reader admin access to read classic branch protection (a PAT reader: classic `repo` on an admin account; an App reader: **Administration: Read**), or check repo settings → rules by hand.
 
 ## An App as the hook admin (#1196)
 

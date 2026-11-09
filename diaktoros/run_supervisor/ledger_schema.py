@@ -109,9 +109,12 @@ CREATE TABLE IF NOT EXISTS filed_issues (
 -- An issue a shadow review asked to file (#914): its broker is no-write, so the request is recorded
 -- here, never posted by the seat. The host files it once the real review exists at that head and
 -- the reviewer did not file the same finding (shadow_issues.file_pending), as the reader, labelled
--- shadow-found. state: recorded → posting → posted (issue_number), duplicate, uncertain or denied.
--- unlabelled: filed (issue_number), but GitHub did not apply some of its labels; error says
--- which, and why (#1589). It is never filed again, and counts toward the daily cap.
+-- shadow-found. state: recorded → posting → posted (issue_number), duplicate, uncertain or denied;
+-- a POST refused with nothing written (broker.BrokerNotSent) sends posting back to recorded, with
+-- the reason in error, and a later sweep tries it again.
+-- unlabelled: filed (issue_number), but its labels are not confirmed: GitHub did not apply some,
+-- or the label write got no answer; error says which, and why (#1589). It is never filed again,
+-- and counts toward the daily cap.
 -- attempts: POSTs refused with nothing written (#1732); at shadow_issues.MAX_ATTEMPTS the row is
 -- denied, so a reader that can never file does not keep every row in the sweep for ever.
 CREATE TABLE IF NOT EXISTS shadow_issues (
