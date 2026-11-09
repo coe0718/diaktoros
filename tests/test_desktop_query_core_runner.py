@@ -106,5 +106,19 @@ class LaunchContract(unittest.TestCase):
                 runner.query_core_entry()
 
 
+class DocumentedCountsTest(unittest.TestCase):
+    """The docs quote the runner's pass count; they must move with it (#1906)."""
+
+    def test_docs_quote_the_runners_counts(self):
+        docs = Path(__file__).resolve().parents[1] / "docs"
+        real = len(runner.REQUIRED_REAL_TESTS)
+        for page, phrase in (
+                ("development.md", f"{runner.EXPECTED_TESTS} executed passes ({real} of them named real-cache cases)"),
+                ("hold-explanations.md", f"runner's {runner.EXPECTED_TESTS} tests ({real} of them named real-TanStack cases)")):
+            with self.subTest(page=page):
+                text = " ".join((docs / page).read_text(encoding="utf-8").split())
+                self.assertIn(phrase, text)
+
+
 if __name__ == "__main__":
     unittest.main()
