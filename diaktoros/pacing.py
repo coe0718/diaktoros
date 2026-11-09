@@ -43,6 +43,9 @@ UNAVAILABLE = "provider unavailable"
 UNAVAILABLE_BASE_S = 15 * 60
 UNAVAILABLE_MAX_S = 2 * 3600
 _UNAVAILABLE_FORGET_S = 6 * 3600
+# A turn the provider killed (#1155), as the inference proxy records it: an HTTP error status, or
+# an upstream it could not reach. ``proxy refused: …`` is the proxy's own policy, never this.
+_PROVIDER_FAILURE = re.compile(r"(?:HTTP [45]\d\d|upstream unreachable): ")
 _UNAVAILABLE_SIGNS = (
     (re.compile(r"empty stream with no finish_reason", re.I), "empty stream with no finish_reason"),
     (re.compile(r"didn.t answer after \d+ attempts", re.I), "wire didn't answer"),
@@ -315,15 +318,80 @@ def hold_unavailable(key: str, detail: str, now: float | None = None) -> float:
     return until
 
 
+def provider_failure(error: object) -> bool:
+    """Whether a failed turn's last provider error (the proxy's ``last_error``) is the
+    provider's own: an HTTP error status or an unreachable upstream (#1155)."""
+    return bool(_PROVIDER_FAILURE.match(str(error or "")))
+
+
+def count_provider_failure(key: str, error: str, limit: int,
+                           now: float | None = None) -> float | None:
+    """A turn on ``key`` died on a provider error (#1155): count it, and at ``limit`` in a row
+    hold the account as an outage does (``hold_unavailable``). Returns when that hold ends, or
+    None while the count is under ``limit``.
+
+    The count stays at ``limit`` once reached, so the first provider failure after the hold
+    lapses holds again at once, for a doubled window: that turn was the probe. A success
+    (``clear_unavailable``) or any other failure (``reset_provider_failures``) ends the run, and
+    a count untouched for ``_UNAVAILABLE_FORGET_S`` starts over.
+    """
+    now = time.time() if now is None else now
+    with _locked() as file:
+        data = _load(file)
+        counts = data.setdefault("provider_failures", {})
+        prev = counts.get(key) if isinstance(counts.get(key), dict) else {}
+        recent = isinstance(prev.get("last"), (int, float)) and now - prev["last"] < _UNAVAILABLE_FORGET_S
+        count = min((int(prev.get("count") or 0) if recent else 0) + 1, limit)
+        counts[key] = {"count": count, "last": now}
+        _save(file, data)
+    if count < limit:
+        return None
+    return hold_unavailable(key, f"{limit} turns in a row: {error}", now)
+
+
+def reset_provider_failures(key: str) -> bool:
+    """A turn on ``key`` failed for another reason (#1155): the provider answered, so a run of
+    provider failures is over. True if one was counted."""
+    if key not in (_load(path()).get("provider_failures") or {}):
+        return False                        # the usual case: no lock, no write
+    with _locked() as file:
+        data = _load(file)
+        data.get("provider_failures", {}).pop(key, None)
+        _save(file, data)
+    return True
+
+
+def clear_holds(profiles: set[str], now: float | None = None) -> list[str]:
+    """``retry --clear-hold`` (#1155): drop every hold on an account of these seat profiles,
+    a provider's own 429 window too (a turn that meets it again holds it again), with the
+    outage strikes and provider failures counted there. Returns the accounts whose hold was
+    still closed."""
+    now = time.time() if now is None else now
+    cleared = []
+    with _locked() as file:
+        data = _load(file)
+        for section in ("holds", "unavailable", "provider_failures"):
+            table = data.get(section) if isinstance(data.get(section), dict) else {}
+            for key in [key for key in table if key.rsplit("|", 1)[-1] in profiles]:
+                entry = table.pop(key)
+                if (section == "holds" and isinstance(entry, dict)
+                        and isinstance(entry.get("until"), (int, float)) and entry["until"] > now):
+                    cleared.append(key)
+        _save(file, data)
+    return sorted(cleared)
+
+
 def clear_unavailable(key: str) -> bool:
-    """A turn succeeded on ``key``: its provider answers. Drop a provider-unavailable hold and
-    the strikes behind it (a 429 hold is the provider's own word and stays); True if any went."""
+    """A turn succeeded on ``key``: its provider answers. Drop a provider-unavailable hold, the
+    strikes behind it and any provider failures counted (#1155) (a 429 hold is the provider's
+    own word and stays); True if any went."""
     data = _load(path())
-    if key not in (data.get("unavailable") or {}):
+    if not any(key in (data.get(section) or {}) for section in ("unavailable", "provider_failures")):
         return False                        # the usual case: no lock, no write
     with _locked() as file:
         data = _load(file)
         data.get("unavailable", {}).pop(key, None)
+        data.get("provider_failures", {}).pop(key, None)
         holds = data.get("holds") if isinstance(data.get("holds"), dict) else {}
         entry = holds.get(key)
         if isinstance(entry, dict) and str(entry.get("reason") or "").startswith(UNAVAILABLE):

@@ -406,6 +406,15 @@ SETTINGS_SCHEMA: dict = {
                                         "runs per head, a whole number 1-50; the reviewer is "
                                         "told how many there were. Blank = not set here: the "
                                         "loop's own value, else 20"},
+    "provider_breaker_failures": {"label": "Provider failures before the account waits",
+                                  "type": "str", "default": "",
+                                  "description": "Turns in a row that die on a provider error "
+                                                 "(an HTTP error or an unreachable provider) "
+                                                 "before every seat on that account waits, "
+                                                 "15 minutes and doubling up to 2 hours, "
+                                                 "spending no retry; a whole number 0-20, 0 = "
+                                                 "off. Blank = not set here: the loop's own "
+                                                 "value, else 3"},
     "attribution": {"label": "Sign what the loop posts", "type": "bool", "default": True,
                     "description": "On: every review, comment and commit the loop itself "
                                    "posts ends with 'Automated by Diaktoros' and "
@@ -627,7 +636,8 @@ def _apply_switches(overlaid, d, settings) -> None:  # noqa: ANN001
         overlaid["operator_agents"] = [name.strip() for name in str(d["operator_agents"]).split(",")
                                        if name.strip()]
     for key, check in (("ci_fix_cap", lists.check_ci_fix_cap),
-                       ("change_proof_max", lists.check_change_proof_max)):
+                       ("change_proof_max", lists.check_change_proof_max),
+                       ("provider_breaker_failures", lists.check_provider_breaker_failures)):
         if _form_value(settings, key) is not None:
             overlaid[key] = check(config.form_int(d[key].strip()), "settings")
     for key in ("review_only_cap", "review_only_daily"):

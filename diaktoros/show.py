@@ -198,6 +198,8 @@ def _rows_review_only(schema, triage, loop) -> None:  # noqa: ANN001
            derived=f"cap ({loop['cap']})")
     schema("ci_fix_cap", ("ci_fix_cap",), config.ci_fix_cap(loop))
     schema("change_proof_max", ("change_proof_max",), config.change_proof_max(loop))
+    schema("provider_breaker_failures", ("provider_breaker_failures",),
+           config.provider_breaker_failures(loop) or "off")
     schema("review_only_daily", ("review_only_daily",), loop.get("review_only_daily") or "no cap",
            note=(f"separate pool: review-only turns count here, not against seats.reviewer."
                  f"daily_turns ({config.seat_daily_turns(loop, 'reviewer') or 'no cap'}), "

@@ -501,6 +501,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000 (default: the plugin setting, else the review cap) |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10 (default: the plugin setting, else 3) |
 | `--change-proof-max` | `N` |  | changed tests the change proof runs per head, 1-50 (default: the plugin setting, else 20) |
+| `--provider-breaker-failures` | `N` |  | turns in a row killed by a provider error before the account waits, 0-20, 0 = off (default: the plugin setting, else 3) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000 (default: the plugin setting, else no cap) |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting) |
 | `--operator-agent` | `OPERATOR_AGENT` (repeatable) |  | a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated) (default: the plugin setting) |
@@ -662,6 +663,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000 (default: the plugin setting, else the review cap) |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10 (default: the plugin setting, else 3) |
 | `--change-proof-max` | `N` |  | changed tests the change proof runs per head, 1-50 (default: the plugin setting, else 20) |
+| `--provider-breaker-failures` | `N` |  | turns in a row killed by a provider error before the account waits, 0-20, 0 = off (default: the plugin setting, else 3) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000 (default: the plugin setting, else no cap) |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting) |
 | `--operator-agent` | `OPERATOR_AGENT` (repeatable) |  | a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated) (default: the plugin setting) |
@@ -769,6 +771,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000; 0 = the review cap |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10; 0 = the default (3) |
 | `--change-proof-max` | `N` |  | changed tests the change proof runs per head, 1-50; 0 = the default (20) |
+| `--provider-breaker-failures` | `N` |  | turns in a row killed by a provider error before the account waits, 0-20; 0 = off, '' = the default (3) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000; 0 = no cap |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated); replaces the list (one of `--review-only`, `--no-review-only`) |
 | `--no-review-only` |  |  | clear the review-only list (one of `--review-only`, `--no-review-only`) |
@@ -1879,12 +1882,26 @@ arbitrary cancellations.
 pushed, or ended `uncertain`) is never replayed: `retry` refuses it and prints how to inspect
 and reconcile it instead.
 
+`--clear-hold` with `--seat` reopens the account that seat draws on (see
+[pacing](operations.md#pacing-usage-windows-and-daily-caps)), and `--pr` isn't needed. Use it
+after you switch the seat's model, or once its provider is back. The account is the provider,
+endpoint and profile, with no model in it, so a model switch alone doesn't end the hold. It
+clears every hold on the seat's profile, a provider's own 429 window too, with the outage and
+provider-failure counts behind it. Then it makes this loop's runs held on a closed account due
+now, on every seat of that profile, and starts a worker. A turn that meets the same outage or
+429 holds the account again. With `--pr` as well, that PR's run is then re-armed as usual.
+
+```bash
+hermes dk retry --loop "<loop-id>" --seat fixer --clear-hold
+```
+
 <!-- flags:retry -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
-| `--pr` | `PR` | **required** | the pull request whose failed run to re-arm |
+| `--pr` | `PR` |  | the pull request whose failed run to re-arm (required unless --clear-hold) |
 | `--seat` | `reviewer` \| `fixer` \| `adjudicator` \| `triage` \| `issue_fixer` \| `shadow` |  | only that seat's run (default: whichever failed at the PR's newest head; a shadow run only when named) |
+| `--clear-hold` |  |  | with --seat: reopen the account that seat draws on (a provider outage or usage-window hold) and run its held turns now, e.g. after switching its model; with --pr, then re-arm that PR's run too |
 <!-- /flags -->
 
 ### cancel

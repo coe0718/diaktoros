@@ -187,8 +187,9 @@ class ProxyReadsTheReset(unittest.TestCase):
         self.assertIsNone(until)
 
 
-class ProductionWorker(unittest.TestCase):
-    """The real ``_run_production``, its turn faked, as test_turn_budget drives it."""
+class ProductionBase(unittest.TestCase):
+    """The real ``_run_production``, its turn faked, as test_turn_budget drives it. No tests of
+    its own, so test_provider_breaker can build on it without running these twice."""
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -254,6 +255,8 @@ class ProductionWorker(unittest.TestCase):
             sup._run_production(row["id"], "w")
         return sup.get(f"acme/widgets:8:{HEAD}:{seat}")
 
+
+class ProductionWorker(ProductionBase):
     def test_a_429d_turn_waits_for_the_reset_without_spending_a_retry(self):
         reset = time.time() + 3600
 

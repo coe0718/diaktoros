@@ -431,6 +431,14 @@ def cmd_retry(args) -> int:
     except config.ConfigError as exc:
         print(f"no such loop: {exc}")
         return 2
+    if getattr(args, "clear_hold", False):
+        if _retry_clear_hold(args, loop):
+            return 2
+        if args.pr is None:
+            return 0
+    elif args.pr is None:
+        print("retry: --pr is required (or --clear-hold with --seat)")
+        return 2
 
     def read_pr():
         return gh.pr(loop, args.pr)
@@ -1041,18 +1049,43 @@ def add_ready(sub) -> None:  # noqa: ANN001
     ready.set_defaults(func=cmd_ready)
 
 
+def _retry_clear_hold(args, loop: dict) -> bool:
+    """``retry --clear-hold`` (#1155), before any PR's re-arm; True when refused."""
+    from .. import retry_action
+    if not args.seat:
+        print("retry: --clear-hold needs --seat (the seat whose account to reopen)")
+        return True
+    result = retry_action.clear_hold(loop, args.seat, ledger=_ledger_path())
+    if not result["profile"]:
+        print(f"retry: the {args.seat} seat has no profile in loop {loop['id']}: no account to reopen")
+        return True
+    for key in result["cleared"]:
+        provider = key.split("|", 1)[0]
+        print(f"[{loop['id']}] hold cleared: {provider} as profile {result['profile']}")
+    if not result["cleared"]:
+        print(f"[{loop['id']}] no hold on profile {result['profile']}: nothing to clear")
+    if result["rearmed"]:
+        print(f"[{loop['id']}] {result['rearmed']} held run(s) due now · {result['worker']}")
+    return False
+
+
 def add_retry(sub) -> None:  # noqa: ANN001
     """The ``retry`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
     retry = sub.add_parser("retry", help="Re-arm a PR's isolated run that failed before "
                                          "any GitHub write (refuses one that may have written)")
     retry.add_argument("--loop", required=True,
                        help="loop id (its config file name; `list` shows them)")
-    retry.add_argument("--pr", type=int, required=True,
-                       help="the pull request whose failed run to re-arm")
+    retry.add_argument("--pr", type=int,
+                       help="the pull request whose failed run to re-arm (required unless "
+                            "--clear-hold)")
     retry.add_argument("--seat", choices=["reviewer", "fixer", "adjudicator", "triage",
                                           "issue_fixer", "shadow"],
                        help="only that seat's run (default: whichever failed at the PR's "
                             "newest head; a shadow run only when named)")
+    retry.add_argument("--clear-hold", action="store_true",
+                       help="with --seat: reopen the account that seat draws on (a provider "
+                            "outage or usage-window hold) and run its held turns now, e.g. after "
+                            "switching its model; with --pr, then re-arm that PR's run too")
     retry.set_defaults(func=cmd_retry)
 
 

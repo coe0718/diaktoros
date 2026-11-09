@@ -101,7 +101,8 @@ def _check_reviewer_and_adjudicator(loop: dict, seats: dict, where: str) -> None
 
 
 def _check_limits(loop: dict, where: str) -> None:
-    """``cap``, the review-only limits, ``ci_fix_cap`` and ``change_proof_max``."""
+    """``cap``, the review-only limits, ``ci_fix_cap``, ``change_proof_max`` and
+    ``provider_breaker_failures``."""
     loop["cap"] = config._as_int(loop["cap"], "cap", where)
     if loop["cap"] < 2:
         raise config.ConfigError(f"{where}: 'cap' is the number of verdicts allowed; must be >= 2")
@@ -110,6 +111,8 @@ def _check_limits(loop: dict, where: str) -> None:
         loop[key] = lists._check_review_only_limit(loop.get(key), key, where)
     loop["ci_fix_cap"] = lists.check_ci_fix_cap(loop.get("ci_fix_cap"), where)
     loop["change_proof_max"] = lists.check_change_proof_max(loop.get("change_proof_max"), where)
+    loop["provider_breaker_failures"] = lists.check_provider_breaker_failures(
+        loop.get("provider_breaker_failures"), where)
     for key in ("cooldown_h", "marker_grace_min"):
         loop[key] = config._positive_number(loop.get(key), key, where)
 
