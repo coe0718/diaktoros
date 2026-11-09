@@ -47,6 +47,12 @@ class QueuedNotice(unittest.TestCase):
             with self.subTest(seat=seat):
                 self.assertEqual(self.gate(seat, return_value="enqueued"), [seat])
 
+    def test_an_enqueued_reconsider_still_sends_it(self):
+        # #2126: only a reconsider that could not be enqueued goes unannounced; one the gate
+        # armed is a real turn, and its notice must still go out.
+        self.assertEqual(self.gate("reviewer", RECONSIDER_KEY, return_value="enqueued"),
+                         ["reviewer"])
+
 
 if __name__ == "__main__":
     unittest.main()
