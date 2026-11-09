@@ -364,9 +364,10 @@ def _file_tail(handle, limit: int) -> bytes:
 
 def account_hold(error: str) -> bool:
     """Whether a ``held:`` line is a closed account's (``pacing.hold_line``: a usage window or an
-    unavailable provider), which ``retry --clear-hold`` reopens (#619), not a daily cap."""
-    return error.startswith("held: ") and (" provider unavailable" in error
-                                           or " usage window (" in error)
+    unavailable provider), which ``retry --clear-hold`` reopens (#619), not a daily cap. The
+    marks are ``pacing``'s, shared with the writer and with ``clear_hold``'s SQL (#2220)."""
+    from .. import pacing
+    return pacing.closed_account(error)
 
 
 def hold_remedy(seat: str, error: str) -> str:

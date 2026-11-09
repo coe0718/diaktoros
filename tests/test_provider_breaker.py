@@ -240,6 +240,24 @@ class ClearHold(tp.ProductionBase):
         self.assertIn("· to run it sooner once the account is usable again, `retry --seat fixer "
                       "--clear-hold`", notices[0])
 
+    def test_a_provider_unavailable_holds_step_and_notice_name_clear_hold(self):
+        """#2219: the other closed-account hold, an unavailable provider, gets the same remedy."""
+        loop = config.normalize({**self.raw, "provider_breaker_failures": 1})
+        row = self.run_production(killed_by(DEEPSEEK), loop=loop)
+        self.assertTrue(row["error"].startswith("held: fixer provider unavailable ("), row["error"])
+        step = views.next_step(row, "widgets")
+        self.assertIn(f"recorded earliest recheck at {pacing.when(row['retry_at'])} (in ", step)
+        self.assertIn("once the account is usable again: `hermes dk retry --loop widgets "
+                      "--seat fixer --clear-hold`", step)
+        notices = []
+        with mock.patch("diaktoros.config.by_repo", return_value=loop), \
+                mock.patch("diaktoros.observer.notify",
+                           side_effect=lambda *a, **k: notices.append(k["outcome"])):
+            Supervisor(self.ledger).failure_notice(row["id"], "waiting")
+        self.assertEqual(len(notices), 1)
+        self.assertIn("· to run it sooner once the account is usable again, `retry --seat fixer "
+                      "--clear-hold`", notices[0])
+
     def test_a_cleared_usage_window_lets_the_held_run_launch(self):
         """#619: the hold is gone, and the run it held launches instead of waiting it out."""
         reset = time.time() + 3 * 24 * 3600
