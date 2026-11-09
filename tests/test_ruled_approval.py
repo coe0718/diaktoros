@@ -235,6 +235,19 @@ class Ready(Base):
         self.assertEqual(merge_check.decide(kinds)[0], merge_check.FAILURE)
         self.assertIn("coe0718's changes-requested review 12", kinds[0][1])
 
+    def test_a_login_less_change_request_is_named_not_left_blank(self):
+        # #1690: a blocking review with no user read "but 's changes-requested review 14".
+        self.mark_escalated(by="dispute")
+        self.ruled("ACCEPT")
+        for user in (None, {"login": ""}):
+            ghost = {**review(14, "CHANGES_REQUESTED", at="2026-01-03T00:00:00Z"), "user": user}
+            with self.subTest(user=user):
+                kinds = self.kinds([DISMISSED, TUCK, ghost])
+                self.assertEqual(merge_check.decide(kinds)[0], merge_check.FAILURE)
+                self.assertEqual(kinds, [(ready.FAILURE, "approved on the adjudicator's ACCEPT "
+                                          "ruling, but ?'s changes-requested review 14 still "
+                                          "blocks GitHub's merge until it is dismissed")])
+
     def test_an_accept_not_acted_on_still_waits_for_a_person(self):
         self.mark_escalated(by="dispute")
         self.ruled("ACCEPT")

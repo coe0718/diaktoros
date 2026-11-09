@@ -145,6 +145,18 @@ def _conflict_waits(loop: dict, row) -> str:
     return owed
 
 
+def _before_shadow_queued(review, created) -> bool:
+    """Whether a review was posted before the shadow row was queued at ``created`` (#1684).
+
+    GitHub's ``submitted_at`` has whole seconds while ``created`` has fractions, so a review
+    posted later in the second the shadow was queued reads as earlier: that whole second is
+    excluded (kept only if strictly before ``floor(created)``). An unreadable stamp fails closed:
+    a review the shadow can't place in time may be the real verdict it must not see."""
+    import math
+    at = util.iso_epoch(review.get('submitted_at') if isinstance(review, dict) else None)
+    return at is not None and at < math.floor(float(created))
+
+
 class ClaimAndLaunch:
     """The claim and turn methods of :class:`~diaktoros.run_supervisor.Supervisor`."""
 
@@ -1060,8 +1072,7 @@ class ClaimAndLaunch:
             if row['seat'] == run_supervisor.SHADOW and isinstance(reviews, list):
                 # The shadow sees what the real reviewer saw when both were queued (#218): a
                 # review posted since, the real one's included, would tell it the answer.
-                reviews = [r for r in reviews
-                           if not util.epoch(r.get('submitted_at')) > row['created']]
+                reviews = [r for r in reviews if _before_shadow_queued(r, row['created'])]
         # The reviewer and fixer see the change itself (#50); the adjudicator needs both
         # sides' comments. A read that failed is transient (retry); a moved head is not.
         # The shadow is prompted as the reviewer it shadows.

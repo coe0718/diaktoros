@@ -33,10 +33,10 @@ PUSHES_A_FIX = "the fixer pushes a fix"
 
 
 class Steps(fg.Base):
-    def report(self, held=None, inflight_fix=False, queued="", verdicts=1, seat="fixer"):
+    def report(self, held=None, inflight_fix=False, queued="", verdicts=1, seat="fixer", parked=False):
         local = {"held": held or {}, "queued_seat": seat if queued else "",
                  "queued_reason": queued, "inflight_review": False, "inflight_fix": inflight_fix,
-                 "marker": {}, "parked": False, "delivery_status": "",
+                 "marker": {}, "parked": parked, "delivery_status": "",
                  "capacity": {"reviewer": (0, 1), "fixer": (0, 1)}, "stale_queues": [],
                  "seat": "", "queue": "", "inflight": "", "escalation": "", "sweep": ""}
         self.loop["adjudicator"] = {"route": "one-breach"}
@@ -324,15 +324,16 @@ class AfterEnabling(Steps):
         self.assertEqual(started, 1)
         self.assertEqual(fire.call_args.args[1], "pull_request_review")
 
-    def ledgered(self, state, error=""):
-        """A fixer turn at this head in ``state``, and the queue entry the gate declined it with."""
+    def ledgered(self, state, error="", seat="fixer"):
+        """A ``seat`` turn (the fixer's by default) at this head in ``state``, and the queue entry
+        the gate declined it with."""
         sup = self.production()
         with mock.patch.object(sup, "_spawn"):
-            sup.enqueue("run", fg.REPO, 7, fg.HEAD, "fixer")
+            sup.enqueue("run", fg.REPO, 7, fg.HEAD, seat)
         with sup._connect() as con:
             # A policy error means the row was never admitted (its redelivery is refused).
             con.execute("UPDATE runs SET state=?, error=?, push_admitted=?", (state, error, 0 if error else 1))
-        return sup, gate.declined_reason("fixer", f"duplicate {state}")
+        return sup, gate.declined_reason(seat, f"duplicate {state}")
 
     def test_a_declined_fixer_turn_is_left_by_the_drain_so_explain_names_the_retry(self):
         # #1510 review: a declined entry read as a push-off hold, promising the sweep or a drain.
@@ -377,6 +378,25 @@ class AfterEnabling(Steps):
                     con.execute("DELETE FROM runs")
 
 
+    def test_a_declined_entry_beside_a_live_lock_or_mark_is_no_capacity(self):
+        # #1614: with a fixer lock or a live fix mark at the head, the push-off branch names
+        # the started turn, and the declined queue entry still read as "no capacity".
+        declined = gate.declined_reason("fixer", "duplicate failed")
+        held = {"fixer": {"head": fg.HEAD, "at": time.time()}}
+        for ledger in (False, True):          # a lock/mark with no run (the issue's probe), or a row
+            if ledger:
+                self.ledgered("failed")
+            for push in (False, True):
+                for name, kw in (("held lock", {"held": held}), ("live mark", {"inflight_fix": True})):
+                    with self.subTest(name, push=push, ledger=ledger):
+                        self.set_push(push)
+                        blockers = self.report(queued=declined, **kw)["blockers"]
+                        if not push and not ledger:
+                            self.assertTrue(any("cannot publish" in b for b in blockers), blockers)
+                        self.assertFalse([b for b in blockers if "no capacity" in b], blockers)
+                        self.assertTrue([b for b in blockers if "gate declined the fixer turn" in b],
+                                        blockers)
+
     def test_a_declined_entry_with_pushes_on_is_no_capacity_wait(self):
         # #1613: with pushes on, the entry the real gate declined read as "no capacity" and
         # promised a freed fixer slot would start it; the drain leaves it as is.
@@ -417,6 +437,57 @@ class AfterEnabling(Steps):
                 self.assertIn("no fixer work order", step["action"])
                 self.assertNotIn("declined the fixer turn", step["action"])
                 self.assertNotIn("starts the fix run", step["action"])
+
+    def test_a_declined_queue_entry_is_never_reported_as_a_capacity_wait(self):
+        # #1610: a declined entry is a terminal answer the drain leaves (gate.is_declined_hold);
+        # outside the push-off branch (pushes on, or a reviewer entry) it read as "no capacity",
+        # and the next step promised a freed slot would start it.
+        for push, seat in ((True, "fixer"), (True, "reviewer"), (False, "reviewer")):
+            with self.subTest(push=push, seat=seat):
+                self.set_push(push)
+                report = self.report(queued=gate.declined_reason(seat, "duplicate failed"), seat=seat)
+                self.assertFalse([b for b in report["blockers"] if "no capacity" in b], report["blockers"])
+                self.assertTrue(any(f"the gate declined the {seat} turn" in b
+                                    for b in report["blockers"]), report["blockers"])
+                if push:   # with pushes off, the push-off step for the verdict comes first
+                    self.assertNotIn("slot frees", report["next"]["action"])
+                    self.assertIn(f"the gate declined the {seat} turn", report["next"]["action"])
+                    self.assertIn("nothing to re-arm", report["next"]["action"])
+        # A real capacity entry still reads as one.
+        self.set_push(True)
+        report = self.report(queued="waiting for a slot")
+        self.assertTrue(any("no capacity" in b for b in report["blockers"]), report["blockers"])
+        self.assertIn("slot frees", report["next"]["action"])
+
+    def test_a_declined_fixer_turn_retry_would_rearm_is_named_with_pushes_on(self):
+        # #1610: the step names the same retry the ledger's plan offers, as with pushes off.
+        self.set_push(True)
+        sup, declined = self.ledgered("failed")
+        report = self.report(queued=declined)
+        self.assertFalse([b for b in report["blockers"] if "no capacity" in b], report["blockers"])
+        self.assertIn(self.retry(), report["next"]["action"])
+        self.assertNotIn("slot frees", report["next"]["action"])
+
+    def test_a_declined_reviewer_turn_names_the_reviewer_retry_its_ledger_offers(self):
+        # #2075 review F2: the step asks the plan for the queue entry's own seat, so a rearmable
+        # reviewer row is named as the reviewer's retry, never read off the fixer's (empty) rows.
+        self.set_push(True)
+        sup, declined = self.ledgered("failed", seat="reviewer")
+        action = self.report(queued=declined, seat="reviewer")["next"]["action"]
+        self.assertIn(f"hermes dk retry --loop {self.loop['id']} --pr 7 --seat reviewer", action)
+        self.assertNotIn("nothing to re-arm", action)
+        self.assertNotIn("slot frees", action)
+
+    def test_a_parked_pr_still_explains_its_declined_fixer_entry(self):
+        # #2075 review F1: parked for a ruling, the push-off blocker is skipped, so it cannot be
+        # the declined entry's story; the declined blocker is (and still no "no capacity").
+        self.set_push(False)
+        declined = gate.declined_reason("fixer", "duplicate failed")
+        with mock.patch.object(gate, "escalated", return_value=True):
+            blockers = self.report(queued=declined, parked=True)["blockers"]
+        self.assertTrue(any(b.startswith("escalated: the PR is parked") for b in blockers), blockers)
+        self.assertTrue(any("the gate declined the fixer turn" in b for b in blockers), blockers)
+        self.assertFalse([b for b in blockers if "no capacity" in b], blockers)
 
 
 if __name__ == "__main__":

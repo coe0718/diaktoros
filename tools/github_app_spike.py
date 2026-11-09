@@ -331,7 +331,8 @@ def run(s: Spike) -> None:
          commit_author=cm["commit"]["author"], author_login=(cm.get("author") or {}).get("login"),
          verified=cm["commit"]["verification"]["verified"])
 
-    # Q3: request the reviewer bot (both login forms), then a human for contrast
+    # Q3: request the reviewer bot (both login forms). The human reviewer request is not
+    # repeated here (docs/github-app-support.md, row 3).
     t3 = time.time() - 2
     for who in (reviewer_bot, s.slugs["reviewer"]):
         status, body = s.gh("fixer", "POST", f"/repos/{s.repo}/pulls/{number}/requested_reviewers",
@@ -440,8 +441,8 @@ def stale_approval(s: Spike, tag: str) -> None:
     number, head = pr["number"], c1["commit"]["sha"]
     status, ap = s.gh("reviewer", "POST", f"/repos/{s.repo}/pulls/{number}/reviews",
                       {"commit_id": head, "event": "APPROVE", "body": "Fine."})
-    time.sleep(6)
-    before = s.protection(number)
+    # The pre-push observation of row 6: wait for GitHub to settle, as after every push.
+    before = s.settled_protection(number)
     _, c2 = s.put_file("person", branch, "def add(a, b):\n    return a + b\n\n\n"
                        "def neg(a):\n    return -a\n\n\ndef inv(a):\n    return 1 / a\n",
                        "Add inv")

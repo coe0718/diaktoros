@@ -157,8 +157,10 @@ def newest_reply(loop: dict, comments: list, since: float) -> dict | None:
 def status_lines(st) -> list[str]:
     """``status``'s and ``explain``'s lines for the issues waiting on a reply (the last sweep)."""
     waiting = st.kv_get(st.dir / WAITING, {})
-    return [line(int(n)) for n in sorted(waiting if isinstance(waiting, dict) else {}, key=int)
-            if str(n).isdigit()]
+    # Filter, then sort: a key that is not a plain number is skipped, never a crash (#2020).
+    numbers = [int(n) for n in (waiting if isinstance(waiting, dict) else {})
+               if str(n).isascii() and str(n).isdigit()]
+    return [line(n) for n in sorted(numbers)]
 
 
 def line(number: int) -> str:
