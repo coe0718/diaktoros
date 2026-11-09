@@ -48,32 +48,32 @@ def _set_switch_flags(change) -> None:  # noqa: ANN001
     change.add_argument("--turn-budget", type=int,
                         help="seconds one isolated seat turn may run (loop default)")
     for flag, text in (
-            ("--attribution", "sign what the loop posts ('Automated by Diaktoros'), or stop"),
+            ("--attribution", "sign what the loop posts ('Automated by Diaktoros'); off stops it"),
             ("--review-only-update", "push a clean merge of the base into a review-only "
-                                     "author's PR branch (same repository only), or stop; "
+                                     "author's PR branch (same repository only); off stops it; "
                                      "turning it on needs --acknowledge-branch-push"),
             ("--review-after-ci", "start each review after the head's checks finish (up to an "
-                                  "hour), or start at once"),
+                                  "hour); off starts it at once"),
             ("--fix-ci", "hand a failed required check on a fixer's PR to the fixer (needs "
-                         "unattended fixer pushes), or stop"),
+                         "unattended fixer pushes); off stops it"),
             ("--ci-webhook", "act on a finished CI run when GitHub reports it, not at the next "
-                             "sweep (then `apply --hooks` adds check_suite to the fixer's hook), "
-                             "or stop"),
+                             "sweep (then `apply --hooks` adds check_suite to the fixer's hook); "
+                             "off stops it"),
             ("--comment-webhook", "wake the issue fixer on a maintainer's issue reply when GitHub "
                                   "reports it, not at the next sweep (then `apply --hooks` adds "
-                                  "issue_comment to the triage hook), or stop"),
+                                  "issue_comment to the triage hook); off stops it"),
             ("--protection-webhook", "re-check the base's protection when its rules change, not "
                                      "only at `doctor` (then `apply --hooks` adds "
                                      "branch_protection_rule and repository_ruleset to the "
-                                     "reviewer's hook), or stop"),
+                                     "reviewer's hook); off stops it"),
             ("--fixer-scope-lock", "hold a fix round that changes files its findings do not name "
-                                   "(other than their tests and docs) for a maintainer, or stop; "
+                                   "(other than their tests and docs) for a maintainer; off stops it; "
                                    "needs unattended fixer pushes"),
             ("--adjudicator-approves", "on an ACCEPT ruling with green checks, approve as the "
                                        "adjudicator login and dismiss the change request it "
-                                       "overruled, or stop; needs the adjudicator comment login"),
-            ("--adjudicator-file-issues", "file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found, or stop"),
-            ("--change-proof", "run each reviewed head's changed tests on its merge base and at the head, and show the reviewer, or stop")):
+                                       "overruled; off stops it; needs the adjudicator comment login"),
+            ("--adjudicator-file-issues", "file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found; off stops it"),
+            ("--change-proof", "run each reviewed head's changed tests on its merge base and at the head, and show the reviewer; off stops it")):
         change.add_argument(flag, choices=("on", "off"), default=None, help=text)
 
 

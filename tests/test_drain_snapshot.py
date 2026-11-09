@@ -171,6 +171,13 @@ class Drain(unittest.TestCase):
         with mock.patch("diaktoros.gate.hooks_read", return_value=(False, "")), self.answer():
             result = self.drain(actions.drain_snapshot(self.loop(), "reviewer"))
         self.assertEqual(result["status"], "refused")
+        self.assertEqual(result["outcomes"][0]["why"], "widgets: hooks are paused — nothing drained")
+        self.assertEqual(self.fired, [])
+        # An unreadable list names its cause, as the watchdog's --drain line does (#2170).
+        with mock.patch("diaktoros.gate.hooks_read", return_value=(None, "HTTP 401")), self.answer():
+            result = self.drain(actions.drain_snapshot(self.loop(), "reviewer"))
+        self.assertEqual(result["outcomes"][0]["why"],
+                         "widgets: hook list unreadable (HTTP 401) — nothing drained")
         self.assertEqual(self.fired, [])
 
     def test_an_unknown_seat_or_a_migration_refuses(self):

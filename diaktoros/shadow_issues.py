@@ -8,8 +8,9 @@ not the reviewer, labelled ``shadow-found``, and says which model found it. Off 
 ``shadow.file_issues`` is on; at most ``config.shadow_issues_daily(loop)`` a day (0 = no cap). An
 unreadable review or ledger files nothing that sweep. A shadow issue whose head never gets a real
 review is dropped after ``WAIT_S``. A POST refused with nothing written (``broker.BrokerNotSent``: no
-reader identity, a repository mismatch, a 4xx other than 408 from GitHub) leaves the issue
-``recorded`` with the reason, and the next sweep tries again, up to ``MAX_ATTEMPTS`` refusals, after
+reader identity, a reader credential that is missing or unreadable, a repository mismatch, a 4xx
+other than 408 from GitHub) leaves the issue ``recorded`` with the reason, and the next sweep tries
+again, up to ``MAX_ATTEMPTS`` refusals, after
 which it is ``denied`` with the reason (#1732); any other failure of the POST (a 408 included) is
 ``uncertain``, never replayed.
 Every one that ends ``uncertain`` or ``denied`` is said in the sweep's log, with its reason (#1359).

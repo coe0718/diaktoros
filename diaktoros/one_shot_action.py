@@ -482,8 +482,11 @@ def _drain_refusal(loop, seat, expected) -> str:
         return "unknown drain seat"
     if migrate.migrating() is not None:
         return "a migration holds the install"
-    armed, _error = gate.hooks_read(loop)
-    return "" if armed else "hooks are paused or unreadable — nothing drained"
+    armed, error = gate.hooks_read(loop)
+    if armed:
+        return ""
+    with _LOCK:        # the watchdog's own line, so both drain paths name the same cause (#2170)
+        return _script("watchdog").not_drained(loop, armed, error)
 
 
 def _snapshot_shape(expected) -> bool:

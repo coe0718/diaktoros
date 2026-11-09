@@ -11,10 +11,12 @@ so GitHub's own figure can be set against the host's: a gap is calls made somewh
 under ``$HERMES_HOME/state/diaktoros-gh-calls/``, rewritten whole every ``FLUSH_EVERY`` calls and
 at exit, so no two processes write one file and no lock is taken. Only a writer process keeps a
 count, as for the cache (``gh_cache.writes_enabled``): the watchdog, the gates and the workers,
-which make nearly every call. A command that promises to write nothing (``doctor``, ``explain``,
-``status``, the Desktop) is not counted, and ``calls`` says so. A worker writes only into a
-directory that already exists: the host makes it as it starts one (``prepare``). Files older
-than ``KEEP_S`` are pruned by a later flush, and a process drops its own hours older than that
+which make nearly every call, and any process that runs a gate in-process (``hermes dk review``,
+or a review from the Desktop) from the moment its gate starts. A process that never ran a gate
+(the other ``hermes dk`` commands, such as ``doctor``, ``explain``, ``status``, ``stats`` and
+``update``; the Desktop until it runs a review) is not counted, and ``calls`` says so. A worker
+writes only into a directory that already exists: the host makes it as it starts one
+(``prepare``). Files older than ``KEEP_S`` are pruned by a later flush, and a process drops its own hours older than that
 as it flushes, since a long-lived writer's file never ages. Nothing here holds a token, a body or
 an error text: logins and path shapes only. Calls made as a GitHub App itself (its JWT, not an
 installation token) are counted under ``app_login``: GitHub keeps them in a bucket of their own.

@@ -769,17 +769,17 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--ttl-min` | `TTL_MIN` |  | how long a run may hold its slot |
 | `--inflight-ttl-min` | `INFLIGHT_TTL_MIN` |  | minutes an in-flight mark blocks a second run at the same head |
 | `--turn-budget` | `TURN_BUDGET` |  | seconds one isolated seat turn may run (loop default) |
-| `--attribution` | `on` \| `off` |  | sign what the loop posts ('Automated by Diaktoros'), or stop |
-| `--review-only-update` | `on` \| `off` |  | push a clean merge of the base into a review-only author's PR branch (same repository only), or stop; turning it on needs --acknowledge-branch-push |
-| `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour), or start at once |
-| `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer (needs unattended fixer pushes), or stop |
-| `--ci-webhook` | `on` \| `off` |  | act on a finished CI run when GitHub reports it, not at the next sweep (then `apply --hooks` adds check_suite to the fixer's hook), or stop |
-| `--comment-webhook` | `on` \| `off` |  | wake the issue fixer on a maintainer's issue reply when GitHub reports it, not at the next sweep (then `apply --hooks` adds issue_comment to the triage hook), or stop |
-| `--protection-webhook` | `on` \| `off` |  | re-check the base's protection when its rules change, not only at `doctor` (then `apply --hooks` adds branch_protection_rule and repository_ruleset to the reviewer's hook), or stop |
-| `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name (other than their tests and docs) for a maintainer, or stop; needs unattended fixer pushes |
-| `--adjudicator-approves` | `on` \| `off` |  | on an ACCEPT ruling with green checks, approve as the adjudicator login and dismiss the change request it overruled, or stop; needs the adjudicator comment login |
-| `--adjudicator-file-issues` | `on` \| `off` |  | file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found, or stop |
-| `--change-proof` | `on` \| `off` |  | run each reviewed head's changed tests on its merge base and at the head, and show the reviewer, or stop |
+| `--attribution` | `on` \| `off` |  | sign what the loop posts ('Automated by Diaktoros'); off stops it |
+| `--review-only-update` | `on` \| `off` |  | push a clean merge of the base into a review-only author's PR branch (same repository only); off stops it; turning it on needs --acknowledge-branch-push |
+| `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour); off starts it at once |
+| `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer (needs unattended fixer pushes); off stops it |
+| `--ci-webhook` | `on` \| `off` |  | act on a finished CI run when GitHub reports it, not at the next sweep (then `apply --hooks` adds check_suite to the fixer's hook); off stops it |
+| `--comment-webhook` | `on` \| `off` |  | wake the issue fixer on a maintainer's issue reply when GitHub reports it, not at the next sweep (then `apply --hooks` adds issue_comment to the triage hook); off stops it |
+| `--protection-webhook` | `on` \| `off` |  | re-check the base's protection when its rules change, not only at `doctor` (then `apply --hooks` adds branch_protection_rule and repository_ruleset to the reviewer's hook); off stops it |
+| `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name (other than their tests and docs) for a maintainer; off stops it; needs unattended fixer pushes |
+| `--adjudicator-approves` | `on` \| `off` |  | on an ACCEPT ruling with green checks, approve as the adjudicator login and dismiss the change request it overruled; off stops it; needs the adjudicator comment login |
+| `--adjudicator-file-issues` | `on` \| `off` |  | file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found; off stops it |
+| `--change-proof` | `on` \| `off` |  | run each reviewed head's changed tests on its merge base and at the head, and show the reviewer; off stops it |
 | `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000; 0 = the review cap |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10; 0 = the default (3) |
