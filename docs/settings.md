@@ -1,5 +1,7 @@
 # Desktop settings reference
 
+[Documentation map](README.md) · [Configuration](configuration.md) · [Commands](commands.md#apply) · [Operations](operations.md)
+
 The form at **Capabilities → Plugins → diaktoros** holds plugin-level defaults in the
 Hermes profile that saved them. It is not a live editor for every repository. A loop's
 JSON file remains its effective configuration; changes reach an existing loop only through
@@ -81,9 +83,9 @@ Defaults are for a fresh form; existing loops retain values when a field is abse
 | `fix_ci` | bool / `false` | Boolean; CLI reader also recognizes boolean words | `fix_ci`: a failed required check on a fixer's PR becomes one fixer turn per head. Only takes effect with `unattended_fixer_push` on; `doctor` reports a mismatch otherwise. |
 | `review_only` | str / `""` | Comma-separated GitHub logins; at most 50 unique, none a fixer or a reviewer | `review_only`: their PRs are reviewed, never fixed; a verdict goes back to the author. Automatic adjudication is off, but a person may request an advisory ruling with `hermes dk escalate --pr N` after a verdict; no push or merge. Verdicts are capped by `review_only_cap`. |
 | `operator_agents` | str / `""` | Comma-separated GitHub logins; at most 50 unique, none a fixer, a reviewer or another seat's account | `operator_agents`: agents that post as the operator's own account. Each speaks with maintainer authority (as in `triage.maintainers`; no extra trust) and is labelled `operator agent` in the comments the seats read, `explain`, `doctor`, `show` and the weekly report. See [accounts](accounts.md). Blank = not set here. |
-| `review_only_cap` | str / `""` | Whole number 1-1000, or blank | `review_only_cap`; verdicts the reviewer gives one review-only PR before it waits for `review --another-round`. Blank = the loop's `cap`. |
+| `review_only_cap` | str / `""` | Whole number 1-1000, or blank | `review_only_cap`; verdicts the reviewer gives one review-only PR before it waits for `review --another-round`. Blank keeps the loop's own value (unset: the loop's `cap`). |
 | `ci_fix_cap` | str / `""` | Whole number 1-10, or blank | `ci_fix_cap`; CI-fix turns per PR before a red head waits for you. Blank = the loop's own value, else 3. |
-| `review_only_daily` | str / `""` | Whole number 1-1000, or blank | `review_only_daily`; reviewer turns per local day on review-only PRs. Blank = no cap (review-only turns then count against the reviewer's daily turns). Set, it is a separate pool from them. |
+| `review_only_daily` | str / `""` | Whole number 1-1000, or blank | `review_only_daily`; reviewer turns per local day on review-only PRs. Blank keeps the loop's own value (unset: no cap (review-only turns then count against the reviewer's daily turns). Set, it is a separate pool from them. |
 | `fixer_scope_lock` | bool / `false` | Boolean | `fixer_scope_lock`: on, a fixer push on a PR with open numbered findings may change only the files those findings name, plus tests and docs; any other file holds the push for a maintainer (nothing written, one `held` notice listing the files). `hermes dk retry --loop L --pr N` releases it. Only takes effect with `unattended_fixer_push` on; not applied to conflict-merge or CI-fix pushes, or when no finding is open. |
 | `adjudicator_approves` | bool / `false` | Boolean | `adjudicator_approves`: on, an `ACCEPT` ruling at a PR's current head over the reviewer's change request is acted on once the required checks are green: the adjudicator's comment login approves the head and dismisses that change request, so the PR can merge. Never for a `human_paths` diff or a held PR. Needs `seats.adjudicator.login`; `show` says when it is inert. |
 | `adjudicator_file_issues` | bool / `false` | Boolean | `adjudicator_file_issues` (#1864): on, the findings the adjudicator rules valid but not blocking (every one it lets through on an `ACCEPT`; on a `REJECT` or `RESPEC`, those apart from what the next round must fix) are filed as issues after the ruling, by the reader, labelled `adjudicator-found`, as follow-ups to the PR; at most 3 a ruling and 25 a day. |
@@ -115,7 +117,8 @@ Defaults are for a fresh form; existing loops retain values when a field is abse
 | `attribution` | bool / `true` | Boolean; CLI reader also recognizes boolean words | `attribution`; signs plugin-mediated reviews/comments and commit trailers. See the attribution-only apply limitation below. |
 
 The form deliberately has **no reader login/token field**, no observer destination (only the
-weekly report's time, for a feed that already exists), no triage,
+weekly report's time, for a feed that already exists), no way to turn triage on (only its caps
+and auto-fix labels, for a loop that already has it),
 no allowlist editor, no route-name editor, no per-seat model picker and no unattended-push
 consent field. Supply the reader at installation or with `set --read-token`, configure observer
 and triage through their documented commands, and enable push policy only with `fixer-push`.
@@ -213,8 +216,10 @@ Do not supply two credential choices: a simultaneous PAT path and App pair refus
 the PAT path matches the existing PAT mapping or the App tuple already matches the loop,
 in which case it is stale data, not a new App choice.
 Clear the PAT form field when selecting App. With no App pair, a PAT field for an existing
-App login is ignored with a note; it never silently migrates App to PAT. To intentionally
-return a working seat to PAT, review the per-loop credential mapping separately.
+App login is ignored with a note; it never silently migrates App to PAT. To move a seat
+between App and PAT deliberately, use `hermes dk identity --loop ID --seat SEAT --pat LOGIN=PATH`
+(or `--app`). `apply` refuses a form login that would move an App seat back to a PAT unless you pass
+`--identity-from-form`.
 
 The reader has no App form fields: use `set --read-token LOGIN --app LOGIN=APP_ID:/abs/key.pem`.
 An App can also be the hook admin (`--admin-token`, with Webhooks and Administration: Read

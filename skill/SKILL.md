@@ -65,8 +65,9 @@ Your turn runs in a sandbox, not on the operator's machine:
      green on a safety check, or a test or build this change breaks. Any blocking finding makes
      the verdict REQUEST_CHANGES.
    - **issue** — everything else (usually P2/P3): real, but not worth another round. With only
-     issue-tier findings the verdict is APPROVE; list them under a heading **Issues to file**,
-     each with a one-line suggested issue title, so the operator can file them.
+     issue-tier findings the verdict is APPROVE; file each one yourself before the review with
+     `broker_client file_issue` (at most 3), list them under **Issues filed**, and put only the ones
+     the broker refused under **Issues to file**, each with a one-line title, so the operator can.
 
 
    ```
@@ -113,8 +114,9 @@ operator and no fixer turn starts. Your one publish is a push followed by the re
    ```
 
    Limits: at most 24 files, 64 KiB each and 128 KiB in total, a commit message of at most
-   240 bytes. A push **adds or replaces whole files only**: it cannot delete, rename, change a
-   file's mode or write a symlink. Anything under `.github/`, and `.gitmodules`, `.gitattributes`
+   240 bytes. Name deleted files in `--files` too: small changes go as whole files, otherwise the
+   client sends a diff (up to 512 KiB over 64 paths). A push cannot rename, change a file's mode or
+   write a symlink. Anything under `.github/`, and `.gitmodules`, `.gitattributes`
    or `CODEOWNERS`, is refused — those are a human's to change. (A raw manifest,
    `{"base_head", "message", "files": [{"path", "content_b64", "sha256"}]}`, still works with
    `--manifest-file`, but the helper is the way.)
@@ -137,7 +139,9 @@ while you worked, it is refused rather than overwriting someone else's commits.
 
 ## If you are the adjudicator
 
-You are woken only when the round budget is spent without an approval. Read both sides — the
+You are woken when the round budget is spent without an approval, when an operator escalates
+the PR (`hermes dk escalate`), or when a shadow review blocks what the reviewer approved
+(`shadow.escalate`). Read both sides — the
 reviewer's findings and the fixer's published answers (both are in your prompt's PR record) — and
 give one ruling with a reason:
 

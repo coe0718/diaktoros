@@ -1,5 +1,7 @@
 # Issue triage and issue fixes
 
+[Documentation map](README.md) · [Configuration](configuration.md#issue-triage-and-issue-fixes) · [Commands](commands.md#triage) · [Troubleshooting](troubleshooting.md)
+
 Two opt-in features start before a PR: triage chooses labels for a new issue; a maintainer
 can hand an issue to the fixer to propose a PR. Neither feature merges code or handles
 arbitrary ongoing issue conversations.
@@ -25,7 +27,7 @@ not a token value. See [commands](commands.md) for the complete CLI reference.
 
 | | Triage | Issue fix |
 | --- | --- | --- |
-| Trigger | `issues` webhook action `opened` | Action `labeled` with configured fix label |
+| Trigger | `issues` webhook action `opened` | Action `labeled` with configured fix label, or a triage label in `triage.auto_fix_labels` (never with P0-P2; capped by `auto_fix_daily`, #232) |
 | Authorization | Author in `triage.authors` | Sender in `triage.maintainers`, author in `triage.authors` or one of the loop's own filing identities (the reader, the reviewer seat) |
 | Live eligibility | Open issue, not PR, no configured triage label already present | Open issue, not PR, fix label still present, pushes enabled |
 | Model environment | Triage profile, empty read-only `/work` | Fixer profile/model/account, base commit checkout |
@@ -167,8 +169,8 @@ If a fix is possible, the broker:
    review request and the ledger's state are unaffected. Later heads are never relabeled.
 4. Requests the configured reviewer. The opened PR then follows the regular review loop.
 
-The file-write boundary adds/replaces whole files; no deletes, renames or `.github/`
-changes. Attribution is added unless disabled. If a fix is not possible, the turn can
+The file-write boundary takes whole files or a diff: regular files may be added, changed or
+deleted; no symlinks, mode changes or `.github/` changes. Attribution is added unless disabled. If a fix is not possible, the turn can
 post one explanation on the issue instead of opening a PR. It is not guaranteed to
 solve the issue or complete all stages of the PR sequence.
 
@@ -357,7 +359,7 @@ can exist even though requesting review failed. Inspect its branch, PR and reque
 separately; a nonterminal record is not proof that nothing was published.
 
 After the push, the host reads the new branch back and waits out GitHub's lag (re-reads
-after 1, 2, 4, 8 and 8 seconds — about 23 seconds in all) before it calls the push unknown. When the push's or the
+after 1, 2, 4 and 8 seconds, about 15 seconds in all) before it calls the push unknown. When the push's or the
 PR's outcome is still unknown, the run itself ends `uncertain` (`post-write push
 quarantine: unknown` or `…: pr_create_unknown`), never `succeeded`: `run_supervisor
 status` lists it, and after you inspect the branch and issue, `reconcile` releases it.
@@ -442,8 +444,9 @@ minute) can therefore lose triage turns. Two things cover it:
   held for Hermes maintenance (a `purpose` in its record) is not a gateway, so it is treated the
   same way: cannot tell, and both the profile's and the host's gateway are judged.
 
-A dropped review or fix wake (a burst of PR events) has no such backstop yet: only the doctor
-warning covers it.
+A dropped review or fix wake (a burst of PR events) has no listing sweep like triage's. The
+watchdog delivers a pending review request that has no review to the reviewer gate after 15
+minutes (#532), and other dropped wakes show as stall alerts.
 
 ## Current limits
 
@@ -456,7 +459,7 @@ warning covers it.
 - Status lacks a dedicated triage-settings/pacing summary; use `triage --loop` and
   ledger queries. Generic run diagnostics are not a complete issue-results view.
 - Triage reads one bounded issue without repository code or a duplicate-issue search feed.
-- Fixes can only add/replace files through the broker and cannot overwrite the deterministic
-  branch. No automated reconciliation of a partial push/open/request sequence exists.
+- Fixes write only regular files (whole or as a diff) through the broker and cannot overwrite the
+  deterministic branch. No automated reconciliation of a partial push/open/request sequence exists.
 - Adjudicator/triage gate failures are reported but are not automatically re-driven like
   reviewer/fixer gate failures. Use repository Recent Deliveries only after inspecting state.

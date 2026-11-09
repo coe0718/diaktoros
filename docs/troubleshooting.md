@@ -1,5 +1,7 @@
 # Troubleshooting
 
+[Documentation map](README.md) · [Operations](operations.md) · [Commands](commands.md) · [Security](security.md)
+
 Diagnose before re-driving. Preserve the loop ID, repository, PR/issue number, head/base,
 delivery ID, exact error, run ID and worker PID. Keep secrets, private diffs and review
 bodies out of shared incident reports. **A lost response or failed process is not proof
@@ -258,7 +260,8 @@ comments, remote refs, PR creation and review requests (nonempty, at most 512 ch
 the explicit acknowledgement is mandatory. A live/inaccessible PID or missing launch
 intent blocks release. Reconcile releases the uncertainty
 hold but does not replay the old turn or make it retryable. A new head gets fresh work.
-Observer uncertainty is different and has no general replay CLI; see [observer](observer.md).
+Observer uncertainty is different: settle it with `hermes dk observer --settle KEY --delivered` or
+`--not-delivered`; see [observer](observer.md).
 
 ## Duplicate Telegram messages, or every stall twice
 
@@ -270,10 +273,11 @@ are one observer notice per head.
 watchdog for all loops rather than a second job per loop. Do not delete observations
 or safety state to test deduplication. Two independent delivery paths are not necessarily
 a defect. To keep operator stall warnings but omit the observer's duplicate stall path,
-set an explicit event list without `stall` (a blank list means all events):
+set an explicit event list without `stall` (a blank list means all events; any event left out of
+an explicit list is dropped, urgent ones included):
 
 ```bash
-hermes dk set --loop "<loop-id>" --observer-events opened,handoff,verdict,approved,escalation,ruling,closed
+hermes dk set --loop "<loop-id>" --observer-events opened,handoff,verdict,approved,escalation,ruling,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined
 ```
 
 An uncertain send is never permission to manually replay it blindly.
@@ -391,8 +395,8 @@ hermes dk triage --loop "<loop-id>"
 | Model selected no labels and no comment | `triage_results` state `nothing` | Valid no-write outcome; comment-only triage is not `nothing` |
 | Write denied/uncertain | Result error/stage | Fix authorization or reconcile; never blindly replay |
 
-Use the read-only queries in [issues](issues.md#inspect-results). `explain` is PR-only, so
-there is no issue explain; `trace --event issues` replays an issues delivery through the
+Use the read-only queries in [issues](issues.md#inspect-results). `explain --pr <issue-number>`
+shows only whether an issue fix waits on a maintainer, so there is no full issue explain; `trace --event issues` replays an issues delivery through the
 triage gate. A safe failed pre-write triage run can use:
 
 ```bash
