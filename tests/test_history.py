@@ -209,6 +209,21 @@ class History(fg.Base):
             self.assertNotIn("/home/agent", out)             # #2134: no local path, only its end
             self.assertIn("…/state.json", out)
 
+    def test_a_file_url_or_a_path_with_spaces_names_no_directory(self):
+        """#2151: a file:// URL's path and a path with spaces are cut at their last ``/`` too;
+        an https URL is a link, kept whole."""
+        self.run_row("fixer", A, T, state="failed",
+                     detail="see file:///home/agent/loops/x/state.json, "
+                            "/home/agent/My Loops/y.json and FILE://host/srv/My%20Runs/z.json; "
+                            "https://example.test/a/b")
+        for form in ("text", "markdown", "json"):
+            rc, out = self.run_cli("--format", form)
+            self.assertEqual(rc, 0)
+            for leak in ("/home", "agent", "loops/", "My Loops", "host", "/srv", "My%20Runs"):
+                self.assertNotIn(leak, out)
+            for tail in ("…/state.json,", "…/y.json and …/z.json;", "https://example.test/a/b"):
+                self.assertIn(tail, out)
+
     def test_the_parser_drives_it_and_json_is_the_data(self):
         self.cycle()
         rc, out = self.run_cli("--format", "json")

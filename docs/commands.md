@@ -1612,7 +1612,10 @@ the loop worked at). It joins what the loop already keeps:
   issues filed from findings, overrides and operator actions;
 - the loop's state dir: the numbered findings (`findings.json`) and every write the broker
   journaled (`broker-audit.jsonl`), such as a fixer's push and the commit it made;
-- GitHub: the reviews' full bodies, the PR's commits and comments, and whether it merged.
+- GitHub: the reviews' full bodies, the PR's commits and comments, and whether it merged;
+- the worker log beside the ledger: each time a turn was parked waiting (a CI hold, a usage
+  window, a backoff after a failed turn), why and until when. Logs from before this was
+  recorded hold none.
 
 Above the timeline, one `summary:` line gives the cycle's totals: rounds, turns, tokens (and cost,
 when a provider reports one), the time from the first review to the merge, and how the findings
@@ -1646,8 +1649,10 @@ to the site's run viewer at once.
 `--format markdown` gives the same timeline as a document, for a PR comment, a write-up or an
 archive: a findings table, a heading per round, and links to each review, commit, comment, answers
 and filed issue. `--format json` gives the same data for tools, with a `schema` number that changes only
-when a key is renamed, removed or changes meaning. No output names a local path: an absolute path in
-a free text, such as a failed turn's output tail, is cut to its last part (`…/state.json`). `--offline` leaves GitHub out and
+when a key is renamed, removed or changes meaning. No output names a local path: an absolute path or
+a `file://` URL in a free text, such as a failed turn's output tail, is cut to its last part
+(`…/state.json`). A path may hold spaces, so the cut goes to its last `/` and can take a few words
+before it with it. `--offline` leaves GitHub out and
 lists what that leaves missing. It exits `2` when no loop can be chosen, or when it gets neither
 or both of `--pr` and `--since`, or `--since` without `--out`.
 
