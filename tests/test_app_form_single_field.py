@@ -10,8 +10,11 @@ busy/identity check the seat owes (the reviewer and fixer are in-flight checked,
 adjudicator's comment identity has no run of its own to strand) and that no other seat's
 credential, nor the PAT reader, moved.
 
-Mutation check (by hand, see the PR): leaving the ``app_id`` or the ``key_file`` out of
-``cli_common._credential_label`` makes the matching cases (and only those) fail.
+Mutation check (by hand, see the PR): blinding the comparison in ``route_sync._seat_diffs`` to
+the ``app_id`` or the ``key_file`` of one seat makes that seat's matching cases (and only those)
+fail. Leaving a field out of ``cli_common._credential_label`` instead is coarser: that label is
+also the printed diff text, so the sibling field's expected diff line breaks too, and all six
+one-field cases fail.
 """
 from __future__ import annotations
 
@@ -138,7 +141,9 @@ class AppFormSingleField(Base):
                 self.assertEqual(self.all_effective(), before_all)
 
     def test_a_form_pat_never_replaces_an_app_seat_by_a_single_field_change(self):
-        # PAT regression: a stale PAT field beside a one-field App change is ignored, not applied.
+        # PAT regression: a different PAT beside a one-field App change is refused ("choose PAT
+        # or App"), not applied. A form PAT is ignored only beside an unchanged App, or when it
+        # is the seat's existing PAT.
         for role in ROLES:
             with self.subTest(role=role):
                 form, _ = self.changed_form(role, "app_id")

@@ -1,6 +1,6 @@
 """The rename to Diaktoros (#425, stage 1): new names everywhere a person sees one, old ones still read.
 
-`hermes diaktoros`, its short name `hermes dk`, and — for a release — the old `hermes review-loop`,
+`hermes diaktoros`, its short name `hermes dk`, and — until v0.6.0 — the old `hermes review-loop`,
 which runs the same verbs and says once that it was renamed. What the loop wrote under the old
 name stays readable: an old footer is still stripped from review history, an old gate shim is
 still ours (stale, so rewritten, never refused as foreign), and a loop naming the old qualified

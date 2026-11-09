@@ -302,7 +302,7 @@ def _check_review_only_limit(value, key: str, where: str) -> int | None:
         value = config.form_int(value)
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= config.DAILY_TURNS_MAX:
         raise config.ConfigError(f"{where}: {key} must be a whole number, 1-{config.DAILY_TURNS_MAX} "
-                          f"(leave it empty for the default), got {value!r}")
+                          f"(leave it empty to unset it), got {value!r}")
     return value
 
 

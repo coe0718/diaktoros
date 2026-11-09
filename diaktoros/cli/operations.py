@@ -416,8 +416,9 @@ def cmd_retry(args) -> int:
     Only runs at the PR's newest ledgered head are considered: the head of the most recently
     active run (``updated``), which is where the PR is after a backwards force-push re-armed an
     older head's run. A run that may have written —
-    uncertain, quarantined, reconciled, or with a receipt claim, push intent or ruling on
-    record — is refused with the reconcile instructions; it is never replayed.
+    uncertain, quarantined, reconciled, or with any write-ahead record (see
+    ``run_supervisor.write_records``) — is refused with the reconcile instructions; it is never
+    replayed.
 
     The selection and the re-arm are ``retry_action``'s, which the Desktop page's Retry button
     calls too (#371): this function only supplies the CLI's two GitHub reads and prints the

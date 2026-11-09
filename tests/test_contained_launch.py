@@ -267,8 +267,14 @@ class ProductionLaunch(Base):
                 argv = self.launch(role)["argv"]
                 options = bwrap_options(argv)
                 flags = {option[0] for option in options}
+                # #1769: WorkerLifecycle.recover() (run_supervisor/workers.py) takes a gone
+                # worker PID as a gone sandbox only because of --die-with-parent and
+                # --unshare-all.
                 for required in ("--unshare-all", "--die-with-parent", "--new-session"):
-                    self.assertIn(required, flags, argv)
+                    self.assertIn(required, flags,
+                                  f"{required} missing; WorkerLifecycle.recover() relies on "
+                                  "--die-with-parent and --unshare-all to end a lost run "
+                                  f"whose worker is gone: {argv}")
                 self.assertIn(("--proc", "/proc"), options, argv)
                 # Anywhere at all: not among the options, not smuggled into the entry.
                 self.assertNotIn("--share-net", argv)
