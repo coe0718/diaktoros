@@ -635,6 +635,59 @@ class RecordedFailureEpisodes(Harness):
         self.assertEqual(self.failures(), [])            # the gate did finish: settled on purpose
 
 
+def review_section() -> str:
+    """The `review` section of docs/commands.md, whitespace folded."""
+    text = (pathlib.Path(__file__).resolve().parents[1] / "docs" / "commands.md").read_text()
+    body = text.split("\n### review\n", 1)[1].split("<!-- flags:review -->", 1)[0]
+    return " ".join(body.split())
+
+
+class ExitTwoDocumented(Harness):
+    """#1669: every exit-2 cause `hermes dk review` can reach is named in docs/commands.md, by
+    the words the command prints. Each cause is driven through the entry point, so a doc phrase
+    that no longer matches the command's output turns this red too."""
+
+    def setUp(self):
+        t.reset(prs={"7": t.pr(7)})
+
+    def assert_documented(self, result, phrase):
+        self.assertEqual(result["code"], 2, result["lines"])
+        self.assertIn(phrase, result["lines"][-1])
+        self.assertIn(phrase, review_section())
+
+    def test_a_migration_hold_is_documented(self):
+        with mock.patch("diaktoros.migrate.migrating", return_value={"from": "x"}):
+            result = actions.review(self.loop(), 7)
+        self.assertEqual(result["code"], 2)
+        self.assertIn("a migration holds the install — nothing started; ask again after it",
+                      " ".join(result["lines"]))
+        self.assertIn("a migration holds the install — nothing started; ask again after it",
+                      review_section())
+
+    def test_unreadable_reviews_for_another_round_are_documented(self):
+        author = t.pr(7)["user"]["login"].lower()
+        with mock.patch("diaktoros.review_asks.config.review_only", return_value={author}), \
+                mock.patch("diaktoros.review_asks.gate_reviews", return_value=None), \
+                mock.patch.object(actions, "_run_reviewer") as gate_call:
+            result = actions.review(self.loop(), 7, another_round=True)
+        self.assert_documented(result, "the reviews could not be read — nothing granted")
+        gate_call.assert_not_called()
+
+    def test_a_gate_that_refused_its_input_is_documented(self):
+        with mock.patch.object(actions, "_run_reviewer", side_effect=SystemExit(2)):
+            result = actions.review(self.loop(), 7)
+        self.assert_documented(result, "the gate did not finish — no answer")
+        self.assertIn("it refused its input", review_section())
+
+    def test_a_held_committed_turn_is_documented(self):
+        with mock.patch.object(actions, "_run_reviewer",
+                               return_value=["[diaktoros] turn held: waiting for CI"]), \
+                mock.patch.object(actions, "_reviewer_runs", side_effect=[0, 1]):
+            result = actions.review(self.loop(), 7)
+        self.assert_documented(result, "review not verified —")
+        self.assertIn("`turn held:`", review_section())
+
+
 class Desktop(Harness):
     def test_the_desktop_still_refuses_review_until_its_control_is_wired(self):
         t.reset(prs={"7": t.pr(7)})
