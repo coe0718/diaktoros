@@ -151,13 +151,14 @@ class ProductionLaunch(Base):
                activity: str = "", observed: dict | None = None, rc: int = 0,
                provider_error: str = "", skipped_paths: tuple = (), on_launch=None,
                stage_error: Exception | None = None, prefetch_error: Exception | None = None,
-               stop=None) -> dict:
+               stop=None, output: tuple = ("agent output", "")) -> dict:
         """Run ``run_turn`` for ``role`` with the launcher spied; return what it was handed.
 
         ``kill``: the launcher raises it instead, as ``contained.run`` does at the budget; the
         proxy then reports ``activity`` as the agent's last step, into ``observed``.
         ``stage_error`` / ``prefetch_error``: staging or the dependency prefetch raises it;
-        ``stop``: the cancel event handed to ``run_turn``."""
+        ``stop``: the cancel event handed to ``run_turn``; ``output``: the (stdout, stderr) a
+        completed sandbox returns."""
         seen = {}
 
         def stage(_loop, **kw):
@@ -172,10 +173,11 @@ class ProductionLaunch(Base):
         def run(**kw):
             seen["kwargs"] = kw
             seen["query"] = Path(kw["query"]).read_text()
-            seen["argv"] = contained.command(**{k: v for k, v in kw.items() if k != "timeout"})
+            argv = {k: v for k, v in kw.items() if k not in ("timeout", "stop")}
+            seen["argv"] = contained.command(**argv)
             if kill is not None:
                 raise kill
-            return subprocess.CompletedProcess([], rc, "agent output", "")
+            return subprocess.CompletedProcess([], rc, *output)
 
         class Inference:
             def __init__(self, directory, *a, **k):
@@ -569,6 +571,32 @@ class ProductionLaunch(Base):
         self.assertIn("[last agent activity before the kill] call terminal", observed["stdout"])
         self.assertIn("run_tests.py", observed["stdout"])
         self.assertEqual(observed["stderr"], "session_id: x")
+
+    def test_every_capture_keeps_8kb_of_stdout_and_2kb_of_stderr(self):
+        """#1658: the production turn's capture keeps the last ``DETAIL_STDOUT_BYTES`` of stdout
+        and ``DETAIL_STDERR_BYTES`` of stderr (it cut both at 4000 before), on each of its three
+        paths: a completed turn, a budget kill and an operator's stop. What it keeps then
+        survives ``output_detail`` into ``runs.detail``."""
+        from diaktoros import run_supervisor
+        keep_out, keep_err = run_supervisor.DETAIL_STDOUT_BYTES, run_supervisor.DETAIL_STDERR_BYTES
+        stdout = "OLD" + "x" * 20000 + "y" * (keep_out - 3) + "END"
+        stderr = "e" * 5000 + "f" * keep_err
+        paths = {
+            "completed": dict(rc=1, output=(stdout, stderr)),
+            "budget kill": dict(kill=subprocess.TimeoutExpired(
+                ["bwrap"], 5, stdout.encode(), stderr.encode())),
+            "stopped": dict(kill=contained.Stopped(stdout.encode(), stderr.encode()),
+                            stop=threading.Event()),
+        }
+        for path, how in paths.items():
+            with self.subTest(path=path):
+                observed = {}
+                self.launch("fixer", observed=observed, **how)
+                self.assertTrue(observed["stdout"].startswith("y" * (keep_out - 3) + "END"))
+                self.assertNotIn("x", observed["stdout"])
+                self.assertEqual(observed["stderr"], "f" * keep_err)
+                detail = run_supervisor.output_detail(observed["stdout"], observed["stderr"])
+                self.assertIn("y" * (keep_out - 3) + "END", detail)
 
     def test_a_failed_turn_names_the_providers_own_error(self):
         """Live #281: Hermes said only "HTTP 400 — Error response"; the proxy kept why."""

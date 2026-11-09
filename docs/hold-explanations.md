@@ -53,7 +53,8 @@ unknown, not immediate eligibility. Automatic resume is deliberately unknown unt
 owner can supply a structured, current condition. Desktop retains and labels stale reads; an older
 backend without the additive explanation field explicitly shows that explanation as unavailable
 (provided its PR envelope includes the required ledger availability). Malformed recorded heads
-are withheld as an empty wire identifier and displayed as unknown; the row and host next-step
+are withheld as an empty wire identifier and displayed as unknown — in stuck rows, turns and the
+drawer's adjudicator-ruling summary alike; the row and host next-step
 remain visible, but its explanation cannot claim head binding.
 
 ### Stable reason vocabulary

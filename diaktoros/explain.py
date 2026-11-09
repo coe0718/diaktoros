@@ -582,11 +582,19 @@ def _seat_needs(c) -> None:
                        and not (c.inflight_fix if c.needed_seat == "fixer" else c.inflight_review))
     c.hooks_line = (_explain_app_ingress(c.loop, c.armed) if config.app_ingress(c.loop)
                     else _explain_hooks(c.armed, c.armed_error))
+    _push_and_queue(c)
+
+
+def _push_and_queue(c) -> None:
+    """What holds a fixer turn or a queue entry: the push-off policy and the queue entry's kind."""
     # The fixer gate holds a changes-requested verdict while the loop has not opted in to
     # unattended pushes: no fixer turn can start, so the next event is the operator's.
     c.push_off = bool(c.at_head) and not c.review_only and not config.unattended_fixer_push_enabled(c.loop)
     c.push_off_held = c.push_off and "fixer" not in c.held and not c.inflight_fix
     c.fixer_queue_hold = c.queued_seat == "fixer" and c.queued_reason.startswith(config.FIXER_PUSH_HOLD)
+    # A queue entry the gate declined (a duplicate of a terminal turn) is a confirmed answer the
+    # drain leaves as is (drain.py, gate.is_declined_hold): it waits for no slot, any seat (#1610).
+    c.queued_declined = bool(c.queued_seat) and gate.is_declined_hold({"reason": c.queued_reason})
 
 
 def _blockers(c) -> None:
@@ -684,9 +692,27 @@ def _ended_rearm(c) -> str:
     return "a redelivered verdict is a duplicate the ledger refuses"
 
 
+def _queue_blockers(c, declined: bool) -> None:
+    """The queue entry's or the seat's capacity blocker: none for a push-off hold or a declined
+    fixer entry (the blockers above tell it), a declined entry of another seat never reads as
+    "no capacity" since the drain leaves it, else the capacity wait itself."""
+    if c.fixer_queue_hold or (declined and not c.ruling):
+        pass  # a hold or a declined entry is no capacity wait: no freed slot starts it (#1613)
+    elif c.queued_declined:
+        # Never "no capacity": the drain leaves a declined entry, so no freed slot starts it (#1610).
+        c.blockers.append(f"the gate declined the {c.queued_seat} turn for head {c.short} "
+                          f"({c.queued_reason}) — the drain leaves it, so no freed slot starts it "
+                          f"and nothing restarts it by itself")
+    elif c.queued_seat:
+        c.blockers.append(f"no capacity: queued with the {c.queued_seat} seat — {c.queued_reason}")
+    elif c.full_seat:
+        c.blockers.append(f"no capacity: {c.needed_seat} seat at capacity {c.used}/{c.limit} "
+                          "on other PRs — this PR has no queue entry yet")
+
+
 def _run_blockers(c) -> None:
     """Guards on the runs: push-off, capacity, stale queues and locks, a missing run."""
-    declined = c.queued_seat == "fixer" and gate.is_declined_hold({"reason": c.queued_reason})
+    declined = c.queued_seat == "fixer" and c.queued_declined
     if c.push_off and c.fixer_ended and not c.ruling:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the fixer turn at head {c.short} is "
                           f"{c.fixer_turn} with no fix pushed — "
@@ -698,17 +724,16 @@ def _run_blockers(c) -> None:
     elif c.push_off_held and declined and not c.ruling:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the gate declined the fixer turn for head "
                           f"{c.short} ({c.queued_reason}) — nothing restarts it by itself")
+    elif declined and not c.ruling:
+        # Pushes on, or a lock/mark over it (#1613): the drain leaves it, a freed slot too.
+        c.blockers.append(f"the gate declined the fixer turn for head {c.short} ({c.queued_reason}) "
+                          "— a freed fixer slot or a drain leaves that entry as is, so nothing "
+                          "restarts it by itself")
     elif c.push_off_held and not c.parked and not c.pending_delivery and not c.cap_spent:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the changes-requested verdict at head "
                           f"{c.short} starts no fixer turn until the loop opts in — "
                           f"`{config.fixer_push_enable_command(c.loop)}`")
-    if c.fixer_queue_hold or (declined and c.push_off_held):
-        pass  # the push-off blocker above is this queue entry's whole story (shadow: not capacity)
-    elif c.queued_seat:
-        c.blockers.append(f"no capacity: queued with the {c.queued_seat} seat — {c.queued_reason}")
-    elif c.full_seat:
-        c.blockers.append(f"no capacity: {c.needed_seat} seat at capacity {c.used}/{c.limit} "
-                          "on other PRs — this PR has no queue entry yet")
+    _queue_blockers(c, declined)
     c.blockers.extend(c.local["stale_queues"])
     for seat in sorted(c.stale_held):
         c.blockers.append(f"{seat} lock targets an older head, not current head {c.short} "
@@ -734,6 +759,30 @@ def _run_blockers(c) -> None:
         c.blockers.append(f"no review request exists for head {c.short} — GitHub clears a request "
                           f"when a verdict lands, so the reviewer gate stays silent until the "
                           f"fixer asks again")
+
+
+def _queue_blockers(c, declined: bool) -> None:
+    """The queue entry's blocker: a declined entry, a capacity wait, or a full seat. A hold or a
+    declined fixer entry already named above adds nothing; one a started turn's push-off blocker
+    displaced is still named declined, never capacity (#1613, #1614)."""
+    # A push-off blocker above for a started turn (a lock, mark or ledger row) names that turn,
+    # not the declined entry, so the entry gets its own line below (#1614).
+    started = c.push_off and (c.fixer_ended or c.fix_live) and not c.ruling
+    # Parked for a ruling (or a delivery pending), no fixer blocker above names the declined
+    # entry, so it gets its own line below too (#2075 review F1).
+    if c.fixer_queue_hold or (declined and not started and not c.ruling):
+        pass  # a hold or a declined entry is no capacity wait: no freed slot starts it (#1613)
+    elif c.queued_seat and gate.is_declined_hold({"reason": c.queued_reason}):
+        # A declined entry is never capacity, whatever lock or mark stands beside it (#1614):
+        # the gate answered, the drain leaves it, and only a retry or a new head moves it.
+        c.blockers.append(f"declined: the gate declined the {c.queued_seat} turn for head "
+                          f"{c.short} ({c.queued_reason}) — not capacity; nothing restarts it "
+                          "by itself")
+    elif c.queued_seat:
+        c.blockers.append(f"no capacity: queued with the {c.queued_seat} seat — {c.queued_reason}")
+    elif c.full_seat:
+        c.blockers.append(f"no capacity: {c.needed_seat} seat at capacity {c.used}/{c.limit} "
+                          "on other PRs — this PR has no queue entry yet")
 
 
 def _next_step(c) -> tuple[str, str]:
@@ -926,10 +975,11 @@ def _redelivery_rearms(c) -> bool:
         return False
 
 
-def _fixer_retry(c) -> tuple[str, str, bool]:
-    """``(command, "", False)`` when ``retry`` would re-arm this head's fixer turn, else
-    ``("", why, blocked)``, ``blocked`` when a run is there but may have written (reconcile first):
-    the ledger's own answer (``retry_action.plan``), so explain never names a retry it refuses."""
+def _fixer_retry(c, seat: str = "fixer") -> tuple[str, str, bool]:
+    """``(command, "", False)`` when ``retry`` would re-arm this head's ``seat`` turn (the fixer's
+    by default), else ``("", why, blocked)``, ``blocked`` when a run is there but may have written
+    (reconcile first): the ledger's own answer (``retry_action.plan``), so explain never names a
+    retry it refuses."""
     import sqlite3
     from . import retry_action
     from .run_supervisor import views
@@ -939,13 +989,13 @@ def _fixer_retry(c) -> tuple[str, str, bool]:
             return "", "no isolated run on record", False
         con.row_factory = sqlite3.Row                      # plan reads rows by name
         try:
-            plan = retry_action.plan(con, c.repo, c.number, "fixer")
+            plan = retry_action.plan(con, c.repo, c.number, seat)
         finally:
             con.close()
     except (sqlite3.Error, OSError) as exc:
         return "", f"the run ledger cannot be read: {exc}", False
     if plan["head"] == c.head and plan["rearmable"]:
-        return f"`hermes dk retry --loop {c.loop['id']} --pr {c.number} --seat fixer`", "", False
+        return f"`hermes dk retry --loop {c.loop['id']} --pr {c.number} --seat {seat}`", "", False
     blocked = next(iter(plan["blocked"].values()), "")
     return "", plan["message"] or blocked or "nothing at this head", bool(blocked)
 
@@ -995,24 +1045,47 @@ def _ended_turn_step(c, enable: str) -> str:
     named only when intake would re-arm the turn, retry only when its plan offers it (#1514
     review: the two rules differ), and a redelivery waits out a live in-flight mark, which the
     gate drops it under, while a retry does not; a run that may have written is reconciled first."""
+    return (f"operator decision: unattended fixer pushes are off for this loop, and the fixer "
+            f"turn at head {c.short} is {c.fixer_turn} with no fix pushed"
+            + ("" if c.redeliver else " — a redelivered verdict is a duplicate the ledger refuses")
+            + f". Run `{enable}`, then {_ended_turn_recovery(c)}, push, and re-request review")
+
+
+def _ended_turn_recovery(c) -> str:
+    """What re-arms an ended fixer turn at this head: retry when its plan offers it, a redelivered
+    verdict when intake would re-arm it (waiting out a live in-flight mark), a reconcile first for
+    a run that may have written, else a fix by hand. Shared by the push-off step and the step for
+    a declined fixer queue entry with pushes on (#1613), so both name the same recovery."""
     rearm, why, reconcile = c.fixer_rearm
     wait = _mark_wait(c) if c.redeliver else ""   # the gate drops it under a live mark (#1514 F3)
     redeliver = wait + c.to_fixer + "— the ledger re-arms the turn for it" if c.redeliver else ""
     if redeliver and rearm:
-        then = (f"{rearm} re-arms it now — or {redeliver}" if wait
+        return (f"{rearm} re-arms it now — or {redeliver}" if wait
                 else f"{redeliver} (or {rearm} re-arms it)") + "; or fix it by hand"
-    elif redeliver or rearm:
-        then = (redeliver or f"{rearm} re-arms it" + (" (with the cap spent, its push then goes "
+    if redeliver or rearm:
+        return (redeliver or f"{rearm} re-arms it" + (" (with the cap spent, its push then goes "
                                                          "for a ruling)" if c.cap_spent else "")
                 ) + "; or fix it by hand"
-    elif reconcile:
-        then = _reconcile_first(c, why) + "; or fix it by hand"
-    else:
-        then = f"`retry` has nothing to re-arm ({why}): fix it by hand"
-    return (f"operator decision: unattended fixer pushes are off for this loop, and the fixer "
-            f"turn at head {c.short} is {c.fixer_turn} with no fix pushed"
-            + ("" if c.redeliver else " — a redelivered verdict is a duplicate the ledger refuses")
-            + f". Run `{enable}`, then {then}, push, and re-request review")
+    if reconcile:
+        return _reconcile_first(c, why) + "; or fix it by hand"
+    return f"`retry` has nothing to re-arm ({why}): fix it by hand"
+
+
+def _declined_step(c) -> tuple[str, str]:
+    """Next event for a fixer queue entry the gate declined (a duplicate of a terminal turn) once
+    no push-off step applies (#1613): drain leaves such an entry as is (drain.py), so a freed
+    fixer slot never starts it. An ended turn in the ledger gets its own recovery (retry or a
+    redelivered verdict); with no run in the ledger a fresh delivery schedules one."""
+    declined = (f"the gate declined the fixer turn for head {c.short} ({c.queued_reason}), and a "
+                "freed fixer slot or a drain leaves that entry as is")
+    if c.fix_live:
+        return "fixer-push", c.fix_push + declined + "; the fixer turn already out answers the verdict"
+    if c.fixer_ended:
+        kind = "fixer-retry" if c.fixer_rearm[0] or c.redeliver else "operator"
+        return kind, f"{declined} — {_ended_turn_recovery(c)}, push, and re-request review"
+    return "fixer-retry", (f"{declined} — no fixer run for this head is in the ledger, so `retry` "
+                           "has nothing to re-arm: "
+                           + _mark_wait(c) + c.to_fixer + "(the gate schedules a fresh turn for it)")
 
 
 def _next_push_off(c) -> tuple[str, str] | None:
@@ -1127,6 +1200,16 @@ def _next_lock(c) -> tuple[str, str] | None:
     elif "fixer" in c.held:
         kind = "fixer-push"
         action = c.fix_push + "asking is what hands the PR back, and it is what frees the fixer's slot"
+    elif c.queued_seat == "fixer" and c.queued_declined:
+        return _declined_step(c)                       # drain leaves it: no freed slot starts it
+    elif c.queued_declined:
+        # The drain leaves a declined entry: no freed slot starts it, as the blocker says (#1610).
+        rearm, why, _ = _fixer_retry(c, c.queued_seat)
+        kind = "retry" if rearm else "operator"
+        action = (f"the gate declined the {c.queued_seat} turn for head {c.short} ({c.queued_reason}) "
+                  "— no freed slot starts it. " + (f"{rearm} re-arms it" if rearm else
+                                                   f"`retry` has nothing to re-arm ({why})")
+                  + "; or re-drive this head by hand")
     elif c.queued_seat:
         kind = "release"
         action = (f"a {c.queued_seat} slot frees — the queued run starts then (a verdict or a handoff "

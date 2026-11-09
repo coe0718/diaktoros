@@ -554,8 +554,8 @@ def cmd_init(args) -> int:
             print(f"refused: the issue-fix daily cap {cap} cannot be set by init: a new loop "
                   "has no triage block for it to live in. Leave --fix-daily-turns (and the "
                   "fix_daily_turns setting) blank, then turn triage on and set it with "
-                  "`hermes dk triage --enable --triage-profile P --author A --labels L "
-                  "--fix-daily-turns N`; nothing written")
+                  "`hermes dk triage --loop LOOP --enable --triage-profile P --author A "
+                  "--labels L --fix-daily-turns N`; nothing written")
             return 2
     except config.ConfigError as exc:
         print(f"refused: {exc}")

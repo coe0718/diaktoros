@@ -7,9 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
 
-from diaktoros import gh, observer, situation, transition
+from diaktoros import gh, observer, situation, transition, watch_mode
 from diaktoros import state as state_mod
 
 def reconcile_stacked(loop: dict, st: state_mod.LoopState, watch: dict,
@@ -105,7 +104,7 @@ def reconcile_stacked(loop: dict, st: state_mod.LoopState, watch: dict,
                         "generation": generation, "status": resolution.status,
                         "reason": resolution.reason, "parents": list(resolution.parents),
                         "identity": resolution.identity.key if resolution.identity else "",
-                        "at": time.time()}
+                        "at": watch_mode.now()}
         lines.append(f"#{number} stacked {resolution.status}: {resolution.reason} "
                      "— visibility queue only; no reviewer run authorized")
         observer.notify(loop, st, "stall", number, head or "", identity=f"stacked:{generation}",

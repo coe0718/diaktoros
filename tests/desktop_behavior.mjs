@@ -1912,6 +1912,27 @@ test('page: the drawer shows shadow reviews beside the real verdict, and none wh
   assert.doesNotMatch(text, /Shadow reviews/)
 })
 
+test('page: a withheld ruling head reads unknown, never blank', async () => {
+  // #1355: the backend withholds a malformed recorded head as ''; the summary must say unknown.
+  const h = await harness()
+  h.queries.loops = h.good(TWO_LOOPS)
+  h.queries.now = h.good({ runs: [{ pr: 42, seat: 'reviewer', head: 'abcdef0', state: 'waiting', why: 'waiting to retry' }],
+    counts: { waiting: 1 }, pacing: {}, available: true })
+  const pr = { repo: 'acme/widgets', loop: 'widgets', pr: 42, cap: 3, ledger_available: true, stuck: [],
+    turns: [], turns_total: 0, verdicts: {},
+    rulings: [{ verdict: 'ACCEPT', head: '', created: 1800000001 }, { verdict: 'REJECT', head: 'abcdef2', created: 1800000002 }],
+    rulings_total: 2, breach: null, findings: [], decisions: [], read_at: 1800000000 }
+  h.queries.pr = h.good(pr)
+  const tree = h.render('page')
+  h.buttons(tree).find(n => h.text([n]).includes('#42')).props.onClick()
+  const text = h.text(h.render('page'))
+  // The drawer's real queryFn admits the withheld head; it is not rejected as malformed.
+  h.respond(pr)
+  assert.equal((await h.options.pr.queryFn()).rulings[0].head, '')
+  assert.match(text, /Adjudicator rulings: ACCEPT on unknown · REJECT on abcdef2/)
+  assert.doesNotMatch(text, /ACCEPT on  ·|ACCEPT on ·/)
+})
+
 test('page: the drawer says when its turns and rulings are the newest of more, and only then', async () => {
   const h = await harness()
   h.queries.loops = h.good(TWO_LOOPS)

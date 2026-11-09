@@ -30,10 +30,16 @@ class SeatSections(unittest.TestCase):
     def test_shadow_section_states_the_no_write_protocol_and_where_the_verdict_goes(self):
         text = section("shadow")
         for needle in ("no-write", "operation out of scope", "posts nothing", "shadow_reviews",
-                       "snapshot", "stats", "shadow.escalate", "shadow.file_issues",
+                       "snapshot", "hermes dk report", "shadow.escalate", "shadow.file_issues",
                        "Not verified:"):
             with self.subTest(needle=needle):
                 self.assertIn(needle, text)
+
+    def test_shadow_section_names_the_command_that_shows_the_verdict(self):
+        # #1677: `stats` drops the shadow seat; `report` sets it beside the real review.
+        text = " ".join(section("shadow").split())
+        self.assertIn("`hermes dk report` and the weekly report set it beside the real review", text)
+        self.assertNotIn("`hermes dk stats` sets it", text)
 
     def test_shadow_section_separates_automatic_retry_from_the_operators_manual_one(self):
         # A failed shadow is never retried automatically, but `retry --seat shadow` re-arms it.
@@ -41,6 +47,15 @@ class SeatSections(unittest.TestCase):
         self.assertIn("not retried automatically", text)
         self.assertIn("hermes dk retry --loop LOOP --pr N --seat shadow", text)
         self.assertNotIn("is not retried.", text)
+
+    def test_the_general_retry_rule_excepts_the_shadow(self):
+        # #1678: the general rule ("retried ... four attempts in all") must not contradict the
+        # shadow section; turns.py sets retry False for every shadow row.
+        flat = " ".join(SKILL.split())
+        rule = re.search(r"a run that failed before it wrote anything is retried(.*?);", flat)
+        self.assertIsNotNone(rule, "the general retry rule moved")
+        tail = flat[rule.start():rule.start() + 400].split(" a provider's")[0]
+        self.assertIn("shadow turn, which gets one attempt", tail)
 
 
 if __name__ == "__main__":
