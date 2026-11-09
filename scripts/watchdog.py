@@ -266,7 +266,7 @@ class _Sweep:
     def __init__(self, loop: dict, st: state_mod.LoopState, lines: list[str]):
         self.loop, self.st, self.lines = loop, st, lines
         self.watch = st.watch()
-        self.now = time.time()
+        self.now = watch_mode.now()
         self.cooldown = 0.0 if watch_mode.TEST else float(loop.get("cooldown_h") or 6) * 3600
         self.health: watch_health.Health | None = None
         self.listing_errors: list[str] = []
@@ -773,7 +773,7 @@ def _stuck_states(c: _Sweep) -> None:
     loop, now = c.loop, c.now
     # A fresh clock (review on #937): ``now`` was taken before this sweep's GitHub reads and
     # hand-offs, so a claim made since would look dated in the future and be reported dead.
-    stuck: list[tuple[str, str]] = died_locks(loop, c.st.kv_get(c.st.locks, {}) or {}, time.time())
+    stuck: list[tuple[str, str]] = died_locks(loop, c.st.kv_get(c.st.locks, {}) or {}, watch_mode.now())
     queue = c.st.queue_all()
     for seat, items in (queue if isinstance(queue, dict) else {}).items():
         for key, entry in (items if isinstance(items, dict) else {}).items():
