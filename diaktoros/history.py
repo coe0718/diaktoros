@@ -40,9 +40,13 @@ _OWN_HEAD = {
 SCHEMA = 1
 _RUN_COLUMNS = ("id", "seat", "head", "state", "created", "launch_intent", "finished", "model",
                 "tokens_in", "tokens_out", "cost", "turn_key", "detail", "error")
-# An absolute local path in a free text (a failed turn's output tail, a review body): shown as
-# its last part only, so no output names a host's layout (#2134). A URL's path is not one.
-_PATH = re.compile(r"(?<![\w.:/~-])(?:~|/)[\w.~-]*(?:/[\w.~-]+)+")
+# An absolute local path or a file:// URL in a free text (a failed turn's output tail, a review
+# body): shown as its last part only, so no output names a host's layout (#2134). A part may hold
+# spaces, so a run is cut at its last ``/`` even across words (#2151): a few words before it may
+# go too, a directory name never shows. An http(s) URL's path is a link, not a local path.
+_PART = r"[\w.~%-]+(?: +(?!(?i:file)://)[\w.~%-]+)*"         # a file:// URL starts its own
+_PATH = re.compile(rf"(?i:\bfile://)[^\s/]*(?:/{_PART})+"
+                   rf"|(?<![\w.:/~%-])(?:~|/)(?:{_PART})?(?:/{_PART})+")
 _SEVERITY = re.compile(r"\b(P[0-4])\b")
 
 
