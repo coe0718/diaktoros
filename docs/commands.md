@@ -1626,7 +1626,9 @@ reason (exit 1). Exit 2 when the loop or the PR cannot be read, several loops ar
 no `--loop` names one, or the gate did not finish: its GitHub budget ran out (20 seconds by
 default, less when the webhook's script timeout is short), or it crashed (it prints `the gate did
 not finish — it crashed (Type)`, naming the exception type only). Only the gate's GitHub
-calls are deadline-limited. There is no hard deadline in-process, so a hang outside a GitHub call
+calls, and the seat drain the gate starts, are deadline-limited: the drain's `watchdog.py`
+process gets at most half of the budget that is left and is stopped at that timeout (logged,
+never fatal). There is no hard deadline in-process, so any other hang outside a GitHub call
 has no bound: the command can stay stuck and never reach exit 2. If it has run well past the
 budget, stop it. On any non-finish, check `explain` before asking again.
 
@@ -1635,9 +1637,10 @@ ledger as a webhook delivery's (`gate-failures.json` in the loop's state directo
 no-loop ledger when that is busy or unwritable), so `explain`, `doctor` and the watchdog's
 gate-failure sweep report them. The entry is never re-driven by the watchdog (it cannot rebuild
 your command, `--reconsider` included): the sweep alerts it, and the way forward is to run
-`review` again, which resolves the entry once the gate finishes. A hang outside a GitHub call
-(see above) never reaches the recorder, so it leaves no entry. If the ledger itself cannot be
-written, the output says `could NOT be recorded`. Settling an entry waits only a bounded time
+`review` again, which resolves the entry once the gate finishes. An unbounded hang outside a
+GitHub call (see above) never reaches the recorder, so it leaves no entry. If the ledger itself
+cannot be written, the output says `could NOT be recorded`. Settling an entry waits only a
+bounded time
 for a busy ledger. If it gives up, the earlier entry stays open (it can alert again later); a
 failure recorded afterwards in the no-loop ledger is still reported as its own, because it
 carries when its run began and the older open entry predates that.

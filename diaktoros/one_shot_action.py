@@ -238,7 +238,9 @@ def _run_reviewer(payload, reconsider=None, holds=None) -> list[str]:
     process budget or decision recorder. The GitHub budget, the failed-read flag and the
     decision recorder are this call's (``gh.gate_scope``, ``util.gate_call``), so concurrent
     calls in one host never see each other's. The budget is the webhook gate's own; there is no
-    signal backstop: only GitHub calls are deadline-limited, and a hang outside one has no bound.
+    signal backstop: only GitHub calls, and the seat drain the gate starts (``gate.drain_seat``
+    bounds its subprocess by half the budget left), are deadline-limited; any other hang outside
+    a GitHub call has no bound.
     Raises ``gh.GateBudgetExceeded`` when the budget runs out, and ``SystemExit`` with a
     non-zero code when the gate refused its input.
     """
