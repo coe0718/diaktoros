@@ -204,7 +204,7 @@ class RunIntake:
         budget is re-armed on the raised one, not the budget recorded when it was enqueued.
 
         Refuses anything that may have written — uncertain, quarantined, reconciled, or with
-        a receipt claim, push intent or ruling on record — with the reconcile instructions.
+        any write-ahead record (``write_records``) — with the reconcile instructions.
         Resets the automatic retry budget. Returns the new state; raises ValueError on refusal.
 
         A fixer run is re-admitted under the push policy in force *now*: a fresh admission

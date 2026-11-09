@@ -1682,8 +1682,9 @@ function RightNowPane() {
   })
 }
 
-// Only read disclosure is reused: QueryStatus includes a refresh button, and RunRow includes
-// drawer/retry affordances. Neither belongs in a passive pane.
+// Only read disclosure is reused: QueryStatus adds a Retry button to a failed, stale or
+// unavailable read, and RunRow includes drawer/retry affordances. Neither belongs in a passive
+// pane.
 function PassiveReadStatus({ query, state, label, noLedger = false }) {
   return jsxs('div', { className: 'flex min-w-0 flex-col gap-1 py-1', children: [
     jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [

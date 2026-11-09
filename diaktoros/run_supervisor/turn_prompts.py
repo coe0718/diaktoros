@@ -176,8 +176,10 @@ def ci_sections(loop: dict, row, seat: str) -> str:
         # #539: commits CI-fix turns pushed unreviewed, so this review checks none weakened
         # a test.
         text += ci_fix.fix_history(loop, row['pr'])
-        # A red head reaches the reviewer only once the fixer is done with it: say why, with
-        # the failing jobs' logs (#539).
+        # #1110 holds a red head for green or a new head while CI fixes are on for the PR,
+        # even once the fixer is done with it, so a red head reaches the reviewer only where
+        # they are off (or CI went red after the hold read it). If CI-fix turns ran on the PR,
+        # say so, with the failing jobs' logs (#539).
         text += ci_fix.still_red(loop, state, row['pr'])
     if seat == 'fixer':
         # #569: a fix round on a red head gets the failing jobs, their failing step and log
