@@ -205,6 +205,18 @@ class Cache(fg.Base):
         self.assertIn("A retry that stops before that point fetches nothing", text)
         self.assertIn("fetches the branch and the base again", text)
 
+    def test_the_settings_page_agrees_on_what_the_cache_saves(self):
+        """docs/settings.md said the cache saves the fetch only and that a retry fetches again;
+        configuration.md says it saves the fetch and the dry merge, and a retry that stops before
+        the broker's update fetches nothing (#1686)."""
+        docs = Path(__file__).resolve().parents[1] / "docs" / "settings.md"
+        row = next(line for line in docs.read_text().splitlines()
+                   if line.startswith("| `review_only_update` |"))
+        self.assertNotIn("fetch only", row)
+        self.assertIn("saves the assessment's fetch and dry merge", row)
+        self.assertIn("one that stops before it, such as while unattended pushes are off, "
+                      "fetches nothing", row)
+
     def test_turning_the_setting_on_assesses_again(self):
         self.sweep(CLEAN)
         with mock.patch.object(safe_push, "dry_merge", return_value=dry()) as merge:

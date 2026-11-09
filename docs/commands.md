@@ -242,9 +242,10 @@ content, so they are safe to publish: see [Publishing stats](operations.md#publi
 
 ### calls
 
-Which GitHub calls spend the rate limit. The host counts every REST call it makes, by login,
-method, path shape (`/repos/R/pulls/N/reviews?page&per_page`: numbers, SHAs, branch names and
-query values taken out) and outcome:
+Which GitHub calls spend the rate limit. The host counts the REST calls of the processes that
+make nearly all of them (listed below), by login, method, path shape
+(`/repos/R/pulls/N/reviews?page&per_page`: numbers, SHAs, branch names and query values taken
+out) and outcome:
 
 - **spent**: an answer GitHub counted;
 - **free**: a `304 Not Modified` from a conditional read (the host keeps each read's ETag and
@@ -269,9 +270,12 @@ hermes dk calls --since 24h --top 30
 Counts are kept in whole hours, in one small file per process under
 `$HERMES_HOME/state/diaktoros-gh-calls/`, for two days (a long-running process drops its own
 older hours as it writes). Only the processes that keep the read
-cache keep a count: the watchdog, the gates and the turn workers, which make nearly every call.
-Commands that promise to write nothing (`doctor`, `explain`, `status`, the Desktop) are not
-counted. Read-only. The files hold logins and path shapes only: no token, body or error text.
+cache keep a count: the watchdog, the gates and the turn workers, which make nearly every call,
+and any process that runs a gate in-process (`hermes dk review`, or a review from the Desktop),
+from the moment its gate starts until that process exits. No other process is counted: not the
+other `hermes dk` commands (`doctor`, `explain`, `status`, `stats --github`, `update` and the
+rest), and not the Desktop until it runs a review. Read-only. The files hold logins and path
+shapes only: no token, body or error text.
 
 <!-- flags:calls -->
 | flag | value | default | what it does |
@@ -339,7 +343,8 @@ sweep filed for shadow reviews whose request was recorded in the window, per sha
 many were later fixed, meaning an issue-fix PR the loop proposed for the issue has merged (read
 now, as the issue fixes' PRs are). A fix made outside the loop is not counted as fixed; one not
 filed (duplicate, denied, waiting) is not counted at all, and the adjudicator's `adjudicator-found`
-issues are not in it. With `file_issues` off, the line never appears. Request → verdict is
+issues are not in it. With `file_issues` off nothing new is filed, but the line still appears for
+issues filed in the window while it was on. Request → verdict is
 measured from the review run's creation to its receipt.
 
 Human overrides (#220, first step): a PR merged over a standing changes-requested. The watchdog
@@ -347,9 +352,11 @@ sweep reads the repository's recently merged PRs (the last 30 updated, merged wi
 author the loop reviews) and their reviews; when the loop reviewer's latest live verdict at the
 merged head is changes-requested, it writes one record (PR, head, seat, the resolved model of the
 reviewer run that posted it, and the findings still open) to the run ledger. A merge after an
-approval, a dismissed review, or a verdict at an earlier head writes none; reviews that cannot be
-read or ordered are read again each sweep while the merge is within the 7 days; one never
-proved by then is not recorded. The report lists them by the day of the merge, with a
+approval, a dismissed review, or a verdict at an earlier head writes none. A merge is read again
+each sweep while it is within the 7 days when its reviews cannot be read or ordered, when no
+verdict is proved current at the merged head, or when the reviewer has a pending review there
+(GitHub shows a pending review only to its author, so the host cannot tell it from no review);
+one never proved by then is not recorded. The report lists them by the day of the merge, with a
 count per model and per category of the findings still open (each blocking finding carries one of
 `correctness`, `test`, `requirement`, `docs`, `security` or `other`, tagged by the reviewer as
 `F1 [test]: …`). Nothing changes behaviour. Not recorded yet: a dismissed review, a reversed
@@ -1143,8 +1150,10 @@ update picks up, the merged PRs among them (squash `title (#N)` and `Merge pull 
 commits; only the subject identifies the PR, so a commit whose subject ends in `(#N)` counts as PR
 #N even when it is a direct push naming an issue, and a commit naming no PR counts as a commit
 only. The shown title is the subject for a squash commit, but for a `Merge pull request #N` commit
-it is the first nonblank line of the body), and the exact install line. GitHub's compare lists at
-most 250 commits, so past that the PR list says it is partial.
+it is the first nonblank line of the body, or empty when the body has none. A `(#N)` inside either
+is dropped, so `Revert "Fix a thing (#876)" (#900)` shows `Revert "Fix a thing"`), and the exact
+install line. GitHub's compare lists at most 250 commits, so past that the PR list says it is
+partial.
 
 - `--apply` runs that install line with `--ref` set to the target's commit, then
   `hermes dk doctor --loop <id>`, and reports the new commit. It refuses while any run is in
@@ -1369,9 +1378,11 @@ hermes dk onboard --loop "<loop-id>" --pr 12
   only whether unattended fixer pushes are on, and the command that turns them on.
 - To tell whether the `live_turn` and `armed` stages are still current, it reads the PR's head
   and the repo's hooks from GitHub, and only for stages that were recorded. Every request to the
-  repository is a GET. The one POST is authentication: a reader that is a GitHub App first mints
-  an installation token with `POST /app/installations/{id}/access_tokens` (a PAT reader sends no
-  POST). That mints a credential and changes nothing in the repository. If a read
+  repository is a GET. The only POST is authentication: a reader that is a GitHub App with no
+  usable stored installation token first mints one with
+  `POST /app/installations/{id}/access_tokens`. A token another host process stored is reused
+  until shortly before it expires, so often no POST is sent, and a PAT reader never sends one.
+  A mint makes a credential and changes nothing in the repository. If a read
   fails, the stage shows `stale`. The record is kept by `onboarding.py` (#1598) and written by the
   commands themselves (#1617); a loop whose commands have not run since then, or that was verified
   by hand, still shows `not_attempted`.
@@ -1467,8 +1478,8 @@ hermes dk arm --loop "<loop-id>" --pause --admin-token "<hook-admin-login>"
 Run it after `doctor` and `selftest` pass. It reads back each hook and exits `1` unless GitHub
 confirms every one is in the state you asked for. It edits the hooks as `--admin-token`'s login
 (default: the reader), which needs hook write access: for a PAT, `repository_hooks: write` (or
-classic `repo`); for a GitHub App login, the App's Webhooks: Read and write permission, with the App
-installed on the repo.
+classic `repo` or `admin:repo_hook`); for a GitHub App login, the App's Webhooks: Read and write
+permission, with the App installed on the repo.
 
 **Safety.** Omission of `--loop` affects every configured loop; prefer an exact id.
 Pause stops new hook deliveries, not already running turns. Arming is not fixer-push consent.
@@ -1679,6 +1690,8 @@ already at this head, and the verdict cap. It makes no GitHub write; the review 
 write, as usual. It prints `review queued` (exit 0), or `no review started —` and the gate's own
 reason (exit 1). Exit 2 when:
 - the loop or the PR cannot be read, or several loops are configured and no `--loop` names one;
+- `--reconsider` and `--another-round` are both given (`--reconsider and --another-round ask for
+  different things; use one`): it is refused before any gate runs;
 - a migration holds the install (`a migration holds the install — nothing started; ask again
   after it`): no gate runs while names are being moved;
 - with `--another-round`, the PR's reviews cannot be read (`the reviews could not be read —
@@ -1700,7 +1713,7 @@ budget, stop it. On any non-finish, check `explain` before asking again.
 
 A crash, a budget overrun and a non-zero exit of the gate are recorded in the same gate-failure
 ledger as a webhook delivery's (`gate-failures.json` in the loop's state directory, or the
-no-loop ledger when that is busy or unwritable), so `explain`, `doctor` and the watchdog's
+no-loop ledger when that is busy or unwritable), so `explain`, `ready` and the watchdog's
 gate-failure sweep report them. The entry is never re-driven by the watchdog (it cannot rebuild
 your command, `--reconsider` included): the sweep alerts it, and the way forward is to run
 `review` again, which resolves the entry once the gate finishes. An unbounded hang outside a
@@ -1718,8 +1731,8 @@ review requests changes, the fixer takes it as usual. An approval adds no round,
 changes-requested verdicts count toward the cap. One per head: a second reconsider of the same
 head is refused, and a new head gets its own review. It's the host operator's alone. No webhook
 or GitHub comment can start one, so a re-request on GitHub still gets "head already has a
-reviewer's verdict". It can't be combined with `--another-round`, and it's refused at a head
-that has no verdict yet (a plain `review` asks for one) or that is escalated to adjudication.
+reviewer's verdict". It can't be combined with `--another-round` (exit 2), and it's refused at a
+head that has no verdict yet (a plain `review` asks for one) or that is escalated to adjudication.
 It's also refused when the verdict cap is spent (#1453): at a fixer PR with `cap` or more
 changes-requested verdicts (say, a cap lowered after the approval) the gate would park the PR for
 adjudication instead of reviewing it, so a reconsider never reaches the gate there and never
