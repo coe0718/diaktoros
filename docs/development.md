@@ -138,8 +138,13 @@ metadata every second: ledger and WAL (not reader-mutated SHM), loop configs,
 state roots, pacing/runtime, hooks and host config. This detects workers outside
 the dashboard without requiring them to publish events. Config JSON is bounded
 and read only to discover custom state roots; token files are never opened.
-Scans cap entries at 4096 and config bytes at 1 MiB; overflow conservatively
-invalidates each interval. A socket has at most one pending hint. The last socket
+Scans cap entries at 4096 and config bytes at 1 MiB. A directory named
+`isolated-runs`, `deps` or `ci-cache` anywhere below a scanned root is stamped but
+not descended (`PRUNED_DIRS`): no view reads inside them. A scan that hit its cap
+cannot prove the rest unchanged, so while nothing it saw changed it invalidates at
+most once per 30 seconds (`OVERFLOW_GAP`), not on every scan. The scanner sends at most
+one invalidation per 5 seconds (`MIN_GAP`); a change inside that gap is sent when
+it ends. A socket has at most one pending hint. The last socket
 leaving cancels and joins the scanner, including in-flight thread IO; server
 cancellation also joins socket tasks. Unavailable metadata cannot establish
 view availability: REST and existing stale/unavailable states remain decisive.

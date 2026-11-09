@@ -3,12 +3,15 @@ reuse it across rounds; what changes with the round or the head comes after, new
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+from pathlib import Path
+import re
 import unittest
 from unittest import mock
 
 from diaktoros import ci, gh, issue_facts, prompts, trusted_turn
 from diaktoros.run_supervisor import pr_facts, turn_prompts
 
+ROOT = Path(__file__).resolve().parents[1]
 REPO = "acme/widgets"
 H1, H2 = "a" * 40, "b" * 40
 LOOP = {"id": "w", "repo": REPO, "base": "main", "cap": 3, "read_token": "read",
@@ -166,6 +169,17 @@ class StableFirst(unittest.TestCase):
     def test_templates_carry_no_round_fact(self):
         for role in ("reviewer", "fixer"):
             self.assertNotRegex(prompts.ISOLATED[role], r"\{(head|round|cap|reviewer)\}")
+
+    def test_the_skill_and_templates_place_the_build_note_where_it_is(self):
+        """#1770: compose_prompt puts the build note just above "This round"; a seat told to look
+        at the top of its prompt would look where the note no longer is."""
+        for path in (ROOT / "skill" / "SKILL.md", Path(prompts.__file__)):
+            flat = " ".join(path.read_text().split())
+            places = re.findall(r'"Build environment" note,? (.{0,40})', flat)
+            with self.subTest(file=path.name):
+                self.assertTrue(places)
+                for place in places:
+                    self.assertTrue(place.startswith("just above **This round**"), place)
 
 
 if __name__ == "__main__":
