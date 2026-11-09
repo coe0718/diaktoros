@@ -2,7 +2,10 @@
 // a drawer showing what would move one PR, and the installation's own preflight — all fed by
 // this plugin's own backend (dashboard/plugin_api.py) through ctx.rest. Reads never mutate state.
 // Writes require confirmation: Retry re-arms an eligible run; Pause/Resume changes webhook
-// delivery only; one-shot escalation requires an independent host preview and opaque confirmation.
+// delivery only; one-shot escalation and cancel require an independent host preview and opaque
+// confirmation (a cancel's confirmation binds the exact runs its preview listed).
+// Issue dependencies (#1301) are listed from their own GitHub-reading read (never polled) and are
+// declared or waived through that same preview and confirmation.
 // Re-review and drain are refused here: the core binds the confirmed head and queue, but the page's
 // controls for them are not wired yet.
 // Plain ESM, loaded uncompiled: jsx() calls, not JSX syntax, and only the three specifiers the
@@ -33,12 +36,22 @@ const ID = 'diaktoros'
 const PATH = '/diaktoros'
 const SINCE = ['24h', '7d', '30d']
 const SEATS = ['reviewer', 'fixer', 'issue_fixer', 'triage', 'adjudicator']
+// The six seats a confirmed cancel may name (one_shot_action.CANCEL_SEATS, #1148).
+const CANCEL_SEATS = ['reviewer', 'fixer', 'adjudicator', 'triage', 'issue_fixer', 'shadow']
+// desktop_api.action_perform_view's detail for a stale or refused confirmation: no write happened.
+const ACTION_STALE = 'Action confirmation is stale or unavailable; preview again.'
 // Where the chip remembers each loop's last announced "needs you" count, keyed by loop id, so a
 // rise in any loop toasts once and the first read after a reload only records the baseline.
 const NEEDS_YOU_PREFIX = 'needsYou:'
 // The health view is the slow one (it stats profiles, the cron store and the venvs), so it is
 // read once and kept, not polled like the run views.
 const HEALTH_STALE_MS = 600000
+// The dependency list reads GitHub once per prerequisite (#1301): read on selection and on an
+// explicit Refresh, kept five minutes, never polled and never socket-invalidated.
+const DEPS_STALE_MS = 300000
+// The confirmed one-shot actions that name a second issue: pr is the issue that waits, on the
+// issue it waits on.
+const DEPS_ACTIONS = ['depends', 'waive']
 
 // Set in register(), cleared on dispose: components reach the backend through them.
 let rest = null
@@ -236,6 +249,7 @@ function observeFreshness(query) {
   const kind = query.queryKey[1]
   if (kind === 'now' || kind === 'overview' || kind === 'hooks') freshRead(query.state, 60000)
   else if (kind === 'loops' || kind === 'stats' || kind === 'settings') freshRead(query.state, 120000)
+  else if (kind === 'deps') freshRead(query.state, DEPS_STALE_MS)
 }
 
 function useViewState(q, empty, maxAge = 120000) {
@@ -258,16 +272,32 @@ function lastGood(q) {
   return q.dataUpdatedAt ? new Date(q.dataUpdatedAt).toLocaleString() : 'time unavailable'
 }
 
+// A verified read is one quiet line: no box, no button and no in-flight flicker, so background
+// refreshes cannot move the page. Only a read that failed or went stale gets the bordered
+// disclosure and a Retry control; a first load has nothing to retry yet.
 function QueryStatus({ query, state, label, noLedger = false }) {
+  const trouble = query.isError || state === 'stale' || state === 'unavailable'
+  if (!trouble) {
+    return jsxs('div', {
+      role: 'status',
+      className: 'flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-(--ui-text-tertiary)',
+      children: [
+        jsx(Badge, { size: 'xs', variant: 'muted', children: state }),
+        jsx('span', { className: 'min-w-0', children: label + (state === 'loading' ? ': loading…' : ': backend read succeeded.') }),
+        query.data != null ? jsx('span', { className: 'min-w-0', children: 'Last good read: ' + lastGood(query) }) : null,
+        noLedger ? jsx('div', { className: 'basis-full text-(--ui-text-secondary)', children: typeof noLedger === 'string' ? noLedger : 'No run ledger available in the last successful backend read. Seat-turn counts are unavailable, not zero.' }) : null
+      ]
+    })
+  }
   return jsxs('div', {
     role: query.isError ? 'alert' : 'status',
     className: 'flex flex-wrap items-center gap-2 rounded-md border border-(--ui-stroke-secondary) p-4',
     children: [
-      jsx(Badge, { size: 'xs', variant: state === 'stale' || state === 'unavailable' ? 'warn' : 'muted', children: state }),
+      jsx(Badge, { size: 'xs', variant: 'warn', children: state }),
       jsxs('div', {
         className: 'min-w-0 flex-1 text-xs text-(--ui-text-secondary)',
         children: [
-          label + (state === 'loading' ? ': loading…' : state === 'unavailable' ? ': no verified data available.' : state === 'stale' ? ': showing last good data, not current status.' : ': backend read succeeded.'),
+          label + (state === 'unavailable' ? ': no verified data available.' : state === 'stale' ? ': showing last good data, not current status.' : ': backend read succeeded.'),
           // ``noLedger`` is the missing-ledger disclosure; a caller may pass its own sentence, else
           // it reads as the seat-turns default. Either way it is a disclosure, never a zero.
           noLedger ? jsx('div', { className: 'mt-1', children: typeof noLedger === 'string' ? noLedger : 'No run ledger available in the last successful backend read. Seat-turn counts are unavailable, not zero.' }) : null,
@@ -784,7 +814,7 @@ function Drawer({ loop, pr, onClose }) {
                             (rulingsTotal > rulings.length
                               ? 'Adjudicator rulings (newest ' + rulings.length + ' of ' + rulingsTotal + '): '
                               : 'Adjudicator rulings: ') +
-                            rulings.map(r => r.verdict + ' on ' + r.head).join(' · ')
+                            rulings.map(r => r.verdict + ' on ' + (r.head || 'unknown')).join(' · ')
                         })
                       : null,
                     jsx(Muted, {
@@ -1254,7 +1284,10 @@ function validateHooks(data, loop, write = false) {
   return { ...data, reason: reasons.includes(data.reason) ? data.reason : reasons[0] }
 }
 
-function HooksControl({ loop, discoveryCurrent }) {
+// ``discoveryCurrent`` is the last verified loop read naming this loop; ``discoveryReading`` is a
+// background re-read in flight. A re-read never hides what is shown (that made the section jump
+// on every refresh): it only disables the write until the read lands.
+function HooksControl({ loop, discoveryCurrent, discoveryReading = false }) {
   const q = useQuery({ queryKey: [ID, 'hooks', loop], enabled: !!loop,
     queryFn: async () => validateHooks(await call('/hooks?loop=' + encodeURIComponent(loop)), loop),
     refetchInterval: 30000 })
@@ -1268,15 +1301,16 @@ function HooksControl({ loop, discoveryCurrent }) {
   const mounted = useRef(true)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   // Latest render is authoritative even for callbacks retained by a closing dialog.
-  current.current = { loop, q, discoveryCurrent }
-  const allowed = () => {
+  current.current = { loop, q, discoveryCurrent, discoveryReading }
+  const offered = () => {
     const latest = current.current
     return mounted.current && latest.loop === loop && latest.discoveryCurrent &&
-      !latest.q.isFetching && trackedViewState(latest.q, false, 60000) === 'verified' &&
+      trackedViewState(latest.q, false, 60000) === 'verified' &&
       latest.q.data?.loop === loop && latest.q.data?.eligible === true &&
       ['armed', 'paused'].includes(latest.q.data.state) &&
       !(consumed.current?.data === latest.q.data && consumed.current?.at === latest.q.dataUpdatedAt)
   }
+  const allowed = () => offered() && !current.current.discoveryReading && !current.current.q.isFetching
   const cancel = () => { targetRef.current = null; setPending(null) }
   useEffect(() => { cancel(); setAnswer(null) }, [loop])
   const ask = () => {
@@ -1321,13 +1355,13 @@ function HooksControl({ loop, discoveryCurrent }) {
     }
   }
   const awaitingRead = consumed.current?.data === q.data && consumed.current?.at === q.dataUpdatedAt
-  const verified = state === 'verified' && !q.isFetching && discoveryCurrent && !awaitingRead
+  const verified = state === 'verified' && discoveryCurrent && !awaitingRead
   return jsx(Section, { title: 'Webhook delivery', children: jsxs('div', {
     className: 'flex min-w-0 flex-col gap-2', children: [
       jsx(QueryStatus, { query: q, state: awaitingRead ? 'stale' : state, label: 'Webhook delivery' }),
       jsx(Muted, { text: verified ? 'Loop ' + loop + ' · ' + (q.data?.state || 'unknown') + ' · ' + q.data.reason : 'Current webhook delivery state unknown. Read status before changing it.' }),
       jsx(Muted, { text: 'Pausing stops webhook delivery, not in-flight turns. The sweeper may recover events while hooks are paused; this is not a full execution stop.' }),
-      allowed() && !busy.current ? jsx(Button, { size: 'xs', variant: 'ghost', onClick: ask,
+      offered() && !busy.current ? jsx(Button, { size: 'xs', variant: 'ghost', onClick: ask, disabled: !allowed(),
         children: q.data.state === 'armed' ? 'Pause webhook delivery' : 'Resume webhook delivery' }) : null,
       answer ? jsx('div', { role: 'status', className: 'break-words text-xs text-(--ui-text-secondary)', children: answer }) : null,
       pending && pending.loop === loop ? jsx(ConfirmDialog, { open: true,
@@ -1344,6 +1378,8 @@ function HooksControl({ loop, discoveryCurrent }) {
 function validateAction(data, target, write = false) {
   const bounded = v => typeof v === 'string' && v.length <= 400 && !/[\x00-\x1f]/.test(v)
   const sha = v => typeof v === 'string' && /^[0-9a-fA-F]{40}$/.test(v)
+  // A dependency action names a second issue and binds no PR head; every other action has no on.
+  const deps = DEPS_ACTIONS.includes(target.action)
   if (!data || typeof data !== 'object' || Array.isArray(data) || data.loop !== target.loop ||
       !bounded(data.repo) || !bounded(data.reason) || !Number.isFinite(data.read_at) || data.read_at < 0 ||
       !(data.head === '' || sha(data.head))) throw invalidResponse('action')
@@ -1352,9 +1388,11 @@ function validateAction(data, target, write = false) {
         typeof data.ok !== 'boolean' || data.ok !== (data.status === 'verified') ||
         (data.status === 'verified' && (data.head !== target.head || data.repo !== target.repo))) throw invalidResponse('action')
   } else if (data.action !== target.action || data.pr !== target.pr || data.seat !== target.seat ||
+      (deps ? data.on !== target.on : data.on !== undefined && data.on !== null) ||
       typeof data.eligible !== 'boolean' || !(data.confirmation === null || (!data.eligible && data.confirmation === '') ||
         (typeof data.confirmation === 'string' && data.confirmation.length > 0 && data.confirmation.length <= 4096)) ||
-      (data.eligible && (!sha(data.head) || !data.repo || !data.confirmation || data.action !== 'escalate')) ||
+      (data.eligible && (!data.repo || !data.confirmation ||
+        (deps ? data.head !== '' : !sha(data.head) || !['escalate', 'cancel'].includes(data.action)))) ||
       (!data.eligible && data.confirmation !== null && data.confirmation !== '')) throw invalidResponse('action')
   return data
 }
@@ -1365,9 +1403,18 @@ function actionReason(reason) {
     ? reason : 'The host refused this action. Read a fresh preview for the current target.'
 }
 
-function ActionsControl({ loop, discoveryCurrent }) {
+const ACTION_NOUN = { escalate: 'escalation', cancel: 'cancel', depends: 'dependency', waive: 'waiver' }
+
+// What a dependency target says, in the preview and the dialog: B waits on A, or the waiver.
+function depsLine(t) {
+  return t.action === 'depends' ? '#' + t.pr + ' waits on #' + t.on : 'waive: #' + t.pr + ' no longer waits on #' + t.on
+}
+
+// ``discoveryReading`` is a background loop re-read: controls stay in place but cannot confirm.
+function ActionsControl({ loop, discoveryCurrent, discoveryReading = false }) {
   const [action, setAction] = useState('escalate')
   const [prText, setPrText] = useState('')
+  const [onText, setOnText] = useState('')
   const [seat, setSeat] = useState('reviewer')
   const [preview, setPreview] = useState(null)
   const [pending, setPending] = useState(null)
@@ -1379,24 +1426,38 @@ function ActionsControl({ loop, discoveryCurrent }) {
   const busy = useRef(false)
   const mounted = useRef(true)
   const activeDialog = useRef(null)
-  const pr = /^[1-9][0-9]*$/.test(prText) && Number.isSafeInteger(Number(prText)) ? Number(prText) : null
-  const target = { loop, action, pr: action === 'drain' ? null : pr, seat: action === 'drain' ? seat : null }
-  current.current = { target, discoveryCurrent, preview }
+  const number = text => /^[1-9][0-9]*$/.test(text) && Number.isSafeInteger(Number(text)) ? Number(text) : null
+  const pr = number(prText)
+  const deps = DEPS_ACTIONS.includes(action)
+  const cancelling = action === 'cancel'
+  const on = deps ? number(onText) : null
+  // Only the dependency actions carry on: every other body keeps exactly its five keys. Cancel
+  // takes an optional seat (null: every open run at the PR's head); escalation takes none.
+  const target = deps ? { loop, action, pr, seat: null, on }
+    : { loop, action, pr: action === 'drain' ? null : pr, seat: action === 'drain' || cancelling ? seat : null }
+  current.current = { target, discoveryCurrent, discoveryReading, preview }
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; generation.current++ } }, [])
   const reset = () => {
     generation.current++; activeDialog.current = null; setPending(null); setPreview(null); setAnswer(''); setReading(false)
   }
-  useEffect(() => { reset(); setPrText('') }, [loop])
+  useEffect(() => { reset(); setPrText(''); setOnText('') }, [loop])
+  const choose = next => {
+    reset()
+    if (next !== action) { setAction(next); setOnText(''); if (DEPS_ACTIONS.includes(next) !== deps) setPrText('') }
+    setSeat(next === 'cancel' ? null : 'reviewer')
+  }
   const state = useViewState(preview || { data: undefined }, false, 60000)
-  const sameTarget = t => Object.keys(target).every(key => current.current.target[key] === t[key])
-  const allowed = p => mounted.current && p && current.current.preview === p && sameTarget(p.target) &&
+  const sameTarget = t => [...new Set([...Object.keys(current.current.target), ...Object.keys(t)])]
+    .every(key => current.current.target[key] === t[key])
+  const offered = p => mounted.current && p && current.current.preview === p && sameTarget(p.target) &&
     current.current.discoveryCurrent && trackedViewState(p, false, 60000) === 'verified' && p.data.eligible
+  const allowed = p => offered(p) && !current.current.discoveryReading
   const read = async () => {
-    if (busy.current || !discoveryCurrent || (action !== 'drain' && !pr)) return
+    if (busy.current || !discoveryCurrent || discoveryReading || (action !== 'drain' && !pr) || (deps && !on)) return
     reset(); const version = generation.current; const selected = { ...target }; setReading(true)
     try {
       const path = '/actions?loop=' + encodeURIComponent(loop) + '&action=' + action +
-        (action === 'drain' ? '&seat=' + seat : '&pr=' + pr)
+        (action === 'drain' ? '&seat=' + seat : '&pr=' + pr + (cancelling && seat ? '&seat=' + seat : '')) + (deps ? '&on=' + on : '')
       const data = validateAction(await call(path), selected)
       if (mounted.current && generation.current === version && sameTarget(selected))
         setPreview({ data, target: selected, dataUpdatedAt: Date.now(), isError: false })
@@ -1420,45 +1481,145 @@ function ActionsControl({ loop, discoveryCurrent }) {
     try {
       const data = validateAction(await call('/actions', { method: 'POST', body: {
         ...p.target, confirmation: p.data.confirmation } }), { ...p.target, head: p.data.head, repo: p.data.repo }, true)
-      if (mounted.current && generation.current === version && sameTarget(p.target)) setAnswer(data.status === 'verified'
-        ? 'Backend verified escalation for loop ' + p.target.loop + ' · #' + p.target.pr + ' @ ' + data.head + '.'
-        : 'Action outcome: ' + data.status + '. No follow-up action is available until a fresh safe preview. ' + actionReason(data.reason))
-    } catch {
-      if (mounted.current && generation.current === version) setAnswer('Action outcome could not be verified. It may have written. Read a fresh safe preview before any follow-up action.')
+      const t = p.target
+      if (mounted.current && generation.current === version && sameTarget(t)) setAnswer(data.status === 'verified'
+        ? (t.action === 'depends' ? 'Backend verified the dependency for loop ' + t.loop + ': #' + t.pr + ' waits on #' + t.on + '.'
+          : t.action === 'waive' ? 'Backend verified the waiver for loop ' + t.loop + ': #' + t.pr + ' no longer waits on #' + t.on + '.'
+            : 'Backend verified ' + (t.action === 'cancel' ? 'cancel' : 'escalation') + ' for loop ' + t.loop + ' · #' + t.pr + ' @ ' + data.head + '.' +
+              (t.action === 'cancel' ? ' Only Retry re-arms a cancelled run.' : ''))
+        : t.action === 'cancel' && data.status === 'partial'
+          ? 'Cancel outcome: partial. The stop was requested, not finished: the worker stops the running turn within seconds. No follow-up action is available until a fresh safe preview.'
+          : 'Action outcome: ' + data.status + '. No follow-up action is available until a fresh safe preview. ' + actionReason(data.reason))
+    } catch (error) {
+      // Only the host's stale/refused detail proves nothing was written: both are refused before
+      // any write. Every other failure, including another 409, may have written.
+      const failure = retryFailure(error)
+      if (mounted.current && generation.current === version) setAnswer(failure.status === 409 && failure.detail === ACTION_STALE
+        ? 'HTTP 409 · Confirmation refused: the target changed since the preview, so nothing was ' +
+          ({ cancel: 'cancelled', escalate: 'escalated' }[p.target.action] || 'recorded') + '. Read a fresh preview.'
+        : 'Action outcome could not be verified. It may have written. Read a fresh safe preview before any follow-up action.')
     } finally {
       busy.current = false
       if (mounted.current) setWriting(false)
       for (const kind of ['now', 'pr', 'overview']) queryClient.invalidateQueries({ queryKey: kind === 'overview' ? [ID, kind] : [ID, kind, p.target.loop] })
+      // A dependency write (or one that may have written) re-reads the list it changed.
+      if (DEPS_ACTIONS.includes(p.target.action)) queryClient.invalidateQueries({ queryKey: [ID, 'deps', p.target.loop] })
     }
   }
-  const button = (label, onClick, disabled = false) => jsx(Button, { size: 'xs', variant: 'ghost', className: 'self-start', onClick, disabled, children: label }, label)
+  const button = (label, onClick, disabled = false, pressed) => jsx(Button, { size: 'xs',
+    variant: pressed ? 'secondary' : 'ghost', 'aria-pressed': pressed, className: 'self-start', onClick, disabled, children: label }, label)
+  const scope = t => t.seat ? 'seat ' + t.seat : 'every seat'
   return jsx(Section, { title: 'One-shot actions', children: jsxs('div', {
     className: 'flex min-w-0 flex-col gap-4 rounded-md border border-(--ui-stroke-secondary) p-4', children: [
       jsx(Muted, { text: 'Preview a target independently of Right now — including an open PR whose previous turn completed. The host checks eligibility; a run label is not permission.' }),
-      // Only escalation can be honoured from this host (see one_shot_action.plan). A control that
-      // can never be eligible is not drawn: the other two are named as unavailable, with why, and
-      // stay on the CLI rather than offering a button whose only outcome is a refusal.
+      // Escalation, cancel and the issue-dependency actions can be honoured from this host (see
+      // one_shot_action.plan). A control that can never be eligible is not drawn: re-review and
+      // drain are named as unavailable and stay on the CLI rather than offering a button whose
+      // only outcome is a refusal.
       jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
-        button('Escalate', () => { reset(); setAction('escalate') }, busy.current),
+        button('Escalate', () => choose('escalate'), busy.current, action === 'escalate'),
+        button('Cancel runs', () => choose('cancel'), busy.current, cancelling),
+        button('Declare dependency', () => choose('depends'), busy.current, action === 'depends'),
+        button('Waive dependency', () => choose('waive'), busy.current, action === 'waive'),
         ...['Re-review', 'Drain queue'].map(label => jsx(Badge, { size: 'xs', variant: 'muted', children: label + ' · host CLI only' }, label))] }),
       jsx('label', { className: 'flex min-w-0 max-w-sm flex-col gap-2 text-xs', children: jsxs('span', { className: 'flex flex-col gap-2', children: [
-        'PR number · required for escalation', jsx(Input, { 'aria-label': 'Action PR number', inputMode: 'numeric', value: prText,
-          disabled: busy.current || action === 'drain', placeholder: action === 'drain' ? 'Drain selects a seat, not a PR' : 'e.g. 937', onChange: e => { reset(); setPrText(e.target.value) } })] }) }),
-
-      jsx(Muted, { text: 'Escalation parks this head against further review and fix, and spends an adjudicator turn to request a ruling. Confirmation names the exact head. The core already binds a confirmed head (re-review) and queue (drain), but the page\'s controls for them are not wired yet; hermes dk review and hermes dk drain still run them.' }),
-      button(reading ? 'Reading preview…' : 'Preview escalation', read, reading || busy.current || !discoveryCurrent || !pr),
+        deps ? 'Issue number · the issue that waits' : 'PR number · required',
+        jsx(Input, { 'aria-label': deps ? 'Waiting issue number' : 'Action PR number', inputMode: 'numeric', value: prText,
+          disabled: busy.current || action === 'drain', placeholder: action === 'drain' ? 'Drain selects a seat, not a PR' : deps ? 'e.g. 42' : 'e.g. 937', onChange: e => { reset(); setPrText(e.target.value) } })] }) }),
+      deps ? jsx('label', { className: 'flex min-w-0 max-w-sm flex-col gap-2 text-xs', children: jsxs('span', { className: 'flex flex-col gap-2', children: [
+        'Waits on issue · the prerequisite', jsx(Input, { 'aria-label': 'Waits on issue', inputMode: 'numeric', value: onText,
+          disabled: busy.current, placeholder: 'e.g. 41', onChange: e => { reset(); setOnText(e.target.value) } })] }) }) : null,
+      cancelling ? jsxs('div', { className: 'flex min-w-0 flex-col gap-2 text-xs', children: [
+        'Which runs · every open run at the PR\'s head, or one seat\'s',
+        jsx('div', { role: 'group', 'aria-label': 'Cancel seat', className: 'flex flex-wrap items-center gap-1', children:
+          [null, ...CANCEL_SEATS].map(choice => button(choice || 'All seats', () => { reset(); setSeat(choice) }, busy.current, seat === choice)) })] }) : null,
+      jsx(Muted, { text: action === 'depends'
+        ? 'Declaring records that the waiting issue\'s fix is held until the prerequisite\'s implementation is merged into the loop\'s base. The host refuses a self-dependency, a cycle, a pull request or an issue it cannot read in this repository, and writes nothing. Confirmation is bound to the issue\'s current dependency record.'
+        : action === 'waive'
+          ? 'Waiving removes a declared dependency; the next watchdog sweep releases the waiting issue if nothing else holds it. The record is deleted, so who waived it is not kept. Confirmation is bound to the issue\'s current dependency record.'
+          : cancelling
+            ? 'Cancel stops exactly the runs the preview lists: queued runs end at once and a running turn is asked to stop. Only Retry re-arms a cancelled run. If any of those runs starts, ends or appears after the preview, the confirmation is refused and nothing is cancelled.'
+            : 'Escalation parks this head against further review and fix, and spends an adjudicator turn to request a ruling. Confirmation names the exact head. The core already binds a confirmed head (re-review) and queue (drain), but the page\'s controls for them are not wired yet; hermes dk review and hermes dk drain still run them.' }),
+      button(reading ? 'Reading preview…' : 'Preview ' + ACTION_NOUN[action], read, reading || busy.current || !discoveryCurrent || discoveryReading || !pr || (deps && !on)),
       preview ? jsxs('div', { role: 'status', className: 'flex min-w-0 flex-col gap-2 break-words text-xs', children: [
         jsx(Badge, { size: 'xs', variant: state === 'verified' && preview.data.eligible ? 'muted' : 'warn', children: state !== 'verified' ? 'Preview expired · read again' : preview.data.eligible ? 'Host eligible' : 'Host refused' }),
-        jsx('div', { className: 'break-words', children: 'Loop ' + preview.target.loop + ' · ' + preview.data.repo + (preview.target.pr ? ' · #' + preview.target.pr : ' · ' + preview.target.seat) + ' · head ' + (preview.data.head || 'unavailable') }),
-        !preview.data.eligible ? jsx('div', { children: actionReason(preview.data.reason) }) : null,
-        allowed(preview) ? button('Confirm escalation', ask) : null] }) : null,
+        jsx('div', { className: 'break-words', children: 'Loop ' + preview.target.loop + ' · ' + preview.data.repo + (DEPS_ACTIONS.includes(preview.target.action)
+          ? ' · ' + depsLine(preview.target)
+          : (preview.target.pr ? ' · #' + preview.target.pr : ' · ' + preview.target.seat) +
+            (preview.target.action === 'cancel' ? ' · ' + scope(preview.target) : '') + ' · head ' + (preview.data.head || 'unavailable')) }),
+        // A cancel or dependency preview's reason says exactly what it would do; show it when eligible too.
+        !preview.data.eligible || preview.target.action === 'cancel' || DEPS_ACTIONS.includes(preview.target.action)
+          ? jsx('div', { children: actionReason(preview.data.reason) }) : null,
+        offered(preview) ? button('Confirm ' + ACTION_NOUN[preview.target.action], ask, !allowed(preview)) : null] }) : null,
       answer ? jsx('div', { role: 'status', className: 'break-words text-xs text-(--ui-text-secondary)', children: answer }) : null,
-      pending && allowed(pending.offer) ? jsx(ConfirmDialog, { open: true, title: 'Escalate this PR?',
-        description: 'Loop ' + pending.offer.target.loop + ' · ' + pending.offer.data.repo + ' · PR #' + pending.offer.target.pr + ' · head ' + pending.offer.data.head +
-          ' · seat adjudicator. Escalation parks this head against further review and fix, and spends an adjudicator turn to request a ruling. Queued review or fix work is retired when the adjudicator claims it. A verified result means parked awaiting adjudication, not a completed ruling. This is not a re-review and does not replace a reviewer verdict. Equivalent CLI: hermes dk escalate --loop ' + pending.offer.target.loop + ' --pr ' + pending.offer.target.pr + '.',
-        confirmLabel: 'Escalate PR', busyLabel: 'Checking action…', cancelLabel: 'Cancel', onClose: () => cancel(pending), onConfirm: () => confirm(pending) }) : null
+      pending && offered(pending.offer) ? jsx(ConfirmDialog, { open: true, ...actionDialogText(pending.offer),
+        busyLabel: 'Checking action…', onClose: () => cancel(pending), onConfirm: () => confirm(pending) }) : null
     ] }) })
 }
+// The confirmation each one-shot action asks for, naming exactly what the host will do.
+function actionDialogText(offer) {
+  const t = offer.target
+  const where = 'Loop ' + t.loop + ' · ' + offer.data.repo + ' · '
+  if (t.action === 'depends') return { title: 'Declare this dependency?', confirmLabel: 'Record dependency', cancelLabel: 'Cancel',
+    description: where + depsLine(t) + '. Records that issue ' + t.pr + '\'s fix waits until issue ' + t.on + '\'s implementation is merged into the loop\'s base. A fix turn already queued for it is held at launch and publish until then; one already running is not recalled. A waiver releases it. If the issue\'s dependency record changes before you confirm, nothing is written. Equivalent CLI: hermes dk depends --loop ' + t.loop + ' --issue ' + t.pr + ' --on ' + t.on + '.' }
+  if (t.action === 'waive') return { title: 'Waive this dependency?', confirmLabel: 'Remove dependency', cancelLabel: 'Cancel',
+    description: where + depsLine(t) + '. Removes the declared dependency; the next watchdog sweep releases issue ' + t.pr + ' if nothing else holds it. The record is deleted, so who waived it is not kept. If the issue\'s dependency record changes before you confirm, nothing is written. Equivalent CLI: hermes dk depends --loop ' + t.loop + ' --issue ' + t.pr + ' --waive ' + t.on + '.' }
+  if (t.action === 'cancel') return { title: 'Cancel these runs?', confirmLabel: 'Cancel runs', cancelLabel: 'Keep runs',
+    description: where + 'PR #' + t.pr + ' · head ' + offer.data.head + ' · ' + (t.seat ? 'seat ' + t.seat : 'every seat') + '. ' +
+      actionReason(offer.data.reason) + '. Queued runs end at once; a running turn is asked to stop, and a partial result means the stop was requested, not finished. Only Retry re-arms a cancelled run. If any of these runs changed since the preview, nothing is cancelled. Equivalent CLI: hermes dk cancel --loop ' + t.loop + ' --pr ' + t.pr + (t.seat ? ' --seat ' + t.seat : '') + '.' }
+  return { title: 'Escalate this PR?', confirmLabel: 'Escalate PR', cancelLabel: 'Cancel',
+    description: where + 'PR #' + t.pr + ' · head ' + offer.data.head +
+      ' · seat adjudicator. Escalation parks this head against further review and fix, and spends an adjudicator turn to request a ruling. Queued review or fix work is retired when the adjudicator claims it. A verified result means parked awaiting adjudication, not a completed ruling. This is not a re-review and does not replace a reviewer verdict. Equivalent CLI: hermes dk escalate --loop ' + t.loop + ' --pr ' + t.pr + '.' }
+}
+
+// Declared issue dependencies (#1301). Every nested row is validated before caching; an
+// unavailable record is never a verified empty list, and why is a bounded host sentence.
+function validateDeps(data, loop) {
+  const object = settingsObject
+  const count = v => Number.isSafeInteger(v) && v >= 0
+  const issue = v => Number.isSafeInteger(v) && v > 0
+  const line = v => typeof v === 'string' && v.length > 0 && v.length <= 240 &&
+    !/[\x00-\x1f\x7f/\\]|gh[pousr]_|github_pat_|bearer|token/i.test(v)
+  if (!object(data) || data.loop !== loop || typeof data.repo !== 'string' || !data.repo ||
+      typeof data.available !== 'boolean' || !count(data.total) || !Array.isArray(data.deps) ||
+      data.deps.length !== Math.min(data.total, 50) || typeof data.read_at !== 'number' ||
+      !Number.isFinite(data.read_at) || data.read_at < 0 || (!data.available && data.total !== 0)) throw invalidResponse('deps')
+  for (const row of data.deps) {
+    if (!object(row) || !issue(row.issue) || !issue(row.on) || row.issue === row.on ||
+        !['met', 'waiting', 'unknown'].includes(row.state) || !line(row.why) ||
+        !(row.by === null || (typeof row.by === 'string' && /^[a-z][a-z0-9_-]{0,31}$/.test(row.by))) ||
+        !(row.at === null || (typeof row.at === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(row.at)))) throw invalidResponse('deps')
+  }
+  return data
+}
+
+function Dependencies({ loop, known }) {
+  // Its own key and policy: GitHub is read per prerequisite, so no polling, no socket
+  // invalidation (not in SERVER_QUERIES) and no focus refetch; Refresh asks again.
+  const query = useQuery({ queryKey: [ID, 'deps', loop || ''], enabled: !!loop && known,
+    queryFn: async () => validateDeps(await call('/deps?loop=' + encodeURIComponent(loop)), loop),
+    staleTime: DEPS_STALE_MS, refetchOnWindowFocus: false })
+  const data = known && query.data?.loop === loop ? query.data : null
+  const state = useViewState(query, !!data && data.available && data.total === 0, DEPS_STALE_MS)
+  const tone = { met: 'success', waiting: 'muted', unknown: 'warn' }
+  return jsx(Section, { title: 'Issue dependencies', children: jsxs('div', { role: 'region', 'aria-label': 'Issue dependencies', className: 'flex min-w-0 flex-col gap-2', children: [
+    jsx(Muted, { text: 'Declared by an operator: the waiting issue\'s fix is held until the prerequisite\'s implementation is merged into the base. Each row reads GitHub, so this list is read when the loop is selected and on Refresh, never polled. Unknown means GitHub could not answer, and it holds the issue too.' }),
+    loop && known ? jsx(QueryStatus, { query, state, label: 'Issue dependencies' }) : jsx(Muted, { text: 'Issue dependencies: unavailable · no readable selected identity; not read.' }),
+    loop && known ? jsx(Button, { size: 'xs', variant: 'ghost', className: 'self-start', disabled: query.isFetching, onClick: () => query.refetch(),
+      children: query.isFetching ? 'Refreshing…' : 'Refresh dependencies' }) : null,
+    data && !data.available ? jsx(Muted, { text: 'Dependency record unavailable · not read. This is not a claim that none are declared.' }) : null,
+    data && data.available && !data.total ? jsx(Muted, { text: state === 'verified-empty' ? 'No issue dependencies declared for this loop.' : 'No issue dependencies were declared in the last good read; not current.' }) : null,
+    data && data.deps.length < data.total ? jsx(Muted, { text: 'Showing ' + data.deps.length + ' of ' + data.total + ' declared dependencies.' }) : null,
+    data && data.deps.length ? jsx('div', { className: 'flex min-w-0 flex-col gap-2', children: data.deps.map(row => jsxs('div', {
+      className: 'flex min-w-0 flex-wrap items-center gap-2 border-t border-(--ui-stroke-secondary) pt-2 text-xs', children: [
+        jsx(Badge, { size: 'xs', variant: tone[row.state], children: row.state }),
+        jsx('span', { className: 'font-medium', children: '#' + row.issue + ' waits on #' + row.on }),
+        jsx('span', { className: 'min-w-0 flex-1 break-words text-(--ui-text-secondary)', children: row.why }),
+        jsx('span', { className: 'text-(--ui-text-tertiary)', children: 'Declared by ' + (row.by || 'not recorded') + (row.at ? ' · ' + row.at : '') })] }, row.issue + ':' + row.on)) }) : null,
+    jsx(Muted, { text: 'A waiver removes the record, so a waived dependency is not listed and who waived it is not recorded. Declare or waive one under One-shot actions.' })
+  ] }) })
+}
+
 /** Passive strip: independent discovery and the exact page query, never page action rows.
  * Selection is local; no focus handoff, toast baseline, navigation or mutation is mounted. */
 function RightNowPane() {
@@ -1531,7 +1692,7 @@ function PassiveReadStatus({ query, state, label, noLedger = false }) {
         state === 'stale' ? ': showing last good data, not current status.' : ': backend read succeeded.') })
     ] }),
     noLedger ? jsx(Muted, { text: 'No run ledger available in the last successful backend read. Run counts are unavailable, not zero.' }) : null,
-    query.data != null ? jsx(Muted, { text: 'Last good read: ' + lastGood(query) + (query.isFetching ? ' · refreshing…' : '') }) : null,
+    query.data != null ? jsx(Muted, { text: 'Last good read: ' + lastGood(query) }) : null,
     query.isError ? jsx(Muted, { text: safeError(query.error) }) : null
   ] })
 }
@@ -1783,10 +1944,10 @@ function Page() {
             })]
         })
       }),
-      jsx(ActionsControl, { loop, discoveryCurrent: loopsState === 'verified' && !loops.isFetching && list.some(item => item.id === loop) }),
-      jsx(HooksControl, { loop, discoveryCurrent: loopsState === 'verified' && !loops.isFetching && list.some(item => item.id === loop) }),
+      jsx(ActionsControl, { loop, discoveryCurrent: loopsState === 'verified' && list.some(item => item.id === loop), discoveryReading: !!loops.isFetching }),
+      jsx(HooksControl, { loop, discoveryCurrent: loopsState === 'verified' && list.some(item => item.id === loop), discoveryReading: !!loops.isFetching }),
       jsx(Health, { loop }),
-      jsx(Muted, { text: 'Writes require confirmation: Retry re-arms a run that never wrote; Pause/Resume changes webhook delivery only; escalation uses an exact host preview. Re-review and drain are not wired to this page yet (host CLI only). Data is this machine\'s run ledger; for PRs and reviews from GitHub, run: hermes dk stats --github' })
+      jsx(Muted, { text: 'Writes require confirmation: Retry re-arms a run that never wrote; Pause/Resume changes webhook delivery only; escalation, cancel and issue dependencies (declare or waive) use an exact host preview. Re-review and drain are not wired to this page yet (host CLI only). Data is this machine\'s run ledger; for PRs and reviews from GitHub, run: hermes dk stats --github' })
     ]
   })
 
@@ -1795,6 +1956,7 @@ function Page() {
     children: [
       header,
       body,
+      jsx(Dependencies, { loop, known: list.some(item => item.id === loop) }),
       jsx(Records, { loop, known: list.some(item => item.id === loop) }),
       jsx(Settings, {}),
       retryDialog,

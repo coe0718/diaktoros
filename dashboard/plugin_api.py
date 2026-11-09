@@ -6,7 +6,11 @@ Reads cover loop config, the run ledger, installation health and GitHub hook sta
 via the same ``arm_action`` operation as CLI ``arm``. Hooks use the existing host credential
 resolution and return no credentials or paths. ``GET /actions`` previews host-owned eligibility;
 ``POST /actions`` performs confirmed escalation and reads back its exact marker, and a confirmed
-cancel of the exact runs it previewed (#1148; the page's control is #1372). Review/drain stay refused until the page's controls are wired to their bound core entry points. ``/health?probe=1`` remains local-only.
+cancel of the exact runs it previewed (#1148; the page's control landed in #1372). Review/drain stay refused until the page's controls are wired to their bound core entry points. ``GET /deps``
+lists the loop's declared issue dependencies and whether each is met (#1301; it reads GitHub per
+prerequisite); declaring or waiving one is the confirmed ``depends``/``waive`` action, whose
+``GET /actions`` takes ``on`` (the issue waited on) and whose ``POST /actions`` body adds ``on``.
+``/health?probe=1`` remains local-only.
 The logic lives in ``diaktoros.desktop_api``; this module maps exceptions and validates body shape.
 """
 from __future__ import annotations
@@ -110,6 +114,12 @@ def settings():
     return _read_answer(desktop_api.settings_view)
 
 
+@router.get("/deps")
+def deps(loop: str | None = None):
+    """Declared issue dependencies (#1301): bounded rows, an availability flag, no raw errors."""
+    return _read_answer(desktop_api.deps_view, loop)
+
+
 @router.get("/hooks")
 def hooks(loop: str | None = None):
     return _read_answer(desktop_api.hooks_view, loop)
@@ -124,22 +134,43 @@ def hooks_action(payload: Any = Body(None)):
                    payload['confirmation'])
 
 
+def _number(value, what):
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.isascii() or not value.isdigit() or len(value) > 12:
+        raise HTTPException(status_code=422, detail=what + ' must be a positive integer.')
+    return int(value)
+
+
+# ``depends``/``waive`` (#1301) name a second issue; every other action's body stays exactly the
+# five keys it always was, and these two require the sixth.
+_ACTION_BODY = {'loop', 'action', 'pr', 'seat', 'confirmation'}
+_DEPS_BODY = _ACTION_BODY | {'on'}
+_DEPS_ACTIONS = ('depends', 'waive')
+
+
 @router.get("/actions")
 def actions(loop: str | None = None, action: str = '', pr: str | None = None,
-            seat: str | None = None):
+            seat: str | None = None, on: str | None = None):
     # A plain string here lets this boundary return only bounded validation errors rather
     # than FastAPI's raw input-echoing integer diagnostics.
-    if pr is not None:
-        if not isinstance(pr, str) or not pr.isascii() or not pr.isdigit() or len(pr) > 12:
-            raise HTTPException(status_code=422, detail='PR must be a positive integer.')
-    number = int(pr) if pr is not None else None
-    return _read_answer(desktop_api.action_view, loop, action, number, seat)
+    number = _number(pr, 'PR')
+    if on is None:
+        return _read_answer(desktop_api.action_view, loop, action, number, seat)
+    return _read_answer(desktop_api.action_view, loop, action, number, seat,
+                        _number(on, 'The issue waited on'))
 
 
 @router.post("/actions")
 def actions_perform(payload: Any = Body(None)):
-    if not isinstance(payload, dict) or set(payload) != {'loop', 'action', 'pr', 'seat', 'confirmation'}:
-        raise HTTPException(status_code=422, detail='Expected loop, action, pr, seat and confirmation.')
+    deps = isinstance(payload, dict) and payload.get('action') in _DEPS_ACTIONS
+    if not isinstance(payload, dict) or set(payload) != (_DEPS_BODY if deps else _ACTION_BODY):
+        raise HTTPException(status_code=422, detail=(
+            'Expected loop, action, pr, seat, on and confirmation.' if deps
+            else 'Expected loop, action, pr, seat and confirmation.'))
+    if deps:
+        return _answer(desktop_api.action_perform_view, payload['loop'], payload['action'],
+                       payload['pr'], payload['seat'], payload['confirmation'], payload['on'])
     return _answer(desktop_api.action_perform_view, payload['loop'], payload['action'],
                    payload['pr'], payload['seat'], payload['confirmation'])
 

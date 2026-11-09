@@ -508,6 +508,21 @@ class Pr(unittest.TestCase):
         self.assertEqual([r["verdict"] for r in view["rulings"]], ["REJECT"])
         self.assertEqual(view["rulings"][0]["head"], head[:7])
 
+    def test_a_malformed_ruling_head_is_withheld_not_echoed(self):
+        # #1355: the wire carries '' for a malformed recorded head; the page renders it unknown.
+        self.row("succeeded")
+        with ledger.connect(self.db) as con:
+            run_id = con.execute("SELECT id FROM runs").fetchone()[0]
+            con.execute("INSERT INTO rulings(run_id,repo,pr,head,turn_key,verdict,body,created,"
+                        "updated) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (run_id, REPO, 626, "/private/../ghp_notahead", "t1", "ACCEPT", "x",
+                         time.time(), time.time()))
+        loops, prod = self.patch_all()
+        with loops, prod:
+            view = desktop_api.pr_view("widgets", 626)
+        self.assertEqual(view["rulings"], [{"verdict": "ACCEPT", "head": "", "created": mock.ANY}])
+        self.assertNotIn("ghp_notahead", json.dumps(view))
+
     def test_a_long_review_shows_the_newest_turns_and_rulings_and_the_true_totals(self):
         extra = 7
         with mock.patch.object(desktop_api, "TURNS_MAX", 5):
@@ -702,7 +717,8 @@ class Health(unittest.TestCase):
         called.assert_not_called()
 
 
-DASHBOARD_ROUTES = {"/loops", "/stats", "/now", "/overview", "/pr", "/health", "/settings", "/hooks", "/actions", "/records"}
+DASHBOARD_ROUTES = {"/loops", "/stats", "/now", "/overview", "/pr", "/health", "/settings", "/hooks", "/actions", "/records",
+                    "/deps"}
 # Confirmed writes only: retry, hook pause/resume, and host-owned one-shot escalation.
 # Review/drain are refused until the page's confirmed controls are wired (the core binds both).
 DASHBOARD_WRITE_ROUTES = {"/retry", "/hooks", "/actions"}
@@ -1035,8 +1051,29 @@ class Surface(unittest.TestCase):
         # cache; the dependency-free cases above already prove each Retry's REST path.
         # The drawer's truncation wording (#821): the named proof that a cut list says so.
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: the drawer says when its turns and rulings are the newest of more, and only then$")
+        self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: a withheld ruling head reads unknown, never blank$")
+        # The confirmed cancel control (#1372): preview/confirm, partial, stale and malformed.
+        for name in ("cancel: every seat by default; preview lists the runs; confirm posts the exact target once",
+                     "cancel: partial says the stop was requested, not finished, and offers no follow-up",
+                     "cancel: a stale confirmation says nothing was cancelled; any other failure may have written",
+                     "cancel: a malformed preview is rejected before any confirmation is offered"):
+            self.assertRegex(done.stdout, rf"(?m)^ok \d+ - {re.escape(name)}$")
         self.assertIn("palette only: unseen successful cache read expires", done.stdout)
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - records: nested malformed and wrong-loop responses never enter the cache$")
+        # #1301: the dependency list and the confirmed depends/waive actions, by name.
+        for name in (
+            "deps: rows render met, waiting and unknown from their own non-polled, non-socket query",
+            "deps: unavailable record, failed read and expired data are never a verified empty list",
+            "deps: malformed nested rows, unsafe why and wrong-loop responses are rejected before cache",
+            "deps: Refresh and Retry re-read the selected loop own /deps endpoint",
+            "actions: declare dependency previews B waits on A, confirms the six-key body and reads back",
+            "actions: waive dependency names the waiver and its CLI, and reads back",
+            "actions: a refused dependency preview offers no confirmation and writes nothing",
+            "actions: stale dependency confirmation (409) is not success and needs a fresh preview",
+            "actions: malformed dependency previews are rejected before confirmation",
+            "actions: a dependency preview needs both issue numbers and invalid input never reads",
+        ):
+            self.assertRegex(done.stdout, rf"(?m)^ok \d+ - {re.escape(name)}$")
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed here")
     def test_it_parses_as_an_es_module(self):

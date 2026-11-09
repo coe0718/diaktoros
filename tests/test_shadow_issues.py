@@ -19,7 +19,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_partial_view_no_approve as fixture  # noqa: E402
-from diaktoros import broker, config, gh, ledger, shadow_issues  # noqa: E402
+from diaktoros import broker, broker_filing, config, gh, ledger, shadow_issues  # noqa: E402
 from diaktoros.config import blocks  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
@@ -203,7 +203,10 @@ class FilePending(unittest.TestCase):
         def write(loop, path, method, body, login):
             posts.append((path, body, login))
             if path.endswith("/labels"):
-                return labelled(body["labels"])
+                data, why = labelled(body["labels"])
+                # The answer's own status, as gh.request records it: None when none arrived.
+                gh._LAST.status = gh.status_of(why) or (200 if data is not None else None)
+                return data, why
             kept = body["labels"] if labelled is None else []
             return {"number": 100 + len(posts), "labels": [{"name": x} for x in kept]}, ""
         pr = None if branch is None else {"number": 7, "head": {"sha": HEAD, "ref": branch}}
@@ -412,6 +415,25 @@ class FilePending(unittest.TestCase):
         self.assertEqual(self.file(labelled=boom)[0], [101])
         self.assertEqual(self.state(run), "unlabelled")
         self.assertIn("(TimeoutError: read timed out)", self.error(run))
+        # #1641: a timeout leaves the outcome unknown; it proves nothing about permissions.
+        self.assertIn("unknown", self.error(run))
+        self.assertNotIn("needs permission", self.error(run))
+
+    def test_only_a_403_is_diagnosed_as_a_missing_label_permission(self):
+        # #1641: no answer is an unknown outcome; another error, a rate-limit 403, or labels
+        # left off a successful answer are reported as they are, never as a permission gap.
+        cases = {"no answer": (lambda _n: (None, "timed out"), "unknown"),
+                 "a 5xx": (lambda _n: (None, "HTTP 502: Bad Gateway"), "(HTTP 502"),
+                 "a rate limit": (lambda _n: (None, "HTTP 403: API rate limit exceeded"),
+                                  "rate limit"),
+                 "left off": (lambda _n: ([{"name": "bug"}], ""), "left them off")}
+        for name, (labelled, said) in cases.items():
+            with self.subTest(name):
+                run = self.recorded(f"A finding about {name}")
+                self.file(labelled=labelled)
+                self.assertEqual(self.state(run), "unlabelled")
+                self.assertIn(said, self.error(run))
+                self.assertNotIn("needs permission", self.error(run))
 
     def audited(self, labelled):
         """The operations the real broker audit records for one filing (#1622 review, F1)."""
@@ -606,9 +628,9 @@ class FilePending(unittest.TestCase):
     def test_the_broker_refuses_a_repository_mismatch_and_no_reader_as_not_sent(self):
         args = dict(number=7, head=HEAD, title="t", body="b", labels=[], model="m", depth=1)
         with self.assertRaisesRegex(broker.BrokerNotSent, "repository mismatch"):
-            broker.file_shadow_issue(self.loop, repo="other/repo", **args)
+            broker_filing.file_shadow_issue(self.loop, repo="other/repo", **args)
         with self.assertRaisesRegex(broker.BrokerNotSent, "no reader identity"):
-            broker.file_shadow_issue({**self.loop, "read_token": ""}, repo=REPO, **args)
+            broker_filing.file_shadow_issue({**self.loop, "read_token": ""}, repo=REPO, **args)
 
     def test_a_408_is_uncertain_and_never_replayed(self):
         run = self.recorded("A finding")

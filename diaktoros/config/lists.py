@@ -1,7 +1,8 @@
 """The list and limit settings ``normalize`` checks (#1349, split from the core): required
 checks, CI coverage, human paths, generated files and the fixer check, with the parsers and
 readers of the first four, and the login lists and per-PR limits (``review_only``,
-``operator_agents``, ``review_only_cap`` / ``review_only_daily``, ``ci_fix_cap``, ``change_proof_max``). Each reaches
+``operator_agents``, ``review_only_cap`` / ``review_only_daily``, ``ci_fix_cap``, ``change_proof_max``,
+``provider_breaker_failures``). Each reaches
 the core through ``config`` (``from .. import config``), so a patch on a core rule reaches it
 too; callers use ``lists.<name>``.
 """
@@ -326,6 +327,21 @@ def check_change_proof_max(value, where: str) -> int | None:
     """``change_proof_max`` (#1782): a whole number 1-50, or empty (unset: the default, 20)."""
     return _check_bound(value, "change_proof_max", config.CHANGE_PROOF_MAX_LIMIT,
                         config.CHANGE_PROOF_MAX_DEFAULT, where)
+
+
+def check_provider_breaker_failures(value, where: str) -> int | None:
+    """``provider_breaker_failures`` (#1155): a whole number 0-20, 0 = off, or empty (unset: the
+    default, 3). Unlike the caps, 0 is a value here, not "unset"."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, str):
+        value = config.form_int(value)
+    top = config.PROVIDER_BREAKER_LIMIT
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= top:
+        raise config.ConfigError(f"{where}: provider_breaker_failures must be a whole number, "
+                                 f"0-{top} (0 = off; leave it empty for "
+                                 f"{config.PROVIDER_BREAKER_DEFAULT}), got {value!r}")
+    return value
 
 
 def check_fixer_check(value, where: str) -> str:

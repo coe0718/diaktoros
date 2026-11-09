@@ -15,7 +15,11 @@ the shared ``arm_action`` owner used by CLI ``arm`` to pause/resume, then reads 
 ``action_view`` previews per-target one-shot eligibility; ``action_perform_view`` invokes
 the shared ``one_shot_action`` owner and reports exact escalation read-back. Re-review and
 drain remain explicit refusals here: their core entry points bind a confirmed head and queue,
-but the page's controls are not wired yet.
+but the page's controls are not wired yet. ``deps`` lists the loop's declared issue
+dependencies with whether each prerequisite is met (#1301) — the rows ``hermes dk depends``
+prints, through the same ``issue_deps`` owner; it reads GitHub per prerequisite, so the page asks
+for it on selection and on Refresh only. Declaring and waiving one are the confirmed
+``depends``/``waive`` one-shot actions (``action_view``/``action_perform_view`` with ``on``).
 
 **Ledger-only action (#371):** ``retry`` re-arms a run the CLI's ``retry`` would
 re-arm. It is not a second implementation of anything: ``retry_action`` owns which run that is
@@ -96,10 +100,21 @@ def hooks_action_view(loop_id: str | None, action: str, confirmation: str) -> di
         raise Conflict('Hook confirmation is stale or unavailable; read hook state again.') from None
 
 
-def _action_target(loop_id, action, pr, seat):
+def _action_target(loop_id, action, pr, seat, on=None):
     """Validate shape only; every eligibility rule belongs to the shared owner."""
-    if action not in ('review', 'escalate', 'drain', 'cancel') or not isinstance(action, str):
-        raise BadRequest('Action must be review, escalate, drain or cancel.')
+    from . import one_shot_action
+    if not isinstance(action, str) or action not in ('review', 'escalate', 'drain', 'cancel',
+                                                     *one_shot_action.DEPS_ACTIONS):
+        raise BadRequest('Action must be review, escalate, drain, cancel, depends or waive.')
+    if action in one_shot_action.DEPS_ACTIONS:
+        # ``pr`` is the issue that waits and ``on`` the issue it waits on (#1301).
+        if (type(pr) is not int or pr <= 0 or type(on) is not int or on <= 0
+                or seat is not None):
+            raise BadRequest('Depends and waive require positive issue numbers (pr and on), '
+                             'not a seat.')
+        return _hooks_loop(loop_id)
+    if on is not None:
+        raise BadRequest('Only depends and waive take a second issue number.')
     if action == 'cancel':
         # Any seat, or none for every open run at the PR's head (#1148). The seat list is the one
         # the shared plan enforces, so the route never accepts what the plan refuses (#1371).
@@ -115,31 +130,93 @@ def _action_target(loop_id, action, pr, seat):
     return _hooks_loop(loop_id)
 
 
-def action_view(loop_id: str | None, action: str, pr=None, seat=None) -> dict:
+def action_view(loop_id: str | None, action: str, pr=None, seat=None, on=None) -> dict:
     """Read a per-target one-shot offer. Refusal is a valid read, never authorization."""
     from . import one_shot_action
-    loop = _action_target(loop_id, action, pr, seat)
+    loop = _action_target(loop_id, action, pr, seat, on)
+    extra = {'on': on} if action in one_shot_action.DEPS_ACTIONS else {}
     try:
-        result = one_shot_action.public_plan(one_shot_action.plan(loop, action, pr=pr, seat=seat))
+        result = one_shot_action.public_plan(one_shot_action.plan(loop, action, pr=pr, seat=seat,
+                                                                  **extra))
     except Exception:
         raise Conflict('Action preview unavailable; nothing authorized.') from None
     return dict(result, loop=loop['id'], repo=loop['repo'], read_at=time.time())
 
 
-def action_perform_view(loop_id: str | None, action: str, pr, seat, confirmation) -> dict:
+def action_perform_view(loop_id: str | None, action: str, pr, seat, confirmation,
+                        on=None) -> dict:
     """Execute only the exact host offer and return its verified/partial/unknown read-back."""
     from . import one_shot_action
-    loop = _action_target(loop_id, action, pr, seat)
+    loop = _action_target(loop_id, action, pr, seat, on)
+    extra = {'on': on} if action in one_shot_action.DEPS_ACTIONS else {}
     if (not isinstance(confirmation, str) or len(confirmation) != 64 or
             any(c not in '0123456789abcdef' for c in confirmation)):
         raise BadRequest('A valid action confirmation is required.')
     try:
-        result = one_shot_action.confirmed_perform(loop, action, confirmation, pr=pr, seat=seat)
+        result = one_shot_action.confirmed_perform(loop, action, confirmation, pr=pr, seat=seat,
+                                                   **extra)
     except Exception:
         raise Conflict('Action outcome unavailable; inspect state before retrying.') from None
     if result['status'] in ('stale', 'refused'):
         raise Conflict('Action confirmation is stale or unavailable; preview again.')
     return dict(result, loop=loop['id'], repo=loop['repo'], read_at=time.time())
+
+
+# The dependency rows one /deps read answers (#1301): each reads GitHub for its prerequisite, so
+# the read is bounded and the page says how many it did not show.
+DEPS_MAX = 50
+_DEPS_WHY = {'met': 'the prerequisite\'s implementation is merged into the base',
+             'waiting': 'the prerequisite\'s implementation is not merged into the base yet',
+             'unknown': 'whether the prerequisite is done could not be read'}
+_UNSAFE_WHY = re.compile(r'[\x00-\x1f\x7f/\\]|://|gh[pousr]_|github_pat_|bearer|token|'
+                         r'traceback|error:', re.I)
+_DEPS_BY = re.compile(r'^[a-z][a-z0-9_-]{0,31}$')
+_DEPS_AT = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')
+
+
+def _deps_why(state: str, why) -> str:
+    """``met``'s own sentence when it is a short, safe line; else the state's fixed sentence.
+    An unreadable fact can carry transport text, which never crosses the boundary."""
+    text = ' '.join(str(why).split()) if isinstance(why, str) else ''
+    if not text or len(text) > 240 or _UNSAFE_WHY.search(text):
+        return _DEPS_WHY[state]
+    return text
+
+
+def deps_view(loop_id: str | None) -> dict:
+    """The loop's declared issue dependencies (#1301), as ``hermes dk depends`` lists them.
+
+    Each row is ``issue_deps.row``: ``issue`` waits on ``on``; ``state`` is ``met``, ``waiting``
+    or ``unknown`` (a fact GitHub could not answer, never a guess), with a bounded ``why``.
+    ``by``/``at`` are who declared it and when; a waiver deletes the record, so waived
+    dependencies are not listed and who waived one is not recorded. An unreadable record is
+    ``available`` false with no rows — never "none declared". At most ``DEPS_MAX`` rows are
+    read; ``total`` says how many are declared.
+    """
+    from . import issue_deps, state as state_mod
+    if loop_id is not None and (not isinstance(loop_id, str) or not loop_id or len(loop_id) > 200):
+        raise BadRequest('A valid loop id is required.')
+    try:
+        loop = _loop(loop_id)
+    except Exception:
+        raise NotFound('Loop configuration unavailable.') from None
+    out = {'loop': loop['id'], 'repo': loop['repo'], 'available': False, 'total': 0,
+           'deps': [], 'read_at': time.time()}
+    try:
+        pairs = issue_deps.declared(state_mod.state_for(loop), strict=True)
+    except Exception:
+        return out
+    cache: dict = {}
+    rows = []
+    for issue, on, record in pairs[:DEPS_MAX]:
+        entry = issue_deps.row(loop, issue, on, record, guarded=True, cache=cache)
+        by, at = entry['by'], entry['at']
+        rows.append({'issue': issue, 'on': on, 'state': entry['state'],
+                     'why': _deps_why(entry['state'], entry['why']),
+                     'by': by if isinstance(by, str) and _DEPS_BY.match(by) else None,
+                     'at': at if isinstance(at, str) and _DEPS_AT.match(at) else None})
+    out.update(available=True, total=len(pairs), deps=rows, read_at=time.time())
+    return out
 
 
 # The probe reads a credential and calls GitHub, so it answers only a caller on this machine.

@@ -90,6 +90,9 @@ def _set_review_only_flags(change) -> None:  # noqa: ANN001
                              "1-10; 0 = the default (3)")
     change.add_argument("--change-proof-max", default=None, metavar="N",
                         help="changed tests the change proof runs per head, 1-50; 0 = the default (20)")
+    change.add_argument("--provider-breaker-failures", default=None, metavar="N",
+                        help="turns in a row killed by a provider error before the account "
+                             "waits, 0-20; 0 = off, '' = the default (3)")
     change.add_argument("--review-only-daily", default=None, metavar="N",
                         help="reviewer turns a day on review-only PRs, 1-1000; 0 = no cap")
     reviewed = change.add_mutually_exclusive_group()

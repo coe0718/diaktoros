@@ -429,6 +429,10 @@ class LiveRouteRetry(unittest.TestCase):
     # -- the scenarios -----------------------------------------------------------------------
 
     def test_pre_write_failures_wait_show_reason_and_retry_to_success(self):
+        # The retry budget's walk (#53): with #1155's breaker on, the third bare 429 in a row
+        # would hold the account instead (test_provider_breaker covers that).
+        (self.home / 'review-loops.d/widgets.json').write_text(
+            json.dumps({**self.loop, 'provider_breaker_failures': 0}))
         self.modes('429', 'launch-failure', '429', '429', 'approve')
 
         # 1. The webhook arrives; the real worker runs the turn; the provider answers 429.

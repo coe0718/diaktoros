@@ -72,7 +72,7 @@ class Files(unittest.IsolatedAsyncioTestCase):
         self.db.execute("CREATE TABLE turns (id INTEGER)")
         self.db.commit()
         self.snapshot = events.FileSnapshot(self.home, self.directory)
-        self.manager = events.DesktopEvents(self.snapshot, interval=.01)
+        self.manager = events.DesktopEvents(self.snapshot, interval=.01, min_gap=.2)
 
     async def settled(self):
         await asyncio.sleep(.06)
@@ -99,6 +99,8 @@ class Files(unittest.IsolatedAsyncioTestCase):
                 (self.state / "hold.json").write_text(str(n))
                 (self.directory / "new.json").write_text("{}")
                 await asyncio.sleep(.015)
+            # The burst is held for the rest of min_gap, then delivered once — never dropped.
+            await asyncio.sleep(.3)
             self.assertEqual(queue.qsize(), 1)
             self.assertNotIn(str(self.home), json.dumps(message))
             self.assertNotIn("NEVER READ", json.dumps(message))
@@ -280,11 +282,56 @@ class Files(unittest.IsolatedAsyncioTestCase):
             self.assertIsNot(events.for_app(app), manager)
 
     async def test_bounded_overflow_conservatively_invalidates(self):
+        manager = events.DesktopEvents(self.snapshot, interval=.01, overflow_gap=.05)
         with mock.patch.object(events, "MAX_ENTRIES", 2):
             self.assertTrue(self.snapshot()[1])
-            async with self.manager.subscribe() as queue:
+            async with manager.subscribe() as queue:
                 await asyncio.wait_for(queue.get(), 1)
                 self.assertLessEqual(queue.qsize(), 1)
+
+    async def test_overflow_alone_invalidates_at_overflow_gap_not_every_scan(self):
+        # The old watcher sent one invalidation per one-second scan while capped, so every
+        # Desktop read refetched every second. An unchanged capped scan now waits the gap.
+        manager = events.DesktopEvents(self.snapshot, interval=.01, min_gap=0, overflow_gap=.4)
+        with mock.patch.object(events, "MAX_ENTRIES", 2):
+            async with manager.subscribe() as queue:
+                await asyncio.sleep(.2)
+                self.assertTrue(queue.empty(), "a capped, unchanged scan must not invalidate per scan")
+                await asyncio.wait_for(queue.get(), 1)
+
+    async def test_worker_private_subtrees_are_stamped_not_descended(self):
+        runs = self.state / "isolated-runs" / "turn-abc" / "home"
+        runs.mkdir(parents=True)
+        for n in range(50):
+            (runs / f"f{n}").write_text("x")
+        for name in ("deps", "ci-cache"):
+            (self.state / name / "nested").mkdir(parents=True)
+            (self.state / name / "nested" / "file").write_text("x")
+        paths = [path for path, _ in self.snapshot()[0]]
+        self.assertIn(str(self.state / "isolated-runs"), paths)
+        for name in events.PRUNED_DIRS:
+            self.assertFalse([p for p in paths if p.startswith(str(self.state / name) + os.sep)], name)
+        self.assertFalse(self.snapshot()[1])
+        before = self.snapshot()
+        (runs / "f0").write_text("rewritten by a running seat")
+        (runs / "new").write_text("y")
+        self.assertEqual(before, self.snapshot())
+        # A file a Desktop view does read is still watched.
+        (self.state / "watchdog.json").write_text("{}")
+        self.assertNotEqual(before, self.snapshot())
+
+    async def test_burst_is_rate_limited_and_the_trailing_change_is_never_dropped(self):
+        manager = events.DesktopEvents(self.snapshot, interval=.01, min_gap=.3)
+        async with manager.subscribe() as queue:
+            await self.settled()
+            (self.state / "hold.json").write_text("1")
+            await asyncio.wait_for(queue.get(), 1)
+            (self.state / "hold.json").write_text("2")
+            await asyncio.sleep(.1)
+            self.assertTrue(queue.empty(), "a second change inside the gap is held")
+            await asyncio.wait_for(queue.get(), 1)
+            await asyncio.sleep(.4)
+            self.assertTrue(queue.empty(), "one held change is delivered once")
 
 
 class Socket(unittest.TestCase):

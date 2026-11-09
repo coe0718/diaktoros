@@ -25,8 +25,9 @@ import sys
 import tempfile
 import time
 
-from . import (broker, broker_client, broker_ipc, config, contained, deps, gh, hostdirs,
-               inference_proxy, prompts, repro_proof, runtime_detect, safe_push, trusted_fetch, util)
+from . import (broker, broker_client, broker_filing, broker_ipc, config, contained, deps, gh,
+               hostdirs, inference_proxy, prompts, repro_proof, runtime_detect, safe_push,
+               trusted_fetch, util)
 
 
 def dependency_cache(loop: dict) -> Path | None:
@@ -152,6 +153,26 @@ def _provider_note(inference) -> str:
     """The provider's last error during this turn, as a line for the run's output tail."""
     error = getattr(inference, 'last_error', '')
     return f"\n[last provider error] {error}" if error else ""
+
+
+def _observe_exit(observed: dict, inference, result, broker) -> None:
+    """What a sandbox that exited leaves for the supervisor: its usage, its output, what it
+    asked the broker for, and what the proxy saw of the provider."""
+    failed = bool(result.returncode)
+    observed['thinking'] = getattr(inference, 'thinking', None)
+    observed.update(usage_of(inference))
+    observed.update(returncode=result.returncode,
+                    # A failed turn names the provider's own error (#281: Hermes
+                    # reported only "HTTP 400 — Error response").
+                    stdout=_kept(result.stdout, 'stdout')
+                    + (_provider_note(inference) if failed else ''),
+                    stderr=_kept(result.stderr, 'stderr'),
+                    # The same error as a host fact, apart from the turn's own output: a run
+                    # of them holds the account (#1155).
+                    provider_error=(getattr(inference, 'last_error', '') or '') if failed else '',
+                    submissions=[dict(entry) for entry in broker.recorded],
+                    # The provider 429'd this turn: when its window reopens (#219).
+                    rate_limited_until=getattr(inference, 'rate_limited_until', None))
 
 
 def _decoded(value) -> str:
@@ -542,7 +563,7 @@ TOOLS = {
                  'given, otherwise what the list line in your instructions says to send (a type '
                  'label is one that is not P0, P1, …; a priority label only if the cap leaves '
                  'room beside the type); '
-                 f'at most {broker.FILED_ISSUES_MAX} per review). It files as your account '
+                 f'at most {broker_filing.FILED_ISSUES_MAX} per review). It files as your account '
                  'and answers with the issue number; a title already filed from this PR is '
                  'refused. A blocking finding is never an issue: it is REQUEST_CHANGES. '),
     'fixer': ('To publish, name the files you changed and write a commit message: '
@@ -901,18 +922,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                             stderr=_kept(exc.stderr, 'stderr'))
                     raise TurnBudgetExceeded(exc.cmd, timeout, grace) from None
                 if observed is not None:
-                    observed['thinking'] = getattr(inference, 'thinking', None)
-                    observed.update(usage_of(inference))
-                    observed.update(returncode=result.returncode,
-                                    # A failed turn names the provider's own error (#281: Hermes
-                                    # reported only "HTTP 400 — Error response").
-                                    stdout=_kept(result.stdout, 'stdout')
-                                    + (_provider_note(inference) if result.returncode else ''),
-                                    stderr=_kept(result.stderr, 'stderr'),
-                                    submissions=[dict(entry) for entry in broker.recorded],
-                                    # The provider 429'd this turn: when its window reopens (#219).
-                                    rate_limited_until=getattr(inference, 'rate_limited_until',
-                                                               None))
+                    _observe_exit(observed, inference, result, broker)
                 if result.returncode == 0 and not broker.completed:
                     if not broker.requests:
                         raise TurnUnpublished('agent exited without a confirmed scoped write '
