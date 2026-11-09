@@ -1073,14 +1073,15 @@ class RunBroker(broker_issues.IssueWrites):
             f"{'delivered the review request to the gate' if sent else 'the watchdog will start it'}")
 
 
-def _issue_notice(loop: dict | None, scope: RunScope, event: str, outcome: str) -> None:
+def _issue_notice(loop: dict | None, scope: RunScope, event: str, outcome: str,
+                  next_turn: str = "") -> None:
     """The observer's issue-side notice (#231): best effort, once per run (keyed by its id)."""
     if loop is None:
         return
     from . import observer, state as state_mod
     try:
         observer.notify(loop, state_mod.state_for(loop), event, scope.number, scope.head,
-                        identity=scope.run_id, outcome=outcome, issue=True)
+                        identity=scope.run_id, outcome=outcome, next_turn=next_turn, issue=True)
     except Exception:
         pass                     # a notice never changes what was written
 

@@ -347,7 +347,7 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `closed` | PR merged or abandoned and cleanup attempted; sent only for PRs this loop worked on (reviewed author, or breach, transition, queue or observer-ledger state). |
 | `triaged` | Issue triage ended (labels, none fit, skipped, denied, uncertain). Links the issue. |
 | `fixing` | Fix label handed an issue to the fixer, or the handoff was held. Links the issue. |
-| `fixed` | Issue-fix write ended: PR opened/review requested, could-not-fix comment, or uncertain. Links the issue. |
+| `fixed` | Issue-fix write ended: PR opened/review requested, a posted plan or question (waits for a maintainer; next: you), could-not-fix comment, or uncertain. Links the issue. |
 | `failed` | Any isolated run's first failed attempt and its terminal failed/uncertain state. Links the issue for triage and issue-fix runs. |
 | `held` | A run waiting on its seat's daily cap, its provider's usage window, or an unavailable provider (#1325): when it resumes, and how to run it sooner. Once per hold. |
 | `conflict` | A loop PR no longer merges into its base (GitHub reports a merge conflict): once per head. Urgent tier. |
