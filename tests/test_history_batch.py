@@ -119,6 +119,19 @@ class Batch(fg.Base):
         self.assertEqual(rc, 2)
         self.assertIn(f"cannot write to {self.out}: ", out)
 
+    def test_a_write_that_fails_midway_says_the_export_is_partial(self):
+        """#2200: the files before the failure are kept and listed, and the exit is 2."""
+        self.cycle()
+        self.other_pr(8, th.T + 700)
+        (self.out / "pr-8.md").mkdir(parents=True)          # pr-7 writes, pr-8 cannot
+        rc, out = self.run_cli("--since", SINCE, "--out", str(self.out), "--format", "markdown",
+                               "--offline")
+        self.assertEqual(rc, 2)
+        self.assertIn("wrote pr-7.md (#7)\ncould not write pr-8.md (#8): ", out)
+        self.assertIn("stopped there, so this export is partial (the files above were kept)", out)
+        self.assertIn("1 cycle(s) written", out)
+        self.assertTrue((self.out / "pr-7.md").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

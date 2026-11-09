@@ -196,7 +196,7 @@ def cmd_history(args) -> int:
             print(f"cannot write to {out}: {exc.strerror or type(exc).__name__}")
             return 2
         print(history_batch.listing(result, out, args.offline))
-        return 0
+        return 2 if result["failed"] else 0
     data = history.collect(loop, run_supervisor.production_ledger(), args.pr, args.offline,
                            selftest.redactor_for(loop))
     if args.format == "json":
