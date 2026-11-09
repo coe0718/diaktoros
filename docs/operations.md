@@ -955,6 +955,17 @@ loop config, the exact live PR/head, effective verdicts, escalation marker and l
 PR actions, `pr` is null for drain. A stale/unavailable offer returns 409 rather than acting on
 whatever is newest. All routes use gateway authentication. Tokens stay on the host.
 
+**Declare dependency** and **Waive dependency** (#1301) take two issue numbers: the issue that
+waits (`pr`) and the one it waits on (`on`). `GET /actions?loop=<id>&action=depends&pr=<b>&on=<a>`
+runs the checks `hermes dk depends` runs (itself, a cycle, a pull request, an issue GitHub
+can't read) and refuses in the preview without writing anything. Its confirmation is bound to the
+issue's current dependency record. For these two actions only, `POST /actions` takes exactly
+`{loop, action, pr, seat, on, confirmation}` (`seat` null). The host reads the record back, and
+verified means the dependency is now present (declare) or absent (waive). The **Issue
+dependencies** section lists declared dependencies from `GET /deps?loop=<id>`. That read checks
+GitHub for each prerequisite (at most 50 rows, with the total), so the page reads it on selection
+and on Refresh and never polls it or refreshes it from socket hints.
+
 **Escalate** parks this head against further review/fix and requests an adjudicator ruling,
 spending its configured turn budget. A queued review/fix is retired when the ruling worker
 claims it. The confirmation names loop, PR and head, these consequences and the equivalent

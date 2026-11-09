@@ -607,7 +607,6 @@ def cmd_depends(args) -> int:
     dependency and whether it is met. Exit 1 when refused, 2 when it cannot be answered.
     """
     from .. import issue_deps
-    from ..util import now_iso
     if args.loop:
         try:
             loop = config.load_id(args.loop)
@@ -625,43 +624,31 @@ def cmd_depends(args) -> int:
             return 2
         loop = loops[0]
     st = state_mod.state_for(loop)
-    deps = st.issue_deps()
+    # Every rule is ``issue_deps``'s (#1301): the Desktop's confirmed action calls the same
+    # owner, so this command only prints what it answers.
     if args.on is None and args.waive is None:
-        if args.issue is not None:
-            deps = {args.issue: deps.get(args.issue) or {}}
-        if not any(deps.values()):
+        rows = issue_deps.listing(loop, st, args.issue)
+        if not rows:
             print(f"[{loop['id']}] no issue dependencies declared")
             return 0
-        for issue, prerequisites in sorted(deps.items()):
-            for prerequisite in sorted(prerequisites):
-                done, why = issue_deps.met(loop, prerequisite)
-                mark = {True: "met", False: "waiting", None: "unknown"}[done]
-                print(f"[{loop['id']}] #{issue} depends on #{prerequisite}: {mark} — {why}")
+        for entry in rows:
+            print(f"[{loop['id']}] #{entry['issue']} depends on #{entry['on']}: "
+                  f"{entry['state']} — {entry['why']}")
         return 0
     if args.issue is None:
         print("--on and --waive need --issue N (the issue that waits)")
         return 2
     if args.waive is not None:
-        if st.issue_dep_drop(args.issue, args.waive):
+        if issue_deps.waive(st, args.issue, args.waive):
             print(f"[{loop['id']}] #{args.issue} no longer depends on #{args.waive}; the next "
                   "watchdog sweep releases it if nothing else holds it")
             return 0
         print(f"[{loop['id']}] refused: #{args.issue} does not depend on #{args.waive}")
         return 1
-    reason = issue_deps.problem(deps, args.issue, args.on)
-    if reason:
-        print(f"[{loop['id']}] refused: {reason}")
-        return 1
-    for number in (args.issue, args.on):
-        found = issue_deps.read_issue(loop, number)
-        if found is None:
-            print(f"[{loop['id']}] #{number} could not be read from GitHub — nothing declared")
-            return 2
-        if "pull_request" in found:
-            print(f"[{loop['id']}] refused: #{number} is a pull request; a dependency joins two "
-                  "issues of this repository")
-            return 1
-    added = st.issue_dep_add(args.issue, args.on, {"by": "operator", "at": now_iso()})
+    code, reason, added = issue_deps.declare(loop, st, args.issue, args.on)
+    if code:
+        print(f"[{loop['id']}] " + (f"refused: {reason}" if code == 1 else reason))
+        return code
     print(f"[{loop['id']}] #{args.issue} " + ("now depends on" if added else "already depends on")
           + f" #{args.on}: its fix waits until #{args.on}'s implementation is merged into "
             f"{loop['base']}; a turn already queued is held at launch and publish until then "

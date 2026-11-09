@@ -5,6 +5,10 @@ runs as a call bound to a confirmed head (#1046: ``review``), and a drain binds 
 queue snapshot (#1047: ``drain_confirmed``). The page's confirmed controls for both are a
 follow-up, so Desktop still refuses them rather than interpreting a confirmation as
 open-ended consent.
+Issue dependencies (#1301) are two more confirmed actions: ``depends`` records that issue
+``pr`` waits on issue ``on`` and ``waive`` removes that record, both through ``issue_deps``, the
+owner ``hermes dk depends`` calls. Their confirmation binds the target and the issue's current
+dependency record, so a record that changed after the preview is refused, never rewritten.
 The CLI retains its explicit operator semantics (including grants and seat selection).
 """
 from __future__ import annotations
@@ -23,14 +27,18 @@ import threading
 import time
 from types import SimpleNamespace
 
-from . import cancel_action, escalate_action, gate, gh, review_asks, run_supervisor, state as state_mod
+from . import (cancel_action, escalate_action, gate, gh, issue_deps, review_asks, run_supervisor,
+               state as state_mod)
 from .run_supervisor import views
 from .ledger import read_only
 from .util import logged
 
 _LOCK = threading.RLock()
 _SECRET = secrets.token_bytes(32)
-_ACTIONS = ("review", "escalate", "drain", "cancel")
+_ACTIONS = ("review", "escalate", "drain", "cancel", "depends", "waive")
+# The confirmed issue-dependency actions (#1301): ``pr`` is the issue that waits, ``on`` the one
+# it waits on. The Desktop route's shape check reads this same constant.
+DEPS_ACTIONS = ("depends", "waive")
 # The seats a confirmed cancel may name (#1148); the other actions take reviewer or fixer only.
 # The cancel command's own list, never a copy: the Desktop route's shape check reads this same
 # constant, so the route and the plan cannot disagree about a seat (#1371).
@@ -45,11 +53,13 @@ def _identity(loop, action, pr, seat, snapshot):
 
 def public_plan(proposal):
     """Only fixed categories and validated identifiers cross the Desktop boundary."""
-    return {key: proposal[key] for key in
-            ("action", "pr", "seat", "eligible", "head", "reason", "confirmation")}
+    out = {key: proposal[key] for key in
+           ("action", "pr", "seat", "eligible", "head", "reason", "confirmation")}
+    out["on"] = proposal.get("on")
+    return out
 
 
-def plan(loop, action, pr=None, seat=None):
+def plan(loop, action, pr=None, seat=None, on=None):
     """Read-only offer; an opaque, process-local confirmation binds the observed facts.
 
     A host restart invalidates outstanding confirmations. CLI-only grant, reason and
@@ -60,6 +70,10 @@ def plan(loop, action, pr=None, seat=None):
            "seat": seat if seat in seats else None, "eligible": False,
            "head": "", "reason": "invalid action target", "confirmation": ""}
     if action not in _ACTIONS:
+        return out
+    if action in DEPS_ACTIONS:
+        return _deps_plan(loop, action, pr, seat, on, out)
+    if on is not None:
         return out
     if action == "cancel":
         return _cancel_plan(loop, pr, seat, out)
@@ -173,18 +187,99 @@ def _cancel_perform(loop, pr, seat, proposal):
     return _result("partial", "stop requested; the worker stops the running turn", head=head)
 
 
+def _deps_snapshot(record: dict) -> list:
+    """An issue's dependency record as the confirmation binds it: every prerequisite with who
+    declared it and when, so any declaration or waiver for the issue makes a preview stale."""
+    return [[a, str((record[a] or {}).get("by")), str((record[a] or {}).get("at"))]
+            for a in sorted(record)]
+
+
+def _deps_record(loop, issue):
+    """``issue``'s current dependency record, read strictly (an unreadable store raises)."""
+    st = state_mod.state_for(loop)
+    return st, (st.issue_deps(strict=True).get(issue) or {})
+
+
+def _deps_plan(loop, action, issue, seat, on, out):
+    """The confirmed ``depends``/``waive`` offer (#1301): ``issue_deps``' own checks, the exact
+    record it would write or remove, and a confirmation bound to the issue's current record.
+    A refusal is a valid read that writes nothing and carries no confirmation."""
+    out["on"] = on if type(on) is int and on > 0 else None
+    if (type(issue) is not int or issue <= 0 or out["on"] is None or seat is not None):
+        return out
+    out["pr"] = issue
+    try:
+        st, record = _deps_record(loop, issue)
+    except Exception:
+        out["reason"] = "dependency record unavailable; nothing authorized"
+        return out
+    if action == "waive":
+        if on not in record:
+            out["reason"] = f"#{issue} does not depend on #{on}; nothing to waive"
+            return out
+        reason = (f"removes #{issue}'s dependency on #{on}; the next watchdog sweep releases "
+                  f"#{issue} if nothing else holds it")
+    else:
+        if on in record:
+            out["reason"] = f"#{issue} already depends on #{on}; nothing to record"
+            return out
+        try:
+            code, why = issue_deps.declare_problem(loop, st, issue, on)
+        except Exception:
+            out["reason"] = "issue facts unavailable; nothing authorized"
+            return out
+        if code:
+            out["reason"] = (" ".join(str(why).split())[:200] if code == 1
+                             else "an issue could not be read from GitHub; nothing authorized")
+            return out
+        reason = (f"records #{issue} waits on #{on}: #{issue}'s fix is held until #{on}'s "
+                  f"implementation is merged into the base")
+    out.update(eligible=True, reason=reason,
+               confirmation=_identity(loop["id"], action, issue, None,
+                                      [on, _deps_snapshot(record)]))
+    return out
+
+
+def _deps_perform(loop, action, issue, on):
+    """Perform a revalidated ``depends``/``waive`` through ``issue_deps`` and read the record
+    back: verified only when it shows the dependency present (depends) or absent (waive)."""
+    try:
+        st = state_mod.state_for(loop)
+        if action == "depends":
+            code, _why, changed = issue_deps.declare(loop, st, issue, on,
+                                                     by=issue_deps.BY_DESKTOP)
+            if code:
+                return _result("refused", "the host refused the dependency; preview again")
+        else:
+            changed = issue_deps.waive(st, issue, on)
+    except Exception:
+        return _result("unknown", "operation interrupted; inspect state before retrying")
+    if not changed:
+        # Another writer got there between the preview and this write: nothing was written here.
+        return _result("stale", "confirmation is stale or unavailable; preview again")
+    try:
+        _st, record = _deps_record(loop, issue)
+    except Exception:
+        return _result("unknown", "read-back unavailable; inspect state before retrying")
+    if action == "depends" and on in record:
+        return _result("verified", f"#{issue} waits on #{on}", ok=True)
+    if action == "waive" and on not in record:
+        return _result("verified", f"#{issue} no longer waits on #{on}", ok=True)
+    return _result("unknown", "the dependency record could not be verified; inspect before retrying")
+
+
 def _result(status, reason, *, ok=False, head=""):
     return {"ok": ok, "status": status, "reason": reason, "head": head}
 
 
-def confirmed_perform(loop, action, confirmation, pr=None, seat=None):
+def confirmed_perform(loop, action, confirmation, pr=None, seat=None, on=None):
     """Revalidate the exact offer, invoke the head-bound core, then read back that target.
 
     No worker launch, CLI exit code or gate return value alone proves success.
     """
     with _LOCK:
         loop = copy.deepcopy(loop)
-        proposal = plan(loop, action, pr=pr, seat=seat)
+        proposal = plan(loop, action, pr=pr, seat=seat, on=on)
         token = proposal["confirmation"]
         if (not isinstance(confirmation, str) or len(confirmation) != 64 or
                 not token or not hmac.compare_digest(confirmation, token)):
@@ -193,6 +288,8 @@ def confirmed_perform(loop, action, confirmation, pr=None, seat=None):
             return _result("refused", proposal["reason"])
         if action == "cancel":
             return _cancel_perform(loop, pr, seat, proposal)
+        if action in DEPS_ACTIONS:
+            return _deps_perform(loop, action, pr, on)
         head = proposal["head"]
         operation = SimpleNamespace(pr=pr, reason="", expected_head=head, expected_confirmation=token)
         try:
