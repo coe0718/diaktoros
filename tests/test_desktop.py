@@ -717,7 +717,8 @@ class Health(unittest.TestCase):
         called.assert_not_called()
 
 
-DASHBOARD_ROUTES = {"/loops", "/stats", "/now", "/overview", "/pr", "/health", "/settings", "/hooks", "/actions", "/records"}
+DASHBOARD_ROUTES = {"/loops", "/stats", "/now", "/overview", "/pr", "/health", "/settings", "/hooks", "/actions", "/records",
+                    "/deps"}
 # Confirmed writes only: retry, hook pause/resume, and host-owned one-shot escalation.
 # Review/drain are refused until the page's confirmed controls are wired (the core binds both).
 DASHBOARD_WRITE_ROUTES = {"/retry", "/hooks", "/actions"}
@@ -1059,6 +1060,20 @@ class Surface(unittest.TestCase):
             self.assertRegex(done.stdout, rf"(?m)^ok \d+ - {re.escape(name)}$")
         self.assertIn("palette only: unseen successful cache read expires", done.stdout)
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - records: nested malformed and wrong-loop responses never enter the cache$")
+        # #1301: the dependency list and the confirmed depends/waive actions, by name.
+        for name in (
+            "deps: rows render met, waiting and unknown from their own non-polled, non-socket query",
+            "deps: unavailable record, failed read and expired data are never a verified empty list",
+            "deps: malformed nested rows, unsafe why and wrong-loop responses are rejected before cache",
+            "deps: Refresh and Retry re-read the selected loop own /deps endpoint",
+            "actions: declare dependency previews B waits on A, confirms the six-key body and reads back",
+            "actions: waive dependency names the waiver and its CLI, and reads back",
+            "actions: a refused dependency preview offers no confirmation and writes nothing",
+            "actions: stale dependency confirmation (409) is not success and needs a fresh preview",
+            "actions: malformed dependency previews are rejected before confirmation",
+            "actions: a dependency preview needs both issue numbers and invalid input never reads",
+        ):
+            self.assertRegex(done.stdout, rf"(?m)^ok \d+ - {re.escape(name)}$")
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed here")
     def test_it_parses_as_an_es_module(self):

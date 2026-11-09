@@ -1730,6 +1730,15 @@ hermes dk depends --loop "<loop-id>" --issue 42 --waive 41
 Dependencies and waits are kept in the loop's state directory and survive a restart. Exit `1`
 means it was refused, and the line says why; `2` that it couldn't be answered.
 
+The Desktop page shows the same list under **Issue dependencies** (`GET /deps`, #1301): each
+row is met, waiting or unknown, with why. It reads GitHub for each prerequisite, so the page reads
+it when you select the loop and when you press Refresh, and never polls it. Declaring or waiving
+one there is the confirmed `depends` / `waive` action (`GET`/`POST /actions` with `on`), which
+runs the same checks as this command. A refusal (itself, a cycle, a pull request, an issue it
+can't read) is shown in the preview and writes nothing. The confirmation is bound to the issue's
+dependency record, so if that record changes before you confirm, nothing is written. A waiver
+deletes the record, so who waived a dependency isn't kept.
+
 <!-- flags:depends -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |

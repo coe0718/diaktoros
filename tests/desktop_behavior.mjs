@@ -101,6 +101,7 @@ async function harness({ cachedAge = null, queryClient: realQueryClient = null, 
   queries.health = good({ checks: [], counts: {}, offline: true })
   queries.settings = good(structuredClone(settingsFixture))
   queries.records = good(recordsFixture())
+  queries.deps = good(depsFixture())
   if (cachedAge !== null) cacheRows.push({ queryKey: ['diaktoros', 'now', 'seeded'],
     state: { data: queries.now.data, dataUpdatedAt: time - cachedAge, status: 'success' } })
   const element = (type, props, key) => ({ type, props: props || {}, key })
@@ -407,6 +408,13 @@ test('hold contract: retained stale and legacy unknown stay explicit with no tra
 })
 
 function recordsFixture() { return structuredClone(recordsWriterFixture) }
+// The /deps shape desktop_api.deps_view returns (#1301): rows from issue_deps.row, bounded.
+function depsFixture(extra = {}) {
+  return { loop: 'fixture-loop', repo: 'fixture/repo', available: true, total: 3, read_at: 1800000000, deps: [
+    { issue: 12, on: 5, state: 'waiting', why: '#5 is still open', by: 'operator', at: '2026-11-01T10:00:00Z' },
+    { issue: 12, on: 6, state: 'met', why: "#6's fix PR #9 merged into main", by: 'desktop', at: '2026-11-02T10:00:00Z' },
+    { issue: 13, on: 5, state: 'unknown', why: '#5 could not be read', by: null, at: null }], ...extra }
+}
 
 const recordsRegion = h => [h.flatten(h.tree()).find(n => n.props?.['aria-label'] === 'Local loop records')].filter(Boolean)
 test('records: selected local history distinguishes failures, audit attempts and remembered CI', async () => {
@@ -2439,6 +2447,174 @@ test('actions: malformed GET success is rejected before confirmation; raw reason
   }
   await previewAction(h, actionPlan({ eligible: false, confirmation: null, reason: '/private/token ghp_secret' }))
   assert.doesNotMatch(h.text(h.tree()), /private\/token|ghp_secret/)
+})
+
+// #1301: issue dependencies — the list from its own GitHub-reading query, and the confirmed
+// depends/waive actions through the same one-shot preview and confirmation.
+const depsRegion = h => h.flatten(h.tree()).find(n => n.props?.['aria-label'] === 'Issue dependencies')
+const depsText = h => h.text([depsRegion(h)])
+const depsRow = (patch = {}) => depsFixture({ total: 1, deps: [{ ...depsFixture().deps[0], ...patch }] })
+const depsPlan = (extra = {}) => ({ loop: 'fixture-loop', repo: 'fixture/repo', read_at: 1800000000, action: 'depends', pr: 12, seat: null, on: 5,
+  eligible: true, head: '', reason: "records #12 waits on #5: #12's fix is held until #5's implementation is merged into the base", confirmation: 'opaque-deps-identity', ...extra })
+const actionInput = (h, label) => h.flatten(h.tree()).find(n => n.type === 'Input' && n.props['aria-label'] === label)
+const selectDeps = (h, action = 'depends', issue = '12', on = '5') => {
+  h.render('page')
+  actionButton(h, action === 'depends' ? 'Declare dependency' : 'Waive dependency').props.onClick()
+  actionInput(h, 'Waiting issue number').props.onChange({ target: { value: issue } })
+  actionInput(h, 'Waits on issue').props.onChange({ target: { value: on } })
+}
+const previewDeps = async (h, data = depsPlan()) => {
+  h.respond(data)
+  await h.buttons(h.tree()).find(b => /^Preview (dependency|waiver)$/.test(b.props.children)).props.onClick()
+}
+const depsDialog = h => h.flatten(h.tree()).find(n => n.type === 'ConfirmDialog' && /this dependency\?$/.test(n.props.title))
+const depsInvalidated = (h, loop = 'fixture-loop') => h.calls.some(c => c && typeof c === 'object' && JSON.stringify(c.queryKey) === JSON.stringify(['diaktoros', 'deps', loop]))
+
+test('deps: rows render met, waiting and unknown from their own non-polled, non-socket query', async () => {
+  const h = await harness(); h.render('page')
+  const text = depsText(h)
+  for (const re of [/#12 waits on #5/, /#5 is still open/, /#6's fix PR #9 merged into main/, /#13 waits on #5/, /#5 could not be read/,
+    /Declared by operator · 2026-11-01T10:00:00Z/, /Declared by desktop/, /Declared by not recorded/, /who waived it is not recorded/]) assert.match(text, re)
+  const badges = h.flatten([depsRegion(h)]).filter(n => n.type === 'Badge').map(n => n.props.children)
+  for (const state of ['met', 'waiting', 'unknown']) assert.ok(badges.includes(state), state)
+  const o = h.options.deps
+  assert.equal(JSON.stringify(o.queryKey), '["diaktoros","deps","fixture-loop"]')
+  assert.equal(o.staleTime, 300000)
+  assert.equal(o.refetchInterval, undefined)
+  assert.equal(o.refetchOnWindowFocus, false)
+  h.respond(depsFixture()); assert.deepEqual(await o.queryFn(), depsFixture())
+  assert.equal(h.calls.at(-1), '/deps?loop=fixture-loop')
+  // A local socket change is never a reason to re-read GitHub for every prerequisite.
+  h.sockets[0].callback({ event: 'invalidate', version: 1 })
+  assert.equal(h.calls.at(-1).predicate({ queryKey: ['diaktoros', 'deps', 'fixture-loop'] }), false)
+})
+
+test('deps: unavailable record, failed read and expired data are never a verified empty list', async () => {
+  const h = await harness()
+  h.queries.deps = h.good(depsFixture({ available: false, total: 0, deps: [] })); h.render('page')
+  assert.match(depsText(h), /Dependency record unavailable · not read/)
+  assert.doesNotMatch(depsText(h), /No issue dependencies declared/)
+  h.queries.deps = h.fail(undefined); h.render('page')
+  assert.match(depsText(h), /Issue dependencies: no verified data available/)
+  assert.doesNotMatch(depsText(h), /No issue dependencies declared|fixture backend offline|#12 waits on/)
+  h.queries.deps = h.fail(depsFixture()); h.render('page')
+  assert.match(depsText(h), /showing last good data, not current status/)
+  assert.match(depsText(h), /#12 waits on #5/)
+  h.queries.deps = h.good(depsFixture({ total: 0, deps: [] })); h.render('page')
+  assert.match(depsText(h), /No issue dependencies declared for this loop/)
+  h.advance(300000); h.render('page')
+  assert.doesNotMatch(depsText(h), /No issue dependencies declared for this loop/)
+  assert.match(depsText(h), /not current/)
+  h.queries.deps = h.good(depsFixture({ total: 60, deps: Array.from({ length: 50 }, (_, i) => ({ ...depsFixture().deps[0], issue: 100 + i })) }))
+  h.render('page'); assert.match(depsText(h), /Showing 50 of 60 declared dependencies/)
+})
+
+test('deps: malformed nested rows, unsafe why and wrong-loop responses are rejected before cache', async () => {
+  const h = await harness(); h.render('page')
+  const bad = [depsFixture({ loop: 'other' }), depsFixture({ available: 'yes' }), depsFixture({ total: -1 }), depsFixture({ total: 4 }),
+    depsFixture({ available: false }), depsFixture({ read_at: -1 }), depsFixture({ repo: '' }), depsFixture({ deps: null }),
+    depsRow({ state: 'blocked' }), depsRow({ issue: 0 }), depsRow({ on: '5' }), depsRow({ on: 12 }), depsRow({ why: '' }),
+    depsRow({ why: '/home/jeremy/.hermes/state' }), depsRow({ why: 'GET failed ghp_secret' }), depsRow({ why: 'x'.repeat(241) }),
+    depsRow({ why: 'two\nlines' }), depsRow({ by: 'Some One' }), depsRow({ at: 'yesterday' }), depsRow({ by: undefined })]
+  for (const payload of bad) {
+    h.respond(payload)
+    await assert.rejects(h.options.deps.queryFn(), /Invalid deps response/, JSON.stringify(payload).slice(0, 120))
+  }
+  h.respond(depsRow()); assert.deepEqual(await h.options.deps.queryFn(), depsRow())
+})
+
+test('deps: Refresh and Retry re-read the selected loop own /deps endpoint', async () => {
+  const h = await harness(); h.render('page')
+  h.queries.deps = { ...h.good(depsFixture()), refetch: () => h.options.deps.queryFn() }
+  h.render('page'); h.respond(depsFixture())
+  const before = h.calls.length
+  await h.buttons([depsRegion(h)]).find(b => b.props.children === 'Refresh dependencies').props.onClick()
+  assert.deepEqual(h.calls.slice(before), ['/deps?loop=fixture-loop'])
+  // A verified read draws no Retry; a failed one does, and it re-reads the same endpoint.
+  assert.equal(h.buttons([depsRegion(h)]).find(b => b.props.children === 'Retry'), undefined)
+  h.queries.deps = { ...h.fail(depsFixture()), refetch: () => h.options.deps.queryFn() }; h.render('page')
+  await h.buttons([depsRegion(h)]).find(b => b.props.children === 'Retry').props.onClick()
+  assert.deepEqual(h.calls.slice(before), ['/deps?loop=fixture-loop', '/deps?loop=fixture-loop'])
+})
+
+test('actions: declare dependency previews B waits on A, confirms the six-key body and reads back', async () => {
+  const h = await harness(); selectDeps(h); await previewDeps(h)
+  assert.equal(h.calls.at(-1), '/actions?loop=fixture-loop&action=depends&pr=12&on=5')
+  assert.match(h.text(h.tree()), /fixture\/repo · #12 waits on #5/)
+  assert.match(h.text(h.tree()), /records #12 waits on #5/)
+  actionButton(h, 'Confirm dependency').props.onClick(); const d = depsDialog(h)
+  assert.equal(d.props.title, 'Declare this dependency?')
+  for (const re of [/Loop fixture-loop/, /fixture\/repo/, /#12 waits on #5/, /merged into the loop's base/, /one already running is not recalled/,
+    /nothing is written/, /Equivalent CLI: hermes dk depends --loop fixture-loop --issue 12 --on 5\./]) assert.match(d.props.description, re)
+  h.actionResult(() => Promise.resolve({ loop: 'fixture-loop', repo: 'fixture/repo', read_at: 1800000000, head: '', ok: true, status: 'verified', reason: '#12 waits on #5' }))
+  await d.props.onConfirm(); await d.props.onConfirm()
+  assert.equal(h.actionCalls.length, 1)
+  assert.deepEqual(JSON.parse(JSON.stringify(h.actionCalls[0])), { method: 'POST', body: { loop: 'fixture-loop', action: 'depends', pr: 12, seat: null, on: 5, confirmation: 'opaque-deps-identity' } })
+  assert.match(h.text(h.tree()), /Backend verified the dependency for loop fixture-loop: #12 waits on #5\./)
+  assert.ok(depsInvalidated(h))
+  assert.equal(actionButton(h, 'Confirm dependency'), undefined)
+})
+
+test('actions: waive dependency names the waiver and its CLI, and reads back', async () => {
+  const h = await harness(); selectDeps(h, 'waive'); await previewDeps(h, depsPlan({ action: 'waive', reason: "removes #12's dependency on #5" }))
+  assert.equal(h.calls.at(-1), '/actions?loop=fixture-loop&action=waive&pr=12&on=5')
+  actionButton(h, 'Confirm waiver').props.onClick(); const d = depsDialog(h)
+  assert.equal(d.props.title, 'Waive this dependency?')
+  for (const re of [/waive: #12 no longer waits on #5/, /next watchdog sweep releases issue 12/, /who waived it is not kept/,
+    /Equivalent CLI: hermes dk depends --loop fixture-loop --issue 12 --waive 5\./]) assert.match(d.props.description, re)
+  h.actionResult(() => Promise.resolve({ loop: 'fixture-loop', repo: 'fixture/repo', read_at: 1800000000, head: '', ok: true, status: 'verified', reason: '' }))
+  await d.props.onConfirm()
+  assert.deepEqual(JSON.parse(JSON.stringify(h.actionCalls[0].body)), { loop: 'fixture-loop', action: 'waive', pr: 12, seat: null, on: 5, confirmation: 'opaque-deps-identity' })
+  assert.match(h.text(h.tree()), /Backend verified the waiver for loop fixture-loop: #12 no longer waits on #5\./)
+  assert.ok(depsInvalidated(h))
+})
+
+test('actions: a refused dependency preview offers no confirmation and writes nothing', async () => {
+  for (const [on, reason] of [['5', 'a cycle: #12 → #5 → #6 → #12'], ['12', '#12 cannot depend on itself'],
+    ['7', '#7 is a pull request; a dependency joins two issues of this repository']]) {
+    const h = await harness(); selectDeps(h, 'depends', '12', on)
+    await previewDeps(h, depsPlan({ on: Number(on), eligible: false, confirmation: '', reason }))
+    assert.match(h.text(h.tree()), new RegExp(reason.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    assert.match(h.text(h.tree()), /Host refused/)
+    assert.equal(actionButton(h, 'Confirm dependency'), undefined)
+    assert.equal(h.actionCalls.length, 0)
+  }
+})
+
+test('actions: stale dependency confirmation (409) is not success and needs a fresh preview', async () => {
+  const h = await harness(); selectDeps(h); await previewDeps(h)
+  h.actionResult(() => Promise.reject(Object.assign(new Error('409: {"detail":"Action confirmation is stale or unavailable; preview again."}'), { status: 409 })))
+  actionButton(h, 'Confirm dependency').props.onClick(); await depsDialog(h).props.onConfirm()
+  // The host's stale detail is raised before any write, so the page may say nothing was recorded.
+  assert.doesNotMatch(h.text(h.tree()), /Backend verified|stale or unavailable; preview again|may have written/)
+  assert.match(h.text(h.tree()), /HTTP 409 · Confirmation refused: the target changed since the preview, so nothing was recorded/)
+  assert.equal(actionButton(h, 'Confirm dependency'), undefined)
+  assert.ok(depsInvalidated(h))
+  await previewDeps(h); assert.ok(actionButton(h, 'Confirm dependency'))
+  // Changing the waited-on issue after the preview retargets nothing.
+  actionButton(h, 'Confirm dependency').props.onClick(); const d = depsDialog(h)
+  actionInput(h, 'Waits on issue').props.onChange({ target: { value: '6' } })
+  await d.props.onConfirm(); assert.equal(h.actionCalls.length, 1)
+})
+
+test('actions: malformed dependency previews are rejected before confirmation', async () => {
+  const h = await harness(); selectDeps(h)
+  for (const extra of [{ on: 6 }, { on: null }, { pr: 13 }, { action: 'waive' }, { seat: 'reviewer' }, { head: 'a'.repeat(40) },
+    { confirmation: '' }, { repo: '' }, { loop: 'other' }]) {
+    await previewDeps(h, depsPlan(extra)); assert.equal(actionButton(h, 'Confirm dependency'), undefined, JSON.stringify(extra))
+    assert.match(h.text(h.tree()), /could not be verified/)
+  }
+  const e = await harness(); selectAction(e)
+  await previewAction(e, actionPlan({ on: 5 })); assert.equal(actionButton(e, 'Confirm escalation'), undefined)
+})
+
+test('actions: a dependency preview needs both issue numbers and invalid input never reads', async () => {
+  const h = await harness()
+  for (const [issue, on] of [['12', ''], ['', '5'], ['0', '5'], ['12', '1e3'], ['12', ' 5 '], ['-1', '5']]) {
+    selectDeps(h, 'depends', issue, on); const before = h.calls.length
+    assert.equal(actionButton(h, 'Preview dependency').props.disabled, true)
+    await actionButton(h, 'Preview dependency').props.onClick(); assert.equal(h.calls.length, before)
+  }
 })
 
 // #647: execute the actual registration/callback; transport fixtures deliver already-parsed SDK frames.

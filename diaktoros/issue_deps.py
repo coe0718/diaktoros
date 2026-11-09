@@ -1,8 +1,10 @@
 """Issue dependencies a maintainer declares (#671): issue B's fix waits for issue A's
 implementation to be merged into the loop's base.
 
-Declared only by the operator (``hermes dk depends``), never inferred from issue text (#686,
-#708). A prerequisite counts as done only on evidence that its implementation is in the base:
+Declared only by the operator (``hermes dk depends``, or the Desktop's confirmed ``depends`` and
+``waive`` actions, #1301), never inferred from issue text (#686, #708). This module owns the
+rules for both: ``declare_problem``/``declare``, ``waive`` and ``listing`` (``row``); the CLI and
+``one_shot_action`` only call them. A prerequisite counts as done only on evidence that its implementation is in the base:
 
 - an issue-fix PR the ledger recorded for it, merged into the base; or
 - the issue closed by a commit GitHub says the base contains (a ``Fixes #A`` merge).
@@ -98,6 +100,86 @@ def met(loop: dict, prerequisite: int) -> tuple[bool | None, str]:
     return False, (f"#{prerequisite} was closed without an implementation merged into {base} — "
                    f"waive it with `hermes dk depends --loop {loop['id']} --issue <dependent> "
                    f"--waive {prerequisite}` if it should not block")
+
+
+# -- the one owner of declare, waive and list (#1301): the CLI and the Desktop both call these ----
+
+STATES = {True: "met", False: "waiting", None: "unknown"}
+# Who declared a dependency: the CLI writes "operator", the Desktop's confirmed action "desktop".
+BY_CLI, BY_DESKTOP = "operator", "desktop"
+
+
+def declared(st, issue: int | None = None, *, strict: bool = False) -> list[tuple[int, int, dict]]:
+    """``(issue, prerequisite, record)`` for every declared dependency (or ``issue``'s), sorted.
+    ``strict`` raises on an unreadable record instead of reading it as none."""
+    deps = st.issue_deps(strict=True) if strict else st.issue_deps()
+    if issue is not None:
+        deps = {issue: deps.get(issue) or {}}
+    return [(b, a, dict(prerequisites[a])) for b, prerequisites in sorted(deps.items())
+            for a in sorted(prerequisites)]
+
+
+def row(loop: dict, issue: int, prerequisite: int, record: dict, *, guarded: bool = False,
+        cache: dict | None = None) -> dict:
+    """One dependency and whether it is met: ``{issue, on, state, why, by, at}``, ``state`` one
+    of ``met``/``waiting``/``unknown`` (``met``'s answer). ``guarded`` turns an exception into
+    ``unknown`` with a fixed sentence (never the exception's text); ``cache`` shares one ``met``
+    answer per prerequisite across rows of one read."""
+    if cache is not None and prerequisite in cache:
+        done, why = cache[prerequisite]
+    else:
+        if guarded:
+            try:
+                done, why = met(loop, prerequisite)
+            except Exception:                         # never guessed, never echoed
+                done, why = None, f"#{prerequisite} could not be read"
+        else:
+            done, why = met(loop, prerequisite)
+        if cache is not None:
+            cache[prerequisite] = (done, why)
+    return {"issue": issue, "on": prerequisite, "state": STATES[done], "why": why,
+            "by": record.get("by"), "at": record.get("at")}
+
+
+def listing(loop: dict, st, issue: int | None = None) -> list[dict]:
+    """Every declared dependency (or ``issue``'s) with whether it is met — what ``hermes dk
+    depends`` with neither ``--on`` nor ``--waive`` prints."""
+    return [row(loop, b, a, record) for b, a, record in declared(st, issue)]
+
+
+def declare_problem(loop: dict, st, issue: int, prerequisite: int) -> tuple[int, str]:
+    """Why ``issue`` may not depend on ``prerequisite`` now: ``(0, "")`` when it may, ``(1, why)``
+    when refused (itself, a cycle, a pull request), ``(2, why)`` when it cannot be answered (an
+    issue GitHub would not read). Both numbers are read in this loop's repository, so a number
+    of another repository is never joined: it is unreadable here, or a different issue."""
+    reason = problem(st.issue_deps(), issue, prerequisite)
+    if reason:
+        return 1, reason
+    for number in (issue, prerequisite):
+        found = read_issue(loop, number)
+        if found is None:
+            return 2, f"#{number} could not be read from GitHub — nothing declared"
+        if "pull_request" in found:
+            return 1, (f"#{number} is a pull request; a dependency joins two issues of this "
+                       "repository")
+    return 0, ""
+
+
+def declare(loop: dict, st, issue: int, prerequisite: int, by: str = BY_CLI
+            ) -> tuple[int, str, bool]:
+    """Check (``declare_problem``) and record that ``issue`` waits on ``prerequisite``:
+    ``(code, why, added)``; ``added`` is False when it was already declared (nothing written)."""
+    from .util import now_iso
+    code, reason = declare_problem(loop, st, issue, prerequisite)
+    if code:
+        return code, reason, False
+    return 0, "", st.issue_dep_add(issue, prerequisite, {"by": by, "at": now_iso()})
+
+
+def waive(st, issue: int, prerequisite: int) -> bool:
+    """Remove (waive) the dependency; False when there was none. The next sweep releases
+    ``issue`` if nothing else holds it. The record is deleted, so who waived it is not kept."""
+    return st.issue_dep_drop(issue, prerequisite)
 
 
 def blocking(loop: dict, st, issue: int) -> list[tuple[int, str]]:

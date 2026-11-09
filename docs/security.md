@@ -118,6 +118,10 @@ not a global stop, drain, rollback or merge permission. Diaktoros never merges.
 **Confirmed one-shot control (#644):** `GET /actions` reads a PR using the host's existing
 credential selection and returns only a per-target offer. `POST /actions` accepts exactly
 `{loop, action, pr, seat, confirmation}`, never a token, path, arbitrary reason, grant or command.
+The issue-dependency actions (#1301) add one field, `on` (an issue number), to that body and
+nothing else. `GET /deps` reads GitHub with the loop's reader credential for each declared
+prerequisite and returns issue numbers, a fixed state (`met`/`waiting`/`unknown`) and a bounded
+reason; a reason that could carry a path, URL or token is replaced by a fixed sentence.
 Both use gateway auth, not the local-only probe restriction. `one_shot_action` owns selection
 and execution for CLI and Desktop (escalation's in `escalate_action`); CLI commands are I/O
 wrappers, not a second rulebook.
