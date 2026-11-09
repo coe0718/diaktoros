@@ -29,6 +29,7 @@ from . import notices   # Supervisor's operator notices: notices.OperatorNotices
 from . import intake   # Supervisor's intake, retry and cancel: intake.RunIntake, inherited (#1349)
 from . import workers   # Supervisor's worker lifecycle and recovery: workers.WorkerLifecycle, inherited (#1349)
 from . import views
+from . import waits   # one worker-log line per wait, read back by `history` (#2080)
 from . import ledger_schema   # the ledger's tables and migrations, as ledger_schema.<name>
 from .turns import _ClaimRead, _Launch, _Turn   # the state classes, still reachable as run_supervisor._Turn
 
@@ -1055,6 +1056,7 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch, notices.OperatorNo
                 # child that exited or timed out with nothing on the write-ahead record waits.
                 self.complete_uncertain(run_id, owner, rc, error, stopped=stopped,
                                         retry=retry and not cancelled, detail=detail)
+                waits.note(self, run_id)       # why it waits, if it does (#2080)
                 # A completed child releases the seat and allows waiting work to advance.
                 self.recover()
 

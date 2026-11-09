@@ -1612,7 +1612,10 @@ the loop worked at). It joins what the loop already keeps:
   issues filed from findings, overrides and operator actions;
 - the loop's state dir: the numbered findings (`findings.json`) and every write the broker
   journaled (`broker-audit.jsonl`), such as a fixer's push and the commit it made;
-- GitHub: the reviews' full bodies, the PR's commits and comments, and whether it merged.
+- GitHub: the reviews' full bodies, the PR's commits and comments, and whether it merged;
+- the worker log beside the ledger: each time a turn was parked waiting (a CI hold, a usage
+  window, a backoff after a failed turn), why and until when. Logs from before this was
+  recorded hold none.
 
 Above the timeline, one `summary:` line gives the cycle's totals: rounds, turns, tokens (and cost,
 when a provider reports one), the time from the first review to the merge, and how the findings
