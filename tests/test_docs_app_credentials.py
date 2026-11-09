@@ -139,5 +139,25 @@ class GeneralDocsQualifyUserChecks(unittest.TestCase):
         self.assert_names_app_path(part.split("See [Accounts]", 1)[0])
 
 
+
+class RefusalsNameAppKeys(unittest.TestCase):
+    """#2186: the four-identity rule and the broker's mapping denials fire for App identities
+    too, so they say "credential", never "token files"."""
+
+    def test_the_four_identity_rule_names_an_app_key(self):
+        import sys
+        sys.path.insert(0, str(ROOT))
+        from diaktoros import config
+        self.assertIn("a PAT or a GitHub App key", config.FOUR_IDENTITY_RULE)
+        self.assertNotIn("token files", config.FOUR_IDENTITY_RULE)
+
+    def test_no_broker_denial_says_token_files_or_token_mappings(self):
+        for name in ("broker.py", "safe_push.py"):
+            text = (ROOT / "diaktoros" / name).read_text()
+            for old in ("distinct token files", "token mappings required",
+                        "token mapping required"):
+                self.assertNotIn(old, text, name)
+
+
 if __name__ == "__main__":
     unittest.main()

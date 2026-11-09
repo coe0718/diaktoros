@@ -1555,7 +1555,7 @@ either way.
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` | **required** | loop id |
-| `--admin-token` | `ADMIN_TOKEN` |  | login whose token can manage rulesets (admin access; default: the reader) |
+| `--admin-token` | `ADMIN_TOKEN` |  | login whose credential can manage rulesets: a token with admin access, or a GitHub App with Administration: Read and write (default: the reader) |
 | `--remove` |  |  | delete the loop's ruleset instead; nothing else is touched |
 | `--dry-run` |  |  | print what would be written, write nothing |
 <!-- /flags -->

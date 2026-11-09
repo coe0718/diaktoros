@@ -452,8 +452,9 @@ def add_protect(sub) -> None:  # noqa: ANN001
                                              "loop's base branch (a ruleset of its own)")
     protect.add_argument("--loop", required=True, help="loop id")
     protect.add_argument("--admin-token", default="",
-                         help="login whose token can manage rulesets (admin access; default: "
-                              "the reader)")
+                         help="login whose credential can manage rulesets: a token with admin "
+                              "access, or a GitHub App with Administration: Read and write "
+                              "(default: the reader)")
     protect.add_argument("--remove", action="store_true",
                          help="delete the loop's ruleset instead; nothing else is touched")
     protect.add_argument("--dry-run", action="store_true",

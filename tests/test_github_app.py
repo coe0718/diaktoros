@@ -427,7 +427,7 @@ class Broker(Base):
 
     def test_an_app_key_shared_with_another_identity_is_refused(self):
         self.loop["tokens"]["fix"] = str(self.key)
-        with self.assertRaisesRegex(broker.BrokerDenied, "distinct token files"):
+        with self.assertRaisesRegex(broker.BrokerDenied, "distinct credential files"):
             self.authorize()
 
 
@@ -436,8 +436,8 @@ class EveryCredentialCheck(Broker):
     of #1177): an App identity passes it and reaches the step after it. Reverting a switch to
     ``gh.credential_path`` / ``config.credentials_map`` brings back the mapping refusal."""
 
-    MAPPING = ("token mappings required", "triage token mapping required",
-               "distinct token files", "explicit seat and read token mappings required")
+    MAPPING = ("credential mappings required", "triage credential mapping required",
+               "distinct credential files", "explicit seat and read credential mappings required")
 
     def assertPastMapping(self, call):
         try:
