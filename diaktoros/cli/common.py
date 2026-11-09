@@ -238,8 +238,9 @@ def _verify_routes(loop: dict, roles) -> None:
     """Refuse to write a route that is not this loop's to write.
 
     Three rails: no other loop may already claim the name, no two roles of this loop may share one
-    route (one route wakes one seat), and an installed route must have this role's exact gate and
-    prompt. All three fail *before* anything is written, because a route is the one
+    route (one route wakes one seat), and an installed route must run this role's gate and be
+    provably ours (``route_intent.provably_ours``: this version's prompt, or the loop's intent
+    record holds it). All three fail *before* anything is written, because a route is the one
     artifact here that another plugin could own.
     """
     mine = _routes_of(loop)
@@ -256,6 +257,7 @@ def _verify_routes(loop: dict, roles) -> None:
     except config.ConfigError as exc:
         raise config.ConfigError(f"cannot check route ownership: {exc}") from exc
     registry = routes.all_routes()
+    intent = route_intent.load_or_empty(loop)
     for role in wanted:
         name = mine[role]
         # "Itself" is the loop file being rewritten — same id *and* same repo. A loop that merely
@@ -286,19 +288,27 @@ def _verify_routes(loop: dict, roles) -> None:
                     "for must use the same --host")
         if name not in registry:
             continue                  # not installed yet: nothing of someone else's to collide with
-        entry = registry[name]
-        if not isinstance(entry, dict):
-            raise config.ConfigError(f"route {name!r} exists but its ownership cannot be verified "
-                                     "— pick another route name")
-        script = entry.get("script")
-        if script != GATE_SCRIPT[role] and script not in config.LEGACY_GATE_SCRIPTS.get(role, ()):
-            raise config.ConfigError(
-                f"route {name!r} runs {script!r}, not {GATE_SCRIPT[role]!r} — it belongs to "
-                "something else; pick another route name")
-        if entry.get("prompt") != _ROUTE_PROMPT[role]:
-            raise config.ConfigError(
-                f"route {name!r} does not have this {role} gate's prompt — ownership cannot be "
-                "verified; pick another route name")
+        _verify_installed(loop, role, name, registry[name], intent)
+
+
+def _verify_installed(loop: dict, role: str, name: str, entry, intent: dict) -> None:
+    """``_verify_routes``' last rail: an installed route ``name`` must run one of this role's
+    gates and be provably this loop's (``route_intent.provably_ours``), or nothing is written."""
+    if not isinstance(entry, dict):
+        raise config.ConfigError(f"route {name!r} exists but its ownership cannot be verified "
+                                 "— pick another route name")
+    script = entry.get("script")
+    if not route_intent.plugin_gate(role, script):
+        raise config.ConfigError(
+            f"route {name!r} runs {script!r}, not {GATE_SCRIPT[role]!r} — it belongs to "
+            "something else; pick another route name")
+    # A route the loop's intent record holds (same gate, the configured profile, the live
+    # secret) is ours even when a release reworded its prompt (#1451).
+    if not route_intent.provably_ours(loop, role, name, entry, intent):
+        raise config.ConfigError(
+            f"route {name!r} does not have this {role} gate's prompt, and this loop's route "
+            f"record does not hold it with this gate, the {role} profile and its secret — "
+            "ownership cannot be verified; pick another route name")
 
 
 # A hooked seat's route: its prompt, and what it wakes the seat for (after the repo).

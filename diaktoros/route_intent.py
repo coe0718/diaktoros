@@ -101,6 +101,55 @@ def owned(entry: dict) -> bool:
     return entry.get("script") in PLUGIN_SCRIPTS
 
 
+def plugin_gate(role: str, script) -> bool:
+    """Is ``script`` a gate this plugin installs (or once installed) for ``role``?"""
+    return script == GATE_SCRIPT[role] or script in config.LEGACY_GATE_SCRIPTS.get(role, ())
+
+
+def recorded_ours(loop: dict, role: str, name: str, entry, intent) -> bool:
+    """Does the intent record prove the live route ``name`` is this loop's ``role`` route,
+    whatever its prompt says (#1451)?
+
+    The prompt's wording changes between versions, so after a reword it no longer proves
+    anything; the record is the plugin's own. It vouches for the live entry when it holds
+    ``name`` with the live entry's script (this role's gate or one it once installed, see
+    ``plugin_gate``), the loop's configured profile for the role, and the live entry's secret —
+    a foreign route re-created under a recorded name carries another secret, and the repo hook
+    could not reach it anyway.
+    """
+    want = intent.get(name) if isinstance(intent, dict) else None
+    if not isinstance(want, dict) or not isinstance(entry, dict):
+        return False
+    script = entry.get("script")
+    secret = entry.get("secret")
+    return (plugin_gate(role, script) and want.get("script") == script
+            and routes.route_profile(want) == config.seat_profile(loop, role)
+            and bool(secret) and want.get("secret") == secret)
+
+
+def provably_ours(loop: dict, role: str, name: str, entry, intent) -> bool:
+    """Is the live route ``name`` provably this loop's ``role`` route, so ``apply``/``set`` may
+    rewrite it (secret kept)? It must run one of this role's gates (``plugin_gate``) and either
+    carry this version's prompt or be vouched for by the intent record (``recorded_ours``).
+
+    The one ownership rule for ``cli.common._verify_routes``, ``cli.route_sync``'s repair
+    filters and the fix ``gate_shims.divergence`` names: they never disagree.
+    """
+    if not isinstance(entry, dict) or not plugin_gate(role, entry.get("script")):
+        return False
+    return (entry.get("prompt") == ROUTE_PROMPT[role]
+            or recorded_ours(loop, role, name, entry, intent))
+
+
+def load_or_empty(loop: dict) -> dict:
+    """The record, or ``{}`` when there is none or it cannot be trusted (it then vouches for
+    nothing: fail closed)."""
+    try:
+        return load(loop) or {}
+    except IntentError:
+        return {}
+
+
 @contextlib.contextmanager
 def _lock(loop: dict):
     target = path(loop)
