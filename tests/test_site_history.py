@@ -129,7 +129,7 @@ class Publish(Fixture):
         out = self.out()
         export = self.exported()
         for bad in ([], {"cycles": "oops"}, {"cycles": [7]}, {"cycles": [{"pr": "7"}]},
-                    {"cycles": [{}]}):
+                    {"cycles": [{}]}, {"cycles": ""}, {"cycles": 0}, {"cycles": None}):
             (out / "index.json").write_text(json.dumps(bad))
             with self.assertRaises(pub.Refused):
                 pub.publish(export, out)
