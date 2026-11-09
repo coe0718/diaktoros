@@ -258,6 +258,7 @@ def revisions(db: Path, repo: str, since: float) -> dict | None:
 LIVE_STATES = ("pending", "claimed", "launching", "running", "waiting", "uncertain")
 RECENT_FAILED_S = 24 * 3600
 WHY_MAX = 160
+CLIP_TRIM = " ;,:—-"   # what _clip trims before its ellipsis: the boundaries a cut may stop at
 
 
 def _clip(text: str, limit: int) -> str:
@@ -271,7 +272,7 @@ def _clip(text: str, limit: int) -> str:
     at = max(head.rfind(mark) for mark in " —-")
     if at >= len(head) // 2:
         head = head[:at]
-    return head.rstrip(" ;,:—-") + "…"
+    return head.rstrip(CLIP_TRIM) + "…"
 
 
 def _why(state: str, error) -> str:

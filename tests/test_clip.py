@@ -35,6 +35,14 @@ class Clip(unittest.TestCase):
         why = self.why(text)
         self.assertEqual(text[len(why) - 1], " ", why)
 
+    def test_every_boundary_the_tests_accept_is_one_clip_trims(self):
+        # #2145: the tests read the boundary set from stats.CLIP_TRIM, so it must be exactly
+        # what _clip trims: each one, left just before the cut, is trimmed off the end.
+        for mark in stats.CLIP_TRIM:
+            with self.subTest(mark=mark):
+                text = PREFIX + "a " * 68 + "ok" + mark + " " + "z" * 60
+                self.assertTrue(self.why(text).endswith("ok…"), self.why(text))
+
 
 if __name__ == "__main__":
     unittest.main()
