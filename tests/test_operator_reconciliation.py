@@ -114,6 +114,23 @@ class OperatorReconciliation(unittest.TestCase):
         self.assertEqual(len(notices), 1)
         self.assertIn('worker failed', notices[0])
 
+    def test_a_failure_notice_shows_a_short_excerpt_of_the_stored_detail(self):
+        """#1658: ``runs.detail`` now keeps ~10 KB of a turn's output; the operator notice the
+        sweep sends still shows only its last ``DETAIL_SHOWN_BYTES``, never the whole of it."""
+        from diaktoros import run_supervisor
+        stdout = 'FIRST ' + 'x' * 9000 + ' LAST-LINE'
+        detail = run_supervisor.output_detail(stdout, 'e' * 3000)
+        self.assertGreater(len(detail.encode()), 8 * 1024)          # stored: the long tail
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='failed', error='child exit 7', detail=? "
+                        "WHERE id=?", (detail, self.row['id']))
+        notices = []
+        self.assertEqual(self.sup.notify(notices.append), 1)
+        excerpt = notices[0].split('Turn output (tail):\n', 1)[1]
+        self.assertIn('LAST-LINE', excerpt)
+        self.assertNotIn('FIRST', excerpt)
+        self.assertLess(len(notices[0].encode()), run_supervisor.DETAIL_SHOWN_BYTES + 1024)
+
     def test_late_owner_completion_cancels_pending_uncertain_notice(self):
         self.crash()
         with self.assertRaises(OSError):
