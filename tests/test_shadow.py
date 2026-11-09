@@ -683,6 +683,46 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual((self.seen["role"], row["state"]), ("reviewer", "succeeded"), row)
         self.assertEqual([w for _k, w in self.kinds() if w.startswith("shadow review")], [])
 
+    def escalating(self):
+        self.loop = config.normalize({**RAW, "state_dir": str(self.home / "state"),
+                                      "required_checks": ["tests"],
+                                      "shadow": {"profile": "grok", "every": 1, "escalate": True}})
+
+    def test_the_reviewers_row_is_never_visible_without_its_shadow(self):
+        # #1682: the shadow's row was a second submit after the reviewer's, so an APPROVE posted
+        # in between, or that submit failing for good, found no shadow and nothing to wait for.
+        self.escalating()
+        seen = []
+
+        def second_submit(loop, supervisor, number, head, **kw):
+            # What a reviewer that already approved finds, the moment its own row exists ...
+            seen.append(gate.shadow_state(self.loop, 8, HEAD, supervisor.db))
+            return "error"                 # ... and the old second submit failing outright
+        with mock.patch.object(gate, "enqueue_shadow", side_effect=second_submit):
+            sup = self.queue_shadow()
+        self.assertEqual([kind for kind, _hold, _note in seen], ["pending"], seen)
+        self.reviewer_is(sup, ("confirmed", "APPROVED"), "succeeded")
+        self.assertEqual(merge_check.decide(self.kinds())[0], merge_check.PENDING)
+        self.assertEqual(sup.get(f"acme/widgets:8:{HEAD}:shadow")["state"], "pending")
+
+    def test_a_shadow_row_that_cannot_be_written_queues_no_reviewer_either(self):
+        # #1682: one transaction. A reviewer row without its owed shadow would go green.
+        self.escalating()
+        budget = config.turn_budget
+        with mock.patch.object(config, "turn_budget",
+                               side_effect=lambda loop, seat: 0 if seat == "shadow"
+                               else budget(loop, seat)), \
+                mock.patch.object(Supervisor, "_spawn"), \
+                mock.patch.object(config, "by_repo", return_value=self.loop):
+            with self.assertRaisesRegex(ValueError, "shadow row"):
+                gate.enqueue_isolated(self.loop, "reviewer", 8, HEAD)
+        sup = Supervisor(self.home / "state" / "diaktoros-runs.sqlite")
+        self.assertIsNone(sup.get(f"acme/widgets:8:{HEAD}:reviewer"))
+        self.assertIsNone(sup.get(f"acme/widgets:8:{HEAD}:shadow"))
+        # The redelivery that follows queues both.
+        sup = self.queue_shadow()
+        self.assertEqual(sup.get(f"acme/widgets:8:{HEAD}:reviewer")["state"], "pending")
+
     def test_escalate_with_always_paths_holds_their_heads_and_not_the_others(self):
         # #1788 (review of #1852, F3): escalate with every > 1 is allowed only beside always
         # paths. A head sampling alone skips (every 6 skips HEAD) is shadowed, held while the

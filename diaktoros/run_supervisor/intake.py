@@ -81,7 +81,7 @@ class RunIntake:
 
     def submit(self, delivery: str, repo: str, pr: int, head: str, seat: str,
                *, turn_key: str = '', require_push_admission: bool = False,
-               budget: float | None = None) -> str:
+               budget: float | None = None, shadow: tuple[str, float] | None = None) -> str:
         """``enqueue``, reporting what it did (issue #73): ``enqueued`` (new row),
         ``rearmed`` (a failed/cancelled pre-write run is pending again), ``pending``
         (an unclaimed row, worker re-armed), or ``duplicate <state>[: why]`` — nothing
@@ -96,6 +96,9 @@ class RunIntake:
         #49), recorded on the row so whichever worker claims it runs it on the loop's terms;
         ``None`` means this supervisor's ``child_timeout``. A re-arm by a new event takes the
         budget the loop has *now*: a turn killed at its budget reruns on the raised one.
+
+        ``shadow`` (a sampled reviewer turn's ``(delivery, budget)``, #1682): its shadow's row,
+        written with this one (``_insert_runs``).
         """
         requested = budget
         if budget is None:
@@ -131,11 +134,8 @@ class RunIntake:
                     con.execute("ROLLBACK")
                     raise run_supervisor.FixerPushDisabled(repo)
                 if not prior:
-                    con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,turn_key,state,created,updated,push_admitted,budget) "
-                                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                                (uuid.uuid4().hex, delivery, repo, pr, head, seat, turn_key,
-                                 "pending" if self.fixture_mode or self.production_config else "blocked", now, now, admitted,
-                                 float(budget)))
+                    self._insert_runs(con, [(delivery, seat, admitted, budget)], shadow,
+                                      (repo, pr, head, turn_key), now)
             outcome = 'enqueued' if not prior else 'pending' if prior['state'] == 'pending' \
                 else f"duplicate {prior['state']}"
             if prior and prior['state'] in run_supervisor.REARMABLE and (self.fixture_mode or self.production_config):
@@ -156,6 +156,28 @@ class RunIntake:
         if (self.fixture_mode or self.production_config) and outcome in ('enqueued', 'pending', 'rearmed'):
             self._spawn()
         return outcome
+
+    def _insert_runs(self, con, rows: list, shadow, identity: tuple, now: float) -> None:
+        """Insert new run rows, ``(delivery, seat, push_admitted, budget)`` each, in the caller's
+        transaction. With ``shadow``, a reviewer turn's shadow row goes in with it (#1682): no
+        reviewer row is ever visible without the shadow it owes, so neither an APPROVE posted
+        before a second submit nor that submit failing can leave ``shadow.escalate`` with
+        nothing to wait for. A failure rolls both back. A shadow row already at the identity
+        is left as it is, for ``gate.enqueue_shadow`` to re-arm or refuse."""
+        repo, pr, head, turn_key = identity
+        if shadow is not None and not con.execute(
+                "SELECT 1 FROM runs WHERE delivery=? OR (repo=? AND pr=? AND head=? AND "
+                "seat=? AND turn_key=?)", (shadow[0], repo, pr, head, run_supervisor.SHADOW,
+                                            turn_key)).fetchone():
+            if run_supervisor.SHADOW not in self.capacity or not shadow[1] > 0:
+                raise ValueError("a shadow row needs the shadow seat and a positive budget")
+            rows = [*rows, (shadow[0], run_supervisor.SHADOW, 0, shadow[1])]
+        state = "pending" if self.fixture_mode or self.production_config else "blocked"
+        for delivery, seat, admitted, budget in rows:
+            con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,turn_key,state,created,"
+                        "updated,push_admitted,budget) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (uuid.uuid4().hex, delivery, repo, pr, head, seat, turn_key, state, now,
+                         now, admitted, float(budget)))
 
     @staticmethod
     def _rearm(con, run_id: str, *, reset: bool, budget: float | None = None) -> None:
