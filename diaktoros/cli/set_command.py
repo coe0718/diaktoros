@@ -519,9 +519,9 @@ def _validated(loop: dict, changes: dict, seats: dict, observer_cfg: dict, token
     return updated, app_route
 
 
-def _observer_move(loop: dict, updated: dict) -> tuple:
+def _observer_move(loop: dict, updated: dict, freed: str = "") -> tuple:
     """Whether the observer's destinations move, refused while notices are unsettled or when a
-    new route would replace another (checked here, before any write: #1972); marks a disabled
+    new route would replace another but ``freed`` (before any write: #1972); marks a disabled
     feed's tombstone. Returns (before, after, destination_changed, urgent_changed)."""
     before = loop.get("observer") or {}
     after = updated.get("observer") or {}
@@ -557,11 +557,11 @@ def _observer_move(loop: dict, updated: dict) -> tuple:
         if name in reserved:
             print("refused: observer route must not replace a seat or adjudicator route")
             raise _Refused
-        if routes.route(name) and name != before.get("route"):
+        if routes.route(name) and name not in (before.get("route"), freed):
             print(f"refused: route {name!r} already exists and is not this observer's route")
             raise _Refused
     if urgent_changed and urgent and (urgent in reserved | {name} or (
-            routes.route(urgent) and urgent != before.get("urgent_route"))):
+            routes.route(urgent) and urgent not in (before.get("urgent_route"), freed))):
         print(f"refused: route {urgent!r} is already in use and is not this observer's "
               "urgent route")
         raise _Refused
@@ -787,7 +787,8 @@ def _set(args) -> int:
 
     updated, app_route = _validated(loop, changes, seats, observer_cfg, tokens, apps, read_after,
                                     read_changed, adj_changed)
-    before, after, destination_changed, urgent_changed = _observer_move(loop, updated)
+    before, after, destination_changed, urgent_changed = _observer_move(
+        loop, updated, set_adjudication.freed(adj))
     if (rc := set_adjudication._commit(adj)):
         return rc
     shims_ok = _observer_route(loop, updated, before, after, destination_changed)

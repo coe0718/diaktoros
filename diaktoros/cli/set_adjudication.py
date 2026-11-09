@@ -130,3 +130,12 @@ def _commit(plan) -> int:
     print("  no repo hook is needed: the loop wakes the adjudicator itself when the cap is spent")
     print(f"  next: hermes dk doctor --loop {loop['id']}")
     return 0 if shims_ok else 1
+
+
+def freed(plan) -> str:
+    """The adjudicator route a plan from ``_check`` gives up (turned off, or renamed), or "".
+    ``_commit`` removes it before the observer's routes are written, so another route may take
+    the name in the same ``set`` (#2168 review)."""
+    if not isinstance(plan, dict) or not plan["old_route"]:
+        return ""
+    return plan["old_route"] if plan["off"] or plan["route"] != plan["old_route"] else ""

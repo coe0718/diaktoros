@@ -508,6 +508,28 @@ class SetAdjudication(Base):
             "observer route must not replace a seat or adjudicator route")
         self.assertEqual(config.load_id("widgets")["adjudicator"], {})
 
+    def observer_takes(self, *adjudication):
+        """One ``set`` frees the adjudicator route and gives its name to the observer (#2168
+        review: the route the plan removes is not another's)."""
+        self.install("acme/widgets")
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-profile", "arbiter"])
+        self.assertEqual(rc, 0, out)
+        rc, out = self.run_cli(["set", "--loop", "widgets", *adjudication, "--observer-profile",
+                                "default", "--observer-route", "widgets-breach"])
+        self.assertEqual(rc, 0, out)
+        loop = config.load_id("widgets")
+        self.assertEqual(loop["observer"]["route"], "widgets-breach")
+        self.assertEqual(routes.route("widgets-breach")["script"], "observe.py")
+        return loop
+
+    def test_the_observer_may_take_the_route_adjudication_turns_off(self):
+        self.assertEqual(self.observer_takes("--adjudicator", "off")["adjudicator"], {})
+
+    def test_the_observer_may_take_the_route_adjudication_renames(self):
+        loop = self.observer_takes("--adjudicator-route", "widgets-adj2")
+        self.assertEqual(loop["adjudicator"]["route"], "widgets-adj2")
+        self.assertTrue(routes.route("widgets-adj2"))
+
     def test_login_refusal_names_the_new_command(self):
         self.install("acme/widgets")
         rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-login", "bot",
