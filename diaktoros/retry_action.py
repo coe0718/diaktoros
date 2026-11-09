@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import time
 
-from . import config, gate, scope_lock, stats
+from . import config, gate, pacing, scope_lock, stats
 from .run_supervisor import (ISSUE_SEATS, Supervisor, operator_cancelled, policy_cancelled,
                              views, write_evidence)
 
@@ -304,6 +304,50 @@ def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confir
             out["worker"] = ("started" if started else
                              "no private runtime file — the run stays pending until one exists")
     out["ok"] = bool(rearmed and not refused)
+    return out
+
+
+def _profile_seats(loop: dict, profile: str) -> list[str]:
+    """The ledger seats whose turns run as ``profile`` (an issue fix runs as the fixer, #214)."""
+    return [seat for seat in SEATS if config.seat_profile(loop, seat) == profile]
+
+
+def clear_hold(loop: dict, seat: str, *, ledger=None) -> dict:
+    """``retry --clear-hold`` (#1155): reopen the account ``seat`` draws on, by hand, after
+    switching its model or once its provider is back. The account key has no model in it, so
+    a switch alone does not end the hold.
+
+    Clears every hold on the seat's profile, a 429's too, with its counts
+    (``pacing.clear_holds``); makes this loop's runs held on a closed account due now, on every
+    seat of that profile; and starts a worker for them. ``cleared`` lists the accounts that
+    were still held, ``rearmed`` how many runs are due.
+    """
+    if seat not in SEATS:
+        raise ValueError(f"seat must be one of {', '.join(SEATS)}")
+    profile = config.seat_profile(loop, seat)
+    if not profile:                     # triage on a loop without it: no account to reopen
+        return {"profile": "", "cleared": [], "rearmed": 0, "worker": ""}
+    out = {"profile": profile, "cleared": pacing.clear_holds({profile}), "rearmed": 0,
+           "worker": ""}
+    ledger = config.host_path("ledger") if ledger is None else ledger
+    if not ledger.exists():
+        return out
+    seats = _profile_seats(loop, profile)
+    now = time.time()
+    with Supervisor(ledger)._connect() as con:
+        # The words ``pacing.hold_line`` writes for a closed account; a daily cap is not one.
+        out["rearmed"] = con.execute(
+            "UPDATE runs SET retry_at=?, updated=? WHERE repo=? AND state='waiting' AND seat IN "
+            f"({','.join('?' * len(seats))}) AND (error LIKE 'held: % provider unavailable%' "
+            "OR error LIKE 'held: % usage window (%')", (now, now, loop["repo"], *seats)).rowcount
+    if out["rearmed"]:
+        try:
+            started = gate.resume_isolated(loop)
+        except Exception as exc:
+            out["worker"] = f"worker not started: {type(exc).__name__}: {exc}"
+        else:
+            out["worker"] = ("started" if started else
+                             "no private runtime file — the runs stay due until one exists")
     return out
 
 

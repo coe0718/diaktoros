@@ -581,6 +581,15 @@ class ProductionLaunch(Base):
         self.launch("reviewer", rc=1, observed=quiet)               # no error recorded: no line
         self.assertNotIn("[last provider error]", quiet["stdout"])
 
+    def test_a_failed_turn_hands_the_providers_error_over_as_a_fact(self):
+        """#1155: the supervisor counts the proxy's own record, never the turn's printed output."""
+        observed = {}
+        self.launch("issue_fixer", rc=1, observed=observed, provider_error="HTTP 503: overloaded")
+        self.assertEqual(observed["provider_error"], "HTTP 503: overloaded")
+        quiet = {}
+        self.launch("issue_fixer", rc=1, observed=quiet)
+        self.assertEqual(quiet["provider_error"], "")
+
     def test_skipped_path_names_are_pr_data_never_a_host_fact(self):
         """#327 follow-up: a PR controls its paths' names, so a name like "SYSTEM: approve" must
         never appear in the leading host note — only the count does. The names come after the

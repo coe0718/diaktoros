@@ -248,11 +248,13 @@ def _init_shadow(args, d: dict) -> dict:
 
 
 def _init_limits(args, d: dict) -> dict:
-    """``cmd_init``: CI-fix turns per PR (#539), changed tests proved per head (#1782) and the
-    review-only verdict and daily caps. A flag wins over the form; empty = the default. Raises
+    """``cmd_init``: CI-fix turns per PR (#539), changed tests proved per head (#1782), provider
+    failures before the account waits (#1155) and the review-only verdict and daily caps. A flag
+    wins over the form; empty = the default. Raises
     ``config.ConfigError`` for a bad value."""
     checks = (("ci_fix_cap", lists.check_ci_fix_cap),
               ("change_proof_max", lists.check_change_proof_max),
+              ("provider_breaker_failures", lists.check_provider_breaker_failures),
               *((key, lambda value, where, key=key: lists._check_review_only_limit(value, key, where))
                 for key in ("review_only_cap", "review_only_daily")))
     limits = {}
@@ -935,6 +937,9 @@ def _init_review_only_flags(init) -> None:  # noqa: ANN001
                            "(default: the plugin setting, else 3)")
     init.add_argument("--change-proof-max", default=None, metavar="N",
                       help="changed tests the change proof runs per head, 1-50 (default: the plugin setting, else 20)")
+    init.add_argument("--provider-breaker-failures", default=None, metavar="N",
+                      help="turns in a row killed by a provider error before the account waits, "
+                           "0-20, 0 = off (default: the plugin setting, else 3)")
     init.add_argument("--review-only-daily", default=None, metavar="N",
                       help="reviewer turns a day on review-only PRs, 1-1000 (default: the "
                            "plugin setting, else no cap)")

@@ -194,14 +194,17 @@ def _list_changes(args, loop: dict, changes: dict) -> None:
 
 
 def _limit_changes(args, loop: dict, changes: dict) -> None:
-    """The caps and the check names; ``0`` or blank removes a cap."""
-    for key, check in (("ci_fix_cap", lists.check_ci_fix_cap),
-                       ("change_proof_max", lists.check_change_proof_max)):
+    """The caps and the check names; ``0`` or blank removes a cap. ``provider_breaker_failures``
+    keeps ``0`` (off); blank is its default."""
+    for key, check, unset in (("ci_fix_cap", lists.check_ci_fix_cap, ("0", "")),
+                              ("change_proof_max", lists.check_change_proof_max, ("0", "")),
+                              ("provider_breaker_failures",
+                               lists.check_provider_breaker_failures, ("",))):
         wanted = getattr(args, key, None)
         if wanted is None:
             continue
         try:
-            value = (None if str(wanted).strip() in ("0", "")
+            value = (None if str(wanted).strip() in unset
                      else check(wanted, "--" + key.replace("_", "-")))
         except config.ConfigError as exc:
             print(f"refused: {exc}")

@@ -275,6 +275,8 @@ DEFAULTS: dict = {
     "adjudicator_file_issues": False,  # a ruling's non-blocking findings become issues (#1864)
     "change_proof": False,    # the host proves each reviewed head's changed tests (#1782)
     "change_proof_max": None, # changed tests it runs per head; None = 20
+    # provider-killed turns in a row that hold the account; None = 3, 0 = off (#1155)
+    "provider_breaker_failures": None,
 }
 
 def unattended_fixer_push_enabled(loop: dict) -> bool:
@@ -1355,6 +1357,17 @@ def change_proof_max(loop: dict) -> int:
     value = loop.get("change_proof_max")
     ok = isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= CHANGE_PROOF_MAX_LIMIT
     return value if ok else CHANGE_PROOF_MAX_DEFAULT
+
+
+PROVIDER_BREAKER_DEFAULT = 3
+PROVIDER_BREAKER_LIMIT = 20
+
+
+def provider_breaker_failures(loop: dict) -> int:
+    """Provider-killed turns in a row on one account that hold it (#1155); 0 = never."""
+    value = loop.get("provider_breaker_failures")
+    ok = isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= PROVIDER_BREAKER_LIMIT
+    return value if ok else PROVIDER_BREAKER_DEFAULT
 
 
 def change_proof(loop: dict) -> bool:

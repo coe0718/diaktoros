@@ -454,7 +454,21 @@ provider unavailable (…) — resumes HH:MM` in `status`, `explain` and the obs
 notice, and spend no retry. The signature is matched in the failed turn's own output, so it holds
 only after a turn that ran and failed that way (a turn that wrote is never parked), and the
 window's length is a guess, not the provider's reset time. A bare 429 with no reset time is still
-an ordinary failure.
+an ordinary failure on its own.
+A run of provider errors holds the account the same way (#1155). A turn that exits non-zero
+counts as a provider failure when the inference proxy recorded an HTTP error from the provider
+(`HTTP 4xx/5xx: …`, a bare 429 included) or an upstream it couldn't reach. The proxy's own
+refusals (`proxy refused: …`) never count. After `provider_breaker_failures` of them in a row on
+one account (default 3, 0 = off), the account is held: `held: <seat> provider unavailable (3 turns
+in a row: HTTP 400: …)`. The run that trips it spends no retry, though the ones before it did.
+Any other failure of a turn that ran ends the run of them, and a success clears it; a turn that
+never reached the provider (a launch or staging failure, a budget kill) leaves the count as it
+is. Once tripped, the first provider
+failure after the hold lapses holds it again at once, for a doubled window. The proxy keeps the
+turn's **last** provider error, so a turn that recovered from one error and then failed for
+another reason still counts.
+To reopen an account by hand, for example after switching the seat's model, run
+`hermes dk retry --loop <id> --seat <seat> --clear-hold` (see [retry](commands.md#retry)).
 Daily caps reset at local midnight; zero removes the cap. An armed scheduling path must
 still resume work. Status shows reviewer/fixer daily counts and every closed usage window held for the reviewer, fixer, adjudicator or triage profile (a triage seat's window is listed too, though triage has no daily counts there); `triage --loop` shows triage settings.
 Issue fixes have concurrency one, their own daily cap (`triage.fix_daily_turns`, default 10, and issue fixes are always capped), and the loop-wide turn budget. Raising

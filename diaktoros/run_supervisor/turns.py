@@ -134,6 +134,23 @@ def _cap_held(turn: _Turn, seat: str, cap: int) -> None:
                   f"{pacing.when(turn.paced_until)}")
 
 
+def _provider_strike(turn: _Turn, account: str) -> float | None:
+    """#1155: a failed turn that the provider killed (an HTTP error or an unreachable upstream,
+    as the inference proxy recorded it) counts toward ``provider_breaker_failures`` in a row on
+    its account, which then holds the account as an outage does (#1325). Any other failure of a
+    turn that ran ends the run of them; one that never launched (it raised before this) leaves
+    it. Returns when the hold ends, else None."""
+    from .. import config, pacing
+    limit = config.provider_breaker_failures(turn.loop)
+    error = turn.observed.get('provider_error')
+    if not limit:
+        return None
+    if not pacing.provider_failure(error):
+        pacing.reset_provider_failures(account)
+        return None
+    return pacing.count_provider_failure(account, str(error), limit)
+
+
 def _conflict_waits(loop: dict, row) -> str:
     """Why a conflict row waits for the fixer (#1907), or ``""``: ``watch_conflicts.fix_owed``,
     read again at the claim and at the launch, since a verdict can land after the row was queued.
@@ -579,9 +596,10 @@ class ClaimAndLaunch:
         self._account_after_turn(turn, row['seat'], provider, account)
 
     def _account_after_turn(self, turn: _Turn, seat: str, provider: str, account: str) -> None:
-        """What a finished turn says about its account (#219, #1325). A 429 with a reset time, or
-        a provider-unavailable signature on a failed turn, holds the account, and this run waits
-        for it without spending a retry. A turn that succeeded clears an unavailable hold."""
+        """What a finished turn says about its account (#219, #1325). A 429 with a reset time, a
+        provider-unavailable signature on a failed turn, or a run of provider errors (#1155)
+        holds the account, and this run waits for it without spending a retry. A turn that
+        succeeded clears an unavailable hold."""
         from .. import pacing
         # A non-zero sandbox exit with nothing on the write-ahead record is the model or
         # provider failing (429/5xx, OAuth refresh, crash): worth a backed-off retry.
@@ -600,9 +618,10 @@ class ClaimAndLaunch:
             # streams. Hold the account, for every seat on it, for a short growing window.
             detail = pacing.unavailable_signature(turn.observed.get('stdout'),
                                                   turn.observed.get('stderr'))
-            if detail is None:
+            if detail is not None:
+                until = pacing.hold_unavailable(account, detail)
+            elif (until := _provider_strike(turn, account)) is None:
                 return
-            until = pacing.hold_unavailable(account, detail)
             reason = (pacing.held(account) or (0, ""))[1]
         turn.paced_until = until
         turn.error = pacing.hold_line(seat, provider, until, reason)

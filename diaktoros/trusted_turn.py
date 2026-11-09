@@ -154,6 +154,25 @@ def _provider_note(inference) -> str:
     return f"\n[last provider error] {error}" if error else ""
 
 
+def _observe_exit(observed: dict, inference, result, broker) -> None:
+    """What a sandbox that exited leaves for the supervisor: its usage, its output, what it
+    asked the broker for, and what the proxy saw of the provider."""
+    failed = bool(result.returncode)
+    observed['thinking'] = getattr(inference, 'thinking', None)
+    observed.update(usage_of(inference))
+    observed.update(returncode=result.returncode,
+                    # A failed turn names the provider's own error (#281: Hermes
+                    # reported only "HTTP 400 — Error response").
+                    stdout=result.stdout[-4000:] + (_provider_note(inference) if failed else ''),
+                    stderr=result.stderr[-4000:],
+                    # The same error as a host fact, apart from the turn's own output: a run
+                    # of them holds the account (#1155).
+                    provider_error=(getattr(inference, 'last_error', '') or '') if failed else '',
+                    submissions=[dict(entry) for entry in broker.recorded],
+                    # The provider 429'd this turn: when its window reopens (#219).
+                    rate_limited_until=getattr(inference, 'rate_limited_until', None))
+
+
 def _decoded(value) -> str:
     """Captured sandbox output as text, whatever form a timeout carried it in."""
     if isinstance(value, bytes):
@@ -891,18 +910,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                             stderr=_decoded(exc.stderr)[-4000:])
                     raise TurnBudgetExceeded(exc.cmd, timeout, grace) from None
                 if observed is not None:
-                    observed['thinking'] = getattr(inference, 'thinking', None)
-                    observed.update(usage_of(inference))
-                    observed.update(returncode=result.returncode,
-                                    # A failed turn names the provider's own error (#281: Hermes
-                                    # reported only "HTTP 400 — Error response").
-                                    stdout=result.stdout[-4000:]
-                                    + (_provider_note(inference) if result.returncode else ''),
-                                    stderr=result.stderr[-4000:],
-                                    submissions=[dict(entry) for entry in broker.recorded],
-                                    # The provider 429'd this turn: when its window reopens (#219).
-                                    rate_limited_until=getattr(inference, 'rate_limited_until',
-                                                               None))
+                    _observe_exit(observed, inference, result, broker)
                 if result.returncode == 0 and not broker.completed:
                     if not broker.requests:
                         raise TurnUnpublished('agent exited without a confirmed scoped write '
