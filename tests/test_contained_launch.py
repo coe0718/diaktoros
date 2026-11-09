@@ -573,14 +573,16 @@ class ProductionLaunch(Base):
         self.assertEqual(observed["stderr"], "session_id: x")
 
     def test_every_capture_keeps_8kb_of_stdout_and_2kb_of_stderr(self):
-        """#1658: the production turn's capture keeps the last ``DETAIL_STDOUT_BYTES`` of stdout
-        and ``DETAIL_STDERR_BYTES`` of stderr (it cut both at 4000 before), on each of its three
-        paths: a completed turn, a budget kill and an operator's stop. What it keeps then
-        survives ``output_detail`` into ``runs.detail``."""
+        """#1658: ``runs.detail`` keeps the last ``DETAIL_STDOUT_BYTES`` of stdout and
+        ``DETAIL_STDERR_BYTES`` of stderr of the production turn's capture (it cut both at 4000
+        before), on each of its three paths: a completed turn, a budget kill and an operator's
+        stop. The capture keeps ``DETAIL_MARGIN`` times that, for ``output_detail`` to redact
+        before its final cut (#2083)."""
         from diaktoros import run_supervisor
         keep_out, keep_err = run_supervisor.DETAIL_STDOUT_BYTES, run_supervisor.DETAIL_STDERR_BYTES
-        stdout = "OLD" + "x" * 20000 + "y" * (keep_out - 3) + "END"
-        stderr = "e" * 5000 + "f" * keep_err
+        margin = run_supervisor.DETAIL_MARGIN
+        stdout = "OLD" + "x" * 40000 + "y" * (keep_out - 3) + "END"
+        stderr = "e" * 10000 + "f" * keep_err
         paths = {
             "completed": dict(rc=1, output=(stdout, stderr)),
             "budget kill": dict(kill=subprocess.TimeoutExpired(
@@ -592,11 +594,37 @@ class ProductionLaunch(Base):
             with self.subTest(path=path):
                 observed = {}
                 self.launch("fixer", observed=observed, **how)
-                self.assertTrue(observed["stdout"].startswith("y" * (keep_out - 3) + "END"))
-                self.assertNotIn("x", observed["stdout"])
-                self.assertEqual(observed["stderr"], "f" * keep_err)
+                self.assertTrue(observed["stdout"].startswith(stdout[-margin * keep_out:]))
+                self.assertNotIn("OLD", observed["stdout"])
+                self.assertEqual(observed["stderr"], stderr[-margin * keep_err:])
                 detail = run_supervisor.output_detail(observed["stdout"], observed["stderr"])
                 self.assertIn("y" * (keep_out - 3) + "END", detail)
+                self.assertNotIn("x", detail)
+                self.assertIn("stderr: […]" + "f" * keep_err + "\n", detail)
+
+    def test_a_token_split_at_the_stored_size_is_redacted_whole(self):
+        """#2083: the capture kept exactly the stored size of each stream, so a token split by
+        that cut reached ``output_detail`` without its prefix and was kept in part. On each
+        path the capture now keeps enough before the cut for the token to be matched whole."""
+        from diaktoros import run_supervisor
+        token = "ghp_" + "A1b2C3d4" * 4
+        stdout = "x" * 8000 + token + " " + "y" * 8169     # the 8192 cut lands inside the token
+        stderr = "e" * 2000 + token + " " + "f" * 2025     # the 2048 cut lands inside the token
+        paths = {
+            "completed": dict(rc=1, output=(stdout, stderr)),
+            "budget kill": dict(kill=subprocess.TimeoutExpired(
+                ["bwrap"], 5, stdout.encode(), stderr.encode())),
+            "stopped": dict(kill=contained.Stopped(stdout.encode(), stderr.encode()),
+                            stop=threading.Event()),
+        }
+        for path, how in paths.items():
+            with self.subTest(path=path):
+                observed = {}
+                self.launch("fixer", observed=observed, **how)
+                detail = run_supervisor.output_detail(observed["stdout"], observed["stderr"])
+                self.assertNotIn("C3d4A1b2", detail)
+                self.assertIn("[REDACTED] " + "y" * 8169, detail)
+                self.assertIn("[REDACTED] " + "f" * 2025, detail)
 
     def test_a_failed_turn_names_the_providers_own_error(self):
         """Live #281: Hermes said only "HTTP 400 — Error response"; the proxy kept why."""

@@ -184,12 +184,13 @@ def _decoded(value) -> str:
 
 def _kept(value, stream: str) -> str:
     """The end of a turn's ``stream`` ('stdout' or 'stderr') worth keeping for ``runs.detail``:
-    at least as many characters as ``run_supervisor.output_detail`` stores bytes of it (#1658),
-    so the split is named once, in ``run_supervisor``. ``output_detail`` makes the final cut."""
+    ``DETAIL_MARGIN`` times as many characters as ``run_supervisor.output_detail`` stores bytes
+    of it (#1658), so the split is named once, in ``run_supervisor``. ``output_detail`` redacts
+    and then makes the final cut, so a token split at the stored size is matched whole (#2083)."""
     from . import run_supervisor
     limit = (run_supervisor.DETAIL_STDOUT_BYTES if stream == 'stdout'
              else run_supervisor.DETAIL_STDERR_BYTES)
-    return _decoded(value)[-limit:]
+    return _decoded(value)[-run_supervisor.DETAIL_MARGIN * limit:]
 # After the sandbox is gone, a broker request already in flight (a push is several GitHub calls
 # plus git fetch/push, each bounded at 90s) is let finish instead of abandoned: abandoning it
 # leaves the push intent unresolved and quarantines the run. The worker's heartbeat keeps the
