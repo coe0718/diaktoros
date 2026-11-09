@@ -85,7 +85,7 @@ class History(fg.Base):
         audit.parent.mkdir(parents=True, exist_ok=True)
         audit.write_text(json.dumps({"repo": fg.REPO, "pr": 7, "old_head": A, "new_head": B,
                                      "role": "fixer", "login": "drey", "operation": "push",
-                                     "phase": "reconciled", "outcome": "pushed", "at": T + 140})
+                                     "phase": "reconciled", "outcome": "published", "at": T + 140})
                          + "\n{torn\n")
         r2 = self.run_row("reviewer", B, T + 300)
         self.insert("INSERT INTO review_receipts(run_id,state,generation,principal_id,review_id,"
@@ -175,12 +175,39 @@ class History(fg.Base):
         self.assertIn("findings.json is unreadable", out)
         self.assertIn("[gap: ended without a write on record]", out)
 
+    def test_a_turn_still_coming_or_uncertain_is_no_writeless_gap(self):
+        """#2133: pending, claimed, blocked and uncertain turns have not ended without a write."""
+        for at, state in enumerate(("pending", "claimed", "blocked", "waiting")):
+            self.run_row("reviewer", A, T + at, key=f"k{at}", state=state)
+        self.run_row("fixer", A, T + 10, state="uncertain")
+        out = history_render.text(self.collect())
+        self.assertNotIn("gap", out)
+        self.assertIn("fixer turn uncertain (model unknown) — its write's outcome is unknown", out)
+
+    def test_a_push_the_journal_could_not_confirm_says_so(self):
+        """#2135: the journal's own outcome words; published reads as a plain push."""
+        audit = config.state_dir(self.loop) / "broker-audit.jsonl"
+        audit.parent.mkdir(parents=True, exist_ok=True)
+        lines = [{"repo": fg.REPO, "pr": 7, "old_head": A, "new_head": new, "role": "fixer",
+                  "operation": "push", "outcome": outcome, "at": T + n}
+                 for n, (new, outcome) in enumerate(((B, "published_pr_unverified"),
+                                                     ("c" * 40, "unchanged"), ("d" * 40, "unknown")))]
+        audit.write_text("".join(json.dumps(line) + "\n" for line in lines))
+        out = history_render.text(self.collect(offline=True))
+        self.assertIn("fixer pushed bbbbbbb\n", out)
+        self.assertIn("pushed ccccccc (not confirmed: the branch did not move)", out)
+        self.assertIn("pushed ddddddd (outcome unknown)", out)
+
     def test_a_token_in_a_turn_s_output_tail_is_redacted(self):
-        self.run_row("fixer", A, T, state="failed", detail=f"push said {TOKEN}")
-        rc, out = self.run_cli("--format", "markdown")
-        self.assertEqual(rc, 0)
-        self.assertNotIn(TOKEN, out)
-        self.assertIn("[REDACTED]", out)
+        self.run_row("fixer", A, T, state="failed",
+                      detail=f"push said {TOKEN} at /home/agent/loops/x/state.json")
+        for form in ("text", "markdown", "json"):
+            rc, out = self.run_cli("--format", form)
+            self.assertEqual(rc, 0)
+            self.assertNotIn(TOKEN, out)
+            self.assertIn("[REDACTED]", out)
+            self.assertNotIn("/home/agent", out)             # #2134: no local path, only its end
+            self.assertIn("…/state.json", out)
 
     def test_the_parser_drives_it_and_json_is_the_data(self):
         self.cycle()

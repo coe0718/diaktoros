@@ -180,7 +180,7 @@ def cmd_history(args) -> int:
     data = history.collect(loop, run_supervisor.production_ledger(), args.pr, args.offline,
                            selftest.redactor_for(loop))
     if args.format == "json":
-        print(json.dumps(data, indent=2, sort_keys=True))
+        print(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False))
     else:
         print(history_render.markdown(data) if args.format == "markdown"
               else history_render.text(data))

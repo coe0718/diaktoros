@@ -44,9 +44,13 @@ def audit_writes(loop: dict, number: int, gaps: list) -> list:
                  "operation": str(entry.get("operation") or "?")}
         new = entry.get("new_head")
         if isinstance(new, str) and new:
-            outcome = entry.get("outcome")
-            event.update(new_head=new, text=f"pushed {new[:7]}"
-                         + (f" ({outcome})" if outcome and outcome != "pushed" else ""))
+            # The journal's outcomes (safe_push): published (or published_pr_unverified),
+            # unchanged, unknown; an attempt record has none yet (#2135).
+            outcome = str(entry.get("outcome") or "")
+            event.update(new_head=new, text=f"pushed {new[:7]}" + (
+                "" if outcome.startswith("published") else
+                " (not confirmed: the branch did not move)" if outcome == "unchanged" else
+                " (outcome unknown)"))
             pushes[new] = event                      # the reconciled record replaces the attempt
             continue
         event["text"] = event["operation"].replace("_", " ")

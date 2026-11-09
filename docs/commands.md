@@ -1612,7 +1612,8 @@ hermes dk history --loop "<loop-id>" --pr 12 --offline --format json
 `--format markdown` gives the same timeline as a document, for a PR comment, a write-up or an
 archive: a findings table, a heading per round, and links to each review, commit, comment, answers
 and filed issue. `--format json` gives the same data for tools, with a `schema` number that changes only
-when a key is renamed, removed or changes meaning. No output names a local path. `--offline` leaves GitHub out and
+when a key is renamed, removed or changes meaning. No output names a local path: an absolute path in
+a free text, such as a failed turn's output tail, is cut to its last part (`…/state.json`). `--offline` leaves GitHub out and
 lists what that leaves missing. It exits `2` only when no loop can be chosen.
 
 <!-- flags:history -->

@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import findings as findings_mod, stats
 from .history_sources import audit_writes, excerpt, github_reads, github_events, tracked_findings
-from .run_supervisor import views
+from .run_supervisor import NOT_ENDED, views
 
 # What each ledger table adds to the timeline: its event kind and the columns it is read with.
 # Rows are joined to their run (seat, head) by run_id; a table without run_id carries its own head.
@@ -40,6 +40,9 @@ _OWN_HEAD = {
 SCHEMA = 1
 _RUN_COLUMNS = ("id", "seat", "head", "state", "created", "launch_intent", "finished", "model",
                 "tokens_in", "tokens_out", "cost", "turn_key", "detail", "error")
+# An absolute local path in a free text (a failed turn's output tail, a review body): shown as
+# its last part only, so no output names a host's layout (#2134). A URL's path is not one.
+_PATH = re.compile(r"(?<![\w.:/~-])(?:~|/)[\w.~-]*(?:/[\w.~-]+)+")
 _SEVERITY = re.compile(r"\b(P[0-4])\b")
 
 
@@ -60,7 +63,7 @@ def collect(loop: dict, db: Path, number: int, offline: bool, redact) -> dict:
     _mark_writeless(runs, events)
     events += [_turn_event(run) for run in runs]
     for event in events:
-        event["text"] = redact(event.get("text") or "")
+        event["text"] = _PATH.sub(_path_tail, redact(event.get("text") or ""))
     data["rounds"] = _rounds([e for e in events if e.get("shown", True)])
     data["findings"] = _findings(tracked, number, data["rounds"], github.get("reviews") or [],
                                  rulings, disputes)
@@ -163,12 +166,16 @@ def _mark_writeless(runs: list, events: list) -> None:
     owned = {e.get("run") for e in events if e.get("run")}
     writes = [e for e in events if e["kind"] == "write"]
     for run in runs:
-        if run["state"] in ("queued", "held", "running", "waiting", "launching"):
-            continue
+        if run["state"] in NOT_ENDED or run["state"] in ("blocked", "uncertain"):
+            continue                 # not ended (#2133); uncertain says its own outcome below
         end = (run["finished"] or run["created"]) + 120
         run["no_write"] = run["id"] not in owned and not any(
             w["who"] == run["seat"] and w["head"] == run["head"]
             and run["created"] <= w["at"] <= end for w in writes)
+
+
+def _path_tail(found: re.Match) -> str:
+    return "…/" + found.group(0).rstrip("/").rsplit("/", 1)[-1]
 
 
 def _turn_event(run: dict) -> dict:
@@ -181,6 +188,8 @@ def _turn_event(run: dict) -> dict:
     text = f"turn {run['state']} ({' · '.join(parts)})"
     if run["turn_key"]:
         text += f" [{run['turn_key']}]"
+    if run["state"] == "uncertain":
+        text += " — its write's outcome is unknown"
     if run["state"] not in ("succeeded",) and (run["error"] or run["detail"]):
         text += f" — {excerpt(run['error'] or run['detail'])}"
     return {"at": float(run["launch_intent"] or run["created"]), "kind": "turn",
