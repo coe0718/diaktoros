@@ -133,7 +133,7 @@
         "label": "Reviewer's GitHub App id",
         "type": "str",
         "default": "",
-        "description": "Positive ASCII decimal App id, paired with this seat's App key file and bot login. Blank pair = not set here. A complete pair selects App, never PAT."
+        "description": "Positive ASCII decimal App id (at most 20 digits), paired with this seat's App key file and bot login. Blank pair = not set here. A complete pair selects App, never PAT."
       },
       "reviewer_app_key_file": {
         "label": "Reviewer's App key file (path only)",
@@ -145,7 +145,7 @@
         "label": "Fixer's GitHub App id",
         "type": "str",
         "default": "",
-        "description": "Positive ASCII decimal App id, paired with this seat's App key file and bot login. Blank pair = not set here. A complete pair selects App, never PAT."
+        "description": "Positive ASCII decimal App id (at most 20 digits), paired with this seat's App key file and bot login. Blank pair = not set here. A complete pair selects App, never PAT."
       },
       "fixer_app_key_file": {
         "label": "Fixer's App key file (path only)",
@@ -157,7 +157,7 @@
         "label": "Adjudicator's GitHub App id",
         "type": "str",
         "default": "",
-        "description": "Positive ASCII decimal App id, paired with this seat's App key file and bot login. Blank pair = not set here. A complete pair selects App, never PAT."
+        "description": "Positive ASCII decimal App id (at most 20 digits), paired with this seat's App key file and bot login. Blank pair = not set here. A complete pair selects App, never PAT."
       },
       "adjudicator_app_key_file": {
         "label": "Adjudicator's App key file (path only)",
