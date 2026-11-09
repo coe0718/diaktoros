@@ -87,7 +87,8 @@ def listing(result: dict, out: Path, offline: bool) -> str:
         lines.append(f"could not write {failed['file']} (#{failed['pr']}): {failed['why']}; "
                      f"stopped there, so this export is partial ({kept})")
     if offline and result["written"]:
-        lines.append("--offline: merge state not read, so every PR with a turn was written")
+        lines.append("--offline: merge state not read, so a PR was written whether it merged or "
+                     "not" + (" (up to the failure above)" if failed else ""))   # #2229
     lines.append(f"{len(result['written'])} cycle(s) written to {out}"
                  if result["written"] or failed
                  else "no merged PR with a turn in that window: nothing written")

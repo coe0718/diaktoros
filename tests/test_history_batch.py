@@ -93,7 +93,7 @@ class Batch(fg.Base):
         self.assertEqual(rc, 0)
         self.assertEqual(self.reads, [])
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["pr-7.md", "pr-8.md"])
-        self.assertIn("merge state not read, so every PR with a turn was written", out)
+        self.assertIn("merge state not read, so a PR was written whether it merged or not\n", out)
         self.assertTrue((self.out / "pr-7.md").read_text().startswith("# Review history of"))
 
     def test_nothing_in_the_window_writes_nothing(self):
@@ -130,6 +130,7 @@ class Batch(fg.Base):
         self.assertIn("wrote pr-7.md (#7)\ncould not write pr-8.md (#8): ", out)
         self.assertIn("stopped there, so this export is partial (the files above were kept)", out)
         self.assertIn("1 cycle(s) written", out)
+        self.assertIn("written whether it merged or not (up to the failure above)", out)  # #2229
         self.assertTrue((self.out / "pr-7.md").is_file())
         (self.out / "pr-7.md").unlink()
         (self.out / "pr-7.md").mkdir()                       # #2213: the first write fails
