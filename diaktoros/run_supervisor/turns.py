@@ -628,8 +628,11 @@ class ClaimAndLaunch:
         else:
             # No 429 to say when (#1325): the DirectSDK path answers a closed window with empty
             # streams. Hold the account, for every seat on it, for a short growing window.
-            detail = pacing.unavailable_signature(turn.observed.get('stdout'),
-                                                  turn.observed.get('stderr'))
+            # The same window runs.detail keeps: the capture holds DETAIL_MARGIN times more
+            # (#2083) only so redaction sees a token at the cut whole.
+            detail = pacing.unavailable_signature(
+                (turn.observed.get('stdout') or '')[-run_supervisor.DETAIL_STDOUT_BYTES:],
+                (turn.observed.get('stderr') or '')[-run_supervisor.DETAIL_STDERR_BYTES:])
             if detail is not None:
                 until = pacing.hold_unavailable(account, detail)
             elif (until := _provider_strike(turn, account)) is None:
