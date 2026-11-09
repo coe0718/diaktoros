@@ -377,6 +377,25 @@ class AfterEnabling(Steps):
                     con.execute("DELETE FROM runs")
 
 
+    def test_a_declined_entry_beside_a_live_lock_or_mark_is_no_capacity(self):
+        # #1614: with a fixer lock or a live fix mark at the head, the push-off branch names
+        # the started turn, and the declined queue entry still read as "no capacity".
+        declined = gate.declined_reason("fixer", "duplicate failed")
+        held = {"fixer": {"head": fg.HEAD, "at": time.time()}}
+        for ledger in (False, True):          # a lock/mark with no run (the issue's probe), or a row
+            if ledger:
+                self.ledgered("failed")
+            for push in (False, True):
+                for name, kw in (("held lock", {"held": held}), ("live mark", {"inflight_fix": True})):
+                    with self.subTest(name, push=push, ledger=ledger):
+                        self.set_push(push)
+                        blockers = self.report(queued=declined, **kw)["blockers"]
+                        if not push and not ledger:
+                            self.assertTrue(any("cannot publish" in b for b in blockers), blockers)
+                        self.assertFalse([b for b in blockers if "no capacity" in b], blockers)
+                        self.assertTrue([b for b in blockers if "gate declined the fixer turn" in b],
+                                        blockers)
+
     def test_a_reviewer_queue_entry_is_no_fixer_work_order(self):
         # Shadow review on #1510: the last queue entry read is any seat's, so a declined or
         # waiting reviewer entry was named a declined fixer turn, or a hold the drain starts.

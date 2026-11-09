@@ -699,6 +699,12 @@ def _run_blockers(c) -> None:
                           f"`{config.fixer_push_enable_command(c.loop)}`")
     if c.fixer_queue_hold or (declined and c.push_off_held):
         pass  # the push-off blocker above is this queue entry's whole story (shadow: not capacity)
+    elif c.queued_seat and gate.is_declined_hold({"reason": c.queued_reason}):
+        # A declined entry is never capacity, whatever lock or mark stands beside it (#1614):
+        # the gate answered, the drain leaves it, and only a retry or a new head moves it.
+        c.blockers.append(f"declined: the gate declined the {c.queued_seat} turn for head "
+                          f"{c.short} ({c.queued_reason}) — not capacity; nothing restarts it "
+                          "by itself")
     elif c.queued_seat:
         c.blockers.append(f"no capacity: queued with the {c.queued_seat} seat — {c.queued_reason}")
     elif c.full_seat:
