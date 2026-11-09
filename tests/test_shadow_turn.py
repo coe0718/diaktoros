@@ -83,6 +83,14 @@ class ActiveTurn(Turns):
         self.assertEqual(self.shadow_reasons(), [])
         self.assertEqual(merge_check.decide(self.kinds())[0], merge_check.SUCCESS)
 
+    def test_a_newer_turns_shadow_at_the_head_clears_the_hold(self):
+        # #1821: a dispute re-review gets its own turn key; its shadow review answers the hold.
+        self.two_turns_old_shadow_only()
+        self.reviewer("dispute:5", time.time() - 5)
+        self.assertEqual(self.state()[0], "pending")       # no shadow of its own yet: still held
+        self.turn_shadow("dispute:5", "succeeded", "APPROVE")
+        self.assertEqual(self.state()[:2], ("", ""))
+
     def test_the_new_turns_shadow_is_waited_for_while_it_runs(self):
         self.two_turns_old_shadow_only()
         self.turn_shadow("t2", "running")
