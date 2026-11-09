@@ -207,6 +207,10 @@ class TrustedFetchTests(unittest.TestCase):
             return self.tarball
         raise AssertionError(path)
 
+    def token(self, loop, login=None):
+        """The token ``stage`` hands every identity; a test replaces it to refuse one login."""
+        return "dummy-token"
+
     def stage(self, callback=None, **changes):
         # Run the tarball fetch through REAL loopback HTTP (two http.servers), so the
         # HTTPError(302) path a real GitHub 302 takes actually executes. Metadata calls
@@ -231,7 +235,7 @@ class TrustedFetchTests(unittest.TestCase):
                     return result
             return self.response(loop, path, login, limit, accept)
 
-        with mock.patch.object(trusted_fetch.gh, "token", return_value="dummy-token"), \
+        with mock.patch.object(trusted_fetch.gh, "token", side_effect=self.token), \
              mock.patch.object(trusted_fetch.gh, "API", api.base), \
              mock.patch.object(trusted_fetch, "_TARBALL_REDIRECT", ("http", "127.0.0.1")), \
              mock.patch.object(trusted_fetch, "_request", side_effect=mock_request):
@@ -330,6 +334,33 @@ class TrustedFetchTests(unittest.TestCase):
         with self.assertRaisesRegex(trusted_fetch.FetchDenied, "principal cannot be verified"):
             self.stage(callback=no_id)
         self.assertFalse((self.root / "sandbox").exists())
+
+    def assert_identity_refused(self, pattern):
+        """The export is refused as this module's FetchDenied (not the broker's BrokerDenied,
+        #1498) before anything is staged."""
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, pattern):
+            self.stage()
+        self.assertFalse((self.root / "sandbox").exists())
+
+    def test_unmapped_identity_is_refused_as_fetch_denied(self):
+        del self.paths["fixer"]
+        self.assert_identity_refused("token mappings required")
+
+    def test_two_identities_sharing_a_token_file_are_refused_as_fetch_denied(self):
+        self.paths["fixer"] = self.paths["reviewer"]
+        self.assert_identity_refused("must use distinct token files")
+
+    def test_empty_token_is_refused_as_fetch_denied(self):
+        self.token = lambda loop, login=None: "" if login == "fixer" else "dummy-token"
+        self.assert_identity_refused("empty token for fixer")
+
+    def test_missing_token_is_refused_as_fetch_denied(self):
+        def token(loop, login=None):
+            if login == "fixer":
+                raise trusted_fetch.gh.GitHubError("no token file")
+            return "dummy-token"
+        self.token = token
+        self.assert_identity_refused("missing token for fixer")
 
     def test_two_identities_resolving_to_one_principal_are_refused(self):
         # Same rule as the broker's (#1498): the export takes it from broker._verify_identities.
