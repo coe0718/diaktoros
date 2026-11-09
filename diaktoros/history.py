@@ -34,6 +34,10 @@ _OWN_HEAD = {
     "overrides": ("override", "head, kind AS override_kind, findings, merged_at AS at"),
     "operator_actions": ("operator", "'' AS head, action, created AS at"),
 }
+# The JSON's shape (``--format json``): raised when a key is renamed, removed or changes meaning,
+# not when one is added. Tools such as a published run viewer check it. Gaps name a store, never
+# a local path.
+SCHEMA = 1
 _RUN_COLUMNS = ("id", "seat", "head", "state", "created", "launch_intent", "finished", "model",
                 "tokens_in", "tokens_out", "cost", "turn_key", "detail", "error")
 _SEVERITY = re.compile(r"\b(P[0-4])\b")
@@ -43,7 +47,8 @@ def collect(loop: dict, db: Path, number: int, offline: bool, redact) -> dict:
     """The PR's cycle: ``{repo, pr, rounds, findings, merged, gaps, missing}``. ``rounds`` is a
     list of ``{head, events}`` in the order each head was first seen; an event is a dict with
     ``at``, ``kind``, ``who``, ``text`` and, when known, ``link`` and ``gap``."""
-    data = {"repo": loop["repo"], "loop": loop["id"], "pr": number, "gaps": [], "missing": []}
+    data = {"schema": SCHEMA, "repo": loop["repo"], "loop": loop["id"], "pr": number,
+            "gaps": [], "missing": []}
     events, runs, rulings, disputes = _ledger(db, loop["repo"], number, data["gaps"])
     events += audit_writes(loop, number, data["gaps"])
     tracked = tracked_findings(loop, number, data["gaps"])
@@ -72,10 +77,11 @@ def _ledger(db: Path, repo: str, number: int, gaps: list) -> tuple:
     try:
         con = views.read_only_connect(db)
     except sqlite3.Error as exc:
-        gaps.append(f"run ledger {db} is unreadable ({exc}): no turns, verdicts or rulings")
+        gaps.append(f"the run ledger is unreadable ({type(exc).__name__}): no turns, verdicts or "
+                    "rulings")
         return [], [], [], []
     if con is None:
-        gaps.append(f"no run ledger at {db}: no turns, verdicts or rulings")
+        gaps.append("no run ledger: no turns, verdicts or rulings")
         return [], [], [], []
     try:
         have = {row[1] for row in con.execute("PRAGMA table_info(runs)")}

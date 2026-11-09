@@ -27,7 +27,7 @@ def audit_writes(loop: dict, number: int, gaps: list) -> list:
     except FileNotFoundError:
         return []
     except (OSError, UnicodeDecodeError) as exc:
-        gaps.append(f"{path} is unreadable ({type(exc).__name__}): no write records")
+        gaps.append(f"broker-audit.jsonl is unreadable ({type(exc).__name__}): no write records")
         return []
     out, pushes = [], {}
     for line in raw.splitlines():
@@ -62,7 +62,7 @@ def tracked_findings(loop: dict, number: int, gaps: list) -> dict:
     except FileNotFoundError:
         return {}
     except (OSError, ValueError) as exc:
-        gaps.append(f"{path} is unreadable ({type(exc).__name__}): finding lives not shown")
+        gaps.append(f"findings.json is unreadable ({type(exc).__name__}): finding lives not shown")
         return {}
     entry = raw.get(str(number)) if isinstance(raw, dict) else None
     found = entry.get("findings") if isinstance(entry, dict) else None

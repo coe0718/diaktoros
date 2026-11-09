@@ -187,7 +187,7 @@ class History(fg.Base):
         rc, out = self.run_cli("--format", "json")
         self.assertEqual(rc, 0)
         data = json.loads(out)
-        self.assertEqual((data["pr"], data["merged"]["by"]), (7, "coe0718"))
+        self.assertEqual((data["schema"], data["pr"], data["merged"]["by"]), (1, 7, "coe0718"))
         self.assertEqual([item["outcome"] for item in data["findings"]], ["fixed", "overruled"])
 
     def run_cli(self, *argv):

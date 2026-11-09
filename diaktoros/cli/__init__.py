@@ -102,6 +102,7 @@ from .operations import (
 )
 from .reports import (
     cmd_calls,
+    cmd_history,
     cmd_models,
     cmd_report,
     cmd_stats,
