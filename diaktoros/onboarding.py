@@ -203,6 +203,8 @@ class HookStateUnknown(Exception):
 
 
 def _hook_state(loop: dict) -> str:
+    """The hooks' state read as the reader (``onboard`` takes no ``--admin-token``): a reader
+    that cannot list hooks reads ``unknown``, so a recorded ``armed`` stage shows ``stale``."""
     from . import arm_action
     return str(arm_action.plan(loop).get("state") or "unknown")
 
@@ -220,9 +222,11 @@ def fingerprint(loop: dict, stage: str, *, pr: tuple | None = None,
     """
     runtime_file = Path(runtime_file or config.host_path("runtime"))
     if stage == "identities":
-        # Logins and file paths (an App's id and key_file path), never the files' contents.
+        # Logins and file paths (an App's id and key_file path), never the files' contents, and
+        # which login each role is checked as (selftest's own role -> login list, #1689).
+        from . import selftest
         facts = {"repo": loop.get("repo"), "tokens": loop.get("tokens") or {},
-                 "apps": loop.get("apps") or {}}
+                 "apps": loop.get("apps") or {}, "roles": selftest._roles(loop)}
     elif stage == "loop":
         from . import seat_model
         facts = {"runtime": _runtime_hash(runtime_file),
@@ -335,7 +339,8 @@ def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
     needs ``pr=(number, head)``. An ``armed`` result whose hook state cannot be verified is stored
     ``failed`` (never ``passed``) with a fingerprint that matches nothing, and so is a ``model``
     result when any seat's model does not resolve. Recording a stage
-    against other inputs than its previous entry marks the later entries ``invalidated``.
+    against other inputs than its previous entry (or with no fingerprint) marks the later
+    entries ``invalidated``; a stage's first record does not.
     Returns the stored entry.
     """
     if stage not in STAGES:
@@ -370,8 +375,9 @@ def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
         stages = _load(loop)
         before = stages.get(stage)
         stages[stage] = entry
-        if not prints or not isinstance(before, dict) or before.get("fingerprint") != prints:
-            # The later stages were shown against other inputs than these.
+        if not prints or (isinstance(before, dict) and before.get("fingerprint") != prints):
+            # The later stages were shown against other inputs than these. A stage's first
+            # record changes no input a later stage was shown against: it invalidates nothing.
             for later in STAGES[STAGES.index(stage) + 1:]:
                 if isinstance(stages.get(later), dict):
                     stages[later]["invalidated"] = True
@@ -381,7 +387,7 @@ def record(loop: dict, stage: str, status: str, command: str, summary: str, *,
 
 
 # What each stage's fingerprint covers, for saying what changed (never the values).
-_INPUTS = {"identities": "the repo, a token mapping or an App mapping",
+_INPUTS = {"identities": "the repo, a token mapping, an App mapping or a role's login",
            "loop": "the runtime file or a seat's profile path",
            "model": "a seat's model, endpoint or key",
            "live_turn": "the PR's head or the reviewer prompt",

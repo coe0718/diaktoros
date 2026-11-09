@@ -203,6 +203,42 @@ class Staleness(Fixture):
             prompts.revision = real
         self.assertNotEqual(before, after)
 
+    def test_re_pointing_a_seat_login_makes_identities_stale(self):                        # #1689
+        # ``coder`` keeps its token mapping; the fixer seat now points at another mapped login.
+        self.loop["tokens"]["other-bot"] = str(self.root / "reader-pat")
+        self.record_all()
+        self.loop["seats"]["fixer"]["login"] = "other-bot"
+        self.assert_stale_from("identities")
+
+    def test_re_pointing_the_reader_or_adjudicator_makes_identities_stale(self):           # #1689
+        self.loop["tokens"]["other-bot"] = str(self.root / "reader-pat")
+        self.record_all()
+        for change in (lambda: self.loop.__setitem__("read_token", "other-bot"),
+                       lambda: self.loop["seats"].__setitem__("adjudicator",
+                                                              {"login": "other-bot"})):
+            with self.subTest():
+                saved = json.loads(json.dumps(self.loop))
+                change()
+                self.assertEqual(self.read()["identities"], "stale")
+                self.loop = saved
+
+
+class FirstRecord(Fixture):
+    """#1689: a stage's first record does not invalidate the later stages."""
+
+    def test_a_first_selftest_after_arm_leaves_armed_passed(self):
+        self.record("armed")
+        for stage in ("identities", "loop", "model"):
+            self.record(stage)
+        got = self.read()
+        self.assertEqual(got["armed"], "passed", got)
+        self.assertNotIn("invalidated", onboarding._load(self.loop)["armed"])
+
+    def test_a_record_with_no_fingerprint_still_invalidates_later_stages(self):
+        self.record("armed")
+        self.record("model", resolver=lambda profile, seat, settings: None)
+        self.assertTrue(onboarding._load(self.loop)["armed"].get("invalidated"))
+
 
 class OnDisk(Fixture):
     def test_the_file_is_0600_and_holds_no_token_or_key_bytes(self):

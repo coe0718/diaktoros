@@ -1375,7 +1375,13 @@ hermes dk onboard --loop "<loop-id>" --pr 12
   checks). `selftest` writes `identities`, `loop` and `model` on every run, from the results it
   already computed; `selftest --no-model` writes `model` as `skipped`, never `passed`; and
   `live_turn` only when `--pr N --live-turn` ran a turn. `arm` writes `armed`, only for a confirmed
-  arm: not `--pause`, the hook write read back ok, and a fresh read of the hooks that says `armed`.
+  arm: not `--pause`, the hook write read back ok, and a fresh read of the hooks that says `armed`
+  (read as the `--admin-token` login when given, else as the reader; when that read does not say
+  `armed`, `arm` prints why and records nothing). `onboard` itself reads the hooks as the reader
+  only: a reader without hook read access shows a recorded `armed` stage as `stale`.
+  A stage recorded for the first time leaves the later stages as they are; re-recording it against
+  other inputs (for `identities`: the repo, a token or App mapping, or the login the reader, a seat
+  or the adjudicator points at) makes them stale.
   A record that cannot be written never changes a command's result or exit code: the command prints
   that the stage could not be recorded.
 
