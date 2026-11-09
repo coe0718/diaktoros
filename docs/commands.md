@@ -1860,7 +1860,8 @@ route would, and its outcome is the last line. When a triage still looks wrong, 
 ### retry
 
 Runs a failed turn again. A turn that failed **before writing anything** retries on its own:
-four attempts in all, waiting 2, 4 and 8 minutes between them, then it ends as `failed`.
+four attempts in all, waiting 2, 4 and 8 minutes between them, then it ends as `failed`. A shadow
+turn is the exception: it gets one attempt and ends as `failed` without an automatic retry.
 `retry` re-arms it once more, for example after you raised its turn budget or fixed its model.
 
 ```bash

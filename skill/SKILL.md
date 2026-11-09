@@ -235,7 +235,8 @@ rather than trusting anyone's summary. For how you work, that means:
 * a seat has a limit (the reviewer's and the fixer's are set separately), so work above it waits in
   the queue — being queued is normal and costs nothing;
 * a run that failed before it wrote anything is retried by the host after 2, 4 and 8 minutes (four
-  attempts in all), except one that ran out of its time budget, which waits for the operator; a provider's usage-window answer (HTTP 429) makes the run wait for the window
+  attempts in all), except one that ran out of its time budget, which waits for the operator, and a
+  shadow turn, which gets one attempt and is never retried automatically; a provider's usage-window answer (HTTP 429) makes the run wait for the window
   without spending a retry. Only a run that may have written reaches the operator: it is marked
   uncertain and never replayed;
 * one PR is held by one seat at a time. A fix hands the PR over by pushing and *asking* for the
