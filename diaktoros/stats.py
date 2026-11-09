@@ -261,14 +261,16 @@ WHY_MAX = 160
 
 
 def _clip(text: str, limit: int) -> str:
-    """``text`` cut to at most ``limit`` characters at a word boundary, ending in an ellipsis
-    when anything was cut: a bare slice left a held line ending mid-word, as ``; n`` (#1700)."""
+    """``text`` cut to at most ``limit`` characters, ending in an ellipsis when anything was cut:
+    a bare slice left a held line ending mid-word, as ``; n`` (#1700). The cut falls at the last
+    space, hyphen or em dash in the back half of what fits. A line with none there (one long
+    unbroken check name, say) is cut mid-token instead, so the rest of it still shows (#2104)."""
     if len(text) <= limit:
         return text
     head = text[:limit - 1]
-    space = head.rfind(" ")
-    if space > 0:
-        head = head[:space]
+    at = max(head.rfind(mark) for mark in " —-")
+    if at >= len(head) // 2:
+        head = head[:at]
     return head.rstrip(" ;,:—-") + "…"
 
 
