@@ -45,8 +45,8 @@
     "diaktoros/desktop_api.py::pr_view": 84,
     "diaktoros/doctor/cron_checks.py::check_cron_job": 137,
     "diaktoros/doctor/hook_checks.py::check_hook": 93,
-    "diaktoros/doctor/route_checks.py::check_adjudicator_route": 87,
-    "diaktoros/doctor/route_checks.py::check_route": 83,
+    "diaktoros/doctor/route_checks.py::check_adjudicator_route": 85,
+    "diaktoros/doctor/route_checks.py::check_route": 81,
     "diaktoros/doctor/seat_checks.py::check_seat_extras": 111,
     "diaktoros/drain.py::drain": 86,
     "diaktoros/escalate_action.py::_escalate": 94,
@@ -84,7 +84,6 @@
     "diaktoros/watch_health.py::read_health": 93,
     "diaktoros/watch_stacked.py::reconcile_stacked": 106,
     "scripts/gate_fixer.py::main": 300,
-    "scripts/gate_reviewer.py::decide": 234,
-    "scripts/watchdog.py::run": 83
+    "scripts/gate_reviewer.py::decide": 234
   }
 }

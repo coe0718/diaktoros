@@ -1079,6 +1079,14 @@ def main() -> None:
         gh.end_gate()
 
 
+def not_drained(loop: dict, armed, error: str) -> str:
+    """``--drain --loop``'s line for a loop that is not armed (``gate.hooks_read``). An App loop
+    has no repo hook list: its armed state is its own pause flag (#1969)."""
+    what = ("hooks are paused" if armed is False else
+            f"{'pause flag' if config.app_ingress(loop) else 'hook list'} unreadable ({error})")
+    return f"{loop['id']}: {what} — nothing drained"
+
+
 def run(args: argparse.Namespace, budget: float) -> None:
     # A migration holds the install (#431): sweeping, draining or healing now would act under
     # names being moved. Say so once per run and do nothing else; the next run after it ends
@@ -1123,8 +1131,7 @@ def run(args: argparse.Namespace, budget: float) -> None:
             armed, armed_error = (True, "") if watch_mode.TEST else gate.hooks_read(loop)
             if not armed:
                 if args.loop:
-                    print(f"{loop['id']}: hooks are paused — nothing drained" if armed is False
-                          else f"{loop['id']}: hook list unreadable ({armed_error}) — nothing drained")
+                    print(not_drained(loop, armed, armed_error))
                 continue
             try:
                 fired = drain(loop, st, args.seat)
