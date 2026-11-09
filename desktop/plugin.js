@@ -2,7 +2,8 @@
 // a drawer showing what would move one PR, and the installation's own preflight — all fed by
 // this plugin's own backend (dashboard/plugin_api.py) through ctx.rest. Reads never mutate state.
 // Writes require confirmation: Retry re-arms an eligible run; Pause/Resume changes webhook
-// delivery only; one-shot escalation requires an independent host preview and opaque confirmation.
+// delivery only; one-shot escalation and cancel require an independent host preview and opaque
+// confirmation (a cancel's confirmation binds the exact runs its preview listed).
 // Re-review and drain are refused here: the core binds the confirmed head and queue, but the page's
 // controls for them are not wired yet.
 // Plain ESM, loaded uncompiled: jsx() calls, not JSX syntax, and only the three specifiers the
@@ -33,6 +34,10 @@ const ID = 'diaktoros'
 const PATH = '/diaktoros'
 const SINCE = ['24h', '7d', '30d']
 const SEATS = ['reviewer', 'fixer', 'issue_fixer', 'triage', 'adjudicator']
+// The six seats a confirmed cancel may name (one_shot_action.CANCEL_SEATS, #1148).
+const CANCEL_SEATS = ['reviewer', 'fixer', 'adjudicator', 'triage', 'issue_fixer', 'shadow']
+// desktop_api.action_perform_view's detail for a stale or refused confirmation: no write happened.
+const ACTION_STALE = 'Action confirmation is stale or unavailable; preview again.'
 // Where the chip remembers each loop's last announced "needs you" count, keyed by loop id, so a
 // rise in any loop toasts once and the first read after a reload only records the baseline.
 const NEEDS_YOU_PREFIX = 'needsYou:'
@@ -1374,7 +1379,7 @@ function validateAction(data, target, write = false) {
   } else if (data.action !== target.action || data.pr !== target.pr || data.seat !== target.seat ||
       typeof data.eligible !== 'boolean' || !(data.confirmation === null || (!data.eligible && data.confirmation === '') ||
         (typeof data.confirmation === 'string' && data.confirmation.length > 0 && data.confirmation.length <= 4096)) ||
-      (data.eligible && (!sha(data.head) || !data.repo || !data.confirmation || data.action !== 'escalate')) ||
+      (data.eligible && (!sha(data.head) || !data.repo || !data.confirmation || !['escalate', 'cancel'].includes(data.action))) ||
       (!data.eligible && data.confirmation !== null && data.confirmation !== '')) throw invalidResponse('action')
   return data
 }
@@ -1400,7 +1405,9 @@ function ActionsControl({ loop, discoveryCurrent, discoveryReading = false }) {
   const mounted = useRef(true)
   const activeDialog = useRef(null)
   const pr = /^[1-9][0-9]*$/.test(prText) && Number.isSafeInteger(Number(prText)) ? Number(prText) : null
-  const target = { loop, action, pr: action === 'drain' ? null : pr, seat: action === 'drain' ? seat : null }
+  // Cancel takes an optional seat (null: every open run at the PR's head); escalation takes none.
+  const target = { loop, action, pr: action === 'drain' ? null : pr,
+    seat: action === 'drain' || action === 'cancel' ? seat : null }
   current.current = { target, discoveryCurrent, discoveryReading, preview }
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; generation.current++ } }, [])
   const reset = () => {
@@ -1417,7 +1424,7 @@ function ActionsControl({ loop, discoveryCurrent, discoveryReading = false }) {
     reset(); const version = generation.current; const selected = { ...target }; setReading(true)
     try {
       const path = '/actions?loop=' + encodeURIComponent(loop) + '&action=' + action +
-        (action === 'drain' ? '&seat=' + seat : '&pr=' + pr)
+        (action === 'drain' ? '&seat=' + seat : '&pr=' + pr + (action === 'cancel' && seat ? '&seat=' + seat : ''))
       const data = validateAction(await call(path), selected)
       if (mounted.current && generation.current === version && sameTarget(selected))
         setPreview({ data, target: selected, dataUpdatedAt: Date.now(), isError: false })
@@ -1442,39 +1449,64 @@ function ActionsControl({ loop, discoveryCurrent, discoveryReading = false }) {
       const data = validateAction(await call('/actions', { method: 'POST', body: {
         ...p.target, confirmation: p.data.confirmation } }), { ...p.target, head: p.data.head, repo: p.data.repo }, true)
       if (mounted.current && generation.current === version && sameTarget(p.target)) setAnswer(data.status === 'verified'
-        ? 'Backend verified escalation for loop ' + p.target.loop + ' · #' + p.target.pr + ' @ ' + data.head + '.'
-        : 'Action outcome: ' + data.status + '. No follow-up action is available until a fresh safe preview. ' + actionReason(data.reason))
-    } catch {
-      if (mounted.current && generation.current === version) setAnswer('Action outcome could not be verified. It may have written. Read a fresh safe preview before any follow-up action.')
+        ? 'Backend verified ' + (p.target.action === 'cancel' ? 'cancel' : 'escalation') + ' for loop ' + p.target.loop + ' · #' + p.target.pr + ' @ ' + data.head + '.' +
+          (p.target.action === 'cancel' ? ' Only Retry re-arms a cancelled run.' : '')
+        : p.target.action === 'cancel' && data.status === 'partial'
+          ? 'Cancel outcome: partial. The stop was requested, not finished: the worker stops the running turn within seconds. No follow-up action is available until a fresh safe preview.'
+          : 'Action outcome: ' + data.status + '. No follow-up action is available until a fresh safe preview. ' + actionReason(data.reason))
+    } catch (error) {
+      // Only the host's stale/refused detail proves nothing was written: both are refused before
+      // any write. Every other failure, including another 409, may have written.
+      const failure = retryFailure(error)
+      if (mounted.current && generation.current === version) setAnswer(failure.status === 409 && failure.detail === ACTION_STALE
+        ? 'HTTP 409 · Confirmation refused: the target changed since the preview, so nothing was ' +
+          (p.target.action === 'cancel' ? 'cancelled' : 'escalated') + '. Read a fresh preview.'
+        : 'Action outcome could not be verified. It may have written. Read a fresh safe preview before any follow-up action.')
     } finally {
       busy.current = false
       if (mounted.current) setWriting(false)
       for (const kind of ['now', 'pr', 'overview']) queryClient.invalidateQueries({ queryKey: kind === 'overview' ? [ID, kind] : [ID, kind, p.target.loop] })
     }
   }
-  const button = (label, onClick, disabled = false) => jsx(Button, { size: 'xs', variant: 'ghost', className: 'self-start', onClick, disabled, children: label }, label)
+  const button = (label, onClick, disabled = false, pressed) => jsx(Button, { size: 'xs',
+    variant: pressed ? 'secondary' : 'ghost', 'aria-pressed': pressed, className: 'self-start', onClick, disabled, children: label }, label)
+  const choose = next => { reset(); setAction(next); setSeat(next === 'cancel' ? null : 'reviewer') }
+  const cancelling = action === 'cancel'
+  const scope = t => t.seat ? 'seat ' + t.seat : 'every seat'
+  const cancelCli = t => 'hermes dk cancel --loop ' + t.loop + ' --pr ' + t.pr + (t.seat ? ' --seat ' + t.seat : '')
   return jsx(Section, { title: 'One-shot actions', children: jsxs('div', {
     className: 'flex min-w-0 flex-col gap-4 rounded-md border border-(--ui-stroke-secondary) p-4', children: [
       jsx(Muted, { text: 'Preview a target independently of Right now — including an open PR whose previous turn completed. The host checks eligibility; a run label is not permission.' }),
-      // Only escalation can be honoured from this host (see one_shot_action.plan). A control that
-      // can never be eligible is not drawn: the other two are named as unavailable, with why, and
-      // stay on the CLI rather than offering a button whose only outcome is a refusal.
+      // Escalation and cancel can be honoured from this host (see one_shot_action.plan). A control
+      // that can never be eligible is not drawn: the other two are named as unavailable, with why,
+      // and stay on the CLI rather than offering a button whose only outcome is a refusal.
       jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
-        button('Escalate', () => { reset(); setAction('escalate') }, busy.current),
+        button('Escalate', () => choose('escalate'), busy.current, action === 'escalate'),
+        button('Cancel runs', () => choose('cancel'), busy.current, cancelling),
         ...['Re-review', 'Drain queue'].map(label => jsx(Badge, { size: 'xs', variant: 'muted', children: label + ' · host CLI only' }, label))] }),
       jsx('label', { className: 'flex min-w-0 max-w-sm flex-col gap-2 text-xs', children: jsxs('span', { className: 'flex flex-col gap-2', children: [
-        'PR number · required for escalation', jsx(Input, { 'aria-label': 'Action PR number', inputMode: 'numeric', value: prText,
+        'PR number · required', jsx(Input, { 'aria-label': 'Action PR number', inputMode: 'numeric', value: prText,
           disabled: busy.current || action === 'drain', placeholder: action === 'drain' ? 'Drain selects a seat, not a PR' : 'e.g. 937', onChange: e => { reset(); setPrText(e.target.value) } })] }) }),
-
-      jsx(Muted, { text: 'Escalation parks this head against further review and fix, and spends an adjudicator turn to request a ruling. Confirmation names the exact head. The core already binds a confirmed head (re-review) and queue (drain), but the page\'s controls for them are not wired yet; hermes dk review and hermes dk drain still run them.' }),
-      button(reading ? 'Reading preview…' : 'Preview escalation', read, reading || busy.current || !discoveryCurrent || discoveryReading || !pr),
+      cancelling ? jsxs('div', { className: 'flex min-w-0 flex-col gap-2 text-xs', children: [
+        'Which runs · every open run at the PR\'s head, or one seat\'s',
+        jsx('div', { role: 'group', 'aria-label': 'Cancel seat', className: 'flex flex-wrap items-center gap-1', children:
+          [null, ...CANCEL_SEATS].map(choice => button(choice || 'All seats', () => { reset(); setSeat(choice) }, busy.current, seat === choice)) })] }) : null,
+      jsx(Muted, { text: cancelling
+        ? 'Cancel stops exactly the runs the preview lists: queued runs end at once and a running turn is asked to stop. Only Retry re-arms a cancelled run. If any of those runs starts, ends or appears after the preview, the confirmation is refused and nothing is cancelled.'
+        : 'Escalation parks this head against further review and fix, and spends an adjudicator turn to request a ruling. Confirmation names the exact head. The core already binds a confirmed head (re-review) and queue (drain), but the page\'s controls for them are not wired yet; hermes dk review and hermes dk drain still run them.' }),
+      button(reading ? 'Reading preview…' : cancelling ? 'Preview cancel' : 'Preview escalation', read, reading || busy.current || !discoveryCurrent || discoveryReading || !pr),
       preview ? jsxs('div', { role: 'status', className: 'flex min-w-0 flex-col gap-2 break-words text-xs', children: [
         jsx(Badge, { size: 'xs', variant: state === 'verified' && preview.data.eligible ? 'muted' : 'warn', children: state !== 'verified' ? 'Preview expired · read again' : preview.data.eligible ? 'Host eligible' : 'Host refused' }),
-        jsx('div', { className: 'break-words', children: 'Loop ' + preview.target.loop + ' · ' + preview.data.repo + (preview.target.pr ? ' · #' + preview.target.pr : ' · ' + preview.target.seat) + ' · head ' + (preview.data.head || 'unavailable') }),
-        !preview.data.eligible ? jsx('div', { children: actionReason(preview.data.reason) }) : null,
-        offered(preview) ? button('Confirm escalation', ask, !allowed(preview)) : null] }) : null,
+        jsx('div', { className: 'break-words', children: 'Loop ' + preview.target.loop + ' · ' + preview.data.repo + (preview.target.pr ? ' · #' + preview.target.pr : ' · ' + preview.target.seat) +
+          (preview.target.action === 'cancel' ? ' · ' + scope(preview.target) : '') + ' · head ' + (preview.data.head || 'unavailable') }),
+        // A cancel preview's reason is the list of runs it would stop; show it when eligible too.
+        !preview.data.eligible || preview.target.action === 'cancel' ? jsx('div', { children: actionReason(preview.data.reason) }) : null,
+        offered(preview) ? button(preview.target.action === 'cancel' ? 'Confirm cancel' : 'Confirm escalation', ask, !allowed(preview)) : null] }) : null,
       answer ? jsx('div', { role: 'status', className: 'break-words text-xs text-(--ui-text-secondary)', children: answer }) : null,
-      pending && offered(pending.offer) ? jsx(ConfirmDialog, { open: true, title: 'Escalate this PR?',
+      pending && offered(pending.offer) ? jsx(ConfirmDialog, pending.offer.target.action === 'cancel' ? { open: true, title: 'Cancel these runs?',
+        description: 'Loop ' + pending.offer.target.loop + ' · ' + pending.offer.data.repo + ' · PR #' + pending.offer.target.pr + ' · head ' + pending.offer.data.head +
+          ' · ' + scope(pending.offer.target) + '. ' + actionReason(pending.offer.data.reason) + '. Queued runs end at once; a running turn is asked to stop, and a partial result means the stop was requested, not finished. Only Retry re-arms a cancelled run. If any of these runs changed since the preview, nothing is cancelled. Equivalent CLI: ' + cancelCli(pending.offer.target) + '.',
+        confirmLabel: 'Cancel runs', busyLabel: 'Checking action…', cancelLabel: 'Keep runs', onClose: () => cancel(pending), onConfirm: () => confirm(pending) } : { open: true, title: 'Escalate this PR?',
         description: 'Loop ' + pending.offer.target.loop + ' · ' + pending.offer.data.repo + ' · PR #' + pending.offer.target.pr + ' · head ' + pending.offer.data.head +
           ' · seat adjudicator. Escalation parks this head against further review and fix, and spends an adjudicator turn to request a ruling. Queued review or fix work is retired when the adjudicator claims it. A verified result means parked awaiting adjudication, not a completed ruling. This is not a re-review and does not replace a reviewer verdict. Equivalent CLI: hermes dk escalate --loop ' + pending.offer.target.loop + ' --pr ' + pending.offer.target.pr + '.',
         confirmLabel: 'Escalate PR', busyLabel: 'Checking action…', cancelLabel: 'Cancel', onClose: () => cancel(pending), onConfirm: () => confirm(pending) }) : null
@@ -1807,7 +1839,7 @@ function Page() {
       jsx(ActionsControl, { loop, discoveryCurrent: loopsState === 'verified' && list.some(item => item.id === loop), discoveryReading: !!loops.isFetching }),
       jsx(HooksControl, { loop, discoveryCurrent: loopsState === 'verified' && list.some(item => item.id === loop), discoveryReading: !!loops.isFetching }),
       jsx(Health, { loop }),
-      jsx(Muted, { text: 'Writes require confirmation: Retry re-arms a run that never wrote; Pause/Resume changes webhook delivery only; escalation uses an exact host preview. Re-review and drain are not wired to this page yet (host CLI only). Data is this machine\'s run ledger; for PRs and reviews from GitHub, run: hermes dk stats --github' })
+      jsx(Muted, { text: 'Writes require confirmation: Retry re-arms a run that never wrote; Pause/Resume changes webhook delivery only; escalation and cancel use an exact host preview. Re-review and drain are not wired to this page yet (host CLI only). Data is this machine\'s run ledger; for PRs and reviews from GitHub, run: hermes dk stats --github' })
     ]
   })
 

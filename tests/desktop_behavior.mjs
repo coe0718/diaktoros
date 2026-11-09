@@ -2305,6 +2305,102 @@ test('hooks: a background re-read keeps the verified delivery line; it never fli
   }
 })
 
+// #1372: the confirmed cancel. Same preview → confirm → read-back path as escalation.
+const cancelPlan = (extra = {}) => actionPlan({ action: 'cancel', seat: null, confirmation: 'c'.repeat(64),
+  reason: 'cancels reviewer pending, shadow running; only a retry re-arms them', ...extra })
+const selectCancel = (h, pr = '937', seat) => {
+  h.render('page')
+  actionButton(h, 'Cancel runs').props.onClick()
+  h.flatten(h.tree()).find(n => n.type === 'Input' && n.props['aria-label'] === 'Action PR number').props.onChange({ target: { value: pr } })
+  if (seat) actionButton(h, seat).props.onClick()
+}
+const previewCancel = async (h, data = cancelPlan()) => { h.respond(data); await actionButton(h, 'Preview cancel').props.onClick() }
+const STALE = '409: {"detail":"Action confirmation is stale or unavailable; preview again."}'
+
+test('cancel: every seat by default; preview lists the runs; confirm posts the exact target once', async () => {
+  const h = await harness(); selectCancel(h)
+  assert.equal(actionButton(h, 'Cancel runs').props['aria-pressed'], true)
+  assert.equal(actionButton(h, 'All seats').props['aria-pressed'], true)
+  await previewCancel(h)
+  assert.equal(h.calls.at(-1), '/actions?loop=fixture-loop&action=cancel&pr=937')
+  const text = h.text(h.tree())
+  assert.match(text, /Host eligible/)
+  assert.match(text, /#937 · every seat · head a{40}/)
+  assert.match(text, /cancels reviewer pending, shadow running; only a retry re-arms them/)
+  actionButton(h, 'Confirm cancel').props.onClick()
+  const d = h.flatten(h.tree()).find(n => n.type === 'ConfirmDialog' && n.props.title === 'Cancel these runs?')
+  for (const re of [/fixture-loop/, /fixture\/repo/, /PR #937/, /a{40}/, /every seat/, /cancels reviewer pending, shadow running/,
+    /Only Retry re-arms a cancelled run/, /stop was requested, not finished/, /hermes dk cancel --loop fixture-loop --pr 937\./]) assert.match(d.props.description, re)
+  assert.equal(d.props.confirmLabel, 'Cancel runs'); assert.equal(d.props.cancelLabel, 'Keep runs')
+  let finish; h.actionResult(() => new Promise(resolve => { finish = resolve }))
+  const task = d.props.onConfirm(); await d.props.onConfirm()
+  assert.equal(h.actionCalls.length, 1)
+  assert.deepEqual(JSON.parse(JSON.stringify(h.actionCalls[0])), { method: 'POST', body: { loop: 'fixture-loop', action: 'cancel', pr: 937, seat: null, confirmation: 'c'.repeat(64) } })
+  finish({ loop: 'fixture-loop', repo: 'fixture/repo', read_at: 1800000000, head: 'a'.repeat(40), ok: true, status: 'verified', reason: 'cancelled; only a retry re-arms them' }); await task
+  assert.match(h.text(h.tree()), /Backend verified cancel for loop fixture-loop · #937 @ a{40}\. Only Retry re-arms a cancelled run\./)
+  assert.equal(actionButton(h, 'Confirm cancel'), undefined)
+  assert.equal(h.buttons(h.tree()).some(b => /merge/i.test(String(b.props.children))), false)
+})
+
+test('cancel: one seat scopes the preview path, the confirmation and the CLI line', async () => {
+  const h = await harness(); selectCancel(h, '937', 'shadow')
+  assert.equal(actionButton(h, 'shadow').props['aria-pressed'], true)
+  assert.equal(actionButton(h, 'All seats').props['aria-pressed'], false)
+  await previewCancel(h, cancelPlan({ seat: 'shadow', reason: 'cancels shadow running; only a retry re-arms them' }))
+  assert.equal(h.calls.at(-1), '/actions?loop=fixture-loop&action=cancel&pr=937&seat=shadow')
+  assert.match(h.text(h.tree()), /#937 · seat shadow · head/)
+  actionButton(h, 'Confirm cancel').props.onClick()
+  const d = h.flatten(h.tree()).find(n => n.type === 'ConfirmDialog' && n.props.title === 'Cancel these runs?')
+  assert.match(d.props.description, /hermes dk cancel --loop fixture-loop --pr 937 --seat shadow\./)
+  h.actionResult(() => Promise.resolve({ loop: 'fixture-loop', repo: 'fixture/repo', read_at: 1800000000, head: 'a'.repeat(40), ok: true, status: 'verified', reason: '' }))
+  await d.props.onConfirm()
+  assert.equal(h.actionCalls[0].body.seat, 'shadow')
+})
+
+test('cancel: partial says the stop was requested, not finished, and offers no follow-up', async () => {
+  const h = await harness(); selectCancel(h); await previewCancel(h)
+  actionButton(h, 'Confirm cancel').props.onClick()
+  h.actionResult(() => Promise.resolve({ loop: 'fixture-loop', repo: 'fixture/repo', read_at: 1800000000, head: 'a'.repeat(40), ok: false, status: 'partial', reason: 'stop requested; the worker stops the running turn' }))
+  await h.flatten(h.tree()).find(n => n.type === 'ConfirmDialog').props.onConfirm()
+  const text = h.text(h.tree())
+  assert.match(text, /Cancel outcome: partial\. The stop was requested, not finished/)
+  assert.doesNotMatch(text, /Backend verified/)
+  assert.equal(actionButton(h, 'Confirm cancel'), undefined)
+})
+
+test('cancel: a stale confirmation says nothing was cancelled; any other failure may have written', async () => {
+  for (const [rejection, expect, refuse] of [
+    [STALE, /HTTP 409 · Confirmation refused: the target changed since the preview, so nothing was cancelled/, /may have written/],
+    ['409: {"detail":"Action outcome unavailable; inspect state before retrying."}', /could not be verified\. It may have written/, /nothing was cancelled/],
+    ['network down /private/token ghp_secret', /could not be verified\. It may have written/, /nothing was cancelled|ghp_secret|\/private\/token/]]) {
+    const h = await harness(); selectCancel(h); await previewCancel(h)
+    actionButton(h, 'Confirm cancel').props.onClick()
+    h.actionResult(() => Promise.reject(new Error(rejection)))
+    await h.flatten(h.tree()).find(n => n.type === 'ConfirmDialog').props.onConfirm()
+    assert.match(h.text(h.tree()), expect); assert.doesNotMatch(h.text(h.tree()), refuse)
+    assert.equal(actionButton(h, 'Confirm cancel'), undefined)
+  }
+})
+
+test('cancel: a malformed preview is rejected before any confirmation is offered', async () => {
+  for (const bad of [cancelPlan({ head: 'nothex' }), cancelPlan({ seat: 'reviewer' }), cancelPlan({ action: 'escalate' }),
+    cancelPlan({ confirmation: '' }), cancelPlan({ pr: 938 }), cancelPlan({ loop: 'other-loop' }), cancelPlan({ eligible: 'yes' })]) {
+    const h = await harness(); selectCancel(h); await previewCancel(h, bad)
+    assert.equal(actionButton(h, 'Confirm cancel'), undefined)
+    assert.match(h.text(h.tree()), /Backend response could not be verified/)
+    assert.equal(h.actionCalls.length, 0)
+  }
+})
+
+test('cancel: escalation is unchanged and draws no seat choice', async () => {
+  const h = await harness(); selectAction(h)
+  assert.equal(actionButton(h, 'Escalate').props['aria-pressed'], true)
+  assert.equal(actionButton(h, 'All seats'), undefined)
+  assert.ok(actionButton(h, 'Preview escalation'))
+  await previewAction(h)
+  assert.equal(h.calls.at(-1), '/actions?loop=fixture-loop&action=escalate&pr=937')
+})
+
 test('actions: a backend escalation refusal leaves no execution affordance', async () => {
   const h = await harness(); selectAction(h)
   await previewAction(h, actionPlan({ eligible: false, confirmation: '', reason: 'Core operation is not snapshot safe.' }))

@@ -1051,6 +1051,12 @@ class Surface(unittest.TestCase):
         # The drawer's truncation wording (#821): the named proof that a cut list says so.
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: the drawer says when its turns and rulings are the newest of more, and only then$")
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: a withheld ruling head reads unknown, never blank$")
+        # The confirmed cancel control (#1372): preview/confirm, partial, stale and malformed.
+        for name in ("cancel: every seat by default; preview lists the runs; confirm posts the exact target once",
+                     "cancel: partial says the stop was requested, not finished, and offers no follow-up",
+                     "cancel: a stale confirmation says nothing was cancelled; any other failure may have written",
+                     "cancel: a malformed preview is rejected before any confirmation is offered"):
+            self.assertRegex(done.stdout, rf"(?m)^ok \d+ - {re.escape(name)}$")
         self.assertIn("palette only: unseen successful cache read expires", done.stdout)
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - records: nested malformed and wrong-loop responses never enter the cache$")
 
