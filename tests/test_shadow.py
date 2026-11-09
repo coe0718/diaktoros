@@ -618,6 +618,40 @@ class ProductionTurn(unittest.TestCase):
         self.assertTrue(row["error"].startswith(f"{run_supervisor.VERDICT_HOLD} at {HEAD[:7]} — "),
                         row["error"])
 
+    def test_a_verdict_held_shadow_ends_when_the_pr_closes_or_the_head_moves(self):
+        # #1776: the hold returns before any GitHub read, so the end the docs promise is the
+        # claim's: the held row falls due, recover() re-arms it, and _claim_read_shadow (never
+        # _ci_poll's reviewer-only fast path) cancels it before _shadow_ci_gate runs again.
+        closed = {"number": 8, "state": "closed", "draft": False, "head": {"sha": HEAD}}
+        moved = {"number": 8, "state": "open", "draft": False, "head": {"sha": "b" * 40}}
+        for name, state, pr in (("failed, closed", "failed", closed),
+                                ("failed, moved", "failed", moved),
+                                ("uncertain, closed", "uncertain", closed),
+                                ("uncertain, moved", "uncertain", moved)):
+            with self.subTest(name):
+                self.setUp()
+                sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok"}],
+                                           reviewer=None, reviewer_state=state)
+                self.assertEqual(row["state"], "waiting")
+                self.assertIn("waiting for the reviewer's verdict", row["error"])
+                with closing(sqlite3.connect(sup.db)) as con, con:
+                    con.execute("UPDATE runs SET retry_at=? WHERE id=?",
+                                (time.time() - 1, row["id"]))
+                sup.recover()
+                key = f"acme/widgets:8:{HEAD}:shadow"
+                self.assertEqual(sup.get(key)["state"], "pending")
+                with mock.patch.object(config, "by_repo", return_value=self.loop), \
+                        mock.patch.object(gh, "api", return_value=pr), \
+                        mock.patch.object(claims, "claim_seat",
+                                          side_effect=AssertionError("a shadow claims no seat")), \
+                        mock.patch.object(sup, "_spawn"):
+                    sup._claim()
+                row = sup.get(key)
+                self.assertEqual(row["state"], "cancelled", row["error"])
+                self.assertEqual(row["error"], "shadow review superseded: PR closed or head moved")
+                # No longer open, so its findings snapshot is evictable again.
+                self.assertNotIn((8, HEAD), gate.shadow_open_heads("acme/widgets", sup.db))
+
     def kinds(self):
         pr = {"number": 8, "draft": False, "user": {"login": "fixer"}, "base": {"ref": "main"},
               "head": {"sha": HEAD, "ref": "fix-8"}}
