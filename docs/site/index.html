@@ -659,6 +659,19 @@
       text-transform: uppercase;
     }
     .case-note { max-width: 760px; margin-top: 26px; color: var(--muted); }
+    .seat-shadow { color: var(--violet); }
+    .history-viewer { margin-top: 44px; border-top: 1px solid var(--line); padding-top: 28px; }
+    .history-viewer h3 { margin: 0 0 4px; }
+    .history-bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 22px 0 8px; }
+    .history-bar select { font: inherit; padding: 8px 10px; background: var(--surface); color: var(--text); border: 1px solid var(--strong-line); max-width: 100%; }
+    .history-meta, .history-gaps, .history-note { color: var(--muted); }
+    .history-gaps { padding-left: 18px; }
+    .history-gap { color: var(--amber); }
+    .history-findings { width: 100%; border-collapse: collapse; margin: 18px 0; font-size: 14px; display: block; overflow-x: auto; }
+    .history-findings th, .history-findings td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    .history-round { margin: 28px 0 0; font-size: 16px; }
+    .history-viewer .case-timeline p { overflow-wrap: anywhere; }
+    .history-viewer[hidden], .history-viewer [hidden] { display: none !important; }
 
     .callout {
       padding: 28px;
@@ -951,7 +964,23 @@
         <div><strong>1</strong><span>Adjudication</span></div>
         <div><strong>1</strong><span>Follow-up issue</span></div>
       </div>
-      <p class="case-note">This cycle is written from the PR&rsquo;s public reviews, answers, and ruling — not from a simulation. A proposed <code>hermes dk history --pr N</code> command would rebuild cycles like this one from the loop&rsquo;s ledger automatically; until it exists, case studies like this one are the evidence.</p>
+      <p class="case-note">This cycle is written from the PR&rsquo;s public reviews, answers, and ruling — not from a simulation. <code>hermes dk history --pr N</code> rebuilds cycles like this one from the loop&rsquo;s ledger, audit log, and GitHub; the cycles published from it are below.</p>
+      <div class="history-viewer" id="history-viewer" aria-labelledby="history-title" hidden>
+        <h3 id="history-title">Replay a cycle from the record</h3>
+        <p class="case-note">Each cycle here is the command&rsquo;s own export, published as is: every round, finding, verdict and ruling the loop recorded, with gaps shown as gaps. Text that only the loop&rsquo;s host saw is not published.</p>
+        <div class="history-bar">
+          <label for="history-pick">Pull request</label>
+          <select id="history-pick"></select>
+          <button type="button" class="button" id="history-md" hidden>Download Markdown</button>
+        </div>
+        <p class="history-meta" id="history-meta" aria-live="polite"></p>
+        <ul class="history-gaps" id="history-gaps"></ul>
+        <table class="history-findings" id="history-findings" hidden>
+          <thead><tr><th>ID</th><th>Severity</th><th>Category</th><th>Raised</th><th>Outcome</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <div id="history-rounds"></div>
+      </div>
     </section>
 
     <section class="shell section" aria-labelledby="wild-title">
@@ -1097,6 +1126,7 @@ hermes dk setup --repo "owner/repository"</code></pre>
       });
     }());
   </script>
+<script src="history.js" defer></script>
 <script src="poster.js"></script>
 <script>document.getElementById("diaktoros-poster").src=window.DIAKTOROS_POSTER;</script>
 <script>
