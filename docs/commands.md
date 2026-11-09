@@ -773,7 +773,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--review-only-update` | `on` \| `off` |  | push a clean merge of the base into a review-only author's PR branch (same repository only); off stops it; turning it on needs --acknowledge-branch-push |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour); off starts it at once |
 | `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer (needs unattended fixer pushes); off stops it |
-| `--ci-webhook` | `on` \| `off` |  | act on a finished CI run when GitHub reports it, not at the next sweep (then `apply --hooks` adds check_suite to the fixer's hook), or stop |
+| `--ci-webhook` | `on` \| `off` |  | act on a finished CI run when GitHub reports it, not at the next sweep (then `apply --hooks` adds check_suite to the fixer's hook); off stops it |
 | `--comment-webhook` | `on` \| `off` |  | wake the issue fixer on a maintainer's issue reply when GitHub reports it, not at the next sweep (then `apply --hooks` adds issue_comment to the triage hook); off stops it |
 | `--protection-webhook` | `on` \| `off` |  | re-check the base's protection when its rules change, not only at `doctor` (then `apply --hooks` adds branch_protection_rule and repository_ruleset to the reviewer's hook); off stops it |
 | `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name (other than their tests and docs) for a maintainer; off stops it; needs unattended fixer pushes |
