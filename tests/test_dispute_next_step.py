@@ -137,6 +137,23 @@ class UncertainTurn(Dispute):
         self.assertFalse([b for b in report["blockers"] if "did not start one" in b],
                          report["blockers"])
 
+    def test_an_uncertain_fixer_turn_is_reconciled_first_never_called_unstarted(self):
+        # #1507: with pushes on, no dispute and the cap not spent, the next step said "re-deliver
+        # ... after checking why its run did not start" — the gate did start it, and a redelivered
+        # verdict re-arms no uncertain run. Its outcome is unknown: reconcile it first.
+        with mock.patch.object(run_supervisor.views, "turn_state",
+                               side_effect=lambda db, repo, pr, head, seat:
+                               "uncertain" if seat == "fixer" else None):
+            report = self.explain()
+        self.assertFalse([b for b in report["blockers"] if "did not start one" in b],
+                         report["blockers"])
+        self.assertEqual(report["next"]["kind"], "operator")
+        self.assertNotIn("did not start", report["next"]["action"])
+        self.assertNotIn("re-deliver", report["next"]["action"])
+        self.assertIn("uncertain", report["next"]["action"])
+        self.assertIn("reconcile it first, its outcome is unknown", report["next"]["action"])
+        self.assertIn(f"hermes dk status --loop {self.loop['id']}", report["next"]["action"])
+
 
 class OneDisputeRule(unittest.TestCase):
     def test_only_views_reads_a_dispute_time_directly(self):

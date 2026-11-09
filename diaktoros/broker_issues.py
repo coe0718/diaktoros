@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from . import broker, config, fixer_answers, issue_labels, repro_proof, safe_push
+from . import broker, broker_filing, config, fixer_answers, issue_labels, repro_proof, safe_push
 
 
 class IssueWrites:
@@ -24,13 +24,15 @@ class IssueWrites:
         try:
             return self._issue_fix_write(raw, request)
         finally:
-            outcome = _issue_fix_outcome(self.scope)
+            try:
+                loop = config.by_repo(self.scope.repo)
+            except Exception:
+                loop = None
+            outcome = _issue_fix_outcome(self.scope, loop)
             if outcome:
-                try:
-                    loop = config.by_repo(self.scope.repo)
-                except Exception:
-                    loop = None
-                broker_ipc._issue_notice(loop, self.scope, "fixed", outcome)
+                # #1523: an open plan or question waits on the maintainer, not on the loop.
+                turn = "you" if _posted_ask(self.scope, loop) else ""
+                broker_ipc._issue_notice(loop, self.scope, "fixed", outcome, next_turn=turn)
 
     def _issue_fix_write(self, raw: bytes, request: object) -> object:
         """The issue fixer's one write (#214): a new branch, its PR and the review request — or,
@@ -193,7 +195,7 @@ class IssueWrites:
         try:
             Supervisor(self.scope.ledger_db, create=False).record_shadow_issue(
                 self.scope.run_id, self.scope.repo, self.scope.number, self.scope.head,
-                title, body, labels, broker.FILED_ISSUES_MAX)
+                title, body, labels, broker_filing.FILED_ISSUES_MAX)
         except ValueError as exc:
             raise broker_ipc.ProtocolError(f"{exc}; nothing was filed")
         return {"accepted": True}
@@ -212,7 +214,7 @@ class IssueWrites:
         try:
             Supervisor(self.scope.ledger_db, create=False).record_shadow_issue(
                 self.scope.run_id, self.scope.repo, self.scope.number, self.scope.head,
-                title, body, labels, broker.FILED_ISSUES_MAX, seat="adjudicator",
+                title, body, labels, broker_filing.FILED_ISSUES_MAX, seat="adjudicator",
                 shadow_files=config.shadow_file_issues(current))
         except ValueError as exc:
             raise broker_ipc.ProtocolError(f"{exc}; nothing was recorded")
@@ -234,9 +236,9 @@ class IssueWrites:
                 f"the issue title must be one line of 1-{broker.ISSUE_PR_TITLE_MAX} characters; "
                 "nothing was filed")
         if (not isinstance(body, str) or not body.strip()
-                or len(body.encode()) > broker.FILED_ISSUE_BODY_MAX):
+                or len(body.encode()) > broker_filing.FILED_ISSUE_BODY_MAX):
             raise broker_ipc.ProtocolError(
-                f"the issue body must be non-empty text of at most {broker.FILED_ISSUE_BODY_MAX} "
+                f"the issue body must be non-empty text of at most {broker_filing.FILED_ISSUE_BODY_MAX} "
                 "bytes; nothing was filed")
         current = config.by_repo(self.scope.repo)
         if (current is None or current.get("id") != self._loop.get("id")
@@ -275,7 +277,7 @@ class IssueWrites:
         """File one issue from an issue-tier finding (#247), as the reviewer's own login.
 
         Narrow on purpose: a title, a body and labels from the loop's triage list, at most
-        ``broker.FILED_ISSUES_MAX`` per run, one title per PR (a retry or a later round never
+        ``broker_filing.FILED_ISSUES_MAX`` per run, one title per PR (a retry or a later round never
         files it twice). Recorded in the ledger before the POST; an unknown outcome is uncertain
         and never replayed. The issue carries its lineage (the PR, and how deep a chain of
         automatic fixes it came from) so a later automatic hand-off can be bounded.
@@ -297,11 +299,11 @@ class IssueWrites:
         try:
             seq = supervisor.record_filed_issue(self.scope.run_id, self.scope.repo,
                                                 self.scope.number, self.scope.head,
-                                                title.strip(), depth, broker.FILED_ISSUES_MAX)
+                                                title.strip(), depth, broker_filing.FILED_ISSUES_MAX)
         except ValueError as exc:
             raise broker_ipc.ProtocolError(f"{exc}; nothing was filed")
         try:
-            issue = broker.file_issue(current, repo=self.scope.repo, number=self.scope.number,
+            issue = broker_filing.file_issue(current, repo=self.scope.repo, number=self.scope.number,
                                       head=self.scope.head, login=login, title=title.strip(),
                                       body=body, labels=labels, depth=depth)
         except broker.BrokerDenied as exc:
@@ -318,7 +320,7 @@ class IssueWrites:
         return {"accepted": True, "issue": issue}
 
     def _issue_comment(self, loop: dict, supervisor, body: str, kind: str | None = None) -> object:
-        from . import state as state_mod
+        from . import fix_hold, state as state_mod
         run_id = self.scope.run_id
         try:
             login = broker.authorize_issue_fix(loop, repo=self.scope.repo, number=self.scope.number)
@@ -327,7 +329,8 @@ class IssueWrites:
             raise
         try:
             comment = broker.post_issue_comment(loop, repo=self.scope.repo,
-                                                number=self.scope.number, login=login, body=body)
+                                                number=self.scope.number, login=login,
+                                                body=fix_hold.posted_ask(kind, body))
         except Exception as exc:
             supervisor.issue_fix_status(run_id, "uncertain",
                                         error=f"POST outcome unknown: {broker_ipc._why(exc)}")
@@ -338,15 +341,43 @@ class IssueWrites:
         return {"accepted": True}
 
 
-def _issue_fix_outcome(scope: broker_ipc.RunScope) -> str:
-    """The recorded issue-fix write, as a notice says it, or "" when nothing was recorded."""
+def _issue_fix_row(scope: broker_ipc.RunScope):
+    """The run's ``issue_fixes`` row, or ``None`` when nothing was recorded; raises when the
+    ledger cannot be read."""
     if not scope.run_id or not scope.ledger_db:
-        return ""
+        return None
     from .run_supervisor import Supervisor
+    with Supervisor(scope.ledger_db, create=False)._connect() as con:
+        return con.execute("SELECT kind,state,pr_number,comment_id,error FROM issue_fixes "
+                           "WHERE run_id=?", (scope.run_id,)).fetchone()
+
+
+def _posted_ask(scope: broker_ipc.RunScope, loop: dict | None, row=None) -> dict | None:
+    """The open ask (#483) this run's posted comment opened, or ``None`` for a plain comment,
+    any other write, or facts that cannot be read. The ask must name the comment the ledger
+    recorded, so an older ask on the same issue is never credited to this run."""
+    if loop is None:
+        return None
+    from . import state as state_mod
     try:
-        with Supervisor(scope.ledger_db, create=False)._connect() as con:
-            row = con.execute("SELECT kind,state,pr_number,comment_id,error FROM issue_fixes "
-                              "WHERE run_id=?", (scope.run_id,)).fetchone()
+        row = row if row is not None else _issue_fix_row(scope)
+        if row is None or row["kind"] != "comment" or row["state"] != "posted":
+            return None
+        ask = state_mod.state_for(loop).fix_ask_open().get(scope.number)
+    except Exception:
+        return None
+    if not isinstance(ask, dict) or ask.get("comment_id") != row["comment_id"]:
+        return None
+    return ask
+
+
+def _issue_fix_outcome(scope: broker_ipc.RunScope, loop: dict | None = None) -> str:
+    """The recorded issue-fix write, as a notice says it, or "" when nothing was recorded.
+
+    Given ``loop``, a posted comment that opened a plan or question says so and names the
+    maintainer's move (#1523); a plain comment is the could-not-fix comment."""
+    try:
+        row = _issue_fix_row(scope)
     except Exception:
         return "write recorded; result unreadable — inspect the ledger"
     if row is None:
@@ -358,6 +389,10 @@ def _issue_fix_outcome(scope: broker_ipc.RunScope) -> str:
             return f"{pr}, review requested"
         return pr + (f" ({error})" if error else "")
     if row["kind"] == "comment" and state == "posted":
+        from . import fix_hold
+        ask = _posted_ask(scope, loop, row)
+        if ask:
+            return fix_hold.ask_outcome(ask)
         return "could not fix it: the fixer commented on the issue instead"
     return f"{state}" + (f": {error}" if error else "") + (
         " — never replayed; inspect the branch and issue" if state == "uncertain" else "")

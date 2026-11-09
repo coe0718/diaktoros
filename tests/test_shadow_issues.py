@@ -19,7 +19,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_partial_view_no_approve as fixture  # noqa: E402
-from diaktoros import broker, config, gh, ledger, shadow_issues  # noqa: E402
+from diaktoros import broker, broker_filing, config, gh, ledger, shadow_issues  # noqa: E402
 from diaktoros.config import blocks  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
@@ -628,9 +628,9 @@ class FilePending(unittest.TestCase):
     def test_the_broker_refuses_a_repository_mismatch_and_no_reader_as_not_sent(self):
         args = dict(number=7, head=HEAD, title="t", body="b", labels=[], model="m", depth=1)
         with self.assertRaisesRegex(broker.BrokerNotSent, "repository mismatch"):
-            broker.file_shadow_issue(self.loop, repo="other/repo", **args)
+            broker_filing.file_shadow_issue(self.loop, repo="other/repo", **args)
         with self.assertRaisesRegex(broker.BrokerNotSent, "no reader identity"):
-            broker.file_shadow_issue({**self.loop, "read_token": ""}, repo=REPO, **args)
+            broker_filing.file_shadow_issue({**self.loop, "read_token": ""}, repo=REPO, **args)
 
     def test_a_408_is_uncertain_and_never_replayed(self):
         run = self.recorded("A finding")

@@ -184,12 +184,17 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
                                                          _ledger_of(supervisor))
         delivery = f"{loop['repo']}:{number}:{head}:{seat}"
         # The turn's wall clock rides on the row (#49): whichever worker claims it — possibly
-        # one spawned by another loop's event — runs it for this loop's seat budget.
+        # one spawned by another loop's event — runs it for this loop's seat budget. A snapped
+        # turn's shadow row is written in the same transaction (#1682).
+        shadow = ((shadow_delivery(loop, number, head, turn_key),
+                   config.turn_budget(loop, "shadow")) if snapped else None)
         outcome = supervisor.submit(delivery + (f':{turn_key}' if turn_key else ''),
                                     loop["repo"], number, head, seat, turn_key=turn_key,
                                     require_push_admission=seat == "fixer",
-                                    budget=config.turn_budget(loop, seat))
+                                    budget=config.turn_budget(loop, seat), shadow=shadow)
         if snapped and outcome == "enqueued":
+            # Re-arms or refuses a shadow row that was already there (#1139); the one just
+            # written is pending, and stays as it is.
             enqueue_shadow(loop, supervisor, number, head, turn_key=turn_key)
     return outcome
 
@@ -646,6 +651,11 @@ def snapshot_shadow(loop: dict, number: int, head: str, turn_key: str = "", db=N
         return False
 
 
+def shadow_delivery(loop: dict, number: int, head: str, turn_key: str = "") -> str:
+    """A shadow row's delivery key: its reviewer turn's, on the shadow seat."""
+    return f"{loop['repo']}:{number}:{head}:shadow" + (f":{turn_key}" if turn_key else "")
+
+
 def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: str = "") -> str:
     """Queue a shadow review beside a newly queued reviewer turn (#218), when the loop has a
     shadow profile and this head is sampled. It runs only once that reviewer turn's APPROVE is
@@ -659,7 +669,7 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
             return "off"
         if not shadow_sampled(loop, number, head, turn_key):
             return "not sampled"
-        delivery = f"{loop['repo']}:{number}:{head}:shadow" + (f":{turn_key}" if turn_key else "")
+        delivery = shadow_delivery(loop, number, head, turn_key)
         # No durable snapshot, no shadow: the broker would judge it on the live ledger, which
         # the real review of this head may change meanwhile (#218, #1013).
         try:

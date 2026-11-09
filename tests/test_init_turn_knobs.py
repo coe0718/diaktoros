@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import pathlib
+import re
+import shlex
 import sys
 import unittest
 
@@ -38,6 +40,18 @@ class InitTurnKnobsTest(Base):
             self.assertIn("no triage block", out)       # not the old fix-label rule (#1220)
             self.assertNotIn("no triage.fix_label", out)
             self.assertFalse(LOOP_FILE.exists())
+
+    def test_the_refusals_triage_command_parses(self):
+        # #1724: the suggested command left out triage's required --loop, so it exited 2.
+        import run_tests
+        rc, out = self.init("--fix-daily-turns", "7")
+        self.assertEqual(rc, 2, out)
+        found = re.search(r"`hermes dk (triage [^`]*)`", out)
+        self.assertIsNotNone(found, out)
+        filled = {"LOOP": "widgets", "P": "triager", "A": "maint", "L": "bug", "N": "9"}
+        argv = [filled.get(word, word) for word in shlex.split(found.group(1))]
+        args = run_tests.parser_for().parse_args(argv)
+        self.assertEqual((args.loop, args.fix_daily_turns), ("widgets", 9))
 
     def test_blank_form_leaves_the_defaults(self):
         rc, out = self.init(settings={"reviewer_max_steps": "", "fixer_max_steps": "",

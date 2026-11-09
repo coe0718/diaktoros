@@ -6,6 +6,7 @@ The real watchdog drain runs against the harness's fake GitHub; the route POST i
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import contextlib
 import os
 import pathlib
 import sys
@@ -381,6 +382,148 @@ class Drain(unittest.TestCase):
         self.assertEqual([(o["outcome"], o["why"]) for o in result["outcomes"]],
                          [("left", "the entry changed during the checks")])
         self.assertIn(f"{t.REPO}#7", self.st().queue_items("reviewer"))
+
+    def test_a_removal_lost_because_the_entry_is_gone_is_dropped_not_left(self):
+        # #1450: a gate took the seat and consumed #7 while its closed PR was being read. The
+        # lost compare leaves nothing queued, so nothing is reported left.
+        t.reset(prs={"7": t.pr(7, state="closed")})
+        self.queue(7)
+        shown = actions.drain_snapshot(self.loop(), "reviewer")
+        real_pr = gh.pr
+
+        def pr_then_consume(loop, number):
+            out = real_pr(loop, number)
+            self.st().queue_pop("reviewer", f"{t.REPO}#7")
+            return out
+        with mock.patch.object(gh, "pr", side_effect=pr_then_consume), self.answer():
+            result = self.drain(shown)
+        self.assertEqual((result["ok"], result["status"]), (True, "nothing to start"))
+        self.assertEqual([(o["outcome"], o["why"]) for o in result["outcomes"]],
+                         [("dropped", "the entry left the queue during the checks — "
+                                      "nothing is left to retry")])
+        self.assertEqual(self.st().queue_items("reviewer"), {})
+        self.assertEqual(self.fired, [])
+
+    def test_every_conditional_removal_lost_because_the_entry_is_gone_is_dropped(self):
+        # #2050 review F1: each of the eight conditional removals in _drain_check, _pr_check and
+        # _verdict_check, driven through the sweep's drain. A gate consumes the entry just as
+        # the removal compares it, so the compare loses and nothing is queued: dropped, never left.
+        from diaktoros import transition
+        watchdog = actions._script("watchdog")
+        real_pop_if = state_mod.LoopState.queue_pop_if
+        gone = ("dropped", "the entry left the queue during the checks — nothing is left to retry")
+        no_hold = mock.patch.object(transition, "hold", return_value=None)
+        cases = {
+            "the key names no PR": ("reviewer", "abc", {}, t.HEAD_A, []),
+            "the PR is closed": ("reviewer", "7", {"7": t.pr(7, state="closed")}, t.HEAD_A, []),
+            "the PR moved": ("reviewer", "7", {"7": t.pr(7)}, t.HEAD_B, []),
+            "a retarget": ("reviewer", "7", {"7": t.pr(7)}, t.HEAD_A,
+                           [mock.patch.object(transition, "record", return_value=None)]),
+            "a same-head hold": ("reviewer", "7", {"7": t.pr(7)}, t.HEAD_A,
+                                 [mock.patch.object(transition, "hold", return_value={"held": True}),
+                                  mock.patch.object(transition, "baseline_missing",
+                                                    return_value=True)]),
+            "not the seat's PR": ("reviewer", "7", {"7": t.pr(7, draft=True)}, t.HEAD_A, []),
+            "not changes-requested": ("fixer", "7", {"7": dict(
+                t.pr(7), reviews=[t.review(t.REVIEWER, "APPROVED")])}, t.HEAD_A, [no_hold]),
+            "already reviewed": ("reviewer", "7", {"7": dict(
+                t.pr(7), reviews=[t.review(t.REVIEWER)])}, t.HEAD_A, [no_hold]),
+        }
+        for name, (seat, number, prs, head, patches) in cases.items():
+            with self.subTest(site=name):
+                t.reset(prs=prs)
+                self.fired = []
+                st = self.st()
+                key = f"{t.REPO}#{number}"
+                st.queue_add(seat, key, head, f"https://github.com/{t.REPO}/pull/{number}", "busy")
+                if name == "a retarget":
+                    watch = st.watch()
+                    watch["stacked_wait"] = {"7": {"base": "feature", "head": t.HEAD_A}}
+                    st.watch_save(watch)
+
+                def consume_then_pop(st, seat, key, expected):
+                    st.queue_pop(seat, key)                     # a gate took it meanwhile
+                    return real_pop_if(st, seat, key, expected)
+                report = []
+                with contextlib.ExitStack() as stack:
+                    for patch in patches:
+                        stack.enter_context(patch)
+                    pop_if = stack.enter_context(mock.patch.object(
+                        state_mod.LoopState, "queue_pop_if", autospec=True,
+                        side_effect=consume_then_pop))
+                    stack.enter_context(self.answer())
+                    watchdog.drain(self.loop(), st, seat, quiet=True, report=report)
+                self.assertEqual(pop_if.call_count, 1, "the removal under test was reached")
+                self.assertEqual([(o["outcome"], o["why"]) for o in report], [gone])
+                self.assertEqual(st.queue_items(seat), {})
+                self.assertEqual(self.fired, [])
+
+    def test_a_claim_swap_lost_because_the_entry_is_gone_is_dropped(self):
+        # #1450: the claim swap in drain() answers a lost compare the same way.
+        t.reset(prs={"7": t.pr(7)})
+        self.queue(7)
+        shown = actions.drain_snapshot(self.loop(), "reviewer")
+        real_swap = state_mod.LoopState.queue_swap_if
+
+        def consume_then_swap(st, seat, key, expected, new):
+            st.queue_pop(seat, key)
+            return real_swap(st, seat, key, expected, new)
+        with mock.patch.object(state_mod.LoopState, "queue_swap_if", autospec=True,
+                               side_effect=consume_then_swap), self.answer():
+            result = self.drain(shown)
+        self.assertEqual((result["ok"], result["status"]), (True, "nothing to start"))
+        self.assertEqual([o["outcome"] for o in result["outcomes"]], ["dropped"])
+        self.assertEqual(self.fired, [])
+
+    def test_a_2xx_whose_unverified_mark_loses_its_compare_is_sent_alone(self):
+        # #1450: the gate consumed the claim between the re-read and the mark. Nothing was
+        # marked and nothing is queued, so no "left" is reported and the status is "sent".
+        t.reset(prs={"7": t.pr(7)})
+        self.queue(7)
+        real_replace = state_mod.LoopState.queue_replace_if
+
+        def consume_then_replace(st, seat, key, expected, head, url, reason, **kw):
+            if reason.startswith("route delivery uncertain"):
+                st.queue_pop(seat, key)
+            return real_replace(st, seat, key, expected, head, url, reason, **kw)
+        with mock.patch.object(state_mod.LoopState, "queue_replace_if", autospec=True,
+                               side_effect=consume_then_replace), self.answer(consume=False):
+            result = self.drain(actions.drain_snapshot(self.loop(), "reviewer"))
+        self.assertEqual((result["ok"], result["status"], result["sent"]), (False, "sent", 1))
+        self.assertEqual([o["outcome"] for o in result["outcomes"]], ["sent"])
+        self.assertEqual(self.st().queue_items("reviewer"), {})
+
+    def test_a_stale_claim_whose_mark_loses_is_not_reported_an_unverified_post(self):
+        # #1450: the sweep's stale-claim mark lost its compare. Gone: dropped; replaced by a
+        # newer request: left as changed — never "an unverified POST" that was not marked.
+        t.reset(prs={"7": t.pr(7)})
+        key = f"{t.REPO}#7"
+        watchdog = actions._script("watchdog")
+        real_replace = state_mod.LoopState.queue_replace_if
+        for race, outcome, why in (
+                ("pop", "dropped", "the entry left the queue during the checks — nothing is "
+                                   "left to retry"),
+                ("requeue", "left", "the entry changed during the checks")):
+            with self.subTest(race=race):
+                self.queue(7)
+                st = self.st()
+                entry = st.queue_items("reviewer")[key]
+                st.queue_swap_if("reviewer", key, entry, dict(entry, drain={"at": 1.0, "id": "x"}))
+
+                def race_then_replace(st, seat, k, expected, head, url, reason, **kw):
+                    st.queue_pop(seat, k)
+                    if race == "requeue":
+                        self.queue(7)
+                    return real_replace(st, seat, k, expected, head, url, reason, **kw)
+                report = []
+                with mock.patch.object(state_mod.LoopState, "queue_replace_if", autospec=True,
+                                       side_effect=race_then_replace), self.answer():
+                    watchdog.drain(self.loop(), st, "reviewer", quiet=True, report=report)
+                self.assertEqual([(o["outcome"], o["why"]) for o in report], [(outcome, why)])
+                current = st.queue_items("reviewer").get(key) or {}
+                self.assertFalse(str(current.get("reason", "")).startswith("route delivery"))
+                self.assertEqual(self.fired, [])
+                st.queue_pop("reviewer", key)
 
     def test_a_confirmed_entry_gone_before_selection_is_reported_not_an_empty_queue(self):
         # #1407 round 2 F5: removed right after the snapshot check.

@@ -15,17 +15,24 @@ FILES = [ROOT / "scripts" / "watchdog.py", ROOT / "diaktoros" / "cli" / "__init_
          ROOT / "diaktoros" / "cli" / "set_command.py",   # and these since the split (#1349)
          ROOT / "diaktoros" / "cli" / "set_parser.py",
          ROOT / "diaktoros" / "cli" / "apply_command.py",
+         ROOT / "diaktoros" / "cli" / "identity_command.py",
+         ROOT / "diaktoros" / "cli" / "set_adjudication.py",
          ROOT / "diaktoros" / "cli" / "triage_command.py",
          *sorted((ROOT / "scripts").glob("gate_*.py"))]
 
 
 def crowded(source):
-    """(line, names) for each package import that puts more than three names on one line."""
+    """(line, names) for each package import that puts more than three names on one line.
+
+    A package import is `from diaktoros import ...` or a relative import that names modules
+    directly: `from . import ...` and also `from .. import ...`, the form the cli modules use
+    for the package root (#1457).
+    """
     bad = []
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.ImportFrom):
             continue
-        if not (node.module == "diaktoros" or (node.module is None and node.level == 1)):
+        if not (node.module == "diaktoros" or (node.module is None and node.level >= 1)):
             continue
         per_line = {}
         for alias in node.names:
@@ -50,6 +57,22 @@ class ImportLines(unittest.TestCase):
         self.assertEqual(len(crowded("from diaktoros import a, b, c, d\n")), 1)
         self.assertEqual(len(crowded("from . import a, b, c, d\n")), 1)
         self.assertEqual(crowded("from diaktoros import a, b, c\n"), [])
+
+    def test_detector_catches_a_long_root_import_in_a_cli_module(self):
+        # #1457: identity_command and set_adjudication import the root as `from .. import (...)`;
+        # a fourth name on that line must fail like it does for `from . import`.
+        self.assertEqual(len(crowded("from .. import config, util, gate_shims, route_intent\n")), 1)
+        self.assertEqual(crowded("from .. import (\n    config,\n    util,\n    gate_shims,\n"
+                                 "    route_intent,\n)\n"), [])
+
+    def test_crowding_a_guarded_cli_module_fails(self):
+        # Through the guard's own FILES: a crowded root import planted in each module #1457 adds.
+        for name in ("identity_command.py", "set_adjudication.py"):
+            with self.subTest(file=name):
+                path = next((p for p in FILES if p.name == name), None)
+                self.assertIsNotNone(path, f"{name} must be in FILES")
+                planted = path.read_text() + "\nfrom .. import config, util, gate_shims, routes\n"
+                self.assertEqual(len(crowded(planted)), 1)
 
 
 if __name__ == "__main__":

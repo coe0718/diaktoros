@@ -17,6 +17,7 @@ text.
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import json
 import sys
 import time
 import pathlib
@@ -86,6 +87,31 @@ class Outcomes(fixture.Base):
         sup.issue_fix_status(run_id, "posted", comment_id=5)
         self.assertIn("could not fix", broker_issues._issue_fix_outcome(self.scope(run_id)))
 
+    def test_a_posted_plan_or_question_is_not_a_could_not_fix(self):
+        """#1523: a plan or question the fixer posted is the maintainer's move, not a failure."""
+        loop = self.loop
+        st = LoopState(loop)
+        sup, run_id = self.fix_row()
+        sup.record_issue_fix(run_id, REPO, 12, BASE, "comment", "diaktoros/issue-12")
+        sup.issue_fix_status(run_id, "posted", comment_id=70)
+        # A plain comment (no ask), or an older ask on another comment, is still could-not-fix.
+        self.assertIn("could not fix", broker_issues._issue_fix_outcome(self.scope(run_id), loop))
+        st.fix_ask_set(12, "question", 5, "older")
+        self.assertIn("could not fix", broker_issues._issue_fix_outcome(self.scope(run_id), loop))
+        self.assertIsNone(broker_issues._posted_ask(self.scope(run_id), loop))
+        st.fix_ask_drop(12)
+        cases = {"plan": ("posted a plan", "`/loop approve`"),
+                 "question": ("asked a question", "an answer to its question")}
+        for kind, (did, wants) in cases.items():
+            with self.subTest(kind=kind):
+                st.fix_ask_set(12, kind, 70, "the ask")       # the ask this run's comment opened
+                outcome = broker_issues._issue_fix_outcome(self.scope(run_id), loop)
+                self.assertNotIn("could not fix", outcome)
+                self.assertIn(did, outcome)
+                self.assertIn(wants, outcome)
+                self.assertEqual(broker_issues._posted_ask(self.scope(run_id), loop)["kind"], kind)
+                st.fix_ask_drop(12)
+
     def triage_row(self, number):
         sup = run_supervisor.Supervisor(self.db)
         sup.enqueue(f"{REPO}:{number}:issue:triage:triage", REPO, number, config.TRIAGE_HEAD,
@@ -121,6 +147,35 @@ class Outcomes(fixture.Base):
         self.assertEqual(call[1]["identity"], run_id)
         self.assertTrue(call[1]["issue"])
         self.assertIn("no allowed label fit", call[1]["outcome"])
+
+
+class AskNotice(fixture.BrokerWrite):
+    """#1523, through the broker's ``issue_comment`` operation: the ``fixed`` notice."""
+
+    def dispatch(self, body):
+        with mock.patch.object(observer, "notify", return_value=True) as notify:
+            self.server._dispatch(json.dumps(body).encode())
+        [call] = [c for c in notify.call_args_list if c[0][2] == "fixed"]
+        return call[1]
+
+    def test_a_plan_names_the_approval_and_the_maintainer_moves_next(self):
+        sent = self.dispatch({"operation": "issue_comment", "body": "1. a", "kind": "plan"})
+        self.assertNotIn("could not fix", sent["outcome"])
+        self.assertIn("posted a plan", sent["outcome"])
+        self.assertIn("`/loop approve`", sent["outcome"])
+        self.assertEqual(sent["next_turn"], "you")
+
+    def test_a_question_names_the_reply_and_the_maintainer_moves_next(self):
+        sent = self.dispatch({"operation": "issue_comment", "body": "which?", "kind": "question"})
+        self.assertNotIn("could not fix", sent["outcome"])
+        self.assertIn("asked a question", sent["outcome"])
+        self.assertIn("an answer to its question", sent["outcome"])
+        self.assertEqual(sent["next_turn"], "you")
+
+    def test_a_plain_comment_still_says_could_not_fix(self):
+        sent = self.dispatch({"operation": "issue_comment", "body": "cannot"})
+        self.assertIn("could not fix", sent["outcome"])
+        self.assertEqual(sent["next_turn"], "")
 
 
 class FailureNotice(fixture.Base):

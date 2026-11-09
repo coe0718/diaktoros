@@ -203,7 +203,10 @@ No green local check overrides later live PR eligibility.
 ## A turn failed, is waiting, or was retried
 
 Read the reason and `retry_at`, not just state. Supervisor details include bounded output
-tail; worker stderr is beside the ledger in `.workers.log` with rotation.
+tail (the ledger's `runs.detail` keeps the last 8 KB of stdout and 2 KB of stderr, redacted;
+the operator notice shows only its last 1200 bytes; see
+[durable state](architecture.md#durable-state-and-recovery)); worker stderr is beside the
+ledger in `.workers.log` with rotation.
 
 | Reason | Meaning | Action |
 | --- | --- | --- |

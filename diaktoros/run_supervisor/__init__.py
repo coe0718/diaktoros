@@ -71,7 +71,15 @@ CI_WAIT_MAX_S = 60 * 60
 MAX_REARMS = 8
 RETRY_BASE = 120.0
 RETRY_CAP = 3600.0
-DETAIL_BYTES = 2000
+# What a turn's output leaves in ``runs.detail`` (#1658): the sandbox is discarded, so the last
+# 8 KB of stdout (the agent's own closing text) and 2 KB of stderr are kept, redacted. The one
+# place the split is named: ``output_detail``, the fixture worker's file tail and the production
+# turn's capture (``trusted_turn``) all read these. What is *shown* stays short: an operator
+# notice and ``explain`` print only the last ``DETAIL_SHOWN_BYTES`` of it.
+DETAIL_STDOUT_BYTES = 8192
+DETAIL_STDERR_BYTES = 2048
+DETAIL_BYTES = DETAIL_STDOUT_BYTES + DETAIL_STDERR_BYTES
+DETAIL_SHOWN_BYTES = 1200
 REARMABLE = ("failed", "cancelled")
 SEATS = ("reviewer", "fixer", "adjudicator", "triage", "issue_fixer", "shadow")
 # A second reviewer model in no-write mode (#218). It runs beside the real loop and never in it:
@@ -328,8 +336,18 @@ def tail(text: object, limit: int = DETAIL_BYTES) -> str:
 
 
 def output_detail(stdout: object, stderr: object) -> str | None:
-    parts = [f'{name}: {tail(value, DETAIL_BYTES // 2)}' for name, value in
-             (('stderr', stderr), ('stdout', stdout)) if tail(value)]
+    """What ``runs.detail`` stores of a turn's output: the last ``DETAIL_STDERR_BYTES`` of
+    stderr and ``DETAIL_STDOUT_BYTES`` of stdout, each passed through the selftest's token
+    redaction (``selftest.Redactor``) before it is kept. Redacted before the final cut, so a
+    token is matched whole rather than as a prefix-less fragment at the tail's edge."""
+    from .. import selftest
+    redact = selftest.Redactor()
+    parts = []
+    for name, value, limit in (('stderr', stderr, DETAIL_STDERR_BYTES),
+                               ('stdout', stdout, DETAIL_STDOUT_BYTES)):
+        text = tail(redact(tail(value, 4 * limit)), limit)
+        if text:
+            parts.append(f'{name}: {text}')
     return '\n'.join(parts) or None
 
 
@@ -1025,7 +1043,8 @@ class Supervisor(records.LedgerRecords, turns.ClaimAndLaunch, notices.OperatorNo
                         stopped = False
             finally:
                 try:
-                    detail = output_detail(*(_file_tail(f, DETAIL_BYTES) for f in (out, err)))
+                    detail = output_detail(_file_tail(out, DETAIL_STDOUT_BYTES),
+                                           _file_tail(err, DETAIL_STDERR_BYTES))
                 except OSError:
                     detail = None
                 # A failed launch remains failed, not retryable: spawn may have occurred. A

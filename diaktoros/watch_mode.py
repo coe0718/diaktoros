@@ -1,12 +1,13 @@
-"""The watchdog's shared basics: its test mode, and how it reads the clocks it keeps.
+"""The watchdog's shared basics: its test mode, its wall clock, and how it reads the clocks it keeps.
 
 The watchdog script and the modules split out of it read these from here, one binding each,
-so patching ``watch_mode.TEST`` in a test reaches every reader.
+so patching ``watch_mode.TEST`` or ``watch_mode.time`` in a test reaches every reader.
 """
 
 from __future__ import annotations
 
 import math
+import time
 
 from diaktoros import envnames
 
@@ -14,6 +15,14 @@ from diaktoros import envnames
 # watchdog piece reads it here as ``watch_mode.TEST`` (never a copy), so a test that patches it
 # reaches all of them.
 TEST = bool(envnames.get("TEST"))
+
+
+def now() -> float:
+    """The sweep's wall clock. Every watchdog piece reads the time as ``watch_mode.now()``,
+    never through its own ``time`` binding, so a test that patches ``watch_mode.time`` reaches
+    the sweep and every module split out of it (#1661: a stamp read from a moved module's own
+    ``time`` missed the patch)."""
+    return time.time()
 
 
 def valid_clock(value: object, now: float) -> float | None:
