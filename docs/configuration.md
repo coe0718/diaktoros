@@ -520,8 +520,10 @@ each one once the real review exists at that head:
 - **Its labels:** GitHub silently drops the labels a new issue is created with when the token
   can't set them (push access), so any it drops are added right after, with the labels endpoint.
   If they still don't land, the issue stays filed (never again), the watchdog log names the
-  labels and the missing permission, the broker audit records the gap, and its `shadow_issues`
-  row is `unlabelled`, not `posted`.
+  labels and why, the broker audit records the gap, and its `shadow_issues` row is `unlabelled`,
+  not `posted`. Only a 403 (not a rate limit) from the labels endpoint is reported as the reader
+  needing permission to label issues; a write that got no answer (a timeout) is reported as an
+  unknown outcome (check the issue's labels), and any other failure is named as it is.
 - **A refusal with nothing written:** if the broker refuses it before sending anything (no reader
   identity, a repository mismatch, a reader token file that is missing or unreadable), or GitHub answers the POST with a 4xx other than 408 (a reader App without
   Issues write gets 403; the status is the response's own, never one named in an error text), no issue exists, so it stays `recorded` with the reason in its `error`,

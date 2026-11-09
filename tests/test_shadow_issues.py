@@ -203,7 +203,10 @@ class FilePending(unittest.TestCase):
         def write(loop, path, method, body, login):
             posts.append((path, body, login))
             if path.endswith("/labels"):
-                return labelled(body["labels"])
+                data, why = labelled(body["labels"])
+                # The answer's own status, as gh.request records it: None when none arrived.
+                gh._LAST.status = gh.status_of(why) or (200 if data is not None else None)
+                return data, why
             kept = body["labels"] if labelled is None else []
             return {"number": 100 + len(posts), "labels": [{"name": x} for x in kept]}, ""
         pr = None if branch is None else {"number": 7, "head": {"sha": HEAD, "ref": branch}}
@@ -412,6 +415,25 @@ class FilePending(unittest.TestCase):
         self.assertEqual(self.file(labelled=boom)[0], [101])
         self.assertEqual(self.state(run), "unlabelled")
         self.assertIn("(TimeoutError: read timed out)", self.error(run))
+        # #1641: a timeout leaves the outcome unknown; it proves nothing about permissions.
+        self.assertIn("unknown", self.error(run))
+        self.assertNotIn("needs permission", self.error(run))
+
+    def test_only_a_403_is_diagnosed_as_a_missing_label_permission(self):
+        # #1641: no answer is an unknown outcome; another error, a rate-limit 403, or labels
+        # left off a successful answer are reported as they are, never as a permission gap.
+        cases = {"no answer": (lambda _n: (None, "timed out"), "unknown"),
+                 "a 5xx": (lambda _n: (None, "HTTP 502: Bad Gateway"), "(HTTP 502"),
+                 "a rate limit": (lambda _n: (None, "HTTP 403: API rate limit exceeded"),
+                                  "rate limit"),
+                 "left off": (lambda _n: ([{"name": "bug"}], ""), "left them off")}
+        for name, (labelled, said) in cases.items():
+            with self.subTest(name):
+                run = self.recorded(f"A finding about {name}")
+                self.file(labelled=labelled)
+                self.assertEqual(self.state(run), "unlabelled")
+                self.assertIn(said, self.error(run))
+                self.assertNotIn("needs permission", self.error(run))
 
     def audited(self, labelled):
         """The operations the real broker audit records for one filing (#1622 review, F1)."""
