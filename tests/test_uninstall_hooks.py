@@ -121,6 +121,9 @@ class RoundTripTest(Base):
         self.assertEqual(rc, 2, out)
         self.assertIn(", ".join(str(i) for i in stale), out)
         self.assertIn("2 active", out)
+        # #2184: whose login the commands run as; no uninstall route, since the config is gone.
+        self.assertIn("These commands run as your own `gh` login", out)
+        self.assertNotIn("hermes dk uninstall", out)
         for hook_id in stale:
             command = f"gh api -X DELETE repos/{t.REPO}/hooks/{hook_id}"
             self.assertIn(command, out)
