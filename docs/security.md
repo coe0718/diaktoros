@@ -49,7 +49,7 @@ Default tmpfs data caps are 2 GiB scratch and 8 GiB checkout/build target. `DIAK
 
 **Hermes source:** `trusted_turn` exports permitted regular blobs from committed `HEAD`, verifies object hashes and bounds the snapshot. Hidden/excluded paths and credential-container names are omitted; credential-shaped names/content are additionally filtered where that will not break imported code. Code/templates are deliberately not removed merely because they contain credential-shaped text. `exported_secrets` reports such code text as advisories. This is a containment aid, **not a complete secret scanner**. Keep the source and venv secret-free.
 
-**Reviewed repository:** `trusted_fetch` verifies distinct reader/reviewer/fixer mappings and actual principals, checks live repository/ref/head, validates tree metadata and hashes tarball files against the Git blob IDs. It rejects unsafe paths, `.git`, devices, hard links, duplicate/extra/missing files and truncated trees; symlinks, submodules and `.gitmodules` are left out of the export and named as not exported, so the turn continues without them (#645). Its 10,000-entry and 100-MiB bounds do not mean every repository is supported. Tarball redirects are manually limited to one HTTPS hop to `codeload.github.com`, without forwarding the reader's Authorization header; further redirects are refused. CI-fix job logs (`fix_ci`) come through GitHub's redirect from `/actions/jobs/{id}/logs` to its log storage; the host follows it over HTTPS only and drops the Authorization header whenever the host changes.
+**Reviewed repository:** `trusted_fetch` verifies distinct reader/reviewer/fixer mappings and actual principals with the broker's own identity rule (`broker._verify_identities`: each token resolves to its login with an integer `id`, no two to one principal), checks live repository/ref/head, validates tree metadata and hashes tarball files against the Git blob IDs. It rejects unsafe paths, `.git`, devices, hard links, duplicate/extra/missing files and truncated trees; symlinks, submodules and `.gitmodules` are left out of the export and named as not exported, so the turn continues without them (#645). Its 10,000-entry and 100-MiB bounds do not mean every repository is supported. Tarball redirects are manually limited to one HTTPS hop to `codeload.github.com`, without forwarding the reader's Authorization header; further redirects are refused. CI-fix job logs (`fix_ci`) come through GitHub's redirect from `/actions/jobs/{id}/logs` to its log storage; the host follows it over HTTPS only and drops the Authorization header whenever the host changes.
 
 Repository export is an integrity check, not sanitization of source content. Any secret already committed to an accepted repository file is readable by the sandbox and may reach inference or a published body.
 
@@ -118,6 +118,10 @@ not a global stop, drain, rollback or merge permission. Diaktoros never merges.
 **Confirmed one-shot control (#644):** `GET /actions` reads a PR using the host's existing
 credential selection and returns only a per-target offer. `POST /actions` accepts exactly
 `{loop, action, pr, seat, confirmation}`, never a token, path, arbitrary reason, grant or command.
+The issue-dependency actions (#1301) add one field, `on` (an issue number), to that body and
+nothing else. `GET /deps` reads GitHub with the loop's reader credential for each declared
+prerequisite and returns issue numbers, a fixed state (`met`/`waiting`/`unknown`) and a bounded
+reason; a reason that could carry a path, URL or token is replaced by a fixed sentence.
 Both use gateway auth, not the local-only probe restriction. `one_shot_action` owns selection
 and execution for CLI and Desktop (escalation's in `escalate_action`); CLI commands are I/O
 wrappers, not a second rulebook.

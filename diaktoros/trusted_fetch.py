@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import gh
+from . import broker, gh
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
@@ -103,20 +103,11 @@ def _identity(loop: dict, repo: str, number: int, head: str, ref: str, role: str
     reader = loop.get("read_token")
     reviewer = (seats.get("reviewer") or {}).get("login")
     fixer = (seats.get("fixer") or {}).get("login")
-    if not all(isinstance(x, str) and x for x in (reader, reviewer, fixer)):
-        raise FetchDenied("explicit, distinct read and seat identities required")
-    assert isinstance(reader, str) and isinstance(reviewer, str) and isinstance(fixer, str)
-    if len({reader.casefold(), reviewer.casefold(), fixer.casefold()}) != 3:
-        raise FetchDenied("explicit, distinct read and seat identities required")
-    paths = [gh.credential_path(loop, x) for x in (reader, reviewer, fixer)]
-    if any(p is None for p in paths) or len({p.resolve() for p in paths if p is not None}) != 3:
-        raise FetchDenied("distinct token files required")
-    # Distinct filenames are not distinct principals; verify every actual credential.
-    for login in (reader, reviewer, fixer):
-        assert isinstance(login, str)
-        user = gh.principal(loop, login, fetch=lambda path, who=login: _json(loop, path, who))
-        if not isinstance(user, dict) or not isinstance(user.get("login"), str) or user["login"].casefold() != login.casefold():
-            raise FetchDenied("credential principal mismatch")
+    # The broker's one four-identity rule (#1498), each principal read through this module's
+    # bounded transport, so an oversized or failed read is still this module's FetchDenied.
+    broker._verify_identities(
+        loop, (reader, reviewer, fixer), "the reader, reviewer and fixer", denied=FetchDenied,
+        fetch=lambda login: (lambda path: _json(loop, path, login)))
     assert isinstance(reader, str)
     return reader
 

@@ -501,6 +501,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000 (default: the plugin setting, else the review cap) |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10 (default: the plugin setting, else 3) |
 | `--change-proof-max` | `N` |  | changed tests the change proof runs per head, 1-50 (default: the plugin setting, else 20) |
+| `--provider-breaker-failures` | `N` |  | turns in a row killed by a provider error before the account waits, 0-20, 0 = off (default: the plugin setting, else 3) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000 (default: the plugin setting, else no cap) |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting) |
 | `--operator-agent` | `OPERATOR_AGENT` (repeatable) |  | a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated) (default: the plugin setting) |
@@ -662,6 +663,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000 (default: the plugin setting, else the review cap) |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10 (default: the plugin setting, else 3) |
 | `--change-proof-max` | `N` |  | changed tests the change proof runs per head, 1-50 (default: the plugin setting, else 20) |
+| `--provider-breaker-failures` | `N` |  | turns in a row killed by a provider error before the account waits, 0-20, 0 = off (default: the plugin setting, else 3) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000 (default: the plugin setting, else no cap) |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting) |
 | `--operator-agent` | `OPERATOR_AGENT` (repeatable) |  | a GitHub login of an agent that posts as the operator's own account; its comments reach the seats as maintainer data, labelled operator agent (repeat it, or comma-separated) (default: the plugin setting) |
@@ -769,6 +771,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000; 0 = the review cap |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10; 0 = the default (3) |
 | `--change-proof-max` | `N` |  | changed tests the change proof runs per head, 1-50; 0 = the default (20) |
+| `--provider-breaker-failures` | `N` |  | turns in a row killed by a provider error before the account waits, 0-20; 0 = off, '' = the default (3) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000; 0 = no cap |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated); replaces the list (one of `--review-only`, `--no-review-only`) |
 | `--no-review-only` |  |  | clear the review-only list (one of `--review-only`, `--no-review-only`) |
@@ -1643,7 +1646,9 @@ reason (exit 1). Exit 2 when:
 - a `--reconsider` the gate could only hold (`reconsider NOT queued`, below).
 
 Only the gate's GitHub
-calls are deadline-limited. There is no hard deadline in-process, so a hang outside a GitHub call
+calls, and the seat drain the gate starts, are deadline-limited: the drain's `watchdog.py`
+process gets at most half of the budget that is left and is stopped at that timeout (logged,
+never fatal). There is no hard deadline in-process, so any other hang outside a GitHub call
 has no bound: the command can stay stuck and never reach exit 2. If it has run well past the
 budget, stop it. On any non-finish, check `explain` before asking again.
 
@@ -1652,9 +1657,10 @@ ledger as a webhook delivery's (`gate-failures.json` in the loop's state directo
 no-loop ledger when that is busy or unwritable), so `explain`, `doctor` and the watchdog's
 gate-failure sweep report them. The entry is never re-driven by the watchdog (it cannot rebuild
 your command, `--reconsider` included): the sweep alerts it, and the way forward is to run
-`review` again, which resolves the entry once the gate finishes. A hang outside a GitHub call
-(see above) never reaches the recorder, so it leaves no entry. If the ledger itself cannot be
-written, the output says `could NOT be recorded`. Settling an entry waits only a bounded time
+`review` again, which resolves the entry once the gate finishes. An unbounded hang outside a
+GitHub call (see above) never reaches the recorder, so it leaves no entry. If the ledger itself
+cannot be written, the output says `could NOT be recorded`. Settling an entry waits only a
+bounded time
 for a busy ledger. If it gives up, the earlier entry stays open (it can alert again later); a
 failure recorded afterwards in the no-loop ledger is still reported as its own, because it
 carries when its run began and the older open entry predates that.
@@ -1723,6 +1729,15 @@ hermes dk depends --loop "<loop-id>" --issue 42 --waive 41
 
 Dependencies and waits are kept in the loop's state directory and survive a restart. Exit `1`
 means it was refused, and the line says why; `2` that it couldn't be answered.
+
+The Desktop page shows the same list under **Issue dependencies** (`GET /deps`, #1301): each
+row is met, waiting or unknown, with why. It reads GitHub for each prerequisite, so the page reads
+it when you select the loop and when you press Refresh, and never polls it. Declaring or waiving
+one there is the confirmed `depends` / `waive` action (`GET`/`POST /actions` with `on`), which
+runs the same checks as this command. A refusal (itself, a cycle, a pull request, an issue it
+can't read) is shown in the preview and writes nothing. The confirmation is bound to the issue's
+dependency record, so if that record changes before you confirm, nothing is written. A waiver
+deletes the record, so who waived a dependency isn't kept.
 
 <!-- flags:depends -->
 | flag | value | default | what it does |
@@ -1876,12 +1891,26 @@ arbitrary cancellations.
 pushed, or ended `uncertain`) is never replayed: `retry` refuses it and prints how to inspect
 and reconcile it instead.
 
+`--clear-hold` with `--seat` reopens the account that seat draws on (see
+[pacing](operations.md#pacing-usage-windows-and-daily-caps)), and `--pr` isn't needed. Use it
+after you switch the seat's model, or once its provider is back. The account is the provider,
+endpoint and profile, with no model in it, so a model switch alone doesn't end the hold. It
+clears every hold on the seat's profile, a provider's own 429 window too, with the outage and
+provider-failure counts behind it. Then it makes this loop's runs held on a closed account due
+now, on every seat of that profile, and starts a worker. A turn that meets the same outage or
+429 holds the account again. With `--pr` as well, that PR's run is then re-armed as usual.
+
+```bash
+hermes dk retry --loop "<loop-id>" --seat fixer --clear-hold
+```
+
 <!-- flags:retry -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
-| `--pr` | `PR` | **required** | the pull request whose failed run to re-arm |
+| `--pr` | `PR` |  | the pull request whose failed run to re-arm (required unless --clear-hold) |
 | `--seat` | `reviewer` \| `fixer` \| `adjudicator` \| `triage` \| `issue_fixer` \| `shadow` |  | only that seat's run (default: whichever failed at the PR's newest head; a shadow run only when named) |
+| `--clear-hold` |  |  | with --seat: reopen the account that seat draws on (a provider outage or usage-window hold) and run its held turns now, e.g. after switching its model; with --pr, then re-arm that PR's run too |
 <!-- /flags -->
 
 ### cancel
@@ -1921,8 +1950,10 @@ and `explain` show a cancelled run as an operator's cancel, with the `retry` tha
 
 The Desktop host has the same cancel as the confirmed `cancel` action (`GET`/`POST /actions`).
 The preview names the runs it would stop. If any of them starts, ends or appears before you
-confirm, the confirmation is stale and nothing is cancelled. The page has no control for it
-yet: that's #1372.
+confirm, the confirmation is stale and nothing is cancelled. The page's **One-shot actions**
+section has the control (#1372): choose *Cancel runs*, a PR and every seat or one, preview, then
+confirm. A `partial` outcome means a running turn's stop was requested, not that it finished;
+only `retry` re-arms a cancelled run.
 
 <!-- flags:cancel -->
 | flag | value | default | what it does |

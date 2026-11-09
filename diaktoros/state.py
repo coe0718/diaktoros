@@ -1176,10 +1176,21 @@ class LoopState:
 
     # -- issue dependencies (#671): {issue: {prerequisite issue: {"by", "at"}}} ----------
 
-    def issue_deps(self) -> dict:
+    def issue_deps(self, strict: bool = False) -> dict:
         """Declared dependencies: issue B waits for issue A's implementation to merge. No lock
-        on read, like ``fix_holds``: writes are atomic replaces."""
-        raw = self._load(self.dir / "issue-deps.json", {})
+        on read, like ``fix_holds``: writes are atomic replaces.
+
+        ``strict`` raises when the file exists but cannot be read or is not a mapping, instead
+        of reading it as no dependencies: a confirmed Desktop write binds the record it shows,
+        and a page must say "unavailable", never "none declared", for a store it could not read
+        (#1301)."""
+        path = self.dir / "issue-deps.json"
+        if strict:
+            raw = json.loads(path.read_text()) if path.exists() else {}
+            if not isinstance(raw, dict):
+                raise ValueError("issue dependency record is not a mapping")
+        else:
+            raw = self._load(path, {})
         out: dict = {}
         for key, deps in (raw.items() if isinstance(raw, dict) else ()):
             if str(key).isdigit() and isinstance(deps, dict):

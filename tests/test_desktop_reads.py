@@ -64,13 +64,19 @@ class ReadRoutes(unittest.TestCase):
         # None of the production projection functions is replaced. Missing runtime prerequisites
         # are honest unavailable/check results, not transport failures or invented green state.
         for path in ('/loops', '/stats?loop=widgets', '/health?loop=widgets', '/settings',
-                     '/records?loop=widgets', '/hooks?loop=widgets', '/overview'):
+                     '/records?loop=widgets', '/hooks?loop=widgets', '/overview',
+                     '/deps?loop=widgets'):
             with self.subTest(path=path):
                 response = self.get(path)
                 self.assertEqual(response.status_code, 200, response.text[:200])
                 self.assertIsInstance(response.json(), dict)
         self.assertEqual(self.get('/stats?loop=widgets').json()['repo'], 'acme/widgets')
         self.assertEqual(self.get('/overview').json()['loops'][0]['id'], 'widgets')
+        # No dependency declared: a verified empty list, read without any GitHub call (#1301).
+        deps = self.get('/deps?loop=widgets').json()
+        self.assertEqual({k: deps[k] for k in ('loop', 'repo', 'available', 'total', 'deps')},
+                         {'loop': 'widgets', 'repo': 'acme/widgets', 'available': True,
+                          'total': 0, 'deps': []})
 
     def test_corrupt_real_ledger_is_safe_unavailable_not_500_or_empty_stats(self):
         self.db.write_bytes(b'not a SQLite database')
@@ -88,6 +94,8 @@ class ReadRoutes(unittest.TestCase):
                            ('/stats?loop=widgets', 'stats_view'),
                            ('/settings', 'settings_view'),
                            ('/records?loop=widgets', 'records_view'),
+                           ('/deps?loop=widgets', 'deps_view'),
+                           ('/actions?loop=widgets&action=depends&pr=2&on=1', 'action_view'),
                            ('/hooks?loop=widgets', 'hooks_view'),
                            ('/overview', 'overview_view'), ('/loops', 'loops'),
                            ('/actions?loop=widgets&action=escalate&pr=1', 'action_view'),
@@ -113,6 +121,10 @@ class ReadRoutes(unittest.TestCase):
              {'loop': 'widgets', 'action': 'escalate', 'pr': 1, 'seat': None,
               'confirmation': confirmation},
              ('widgets', 'escalate', 1, None, confirmation)),
+            ('/actions', 'action_perform_view',
+             {'loop': 'widgets', 'action': 'depends', 'pr': 2, 'seat': None, 'on': 1,
+              'confirmation': confirmation},
+             ('widgets', 'depends', 2, None, confirmation, 1)),
         )
 
     def test_unexpected_post_exceptions_remain_generic_500_not_read_unavailable(self):

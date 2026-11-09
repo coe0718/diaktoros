@@ -411,6 +411,12 @@
         "default": "",
         "description": "The changed test methods 'Prove the changed tests' runs per head, a whole number 1-50; the reviewer is told how many there were. Blank = not set here: the loop's own value, else 20"
       },
+      "provider_breaker_failures": {
+        "label": "Provider failures before the account waits",
+        "type": "str",
+        "default": "",
+        "description": "Turns in a row that die on a provider error (an HTTP error or an unreachable provider) before every seat on that account waits, 15 minutes and doubling up to 2 hours, spending no retry; a whole number 0-20, 0 = off. Blank = not set here: the loop's own value, else 3"
+      },
       "attribution": {
         "label": "Sign what the loop posts",
         "type": "bool",
@@ -487,6 +493,7 @@
       "adjudicator_file_issues": false,
       "change_proof": false,
       "change_proof_max": "",
+      "provider_breaker_failures": "",
       "attribution": true
     },
     "sources": {
@@ -558,6 +565,7 @@
       "adjudicator_file_issues": "default",
       "change_proof": "default",
       "change_proof_max": "default",
+      "provider_breaker_failures": "default",
       "attribution": "default"
     },
     "seats": {

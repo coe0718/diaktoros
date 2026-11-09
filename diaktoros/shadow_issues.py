@@ -20,7 +20,7 @@ import json
 import re
 import time
 
-from . import broker, config, gate, gh
+from . import broker, broker_filing, config, gate, gh
 
 WAIT_S = 7 * 86400        # a head the real reviewer never reached is not waited on for ever
 MAX_ATTEMPTS = 12         # refused POSTs (nothing written) before the issue is dropped (#1732)
@@ -111,7 +111,7 @@ def _lineage_depth(loop: dict, sup, number: int) -> int | None:
 
 
 def _send_shadow(loop: dict, sup, row, depth: int) -> tuple[int, str]:
-    return broker.file_shadow_issue(
+    return broker_filing.file_shadow_issue(
         loop, repo=loop["repo"], number=int(row["pr"]), head=str(row["head"]),
         title=row["title"], body=row["body"], labels=json.loads(row["labels"] or "[]"),
         model=sup.shadow_model(row["run_id"]) or "unknown", depth=depth)

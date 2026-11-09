@@ -230,7 +230,8 @@ def _setup_setting_argv(args, d: dict, interactive: bool) -> list[str]:
     if getattr(args, "acknowledge_branch_push", False):
         argv.append("--acknowledge-branch-push")
     argv += _given(args, seat_flags.forwarded())
-    argv += _given(args, ("fix_daily_turns", "review_only_cap", "review_only_daily", "ci_fix_cap", "change_proof_max"))
+    argv += _given(args, ("fix_daily_turns", "review_only_cap", "review_only_daily", "ci_fix_cap",
+                          "change_proof_max", "provider_breaker_failures"))
     return argv
 
 def _setup_check_argv(args, d: dict, interactive: bool) -> list[str]:
@@ -567,6 +568,9 @@ def _setup_review_only_flags(first) -> None:  # noqa: ANN001
                             "(default: the plugin setting, else 3)")
     first.add_argument("--change-proof-max", default=None, metavar="N",
                        help="changed tests the change proof runs per head, 1-50 (default: the plugin setting, else 20)")
+    first.add_argument("--provider-breaker-failures", default=None, metavar="N",
+                       help="turns in a row killed by a provider error before the account waits, "
+                            "0-20, 0 = off (default: the plugin setting, else 3)")
     first.add_argument("--review-only-daily", default=None, metavar="N",
                        help="reviewer turns a day on review-only PRs, 1-1000 (default: the "
                             "plugin setting, else no cap)")

@@ -1,7 +1,7 @@
 """File the follow-ups an adjudicator ruled valid but not blocking (#1864).
 
 The adjudicator writes nothing but its ruling. With ``adjudicator_file_issues`` on, its ruling turn
-may also ask, through the broker, to file up to ``broker.FILED_ISSUES_MAX`` issues: each checked as
+may also ask, through the broker, to file up to ``broker_filing.FILED_ISSUES_MAX`` issues: each checked as
 the reviewer's would be and recorded in the run ledger (``shadow_issues``, under the adjudicator's
 run), never posted by the seat. The watchdog sweep calls :func:`file_pending`, which files each one
 whose run recorded its ruling, as the reader, labelled ``adjudicator-found``, with a header naming
@@ -21,10 +21,10 @@ from __future__ import annotations
 import json
 import time
 
-from . import broker, config, shadow_issues
+from . import broker_filing, config, shadow_issues
 
 def _send(loop: dict, sup, row, depth: int) -> tuple[int, str]:
-    return broker.file_ruling_issue(
+    return broker_filing.file_ruling_issue(
         loop, repo=loop["repo"], number=int(row["pr"]), head=str(row["head"]),
         title=row["title"], body=row["body"], labels=json.loads(row["labels"] or "[]"),
         verdict=str(row["verdict"]), depth=depth)
