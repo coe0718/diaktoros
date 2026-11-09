@@ -530,6 +530,35 @@ class SetAdjudication(Base):
         self.assertEqual(loop["adjudicator"]["route"], "widgets-adj2")
         self.assertTrue(routes.route("widgets-adj2"))
 
+    def observer_route_fails(self, *adjudication):
+        """The observer's route write fails after the same ``set`` wrote its adjudication change
+        (#2212): the refusal must not claim that change was undone."""
+        self.install("acme/widgets")
+        real = routes.new_route
+
+        def new_route(name, **kwargs):
+            if name == "widgets-watch":
+                raise OSError("disk full")
+            return real(name, **kwargs)
+        with patch.object(routes, "new_route", side_effect=new_route):
+            rc, out = self.run_cli(["set", "--loop", "widgets", *adjudication, "--observer-profile",
+                                    "default", "--observer-route", "widgets-watch"])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("observer route could not be reconciled; loop config unchanged: disk full",
+                      out)
+        self.assertNotIn("widgets-watch", self.loop_routes())
+        return out
+
+    def test_a_later_route_failure_names_the_adjudication_change_that_stays(self):
+        out = self.observer_route_fails("--adjudicator-profile", "arbiter")
+        self.assertIn("but the adjudication change above stays written: run the same `set` "
+                      "again to finish", out)
+        self.assertEqual(config.load_id("widgets")["adjudicator"]["profile"], "arbiter")
+        self.assertIn("widgets-breach", self.loop_routes())
+
+    def test_a_route_failure_without_an_adjudication_change_says_nothing_of_it(self):
+        self.assertNotIn("adjudication change", self.observer_route_fails())
+
     def test_login_refusal_names_the_new_command(self):
         self.install("acme/widgets")
         rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-login", "bot",

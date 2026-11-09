@@ -525,9 +525,8 @@ def _observer_move(loop: dict, updated: dict, freed: str = "") -> tuple:
     feed's tombstone. Returns (before, after, destination_changed, urgent_changed)."""
     before = loop.get("observer") or {}
     after = updated.get("observer") or {}
-    # Disabling stops new notices and removes the route, but leaves the outbox intact.
-    # Keep its former destination as a tombstone: otherwise re-enabling at a new
-    # destination (or host) could forward a queued private PR link there.
+    # Disabling removes the route but keeps the outbox; the old destination stays as a tombstone,
+    # or re-enabling elsewhere (or on another host) could forward a queued private PR link there.
     previous = loop.get("observer_disabled") or {}
     bound = before or previous
     keys = ("route", "profile", "deliver")
@@ -535,8 +534,7 @@ def _observer_move(loop: dict, updated: dict, freed: str = "") -> tuple:
     old_target["host"] = previous.get("host") if previous else loop.get("host")
     new_target = {k: after.get(k) for k in keys}
     new_target["host"] = updated.get("host")
-    destination_changed = any(before.get(k) != after.get(k)
-                              for k in ("route", "profile", "deliver"))
+    destination_changed = any(before.get(k) != after.get(k) for k in keys)
     urgent_keys = ("urgent_route", "urgent_profile", "urgent_deliver")
     urgent_changed = any(before.get(k) != after.get(k) for k in urgent_keys) or (
         bool(after.get("urgent_route")) and
@@ -749,8 +747,8 @@ def _set(args) -> int:
     loop = _load_loop(args)
     # #1293: moving the reader or the adjudicator waits for its runs, as `identity` does.
     _refuse_busy_identity(args, loop)
-    # #1972: the steps below check the loop as the adjudication change leaves it, and that change
-    # is written only after the last of them can refuse, so a refused `set` writes nothing.
+    # #1972: the steps below check the loop the adjudication change leaves; it is written after
+    # the last of them can refuse, so a refused `set` writes nothing.
     adj = None
     if (getattr(args, "adjudicator_profile", None) or getattr(args, "adjudicator_route", None)
             or getattr(args, "adjudicator", None)):
@@ -791,9 +789,15 @@ def _set(args) -> int:
         loop, updated, set_adjudication.freed(adj))
     if (rc := set_adjudication._commit(adj)):
         return rc
-    shims_ok = _observer_route(loop, updated, before, after, destination_changed)
-    shims_ok = _urgent_route(loop, updated, before, after, urgent_changed, shims_ok)
-    shim_lines = _app_route(loop, updated, app_route)
+    try:
+        shims_ok = _observer_route(loop, updated, before, after, destination_changed)
+        shims_ok = _urgent_route(loop, updated, before, after, urgent_changed, shims_ok)
+        shim_lines = _app_route(loop, updated, app_route)
+    except _Refused:
+        if adj:     # #2212
+            print("  but the adjudication change above stays written: run the same `set` "
+                  "again to finish")
+        raise
     path = cli_common._write_config(updated)
     _retire_routes(updated, before, after, destination_changed)
     _print_summary(loop, updated, path, changes, seat_changes, budget_changes, read_before,
