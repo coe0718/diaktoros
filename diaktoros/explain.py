@@ -768,7 +768,8 @@ def _queue_blockers(c, declined: bool) -> None:
     # A push-off blocker above for a started turn (a lock, mark or ledger row) names that turn,
     # not the declined entry, so the entry gets its own line below (#1614).
     started = c.push_off and (c.fixer_ended or c.fix_live) and not c.ruling
-    if c.fixer_queue_hold or (declined and not started):
+    # Parked for a ruling, _run_blockers names no declined entry (#2075 review F1): name it here.
+    if c.fixer_queue_hold or (declined and not started and not c.ruling):
         pass  # a hold or a declined entry is no capacity wait: no freed slot starts it (#1613)
     elif c.queued_seat and gate.is_declined_hold({"reason": c.queued_reason}):
         # A declined entry is never capacity, whatever lock or mark stands beside it (#1614):
