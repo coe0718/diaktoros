@@ -256,18 +256,72 @@ class ShowTests(_Base):
             with self.subTest(hint):
                 self.assertEqual(self.hand_spelled(f'"""``hermes dk fixer-push``."""\nnote = {hint}\n'), [2])
 
+    @staticmethod
+    def inline_fixer_push(text: str) -> list[str]:
+        """Each ``dk fixer-push`` command quoted inline (in backticks) in Markdown ``text``, a span
+        wrapped across lines joined back into one line (#1492). Fenced blocks are left out: the
+        docs harness (``tests/harness/docs.py``) already parses every command in them."""
+        import re
+        prose, fenced = [], False
+        for line in text.splitlines():
+            if line.lstrip().startswith("```"):
+                fenced = not fenced
+                line = ""
+            prose.append("" if fenced else line)
+        commands = []
+        for span in re.findall(r"(?<!`)`([^`]+)`(?!`)", "\n".join(prose)):
+            joined = " ".join(span.split())
+            start = joined.find("dk fixer-push")
+            if start >= 0 and not re.search(r"\n\s*\n", span):  # a paragraph break ends a span
+                commands.append(joined[start:])
+        return commands
+
+    @staticmethod
+    def fixer_push_problem(parser, command: str) -> str | None:
+        """Why the CLI would refuse ``command`` (``dk fixer-push …``), or ``None`` when it runs:
+        the real parser's verdict (#1492), then the ``--enable`` acknowledgement that
+        ``cmd_fixer_push`` requires after parsing."""
+        import sys
+        sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
+        from harness import docs
+        tokens = docs._argv("hermes " + command)
+        if tokens is None:
+            return "not a command the parser can read"
+        refused = docs._rejects(parser, tokens)
+        if refused:
+            return refused
+        args = parser.parse_args(tokens)
+        if args.enable and not args.acknowledge_pr_race:
+            return "--enable without --acknowledge-pr-race is refused by the command"
+        return None
+
     def test_every_documented_fixer_push_command_runs(self):
         # #1477 shadow review: the skill the fixer seat loads said `hermes dk fixer-push --enable`.
-        # Markdown cannot call the helper, so each command written there must be whole.
+        # Markdown cannot call the helper, so each command written there must be whole. #1492: it
+        # is parsed by the CLI's own parser, not matched by substring.
         import pathlib
-        import re
+        import sys
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+        from harness import docs
+        parser = docs._real_parser()
+        # The checker first: it must refuse what the CLI refuses and accept what it accepts.
+        sample = ("Run `hermes dk fixer-push --loop=ID --enable --acknowledge-pr-race`, or\n"
+                  "`hermes dk fixer-push --loop ID\n  --disable`. Wrong: `dk fixer-push --loop ID`,\n"
+                  "`dk fixer-push --loop ID --enable --disable --acknowledge-pr-race`,\n"
+                  "`dk fixer-push --loop ID --enable`.\n```\nhermes dk fixer-push --loop ID\n```\n")
+        found = self.inline_fixer_push(sample)
+        self.assertEqual(len(found), 5, found)
+        self.assertEqual(found[1], "dk fixer-push --loop ID --disable")
+        self.assertEqual([self.fixer_push_problem(parser, c) is None for c in found],
+                         [True, True, False, False, False])
         root = pathlib.Path(__file__).resolve().parents[1]
+        seen = 0
         for path in [*root.glob("*.md"), *(root / "docs").rglob("*.md"), *(root / "skill").rglob("*.md")]:
-            for command in re.findall(r"dk fixer-push\b[^`\n]*", path.read_text()):
+            for command in self.inline_fixer_push(path.read_text()):
+                seen += 1
                 with self.subTest(f"{path.relative_to(root)}: {command}"):
-                    self.assertIn("--loop ", command)
-                    if "--enable" in command:
-                        self.assertIn("--acknowledge-pr-race", command)
+                    self.assertIsNone(self.fixer_push_problem(parser, command))
+        self.assertGreater(seen, 0, "no inline fixer-push command found: the extractor is broken")
 
     def test_a_loop_file_value_wins_and_text_groups_on_first(self):
         self.install()
