@@ -190,7 +190,8 @@ def _stale_hooks_refusal(loop: dict, admin: str | None) -> str:
     if hooks is None:
         return (f"refused: cannot read {loop['repo']}'s hooks to check for a previous install's "
                 f"({error}); nothing written. Give the --admin-token login hook access "
-                "(`admin:repo_hook`, or classic `repo`) and re-run")
+                "(`admin:repo_hook` or classic `repo` for a token, Webhooks: Read and write for a "
+                "GitHub App) and re-run")
     for line in cli_common._foreign_lines(loop, foreign):
         print(f"  info: {line}")
     if not hooks:
@@ -387,6 +388,10 @@ def _form_credentials(d: dict, explicit: set, reviewer_seat: str, fixer_seat: st
     return credential_form
 
 
+# How init maps the reader's credential: either kind can be the reader (#1916).
+_READER_MAPS = "--token LOGIN=/path/to/pat or --app LOGIN=APP_ID:/abs/key.pem"
+
+
 def cmd_init(args) -> int:
     """Install a loop: write its config, its routes, and (on request) its hooks and cron job.
 
@@ -574,8 +579,8 @@ def cmd_init(args) -> int:
         # one-account-two-hats shape the broker refuses at the first write.
         if not args.read_token:
             raise config.ConfigError(
-                "--read-token LOGIN names the account the gates read GitHub as (map its file with "
-                f"--token LOGIN=/path/to/pat) — {config.FOUR_IDENTITY_RULE}")
+                "--read-token LOGIN names the account the gates read GitHub as (map it with "
+                f"{_READER_MAPS}) — {config.FOUR_IDENTITY_RULE}")
         loop = config.normalize(raw)
         # One repo, one loop: a second id for it makes by_repo raise in every gate.
         others = config.loop_ids_for_repo(loop["repo"], exclude=loop["id"])

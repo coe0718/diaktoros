@@ -17,8 +17,9 @@ exits 1 if anything failed:
 3. one tiny real request in the seat's wire format (chat completion, Responses or Messages)
    through the host inference capability, once per distinct seat resolution (``--no-model``
    skips it);
-4. the read/reviewer/fixer (and optional adjudicator) tokens resolve via ``/user`` to distinct
-   principals with the expected logins, and the repository is readable;
+4. the read/reviewer/fixer (and optional adjudicator) credentials resolve to distinct principals
+   with the expected logins (``/user`` for a PAT; ``/app`` and ``/users/<slug>[bot]`` for a
+   GitHub App), and the repository is readable;
 5. with ``--pr N``: the broker's reviewer-write authorization, run with reads only; then whether
    the seat can build that head — the host prefetch of its pinned dependencies (issue #51) and an
    offline ``cargo metadata`` inside the real sandbox layout with the cache mounted read-only;

@@ -200,7 +200,8 @@ def _split_app_pair(pair: str) -> tuple[str, dict] | None:
     app_id = app_id.strip()
     parsed_id = config.parse_app_id(app_id)
     if parsed_id is None:
-        print(f"refused: {usage}: the App id {app_id!r} is not a number")
+        print(f"refused: {usage}: the App id {app_id!r} is not a number "
+              f"(at most {config.APP_ID_MAX_DIGITS} digits)")
         return None
     try:
         credentials.check_token_file(key, f"--app {login} key")
@@ -531,10 +532,13 @@ def _app_hook_need(login: str, repo) -> str:
 
 def hook_write_need_any(loop: dict) -> str:
     """The hook-write remedy where the admin login is not known yet (doctor's ``--admin-token
-    <login>``): the PAT wording and the App alternative, since either kind can be the admin (#1569)."""
+    <login>``): the PAT wording and the App alternative, since either kind can be the admin (#1569).
+    The App is mapped with ``set``: the command doctor puts this in (``apply``) has no ``--app``."""
+    lid = shlex.quote(str(loop.get("id") or "<id>"))
     return (f"{hook_write_need(loop, '<login>')}; if that login is a GitHub App, its key needs hook "
-            f"write access on {loop.get('repo')} instead (Webhooks: Read and write), the App installed "
-            "on the repo and mapped with `--app <login>=APP_ID:/abs/path/to/key.pem`")
+            f"write access on {loop.get('repo')} instead (Webhooks: Read and write): install the App "
+            f"on the repo and map it with `hermes dk set --loop {lid} --app "
+            "<login>=APP_ID:/abs/path/to/key.pem`")
 
 
 def hook_write_need(loop: dict, token_login: str | None) -> str:

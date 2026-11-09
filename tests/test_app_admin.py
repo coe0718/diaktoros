@@ -69,6 +69,10 @@ class DoctorHookFix(unittest.TestCase):
         for part in ("the token for '<login>'", "admin:repo_hook", "if that login is a GitHub App",
                      "Webhooks: Read and write", "--app <login>=APP_ID:/abs/path/to/key.pem"):
             self.assertIn(part, need)
+        # The mapping names the command that takes --app; doctor's fix line runs `apply`, which
+        # has none (#1687).
+        self.assertIn("install the App on the repo and map it with `hermes dk set --loop "
+                      f"{self.LOOP['id']} --app <login>=APP_ID:/abs/path/to/key.pem`", need)
 
     def test_doctor_hook_check_advice_offers_the_app_alternative(self):
         from diaktoros.doctor import hook_checks

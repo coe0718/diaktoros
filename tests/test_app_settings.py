@@ -43,6 +43,11 @@ class AppSettings(Base):
                            for value in ("0", "-1", "+2", "٢", "2.0", "9" * 4301))):
             with self.subTest(settings=settings):
                 self.assert_refused(["apply", "--loop", "widgets"], "reviewer_app", settings)
+        # #1748: an all-digit id over the cap is refused, and the message says why.
+        self.assert_refused(["apply", "--loop", "widgets"],
+                            r"reviewer_app_id must be a positive ASCII decimal App id "
+                            r"\(at most 20 digits\)",
+                            {"reviewer_app_id": "9" * 21, "reviewer_app_key_file": str(self.key1)})
 
     def test_dry_run_shows_app_kind_id_and_path_without_writing(self):
         self.install()

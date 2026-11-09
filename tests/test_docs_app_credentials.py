@@ -53,9 +53,55 @@ class GeneralDocsNameAppKeys(unittest.TestCase):
 
     def test_operations_token_section_points_apps_to_their_guide(self):
         ops = " ".join((ROOT / "docs" / "operations.md").read_text().split())
-        section = ops.split("## Token files: one PAT per account", 1)[1].split("## ", 1)[0]
-        self.assertIn("GitHub App has a private key file", section)
+        section = ops.split("## Credential files: one per account", 1)[1].split("## ", 1)[0]
+        self.assertIn("a PAT, or a GitHub App's private key", section)
         self.assertIn("github-apps.md", section)
+
+    def test_operations_credential_section_is_kind_neutral_and_its_links_resolve(self):
+        # #1687: the heading and its first rule held for every login, App logins included, and
+        # the page's contents and the four-identity rule's message link to the new anchor.
+        from diaktoros import config
+        ops = (ROOT / "docs" / "operations.md").read_text()
+        self.assertNotIn("one PAT per account", ops)
+        self.assertNotIn("its own nonempty private token file", ops)
+        self.assertIn("](#credential-files-one-per-account)", ops)
+        self.assertIn("docs/operations.md#credential-files-one-per-account",
+                      config.FOUR_IDENTITY_RULE)
+
+
+class AppIdCapIsDocumented(unittest.TestCase):
+    """#1748: the App id digit cap a user meets as a refusal is stated where the field is."""
+
+    def test_settings_and_configuration_state_the_cap(self):
+        from diaktoros import config
+        cap = f"at most {config.APP_ID_MAX_DIGITS} digits"
+        for role in ("reviewer", "fixer", "adjudicator"):
+            self.assertIn(f"({cap})", row("settings.md", f"| `{role}_app_id` |"))
+        self.assertIn(f"An App id is positive ASCII decimal ({cap})",
+                      " ".join((ROOT / "docs" / "settings.md").read_text().split()))
+        self.assertIn(f"positive App id of {cap}", row("configuration.md", "| `apps` |"))
+        # The settings form shows plugin.yaml's description beside each App id field.
+        self.assertEqual((ROOT / "plugin.yaml").read_text().count(
+            f"Positive ASCII decimal App id ({cap}), paired with this seat's App key file"), 3)
+
+
+class DocstringsQualifyUserChecks(unittest.TestCase):
+    """#1687: an App identity resolves through ``/app`` and ``/users/<slug>[bot]``, never
+    ``/user``, so no docstring says every identity resolves via ``/user``."""
+
+    def test_principal_docstrings_name_the_app_path(self):
+        from diaktoros import broker, broker_ipc, selftest
+        from diaktoros.config import credentials
+        from diaktoros.doctor import identity_checks
+        for owner in (selftest, broker.authorize_ruling_comment,
+                      credentials.verify_adjudicator_token, credentials.reader_problem,
+                      identity_checks.check_adjudicator_identity,
+                      broker_ipc.RunBroker._record_only):
+            doc = " ".join((owner.__doc__ or "").split())
+            with self.subTest(owner=getattr(owner, "__qualname__", owner.__name__)):
+                self.assertIn("``/user`` for a PAT", doc)
+                self.assertIn("``/app`` and ``/users/<slug>[bot]`` for a GitHub App", doc)
+                self.assertNotIn("via ``/user``", doc)
 
 
 class GeneralDocsQualifyUserChecks(unittest.TestCase):

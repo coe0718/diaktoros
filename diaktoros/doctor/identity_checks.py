@@ -157,7 +157,8 @@ def check_adjudicator_identity(loop: dict) -> doctor.Check | None:
     Without one, rulings go to the operator feed and the host ledger only — that is a valid
     configuration, not a failure, so nothing is reported. With one, it must be a fourth account:
     its own login and its own token file, never the reader's or a seat's. (Distinct *principals*
-    need a network read; the broker verifies those via ``/user`` before every comment.)
+    need a network read; the broker verifies those before every comment: ``/user`` for a PAT,
+    ``/app`` and ``/users/<slug>[bot]`` for a GitHub App.)
     """
     login = config.adjudicator_login(loop)
     if not login:
@@ -174,11 +175,14 @@ def check_adjudicator_identity(loop: dict) -> doctor.Check | None:
                                 "operator-only rulings")
     path = gh.token_path(loop, login)
     from .. import github_app
+    # An App adjudicator's credential is its private key, not a token file (#1687, #1675).
+    file_kind = "token file"
     if path is None and github_app.is_app(loop, login):
         found = check_app_identity(loop, login, "credential:adjudicator")
         if found.status != doctor.VERIFIED:
             return found
         path = github_app.key_path(loop, login)
+        file_kind = "GitHub App key"
     if path is None:
         return doctor.Check("credential:adjudicator", doctor.ABSENT, f"no tokens or apps entry for {login!r}",
                             f"add --token {login}=/path/to/pat (or --app {login}=APP_ID:/abs/key.pem), or "
@@ -201,10 +205,12 @@ def check_adjudicator_identity(loop: dict) -> doctor.Check | None:
             shared = True
         if shared:
             return doctor.Check("credential:adjudicator", doctor.MISMATCH,
-                                f"{login} reads the same token file as the {role}",
+                                f"{login} reads the same {file_kind} as the {role}",
+                                f"give {login} its own GitHub App and key: a shared key is one identity"
+                                if file_kind != "token file" else
                                 f"give {login} its own PAT file: a shared file is one account")
     return doctor.Check("credential:adjudicator", doctor.VERIFIED,
-                        f"{login} → its own token file {_token_file_facts(path)}; rulings are also posted as a PR comment "
+                        f"{login} → its own {file_kind} {_token_file_facts(path)}; rulings are also posted as a PR comment "
                         "(principal checked by the broker before each comment)")
 
 

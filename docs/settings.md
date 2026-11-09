@@ -67,11 +67,11 @@ Defaults are for a fresh form; existing loops retain values when a field is abse
 | `fixer_token_file` | str / `""` | Owned private regular file; absolute path or `~` path | Maps the effective fixer login into `tokens`; path only, blank keeps mapping. |
 | `adjudicator_login` | str / `""` | Optional fourth GitHub login distinct from reader, seats and their allowlists | `seats.adjudicator.login`, only with an adjudicator route; adds a PR comment identity for rulings. Without it rulings remain operator/ledger output. |
 | `adjudicator_token_file` | str / `""` | Owned private regular file; absolute path or `~` path, not shared with another login | Maps the optional adjudicator comment login into `tokens`, only with an adjudicator route. Needs an effective adjudicator login. |
-| `reviewer_app_id` | str / `""` | Positive ASCII decimal App id, paired with key path | Selects an App for the effective login; blank pair preserves mapping. |
+| `reviewer_app_id` | str / `""` | Positive ASCII decimal App id (at most 20 digits), paired with key path | Selects an App for the effective login; blank pair preserves mapping. |
 | `reviewer_app_key_file` | str / `""` | Owned private regular file; absolute or `~` path, paired with App id | Maps `apps[login].key_file`; metadata only, never key contents. Adjudicator requires an existing route. |
-| `fixer_app_id` | str / `""` | Positive ASCII decimal App id, paired with key path | Selects an App for the effective login; blank pair preserves mapping. |
+| `fixer_app_id` | str / `""` | Positive ASCII decimal App id (at most 20 digits), paired with key path | Selects an App for the effective login; blank pair preserves mapping. |
 | `fixer_app_key_file` | str / `""` | Owned private regular file; absolute or `~` path, paired with App id | Maps `apps[login].key_file`; metadata only, never key contents. Adjudicator requires an existing route. |
-| `adjudicator_app_id` | str / `""` | Positive ASCII decimal App id, paired with key path | Selects an App for the effective login; blank pair preserves mapping. |
+| `adjudicator_app_id` | str / `""` | Positive ASCII decimal App id (at most 20 digits), paired with key path | Selects an App for the effective login; blank pair preserves mapping. |
 | `adjudicator_app_key_file` | str / `""` | Owned private regular file; absolute or `~` path, paired with App id | Maps `apps[login].key_file`; metadata only, never key contents. Adjudicator requires an existing route. |
 | `review_after_ci` | bool / `false` | Boolean; CLI reader also recognizes boolean words | `review_after_ci`: a review waits while the head's checks are still running (up to an hour), then starts with their results. |
 | `ingress` | str / `""` | `repo-hooks` or `app-webhook`; blank = not set here | `ingress`: where the loop's events arrive; `app-webhook` takes them from a GitHub App's own webhook, so the loop needs no repo hooks. |
@@ -208,7 +208,7 @@ is the explicit clearing path.
 ### Selecting an App credential
 
 For reviewer, fixer and optional adjudicator, set the existing login plus both App fields.
-An App id is positive ASCII decimal; the key is an absolute (or `~/`) private-key path.
+An App id is positive ASCII decimal (at most 20 digits); the key is an absolute (or `~/`) private-key path.
 The App-id/key pair must be complete: a partial pair refuses, while a blank pair preserves
 the loop’s current mapping. A complete pair selects `apps` and removes all case-variant
 `tokens` entries for that target login.

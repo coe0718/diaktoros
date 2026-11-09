@@ -364,7 +364,9 @@ def add_selftest(sub) -> None:  # noqa: ANN001
                        help="ask GitHub to ping each loop hook and report whether the gateway "
                             "accepted its signature (the selftest's only GitHub write)")
     check.add_argument("--admin-token", default="",
-                       help="login whose token may ping hooks (admin:repo_hook or repo)")
+                       help="login whose credential may ping hooks: a token with "
+                            "admin:repo_hook or repo, or a GitHub App with Webhooks: Read and "
+                            "write")
     check.add_argument("--timeout", type=int, default=None,
                        help="live turn budget in seconds (default: the loop's reviewer "
                             "turn_budget_s — the budget the production worker enforces)")

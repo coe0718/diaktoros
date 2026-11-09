@@ -762,7 +762,8 @@ def _uninstall_refused(loop: dict, reasons: list[str], left_hooks: list[int],
               "`admin:repo_hook` (or classic `repo`):")
         for command in cli_common._hook_delete_commands(loop, left_hooks):
             print(f"  {command}")
-        print("or map such a token on this loop and let uninstall do it:")
+        print("or map such a token, or a GitHub App with Webhooks: Read and write, on this loop "
+              "and let uninstall do it:")
         print(f"  hermes dk uninstall --loop {lid} --admin-token <login>")
     elif any(reason.startswith(("hook", "could not")) for reason in reasons):
         # Nothing was read (or read back), so nothing is known about which hooks exist — or
@@ -1085,7 +1086,9 @@ def add_uninstall(sub) -> None:  # noqa: ANN001
     uninstall.add_argument("--keep-config", action="store_true",
                            help="remove hooks, cron job and routes but keep the loop config file")
     uninstall.add_argument("--admin-token", default="",
-                           help="login whose token can delete hooks (admin:repo_hook or repo)")
+                           help="login whose credential can delete hooks: a token with "
+                                "admin:repo_hook or repo, or a GitHub App with Webhooks: Read "
+                                "and write")
     uninstall.add_argument("--keep-hooks", action="store_true",
                            help="leave the repo hooks live (explicit opt-out)")
     uninstall.add_argument("--purge", action="store_true",

@@ -309,7 +309,8 @@ def authorize_ruling_comment(loop: dict, *, repo: str, number: int, head: str,
     A sibling of :func:`authorize`, not a relaxation of it: the reviewer/fixer role and
     operation table there is unchanged. Only an *optional* ``seats.adjudicator.login`` can
     comment, and only if it is a fourth identity — distinct login, distinct token file and a
-    distinct ``/user`` principal from the reader and both seats — at a live PR that is still the
+    distinct principal (``/user`` for a PAT; ``/app`` and ``/users/<slug>[bot]`` for a GitHub
+    App) from the reader and both seats — at a live PR that is still the
     open, non-draft, same-repository, unapproved head the ruling was made on.
     """
     from . import gate

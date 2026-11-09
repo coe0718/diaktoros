@@ -139,9 +139,9 @@ def _check_tokens(loop: dict, where: str) -> None:
     if not loop["read_token"]:
         raise config.ConfigError(f"{where}: 'read_token' is not set, and the reader is never inferred "
                           "from 'tokens' — add \"read_token\": \"<login>\" naming the reader's "
-                          "own account, with its own entry in 'tokens': `hermes dk set "
-                          f"--loop {loop.get('id') or '<id>'} --read-token LOGIN --token "
-                          f"LOGIN=/abs/path/to/pat` writes both; {config.FOUR_IDENTITY_RULE}")
+                          "own account, with its own entry in 'tokens' or 'apps'. `hermes dk set` "
+                          f"writes both: {credentials.reader_fix(loop, 'LOGIN')}; "
+                          f"{config.FOUR_IDENTITY_RULE}")
 
 
 def _add_optional_seats(loop: dict, seats: dict, raw_seats: dict, where: str) -> None:

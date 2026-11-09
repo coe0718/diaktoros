@@ -213,6 +213,9 @@ class ReaderIdentityTests(_Loop):
     def test_init_no_longer_defaults_the_reader_to_the_reviewer_seat(self):
         out = self.refused(self.init_argv(reader=""), r"--read-token LOGIN names the account")
         self.assertIn("four-identity rule", out)
+        # Both credential kinds can be the reader, so both mappings are named (#1916).
+        self.assertIn("(map it with --token LOGIN=/path/to/pat or --app "
+                      "LOGIN=APP_ID:/abs/key.pem)", out)
         self.assertFalse(self.loop_file().exists())
 
     def test_init_refuses_a_reader_sharing_a_seat_token_file(self):
@@ -370,8 +373,9 @@ class ReaderIdentityTests(_Loop):
         self.loop_file().write_text(json.dumps(data))
         # The refusal names the repair, and the repair works on exactly this defect.
         rc, out = self.run_cli(["status", "--loop", "widgets"])
-        self.assertIn("`hermes dk set --loop widgets --read-token LOGIN --token "
-                      "LOGIN=/abs/path/to/pat` writes both", out)
+        self.assertIn("with its own entry in 'tokens' or 'apps'. `hermes dk set` writes both: "
+                      "hermes dk set --loop widgets --read-token LOGIN --token LOGIN=/path/to/pat "
+                      "(or --app LOGIN=APP_ID:/abs/key.pem for a GitHub App reader)", out)
         new = self.pat("fresh-reader")
         rc, out = self.run_cli(["set", "--loop", "widgets", "--read-token", "fresh-reader",
                                 "--token", f"fresh-reader={new}"])
