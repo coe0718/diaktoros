@@ -508,6 +508,21 @@ class Pr(unittest.TestCase):
         self.assertEqual([r["verdict"] for r in view["rulings"]], ["REJECT"])
         self.assertEqual(view["rulings"][0]["head"], head[:7])
 
+    def test_a_malformed_ruling_head_is_withheld_not_echoed(self):
+        # #1355: the wire carries '' for a malformed recorded head; the page renders it unknown.
+        self.row("succeeded")
+        with ledger.connect(self.db) as con:
+            run_id = con.execute("SELECT id FROM runs").fetchone()[0]
+            con.execute("INSERT INTO rulings(run_id,repo,pr,head,turn_key,verdict,body,created,"
+                        "updated) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (run_id, REPO, 626, "/private/../ghp_notahead", "t1", "ACCEPT", "x",
+                         time.time(), time.time()))
+        loops, prod = self.patch_all()
+        with loops, prod:
+            view = desktop_api.pr_view("widgets", 626)
+        self.assertEqual(view["rulings"], [{"verdict": "ACCEPT", "head": "", "created": mock.ANY}])
+        self.assertNotIn("ghp_notahead", json.dumps(view))
+
     def test_a_long_review_shows_the_newest_turns_and_rulings_and_the_true_totals(self):
         extra = 7
         with mock.patch.object(desktop_api, "TURNS_MAX", 5):
@@ -1035,6 +1050,7 @@ class Surface(unittest.TestCase):
         # cache; the dependency-free cases above already prove each Retry's REST path.
         # The drawer's truncation wording (#821): the named proof that a cut list says so.
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: the drawer says when its turns and rulings are the newest of more, and only then$")
+        self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: a withheld ruling head reads unknown, never blank$")
         self.assertIn("palette only: unseen successful cache read expires", done.stdout)
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - records: nested malformed and wrong-loop responses never enter the cache$")
 

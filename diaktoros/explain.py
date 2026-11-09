@@ -746,15 +746,15 @@ def _run_blockers(c) -> None:
 def _queue_blockers(c, declined: bool) -> None:
     """The queue entry's blocker: a declined entry, a capacity wait, or a full seat. A hold or a
     declined fixer entry already named above adds nothing; one a started turn's push-off blocker
-    displaced, or one a parked PR skipped, is still named declined, never capacity (#1610,
-    #1613, #1614)."""
+    displaced is still named declined, never capacity (#1613, #1614)."""
     # A push-off blocker above for a started turn (a lock, mark or ledger row) names that turn,
-    # not the declined entry, so the entry gets its own line below (#1614). Parked for a ruling,
-    # the blockers above are all skipped, so the entry gets its own line too (#2075 review F1).
+    # not the declined entry, so the entry gets its own line below (#1614).
     started = c.push_off and (c.fixer_ended or c.fix_live) and not c.ruling
+    # Parked for a ruling (or a delivery pending), no fixer blocker above names the declined
+    # entry, so it gets its own line below too (#2075 review F1).
     if c.fixer_queue_hold or (declined and not started and not c.ruling):
         pass  # a hold or a declined entry is no capacity wait: no freed slot starts it (#1613)
-    elif c.queued_declined:
+    elif c.queued_seat and gate.is_declined_hold({"reason": c.queued_reason}):
         # A declined entry is never capacity, whatever lock or mark stands beside it (#1614):
         # the gate answered, the drain leaves it, and only a retry or a new head moves it.
         c.blockers.append(f"declined: the gate declined the {c.queued_seat} turn for head "
