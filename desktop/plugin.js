@@ -258,16 +258,32 @@ function lastGood(q) {
   return q.dataUpdatedAt ? new Date(q.dataUpdatedAt).toLocaleString() : 'time unavailable'
 }
 
+// A verified read is one quiet line: no box, no button and no in-flight flicker, so background
+// refreshes cannot move the page. Only a read that failed or went stale gets the bordered
+// disclosure and a Retry control; a first load has nothing to retry yet.
 function QueryStatus({ query, state, label, noLedger = false }) {
+  const trouble = query.isError || state === 'stale' || state === 'unavailable'
+  if (!trouble) {
+    return jsxs('div', {
+      role: 'status',
+      className: 'flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-(--ui-text-tertiary)',
+      children: [
+        jsx(Badge, { size: 'xs', variant: 'muted', children: state }),
+        jsx('span', { className: 'min-w-0', children: label + (state === 'loading' ? ': loading…' : ': backend read succeeded.') }),
+        query.data != null ? jsx('span', { className: 'min-w-0', children: 'Last good read: ' + lastGood(query) }) : null,
+        noLedger ? jsx('div', { className: 'basis-full text-(--ui-text-secondary)', children: typeof noLedger === 'string' ? noLedger : 'No run ledger available in the last successful backend read. Seat-turn counts are unavailable, not zero.' }) : null
+      ]
+    })
+  }
   return jsxs('div', {
     role: query.isError ? 'alert' : 'status',
     className: 'flex flex-wrap items-center gap-2 rounded-md border border-(--ui-stroke-secondary) p-4',
     children: [
-      jsx(Badge, { size: 'xs', variant: state === 'stale' || state === 'unavailable' ? 'warn' : 'muted', children: state }),
+      jsx(Badge, { size: 'xs', variant: 'warn', children: state }),
       jsxs('div', {
         className: 'min-w-0 flex-1 text-xs text-(--ui-text-secondary)',
         children: [
-          label + (state === 'loading' ? ': loading…' : state === 'unavailable' ? ': no verified data available.' : state === 'stale' ? ': showing last good data, not current status.' : ': backend read succeeded.'),
+          label + (state === 'unavailable' ? ': no verified data available.' : state === 'stale' ? ': showing last good data, not current status.' : ': backend read succeeded.'),
           // ``noLedger`` is the missing-ledger disclosure; a caller may pass its own sentence, else
           // it reads as the seat-turns default. Either way it is a disclosure, never a zero.
           noLedger ? jsx('div', { className: 'mt-1', children: typeof noLedger === 'string' ? noLedger : 'No run ledger available in the last successful backend read. Seat-turn counts are unavailable, not zero.' }) : null,
@@ -1254,7 +1270,10 @@ function validateHooks(data, loop, write = false) {
   return { ...data, reason: reasons.includes(data.reason) ? data.reason : reasons[0] }
 }
 
-function HooksControl({ loop, discoveryCurrent }) {
+// ``discoveryCurrent`` is the last verified loop read naming this loop; ``discoveryReading`` is a
+// background re-read in flight. A re-read never hides what is shown (that made the section jump
+// on every refresh): it only disables the write until the read lands.
+function HooksControl({ loop, discoveryCurrent, discoveryReading = false }) {
   const q = useQuery({ queryKey: [ID, 'hooks', loop], enabled: !!loop,
     queryFn: async () => validateHooks(await call('/hooks?loop=' + encodeURIComponent(loop)), loop),
     refetchInterval: 30000 })
@@ -1268,15 +1287,16 @@ function HooksControl({ loop, discoveryCurrent }) {
   const mounted = useRef(true)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   // Latest render is authoritative even for callbacks retained by a closing dialog.
-  current.current = { loop, q, discoveryCurrent }
-  const allowed = () => {
+  current.current = { loop, q, discoveryCurrent, discoveryReading }
+  const offered = () => {
     const latest = current.current
     return mounted.current && latest.loop === loop && latest.discoveryCurrent &&
-      !latest.q.isFetching && trackedViewState(latest.q, false, 60000) === 'verified' &&
+      trackedViewState(latest.q, false, 60000) === 'verified' &&
       latest.q.data?.loop === loop && latest.q.data?.eligible === true &&
       ['armed', 'paused'].includes(latest.q.data.state) &&
       !(consumed.current?.data === latest.q.data && consumed.current?.at === latest.q.dataUpdatedAt)
   }
+  const allowed = () => offered() && !current.current.discoveryReading && !current.current.q.isFetching
   const cancel = () => { targetRef.current = null; setPending(null) }
   useEffect(() => { cancel(); setAnswer(null) }, [loop])
   const ask = () => {
@@ -1321,13 +1341,13 @@ function HooksControl({ loop, discoveryCurrent }) {
     }
   }
   const awaitingRead = consumed.current?.data === q.data && consumed.current?.at === q.dataUpdatedAt
-  const verified = state === 'verified' && !q.isFetching && discoveryCurrent && !awaitingRead
+  const verified = state === 'verified' && discoveryCurrent && !awaitingRead
   return jsx(Section, { title: 'Webhook delivery', children: jsxs('div', {
     className: 'flex min-w-0 flex-col gap-2', children: [
       jsx(QueryStatus, { query: q, state: awaitingRead ? 'stale' : state, label: 'Webhook delivery' }),
       jsx(Muted, { text: verified ? 'Loop ' + loop + ' · ' + (q.data?.state || 'unknown') + ' · ' + q.data.reason : 'Current webhook delivery state unknown. Read status before changing it.' }),
       jsx(Muted, { text: 'Pausing stops webhook delivery, not in-flight turns. The sweeper may recover events while hooks are paused; this is not a full execution stop.' }),
-      allowed() && !busy.current ? jsx(Button, { size: 'xs', variant: 'ghost', onClick: ask,
+      offered() && !busy.current ? jsx(Button, { size: 'xs', variant: 'ghost', onClick: ask, disabled: !allowed(),
         children: q.data.state === 'armed' ? 'Pause webhook delivery' : 'Resume webhook delivery' }) : null,
       answer ? jsx('div', { role: 'status', className: 'break-words text-xs text-(--ui-text-secondary)', children: answer }) : null,
       pending && pending.loop === loop ? jsx(ConfirmDialog, { open: true,
@@ -1365,7 +1385,7 @@ function actionReason(reason) {
     ? reason : 'The host refused this action. Read a fresh preview for the current target.'
 }
 
-function ActionsControl({ loop, discoveryCurrent }) {
+function ActionsControl({ loop, discoveryCurrent, discoveryReading = false }) {
   const [action, setAction] = useState('escalate')
   const [prText, setPrText] = useState('')
   const [seat, setSeat] = useState('reviewer')
@@ -1381,7 +1401,7 @@ function ActionsControl({ loop, discoveryCurrent }) {
   const activeDialog = useRef(null)
   const pr = /^[1-9][0-9]*$/.test(prText) && Number.isSafeInteger(Number(prText)) ? Number(prText) : null
   const target = { loop, action, pr: action === 'drain' ? null : pr, seat: action === 'drain' ? seat : null }
-  current.current = { target, discoveryCurrent, preview }
+  current.current = { target, discoveryCurrent, discoveryReading, preview }
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; generation.current++ } }, [])
   const reset = () => {
     generation.current++; activeDialog.current = null; setPending(null); setPreview(null); setAnswer(''); setReading(false)
@@ -1389,10 +1409,11 @@ function ActionsControl({ loop, discoveryCurrent }) {
   useEffect(() => { reset(); setPrText('') }, [loop])
   const state = useViewState(preview || { data: undefined }, false, 60000)
   const sameTarget = t => Object.keys(target).every(key => current.current.target[key] === t[key])
-  const allowed = p => mounted.current && p && current.current.preview === p && sameTarget(p.target) &&
+  const offered = p => mounted.current && p && current.current.preview === p && sameTarget(p.target) &&
     current.current.discoveryCurrent && trackedViewState(p, false, 60000) === 'verified' && p.data.eligible
+  const allowed = p => offered(p) && !current.current.discoveryReading
   const read = async () => {
-    if (busy.current || !discoveryCurrent || (action !== 'drain' && !pr)) return
+    if (busy.current || !discoveryCurrent || discoveryReading || (action !== 'drain' && !pr)) return
     reset(); const version = generation.current; const selected = { ...target }; setReading(true)
     try {
       const path = '/actions?loop=' + encodeURIComponent(loop) + '&action=' + action +
@@ -1446,14 +1467,14 @@ function ActionsControl({ loop, discoveryCurrent }) {
           disabled: busy.current || action === 'drain', placeholder: action === 'drain' ? 'Drain selects a seat, not a PR' : 'e.g. 937', onChange: e => { reset(); setPrText(e.target.value) } })] }) }),
 
       jsx(Muted, { text: 'Escalation parks this head against further review and fix, and spends an adjudicator turn to request a ruling. Confirmation names the exact head. The core already binds a confirmed head (re-review) and queue (drain), but the page\'s controls for them are not wired yet; hermes dk review and hermes dk drain still run them.' }),
-      button(reading ? 'Reading preview…' : 'Preview escalation', read, reading || busy.current || !discoveryCurrent || !pr),
+      button(reading ? 'Reading preview…' : 'Preview escalation', read, reading || busy.current || !discoveryCurrent || discoveryReading || !pr),
       preview ? jsxs('div', { role: 'status', className: 'flex min-w-0 flex-col gap-2 break-words text-xs', children: [
         jsx(Badge, { size: 'xs', variant: state === 'verified' && preview.data.eligible ? 'muted' : 'warn', children: state !== 'verified' ? 'Preview expired · read again' : preview.data.eligible ? 'Host eligible' : 'Host refused' }),
         jsx('div', { className: 'break-words', children: 'Loop ' + preview.target.loop + ' · ' + preview.data.repo + (preview.target.pr ? ' · #' + preview.target.pr : ' · ' + preview.target.seat) + ' · head ' + (preview.data.head || 'unavailable') }),
         !preview.data.eligible ? jsx('div', { children: actionReason(preview.data.reason) }) : null,
-        allowed(preview) ? button('Confirm escalation', ask) : null] }) : null,
+        offered(preview) ? button('Confirm escalation', ask, !allowed(preview)) : null] }) : null,
       answer ? jsx('div', { role: 'status', className: 'break-words text-xs text-(--ui-text-secondary)', children: answer }) : null,
-      pending && allowed(pending.offer) ? jsx(ConfirmDialog, { open: true, title: 'Escalate this PR?',
+      pending && offered(pending.offer) ? jsx(ConfirmDialog, { open: true, title: 'Escalate this PR?',
         description: 'Loop ' + pending.offer.target.loop + ' · ' + pending.offer.data.repo + ' · PR #' + pending.offer.target.pr + ' · head ' + pending.offer.data.head +
           ' · seat adjudicator. Escalation parks this head against further review and fix, and spends an adjudicator turn to request a ruling. Queued review or fix work is retired when the adjudicator claims it. A verified result means parked awaiting adjudication, not a completed ruling. This is not a re-review and does not replace a reviewer verdict. Equivalent CLI: hermes dk escalate --loop ' + pending.offer.target.loop + ' --pr ' + pending.offer.target.pr + '.',
         confirmLabel: 'Escalate PR', busyLabel: 'Checking action…', cancelLabel: 'Cancel', onClose: () => cancel(pending), onConfirm: () => confirm(pending) }) : null
@@ -1531,7 +1552,7 @@ function PassiveReadStatus({ query, state, label, noLedger = false }) {
         state === 'stale' ? ': showing last good data, not current status.' : ': backend read succeeded.') })
     ] }),
     noLedger ? jsx(Muted, { text: 'No run ledger available in the last successful backend read. Run counts are unavailable, not zero.' }) : null,
-    query.data != null ? jsx(Muted, { text: 'Last good read: ' + lastGood(query) + (query.isFetching ? ' · refreshing…' : '') }) : null,
+    query.data != null ? jsx(Muted, { text: 'Last good read: ' + lastGood(query) }) : null,
     query.isError ? jsx(Muted, { text: safeError(query.error) }) : null
   ] })
 }
@@ -1783,8 +1804,8 @@ function Page() {
             })]
         })
       }),
-      jsx(ActionsControl, { loop, discoveryCurrent: loopsState === 'verified' && !loops.isFetching && list.some(item => item.id === loop) }),
-      jsx(HooksControl, { loop, discoveryCurrent: loopsState === 'verified' && !loops.isFetching && list.some(item => item.id === loop) }),
+      jsx(ActionsControl, { loop, discoveryCurrent: loopsState === 'verified' && list.some(item => item.id === loop), discoveryReading: !!loops.isFetching }),
+      jsx(HooksControl, { loop, discoveryCurrent: loopsState === 'verified' && list.some(item => item.id === loop), discoveryReading: !!loops.isFetching }),
       jsx(Health, { loop }),
       jsx(Muted, { text: 'Writes require confirmation: Retry re-arms a run that never wrote; Pause/Resume changes webhook delivery only; escalation uses an exact host preview. Re-review and drain are not wired to this page yet (host CLI only). Data is this machine\'s run ledger; for PRs and reviews from GitHub, run: hermes dk stats --github' })
     ]

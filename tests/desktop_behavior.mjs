@@ -417,8 +417,8 @@ test('records: selected local history distinguishes failures, audit attempts and
   assert.equal(h.options.records.refetchInterval, 30000)
   assert.equal(h.options.records.staleTime, 30000)
   assert.equal(h.options.records.queryKey[2], 'fixture-loop')
-  assert.equal(h.buttons(region).length, 1)
-  assert.equal(h.buttons(region)[0].props.children, 'Retry')
+  // A verified read is a quiet line: no Retry until the read fails or goes stale.
+  assert.equal(h.buttons(region).length, 0)
   h.respond(recordsFixture()); await h.options.records.queryFn()
   assert.equal(h.calls.at(-1), '/records?loop=fixture-loop')
   h.dispose()
@@ -502,7 +502,8 @@ test('records: retry is executable only for a readable selected identity', async
   // refetch with the wrong loop) fails the assertion instead of passing silently.
   const refetched = []
   const h = await harness()
-  h.queries.records = { ...h.good(recordsFixture()), refetch: () => refetched.push([...h.options.records.queryKey]) }
+  // Retry is drawn for a failed read (here: cached data kept, latest read failed).
+  h.queries.records = { ...h.fail(recordsFixture()), refetch: () => refetched.push([...h.options.records.queryKey]) }
   h.render('page')
   const retry = h.buttons(recordsRegion(h))[0]
   assert.equal(retry.props.children, 'Retry')
@@ -628,7 +629,11 @@ test('pane: first loading/error, recovery, retained rows and timestamp are truth
   assert.match(h.text(h.render(PANE)), /#646.*passive fixture row/)
   h.advance(10000)
   h.queries.now = { ...h.queries.now, isFetching: true }
-  assert.match(h.text(h.render(PANE)), /refreshing….*#646/)
+  // A background refresh changes nothing on screen: same rows, same timestamp, no flicker.
+  const refreshing = h.text(h.render(PANE))
+  assert.match(refreshing, /#646/)
+  assert.doesNotMatch(refreshing, /refreshing/)
+  assert.ok(refreshing.includes('Last good read: ' + stamp))
   h.queries.now = { ...h.queries.now, isError: true, error: new Error('/private/token ghp_secret') }
   const text = h.text(h.render(PANE))
   assert.match(text, /stale.*showing last good data, not current status.*#646/)
@@ -926,7 +931,14 @@ for (const scenario of ['loading', 'first-error', 'cached-error', 'refreshing', 
     if (scenario === 'ineligible') h.queries.hooks = h.good(hookView({ eligible: false, confirmation: null }))
     if (scenario === 'discovery-error') h.queries.loops = h.fail(h.queries.loops.data)
     if (scenario === 'discovery-refresh') h.queries.loops.isFetching = true
-    h.render('page'); assert.equal(hookButton(h), undefined)
+    h.render('page')
+    // A background re-read keeps the shown control (no layout jump) but disabled; every
+    // other unverified state draws none. Either way a click opens nothing and writes nothing.
+    const shown = hookButton(h)
+    if (scenario === 'refreshing' || scenario === 'discovery-refresh') {
+      assert.equal(shown.props.disabled, true)
+      shown.props.onClick(); assert.equal(hookDialog(h), undefined)
+    } else assert.equal(shown, undefined)
     assert.equal(h.hookCalls.length, 0)
     if (scenario === 'unknown') assert.match(h.text(h.tree()), /Loop fixture-loop · unknown/)
   })
@@ -1314,8 +1326,11 @@ for (const kind of ['now', 'stats']) {
     assert.match(text, /Backend read failed/)
     assert.doesNotMatch(text, /fixture backend offline/)
     assert.doesNotMatch(text, kind === 'now' ? /No active or recent failed/ : /No turns in this window|seat turns/)
-    // Each section has its own callback; retrying one must not refetch the other.
-    h.buttons(tree).filter(n => h.text([n]) === 'Retry')[kind === 'now' ? 0 : 1].props.onClick()
+    // Each section has its own callback; retrying one must not refetch the other. Verified
+    // sections draw no Retry, so the failed section's is the only one on the page.
+    const retries = h.buttons(tree).filter(n => h.text([n]) === 'Retry')
+    assert.equal(retries.length, 1)
+    retries[0].props.onClick()
     assert.equal(retried, 1)
   })
   test(`page ${kind}: cached failure keeps data and last good timestamp but not empty claim`, async () => {
@@ -1484,12 +1499,19 @@ test('last-good timestamp is retained through refresh failure, not replaced by e
   assert.ok(h.buttons(h.render('status'))[0].props.title.includes(date))
 })
 
-test('refresh keeps verified data and timestamp while in flight; retry disabled', async () => {
+test('refresh keeps verified data and timestamp while in flight, with no flicker or Retry', async () => {
   const h = await harness()
+  const quiet = h.text(h.render('page'))
   h.queries.now.isFetching = true
   const tree = h.render('page')
-  assert.match(h.text(tree), /refreshing…/)
-  assert.equal(h.buttons(tree).find(n => h.text([n]) === 'Reading…').props.disabled, true)
+  assert.equal(h.text(tree), quiet)
+  assert.doesNotMatch(h.text(tree), /refreshing|Reading…/)
+  assert.equal(h.buttons(tree).filter(n => ['Retry', 'Reading…'].includes(h.text([n]))).length, 0)
+  // A failed refresh does get the disclosure and a disabled Retry while it re-reads.
+  h.queries.now = { ...h.queries.now, isError: true, error: new Error('offline'), isFetching: true }
+  const failed = h.render('page')
+  assert.match(h.text(failed), /showing last good data.*refreshing…/)
+  assert.equal(h.buttons(failed).find(n => h.text([n]) === 'Reading…').props.disabled, true)
 })
 
 test('chip notifications only follow successful verified reads, keyed per loop', async () => {
@@ -2253,6 +2275,34 @@ test('actions: independent PR preview confirms full target and opaque identity e
   assert.match(h.text(h.tree()), /Backend verified escalation/)
   assert.equal(actionButton(h, 'Confirm escalation'), undefined)
   assert.equal(h.buttons(h.tree()).some(b => /merge/i.test(String(b.props.children))), false)
+})
+
+test('actions: a background loop re-read keeps the confirm control in place but cannot confirm', async () => {
+  const h = await harness(); selectAction(h); await previewAction(h)
+  const layout = h.text(h.tree())
+  h.queries.loops = { ...h.queries.loops, isFetching: true }; h.render('page')
+  // Nothing moves: same text, same control, now disabled; neither click nor confirm writes.
+  assert.equal(h.text(h.tree()), layout)
+  const shown = actionButton(h, 'Confirm escalation')
+  assert.equal(shown.props.disabled, true)
+  shown.props.onClick(); assert.equal(actionDialog(h), undefined)
+  h.queries.loops = { ...h.queries.loops, isFetching: false }; h.render('page')
+  assert.equal(actionButton(h, 'Confirm escalation').props.disabled, false)
+  actionButton(h, 'Confirm escalation').props.onClick(); const d = actionDialog(h)
+  h.queries.loops = { ...h.queries.loops, isFetching: true }; h.render('page')
+  await d.props.onConfirm(); assert.equal(h.actionCalls.length, 0)
+})
+
+test('hooks: a background re-read keeps the verified delivery line; it never flips to unknown', async () => {
+  const h = await harness(); h.render('page')
+  const before = h.text(h.tree())
+  assert.match(before, /Loop fixture-loop · armed/)
+  for (const reading of ['hooks', 'loops']) {
+    h.queries[reading] = { ...h.queries[reading], isFetching: true }; h.render('page')
+    assert.equal(h.text(h.tree()), before, reading + ' re-read changes nothing on screen')
+    assert.doesNotMatch(h.text(h.tree()), /webhook delivery state unknown/)
+    h.queries[reading] = { ...h.queries[reading], isFetching: false }
+  }
 })
 
 test('actions: a backend escalation refusal leaves no execution affordance', async () => {
