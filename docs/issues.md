@@ -76,8 +76,9 @@ but recorded write outcomes are never blindly replayed.
    validated (1–50 characters; no commas, braces, backticks or control characters;
    up to 100 configured labels). Create repository labels ahead of time if you need
    predictable colors/descriptions.
-5. Choose a mapped login able to manage hooks. The triage hook subscribes to `issues`;
-   route installation alone cannot receive GitHub events.
+5. Choose a mapped login able to manage hooks. The triage hook subscribes to `issues`,
+   and to `issue_comment` with `comment_webhook` on; route installation alone cannot
+   receive GitHub events.
 
 ## Turn on issue triage
 

@@ -144,7 +144,7 @@ retry so the gateway can also deduplicate a logical send.
 | `pending` | Sender claimed delivery; `posting_at` is set the moment its POST starts | Wait. A stale claim that never reached its POST is resent (it provably never left the host); one that did, or a legacy claim with no `posting_marked`, becomes uncertain |
 | `delivered` | Delivery success recorded | Check intended destination if not visible |
 | `failed` with proven pre-POST failure | Route/secret/destination unavailable before send | Fix route; bounded watchdog retry |
-| `uncertain` | POST may have landed: the sender died after its POST started, before the receipt | Inspect chat/gateway logs manually; never blind replay |
+| `uncertain` | POST may have landed: the sender died after its POST started, before the receipt. Or a digest claim stopped before its POST on its last attempt (#1320): it never left the host | Inspect chat/gateway logs manually; never blind replay. For the #1320 digest claim (error "sender stopped before the POST on its last attempt"), settling it with `--not-delivered` resends it once with its original id |
 
 Only definite pre-POST failures retry automatically, up to three attempts, including a sender that stopped before its POST began (#1314). That proof needs
 the claim's `posting_marked` field, which every current sender writes with the claim: a `pending`

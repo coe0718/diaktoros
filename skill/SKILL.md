@@ -33,8 +33,8 @@ Your turn runs in a sandbox, not on the operator's machine:
 * **No network and no GitHub credentials.** There is no `gh`, no `git push`, no token anywhere in
   the sandbox, by design. A command that needs GitHub will fail; that is not a bug to work around.
   Dependencies a committed lockfile pins (Rust's `Cargo.lock`) are fetched by the host before
-  the turn and mounted read-only, offline; the "Build environment" note at the top of your
-  prompt says whether that worked. Only crates.io packages are fetched: a git dependency or
+  the turn and mounted read-only, offline; the "Build environment" note just above
+  **This round** says whether that worked. Only crates.io packages are fetched: a git dependency or
   another registry is never fetched, by design (the host fetches nothing it cannot name), so a
   lockfile with one is always "unavailable" — a host boundary, not a defect of the PR.
 * **One scoped write, through the broker.** `python -P -m diaktoros.broker_client` is the only way
@@ -76,7 +76,7 @@ Your turn runs in a sandbox, not on the operator's machine:
    A `COMMENT` is refused (without spending your write): it would neither wake the fixer nor cue a
    merge, and the loop would stall. If you could not verify something, that is `REQUEST_CHANGES`
    naming what you could not verify — never an approval. The one exception is the sandbox
-   itself: when the "Build environment" note at the top of your prompt says dependencies are
+   itself: when the "Build environment" note just above **This round** says dependencies are
    unavailable, the failed build is not a finding. Judge by reading, say what you could not run,
    and give the verdict the code earns.
 
