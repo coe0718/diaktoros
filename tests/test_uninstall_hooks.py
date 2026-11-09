@@ -136,6 +136,9 @@ class RoundTripTest(Base):
         rc, out = self.init("--hooks")
         self.assertEqual(rc, 2, out)
         self.assertIn("cannot read", out)
+        # The --admin-token login can be a PAT or a GitHub App: both permissions are named (#1687).
+        self.assertIn("(`admin:repo_hook` or classic `repo` for a token, Webhooks: Read and "
+                      "write for a GitHub App)", out)
         self.assertFalse(LOOP_FILE.exists())
 
     def test_init_ignores_other_routes_hooks(self):
@@ -204,6 +207,8 @@ class UninstallRefusalTest(Base):
         for hook_id in ids:
             self.assertIn(f"  gh api -X DELETE repos/{t.REPO}/hooks/{hook_id}\n", out)
         self.assertIn("hermes dk uninstall --loop widgets --admin-token <login>", out)
+        # uninstall's --admin-token accepts an App as well as a PAT (#1687).
+        self.assertIn("or a GitHub App with Webhooks: Read and write, on this loop", out)
         # The printed re-run still parses: the config it needs is still there.
         t.parser_for().parse_args(["uninstall", "--loop", "widgets"])
         rc, out = self.cli("uninstall", "--loop", "widgets", "--admin-token", t.FIXER)

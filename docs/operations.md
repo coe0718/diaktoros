@@ -12,7 +12,7 @@ incident recovery, and the decision to merge.
 - [Everyday commands](#everyday-commands) and [reviewing your own PRs](#reviewing-your-own-prs)
 - [Signing](#what-the-loop-signs) and [review findings](#how-the-reviewer-grades-findings)
 - [Automatic CI repair](#automatic-repair-for-failed-required-checks)
-- [Token files](#token-files-one-pat-per-account) and [permissions](#token-scopes-by-role)
+- [Credential files](#credential-files-one-per-account) and [permissions](#token-scopes-by-role)
 - [Doctor](#preflight-doctor) and [selftest](#verifying-the-isolated-setup-selftest)
 - [Storage limits](#sandbox-size-caps-the-two-writable-mounts)
 - [Explain a PR](#why-isnt-this-pr-moving) and [trace a delivery](#why-did-that-delivery-start-nothing-trace)
@@ -324,11 +324,11 @@ are published as a bounded PR comment before a fresh review request; a final mod
 summary is not a receipt. At the cap, adjudication records `ACCEPT`, `REJECT` or `RESPEC`.
 A ruling is not a merge and does not grant permission to blindly resume the old loop.
 
-## Token files: one PAT per account
+## Credential files: one per account
 
-Each GitHub login maps to its own nonempty private token file readable by the gateway user.
-A login that is a GitHub App has a private key file instead (see [GitHub Apps](github-apps.md));
-a loop made only of Apps needs no PAT files.
+Each GitHub login maps to its own nonempty private credential file readable by the gateway user:
+a PAT, or a GitHub App's private key (see [GitHub Apps](github-apps.md)). A loop made only of
+Apps needs no PAT files.
 Reviewer/fixer writes use their own identities; read/control identity is separate. A
 profile name does not establish GitHub identity: the broker checks the token principal.
 See [accounts](accounts.md) for separation, least privilege and rotation.

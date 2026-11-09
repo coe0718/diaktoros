@@ -107,8 +107,8 @@ SETTINGS_SCHEMA: dict = {
     "reviewer_app_id": {"label": "Reviewer's GitHub App id",
                               "type": "str", "default": "",
                               "description": (
-                                  "Positive ASCII decimal App id, paired with this seat's App key file and bot "
-                                  'login. Blank pair = not set here. A complete pair selects App, never PAT.'
+                                  "Positive ASCII decimal App id (at most 20 digits), paired with this seat's App key "
+                                  'file and bot login. Blank pair = not set here. A complete pair selects App, never PAT.'
                               )},
     "reviewer_app_key_file": {"label": "Reviewer's App key file (path only)",
                               "type": "str", "default": "",
@@ -119,8 +119,8 @@ SETTINGS_SCHEMA: dict = {
     "fixer_app_id": {"label": "Fixer's GitHub App id",
                               "type": "str", "default": "",
                               "description": (
-                                  "Positive ASCII decimal App id, paired with this seat's App key file and bot "
-                                  'login. Blank pair = not set here. A complete pair selects App, never PAT.'
+                                  "Positive ASCII decimal App id (at most 20 digits), paired with this seat's App key "
+                                  'file and bot login. Blank pair = not set here. A complete pair selects App, never PAT.'
                               )},
     "fixer_app_key_file": {"label": "Fixer's App key file (path only)",
                               "type": "str", "default": "",
@@ -131,8 +131,8 @@ SETTINGS_SCHEMA: dict = {
     "adjudicator_app_id": {"label": "Adjudicator's GitHub App id",
                               "type": "str", "default": "",
                               "description": (
-                                  "Positive ASCII decimal App id, paired with this seat's App key file and bot "
-                                  'login. Blank pair = not set here. A complete pair selects App, never PAT.'
+                                  "Positive ASCII decimal App id (at most 20 digits), paired with this seat's App key "
+                                  'file and bot login. Blank pair = not set here. A complete pair selects App, never PAT.'
                               )},
     "adjudicator_app_key_file": {"label": "Adjudicator's App key file (path only)",
                               "type": "str", "default": "",
@@ -825,7 +825,8 @@ def select_credentials(loop: dict, settings: dict | None) -> tuple[dict, dict, d
         if app_id:
             parsed_id = config.parse_app_id(app_id)
             if parsed_id is None:
-                raise config.ConfigError(f"{role}_app_id must be a positive ASCII decimal App id")
+                raise config.ConfigError(f"{role}_app_id must be a positive ASCII decimal App id "
+                                         f"(at most {config.APP_ID_MAX_DIGITS} digits)")
             requested_app = {"app_id": parsed_id, "key_file": str(config.expand_path(key_file))}
             unchanged_app = existing_app == requested_app
             inherited_pat = existing_pat and config.expand_path(path) == config.expand_path(existing_pat)

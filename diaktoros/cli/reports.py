@@ -330,7 +330,8 @@ def add_trace(sub) -> None:  # noqa: ANN001
     tracer.add_argument("--route", help="the route it was sent to (default: from the delivery's "
                                         "hook, or the event)")
     tracer.add_argument("--admin-token", default="",
-                        help="login whose token can read hook deliveries (admin:repo_hook or repo)")
+                        help="login whose credential can read hook deliveries: a token with "
+                             "admin:repo_hook or repo, or a GitHub App with Webhooks: Read")
     tracer.set_defaults(func=cmd_trace)
 
 

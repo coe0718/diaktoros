@@ -925,7 +925,8 @@ class RunBroker(broker_issues.IssueWrites):
     def _record_only(self, verdict: str, body: str) -> object:
         """No-write reviewer: the live authorization reads, then record, and never POST.
 
-        ``broker.authorize`` only GETs (``/user`` per identity and the live PR), so this proves
+        ``broker.authorize`` only GETs (each identity's principal, ``/user`` for a PAT or ``/app``
+        and ``/users/<slug>[bot]`` for a GitHub App, and the live PR), so this proves
         the real write would have been allowed at this head without making it. No receipt claim,
         ledger row, audit line or GitHub write is produced. The sandbox gets the same answer a
         real write would give, so the agent's behaviour is the one a live run would show.

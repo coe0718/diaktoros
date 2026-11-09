@@ -113,10 +113,15 @@ class Doctor(AppLoop):
         self.loop["seats"]["adjudicator"] = {"login": "acme-arbiter[bot]"}
         got = identity_checks.check_adjudicator_identity(self.loop)
         self.assertEqual(got.status, doctor.VERIFIED, got.detail)
+        # An App's credential is its key, never "its own token file" (#1687, #1675).
+        self.assertIn("acme-arbiter[bot] → its own GitHub App key", got.detail)
+        self.assertNotIn("token file", got.detail)
         self.loop["apps"]["acme-arbiter[bot]"]["key_file"] = str(self.rev_key)
         got = identity_checks.check_adjudicator_identity(self.loop)
         self.assertEqual(got.status, doctor.MISMATCH)
-        self.assertIn("same token file as the reviewer", got.detail)
+        self.assertIn("same GitHub App key as the reviewer", got.detail)
+        self.assertIn("its own GitHub App and key", got.fix)
+        self.assertNotIn("PAT", got.fix)
 
 
 class _Answer:

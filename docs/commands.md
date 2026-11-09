@@ -1340,7 +1340,7 @@ It is ignored for ordinary tiny probes. Live turn verdicts never post a review o
 | `--no-model` |  |  | skip the one tiny real completion (costs a few tokens) |
 | `--live-turn` |  |  | with --pr: run one real isolated reviewer turn whose verdict is printed and never posted |
 | `--ping` |  |  | ask GitHub to ping each loop hook and report whether the gateway accepted its signature (the selftest's only GitHub write) |
-| `--admin-token` | `ADMIN_TOKEN` |  | login whose token may ping hooks (admin:repo_hook or repo) |
+| `--admin-token` | `ADMIN_TOKEN` |  | login whose credential may ping hooks: a token with admin:repo_hook or repo, or a GitHub App with Webhooks: Read and write |
 | `--timeout` | `TIMEOUT` |  | live turn budget in seconds (default: the loop's reviewer turn_budget_s — the budget the production worker enforces) |
 <!-- /flags -->
 
@@ -1915,7 +1915,7 @@ route would, and its outcome is the last line. When a triage still looks wrong, 
 | `--payload` | `PAYLOAD` |  | a webhook payload JSON file instead (one of `--delivery`, `--payload`) |
 | `--event` | `pull_request` \| `pull_request_review` \| `issues` |  | with --payload: the event it was (default: read from the payload) |
 | `--route` | `ROUTE` |  | the route it was sent to (default: from the delivery's hook, or the event) |
-| `--admin-token` | `ADMIN_TOKEN` |  | login whose token can read hook deliveries (admin:repo_hook or repo) |
+| `--admin-token` | `ADMIN_TOKEN` |  | login whose credential can read hook deliveries: a token with admin:repo_hook or repo, or a GitHub App with Webhooks: Read |
 <!-- /flags -->
 
 ### retry
@@ -2152,7 +2152,7 @@ workers separately; ordinary uninstall does not cancel every live turn.
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
 | `--keep-config` |  |  | remove hooks, cron job and routes but keep the loop config file |
-| `--admin-token` | `ADMIN_TOKEN` |  | login whose token can delete hooks (admin:repo_hook or repo) |
+| `--admin-token` | `ADMIN_TOKEN` |  | login whose credential can delete hooks: a token with admin:repo_hook or repo, or a GitHub App with Webhooks: Read and write |
 | `--keep-hooks` |  |  | leave the repo hooks live (explicit opt-out) |
 | `--purge` |  |  | also delete the loop's default state directory |
 <!-- /flags -->

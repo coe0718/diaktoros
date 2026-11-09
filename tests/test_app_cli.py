@@ -89,7 +89,8 @@ class Init(Base):
                           (f"{BOT_REV}=²:{good}", "not a number"),
                           (f"{BOT_REV}=٣:{good}", "not a number"),
                           (f"{BOT_REV}={'9' * 4301}:{good}", "not a number"),   # #1633
-                          (f"{BOT_REV}={'9' * 21}:{good}", "not a number"),
+                          (f"{BOT_REV}={'9' * 21}:{good}",               # #1748: say the cap
+                           r"is not a number \(at most 20 digits\)"),
                           (f"{BOT_REV}=5:{loose}", "group/other"),
                           (f"{BOT_REV}=5:relative.pem", "absolute|relative")):
             with self.subTest(pair=pair):

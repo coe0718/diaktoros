@@ -56,7 +56,8 @@ def verify_adjudicator_token(loop: dict) -> None:
 
     Checked when a CLI or settings push *writes* the identity; ``normalize`` already refused a
     missing mapping, a shared file and a login that is also the reader, a seat or an allowlisted
-    account. The live ``/user`` principal check stays in the broker, before each comment.
+    account. The live principal check (``/user`` for a PAT; ``/app`` and ``/users/<slug>[bot]``
+    for a GitHub App) stays in the broker, before each comment.
     """
     login = config.adjudicator_login(loop)
     if login:
@@ -113,7 +114,8 @@ def reader_problem(loop: dict) -> str:
     The reader reads every PR state the gates act on; the broker refuses every write when it is
     also a seat, so a loop that installs that way passes init and fails at its first review. The
     offline part of the rule is checked here — distinct logins, distinct token files; distinct
-    ``/user`` principals need the network, and ``selftest`` and the broker check those.
+    principals (``/user`` for a PAT; ``/app`` and ``/users/<slug>[bot]`` for a GitHub App) need
+    the network, and ``selftest`` and the broker check those.
     """
     reader = str(loop.get("read_token") or "").strip()
     if not reader:
