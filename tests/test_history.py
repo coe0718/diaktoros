@@ -241,6 +241,18 @@ class History(fg.Base):
             for tail in ("…/a.json,", "…/b.json,", "…/c.json,", "…/d.json and …/e.json"):
                 self.assertIn(tail, out)
 
+    def test_a_unc_share_or_slashes_before_a_drive_name_no_directory(self):
+        """#2221, #2222: a UNC share and ``//C:/…`` are cut to their last part too."""
+        self.run_row("fixer", A, T, state="failed",
+                     detail="see \\\\fileserver\\share\\agent\\f.json and "
+                            "//C:/Users/agent/g.json end")
+        for form in ("text", "markdown", "json"):
+            rc, out = self.run_cli("--format", form)
+            self.assertEqual(rc, 0)
+            for leak in ("fileserver", "share", "agent", "Users", "C:"):
+                self.assertNotIn(leak, out)
+            self.assertIn("…/f.json and …/g.json end", out)
+
     def test_the_parser_drives_it_and_json_is_the_data(self):
         self.cycle()
         rc, out = self.run_cli("--format", "json")

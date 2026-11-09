@@ -119,6 +119,15 @@ class Batch(fg.Base):
         self.assertEqual(rc, 2)
         self.assertIn(f"cannot write to {self.out}: ", out)
 
+    def test_an_out_that_is_a_file_exits_2_with_nothing_in_the_window(self):
+        """#2204: the refusal does not wait for a PR to write; nothing is created."""
+        self.out.write_text("not a directory")
+        for out_dir in (self.out, self.out / "sub"):
+            rc, out = self.run_cli("--since", "1d", "--out", str(out_dir))
+            self.assertEqual(rc, 2, out)
+            self.assertIn(f"cannot write to {out_dir}: Not a directory", out)
+        self.assertEqual(self.out.read_text(), "not a directory")
+
 
 if __name__ == "__main__":
     unittest.main()
