@@ -1632,20 +1632,32 @@ a failed turn's output tail) passes the loop's redactor before it is printed.
 hermes dk history --loop "<loop-id>" --pr 12
 hermes dk history --loop "<loop-id>" --pr 12 --format markdown
 hermes dk history --loop "<loop-id>" --pr 12 --offline --format json
+hermes dk history --loop "<loop-id>" --since 2026-11-01 --out cycles --format json
 ```
+
+`--since DATE --out DIR` (instead of `--pr`) writes every merged PR the loop took a turn on since
+`DATE` (`7d`, `24h` or `2026-11-01`) to its own file in `DIR`: `pr-N.json`, `pr-N.md` or
+`pr-N.txt`, each exactly what `--pr N` prints in that format, with the PR's whole cycle (turns
+before the date included). It lists what it wrote and which PRs it skipped as not merged. With
+`--offline` the merge is not read, so every PR with a turn in the window is written. A file of the
+same name in `DIR` is replaced; nothing is written anywhere else. Use it to publish several cycles
+to the site's run viewer at once.
 
 `--format markdown` gives the same timeline as a document, for a PR comment, a write-up or an
 archive: a findings table, a heading per round, and links to each review, commit, comment, answers
 and filed issue. `--format json` gives the same data for tools, with a `schema` number that changes only
 when a key is renamed, removed or changes meaning. No output names a local path: an absolute path in
 a free text, such as a failed turn's output tail, is cut to its last part (`…/state.json`). `--offline` leaves GitHub out and
-lists what that leaves missing. It exits `2` only when no loop can be chosen.
+lists what that leaves missing. It exits `2` when no loop can be chosen, or when it gets neither
+or both of `--pr` and `--since`, or `--since` without `--out`.
 
 <!-- flags:history -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
-| `--pr` | `PR` | **required** | pull request number |
+| `--pr` | `PR` |  | pull request number (or use --since) |
+| `--since` | `SINCE` |  | every merged PR with a turn since then: 7d, 24h or a date like 2026-11-01; needs --out |
+| `--out` | `DIR` |  | with --since: write one file per PR (pr-N.json, .md or .txt) to DIR |
 | `--offline` |  |  | leave GitHub out (review bodies, commits, comments, merge) and say what is missing |
 | `--format` | `text` \| `markdown` \| `json` | `text` | text for the terminal, markdown for a comment or archive, json for tools (default text) |
 <!-- /flags -->
