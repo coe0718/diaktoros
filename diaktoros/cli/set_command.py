@@ -795,8 +795,7 @@ def _set(args) -> int:
         shim_lines = _app_route(loop, updated, app_route)
     except _Refused:
         if adj:     # #2212
-            print("  but the adjudication change above stays written: run the same `set` "
-                  "again to finish")
+            print("  but the adjudication change above stays written")
         raise
     path = cli_common._write_config(updated)
     _retire_routes(updated, before, after, destination_changed)

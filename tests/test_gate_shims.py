@@ -551,8 +551,8 @@ class SetAdjudication(Base):
 
     def test_a_later_route_failure_names_the_adjudication_change_that_stays(self):
         out = self.observer_route_fails("--adjudicator-profile", "arbiter")
-        self.assertIn("but the adjudication change above stays written: run the same `set` "
-                      "again to finish", out)
+        self.assertIn("but the adjudication change above stays written", out)
+        self.assertNotIn("run the same `set` again", out)      # #2224: not always true
         self.assertEqual(config.load_id("widgets")["adjudicator"]["profile"], "arbiter")
         self.assertIn("widgets-breach", self.loop_routes())
 
