@@ -4,6 +4,17 @@
 
 Prepare GitHub identities before installing a loop. A **PAT** (personal access token) acts as its issuing GitHub account. A **token file** contains one PAT; the loop stores only its path. A Hermes profile chooses inference, not GitHub identity.
 
+## Contents
+
+- [Choose the accounts](#choose-the-accounts)
+- [Create accounts and grant repository access](#create-accounts-and-grant-repository-access)
+- [Choose PAT type and permissions](#choose-pat-type-and-permissions)
+- [Store token files privately](#store-token-files-privately)
+- [Map accounts to the loop](#map-accounts-to-the-loop)
+- [Verify files, accounts and access](#verify-files-accounts-and-access)
+- [Rotate or revoke](#rotate-or-revoke)
+- [Least privilege and remaining risk](#least-privilege-and-remaining-risk)
+
 ## Choose the accounts
 
 The reader, reviewer and fixer must be three distinct GitHub accounts with three distinct files. If an adjudicator posts rulings as comments, that login/file must be a fourth. This is the source's **four-identity rule**; the fourth role is optional. Separate tokens for the same account are not separate principals. Symlink/hardlink aliases of the same file do not create distinct files.
@@ -13,7 +24,7 @@ The reader, reviewer and fixer must be three distinct GitHub accounts with three
 | Reader | `"<reader-login>"` | Trusted PR/review/ref/hook reads; normally the repository owner on a user-owned repo | `--read-token` plus its file mapping |
 | Reviewer | `"<reviewer-login>"` | Post bounded review verdicts | Reviewer allowlist/seat plus its file mapping |
 | Fixer | `"<fixer-login>"` | Publish authorized fixes and request review; issue fixer reuses it | Fixer allowlist/seat plus its file mapping |
-| Adjudicator comment account (optional) | `"<adjudicator-login>"` | Post an isolated ruling as a PR comment | Adjudicator route, distinct profile, login and file mapping |
+| Adjudicator comment account (optional) | `"<adjudicator-login>"` | Post an isolated ruling as a PR comment; with `adjudicator_approves` on, also approve the head on an ACCEPT and dismiss the review it overruled | Adjudicator route, distinct profile, login and file mapping |
 | Hook admin | `"<admin-login>"` or reader | Create/arm/pause/delete repository hooks | `--admin-token`; file must already be mapped |
 | Triage (optional) | Reviewer by default | Apply bounded issue labels, optionally comment | Issue configuration; never the reader |
 
@@ -64,6 +75,7 @@ The plugin uses token files and Python REST calls; **`gh auth login` is not requ
 | Hook admin | Classic `repo` or `admin:repo_hook`, or fine-grained owner token | `repository_hooks: write` (Webhooks: Read and write) |
 | Ruleset admin (`protect`, setup step 5) | Classic `repo` on an account with admin access to the repository | `administration: write` (Administration: Read and write) |
 | Reader with issue automation | Add issue-reading access | Add `issues: read` |
+| Reader with `shadow.file_issues` or `adjudicator_file_issues` on | The reader files shadow- and adjudicator-found issues | Add `issues: write` |
 | Triage account | Classic `repo` covers issue writes | Add `issues: write` |
 | Issue fixer | Classic `repo` covers issue/branch/PR operations | `contents: write`, `pull_requests: write`, `issues: write` |
 
@@ -183,10 +195,10 @@ other App's webhook stays inactive with no events:
 
 | App | Permissions | Why |
 | --- | --- | --- |
-| Reader | Contents, Pull requests, Checks, Commit statuses, Issues: **Read**; **Webhooks** and **Administration**: **Read**, or **Read and write** as the hook admin (`create-apps` grants that) | The gates' reads and the CI the reviewer sees; Webhooks and Administration let `doctor`, `selftest` and `explain` see the hooks and the base's classic protection (without them those lines stay ⚠️). As the hook admin (`--admin-token`, so a loop needs no PAT for hooks) it needs both **Read and write**: then it creates, arms and pauses the hooks and runs `protect` (#1196) |
+| Reader | Contents, Pull requests, Checks, Commit statuses, Issues: **Read** (Issues: **Read and write** when `shadow.file_issues` or `adjudicator_file_issues` is on; `create-apps` grants Read only, so add it); **Webhooks** and **Administration**: **Read**, or **Read and write** as the hook admin (`create-apps` grants that) | The gates' reads and the CI the reviewer sees; Webhooks and Administration let `doctor`, `selftest` and `explain` see the hooks and the base's classic protection (without them those lines stay ⚠️). As the hook admin (`--admin-token`, so a loop needs no PAT for hooks) it needs both **Read and write**: then it creates, arms and pauses the hooks and runs `protect` (#1196) |
 | Reviewer | Contents: Read; Pull requests, Issues: **Read and write**; **Checks: Read and write** | Reviews; issues it files and triage labels; the `diaktoros/review` check |
 | Fixer | Contents, Pull requests, Issues: **Read and write** | Pushes and PRs; comments on the issues it fixes. Never Workflows: a merge that carries workflow changes comes back to you |
-| Adjudicator (optional) | Pull requests: **Read and write** | The ruling's PR comment, nothing else |
+| Adjudicator (optional) | Pull requests: **Read and write** | The ruling's PR comment; with `adjudicator_approves` on, also the approval on an ACCEPT and the dismissal of the review it overruled |
 
 After adding a permission, accept it on the App's installation (GitHub asks the owner first);
 until then the App's tokens do not carry it.

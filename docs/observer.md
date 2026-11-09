@@ -1,5 +1,7 @@
 # Observer feed
 
+[Documentation map](README.md) · [Configuration](configuration.md#observer-configuration) · [Operations](operations.md) · [Troubleshooting](troubleshooting.md)
+
 The observer delivers short transition notices to an operator's configured chat. It is
 **not a review seat**: the delivery-only route starts no model conversation, holds no
 seat lock, and does not authorize a GitHub write. The review loop continues if the feed
@@ -75,7 +77,7 @@ and a PR link. It does not contain the diff, review body, GitHub credentials or 
 | `fixing` | A maintainer's fix label handed the issue to the fixer, or the handoff was held and why | The fix turn has started |
 | `fixed` | The issue-fix write ended: PR opened (and review requested), a posted plan or question (names the maintainer's move — `/loop approve` or an answer — with next: you), a could-not-fix comment, or an uncertain write | The PR passes review |
 | `failed` | An isolated run's first failed attempt (with the retry time) and its terminal `failed`/`uncertain` state | The cause is transient, or a retry will work |
-| `held` | A run is waiting without spending a retry: its seat's daily cap is reached, its provider's usage window is closed, or the provider is unavailable with no 429 (#1325). Says when it resumes and, for a cap, the flag that raises it and the `retry` that runs it sooner | It will run the moment the hold lifts (capacity and pacing still apply) |
+| `held` | A run is waiting without spending a retry: its seat's daily cap is reached, its provider's usage window is closed, or the provider is unavailable with no 429 (#1325); also when a maintainer's fix label is declined, or a fix push changed files outside its findings (`fixer_scope_lock`). Says when it resumes and, for a cap, the flag that raises it and the `retry` that runs it sooner | It will run the moment the hold lifts (capacity and pacing still apply) |
 | `ci_failed` | A required check is red at a loop PR's current head, once per head, naming the failed check(s) and linking the run (#306). Found by the watchdog sweep, with no model | With `fix_ci` and unattended fixer pushes on, on a fixer's PR: one fixer turn for that head, which gets the failing jobs' log tails as data. The notice says which CI fix it is ("CI fix 2 of 3"), or that the CI-fix budget is spent (#539). Once the budget is spent, and on a review-only PR, the review waits for green: re-run the check or push (#1110). Otherwise you fix it |
 | `main_red` | A required check is red at the head of the loop's base branch, once per main head, naming the failed check(s) and the PRs merged since main's last green head (marked partial when GitHub truncated the compare). Found by the watchdog sweep, with no model and no GitHub write. GitHub's "Require branches to be up to date before merging" protection prevents this class of breakage | You fix or revert main |
 | `conflict` | A loop PR no longer merges into its base (GitHub reports a merge conflict), once per head (#303) | With unattended fixer pushes on, a resolving fixer turn: the host merges the base into the head and the fixer resolves the conflicted files (a whole-file conflict, or a base that changed workflow files, ends that run as "needs a person"). While the head's newest verdict requests changes (and the PR is not at its cap or escalated), the turn waits and the notice says the fixer answers first (#1907). With them off, you merge the base by hand. A new head that still conflicts is reported again |
@@ -259,7 +261,7 @@ are not a guaranteed replay backlog.
 | Digest late | No watchdog sweep, hooks paused, oldest entry not old enough | Inspect watchdog scheduling and receipts; don't resend members |
 | Notice owed after timeout | Outcome uncertain | Search intended chat and gateway logs; preserve receipt |
 | Destination change refused | Old owed/uncertain notices bound to prior chat | Inspect old debt; don't bypass binding by deleting state |
-| No notice for issue labels or proposal | Feature unsupported | Use issue/result ledger and GitHub, not observer expectation |
+| No notice for an issue's triage or fix | `triaged`/`fixing`/`fixed` not in `--observer-events` | Add them, or leave the list blank for all events |
 | Closed notice but disk still used | Cleanup attempted, not confirmed | Use [disk troubleshooting](troubleshooting.md#disk-usage-keeps-growing) |
 
 The feed is emitted from host transitions, not agent prose. Do not treat an agent summary

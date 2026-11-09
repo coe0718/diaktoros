@@ -4,6 +4,16 @@
 
 This guide installs one loop for one repository, verifies isolation before production writes and leaves unattended fixer pushes **off**. Read [concepts](concepts.md) first if seats, routes or hooks are unfamiliar.
 
+## Contents
+
+- [Prepare the host and identities](#prepare-the-host-and-identities)
+- [Example conventions](#example-conventions)
+- [Install the plugin](#install-the-plugin)
+- [Choose one setup path](#choose-one-setup-path)
+- [Verify and arm](#verify-and-arm)
+- [Exercise the first production review](#exercise-the-first-production-review)
+- [Decide separately about unattended pushes](#decide-separately-about-unattended-pushes)
+
 ## Prepare the host and identities
 
 | Prerequisite | What to prepare | Why it matters |
@@ -61,7 +71,7 @@ Setup performs these steps in order:
 3. Install the shared watchdog job if missing.
 4. Run `doctor` and `selftest --no-model`. Failure stops before arming; already completed steps are kept. When the [onboarding record](commands.md#onboard) says `identities`, `loop` and `model` already passed (or `model` was skipped) and nothing they depend on has changed, a re-run skips this step and says so; after a change it starts over at the stale stage.
 5. Offer to require the `diaktoros/review` merge check on the base, when the loop posts it ([`protect`](commands.md#protect); defaults to **no**). A loop that does not post it gets one line saying there is nothing to require.
-6. Ask whether to arm. It defaults to **no**, and it is skipped when the record shows the hooks armed and unchanged. Setup does not enable fixer pushes, adjudication or issue automation.
+6. Ask whether to arm. It defaults to **no**, and it is skipped when the record shows the hooks armed and unchanged. Setup does not enable fixer pushes or issue automation. It turns adjudication on only when you name an adjudicator profile (asked, blank = none; with `--yes`, the plugin setting's profile).
 
 Setup ends by printing the `onboard` summary: each stage's status and the next command to run. If setup stops partway, fix what it names and run the same command again; it resumes at the stage that is not done.
 
@@ -187,7 +197,7 @@ hermes dk onboard --loop ID
 | `arm --loop ID` | Activates matching existing hooks and sends each a GitHub ping (a write); exits 1 if a ping is rejected. Does not create missing hooks or enable fixer pushes |
 | `--admin-token` on `arm` | Hook editor login mapped in loop tokens; omit only if the reader already has hook write |
 | `status --loop ID` | Read back seats, route mapping, policy, live/queued runs and holds |
-| `onboard --loop ID` | Read-only checklist from the onboarding record: each stage's status (`passed`, `failed`, `skipped`, `stale`, `not_attempted`), when and by which command, and the next command to run with its cost (offline, live read, model-spending, live turn, hook write). Runs nothing and writes nothing; whether unattended fixer pushes are on is reported, never changed |
+| `onboard --loop ID` | Read-only checklist from the onboarding record: each stage's status (`passed`, `failed`, `skipped`, `stale`, `not_attempted`), when and by which command, and the next command to run with its cost (live read, model-spending, live turn, hook write). Runs nothing and writes nothing; whether unattended fixer pushes are on is reported, never changed |
 
 Use an **open, non-draft, same-repository PR** authored by a fixer-allowlisted login and targeting the configured base. Review every failed or unknown check rather than counting green lines. `doctor --offline` skips network probes and therefore cannot prove public delivery. `selftest --ping` explicitly requests a GitHub hook-ping write; ordinary selftest probes do not post a review. `arm` also pings hooks, so the full sequence above is not write-free. See [operations](operations.md) for individual steps and [troubleshooting](troubleshooting.md) for failures.
 
@@ -222,7 +232,7 @@ To disable future fixer pushes use `fixer-push --loop ID --disable`; to pause ho
 - [Getting started with GitHub Apps](github-apps.md): run the loop's identities as GitHub Apps, with no personal accounts or PATs.
 - [Accounts](accounts.md): rotate a PAT without changing the file path.
 - [Settings](settings.md): change identities/models/defaults without reinstalling.
-- [Configuration](configuration.md): add isolated adjudication (not enabled by setup).
+- [Configuration](configuration.md): isolated adjudication, which setup turns on only when you name an adjudicator profile.
 - [Observer](observer.md): add delivery-only transition notices; no observer agent runs.
 - [Issues](issues.md): opt-in triage and maintainer-triggered issue fixes, with extra scopes and policy.
 - [Operations](operations.md): pacing, retries, uncertain outcomes and removal.

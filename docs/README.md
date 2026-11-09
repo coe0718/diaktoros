@@ -6,7 +6,7 @@
 
 1. [Concepts](concepts.md): roles, eligible events, review budget and safety switches.
 2. [Accounts and tokens](accounts.md): prepare distinct accounts, repository access and private token files.
-3. [Getting started](getting-started.md): prerequisites, installation, guided or explicit configuration, checks and first PR.
+3. [Getting started](getting-started.md): prerequisites, installation, guided or explicit configuration, checks and first PR. Running the seats as GitHub Apps instead of PATs? Follow [Getting started with GitHub Apps](github-apps.md) here.
 4. [Operations](operations.md): watch the loop, change it, diagnose failures and remove it.
 
 ## Choose by task
@@ -28,6 +28,8 @@
 | Run a loop as GitHub Apps | [Getting started with GitHub Apps](github-apps.md) | Make the Apps, set up or move a loop, events through the App's webhook, the merge check |
 | Evaluate GitHub App identities | [GitHub App support](github-app-support.md) | What App bots can and can't do on GitHub, observed |
 | Understand implementation | [Architecture](architecture.md) | Gates, ledgers, exact-head isolation, adjudication and reconciliation |
+| Read why a run is held | [Hold explanations](hold-explanations.md) | The shared hold-reason contract behind `explain`, the watchdog and Desktop |
+| Diagnose the Desktop page | [Desktop read diagnostics](desktop-read-diagnostics.md) | Telling a transport failure from a rejected payload or a missing prerequisite |
 | Test or contribute | [Development](development.md) | Development workflow and verification |
 
 ## Conventions and boundaries

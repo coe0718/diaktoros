@@ -6,6 +6,16 @@ The plugin reviews eligible GitHub PRs with an isolated reviewer. If you opt int
 
 **The default is review automation, not unattended fixing.** A changes-requested verdict is held for you while fixer pushes are off. The fixer-push policy is independent of hook arming.
 
+## Contents
+
+- [Glossary](#glossary)
+- [Event path: hook → route → gate → worker](#event-path-hook--route--gate--worker)
+- [One PR, start to finish](#one-pr-start-to-finish)
+- [The switches](#the-switches)
+- [Capacity, time and recovery](#capacity-time-and-recovery)
+- [Trust boundary and limits](#trust-boundary-and-limits)
+- [Where things live](#where-things-live)
+
 ## Glossary
 
 ### Roles and identities
@@ -190,7 +200,7 @@ Reviewer findings are graded P0–P3 and classified as blocking or issue-tier. B
 | Observer route | Send transition notices to a configured chat | No notification feed; not a blocker for turns |
 | Triage / issue-fix settings | Allow issue labeling or maintainer-triggered fixing | No issue automation; issue fixing also needs unattended-push authorization |
 
-Setup writes runtime paths and can install paused hooks, but does not enable adjudication, issue automation or fixer pushes. The [getting-started guide](getting-started.md) explains the checks before arming.
+Setup writes runtime paths and can install paused hooks, but does not enable issue automation or fixer pushes. It turns adjudication on only when you name an adjudicator profile. The [getting-started guide](getting-started.md) explains the checks before arming.
 
 ```bash
 hermes dk fixer-push --loop ID --enable --acknowledge-pr-race

@@ -1,5 +1,7 @@
 # Command reference
 
+[Documentation map](README.md) · [Configuration](configuration.md) · [Settings](settings.md) · [Troubleshooting](troubleshooting.md)
+
 Every `hermes dk` command, what it is for, what it changes, and every flag it takes.
 New to the loop? Read [How it works](concepts.md) first; the words used here (seat, route, hook,
 reader, arm) are defined there.
@@ -72,7 +74,7 @@ No setting named here is an extra CLI flag.
 | `--host` | HTTP(S) gateway origin, optional port, no path/query/fragment/userinfo | Fresh unset; `init` requires it even without hooks. HTTPS is recommended. Trailing slash stripped. `set` refuses clearing it. |
 | `--skill`, display-name options | String; fresh empty | Skill is a prompt instruction, not installed by this flag. Plugin skill identifier: `diaktoros:review-loop` (a loop that still names `hermes-review-loop:review-loop` is read as the new name). Agent display names are cosmetic, not identities. |
 | `--attribution`, `--comment` | Exactly `on` or `off` | Attribution fresh on; triage comments fresh off. Attribution signs only plugin-mediated writes. |
-| Observer events | Comma-separated `opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held`; blank = all | Unknown names remain stored without a misconfiguration warning. Unknown-only input matches no transitions, so the feed is silent; use the listed names. |
+| Observer events | Comma-separated, from `opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined`; blank = all | Unknown names remain stored without a misconfiguration warning. Unknown-only input matches no transitions, so the feed is silent; use the listed names. |
 | Observer digest | Integer minutes; non-positive = per-transition, positive = watchdog-flushed batches | Negative values silently normalize to immediate delivery, not a misconfigured feed. Hand-edited unparseable values do the same; CLI flags require integers. Muting preserves configuration; disabling removes its route but retains delivery history. |
 | Delivery targets | Gateway/Hermes delivery string; observer fresh `telegram`, watchdog fresh `local` | Parser does not enumerate or verify configured destinations. Observer sends notices to another chat; verify privacy first. |
 | `--schedule` | Hermes cron schedule string, e.g. `15m`; init omitted = no cron, setup default `15m` | Delegated to Hermes cron parsing, not independently validated by plugin argparse. One shared watchdog job is reused. |
@@ -316,7 +318,9 @@ reader, one read per PR, at most 100) each time the report runs. `merged`, `clos
 Merge conversion is merged over decided (merged + closed). Turns per merged fix count the
 issue-fix turn and every turn that ran on its PR after it: reviews, fixes, CI fixes, conflict
 turns and rulings. Operator steps are the explicit ones on that PR after the proposal: `retry`,
-`escalate`, `review` (a fresh review asked for) and `hold` (a maintainer's hold began). They are
+`escalate`, `review` (a fresh review asked for), `reconsider` (`review --reconsider`), `cancel`,
+`hold` (a maintainer's hold began) and `agent hold` (a hold by an operator agent, counted apart
+from a person's). They are
 recorded from this version on, so the line says when the first was; earlier work is a lower
 bound. Human overrides (#220) are not among them.
 
@@ -460,8 +464,8 @@ hermes dk setup --repo "<owner>/<repository>" --dry-run
 
 Running it again is safe: whatever is already in place is kept, so a second run only repairs what
 is missing or broken. `--dry-run` shows every step and writes nothing. `--yes` asks no questions:
-your flags and the settings form are the answers and every confirmation is yes, except arming,
-which still needs `--arm`. Without a terminal (in a script), it refuses unless you pass `--yes`.
+your flags and the settings form are the answers and every confirmation is yes, except requiring
+the merge check and arming, which still need `--protect` and `--arm`. Without a terminal (in a script), it refuses unless you pass `--yes`.
 
 Resuming reads the onboarding record, which `selftest` and `arm` write (#1617). A loop whose
 checks were never recorded (verified by hand, or before #1617) runs every step as before. The
@@ -569,7 +573,8 @@ Installs a new loop for one repository. Through a staged installation it writes:
 3. the gate shims in each seat profile's `scripts/` directory, the small files the gateway runs
    when a route is called;
 4. with `--hooks`, the two GitHub repo hooks, created **paused** (nothing happens until
-   [`arm`](#arm));
+   [`arm`](#arm)). A loop with `--ingress app-webhook` gets no repo hooks: its events arrive on the
+   App's own route, and `init` names the [`app-webhook --set`](#app-webhook) command to run next;
 5. with `--schedule`, the shared watchdog cron job, created only if it does not exist yet.
 
 Everything is checked before the first file is written: the profiles exist, the logins are in
@@ -1652,8 +1657,9 @@ left out. Read-only: the loop never merges.
 
 A PR is listed when it is approved at its head, that approval is not stale (#473), the required
 checks are green, GitHub reports it mergeable, and nothing holds it (draft, open gate failure,
-human-paths hold, escalation, issue-fix hold, shadow-review hold (with `shadow.escalate`),
-same-head retarget hold). A retarget hold blocks only while its fresh review is
+human-paths hold, escalation, shadow-review hold (with `shadow.escalate`),
+same-head retarget hold). An issue whose fix waits for this PR to merge does not hold the PR itself.
+A retarget hold blocks only while its fresh review is
 still owed; a host-receipted approval at that head lifts it. Anything unreadable
 excludes the PR and says so. A stacked PR (based on another PR's branch) comes after its parent
 and is excluded until the parent is ready. PRs changing the same files are listed one after
@@ -1769,7 +1775,7 @@ that started nothing leaves nothing behind.
 Makes one issue's fix wait for another issue's implementation (#671): issue B (`--issue`) is
 not handed to the fixer until issue A (`--on`) has its implementation merged into the loop's
 base. Only you declare a dependency; the loop never reads one from issue text (#686), and a
-maintainer's comment can't declare one yet (#708).
+maintainer's comment can't declare one either (#708, closed as not planned).
 
 ```bash
 hermes dk depends --loop "<loop-id>" --issue 42 --on 41

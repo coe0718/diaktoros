@@ -1,5 +1,7 @@
 # GitHub App support
 
+[Documentation map](README.md) · [Getting started with GitHub Apps](github-apps.md) · [Accounts](accounts.md)
+
 What three GitHub App identities (reader, reviewer, fixer) can actually do on GitHub, observed on
 2026-10-21 against a throwaway repository in the M0 feasibility spike (#1164). This evidence
 shaped the App mode built in #1163, and the sections below record how each finding was answered.

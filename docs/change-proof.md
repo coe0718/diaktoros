@@ -51,7 +51,7 @@ hermes dk set --loop ID --change-proof-max 30
 
 Only **reviewer turns** get a proof. It runs after the head is exported and its dependencies are
 prefetched, and **before the turn budget starts**, so it does not eat into the reviewer's time.
-While it runs, the turn's progress line reads `proving the changed tests`.
+While it runs, the turn's progress line begins with `proving the changed tests`.
 
 1. **Find the changed tests.** The host compares the merge-base tree with the head tree. A test
    module is a `.py` file on a test path (under `tests/`, `test/` or `spec/`, or named `test_*`,
@@ -70,7 +70,7 @@ While it runs, the turn's progress line reads `proving the changed tests`.
    kept in the run ledger (table `change_proofs`) for that exact head. The first proof for a head
    stands. A shadow review or a re-review of the same head reads it instead of running it again.
 
-Two cases skip the run:
+Three cases skip the run:
 
 - **An issue fix whose fixer named its reproduction tests.** That head already carries the host's
   reproduction proof (#484), so the change proof leaves it alone.

@@ -1,5 +1,7 @@
 # Desktop read diagnostics
 
+[Documentation map](README.md) · [Operations](operations.md) · [Security](security.md) · [Troubleshooting](troubleshooting.md)
+
 The page's Failed/Retry state is not evidence that a particular panel, store or route is the
 cause. Distinguish transport failures, rejected payloads, missing prerequisites and actual
 unavailable local stores before changing an installation.
@@ -115,6 +117,6 @@ python3 tests/leakguard.py -v test_desktop_reads test_desktop test_desktop_setti
 
 Web dependencies are optional only in standalone shards. Supply FastAPI, HTTPX and Hermes and
 set `DIAKTOROS_REQUIRE_HERMES_SOURCE=1` in the dependency-equipped integration lane; a missing
-prerequisite must fail there rather than turn into a green skipped acceptance. The real-host
-case must be included explicitly in that lane when adding it to CI. Full-suite and real-render
+prerequisite must fail there rather than turn into a green skipped acceptance. CI's `verticals`
+core job already runs these reads with FastAPI, HTTPX and the pinned Hermes, and fails on any skip. Full-suite and real-render
 acceptance remain separate from these targeted backend tests.
