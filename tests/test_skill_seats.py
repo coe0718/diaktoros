@@ -30,10 +30,16 @@ class SeatSections(unittest.TestCase):
     def test_shadow_section_states_the_no_write_protocol_and_where_the_verdict_goes(self):
         text = section("shadow")
         for needle in ("no-write", "operation out of scope", "posts nothing", "shadow_reviews",
-                       "snapshot", "stats", "shadow.escalate", "shadow.file_issues",
+                       "snapshot", "hermes dk report", "shadow.escalate", "shadow.file_issues",
                        "Not verified:"):
             with self.subTest(needle=needle):
                 self.assertIn(needle, text)
+
+    def test_shadow_section_names_the_command_that_shows_the_verdict(self):
+        # #1677: `stats` drops the shadow seat; `report` sets it beside the real review.
+        text = " ".join(section("shadow").split())
+        self.assertIn("`hermes dk report` and the weekly report set it beside the real review", text)
+        self.assertNotIn("`hermes dk stats` sets it", text)
 
     def test_shadow_section_separates_automatic_retry_from_the_operators_manual_one(self):
         # A failed shadow is never retried automatically, but `retry --seat shadow` re-arms it.
