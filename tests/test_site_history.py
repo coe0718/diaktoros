@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
@@ -24,6 +25,11 @@ SITE = Path(__file__).resolve().parents[1] / "docs" / "site"
 spec = importlib.util.spec_from_file_location("publish_history", SITE / "publish-history.py")
 pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
+def pub_util():
+    from diaktoros import util
+    return util
+
+
 TAIL = "push said /home/jeremy/.hermes/state boom"
 
 
@@ -97,6 +103,47 @@ class Publish(Fixture):
         data = pub.sanitize(export)
         self.assertEqual(data["rounds"][0]["events"][0]["text"], "see [path] and [path]")
         self.assertEqual(data["gaps"], ["broker-audit at [path] is unreadable"])
+
+    def test_a_value_of_the_wrong_type_refuses_cleanly(self):
+        """#2158: a bad ``merged``, time or finding is refused, not a TypeError traceback."""
+        out = self.out()
+        export = self.exported()
+        bad_event = json.loads(json.dumps(export))
+        bad_event["rounds"][0]["events"][0]["at"] = "soon"
+        for bad in ({**export, "merged": "yes"}, {**export, "merged": {"at": "soon"}},
+                    {**export, "merged": {"at": True, "by": "x"}},
+                    {**export, "findings": ["F1"]}, bad_event):
+            with self.assertRaises(pub.Refused):
+                pub.publish(bad, out)
+        self.assertEqual(list(out.iterdir()), [])
+        cycle = out / "c.json"
+        cycle.write_text(json.dumps({**export, "merged": "yes"}))
+        proc = subprocess.run([sys.executable, str(SITE / "publish-history.py"), str(cycle)],
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 1)
+        self.assertTrue(proc.stderr.startswith("refused: "), proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+
+    def test_both_files_go_through_atomic_write_index_last(self):
+        """#2159: a failed index write leaves the old index whole and the cycle published."""
+        out = self.out()
+        export = self.exported()
+        pub.publish(export, out)
+        before = (out / "index.json").read_text()
+        real, calls = pub_util().atomic_write, []
+
+        def fail_on_index(path, data, **kw):
+            calls.append(Path(path).name)
+            if Path(path).name == "index.json":
+                raise OSError("disk full")
+            return real(path, data, **kw)
+
+        with mock.patch.object(pub_util(), "atomic_write", fail_on_index):
+            with self.assertRaises(OSError):
+                pub.publish({**export, "pr": 8}, out)
+        self.assertEqual(calls, ["8.json", "index.json"])
+        self.assertEqual((out / "index.json").read_text(), before)
+        self.assertTrue((out / "8.json").exists())
 
 
 HARNESS = r"""
