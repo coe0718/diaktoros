@@ -930,8 +930,9 @@ def group_doctor() -> None:
     check("a seat with no credential at all fails", rc, 1)
     check("  and names the seat", "❌ credential:fixer" in out, True)
     check("  and names the login", FIXER in out, True)
-    check("  the fix is a token file, never a GH_TOKEN in the profile",
-          "--token" in out and "GH_TOKEN=<pat>" not in out, True)
+    # #2240: a seat's credential maps through the settings (`set --token` refuses a seat's login).
+    check("  the fix is a token file or an App, never a GH_TOKEN in the profile",
+          "fixer_token_file (a PAT) or fixer_app_id" in out and "GH_TOKEN=<pat>" not in out, True)
     check("  the reviewer keeps its mapped token", "✅ credential:reviewer" in out, True)
 
     section("doctor — profiles, scripts and the cron shim")

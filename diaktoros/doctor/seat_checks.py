@@ -32,6 +32,17 @@ def check_profile(loop: dict, seat: str) -> doctor.Check:
     return _check_profile(str(loop["seats"][seat].get("profile") or ""), seat)
 
 
+def _triage_fix(loop: dict, login: str) -> str:
+    """A PAT or a GitHub App for the triage login (#2240); a seat's login maps the seat's way."""
+    seat = next((s for s in config.SEAT_KEYS
+                 if login and login.casefold() == config.seat_login(loop, s).casefold()), "")
+    if seat:
+        return f"triage labels as the {seat} seat: {credentials.seat_fix(loop, seat)}"
+    who = login or "<login>"
+    return (f"map one: `hermes dk set --loop {loop['id']} --token {who}=/path/to/pat` (or --app "
+            f"{who}=APP_ID:/abs/key.pem for a GitHub App); it needs issues: write")
+
+
 def check_triage(loop: dict) -> list[doctor.Check]:
     """Issue triage (#213): the profile its model runs as, and the token it labels with."""
     checks = [_check_profile(config.seat_profile(loop, "triage"), "triage")]
@@ -43,8 +54,7 @@ def check_triage(loop: dict) -> list[doctor.Check]:
     elif path is None or not path.is_file() or path.stat().st_size == 0:
         checks.append(doctor.Check("credential:triage", doctor.ABSENT,
                                    f"no nonempty token file mapped for the triage login {login or '?'}",
-                                   f"map one: `hermes dk set --loop {loop['id']} --token "
-                                   f"{login or '<login>'}=/path/to/pat` (it needs issues: write)"))
+                                   _triage_fix(loop, login)))
     elif credentials.token_file_problem(str(path)):
         checks.append(doctor.Check("credential:triage", doctor.MISMATCH,
                                    f"{login} → {identity_checks._token_file_facts(path)}: "
