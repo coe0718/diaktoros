@@ -83,6 +83,12 @@ def release_how(hold: dict) -> str:
     return "an authorized `/loop release` comment (removing the label does not lift it)"
 
 
+def short(hold: dict) -> str:
+    """Who holds the PR and how, in a few words for the merge check's turn note (#753)."""
+    how = f"the {LABEL} label" if hold.get("how") == "label" else HOLD
+    return f"held by {hold.get('by') or '?'} via {how}"
+
+
 def line(hold: dict, loop: dict | None = None) -> str:
     """The one sentence explain, status and the watchdog all use. With ``loop``, a hold by an
     ``operator_agents`` login says so (#757)."""

@@ -221,12 +221,23 @@ def post(loop: dict, number: int, head: str, state: str, summary: str,
     reasons = [line[2:] for line in summary.splitlines() if line.startswith("- ")]
     first = reasons[0] if reasons else summary.splitlines()[0] if summary else ""
     body = {"state": state, "context": NAME,             # a status shows one line: the first reason
-            "description": (f"{title(state)}: {first}" if first else title(state))
-            [:STATUS_DESCRIPTION_MAX]}
+            "description": description(state, first)}
     done = gh.api(loop, f"/repos/{repo}/statuses/{head}", method="POST", body=body, login=login)
     if isinstance(done, dict) and done.get("context") == NAME:
         return None, ""
     return None, gh.last_error() or "commit status not written"
+
+
+def description(state: str, first: str) -> str:
+    """A commit status's one line: the state's title and the first reason, within GitHub's 140
+    characters. A longer reason loses its middle, not its end (#2313): the end is the turn's note
+    (#753), and a held turn's note ends with when it resumes."""
+    text = f"{title(state)}: {first}" if first else title(state)
+    if len(text) <= STATUS_DESCRIPTION_MAX:
+        return text
+    keep = STATUS_DESCRIPTION_MAX - 1
+    start = min(64, keep // 2)
+    return text[:start] + "…" + text[len(text) - (keep - start):]
 
 
 def refresh(loop: dict, st, only: set[int] | None = None, log=lambda _msg: None) -> int:

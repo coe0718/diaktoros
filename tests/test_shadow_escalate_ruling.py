@@ -636,6 +636,8 @@ class CallSites(Base):
         turn.setUp()
         self.addCleanup(turn.doCleanups)
         sup = turn.queue_shadow()
+        # Its reviewer turn is done (#753 refreshes the check for a reviewer's claim too).
+        turn.reviewer_is(sup, ("confirmed", "APPROVED"), "succeeded")
         closed = {"number": 8, "state": "closed", "draft": False,
                   "head": {"sha": ts.HEAD, "ref": "fix-8"}}
         with mock.patch.object(ts.config, "by_repo", return_value=turn.loop), \
@@ -658,6 +660,7 @@ class CallSites(Base):
         turn.setUp()
         self.addCleanup(turn.doCleanups)
         sup = turn.queue_shadow()
+        turn.reviewer_is(sup, ("confirmed", "APPROVED"), "succeeded")     # as above (#753)
         delivery = f"acme/widgets:8:{ts.HEAD}:shadow"
         with closing(sqlite3.connect(sup.db)) as con, con:
             con.execute("UPDATE runs SET retries=? WHERE delivery=?", (retries, delivery))

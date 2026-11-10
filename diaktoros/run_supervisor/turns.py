@@ -55,6 +55,7 @@ class _Turn:
     cancel: bool = False       # ended before launch by a fact, not a fault: cancelled (#723)
     row: sqlite3.Row | None = None
     loop: dict | None = None
+    launched: bool = False     # its merge check says it is running (#753)
 
 
 class _Launch(NamedTuple):
@@ -446,7 +447,7 @@ class ClaimAndLaunch:
                 con.execute('COMMIT')
                 # #1786: a shadow retired at its claim (off, moved head, closed PR) never
                 # arrives; the merge check must stop waiting for it.
-                self._refresh_shadow_check(None, row, 'cancelled')
+                self._refresh_check(None, row, 'cancelled')
                 return None
             if read.read_error:
                 # Bounded like a failed turn (#53): back off, then fail with the reason and
@@ -465,7 +466,7 @@ class ClaimAndLaunch:
                                  now, row['id']))
                 con.execute('COMMIT')
                 # #1786: a read that failed for good ends the shadow; a backed-off one is still open.
-                self._refresh_shadow_check(None, row, 'waiting' if retries < run_supervisor.MAX_RETRIES
+                self._refresh_check(None, row, 'waiting' if retries < run_supervisor.MAX_RETRIES
                                            else 'failed')
                 return None
             if read.retry_read:
@@ -588,7 +589,7 @@ class ClaimAndLaunch:
         launch = self._prepare_launch(turn)
         if launch is None:
             return
-        self.record_launch(run_id, owner, prompts.revision(_turn_role(row)), inference.model)
+        self._launched(turn, prompts.revision(_turn_role(row)), inference.model)
         prompt = _nudged(row, launch.prompt)
         cancel = self._cancels.get(run_id)
         if cancel is not None and cancel.is_set():
@@ -1176,19 +1177,38 @@ class ClaimAndLaunch:
                                    turn_key=row['turn_key'] or '',
                                    shadow=row['seat'] == run_supervisor.SHADOW)
 
-    def _refresh_shadow_check(self, loop: dict | None, row, state: str | None) -> None:
-        """Refresh the merge check of a shadow run's own PR once the run has ended (#1786).
+    def _launched(self, turn: _Turn, prompt_rev: str, model: str) -> None:
+        """Record what the turn launches with (#472), then show it running on its PR's merge
+        check (#753) before the seat starts."""
+        self.record_launch(turn.run_id, turn.owner, prompt_rev, model)
+        turn.launched = True
+        self._refresh_check(turn.loop, turn.row, 'running', launched=True)
 
-        The check says "waiting on the shadow review" for as long as the ledger shows the run
-        open, and nothing else refreshes it until the watchdog's next sweep. A run still open
-        (``gate.SHADOW_OPEN``: held for CI, waiting to retry) changes nothing, and ``state`` None
-        means this owner no longer holds the run. A ``loop`` of None is looked up from the row's
-        repo. Best effort, like every refresh after an event."""
+    def _refresh_check(self, loop: dict | None, row, state: str | None,
+                       launched: bool = False) -> None:
+        """Refresh the merge check of a run's own PR once the ledger says something new about it.
+
+        A shadow run (#1786): the check says "waiting on the shadow review" for as long as the
+        ledger shows the run open, so it is refreshed once the run has ended; one still open
+        (``gate.SHADOW_OPEN``: held for CI, waiting to retry) changes nothing. Any other PR turn
+        (#753): the check names the turn (``views.turn_note``), so it is refreshed when the turn
+        launches and when it ends, except a turn that never launched and waits again with the
+        reason it was claimed with: a CI hold re-polled unchanged costs no refresh. ``state``
+        None means this owner no longer holds the run. A ``loop`` of None is looked up from the
+        row's repo. Best effort, like every refresh after an event."""
         try:
             from .. import config, gate, merge_check
-            if (row is None or state is None or state in gate.SHADOW_OPEN
-                    or row['seat'] != run_supervisor.SHADOW):
+            from . import claims
+            if (row is None or state is None
+                    or row['seat'] not in (*claims.PR_HOLD_SEATS, run_supervisor.SHADOW)):
+                return                  # an issue fix's or a triage's number is an issue's
+            if row['seat'] == run_supervisor.SHADOW and state in gate.SHADOW_OPEN:
                 return
+            if row['seat'] != run_supervisor.SHADOW and state == 'waiting' and not launched:
+                with self._connect() as con:
+                    now = con.execute("SELECT error FROM runs WHERE id=?", (row['id'],)).fetchone()
+                if now is not None and now[0] == row['error']:
+                    return
             loop = loop or config.by_repo(row['repo'])
             if loop is not None:
                 merge_check.refresh_quietly(loop, row['pr'])
@@ -1260,11 +1280,10 @@ class ClaimAndLaunch:
             except Exception:
                 pass
         claims.release_seat(turn.claim, state)
-        if shadow:
-            # #1786 (and #1163 for a recorded verdict): the merge check reads the shadow run's
-            # state from the ledger, so it is refreshed once that state is written, whatever the
-            # outcome: a review recorded, a failure, or a cancellation before launch.
-            self._refresh_shadow_check(turn.loop, turn.row, state)
+        # The merge check reads the run's state from the ledger, so it is refreshed once that
+        # state is written (#1786 for a shadow, #1163 for its recorded verdict, #753 for a turn
+        # the check names), whatever the outcome.
+        self._refresh_check(turn.loop, turn.row, state, launched=turn.launched)
         if not shadow:
             # A shadow turn is no part of the loop (#218): its failure pages nobody.
             self.failure_notice(run_id, state)

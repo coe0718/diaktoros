@@ -130,8 +130,7 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
             add(PENDING, "review receipts unreadable: approval unknown")
         elif latest is not None and gh.review_state(latest) == "CHANGES_REQUESTED":
             # #1245: a red merge check names the verdict, with the budget explain counts.
-            add(FAILURE, f"changes requested at head {head[:7]} "
-                         f"({len(gate.verdicts(reviews, loop))} of {loop.get('cap')} verdicts)")
+            add(FAILURE, _changes_requested(loop, number, head, reviews))
         elif latest is None or gh.review_state(latest) != "APPROVED":
             # No verdict at the head yet is a review still to come.
             add(PENDING, _not_approved(loop, st, number, head, reviews, author))
@@ -215,7 +214,30 @@ def _not_approved(loop: dict, st, number: int, head: str, reviews: list, author:
     said = f"not approved at head {head[:7]}"
     if gate.review_cap_hit(loop, st, number, head, len(gate.verdicts(reviews, loop)), author):
         said += " — review cap reached; a maintainer grants another round"
-    return said
+    return _with_turn(loop, number, head, "reviewer", said)
+
+
+def _changes_requested(loop: dict, number: int, head: str, reviews: list) -> str:
+    """A change request at the head, with the budget ``explain`` counts (#1245) and the fixer's
+    turn answering it (#753)."""
+    return _with_turn(loop, number, head, "fixer",
+                      f"changes requested at head {head[:7]} "
+                      f"({len(gate.verdicts(reviews, loop))} of {loop.get('cap')} verdicts)")
+
+
+def _with_turn(loop: dict, number: int, head: str, seat: str, said: str) -> str:
+    """``said`` with the newest ``seat`` turn at this head, when the ledger has one (#753): a
+    review held for a usage window or by a maintainer, queued or failed shows on the PR's merge
+    check, not only in ``status``. Words only: the check's state is decided without it, so an
+    approved, green head a maintainer holds stays green (the hold pauses the loop's turns, not a
+    merge)."""
+    from . import pr_hold
+    from .run_supervisor import claims, production_ledger, views
+
+    def held():         # a maintainer's hold keeps a queued turn from starting (#477)
+        return pr_hold.read(loop, number)[0] if seat in claims.PR_HOLD_SEATS else None
+    note = views.turn_note(production_ledger(), loop["repo"], number, head, seat, held)
+    return f"{said} — {note}" if note else said
 
 
 def _escalation(loop: dict, number: int, head: str, marker,
@@ -244,7 +266,8 @@ def _escalation(loop: dict, number: int, head: str, marker,
                           "decides (merge, close, or push a new head)")]
     if not (loop.get("adjudicator") or {}).get("route"):
         return [(FAILURE, "escalated, and this loop has no adjudicator route: a person decides")]
-    return [(PENDING, "escalated: parked awaiting adjudication")]
+    return [(PENDING, _with_turn(loop, number, head, "adjudicator",
+                                 "escalated: parked awaiting adjudication"))]
 
 
 def acting(loop: dict, number: int, head: str, reviews: list | None,
