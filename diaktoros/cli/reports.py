@@ -101,8 +101,13 @@ def cmd_stats(args) -> int:
     either can be published (docs/operations.md, "Publishing stats").
     """
     from .. import run_supervisor, stats
-    try:
-        since = stats.parse_since(args.since)
+    public = getattr(args, "public", False)
+    if (public and not args.json) or (getattr(args, "models", False) and not public) or (
+            public and (args.html or args.github)):
+        print("--public needs --json and takes no --html or --github; --models needs --public")
+        return 2
+    try:                                   # --public: the whole ledger unless --since says
+        since = 0.0 if public and args.since is None else stats.parse_since(args.since or "7d")
     except ValueError as exc:
         print(str(exc))
         return 2
@@ -126,6 +131,11 @@ def cmd_stats(args) -> int:
             print(f"no loops configured in {config.config_dir()}")
             return 2
         loop = loops[0]
+    if public:                             # #2253: the site's "what the second opinion caught"
+        from .. import stats_public
+        print(json.dumps(stats_public.collect(loop, run_supervisor.production_ledger(), since,
+                                              with_models=args.models), indent=2, sort_keys=True))
+        return 0
     report = stats.collect(loop, run_supervisor.production_ledger(), since, args.github)
     print(stats.as_json(report) if args.json else stats.text(report))
     if args.html:
@@ -281,14 +291,20 @@ def add_stats(sub) -> None:  # noqa: ANN001
                                              "how long they ran, and (with --github) its PRs "
                                              "and reviews")
     stats_cmd.add_argument("--loop", help="loop id (default: the only configured loop)")
-    stats_cmd.add_argument("--since", default="7d",
-                           help="window start: 7d, 24h or a date like 2026-09-28 (default 7d)")
+    stats_cmd.add_argument("--since",
+                           help="window start: 7d, 24h or a date like 2026-09-28 (default 7d; "
+                                "with --public, the whole ledger)")
     stats_cmd.add_argument("--github", action="store_true",
                            help="also read the window's PRs and reviews from GitHub, as the "
                                 "reader (one request per PR)")
     stats_cmd.add_argument("--json", action="store_true", help="print the data as JSON")
     stats_cmd.add_argument("--html", metavar="FILE",
                            help="also write one self-contained HTML page to FILE")
+    stats_cmd.add_argument("--public", action="store_true",
+                           help="with --json: only what the site may publish, what the shadow "
+                                "and arbiter caught, as counts and PR numbers (#2253)")
+    stats_cmd.add_argument("--models", action="store_true",
+                           help="with --public: add the reviewer-model comparison")
     stats_cmd.set_defaults(func=cmd_stats)
 
 

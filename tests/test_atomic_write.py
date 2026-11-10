@@ -56,7 +56,7 @@ CALLERS = {
     "diaktoros/route_intent.py::_write", "diaktoros/run_supervisor/__init__.py::Supervisor.__init__",
     "diaktoros/runtime_detect.py::write", "diaktoros/state.py::_atomic_publish",
     "diaktoros/state.py::LoopState._transition_write",
-    "docs/site/publish-history.py::_write",
+    "docs/site/publish-history.py::_write", "docs/site/publish-stats.py::publish",
 }
 BY_HAND = {"os.replace", "os.rename", "tempfile.mkstemp", "tempfile.NamedTemporaryFile",
            "shutil.move"}
