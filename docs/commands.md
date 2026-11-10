@@ -1303,6 +1303,18 @@ restore and overwrite, reads the archive back like `backup --verify` (exit `2`, 
 if it cannot) and writes nothing. Exit `1` means a step is not finished or `doctor`
 listed a check that is not verified.
 
+Before it overwrites anything, `restore` backs up the live install to
+`$HERMES_HOME/backups/diaktoros-pre-restore-<stamp>.tar.gz` (#1049) and prints its path;
+restore that archive to undo the restore. It is written like a `backup --out` archive: retention
+(`--keep`) never counts or deletes it, so delete it by hand once it is no longer needed. If that
+backup cannot be taken (for example a live loop file that does not load), the restore is
+refused and nothing is written. A restore onto an install with nothing to overwrite takes no such
+backup. The files are then put back all or none: every member is first written to a temp file
+beside its target, and only when all of them are written are they swapped in; if a swap fails,
+the files already swapped are put back as they were. Route entries and the watchdog job are
+written after the files and are not part of that rollback: if one of those steps fails, restore
+the pre-restore archive.
+
 An archive is treated as outside input. `restore` refuses it (exit `2`, nothing written) when:
 - a file would land outside this plugin's places (the Hermes home, the loop files'
   directory and the state directories the archive declares) or behind a symlink;

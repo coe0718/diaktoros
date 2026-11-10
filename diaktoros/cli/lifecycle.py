@@ -586,7 +586,23 @@ def _restore_cron(job: dict | None) -> list[str]:
     return [f"cron: job {job['name']!r} created ({job['schedule']}, deliver {job['deliver']})"]
 
 
-def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
+def _pre_restore_snapshot(left: dict | None = None) -> pathlib.Path | None:
+    """Back up the live install before a restore overwrites it (#1049), through ``backup.create``
+    as an ``--out`` archive (so it prunes nothing and is never pruned), and return its path. On
+    failure print why and return None: the restore then writes nothing, since without the
+    snapshot a mistaken or failed restore would leave no way back. It is taken under restore's
+    own marker (``held``), recording what an interrupted run left (``left``, #1054)."""
+    from .. import backup
+    try:
+        return backup.create(backup.pre_restore_out(), held=True, half_moved=left)
+    except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
+        print(f"cannot restore: the backup of the live install before it failed ({exc}); "
+              "nothing was written — fix what it names (a loop file that does not load can be "
+              "moved aside) and run restore again")
+        return None
+
+
+def _restore(args, manifest: dict, archive: pathlib.Path, left: dict | None = None) -> int:
     from .. import backup, migrate, restore_checks
     lines = [f"restore: {len(manifest['files'])} file(s), {len(manifest.get('routes') or {})} "
              f"route(s), loops: {', '.join(manifest.get('loops') or []) or 'none'}"]
@@ -615,6 +631,11 @@ def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
                                  "passed SQLite's integrity check",
                                  "dry run: nothing was written"]))
         return 0
+    if backup.existing(manifest):
+        snapshot = _pre_restore_snapshot(left)
+        if snapshot is None:
+            return 2
+        lines.append(f"restore: the install as it was is in {snapshot}")
     backup.put_files(archive, manifest)
     lines.append(f"restore: {len(manifest['files'])} file(s) put back")
     if isinstance(manifest.get("migrating"), dict):
@@ -647,7 +668,7 @@ def cmd_restore(args) -> int:
         manifest = backup.read_manifest(archive)
         if args.dry_run:
             return _restore(args, manifest, archive)
-        with migrate.hold():
+        with migrate.hold() as left:
             busy = migrate.runs_in_flight()
             if busy:
                 print(f"cannot restore: {busy} run(s) are in flight or uncertain; wait for them "
@@ -659,7 +680,7 @@ def cmd_restore(args) -> int:
                       + "\n  ".join(clash[:20])
                       + (f"\n  … {len(clash) - 20} more" if len(clash) > 20 else ""))
                 return 2
-            return _restore(args, manifest, archive)
+            return _restore(args, manifest, archive, left)
     except (migrate.MigrationBusy, migrate.RunsUnknown) as exc:
         print(f"cannot restore: {exc}")
         return 2
