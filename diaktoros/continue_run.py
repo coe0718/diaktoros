@@ -6,7 +6,10 @@ last write's outcome is unknown, so it is ``uncertain``) used to need a person t
 ledger and GitHub by hand. ``inspect`` compares the two and names the one safe next step;
 ``run`` performs only the stages still missing. It never pushes: the branch push is not a
 stage ``continue`` can do, so no push can happen twice. Anything the records and GitHub
-disagree on stays quarantined, with the facts listed.
+disagree on stays quarantined, with the facts listed. Before any stage writes, the fix is
+re-authorized against live policy (``broker.authorize_issue_fix``, #1051): the operator's
+switch, the identity checks, the issue's author and fix label and its dependency holds bind
+``continue`` as they bind the seat's own ``open_pr``.
 
 ``from_chat`` is the reply path (``continue N``): a sender who is not one of the loop's
 maintainers is ignored without a trace.
@@ -95,20 +98,7 @@ def inspect(loop: dict, sup, run_id: str) -> dict:
                          + ", ".join(f"#{p.get('number')}" for p in prs if isinstance(p, dict)))
     elif prs and isinstance(prs[0], dict):
         pr = prs[0]
-        facts.append(f"PR #{pr.get('number')} is {pr.get('state')} at "
-                     f"{str((pr.get('head') or {}).get('sha'))[:7]}")
-        seat = config.seat_login(loop, "fixer").casefold()
-        if pr.get("state") != "open":
-            conflicts.append(f"PR #{pr.get('number')} is {pr.get('state')}")
-        if sha and (pr.get("head") or {}).get("sha") != sha:
-            conflicts.append(f"PR #{pr.get('number')} head differs from the branch head")
-        if (pr.get("base") or {}).get("ref") != loop.get("base"):
-            conflicts.append(f"PR #{pr.get('number')} targets another base")
-        if str((pr.get("user") or {}).get("login") or "").casefold() != seat:
-            conflicts.append(f"PR #{pr.get('number')} was not opened by the fixer seat")
-        if fix["pr_number"] and fix["pr_number"] != pr.get("number"):
-            conflicts.append(f"the ledger recorded PR #{fix['pr_number']}, GitHub has "
-                             f"#{pr.get('number')}")
+        _check_pr(loop, plan, pr, sha)
     elif fix["pr_number"]:
         conflicts.append(f"the ledger recorded PR #{fix['pr_number']}, GitHub has no PR "
                          "for the branch")
@@ -121,7 +111,44 @@ def inspect(loop: dict, sup, run_id: str) -> dict:
         plan["stages"] = ["open_pr", review_stage(loop)]
     else:
         _review_stage(loop, plan, pr)
+    _authorize(loop, plan)
     return plan
+
+
+def _check_pr(loop: dict, plan: dict, pr: dict, sha: str | None) -> None:
+    """Say in ``plan`` what GitHub's one PR for the fix branch is, and every way it disagrees
+    with the records: not open, another head or base, not the fixer seat's, another number."""
+    fix, facts, conflicts = plan["fix"], plan["facts"], plan["conflicts"]
+    facts.append(f"PR #{pr.get('number')} is {pr.get('state')} at "
+                 f"{str((pr.get('head') or {}).get('sha'))[:7]}")
+    seat = config.seat_login(loop, "fixer").casefold()
+    if pr.get("state") != "open":
+        conflicts.append(f"PR #{pr.get('number')} is {pr.get('state')}")
+    if sha and (pr.get("head") or {}).get("sha") != sha:
+        conflicts.append(f"PR #{pr.get('number')} head differs from the branch head")
+    if (pr.get("base") or {}).get("ref") != loop.get("base"):
+        conflicts.append(f"PR #{pr.get('number')} targets another base")
+    if str((pr.get("user") or {}).get("login") or "").casefold() != seat:
+        conflicts.append(f"PR #{pr.get('number')} was not opened by the fixer seat")
+    if fix["pr_number"] and fix["pr_number"] != pr.get("number"):
+        conflicts.append(f"the ledger recorded PR #{fix['pr_number']}, GitHub has "
+                         f"#{pr.get('number')}")
+
+
+def _authorize(loop: dict, plan: dict) -> None:
+    """Re-authorize the planned writes against live policy (#1051), as the seat's own
+    ``open_pr`` is: ``broker.authorize_issue_fix`` (issue fixes on, distinct verified
+    identities, the issue still open by an allowlisted author with the fix label, no
+    dependency hold). A denial is a conflict, so the dry run says it and ``run`` writes nothing.
+    With no stage planned nothing is written, so recording a finished fix needs no check."""
+    if not plan["stages"]:
+        return
+    fix = plan["fix"]
+    try:
+        broker.authorize_issue_fix(loop, repo=fix["repo"], number=fix["number"])
+    except broker.BrokerDenied as exc:
+        plan["conflicts"].append(f"the issue fix is not authorized now: {exc}")
+        plan["stages"] = []
 
 
 def review_stage(loop: dict) -> str:
