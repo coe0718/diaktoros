@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 import time
 
-from diaktoros import config, conflict_person, gate, gh, observer, pr_hold
+from diaktoros import base_merge, config, conflict_person, gate, gh, observer, pr_hold
 from diaktoros import review_only_conflict, watch_mode
 from diaktoros import state as state_mod
 from diaktoros.util import log
@@ -24,12 +24,14 @@ MERGEABILITY_WAIT_S = 5.0
 
 def mergeability(loop: dict, live, head: str, author: str) -> str:
     """``conflict``, ``unknown`` (GitHub has not computed it yet) or ``""`` for a loop PR read
-    live at ``head``. A review-only PR that merely fell behind counts as a conflict too, when
-    the host may update it."""
+    live at ``head``. A PR that merely fell behind counts as a conflict too, when the host may
+    update it: a review-only one with ``review_only_update``, any other with ``update_behind``
+    (``base_merge``, #1785)."""
     if not isinstance(live, dict) or (live.get("head") or {}).get("sha") != head:
         return ""
-    stale = ("dirty", "behind") if (author in config.review_only(loop)
-                                    and config.review_only_update(loop)) else ("dirty",)
+    update = (config.review_only_update(loop) if author in config.review_only(loop)
+              else config.update_behind(loop))
+    stale = ("dirty", "behind") if update else ("dirty",)
     if live.get("mergeable_state") in stale:
         return "conflict"
     if live.get("mergeable") is None or live.get("mergeable_state") in (None, "unknown"):
@@ -59,7 +61,9 @@ def act_on_conflicts(loop: dict, st: state_mod.LoopState,
                      conflict_live: dict[int, dict]) -> None:
     """Queue a conflict turn and say each conflicted head once (#303). The sweep and the
     merge-triggered conflict scan share it, so both act the same way; the turn key and the
-    observer's per-head dedup keep a later pass from doing it twice."""
+    observer's per-head dedup keep a later pass from doing it twice. A loop PR that is only
+    behind is the host's to bring up to date first (``base_merge``, #1785)."""
+    conflicts = base_merge.act(loop, st, conflicts, conflict_live)
     resolving = config.unattended_fixer_push_enabled(loop)
     tip = base_tip(loop) if resolving and conflicts else None
     for number, head, _pr_base_sha, author in conflicts:
@@ -82,46 +86,9 @@ def act_on_conflicts(loop: dict, st: state_mod.LoopState,
             owed = _queue_turn(loop, st, number, head, base_sha)
         next_review_only = ""
         if review_only:
-            # The cause, the files and the commands (a dry merge on the host, nothing pushed);
-            # with review_only_update on, a clean merge is pushed first, once, under a lease.
-            tried = ""
-            try:
-                # The dry merge, and an attempt that stopped, are kept per (head, base tip): a
-                # sweep that sees the same pair again reads them instead of fetching (#504).
-                key = (number, head, tip or base_tip(loop) or "", config.review_only_update(loop))
-                cached = st.review_only_conflict(*key) if key[2] else None
-                if cached:
-                    facts, tried, attempt = cached
-                else:
-                    facts, attempt = review_only_conflict.assess(
-                        loop, number, head, conflict_live.get(number) or {}), True
-                if (conflict_live.get(number) or {}).get("mergeable_state") == "behind" \
-                        and facts["error"]:
-                    continue                  # behind, no dry merge ran: nothing to say
-                pushed = ""
-                # A stop that is not a fact about the pair (pushes off, a broker refusal, a
-                # failed push) keeps the dry merge but is attempted again (shadow on #1151).
-                if attempt:
-                    pushed, tried = review_only_conflict.update(loop, number, head, facts)
-                    if not pushed and key[2] and "clean" in facts:   # the dry merge ran
-                        st.review_only_conflict_set(
-                            *key, facts, tried,
-                            retry=isinstance(tried, review_only_conflict.Retry))
-                if pushed:
-                    log(f"#{number} @ {head[:7]} merged {loop['base']} in: {pushed[:7]}")
-                    observer.notify(loop, st, "updated", number, pushed, identity="updated",
-                                    outcome=f"merged {loop['base']} into #{number} at "
-                                            f"{pushed[:7]}; review resumes",
-                                    next_turn="reviewer: the new head is reviewed as usual")
-                    continue
-                next_review_only = review_only_conflict.message(loop, author, facts, tried)
-            except Exception as exc:
-                log(f"#{number} review-only conflict facts unavailable: "
-                    f"{type(exc).__name__}: {exc}")
-                next_review_only = (f"{author}: merge {loop['base']} into the branch "
-                                    "(review-only — no fixer)")
-            if (conflict_live.get(number) or {}).get("mergeable_state") == "behind":
-                continue                      # behind and the host did not update: no conflict
+            next_review_only = _review_only_next(loop, st, number, head, author, tip, conflict_live)
+            if next_review_only is None:
+                continue
         # Keyed by head (the observer dedups on it): a new push that still conflicts is a new
         # notice, a sweep that sees the same conflicted head again is not.
         observer.notify(loop, st, "conflict", number, head, identity="conflict",
@@ -132,6 +99,53 @@ def act_on_conflicts(loop: dict, st: state_mod.LoopState,
                                    "come back to you)" if resolving else
                                    f"you: merge {loop['base']} into the branch (unattended fixer "
                                    "pushes are off, so the loop does not resolve it)"))
+
+
+def _review_only_next(loop: dict, st: state_mod.LoopState, number: int, head: str, author: str,
+                      tip: str | None, conflict_live: dict[int, dict]) -> str | None:
+    """A conflicted review-only PR's next step for its notice, or None when there is nothing to
+    say: the host merged the base in (``review_only_update``), or it is only behind."""
+    # The cause, the files and the commands (a dry merge on the host, nothing pushed);
+    # with review_only_update on, a clean merge is pushed first, once, under a lease.
+    tried = ""
+    try:
+        # The dry merge, and an attempt that stopped, are kept per (head, base tip): a
+        # sweep that sees the same pair again reads them instead of fetching (#504).
+        key = (number, head, tip or base_tip(loop) or "", config.review_only_update(loop))
+        cached = st.review_only_conflict(*key) if key[2] else None
+        if cached:
+            facts, tried, attempt = cached
+        else:
+            facts, attempt = review_only_conflict.assess(
+                loop, number, head, conflict_live.get(number) or {}), True
+        if (conflict_live.get(number) or {}).get("mergeable_state") == "behind" \
+                and facts["error"]:
+            return None               # behind, no dry merge ran: nothing to say
+        pushed = ""
+        # A stop that is not a fact about the pair (pushes off, a broker refusal, a
+        # failed push) keeps the dry merge but is attempted again (shadow on #1151).
+        if attempt:
+            pushed, tried = review_only_conflict.update(loop, number, head, facts)
+            if not pushed and key[2] and "clean" in facts:   # the dry merge ran
+                st.review_only_conflict_set(
+                    *key, facts, tried,
+                    retry=isinstance(tried, review_only_conflict.Retry))
+        if pushed:
+            log(f"#{number} @ {head[:7]} merged {loop['base']} in: {pushed[:7]}")
+            observer.notify(loop, st, "updated", number, pushed, identity="updated",
+                            outcome=f"merged {loop['base']} into #{number} at "
+                                    f"{pushed[:7]}; review resumes",
+                            next_turn="reviewer: the new head is reviewed as usual")
+            return None
+        next_review_only = review_only_conflict.message(loop, author, facts, tried)
+    except Exception as exc:
+        log(f"#{number} review-only conflict facts unavailable: "
+            f"{type(exc).__name__}: {exc}")
+        next_review_only = (f"{author}: merge {loop['base']} into the branch "
+                            "(review-only — no fixer)")
+    if (conflict_live.get(number) or {}).get("mergeable_state") == "behind":
+        return None                   # behind and the host did not update: no conflict
+    return next_review_only
 
 
 def _queue_turn(loop: dict, st: state_mod.LoopState, number: int, head: str, base_sha: str) -> str:

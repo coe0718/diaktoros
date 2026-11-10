@@ -76,11 +76,7 @@ def _flag_changes(args, loop: dict, host: str | None) -> dict:
               "inflight_ttl_min": args.inflight_ttl_min, "host": host,
               "turn_budget_s": getattr(args, "turn_budget", None),
               "attribution": cli_common._attribution_arg(args, None),
-              **{key: cli_common._on_off(args, key, None) for key in (
-                  "review_after_ci", "fix_ci", "ci_webhook", "comment_webhook", "protection_webhook",
-                  "fixer_scope_lock",
-                  "adjudicator_approves", "adjudicator_file_issues", "change_proof",
-                  "main_flake_rerun", "review_only_update")}}
+              **{key: cli_common._on_off(args, key, None) for key in config.flags.SWITCHES}}
     if (wanted["review_only_update"] and not loop.get("review_only_update")
             and not getattr(args, "acknowledge_branch_push", False)):
         print(BRANCH_PUSH_REFUSAL)

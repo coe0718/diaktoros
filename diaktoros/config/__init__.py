@@ -275,6 +275,7 @@ DEFAULTS: dict = {
     "adjudicator_file_issues": False,  # a ruling's non-blocking findings become issues (#1864)
     "change_proof": False,    # the host proves each reviewed head's changed tests (#1782)
     "main_flake_rerun": False,  # main's flaky red is rerun once before its notice (#1784)
+    "update_behind": False,   # the host merges the base into a behind loop PR (#1785)
     "change_proof_max": None, # changed tests it runs per head; None = 20
     # provider-killed turns in a row that hold the account; None = 3, 0 = off (#1155)
     "provider_breaker_failures": None,
@@ -1400,6 +1401,12 @@ def adjudicator_approves(loop: dict) -> bool:
     dismisses the change request it overruled. Off unless set, and it needs the adjudicator's
     comment login (``seats.adjudicator.login``), the identity that writes both."""
     return loop.get("adjudicator_approves") is True and bool(adjudicator_login(loop))
+
+
+def update_behind(loop: dict) -> bool:
+    """Whether the host merges the base into a loop PR that fell behind, carrying a clean merge's
+    approval (#1785, ``base_merge``). Off unless set."""
+    return loop.get("update_behind") is True
 
 
 def review_only_update(loop: dict) -> bool:

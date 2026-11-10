@@ -276,10 +276,7 @@ def _init_settings(args, d: dict) -> dict:
         "attribution": cli_common._attribution_arg(args, d["attribution"]),
         # Each as asked, else the form's. review_only_update (host merge pushes to a review-only
         # author's branch) is also refused below unless acknowledged.
-        **{key: cli_common._on_off(args, key, d[key]) for key in (
-            "review_after_ci", "fix_ci", "ci_webhook", "comment_webhook", "protection_webhook",
-            "fixer_scope_lock", "adjudicator_approves",
-            "adjudicator_file_issues", "change_proof", "main_flake_rerun", "review_only_update")},
+        **{key: cli_common._on_off(args, key, d[key]) for key in config.flags.SWITCHES},
         # The checks CI always runs, which a fixer running only its touched tests would miss.
         "fixer_check": (d["fixer_check"] if getattr(args, "fixer_check", None) is None
                         else args.fixer_check),
@@ -933,6 +930,7 @@ def _init_switch_flags(init, d) -> None:  # noqa: ANN001
             ("--adjudicator-file-issues", "file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found"),
             ("--change-proof", "run each reviewed head's changed tests on its merge base and at the head, and show the reviewer"),
             ("--main-flake-rerun", "rerun main's failed CI jobs once when they look like a flake, before a red-main notice"),
+            ("--update-behind", "merge the base into a loop PR that fell behind, keeping its approval when the merge touches nothing the PR changed"),
             ("--attribution", "sign what the loop posts with 'Automated by Diaktoros'")):
         on = d[flag[2:].replace("-", "_")]
         init.add_argument(flag, choices=("on", "off"), default=None,

@@ -947,17 +947,66 @@ def dry_merge(loop: dict, *, branch: str, head: str, base_ref: str, login: str,
         return _dry(git, head, _fetch_pair(git, url, branch, head, base_ref))
 
 
+def tree_identity(git: "_Isolated", head: str, tip: str, merged: dict) -> str:
+    """'' when the merge of ``tip`` into ``head`` is exactly the base plus the PR's diff (#1785),
+    else why it is not: the base's new commits touch no path the PR changed, the merged tree
+    differs from the base only where the PR changed it, and from the PR head only where the
+    base changed. Renames count as a delete and an add."""
+    bare = str(git.bare)
+
+    def paths(a: str, b: str) -> set:
+        out = git.run("--git-dir", bare, "diff", "--no-renames", "--name-only", "-z", a, b)
+        return {p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p}
+
+    ours, theirs = paths(merged["split"], head), paths(merged["split"], tip)
+    both = sorted(ours & theirs)
+    if both:
+        more = f" and {len(both) - 3} more" if len(both) > 3 else ""
+        return f"{', '.join(both[:3])}{more} changed on both sides"
+    if paths(tip, merged["tree"]) != ours or paths(head, merged["tree"]) != theirs:
+        return "the merged tree is not the base plus the PR's diff"
+    return ""
+
+
+def _authorize_update(loop: dict, repo: str, number: int, head: str, branch: str, reader: str,
+                      behind: bool) -> None:
+    """The live PR is the one ``update_branch`` may push: open, not a draft, at ``head``, on the
+    loop's base, a branch of ``repo``, and by a review-only author (or, ``behind``, a loop
+    author who is not one)."""
+    current = gh.api(loop, f"/repos/{repo}/pulls/{number}", login=reader)
+    if not isinstance(current, dict):
+        raise broker.BrokerDenied("cannot verify live PR")
+    pr_head, pr_base = current.get("head") or {}, current.get("base") or {}
+    author = str((current.get("user") or {}).get("login") or "").lower()
+    if (current.get("number") != number or current.get("state") != "open"
+            or current.get("draft") is not False):
+        raise broker.BrokerDenied("PR identity, state or draft status changed")
+    if (pr_base.get("repo") or {}).get("full_name") != repo or pr_base.get("ref") != loop.get("base"):
+        raise broker.BrokerDenied("PR base branch mismatch")
+    if pr_head.get("sha") != head:
+        raise broker.BrokerDenied("stale PR head")
+    if pr_head.get("ref") != branch or (pr_head.get("repo") or {}).get("full_name") != repo:
+        raise broker.BrokerDenied("fork head not permitted for credentialed writes")
+    review_only = author in config.review_only(loop)
+    if behind and (review_only or author not in config.reviewed_authors(loop)):
+        raise broker.BrokerDenied("PR author is not a loop author")
+    if not behind and not review_only:
+        raise broker.BrokerDenied("PR author is not review-only")
+
+
 def update_branch(loop: dict, *, repo: str, number: int, head: str, branch: str,
-                  remote: str | None = None) -> dict:
-    """Merge the base into a review-only author's same-repository PR branch and push the merge
-    commit with a lease on ``head``. Only a clean merge that carries no workflow change is pushed
-    (``NotClean`` otherwise); the author pushing meanwhile makes the lease fail, overwriting nothing.
+                  remote: str | None = None, behind: bool = False, before_push=None) -> dict:
+    """Merge the base into a review-only author's same-repository PR branch (or, ``behind``, a
+    loop PR's that fell behind, #1785) and push the merge commit with a lease on ``head``. Only a
+    clean merge that carries no workflow change is pushed (``NotClean`` otherwise); the author
+    pushing meanwhile makes the lease fail, overwriting nothing. ``before_push(new_head, tip,
+    identity)`` runs before the push, ``identity`` being ``tree_identity``'s answer.
 
     Pushes as the account that makes the host's merge pushes (the fixer seat), within the push
-    policy: ``review_only_update`` and unattended fixer pushes must both be on."""
+    policy: ``review_only_update`` (``update_behind``) and unattended fixer pushes must be on."""
     _sha(head)
-    if not config.review_only_update(loop):
-        raise broker.BrokerDenied("review-only updates disabled")
+    if not (config.update_behind(loop) if behind else config.review_only_update(loop)):
+        raise broker.BrokerDenied("behind updates disabled" if behind else "review-only updates disabled")
     if not config.unattended_fixer_push_enabled(loop):
         raise broker.BrokerDenied("unattended fixer push disabled")
     login = config.seat_login(loop, "fixer")
@@ -970,30 +1019,12 @@ def update_branch(loop: dict, *, repo: str, number: int, head: str, branch: str,
             and ".." not in part and not part.endswith(".lock") for part in branch.split("/")):
         raise broker.BrokerDenied("unsafe branch ref")
 
-    def authorize() -> None:
-        current = gh.api(loop, f"/repos/{repo}/pulls/{number}", login=reader)
-        if not isinstance(current, dict):
-            raise broker.BrokerDenied("cannot verify live PR")
-        pr_head, pr_base = current.get("head") or {}, current.get("base") or {}
-        author = str((current.get("user") or {}).get("login") or "").lower()
-        if (current.get("number") != number or current.get("state") != "open"
-                or current.get("draft") is not False):
-            raise broker.BrokerDenied("PR identity, state or draft status changed")
-        if (pr_base.get("repo") or {}).get("full_name") != repo or pr_base.get("ref") != loop.get("base"):
-            raise broker.BrokerDenied("PR base branch mismatch")
-        if pr_head.get("sha") != head:
-            raise broker.BrokerDenied("stale PR head")
-        if pr_head.get("ref") != branch or (pr_head.get("repo") or {}).get("full_name") != repo:
-            raise broker.BrokerDenied("fork head not permitted for credentialed writes")
-        if author not in config.review_only(loop):
-            raise broker.BrokerDenied("PR author is not review-only")
-
-    authorize()
+    _authorize_update(loop, repo, number, head, branch, reader, behind)
     identity = _fixer_identity(loop, login, invalid="fixer identity changed")
     ref = f"refs/heads/{branch}"
     ref_path = f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"
     receipt = {"repo": repo, "pr": number, "old_head": head, "branch": branch,
-               "role": "review_only_update", "login": login, "paths": [],
+               "role": "update_behind" if behind else "review_only_update", "login": login, "paths": [],
                "operation": "update_branch"}
     new_head = None
     attempt_started = False
@@ -1012,7 +1043,9 @@ def update_branch(loop: dict, *, repo: str, number: int, head: str, branch: str,
         new_head = _sha(git.run("--git-dir", bare, "commit-tree", merged["tree"], "-p", head,
                                 "-p", tip, input=message.encode("utf-8") + b"\n").decode())
         receipt["merge_base"] = tip
-        authorize()
+        if before_push is not None:
+            before_push(new_head, tip, tree_identity(git, head, tip, merged))
+        _authorize_update(loop, repo, number, head, branch, reader, behind)
         attempt_started = True
         _audit(loop, {**receipt, "new_head": new_head, "phase": "attempt"})
         try:

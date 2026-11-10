@@ -1,6 +1,12 @@
 """The loop's plain on/off settings: each must be a JSON boolean, never a truthy string."""
 from __future__ import annotations
 
+# The on/off switches `set`, `init` and the settings form each move with ``--<key> on|off`` (or
+# the form's checkbox): one list, so a new switch is added once for all three (#323).
+SWITCHES = ("review_after_ci", "fix_ci", "ci_webhook", "comment_webhook", "protection_webhook",
+            "fixer_scope_lock", "adjudicator_approves", "adjudicator_file_issues", "change_proof",
+            "main_flake_rerun", "update_behind", "review_only_update")
+
 # key -> what the message says after "must be a JSON boolean"
 _BOOLEANS = {
     "unattended_fixer_push": "; only explicit true authorizes unattended fixer pushes",
@@ -13,6 +19,7 @@ _BOOLEANS = {
     "adjudicator_file_issues": " (true files the findings a ruling lets through as issues)",
     "change_proof": " (true runs a reviewed head's changed tests on its merge base and at the head)",
     "main_flake_rerun": " (true reruns main's failed jobs once when they look like a flake)",
+    "update_behind": " (true merges the base into a behind loop PR, keeping a clean merge's approval)",
     "fix_ci": " (true hands a failed required check on a fixer's PR to the fixer)",
     "ci_webhook": " (true acts on a finished CI run when GitHub reports it, not at the next sweep)",
     "comment_webhook": " (true wakes the issue fixer on a maintainer's reply when GitHub reports it)",

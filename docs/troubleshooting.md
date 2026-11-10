@@ -27,6 +27,7 @@ that no GitHub write happened.** Never delete safety state to bypass a refusal.
 - [Disk](#disk-usage-keeps-growing) and [uninstall](#after-uninstall-things-are-left-behind)
 - [Triage](#an-issue-opened-and-nothing-was-labelled) and [issue fixes](#a-fix-label-was-applied-and-no-pr-came)
 - [Attribution](#the-loops-posts-carry-a-footer-or-trailer-you-did-not-expect)
+- [Behind PRs](#an-approved-pr-fell-behind-and-was-reviewed-again)
 - [Escalation evidence](#still-stuck)
 
 Replace quoted angle-bracket placeholders, including brackets, with your values.
@@ -450,6 +451,22 @@ hermes dk set --loop "<loop-id>" --attribution off
 `--attribution off` disables future footer/trailer addition; `on` restores it. Existing
 posts/commits remain. Keep plugin settings consistent before apply. See
 [signing](operations.md#what-the-loop-signs).
+
+## An approved PR fell behind and was reviewed again
+
+**Cause:** with `update_behind` on (#1785), the host merged the base into the PR, and its
+approval did not carry over. The `updated` notice says why: the head was not ready to merge
+but for being behind (CI, the shadow, a hold or a ruling), or the base's new commits touched a
+file the PR changed, which always gets a real review. With the setting off, nothing merges the
+base in, and the next push (yours or the fixer's) is reviewed as usual.
+**Action:** let the review run; `explain` says "approved at head … (carried from …)" when an
+approval did carry. If nothing merges behind PRs at all, `doctor` reports why (`update-behind`):
+the base must require branches to be up to date, and unattended fixer pushes must be on.
+
+```bash
+hermes dk explain --loop "<loop-id>" --pr "<number>"
+hermes dk doctor --loop "<loop-id>"
+```
 
 ## Still stuck?
 

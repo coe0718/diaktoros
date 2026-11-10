@@ -81,7 +81,8 @@ def _switches(loop: dict, schema, rows: list, enable: str) -> None:
             ("adjudicator_approves", "an ACCEPT ruling is left to you", login),
             ("adjudicator_file_issues", "a ruling's follow-ups stay in its comment", ""),
             ("change_proof", "the reviewer proves the changed tests by hand", ""),
-            ("main_flake_rerun", "every red main is a main_red notice", "")):
+            ("main_flake_rerun", "every red main is a main_red notice", ""),
+            ("update_behind", "a behind loop PR waits for a person or the fixer", pushes)):
         schema(key, (key,), bool(loop[key]), on=bool(loop[key]), off=off)
         if loop[key] and needs:
             rows[-1].note = f"on, but inert: needs {needs}"

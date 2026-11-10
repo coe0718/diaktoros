@@ -394,6 +394,8 @@ SETTINGS_SCHEMA: dict = {
                                                "ruling comment."},
     "main_flake_rerun": {"label": "Rerun a flaky red main once", "type": "bool", "default": False,
                          "description": "On: before a red-main notice, the watchdog reruns main's failed CI jobs once when they look like a flake (every failing test passed in a sibling job of the same head, or every failure is a timeout), as the first maintainer whose token the loop holds, never a seat (#1784). A rerun that passes sends a routine main_flaked notice naming the test; a second red sends main_red, saying a rerun was tried. Never on a PR. Off: every red main is a main_red notice."},
+    "update_behind": {"label": "Bring a behind loop PR up to date", "type": "bool", "default": False,
+                      "description": "On: when a loop PR falls behind its base (GitHub reports it once the base requires branches to be up to date), the host merges the base into it as the fixer seat, if no turn of the PR is queued or running and the merge is clean (#1785). When the head before was approved and ready to merge but for being behind, and the base's new commits touch nothing the PR changed, the approval carries over to the merged head, which still needs green CI; otherwise the new head is reviewed as usual. Needs unattended fixer pushes. Off: a behind loop PR waits for a person or the fixer."},
     "change_proof": {"label": "Prove the changed tests", "type": "bool", "default": False,
                      "description": "On: before each reviewer turn the host runs the test "
                                     "methods the PR adds or changes against its merge base "
@@ -620,9 +622,7 @@ def _apply_capacity(seats: dict, loop_raw: dict, d: dict, settings: dict | None)
 def _apply_switches(overlaid, d, settings) -> None:  # noqa: ANN001
     """``apply_settings``: the on/off and named settings, and the review-only and CI-fix limits."""
     # The on/off knobs, attribution (#197) among them, move only when the form names them.
-    for key in ("attribution", "review_after_ci", "fix_ci", "ci_webhook", "comment_webhook",
-                "protection_webhook", "fixer_scope_lock", "adjudicator_approves", "adjudicator_file_issues", "change_proof",
-                "main_flake_rerun", "review_only_update"):
+    for key in ("attribution", *config.flags.SWITCHES):
         if _form_value(settings, key) is not None:
             overlaid[key] = d[key]
     if str(d.get("merge_check") or "").strip():
