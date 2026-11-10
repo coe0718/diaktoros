@@ -33,7 +33,11 @@ DIFFERENT = {
     "diaktoros/routes.py::_write_registry": (
         "RegistryDurabilityError: published, directory unsynced",
         {"tempfile.mkstemp": 1, "os.replace": 1}),
-    "diaktoros/backup.py::_put": ("a restore streams a member to its target", {"os.replace": 1}),
+    "diaktoros/backup.py::_swap_in": (
+        "a restore swaps staged members in, journalling each displaced file aside (#1049)",
+        {"os.rename": 1, "os.replace": 1}),
+    "diaktoros/backup.py::_roll_back": ("a failed restore puts the displaced files back",
+                                        {"os.replace": 1}),
     "diaktoros/migrate.py::move_state_dir": (
         "renames a loop's state directory; nothing is written", {"os.rename": 1}),
     "diaktoros/migrate.py::_move_ledger_file": (

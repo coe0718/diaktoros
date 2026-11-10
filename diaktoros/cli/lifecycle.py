@@ -585,6 +585,21 @@ def _restore_cron(job: dict | None) -> list[str]:
     return [f"cron: job {job['name']!r} created ({job['schedule']}, deliver {job['deliver']})"]
 
 
+def _pre_restore_snapshot() -> pathlib.Path | None:
+    """Back up the live install before a restore overwrites it (#1049), through ``backup.create``
+    as an ``--out`` archive (so it prunes nothing and is never pruned), and return its path. On
+    failure print why and return None: the restore then writes nothing, since without the
+    snapshot a mistaken or failed restore would leave no way back."""
+    from .. import backup
+    try:
+        return backup.create(backup.pre_restore_out())
+    except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
+        print(f"cannot restore: the backup of the live install before it failed ({exc}); "
+              "nothing was written — fix what it names (a loop file that does not load can be "
+              "moved aside) and run restore again")
+        return None
+
+
 def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
     from .. import backup, migrate
     lines = [f"restore: {len(manifest['files'])} file(s), {len(manifest.get('routes') or {})} "
@@ -611,6 +626,11 @@ def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
                                  "passed SQLite's integrity check",
                                  "dry run: nothing was written"]))
         return 0
+    if backup.existing(manifest):
+        snapshot = _pre_restore_snapshot()
+        if snapshot is None:
+            return 2
+        lines.append(f"restore: the install as it was is in {snapshot}")
     backup.put_files(archive, manifest)
     lines.append(f"restore: {len(manifest['files'])} file(s) put back")
     if manifest.get("routes"):

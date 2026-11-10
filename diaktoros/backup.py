@@ -127,15 +127,29 @@ def latest_archive(now: float | None = None) -> tuple[tuple[pathlib.Path, float]
     return newest, ahead
 
 
-def default_out() -> pathlib.Path:
+def _free_name(prefix: str) -> pathlib.Path:
+    """``backups_dir()/<prefix>-<stamp>.tar.gz``, with ``-2``, ``-3`` ... appended to the stamp
+    while that name is taken: two runs in one second must not collide."""
     stamp = time.strftime("%Y%m%d-%H%M%S")
     base = backups_dir()
-    path = base / f"diaktoros-backup-{stamp}.tar.gz"
+    path = base / f"{prefix}-{stamp}.tar.gz"
     n = 1
-    while path.exists() or path.is_symlink():   # two runs in one second must not collide
+    while path.exists() or path.is_symlink():
         n += 1
-        path = base / f"diaktoros-backup-{stamp}-{n}.tar.gz"
+        path = base / f"{prefix}-{stamp}-{n}.tar.gz"
     return path
+
+
+def default_out() -> pathlib.Path:
+    return _free_name("diaktoros-backup")
+
+
+def pre_restore_out() -> pathlib.Path:
+    """Where ``restore`` writes its snapshot of the live install before it overwrites anything
+    (#1049): in ``backups_dir()``, but not named like ``default_out`` and written as an ``--out``
+    archive (no ``DEFAULT_MARK``), so ``prune`` never counts or deletes it and taking it never
+    prunes another archive (which could be the one being restored)."""
+    return _free_name("diaktoros-pre-restore")
 
 
 def check_keep(keep: int) -> None:
@@ -738,31 +752,91 @@ def missing_tokens(manifest: dict) -> list[str]:
     return out
 
 
-def _put(data, target: pathlib.Path, *, ledger: bool) -> None:
+def _stage(data, target: pathlib.Path) -> pathlib.Path:
+    """Stream one archive member to a private temp file beside ``target`` and return its path.
+    Nothing live is touched: ``put_files`` swaps the staged files in only once every member has
+    been read and written."""
     target.parent.mkdir(parents=True, exist_ok=True)
-    if ledger:
-        for side in ("-wal", "-shm", "-journal"):
-            pathlib.Path(str(target) + side).unlink(missing_ok=True)
     tmp = target.with_name(f".{target.name}.restore-{os.getpid()}")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         with os.fdopen(fd, "wb") as stream:
             while chunk := data.read(1 << 20):
                 stream.write(chunk)
-        os.replace(tmp, target)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+    return tmp
+
+
+def _swap_in(staged: list[tuple[pathlib.Path, pathlib.Path, bool]],
+             undo: list[tuple[pathlib.Path, pathlib.Path | None]]) -> None:
+    """Put each staged file in place, journalling in ``undo`` how to take it back: each live file
+    it displaces (and, for the ledger, its ``-wal``/``-shm``/``-journal`` sidecars, which belong
+    to the live database, not the restored one) is renamed aside first, as ``(path, aside)``; a
+    path that did not exist is ``(path, None)``."""
+    for tmp, target, ledger in staged:
+        sides = [pathlib.Path(str(target) + s) for s in ("-wal", "-shm", "-journal")] if ledger else []
+        for path in [target, *sides]:
+            if os.path.lexists(path):
+                aside = path.with_name(f".{path.name}.pre-restore-{os.getpid()}")
+                os.rename(path, aside)
+                undo.append((path, aside))
+            else:
+                undo.append((path, None))
+        os.replace(tmp, target)
+
+
+def _roll_back(undo: list[tuple[pathlib.Path, pathlib.Path | None]]) -> list[str]:
+    """Undo ``_swap_in``'s journal, newest first: each displaced file goes back, each path that
+    did not exist before is removed. Returns what could not be put back, as text."""
+    left = []
+    for path, aside in reversed(undo):
+        try:
+            if aside is None:
+                path.unlink(missing_ok=True)
+            else:
+                os.replace(aside, path)
+        except OSError as exc:
+            left.append(f"{path} ({exc}; the original is at {aside})" if aside else f"{path} ({exc})")
+    return left
 
 
 def put_files(archive: pathlib.Path, manifest: dict) -> int:
-    with tarfile.open(archive, "r:gz") as tar:
-        for entry in manifest["files"]:
-            member = tar.getmember(entry["member"])
-            if not member.isfile():
-                raise BackupError(f"{archive}: {entry['member']} is not a regular file")
-            _put(tar.extractfile(member), pathlib.Path(entry["path"]),
-                 ledger=entry.get("kind") == "ledger")
+    """Put the archive's files back, all or none (#1049).
+
+    Every member is first streamed to a temp file beside its target (``_stage``), so a member that
+    cannot be read or a full disk fails before anything live is touched. Only then are the staged
+    files swapped in (``_swap_in``), each displaced file renamed aside and journalled; if a swap
+    fails, the journal is rolled back (``_roll_back``) and the live files are what they were. A
+    rollback that itself fails is named in the ``BackupError``, with where each original was left.
+    Directories created for new targets are not removed. Then every absolute state directory the
+    manifest declares is created."""
+    staged: list[tuple[pathlib.Path, pathlib.Path, bool]] = []
+    undo: list[tuple[pathlib.Path, pathlib.Path | None]] = []
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            for entry in manifest["files"]:
+                member = tar.getmember(entry["member"])
+                if not member.isfile():
+                    raise BackupError(f"{archive}: {entry['member']} is not a regular file")
+                target = pathlib.Path(entry["path"])
+                staged.append((_stage(tar.extractfile(member), target), target,
+                               entry.get("kind") == "ledger"))
+        try:
+            _swap_in(staged, undo)
+        except BaseException as exc:
+            left = _roll_back(undo)
+            if left:
+                raise BackupError(f"restore failed ({exc}) and could not be undone for: "
+                                  + "; ".join(left)) from exc
+            raise
+        for _, aside in undo:
+            if aside is not None:
+                aside.unlink(missing_ok=True)
+    finally:
+        for tmp, _, _ in staged:
+            tmp.unlink(missing_ok=True)
     for directory in manifest.get("state_dirs") or []:
         if pathlib.PurePath(directory).is_absolute():
             pathlib.Path(directory).mkdir(parents=True, exist_ok=True)

@@ -1243,6 +1243,95 @@ class MigrateBacksUpFirst(Base):
         moved.assert_not_called()
 
 
+class AllOrNothing(Base):
+    """#1049: a restore that fails partway leaves the live files as they were, and every restore
+    that overwrites something first backs the live install up, through ``cmd_restore``."""
+
+    def changed_live_install(self):
+        """An archive of the starting install, then the live install changed after it."""
+        out = self.root / "b.tar.gz"
+        backup.create(out)
+        (self.root / "home" / "diaktoros-runtime.json").write_text('{"runtime": 2}')
+        (self.state / "queue.json").write_text('{"newer": true}')
+        return out
+
+    def test_a_swap_that_fails_partway_puts_back_what_it_had_replaced(self):
+        out = self.changed_live_install()
+        runtime = self.root / "home" / "diaktoros-runtime.json"
+        queue = self.state / "queue.json"
+        real, failed = os.replace, []
+
+        def flaky(src, dst, *a, **k):
+            if Path(dst) == queue and not failed:      # the disk fills on the state file
+                failed.append(dst)
+                raise OSError(28, "No space left on device")
+            return real(src, dst, *a, **k)
+        with mock.patch.object(os, "replace", flaky):
+            code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        self.assertEqual(code, 2, text)
+        self.assertTrue(failed)
+        # The runtime file was swapped in before the failure; it is the live one again.
+        self.assertEqual(runtime.read_text(), '{"runtime": 2}')
+        self.assertEqual(queue.read_text(), '{"newer": true}')
+        self.assertEqual(self.ledger_count(), 298)
+        litter = [p.name for p in (self.root / "home").rglob("*")
+                  if ".restore-" in p.name or ".pre-restore-" in p.name]
+        self.assertEqual(litter, [])
+
+    def test_an_unreadable_member_fails_before_any_live_file_is_replaced(self):
+        out = self.changed_live_install()
+        manifest = backup.read_manifest(out)
+        bad = self.root / "bad.tar.gz"
+        last = manifest["files"][-1]["member"]
+        with tarfile.open(out, "r:gz") as src, tarfile.open(bad, "w:gz") as dst:
+            for member in src.getmembers():
+                if member.name == last:
+                    member = tarfile.TarInfo(last)
+                    member.type = tarfile.DIRTYPE      # no longer a regular file
+                    dst.addfile(member)
+                else:
+                    dst.addfile(member, src.extractfile(member))
+        code, text = self.run_cmd(cli.cmd_restore, file=str(bad), dry_run=False, force=True)
+        self.assertEqual(code, 2, text)
+        self.assertIn("is not a regular file", text)
+        self.assertEqual((self.root / "home" / "diaktoros-runtime.json").read_text(),
+                         '{"runtime": 2}')
+        self.assertEqual((self.state / "queue.json").read_text(), '{"newer": true}')
+
+    def test_restore_backs_up_the_live_install_first_and_that_archive_undoes_it(self):
+        out = self.changed_live_install()
+        code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        self.assertEqual(code, 0, text)
+        self.assertEqual((self.state / "queue.json").read_text(),
+                         '{"owner/one#7": {"head": "abc"}}')
+        snaps = sorted(backup.backups_dir().glob("diaktoros-pre-restore-*.tar.gz"))
+        self.assertEqual(len(snaps), 1, text)
+        self.assertIn(f"restore: the install as it was is in {snaps[0]}", text)
+        self.assertFalse(backup.made_by_default(snaps[0]))      # retention never deletes it
+        self.assertEqual(backup.prune(1), [])
+        code, text = self.run_cmd(cli.cmd_restore, file=str(snaps[0]), dry_run=False, force=True)
+        self.assertEqual(code, 0, text)
+        self.assertEqual((self.state / "queue.json").read_text(), '{"newer": true}')
+        self.assertEqual((self.root / "home" / "diaktoros-runtime.json").read_text(),
+                         '{"runtime": 2}')
+
+    def test_no_pre_restore_backup_means_nothing_is_written(self):
+        out = self.changed_live_install()
+        with mock.patch.object(backup, "create", side_effect=backup.BackupError("disk full")):
+            code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        self.assertEqual(code, 2, text)
+        self.assertIn("the backup of the live install before it failed (disk full)", text)
+        self.assertEqual((self.state / "queue.json").read_text(), '{"newer": true}')
+
+    def test_a_restore_onto_an_empty_install_takes_no_pre_restore_backup(self):
+        out = self.root / "b.tar.gz"
+        backup.create(out)
+        self.wipe()
+        code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=False)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(list(backup.backups_dir().glob("diaktoros-pre-restore-*")), [])
+
+
 class InterruptedKeepsThePause(Base):
     """#766: an exception inside the hold leaves the marker; clean refusals and success clear it."""
 
