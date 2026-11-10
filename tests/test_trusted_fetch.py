@@ -344,11 +344,11 @@ class TrustedFetchTests(unittest.TestCase):
 
     def test_unmapped_identity_is_refused_as_fetch_denied(self):
         del self.paths["fixer"]
-        self.assert_identity_refused("token mappings required")
+        self.assert_identity_refused("credential mappings required")
 
     def test_two_identities_sharing_a_token_file_are_refused_as_fetch_denied(self):
         self.paths["fixer"] = self.paths["reviewer"]
-        self.assert_identity_refused("must use distinct token files")
+        self.assert_identity_refused("must use distinct credential files")
 
     def test_empty_token_is_refused_as_fetch_denied(self):
         self.token = lambda loop, login=None: "" if login == "fixer" else "dummy-token"

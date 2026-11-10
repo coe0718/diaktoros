@@ -113,7 +113,7 @@ def reader_problem(loop: dict) -> str:
 
     The reader reads every PR state the gates act on; the broker refuses every write when it is
     also a seat, so a loop that installs that way passes init and fails at its first review. The
-    offline part of the rule is checked here — distinct logins, distinct token files; distinct
+    offline part of the rule is checked here — distinct logins, distinct credential files; distinct
     principals (``/user`` for a PAT; ``/app`` and ``/users/<slug>[bot]`` for a GitHub App) need
     the network, and ``selftest`` and the broker check those.
     """

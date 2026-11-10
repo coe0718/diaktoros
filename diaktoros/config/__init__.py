@@ -952,7 +952,8 @@ class ConfigError(Exception):
 
 FOUR_IDENTITY_RULE = ("the four-identity rule: the reader, the reviewer, the fixer and (if set) "
                       "the adjudicator comment login must be four different accounts with four "
-                      "different token files (docs/operations.md#credential-files-one-per-account)")
+                      "different credential files, each a PAT or a GitHub App key "
+                      "(docs/operations.md#credential-files-one-per-account)")
 
 
 _DNS_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
