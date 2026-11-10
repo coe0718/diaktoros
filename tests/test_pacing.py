@@ -714,6 +714,15 @@ class SeatView(unittest.TestCase):
         self.assertEqual(pacing.seats(self.loop, now=now)["holds"], [])
         self.assertIsNone(pacing.held("openai-codex|chatgpt.com|vex", now))
 
+    def test_the_shadow_seats_spend_appears_only_with_shadow_on(self):
+        # #1070: `status` and the Desktop page read the shadow seat's day from this view.
+        pacing.count_tokens("w", "shadow", 700)
+        self.assertNotIn("shadow", pacing.seats(self.loop)["seats"])
+        loop = {**self.loop, "shadow": {"profile": "shade"},
+                "seats": {**self.loop["seats"], "shadow": {"daily_tokens": 9000}}}
+        self.assertEqual(pacing.seats(loop)["seats"]["shadow"],
+                         {"turns": 0, "turns_cap": None, "tokens": 700, "tokens_cap": 9000})
+
     def test_review_only_appears_only_where_the_loop_has_those_authors(self):
         with mock.patch.object(config, "review_only", return_value=set()):
             self.assertNotIn(pacing.REVIEW_ONLY_SEAT, pacing.seats(self.loop)["seats"])

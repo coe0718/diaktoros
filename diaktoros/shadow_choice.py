@@ -182,17 +182,18 @@ def hits(paths: list[str], patterns: list[str]) -> list[str]:
 
 
 def status_lines(loop: dict, limit: int = 3) -> list[str]:
-    """``status``: how this loop chooses its shadow reviews, then its newest kept choices;
-    [] with no shadow profile."""
+    """``status``: the shadow seat's profile and today's spend (#1070), how this loop chooses
+    its shadow reviews, then its newest kept choices; [] with no shadow profile."""
     if not config.shadow_profile(loop):
         return []
     every = config.shadow_every(loop)
     rate = "every head" if every == 1 else f"one head in {every}"
+    lines = [_spend_line(loop)]
     if not by_risk(loop):
-        return [f"{rate}, sampled (shadow.every)"]
+        return lines + [f"{rate}, sampled (shadow.every)"]
     always, never = config.shadow_always_paths(loop), config.shadow_never_paths(loop)
-    lines = [f"by risk: always if a PR changes a shadow.always_paths glob ({len(always)}), never "
-             f"if it changes only shadow.never_paths globs ({len(never)}), else {rate}, sampled"]
+    lines += [f"by risk: always if a PR changes a shadow.always_paths glob ({len(always)}), never "
+              f"if it changes only shadow.never_paths globs ({len(never)}), else {rate}, sampled"]
     try:
         from . import state as state_mod
         memory = _memory(state_mod.state_for(loop))
@@ -204,3 +205,12 @@ def status_lines(loop: dict, limit: int = 3) -> list[str]:
         lines.append(f"PR #{number} at {head[:7]}: {'shadowed' if entry['shadow'] else 'no shadow'}"
                      f" — {entry['why']}")
     return lines
+
+
+def _spend_line(loop: dict) -> str:
+    """``status``: the profile shadow reviews run as and what the seat spent today against its
+    ``seats.shadow`` caps (#1070), read from ``pacing.seats``, the view the Desktop page uses."""
+    from . import pacing
+    entry = pacing.seats(loop)["seats"]["shadow"]
+    turns = f"{entry['turns']}/{entry['turns_cap'] or 'no cap'} turns today"
+    return f"profile {config.shadow_profile(loop)} · {pacing.tokens_text(entry)} · {turns}"
