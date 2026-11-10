@@ -155,8 +155,10 @@ def _job_results(loop: dict, job_id: int, head: str, runs: dict) -> dict[str, st
 def read(loop: dict, state: ci.CIState | None, required, head: str) -> dict[str, str]:
     """Per-test results of the passed required checks at ``head``; ``{}`` when none can be read.
 
-    A later check's result does not replace an earlier ``ok`` with a skip: ``ok`` in any matrix
-    job counts as run, a test is ``skipped`` only when no required job ran it.
+    Across jobs the worst result stands, as it does within one log (``parse``): ``ok`` in any
+    matrix job beats a skip (a test is ``skipped`` only when no required job ran it), but a
+    ``FAIL``/``ERROR`` in any passed job's log (a retry-until-green step, a masked exit code) is
+    never erased by another job's ``ok``, whatever order the jobs are read in (#1064).
     """
     if state is None or not required or not head:
         return {}
@@ -168,7 +170,7 @@ def read(loop: dict, state: ci.CIState | None, required, head: str) -> dict[str,
         if type(job_id) is not int:
             continue
         for test, outcome in _job_results(loop, job_id, head, runs).items():
-            if results.get(test) != "ok":
+            if _RANK[outcome] >= _RANK.get(results.get(test), -1):
                 results[test] = outcome
     return results
 
