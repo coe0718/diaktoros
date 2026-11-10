@@ -511,11 +511,16 @@ def seats(loop: dict, now: float | None = None) -> dict:
     ``review_only`` appears only for a loop that has review-only authors: a reviewer turn on one
     of their PRs is counted there (``run_supervisor``) once ``review_only_daily`` is set, capped by
     it, and the reviewer's own counter does not see it (#772). Unset, the one pool is the reviewer's.
+
+    ``shadow`` appears only for a loop with shadow reviews on (#1070): its turns and tokens are
+    counted under that seat (``run_supervisor``) and held by ``seats.shadow``'s caps.
     """
     now = time.time() if now is None else now
     names = ["reviewer", "fixer"]
     if config.review_only(loop):
         names.append(REVIEW_ONLY_SEAT)
+    if config.shadow_profile(loop):
+        names.append("shadow")
     per_seat = {seat: {"turns": turns_today(loop["id"], seat, now),
                        "turns_cap": (config.review_only_daily(loop) if seat == REVIEW_ONLY_SEAT
                                      else config.seat_daily_turns(loop, seat)),
@@ -538,6 +543,13 @@ def seats(loop: dict, now: float | None = None) -> dict:
         holds.append({"provider": provider, "profile": profile, "until": float(until),
                       "reason": str(entry.get("reason") or "usage window")})
     return {"now": now, "seats": per_seat, "holds": holds}
+
+
+def tokens_text(entry: dict) -> str:
+    """One seat's token spend today against its budget, from a ``seats`` entry: what ``status``
+    prints for each seat (#480, #1070)."""
+    cap = f"{entry['tokens_cap']:,}" if entry["tokens_cap"] else "no budget"
+    return f"{entry['tokens']:,}/{cap} tokens today"
 
 
 def rename_loop(old_id: str, new_id: str) -> int:

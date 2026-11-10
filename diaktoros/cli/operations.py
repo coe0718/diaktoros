@@ -553,18 +553,15 @@ def _pacing_lines(loop: dict) -> list[str]:
     """
     from .. import pacing
     data = pacing.seats(loop)
+    # The shadow seat's spend is on its own `shadow:` line (shadow_choice.status_lines, #1070).
     seats = [(seat, data["seats"][seat]) for seat in ("reviewer", "fixer")]
-
-    def tokens_text(entry: dict) -> str:
-        cap = f"{entry['tokens_cap']:,}" if entry["tokens_cap"] else "no budget"
-        return f"{entry['tokens']:,}/{cap} tokens today"
 
     lines = []
     if any(entry["turns_cap"] for _, entry in seats):
         lines.append(" · ".join(f"{seat} {entry['turns']}/{entry['turns_cap'] or 'no cap'} today"
                                 for seat, entry in seats))
     if any(entry["tokens_cap"] for _, entry in seats):
-        lines.append(" · ".join(f"{seat} " + tokens_text(entry) for seat, entry in seats))
+        lines.append(" · ".join(f"{seat} " + pacing.tokens_text(entry) for seat, entry in seats))
     for hold in data["holds"]:
         if hold["reason"].startswith(pacing.UNAVAILABLE):
             # #1325: no 429 said when; the hold is the loop's own short window.

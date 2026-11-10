@@ -145,8 +145,10 @@ No flags.
 
 Shows a loop's configuration and its live state: who serves each seat, the routes as they are
 actually installed, the token files (paths, never contents), the observer feed, pacing (daily
-caps, and any seat waiting for its usage window), queued and running turns, how shadow reviews
-are chosen (with the newest choices made by path, #1788), and when the watchdog last ran.
+caps, and any seat waiting for its usage window), queued and running turns, the shadow seat
+(with shadow reviews on, #1070: its profile and today's tokens and turns against
+`seats.shadow`'s caps), how shadow reviews are chosen (`shadow.every`, and the newest choices
+made by path, #1788), and when the watchdog last ran.
 Read-only.
 
 ```bash

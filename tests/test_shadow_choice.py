@@ -194,12 +194,13 @@ class ByRisk(unittest.TestCase):
         head = an_unsampled_head(self.loop, 14)
         self.enqueue(self.loop, (files("diaktoros/broker.py"), ""), 14, head)
         lines = shadow_choice.status_lines(self.loop)
-        self.assertIn("by risk: always if a PR changes a shadow.always_paths glob (2)", lines[0])
-        self.assertEqual(lines[1], f"PR #14 at {head[:7]}: shadowed — it changes "
+        self.assertEqual(lines[0], "profile grok · 0/no budget tokens today · 0/no cap turns today")
+        self.assertIn("by risk: always if a PR changes a shadow.always_paths glob (2)", lines[1])
+        self.assertEqual(lines[2], f"PR #14 at {head[:7]}: shadowed — it changes "
                                    "diaktoros/broker.py (shadow.always_paths)")
         plain = self.make(every=5, always_paths=None, never_paths=None)
-        self.assertEqual(shadow_choice.status_lines(plain), ["one head in 5, sampled "
-                                                             "(shadow.every)"])
+        self.assertEqual(shadow_choice.status_lines(plain)[1:], ["one head in 5, sampled "
+                                                                 "(shadow.every)"])
         self.assertEqual(shadow_choice.status_lines(config.normalize(dict(RAW))), [])
 
     def test_explain_never_decides_by_paths_itself(self):
@@ -256,6 +257,47 @@ class Setting(unittest.TestCase):
         self.assertEqual(loosened["every"], 5)
         with self.assertRaises(config.ConfigError):        # the always list was what allowed it
             settings_form.shadow_block(loosened, None, None, "set", always_paths=[])
+
+
+class Status(unittest.TestCase):
+    """#1070: `hermes dk status` shows the shadow seat: profile, every-N, today's spend."""
+
+    def status(self, loop: dict) -> str:
+        import argparse
+        import io
+        import os
+        import tempfile
+        from contextlib import redirect_stdout
+        from diaktoros import cli
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"DIAKTOROS_CONFIG_DIR": temp.name}), \
+                mock.patch.object(config, "load_id", return_value=loop), \
+                mock.patch("diaktoros.state.state_for") as state_for, redirect_stdout(out):
+            state_for.return_value.dir = pathlib.Path(temp.name)
+            for name in ("kv_get", "queue_items", "queue_all", "breach_all", "watch",
+                         "late_triage", "pr_holds", "scope_holds", "_lock_ledger"):
+                getattr(state_for.return_value, name).return_value = {}
+            cli.cmd_status(argparse.Namespace(loop=loop["id"]))
+        return out.getvalue()
+
+    def test_status_prints_the_shadow_profile_cadence_and_spend(self):
+        from diaktoros import pacing
+        raw = {**RAW, "id": "shady", "shadow": {"profile": "grok", "every": 4},
+               "seats": {**RAW["seats"], "shadow": {"daily_tokens": 50000, "daily_turns": 6}}}
+        loop = config.normalize(raw)
+        pacing.count_tokens("shady", "shadow", 12345)
+        pacing.count_turn("shady", "shadow")
+        out = self.status(loop)
+        self.assertIn("  shadow:     profile grok · 12,345/50,000 tokens today · 1/6 turns today",
+                      out)
+        self.assertIn("  shadow:     one head in 4, sampled (shadow.every)", out)
+        # The reviewer/fixer pacing line is unchanged by the shadow's budget.
+        self.assertNotIn("pacing:     reviewer 0/no budget", out)
+
+    def test_status_without_shadow_prints_no_shadow_line(self):
+        self.assertNotIn("shadow:", self.status(config.normalize({**RAW, "id": "plain"})))
 
 
 if __name__ == "__main__":
