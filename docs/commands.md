@@ -2036,9 +2036,10 @@ hermes dk cancel --loop "<loop-id>" --run "<run-id>"
 
 - **Not started yet** (pending, blocked, waiting, claimed): cancelled at once, unless it already
   holds any write-ahead record: a review receipt, a push intent or confirmation, a ruling, a
-  dispute, a CI-fix decline, a triage result, an issue fix, or a reviewer-filed issue whose
-  outcome is unknown. Then it ends `uncertain` instead and is never replayed, and the output
-  says `after it may have written`. Inspect and reconcile it; don't `retry` it.
+  dispute, a CI-fix decline, a fixer's answers comment, a triage result, an issue fix, or a
+  reviewer-filed issue whose outcome is unknown. Then it ends `uncertain` instead and is never
+  replayed, and the output says `after it may have written`. Inspect and reconcile it; don't
+  `retry` it.
 - **Launching or running:** the worker that owns the turn stops it, within a few seconds. It
   kills the sandbox the same way the turn budget does, and frees the seat. An adjudicator's
   breach marker is handed back. The command waits up to 30 seconds and prints how the run ended.

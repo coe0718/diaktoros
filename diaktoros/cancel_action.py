@@ -8,9 +8,10 @@ unchanged), one read-back.
   redelivered event or sweep re-arms it; ``hermes dk retry`` does, on purpose, and a new head
   queues a fresh run as usual. The exception: one that already holds any write-ahead record
   (a review receipt, a push intent or confirmation, a ruling, a dispute, a CI-fix decline, a
-  triage result, an issue fix, or a reviewer-filed issue whose outcome is unknown: every kind
-  ``run_supervisor.write_records`` checks) is quarantined as ``uncertain`` instead, whatever its
-  state, blocked included. It is never replayed; the operator reconciles it rather than retries.
+  fixer's answers comment, a triage result, an issue fix, or a reviewer-filed issue whose
+  outcome is unknown: every kind ``run_supervisor.write_records`` checks) is quarantined as
+  ``uncertain`` instead, whatever its state, blocked included. It is never replayed; the
+  operator reconciles it rather than retries.
 * A launching or running turn is the owning worker's to stop: the request is recorded, and the
   worker's heartbeat kills the sandbox the way the turn budget does, then ends the run as
   ``cancelled`` (or ``uncertain``, never replayed, when it may already have written).

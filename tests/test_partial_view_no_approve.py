@@ -290,6 +290,35 @@ class FixerBroker(Broker):
             sup.begin_answers(run_id=scope.run_id, repo=REPO, pr=7, base=HEAD, head=HEAD,
                               body="x")
 
+    def test_an_answers_only_run_whose_post_was_lost_is_never_re_armed(self):
+        # #1052: a partial-view fixer's answers are its only write, with no push intent. The
+        # POST's response is lost ('uncertain'), then the turn dies: recovery must see the
+        # write-ahead record, not call it a pre-write failure and relaunch the turn.
+        sup, scope = self.fixer_run(REASON)
+        server = self.start(scope, require_push=True)
+        lost = mock.patch.object(gh, "api", side_effect=_ci_green.green(self.lose_comment))
+        with lost:
+            answered = self.raw(server, {"operation": "request_review", "verdict": "",
+                                         "body": "From /work the finding at src/lib.rs:3 holds."})
+        self.assertEqual(answered["result"].get("answers"), "uncertain", answered)
+        with ledger.connect(sup.db) as con:
+            self.assertEqual(con.execute("SELECT push_intent FROM runs").fetchone()[0], None)
+            self.assertEqual(con.execute("SELECT state FROM fixer_answers").fetchone()[0],
+                             "uncertain")
+        state = sup.complete_uncertain(scope.run_id, "w", 1, "turn failed", retry=True)
+        self.assertEqual(state, "failed")                      # not 'waiting' for a relaunch
+        with ledger.connect(sup.db) as con:
+            self.assertEqual(con.execute("SELECT retry_at FROM runs").fetchone()[0], None)
+        with mock.patch.object(config, "by_repo", return_value=self.loop), \
+                self.assertRaisesRegex(ValueError, "fixer answers uncertain"):
+            sup.retry(scope.run_id)
+
+    def lose_comment(self, loop, path, method="GET", body=None, login=None):
+        """GitHub may have taken the answers comment, but its response never came back."""
+        if method == "POST" and path.endswith("/issues/7/comments"):
+            raise OSError("connection reset")
+        return self.api(loop, path, method, body, login)
+
     def test_the_fixer_is_told_to_answer_not_to_push(self):
         world = pc.World([pc.changed(1)])
         world.gone[pc.FILES] = "HTTP 404 {}"
