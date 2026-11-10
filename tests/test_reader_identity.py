@@ -542,6 +542,7 @@ class ReaderIdentityTests(_Loop):
         self.assertEqual(check.status, doctor.MISMATCH)
         self.assertIn(credentials.reader_fix(config.load_id("widgets"), READER), check.fix)
         self.assertIn(f"--read-token {READER} --token {READER}=", check.fix)
+        self.assertNotIn("`", check.fix)       # #2268: no quoted span that takes the prose too
         pat = self.pat("read2")
         self.refused(["set", "--loop", "widgets", "--token", f"{READER}={pat}"],
                      r"is a seat or the current reader")
