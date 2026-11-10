@@ -227,10 +227,16 @@ def _changes_requested(loop: dict, number: int, head: str, reviews: list) -> str
 
 def _with_turn(loop: dict, number: int, head: str, seat: str, said: str) -> str:
     """``said`` with the newest ``seat`` turn at this head, when the ledger has one (#753): a
-    review held for a usage window, queued or failed shows on the PR's merge check, not only in
-    ``status``. Words only: the check's state is decided without it."""
-    from .run_supervisor import production_ledger, views
-    note = views.turn_note(production_ledger(), loop["repo"], number, head, seat)
+    review held for a usage window or by a maintainer, queued or failed shows on the PR's merge
+    check, not only in ``status``. Words only: the check's state is decided without it, so an
+    approved, green head a maintainer holds stays green (the hold pauses the loop's turns, not a
+    merge)."""
+    from . import pr_hold
+    from .run_supervisor import claims, production_ledger, views
+
+    def held():         # a maintainer's hold keeps a queued turn from starting (#477)
+        return pr_hold.read(loop, number)[0] if seat in claims.PR_HOLD_SEATS else None
+    note = views.turn_note(production_ledger(), loop["repo"], number, head, seat, held)
     return f"{said} — {note}" if note else said
 
 

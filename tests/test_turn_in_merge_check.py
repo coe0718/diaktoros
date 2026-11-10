@@ -56,8 +56,11 @@ class Note(Ledger, unittest.TestCase):
                 ("pending", None, "reviewer turn queued"),
                 ("claimed", None, "reviewer turn running"),
                 ("running", None, "reviewer turn running"),
-                ("waiting", HELD, f"reviewer turn {HELD}"),
+                ("waiting", HELD, "reviewer turn held: usage window (openai-codex) — resumes 11:31"),
                 ("waiting", "HTTP 502", "reviewer turn waiting to retry (attempt 2 of "),
+                # #2297 shadow: a conflict turn's wait is no held: line, and keeps its reason.
+                ("waiting", "conflict turn waits: its changes-requested verdict is not answered",
+                 "reviewer turn waiting to retry (attempt 2 of 4): conflict turn waits: its "),
                 ("failed", "budget killed", "reviewer turn failed: budget killed"),
                 ("cancelled", "superseded", "reviewer turn cancelled: superseded"),
                 ("uncertain", None, "reviewer turn outcome uncertain"),
@@ -83,6 +86,26 @@ class Note(Ledger, unittest.TestCase):
         self.assertNotIn("\n", said)
         self.assertLessEqual(len(said), len("reviewer turn failed: ") + views.TURN_NOTE_MAX)
 
+    def test_a_queued_turn_a_maintainer_holds_says_who_and_how(self):
+        # #2297 shadow F1: a held PR's turn stays pending (#477); "queued" would hide why.
+        self.add("reviewer", "pending")
+        hold = {"by": "maint", "how": "label", "at": "2026-11-10T10:00:00Z"}
+        said = views.turn_note(self.db, "acme/widgets", 7, HEAD, "reviewer", lambda: hold)
+        self.assertEqual(said, "reviewer turn held by maint via the diaktoros:hold label, "
+                               "until released")
+        self.assertEqual(views.turn_note(self.db, "acme/widgets", 7, HEAD, "reviewer",
+                                         lambda: None), "reviewer turn queued")
+
+        def broken():
+            raise RuntimeError("unreadable")
+        self.assertEqual(views.turn_note(self.db, "acme/widgets", 7, HEAD, "reviewer", broken),
+                         "reviewer turn queued")
+
+    def test_the_hold_is_read_only_for_a_queued_turn(self):
+        self.add("reviewer", "running")
+        views.turn_note(self.db, "acme/widgets", 7, HEAD, "reviewer",
+                        lambda: self.fail("a running turn read the hold"))
+
     def test_no_ledger_is_no_note(self):
         self.assertEqual(views.turn_note(self.db.parent / "none.sqlite", "acme/widgets", 7,
                                          HEAD, "reviewer"), "")
@@ -99,8 +122,8 @@ class Ready(Ledger, tmc.KindsBase):
     def test_a_held_review_names_its_hold_and_the_check_still_waits(self):
         self.add("reviewer", "waiting", HELD)
         kinds = self.kinds(reviews=[])
-        self.assertIn((ready.PENDING, f"not approved at head {HEAD[:7]} — reviewer turn {HELD}"),
-                      kinds)
+        self.assertIn((ready.PENDING, f"not approved at head {HEAD[:7]} — reviewer turn held: "
+                                      "usage window (openai-codex) — resumes 11:31"), kinds)
         state, summary = merge_check.decide(kinds)
         self.assertEqual(state, merge_check.PENDING)
         self.assertIn("resumes 11:31", summary)
@@ -110,6 +133,31 @@ class Ready(Ledger, tmc.KindsBase):
         self.assertEqual(self.kind_of("changes requested at head aaaaaaa (1 of 3 verdicts) — "
                                       "fixer turn running",
                                       reviews=[tmc.review("CHANGES_REQUESTED")]), ready.FAILURE)
+
+    def test_a_maintainers_hold_names_itself_on_the_queued_review(self):
+        from diaktoros import pr_hold
+        self.add("reviewer", "pending")
+        hold = {"by": "maint", "how": "comment", "at": "2026-11-10T10:00:00Z"}
+        with mock.patch.object(pr_hold, "read", return_value=(hold, "")) as read:
+            kinds = self.kinds(reviews=[])
+        read.assert_called_with(self.loop, 7)
+        self.assertIn((ready.PENDING, f"not approved at head {HEAD[:7]} — reviewer turn held by "
+                                      "maint via /loop hold, until released"), kinds)
+
+    def test_a_parked_escalation_names_the_adjudicators_turn(self):
+        # #2297 shadow F2: the adjudicator's note on "parked awaiting adjudication".
+        from diaktoros import explain, state as state_mod
+        self.st.breach.parent.mkdir(parents=True, exist_ok=True)
+        state_mod._atomic_write(self.st.breach, {"acme/widgets#7": {
+            "pr": 7, "head": HEAD, "rounds": 3, "cap": 3, "reason": "r", "at": "now",
+            "status": "awaiting-adjudication"}})
+        self.loop["adjudicator"] = {"route": "w-breach"}
+        self.add("adjudicator", "waiting", "HTTP 502", retries=1)
+        with mock.patch.object(explain, "_ruled", return_value=None):
+            kind = self.kind_of("escalated: parked awaiting adjudication — adjudicator turn "
+                                "waiting to retry (attempt 2 of 4",
+                                reviews=tmc.spent_cap() + [tmc.review("APPROVED")])
+        self.assertEqual(kind, ready.PENDING)
 
     def test_the_note_never_changes_the_state(self):
         # An approved, green head with a failed turn left at it is still success.
@@ -147,8 +195,10 @@ class Refresh(Ledger, unittest.TestCase):
         self.assertFalse(self.ended(row, "waiting", "held: waiting for CI on aaaaaaa — tests"))
         self.assertTrue(self.ended(row, "waiting", "held: waiting for CI on aaaaaaa — lint"))
 
-    def test_an_issue_fix_or_an_open_shadow_refreshes_nothing(self):
+    def test_an_issue_fix_a_triage_or_an_open_shadow_refreshes_nothing(self):
+        # Their number is an issue's (#2297 shadow): there is no PR check to refresh.
         self.assertFalse(self.ended(self.add("issue_fixer", "launching"), "failed", "x"))
+        self.assertFalse(self.ended(self.add("triage", "launching"), "failed", "x"))
         self.assertFalse(self.ended(self.add(run_supervisor.SHADOW, "launching"), "waiting", "x"))
         self.assertTrue(self.ended(self.add(run_supervisor.SHADOW, "launching", pr=8),
                                    "failed", "x"))
@@ -164,6 +214,19 @@ class Refresh(Ledger, unittest.TestCase):
             self.sup._launched(turn, "rev", "model-x")
         self.assertEqual(order, ["record", "refresh"])
         self.assertTrue(turn.launched)
+
+
+class Description(unittest.TestCase):
+    def test_a_long_reason_loses_its_middle_not_the_resume_time(self):
+        # #2313: GitHub takes 140 characters; a hard cut dropped the note's tail.
+        first = (f"not approved at head {HEAD[:7]} — review cap reached; a maintainer grants "
+                 "another round — reviewer turn held: usage window (openai-codex) — resumes 11:31")
+        said = merge_check.description(merge_check.PENDING, first)
+        self.assertLessEqual(len(said), merge_check.STATUS_DESCRIPTION_MAX)
+        self.assertTrue(said.startswith("Waiting: not approved at head aaaaaaa"), said)
+        self.assertTrue(said.endswith("resumes 11:31"), said)
+        self.assertIn("…", said)
+        self.assertEqual(merge_check.description(merge_check.PENDING, "short"), "Waiting: short")
 
 
 if __name__ == "__main__":

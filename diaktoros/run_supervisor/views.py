@@ -201,16 +201,21 @@ def turn_state(db: str | Path, repo: str, pr: int, head: str, seat: str) -> str 
 
 
 # A turn's own words in the merge check (#753): one clause, bounded under GitHub's 140-character
-# status description with the reason it follows.
+# status description with the reason it follows (``merge_check.description`` cuts the middle).
 TURN_NOTE_MAX = 90
 
 
-def turn_note(db: str | Path, repo: str, pr: int, head: str, seat: str) -> str:
-    """The newest ``seat`` turn at this PR head as one clause for the merge check, ``ready`` and
-    ``explain`` (#753): queued, running, held (its host-written ``held:`` line, which says when a
-    pacing hold resumes), waiting to retry, failed, cancelled or uncertain. "" when there is none,
-    it succeeded, or the ledger can't be read: the note never changes what the check decides."""
-    from .. import gh, pacing
+def turn_note(db: str | Path, repo: str, pr: int, head: str, seat: str, held=lambda: None) -> str:
+    """The newest ``seat`` turn at this PR head as one clause for the merge check and ``ready``
+    (#753): queued (or held by a maintainer: ``held()`` gives the ``pr_hold`` hold, read only for
+    a queued turn), running, held (its host-written ``held:`` line, which says when a pacing hold
+    resumes), waiting to retry (and why), failed, cancelled or uncertain. "" when there is none,
+    it succeeded, or the ledger can't be read: the note never changes what the check decides.
+
+    Newest by ``created``: the attempt that is current. ``turn_state`` orders by ``updated``
+    because it asks what last happened at the head; here an older row retired after a newer one
+    was queued would speak for the wrong turn (#2314)."""
+    from .. import gh, pacing, pr_hold
     try:
         con = read_only_connect(db)
         if con is None:
@@ -227,17 +232,22 @@ def turn_note(db: str | Path, repo: str, pr: int, head: str, seat: str) -> str:
         return ''
     state, error, retries, retry_at = row
     error = gh.one_line(error or '', TURN_NOTE_MAX)
-    turn = f"{'issue fix' if seat == 'issue_fixer' else seat} turn"
+    turn = f"{seat} turn"
     if state == 'pending':
-        return f"{turn} queued"
+        try:
+            hold = held()
+        except Exception:       # an unreadable hold says nothing; the claim still waits on it
+            hold = None
+        return f"{turn} {pr_hold.short(hold)}, until released" if hold else f"{turn} queued"
     if state in ('claimed', 'launching', 'running'):
         return f"{turn} running"
     if state == 'waiting' and error.startswith('held: '):
-        return f"{turn} {error}"
+        # The held line names its seat too ("held: reviewer usage window …"): said once.
+        return f"{turn} held: {error.removeprefix('held: ').removeprefix(f'{seat} ')}"
     if state == 'waiting':
         at = f", next check {pacing.when(retry_at)}" if type(retry_at) in (int, float) else ''
         return (f"{turn} waiting to retry (attempt {(retries or 0) + 1} of "
-                f"{run_supervisor.MAX_RETRIES}){at}")
+                f"{run_supervisor.MAX_RETRIES}{at})" + (f": {error}" if error else ''))
     if state in ('failed', 'cancelled'):
         return f"{turn} {state}: {error or 'no reason recorded'}"
     if state == 'uncertain':

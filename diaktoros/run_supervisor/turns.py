@@ -1198,8 +1198,10 @@ class ClaimAndLaunch:
         row's repo. Best effort, like every refresh after an event."""
         try:
             from .. import config, gate, merge_check
-            if row is None or state is None or row['seat'] == 'issue_fixer':
-                return
+            from . import claims
+            if (row is None or state is None
+                    or row['seat'] not in (*claims.PR_HOLD_SEATS, run_supervisor.SHADOW)):
+                return                  # an issue fix's or a triage's number is an issue's
             if row['seat'] == run_supervisor.SHADOW and state in gate.SHADOW_OPEN:
                 return
             if row['seat'] != run_supervisor.SHADOW and state == 'waiting' and not launched:
