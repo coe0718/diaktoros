@@ -4,8 +4,9 @@ once (the site's run viewer, #1749) instead of one PR at a time.
 
 The PRs are the ones the run ledger has a turn for since the date. Each is collected whole (its
 turns before the date included) and written only when GitHub says it merged; with ``--offline``
-the merge cannot be read, so every PR with a turn is written and the listing says so. Nothing is
-written outside ``DIR``; a file of the same name is replaced.
+the merge cannot be read, so every PR with a turn is written unless a write fails (the export
+stops there), and the listing says so. Nothing is written outside ``DIR``; a file of the same name
+is replaced.
 """
 from __future__ import annotations
 
