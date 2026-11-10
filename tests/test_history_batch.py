@@ -93,7 +93,7 @@ class Batch(fg.Base):
         self.assertEqual(rc, 0)
         self.assertEqual(self.reads, [])
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["pr-7.md", "pr-8.md"])
-        self.assertIn("merge state not read, so every PR with a turn was written", out)
+        self.assertIn("merge state not read, so a PR was written whether it merged or not\n", out)
         self.assertTrue((self.out / "pr-7.md").read_text().startswith("# Review history of"))
 
     def test_nothing_in_the_window_writes_nothing(self):
@@ -127,6 +127,29 @@ class Batch(fg.Base):
             self.assertEqual(rc, 2, out)
             self.assertIn(f"cannot write to {out_dir}: Not a directory", out)
         self.assertEqual(self.out.read_text(), "not a directory")
+
+    def test_a_write_that_fails_midway_says_the_export_is_partial(self):
+        """#2200: the files before the failure are kept and listed, and the exit is 2."""
+        self.cycle()
+        self.other_pr(8, th.T + 700)
+        (self.out / "pr-8.md").mkdir(parents=True)          # pr-7 writes, pr-8 cannot
+        rc, out = self.run_cli("--since", SINCE, "--out", str(self.out), "--format", "markdown",
+                               "--offline")
+        self.assertEqual(rc, 2)
+        self.assertIn("wrote pr-7.md (#7)\ncould not write pr-8.md (#8): ", out)
+        self.assertIn("stopped there, so this export is partial (the files above were kept)", out)
+        self.assertIn("1 cycle(s) written", out)
+        self.assertIn("written whether it merged or not (up to the failure above)", out)  # #2229
+        self.assertTrue((self.out / "pr-7.md").is_file())
+        (self.out / "pr-7.md").unlink()
+        (self.out / "pr-7.md").mkdir()                       # #2213: the first write fails
+        rc, out = self.run_cli("--since", SINCE, "--out", str(self.out), "--format", "markdown",
+                               "--offline")
+        self.assertEqual(rc, 2)
+        self.assertIn("could not write pr-7.md (#7): ", out)
+        self.assertIn("this export is partial (none was written before it)", out)
+        self.assertIn("0 cycle(s) written", out)
+        self.assertNotIn("nothing written", out)
 
 
 if __name__ == "__main__":

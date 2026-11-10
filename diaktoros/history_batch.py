@@ -51,10 +51,12 @@ def render(data: dict, fmt: str) -> str:
 
 def export(loop: dict, db: Path, since: float, out: Path, fmt: str, offline: bool,
            redact) -> dict:
-    """Write each merged cycle to ``out/pr-N.<suffix>``. Returns ``{written, skipped, gap}``:
-    ``written`` as ``[{pr, file}]``, ``skipped`` as ``[{pr, why}]`` (not merged, its state)."""
+    """Write each merged cycle to ``out/pr-N.<suffix>``. Returns ``{written, skipped, failed,
+    gap}``: ``written`` as ``[{pr, file}]``, ``skipped`` as ``[{pr, why}]`` (not merged, its
+    state), ``failed`` as ``{pr, file, why}`` when a write failed, which stops the export there
+    with the files before it kept (#2200). A ``DIR`` that cannot be made raises ``OSError``."""
     numbers, gap = prs_since(db, loop["repo"], since)
-    result: dict = {"written": [], "skipped": [], "gap": gap}
+    result: dict = {"written": [], "skipped": [], "failed": None, "gap": gap}
     if not numbers:
         _writable(out)      # an unwritable DIR refuses even when there is nothing to write (#2204)
         return result
@@ -65,7 +67,12 @@ def export(loop: dict, db: Path, since: float, out: Path, fmt: str, offline: boo
             result["skipped"].append({"pr": number, "why": data["state"] or "state unknown"})
             continue
         name = f"pr-{number}.{_SUFFIX[fmt]}"
-        (out / name).write_text(render(data, fmt), encoding="utf-8")
+        try:
+            (out / name).write_text(render(data, fmt), encoding="utf-8")
+        except OSError as exc:
+            result["failed"] = {"pr": number, "file": name,
+                                "why": exc.strerror or type(exc).__name__}
+            break
         result["written"].append({"pr": number, "file": name})
     return result
 
@@ -89,8 +96,15 @@ def listing(result: dict, out: Path, offline: bool) -> str:
         lines.append(f"wrote {row['file']} (#{row['pr']})")
     for row in result["skipped"]:
         lines.append(f"skipped #{row['pr']}: not merged ({row['why']})")
+    failed = result.get("failed")
+    if failed:                                  # #2213: true with none written before it too
+        kept = "the files above were kept" if result["written"] else "none was written before it"
+        lines.append(f"could not write {failed['file']} (#{failed['pr']}): {failed['why']}; "
+                     f"stopped there, so this export is partial ({kept})")
     if offline and result["written"]:
-        lines.append("--offline: merge state not read, so every PR with a turn was written")
-    lines.append(f"{len(result['written'])} cycle(s) written to {out}" if result["written"]
+        lines.append("--offline: merge state not read, so a PR was written whether it merged or "
+                     "not" + (" (up to the failure above)" if failed else ""))   # #2229
+    lines.append(f"{len(result['written'])} cycle(s) written to {out}"
+                 if result["written"] or failed
                  else "no merged PR with a turn in that window: nothing written")
     return "\n".join(lines)

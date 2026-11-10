@@ -30,6 +30,18 @@ class ClaimantLine(unittest.TestCase):
         with patch.object(claimant, "LOADED", OLD):
             self.assertIn(f"plugin {OLD[:7]}, installed {NEW[:7]}", claimant.identity(installed=NEW))
 
+    def test_a_long_executable_and_entry_never_cut_off_the_commits(self):
+        """#2218: the unbounded fields keep their tails; the commits, last, always survive."""
+        exe = "/opt/" + "very-long-directory/" * 20 + "python3"
+        argv = ["/srv/" + "nested/" * 40 + "run_supervisor/__main__.py"]
+        with patch.object(claimant, "LOADED", OLD), patch.object(sys, "executable", exe), \
+                patch.object(sys, "argv", argv):
+            line = claimant.identity(installed=NEW)
+        self.assertTrue(line.endswith(f"plugin {OLD[:7]}, installed {NEW[:7]}"), line)
+        self.assertIn("…", line)
+        self.assertIn("/python3 ", line, "the executable keeps its tail")
+        self.assertLess(len(line), 240)
+
     def test_stale_only_when_both_commits_are_known_and_differ(self):
         with patch.object(claimant, "LOADED", OLD):
             self.assertIn(f"loaded plugin {OLD[:7]}, but {NEW[:7]} is installed",

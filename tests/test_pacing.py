@@ -129,6 +129,34 @@ class Store(unittest.TestCase):
         self.assertIsNotNone(pacing.held("k"))
 
 
+class ClosedAccountLines(unittest.TestCase):
+    """#2220: the lines ``hold_line`` writes for a closed account, and no other, match both
+    readers: ``account_hold`` (status, explain, the held notice) and ``clear_hold``'s SQL."""
+
+    def sql_matches(self, error: str) -> bool:
+        like = pacing.closed_account_like()
+        with closing(sqlite3.connect(":memory:")) as con:
+            return con.execute("SELECT 1 WHERE " + " OR ".join("? LIKE ?" for _ in like),
+                               [x for pattern in like for x in (error, pattern)]).fetchone() is not None
+
+    def test_every_closed_account_line_matches_both_readers_and_a_cap_matches_neither(self):
+        until = time.time() + 600
+        closed = [pacing.hold_line("fixer", "openai-codex", until),
+                  pacing.hold_line("reviewer", "anthropic", until, "openai-codex answered 429"),
+                  pacing.hold_line("fixer", "deepseek", until,
+                                   f"{pacing.UNAVAILABLE} (3 turns in a row: HTTP 400: x)")]
+        for line in closed:
+            with self.subTest(line=line):
+                self.assertTrue(run_supervisor.account_hold(line))
+                self.assertTrue(self.sql_matches(line))
+        for line in ("held: fixer daily turn cap (3) reached — resumes 00:00",
+                     "held: fixer daily token budget (9) reached — resumes 00:00",
+                     "held: waiting for CI: 2 checks pending", "turn exited with status 1"):
+            with self.subTest(line=line):
+                self.assertFalse(run_supervisor.account_hold(line))
+                self.assertFalse(self.sql_matches(line))
+
+
 class ProxyReadsTheReset(unittest.TestCase):
     def serve(self, status, headers, body):
         class Upstream(http.server.BaseHTTPRequestHandler):
