@@ -36,10 +36,18 @@ One thing it adds instead of forwarding: when the capability is created with the
 host-written message telling the agent to submit what it has verified now (#554). The host
 appends it to each of those requests itself, since the agent's own history never contains it
 (#1789), so a turn that finishes early never sees it.
+
+And one more for the ChatGPT Codex backend: the session affinity Hermes's own Codex client sends.
+Behind this proxy Hermes cannot see it is talking to that backend, so it sends no ``session_id``
+or ``x-client-request-id`` header, and the backend's prompt cache served only about 45% of the input
+of requests that only appended to the one before (#1790). The capability gives each
+turn one session id and sends it, with the body's ``prompt_cache_key`` (set to that id when the
+body has none), on every request of the turn. A header the sandbox sent itself is kept.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import http.client
 import http.server
 import json
@@ -869,8 +877,20 @@ class InferenceCapability:
         except Exception:
             return ''
 
-    def _headers(self, credential: Credential, sandbox_headers) -> dict:
+    @property
+    def session(self) -> str:
+        """This turn's Codex session id (#1790), '' elsewhere: a hash of the capability's own socket
+        directory, which is new for every turn, so it is stable within one and names nothing."""
+        if not self.codex_backend:
+            return ''
+        return hashlib.sha256(os.fsencode(self.directory)).hexdigest()[:32]
+
+    def _headers(self, credential: Credential, sandbox_headers, cache_key: str = '') -> dict:
         headers = forwarded_headers(sandbox_headers, self.contract)
+        if self.codex_backend:
+            # What Hermes's Codex client sends when it can see the backend (#1790).
+            headers.setdefault('session_id', self.session)
+            headers.setdefault('x-client-request-id', cache_key or self.session)
         headers.update(self.contract.fixed)
         headers.update(credential.headers)
         headers['Content-Type'] = 'application/json'
@@ -883,15 +903,30 @@ class InferenceCapability:
         """Send one policy-checked body upstream; refresh and retry once on a 401."""
         if self.process_backend:
             return self.endpoint.post(body, {})
+        body, key = self.with_cache_key(body)
         credential = self.credential.current()
-        status, content_type, data = self.endpoint.post(body, self._headers(credential, sandbox_headers))
+        status, content_type, data = self.endpoint.post(
+            body, self._headers(credential, sandbox_headers, key))
         if status == 401 and getattr(self.credential, 'refreshable', False):
             _close(data)
             fresh = self.credential.refresh(credential.token)
             if fresh is None:
                 return 401, 'application/json', iter([b'{"error": "upstream rejected the credential"}'])
-            status, content_type, data = self.endpoint.post(body, self._headers(fresh, sandbox_headers))
+            status, content_type, data = self.endpoint.post(
+                body, self._headers(fresh, sandbox_headers, key))
         return status, content_type, data
+
+    def with_cache_key(self, body: bytes) -> tuple[bytes, str]:
+        """``body`` with a ``prompt_cache_key`` on the Codex backend, and that key: the agent's
+        own when it is a plain value, else this turn's session (#1790). Elsewhere unchanged."""
+        if not self.codex_backend:
+            return body, ''
+        payload = json.loads(body)           # policy-checked already: a JSON object
+        key = payload.get('prompt_cache_key')
+        if isinstance(key, str) and _SAFE_VALUE.match(key):
+            return body, key
+        payload['prompt_cache_key'] = self.session
+        return json.dumps(payload).encode('utf-8'), self.session
 
     def saw(self, body: bytes) -> None:
         """Note one validated request, as the agent sent it: its last step and the turn's

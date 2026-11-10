@@ -149,6 +149,44 @@ class ModeContracts(Tmp):
                         "openai-organization"):
             self.assertNotIn(dropped, h)
 
+    def test_the_codex_backend_gets_one_session_per_turn_for_its_prompt_cache(self):
+        """#1790: behind the proxy Hermes sends no Codex session headers, so the host does: one
+        session per turn, on every request, with the body's cache key (its own, or the session)."""
+        cred = Credential("CODEX-ACCESS-TOKEN", "bearer", ())
+
+        def turn(backend, *bodies, headers=None):
+            with Upstream(lambda h, r: send_json(h)) as up, \
+                    mock.patch.object(inference_proxy, "is_codex_backend", return_value=backend), \
+                    InferenceCapability(self.socket_dir(), up.url("/backend-api/codex/responses"),
+                                        model="gpt-seat", quota=5, api_mode="codex_responses",
+                                        credential=StaticCredential(cred)) as cap:
+                for body in bodies:
+                    self.assertEqual(post(cap, body, headers)[0], 200)
+            return up.requests
+
+        first, second, own = turn(True, {"input": []}, {"input": [1]},
+                                  {"input": [], "prompt_cache_key": "pk-agent"})
+        session = first["headers"]["session_id"]
+        self.assertRegex(session, r"^[0-9a-f]{32}$")
+        for request in (first, second):
+            self.assertEqual(request["headers"]["session_id"], session)
+            self.assertEqual(request["headers"]["x-client-request-id"], session)
+            self.assertEqual(request["body"]["prompt_cache_key"], session)
+        # The agent's own key is kept, and the header follows it; the session stays the turn's.
+        self.assertEqual(own["body"]["prompt_cache_key"], "pk-agent")
+        self.assertEqual((own["headers"]["session_id"], own["headers"]["x-client-request-id"]),
+                         (session, "pk-agent"))
+        # Another turn is another session; a header the sandbox sent is kept as it is.
+        (other,) = turn(True, {"input": []})
+        self.assertNotEqual(other["headers"]["session_id"], session)
+        (sent,) = turn(True, {"input": []}, headers={"session_id": "sess-1"})
+        self.assertEqual(sent["headers"]["session_id"], "sess-1")
+        # Any other Responses upstream is left exactly as the agent sent it.
+        (plain,) = turn(False, {"input": []})
+        self.assertNotIn("session_id", plain["headers"])
+        self.assertNotIn("x-client-request-id", plain["headers"])
+        self.assertNotIn("prompt_cache_key", plain["body"])
+
     def test_codex_backend_never_gets_an_output_cap_field(self):
         contract = CONTRACTS["codex_responses"]
         body = json.loads(inference_proxy.bounded_request(
