@@ -456,7 +456,7 @@ def _dissent_state(loop: dict, number: int, head: str, short: str, ruling, marke
     if mine and verdict == "REJECT":
         # Part 3 (#1004): upheld. The fixer answers it where queue_shadow_fix can hand it on;
         # a loop without unattended pushes, or a review-only author's PR, is the operator's.
-        if config.unattended_fixer_push_enabled(loop) and not _review_only_pr(loop, number):
+        if fixer_answers_upheld(loop, number):
             return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT): "
                     "the fixer answers its findings, and the fixed head is reviewed fresh"), ""
         return "failure", (f"the adjudicator upheld the shadow review at {short} (REJECT) — no "
@@ -478,6 +478,26 @@ def _review_only_pr(loop: dict, number: int) -> bool:
     pr = gh.pr(loop, number)
     author = str(((pr or {}).get("user") or {}).get("login") or "").casefold()
     return not author or author not in {str(x).casefold() for x in loop.get("fixers") or []}
+
+
+def fixer_answers_upheld(loop: dict, number: int) -> bool:
+    """Whether the fixer answers a shadow review the adjudicator upheld on this PR (#1004 part 3):
+    the loop pushes unattended and the PR is a fixer's; otherwise the decision is a person's. One
+    rule for the hold's text, ``ready`` and ``explain`` (#1353), and the two conditions
+    ``queue_shadow_fix`` checks, each with its own reason."""
+    return config.unattended_fixer_push_enabled(loop) and not _review_only_pr(loop, number)
+
+
+def shadow_fix_owed(loop: dict, marker, head: str, db=None) -> bool:
+    """Whether this head's breach marker is a shadow escalation (#1004) the adjudicator upheld
+    (REJECT, ``upheld_shadow_ruling``) and the fixer answers it (``fixer_answers_upheld``): its
+    findings go to the fixer, so no person is waited for (#1353). The shadow hold still stands."""
+    m = marker if isinstance(marker, dict) else {}
+    if str(m.get("head") or "") != head or (m.get("escalated") or {}).get("by") != SHADOW_ESCALATION:
+        return False
+    number = int(m.get("pr") or 0)
+    return (upheld_shadow_ruling(loop, number, head, db=db) is not None
+            and fixer_answers_upheld(loop, number))
 
 
 def upheld_shadow_ruling(loop: dict, number: int, head: str, db=None) -> float | None:

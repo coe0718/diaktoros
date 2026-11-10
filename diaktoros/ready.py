@@ -209,8 +209,11 @@ def _not_approved(loop: dict, st, number: int, head: str, reviews: list, author:
 def _escalation(loop: dict, number: int, head: str, marker) -> list[tuple[str, str]]:
     """An escalated or parked head waits for its ruling; once it is in, the decision is the
     operator's. With no adjudicator route no ruling ever comes: a person decides (shadow, #1225).
-    The reason says which (#1245): a stale "awaiting" after the ruling misled."""
+    The reason says which (#1245): a stale "awaiting" after the ruling misled. An upheld shadow
+    review the fixer answers waits on no person: the shadow line says so (#1353)."""
     if gate.shadow_overruled(loop, marker, head):        # #1004: ACCEPT, approval stands
+        return []
+    if gate.shadow_fix_owed(loop, marker, head):         # #1004 part 3: REJECT, the fixer answers
         return []
     if not (gate.escalated(marker, head) or gate.breach_delivery_status(
             marker if isinstance(marker, dict) else {}, head) in {"awaiting-adjudication",

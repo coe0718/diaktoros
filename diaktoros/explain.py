@@ -539,6 +539,11 @@ def _local_state(c) -> None:
         # #1004: the adjudicator overruled the shadow review; the reviewer's approval stands.
         # #905: the adjudicator approved on its ACCEPT, so no person is waited for either.
         c.parked, c.ruled = False, None
+    # #1004 part 3 (#1353): an upheld shadow review the fixer answers waits on no person; the
+    # shadow hold says the fixer answers it, and the next event is the fixer's.
+    c.shadow_fix = gate.shadow_fix_owed(c.loop, c.marker, c.head)
+    if c.shadow_fix:
+        c.parked, c.ruled = False, None
 
 
 def _seat_needs(c) -> None:
@@ -860,6 +865,10 @@ def _next_approval(c) -> tuple[str, str] | None:
         if c.shadow_held.startswith("waiting on"):
             kind = "wait"
             action = f"{c.shadow_held} — head {c.short} is approved but held until it lands"
+        elif c.shadow_fix:
+            kind = "fixer-push"
+            action = (f"{c.shadow_held} — do not merge head {c.short}; the fixer's turn on the "
+                      "upheld findings answers it")
         else:
             kind = "operator"
             action = (f"your decision: {c.shadow_held} — do not merge head {c.short} until you have "

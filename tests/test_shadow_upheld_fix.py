@@ -61,6 +61,66 @@ class Upheld(ruling.Base):
         self.assertIn("the decision is yours", held(author="someone"))             # review-only
 
 
+class Operator(ruling.Base):
+    """#1353: ``ready`` and ``explain`` agree with the shadow hold on who answers an upheld review:
+    the fixer on a fixer's PR of a loop that pushes unattended, a person everywhere else."""
+
+    def upheld_marker(self):
+        self.shadow("REQUEST_CHANGES")
+        marker = self.mark_escalated()          # the marker stays ``adjudicating`` after a ruling
+        self.ruled("REJECT")
+        return marker
+
+    def ready(self, author="fixer"):
+        from diaktoros import ready
+        pr = {**fg.LIVE, "user": {"login": author}}
+        with mock.patch.object(gh, "pr", return_value=pr), \
+                mock.patch.object(ready.gate_failures, "open_for", return_value=[]):
+            return ready.assess(self.loop, self.st, pr, ruling.APPROVED, None, None)
+
+    def explain(self, author="fixer"):
+        from diaktoros import explain
+        pr = {**fg.LIVE, "user": {"login": author}}
+        with mock.patch.object(gh, "pr", return_value=pr):
+            held = gate.shadow_hold(self.loop, 7, fg.HEAD, db=self.db,
+                                    marker=self.st.breach_get(7))
+            facts = {"pr": pr, "reviews": ruling.APPROVED, "armed": True, "read_at": 0,
+                     "shadow_hold": held}
+            return explain.explain(self.loop, self.st, 7, facts)
+
+    def test_ready_says_only_the_fixer_answers_it(self):
+        self.upheld_marker()
+        self.loop = {**self.loop, "unattended_fixer_push": True}
+        why = self.ready()
+        self.assertTrue(any("the fixer answers its findings" in w for w in why), why)
+        self.assertFalse(any(w.startswith("escalated:") for w in why), why)   # no "a person decides"
+
+    def test_ready_still_leaves_it_to_a_person_where_no_fixer_takes_it(self):
+        self.upheld_marker()
+        why = self.ready()                                                    # push off
+        self.assertTrue(any("a person decides" in w for w in why), why)
+        self.loop = {**self.loop, "unattended_fixer_push": True}
+        why = self.ready(author="someone")                                    # review-only
+        self.assertTrue(any("a person decides" in w for w in why), why)
+
+    def test_explain_hands_it_to_the_fixer_not_to_you(self):
+        self.upheld_marker()
+        self.loop = {**self.loop, "unattended_fixer_push": True}
+        report = self.explain()
+        self.assertFalse(any(b.startswith(("ruled:", "escalated:")) for b in report["blockers"]),
+                         report["blockers"])
+        self.assertTrue(any("the fixer answers its findings" in b for b in report["blockers"]),
+                        report["blockers"])
+        self.assertEqual(report["next"]["kind"], "fixer-push", report["next"])
+        self.assertNotIn("your decision", report["next"]["action"])
+
+    def test_explain_still_leaves_it_to_you_where_no_fixer_takes_it(self):
+        self.upheld_marker()
+        report = self.explain()                                               # push off
+        self.assertTrue(any(b.startswith("ruled:") for b in report["blockers"]), report["blockers"])
+        self.assertIn("your decision", report["next"]["action"])
+
+
 class Queue(ruling.Base):
     def queue(self, author="fixer"):
         live = {**fg.LIVE, "user": {"login": author}}
