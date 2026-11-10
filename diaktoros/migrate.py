@@ -102,6 +102,13 @@ def _running() -> bool:
     return False
 
 
+def dead(info: dict | None) -> bool:
+    """Whether a held marker was left by a migrate that is no longer running (#1077): the
+    install stays paused until someone runs ``migrate`` again, so it needs a person. The same
+    test ``describe`` words; an unreadable marker that no run holds counts too."""
+    return info is not None and not _running()
+
+
 def describe(info: dict | None) -> str:
     """One line for the watchdog, explain and the worker about a held marker."""
     if info is None:
@@ -111,7 +118,7 @@ def describe(info: dict | None) -> str:
     since = info.get("started")
     when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(since)) if isinstance(
         since, (int, float)) else "an unknown time"
-    if _running():
+    if not dead(info):
         return f"`migrate` is running (pid {info.get('pid')}, since {when})"
     return (f"a `migrate` started {when} did not finish (pid {info.get('pid')} is gone): its "
             "records may be half moved — run `migrate` again to finish it")

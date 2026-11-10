@@ -1087,15 +1087,49 @@ def not_drained(loop: dict, armed, error: str) -> str:
     return f"{loop['id']}: {what} — nothing drained"
 
 
+def notify_dead_migrate(held: dict) -> None:
+    """One urgent ``held`` notice per loop for a migrate that died holding the pause (#1077).
+
+    The pause lasts until ``migrate`` runs again, and cron stdout is a log nobody reads. Keyed
+    on the marker's start time, so every later sweep finds the notice recorded and sends
+    nothing; a new interrupted migrate is a new notice. A loop whose state directory does not
+    exist (its move may be half done) is skipped: writing its observer ledger would recreate
+    the directory under the old name, and the re-run would then refuse to move it."""
+    from diaktoros import migrate
+    outcome = (f"install paused — {migrate.describe(held)} (marker {migrate.marker_path()}; "
+               "run `hermes dk migrate`)")
+    identity = f"migrate:{held.get('started') or 'unreadable'}"
+    loops, _refused = config.readable_loops()
+    for loop in loops:
+        try:
+            st = state_mod.state_for(loop)
+            if st.dir.is_dir():
+                observer.notify(loop, st, "held", 0, "", identity=identity,
+                                outcome=outcome[:600], next_turn="you")
+        except Exception as exc:                  # best effort: the pause line is printed
+            print(f"⚠️ Diaktoros [{loop.get('id', '?')}] paused notice failed: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+
+
+def paused_by_migrate(args: argparse.Namespace) -> bool:
+    """Whether a migration holds the install (#431), saying so once per run (not on a drain).
+    A migrate that died holding it also sends its observer notice (#1077)."""
+    from diaktoros import migrate
+    held = migrate.migrating()
+    if held is None:
+        return False
+    if not args.drain:
+        print(f"⏸️ Diaktoros: paused — {migrate.describe(held)}", flush=True)
+        if migrate.dead(held):
+            notify_dead_migrate(held)
+    return True
+
+
 def run(args: argparse.Namespace, budget: float) -> None:
     # A migration holds the install (#431): sweeping, draining or healing now would act under
     # names being moved. Say so once per run and do nothing else; the next run after it ends
     # re-drives what the gates deferred meanwhile.
-    from diaktoros import migrate
-    held = migrate.migrating()
-    if held is not None:
-        if not args.drain:
-            print(f"⏸️ Diaktoros: paused — {migrate.describe(held)}", flush=True)
+    if paused_by_migrate(args):
         return
     # The cron job runs this with no --loop: one loop file the loader refuses (for any repo)
     # is reported by name, like any other per-loop failure, and every other loop still sweeps.
