@@ -503,7 +503,12 @@ keeps the last finding, so the finding can land or clear more than one sweep lat
   that moves, ends it. The pushed head is reviewed fresh by the reviewer and the shadow. The
   ruling's own delivery queues the turn, and the watchdog sweep does as a backstop (same key, so
   never twice). Nothing is queued on a loop without unattended fixer pushes, or on a review-only
-  author's PR: there the decision stays yours.
+  author's PR: there the decision stays yours. `ready` and `explain` say the same (#1353): where the
+  fixer takes the findings, neither reports "a person decides" or "your decision" (the PR stays not
+  ready on the shadow hold, and `explain`'s next step is the fixer's push); elsewhere both still
+  leave the ruled head to you. That includes a loop whose `shadow.escalate` is off: with no
+  shadow hold to keep the head not ready, the ruling's escalation line does, and it stays a
+  person's decision.
 - **RESPEC** keeps the hold, and the decision is yours.
 
 If a later shadow review at the same head requests changes again after the ruling, that review goes for a ruling of its own.
