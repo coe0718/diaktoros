@@ -5,6 +5,9 @@ main's checks at its current head (no model, no GitHub write). A required check 
 ``main_red`` observer notice per head, naming the check and the PRs merged since main's last
 green head. A green main sends nothing and becomes the new last green head.
 
+With ``main_flake_rerun`` on, a red that looks like a flake has its failed jobs rerun once first,
+as a maintainer, and the notice waits for that rerun (``main_flake``, #1784): the one write here.
+
 GitHub's "Require branches to be up to date before merging" branch protection prevents this class
 of breakage; the notice says so.
 """
@@ -65,7 +68,7 @@ def merged_since(loop: dict, green: str, head: str) -> Merges | None:
     return Merges(out, len(commits), data.get("total_commits"))
 
 
-def _outcome(failed: list[str], merges: list[int] | None, url: str) -> str:
+def _outcome(failed: list[str], merges: list[int] | None, url: str, note: str = "") -> str:
     if merges is None:
         since = "merged PRs unknown (no earlier green main head recorded or readable)"
     else:
@@ -86,16 +89,28 @@ def _outcome(failed: list[str], merges: list[int] | None, url: str) -> str:
                 said = (f"could not confirm GitHub's compare was complete "
                         f"({seen} commit{'' if seen == 1 else 's'} read, total unreported)")
             since += f" — {said}, so other merged PRs may be missing; this is not the full list"
-    text = f"main: required check(s) failed: {ci._names(failed)} — {since}. {ADVICE}"
+    text = f"main: required check(s) failed: {ci._names(failed)} — {since}. {ADVICE}{note}"
     return f"{text} — {url}" if url else text
 
 
-def _remember(st, path, key: str, head: str) -> None:
-    """Record ``key`` = head, re-reading the file under the lock so the other key survives."""
+def _remember(st, path, key: str, head) -> None:
+    """Record ``key`` = head (or a rerun's record), re-reading the file under the lock so the
+    other keys survive."""
     with st.locked():
         current = st.kv_get(path, {})
         current = current if isinstance(current, dict) else {}
         st.kv_set(path, {**current, key: head})
+
+
+def _green(loop: dict, st, path, memory: dict, head: str) -> None:
+    """Record ``head`` green; a head turned green by the flake rerun gets its one routine
+    ``main_flaked`` notice (#1784)."""
+    from . import main_flake, observer
+    _remember(st, path, "green", head)
+    tried = memory.get("rerun")
+    if isinstance(tried, dict) and tried.get("head") == head:
+        observer.notify(loop, st, "main_flaked", 0, head, identity="main_flaked",
+                        outcome=main_flake.flaked_outcome(tried)[:600], next_turn="")
 
 
 def sweep(loop: dict, st, log=lambda _msg: None) -> bool:
@@ -122,10 +137,18 @@ def sweep(loop: dict, st, log=lambda _msg: None) -> bool:
         return False
     if not view.failed:
         if view.green:
-            _remember(st, path, "green", head)
+            _green(loop, st, path, memory, head)
         return False                                  # green or still running: nothing yet
+    from . import main_flake
+    decided = main_flake.decide(loop, memory, view, head)   # #1784: a flake is rerun first
+    if decided.action == "rerun":
+        _remember(st, path, "rerun", decided.record)
+        log(f"main @ {head[:7]} looks flaky ({decided.record['why']}): reran runs "
+            f"{decided.record['runs']}")
+    if decided.action != "notice":
+        return False
     merges = merged_since(loop, memory.get("green") or "", head)
-    outcome = _outcome(view.failed, merges, view.urls.get(view.failed[0], ""))
+    outcome = _outcome(view.failed, merges, view.urls.get(view.failed[0], ""), decided.note)
     _remember(st, path, "notified", head)             # remember first: one notice per head
     observer.notify(loop, st, "main_red", merges[-1] if merges else 0, head,
                     identity="main_red", outcome=outcome[:600], next_turn="you")

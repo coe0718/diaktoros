@@ -392,6 +392,8 @@ SETTINGS_SCHEMA: dict = {
                                                "labelled adjudicator-found, at most 3 a ruling "
                                                "and 25 a day. Off: its follow-ups stay in the "
                                                "ruling comment."},
+    "main_flake_rerun": {"label": "Rerun a flaky red main once", "type": "bool", "default": False,
+                         "description": "On: before a red-main notice, the watchdog reruns main's failed CI jobs once when they look like a flake (every failing test passed in a sibling job of the same head, or every failure is a timeout), as the first maintainer whose token the loop holds, never a seat (#1784). A rerun that passes sends a routine main_flaked notice naming the test; a second red sends main_red, saying a rerun was tried. Never on a PR. Off: every red main is a main_red notice."},
     "change_proof": {"label": "Prove the changed tests", "type": "bool", "default": False,
                      "description": "On: before each reviewer turn the host runs the test "
                                     "methods the PR adds or changes against its merge base "
@@ -620,7 +622,7 @@ def _apply_switches(overlaid, d, settings) -> None:  # noqa: ANN001
     # The on/off knobs, attribution (#197) among them, move only when the form names them.
     for key in ("attribution", "review_after_ci", "fix_ci", "ci_webhook", "comment_webhook",
                 "protection_webhook", "fixer_scope_lock", "adjudicator_approves", "adjudicator_file_issues", "change_proof",
-                "review_only_update"):
+                "main_flake_rerun", "review_only_update"):
         if _form_value(settings, key) is not None:
             overlaid[key] = d[key]
     if str(d.get("merge_check") or "").strip():

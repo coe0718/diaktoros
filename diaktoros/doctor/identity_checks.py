@@ -351,3 +351,41 @@ def check_token_expiry_scopes(loop: dict, offline: bool, now: float | None = Non
         else:
             checks.append(doctor.Check(scopes, doctor.VERIFIED, f"scopes cover {', '.join(roles)}"))
     return checks
+
+
+def check_main_flake_rerun(loop: dict, offline: bool = False) -> doctor.Check | None:
+    """The identity that reruns main's flaky jobs (#1784, ``main_flake_rerun``); ``None`` when
+    the setting is off."""
+    from .. import main_flake   # here, not module level: main_flake imports the CI readers
+    if not config.main_flake_rerun(loop):
+        return None
+    lid = str(loop.get("id") or "<id>")
+    off = f"`hermes dk set --loop {lid} --main-flake-rerun off`"
+    login = main_flake.rerun_login(loop)
+    if not login:
+        return doctor.Check("main-flake-rerun", doctor.MISMATCH,
+                            "on, but the loop holds no token for a triage maintainer who is not a "
+                            "seat, so no flaky main is ever rerun",
+                            f"name your login in triage.maintainers and its token file in tokens, "
+                            f"or {off}")
+    if not config.required_checks(loop):
+        return doctor.Check("main-flake-rerun", doctor.MISMATCH,
+                            "on, but the loop names no required_checks: their job logs are what "
+                            "tells a flake, so nothing is ever rerun",
+                            f"`hermes dk set --loop {lid} --required-check NAME` (repeat it), or {off}")
+    if offline:
+        return doctor.Check("main-flake-rerun", doctor.UNKNOWN,
+                            f"on — {login} reruns main's flaky jobs; its access was not probed "
+                            "(--offline)")
+    repo = gh.api(loop, f"/repos/{loop['repo']}", login=login)
+    perms = repo.get("permissions") if isinstance(repo, dict) else None
+    if not isinstance(perms, dict) or perms.get("push") is not True:
+        return doctor.Check("main-flake-rerun", doctor.MISMATCH,
+                            f"on, but {login}'s token cannot write to {loop['repo']} (or could not "
+                            "be read), so a rerun would be refused",
+                            f"give {login}'s token write access (a fine-grained token: Actions "
+                            f"read and write), or {off}")
+    return doctor.Check("main-flake-rerun", doctor.VERIFIED,
+                        f"on — a red main that looks like a flake is rerun once as {login} before "
+                        "its notice (a fine-grained token also needs Actions: write; a refused "
+                        "rerun is said in the main_red notice)")

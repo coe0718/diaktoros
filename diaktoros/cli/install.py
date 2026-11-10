@@ -279,7 +279,7 @@ def _init_settings(args, d: dict) -> dict:
         **{key: cli_common._on_off(args, key, d[key]) for key in (
             "review_after_ci", "fix_ci", "ci_webhook", "comment_webhook", "protection_webhook",
             "fixer_scope_lock", "adjudicator_approves",
-            "adjudicator_file_issues", "change_proof", "review_only_update")},
+            "adjudicator_file_issues", "change_proof", "main_flake_rerun", "review_only_update")},
         # The checks CI always runs, which a fixer running only its touched tests would miss.
         "fixer_check": (d["fixer_check"] if getattr(args, "fixer_check", None) is None
                         else args.fixer_check),
@@ -879,7 +879,7 @@ def _init_route_flags(init) -> None:  # noqa: ANN001
     init.add_argument("--observer-events", default="",
                       help="comma-separated transitions to send, from "
                            "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                           "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined "
+                           "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined,main_flaked "
                            "(default: all)")
     init.add_argument("--observer-digest-min", type=int, default=0,
                       help="batch the feed into one message per this many minutes "
@@ -932,6 +932,7 @@ def _init_switch_flags(init, d) -> None:  # noqa: ANN001
                                        "overruled"),
             ("--adjudicator-file-issues", "file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found"),
             ("--change-proof", "run each reviewed head's changed tests on its merge base and at the head, and show the reviewer"),
+            ("--main-flake-rerun", "rerun main's failed CI jobs once when they look like a flake, before a red-main notice"),
             ("--attribution", "sign what the loop posts with 'Automated by Diaktoros'")):
         on = d[flag[2:].replace("-", "_")]
         init.add_argument(flag, choices=("on", "off"), default=None,

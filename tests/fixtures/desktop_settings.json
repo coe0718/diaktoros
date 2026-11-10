@@ -422,6 +422,12 @@
         "type": "bool",
         "default": true,
         "description": "On: every review, comment and commit the loop itself posts ends with 'Automated by Diaktoros' and a link (commits get an Automated-By trailer). Off: nothing is added. Never touches what people or agents post by hand."
+      },
+      "main_flake_rerun": {
+        "label": "Rerun a flaky red main once",
+        "type": "bool",
+        "default": false,
+        "description": "On: before a red-main notice, the watchdog reruns main's failed CI jobs once when they look like a flake (every failing test passed in a sibling job of the same head, or every failure is a timeout), as the first maintainer whose token the loop holds, never a seat (#1784). A rerun that passes sends a routine main_flaked notice naming the test; a second red sends main_red, saying a rerun was tried. Never on a PR. Off: every red main is a main_red notice."
       }
     },
     "values": {
@@ -494,7 +500,8 @@
       "change_proof": false,
       "change_proof_max": "",
       "provider_breaker_failures": "",
-      "attribution": true
+      "attribution": true,
+      "main_flake_rerun": false
     },
     "sources": {
       "cap": "set",
@@ -566,7 +573,8 @@
       "change_proof": "default",
       "change_proof_max": "default",
       "provider_breaker_failures": "default",
-      "attribution": "default"
+      "attribution": "default",
+      "main_flake_rerun": "default"
     },
     "seats": {
       "reviewer": {

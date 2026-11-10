@@ -282,7 +282,7 @@ set an explicit event list without `stall` (a blank list means all events; any e
 an explicit list is dropped, urgent ones included):
 
 ```bash
-hermes dk set --loop "<loop-id>" --observer-events opened,handoff,verdict,approved,escalation,ruling,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined
+hermes dk set --loop "<loop-id>" --observer-events opened,handoff,verdict,approved,escalation,ruling,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set,protection,ci_declined,main_flaked
 ```
 
 An uncertain send is never permission to manually replay it blindly.

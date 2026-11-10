@@ -92,6 +92,7 @@ PUSHES = {
     "adjudicator_approves": True,
     "adjudicator_file_issues": True,
     "change_proof": True,
+    "main_flake_rerun": True,
     "change_proof_max": "7",
     "provider_breaker_failures": "0",
     "attribution": False,
