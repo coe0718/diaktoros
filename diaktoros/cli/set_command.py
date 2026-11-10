@@ -747,8 +747,8 @@ def _set(args) -> int:
     loop = _load_loop(args)
     # #1293: moving the reader or the adjudicator waits for its runs, as `identity` does.
     _refuse_busy_identity(args, loop)
-    # #1972: the steps below check the loop the adjudication change leaves; it is written after
-    # the last of them can refuse, so a refused `set` writes nothing.
+    # #1972: the checks below see the loop the adjudication change leaves; it is written after
+    # the last of them, though a route write after it can still refuse (#2212).
     adj = None
     if (getattr(args, "adjudicator_profile", None) or getattr(args, "adjudicator_route", None)
             or getattr(args, "adjudicator", None)):
