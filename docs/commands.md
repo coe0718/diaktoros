@@ -1334,7 +1334,7 @@ hermes dk restore "<archive-file>"
 Proves the isolated turn path step by step: the runtime file and its paths, the bubblewrap
 sandbox (no network, no credentials visible inside), each seat's model, the GitHub identities,
 the broker and the run ledger. It never writes to GitHub, except `--ping`, which asks GitHub to
-ping the hooks.
+ping the hooks (on a loop with `ingress: app-webhook`, to redeliver the App's newest ping).
 
 Run it in three stages, each one costing a little more:
 
@@ -1369,7 +1369,7 @@ It is ignored for ordinary tiny probes. Live turn verdicts never post a review o
 | `--pr` | `PR` |  | dry-run the reviewer write authorization on this PR |
 | `--no-model` |  |  | skip the one tiny real completion (costs a few tokens) |
 | `--live-turn` |  |  | with --pr: run one real isolated reviewer turn whose verdict is printed and never posted |
-| `--ping` |  |  | ask GitHub to ping each loop hook and report whether the gateway accepted its signature (the selftest's only GitHub write) |
+| `--ping` |  |  | ask GitHub to ping each loop hook (an App-webhook loop: to redeliver the App's newest ping) and report whether the gateway accepted its signature (the selftest's only GitHub write) |
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose credential may ping hooks: a token with admin:repo_hook or repo, or a GitHub App with Webhooks: Read and write |
 | `--timeout` | `TIMEOUT` |  | live turn budget in seconds (default: the loop's reviewer turn_budget_s — the budget the production worker enforces) |
 <!-- /flags -->
@@ -1957,7 +1957,9 @@ hermes dk trace --loop "<loop-id>" --payload "<payload-json-file>" --event pull_
 
 - `--delivery` takes the GUID from the hook's **Recent Deliveries** page on GitHub (repo →
   Settings → Webhooks → the hook → Recent Deliveries), or its numeric id. Reading deliveries
-  needs hook read access (`--admin-token`).
+  needs hook read access (`--admin-token`). On a loop with `ingress: app-webhook` there are no
+  repo hooks: the delivery comes from the App's own log (the App's settings → Advanced → Recent
+  Deliveries), read with the App's key, and runs through the App's dispatcher (`gate_app.py`).
 - `--payload` replays a payload you saved to a file instead.
 
 The last line is the outcome: `would start a reviewer run` (or `would queue a … run`),

@@ -164,7 +164,12 @@ def infer_event(payload: dict) -> str:
 
 
 def role_for(loop: dict, event: str, route: str | None = None) -> str:
-    """Which seat's gate a delivery reaches: the route it was sent to, else its event."""
+    """Which seat's gate a delivery reaches: the route it was sent to, else its event. A loop on
+    its App's webhook (#1239) gets its events through the App's dispatcher, which picks the gate
+    from the payload: run as a seat's own script, the gate would drop the delivery as a leftover
+    repo hook's (``app_ingress.woken_by_repo_hook``)."""
+    if not route and config.app_ingress(loop):
+        return "app"
     if route:
         for role, name in route_intent.routes_of(loop).items():
             if name == route and role in route_intent.GATE_SCRIPT:
@@ -185,8 +190,16 @@ def fetch_delivery(loop: dict, delivery: str, login: str | None) -> tuple[dict, 
 
     ``delivery`` is GitHub's numeric delivery id or the ``X-GitHub-Delivery`` GUID the webhook
     page shows. Reading deliveries needs hook read access, a token with ``admin:repo_hook`` or
-    ``repo`` or a GitHub App with Webhooks: Read: the loop's hook admin.
+    ``repo`` or a GitHub App with Webhooks: Read: the loop's hook admin. A loop on its App's
+    webhook has no repo hooks: its deliveries are in the App's own log, read with the App's JWT
+    (#1239 part 2), and they reach the App's route.
     """
+    if config.app_ingress(loop):
+        from . import app_deliveries
+        payload, event, error = app_deliveries.find(loop, delivery)
+        if error:
+            raise TraceError(error)
+        return payload, event, config.app_route(loop)
     hooks, error = gh.hooks_read(loop, login)
     if hooks is None:
         raise TraceError(f"cannot read the repo's hooks ({error}) — pass --admin-token LOGIN, a "

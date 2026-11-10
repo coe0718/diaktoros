@@ -87,8 +87,42 @@ def check_app_webhook(loop: dict, offline: bool) -> doctor.Check:
                   if state["missing_events"] else "")
         return doctor.Check("app-webhook", doctor.MISMATCH, f"{app}'s webhook delivers nothing here: {problem}",
                             f"`{fix}`{events}")
+    delivery = check_app_deliveries(loop)
+    if isinstance(delivery, doctor.Check):
+        return delivery
     return doctor.Check("app-webhook", doctor.VERIFIED, f"{app}'s webhook posts to {state['url']} "
-                        f"({', '.join(state['events'])})")
+                        f"({', '.join(state['events'])}; {delivery})")
+
+
+def check_app_deliveries(loop: dict) -> "doctor.Check | str":
+    """``check_deliveries`` for the App's webhook (#1239 part 2): how the gateway answered this
+    repository's latest delivery in the App's log, the only evidence the App's secret is the
+    route's. A failing or unknown ``Check``, or a short phrase for the verified line."""
+    from .. import app_deliveries
+    app = loop.get("ingress_app")
+    ping = f"`hermes dk selftest --loop {shlex.quote(loop['id'])} --no-model --ping`"
+    latest, error = app_deliveries.latest(loop)
+    if error:
+        return doctor.Check("app-webhook", doctor.UNKNOWN,
+                            f"{app}'s webhook points here, but {error} — whether its secret matches "
+                            "the route is unproven", "run doctor again once GitHub answers")
+    if latest is None:
+        return "no deliveries for this repository in its log yet — the secret is unproven until one arrives"
+    code, when = latest.get("status_code"), latest["delivered_at"]
+    if type(code) is not int or code <= 0:
+        return doctor.Check("app-webhook", doctor.UNKNOWN,
+                            f"{app}'s latest delivery here ({when}) got no HTTP response from the "
+                            f"gateway (GitHub recorded: {latest.get('status') or 'no status'}) — "
+                            "whether its secret matches is unproven",
+                            "check the gateway is running and reachable from GitHub (`hermes "
+                            f"gateway status`), then {ping}")
+    if not 200 <= code < 300:
+        return doctor.Check("app-webhook", doctor.MISMATCH,
+                            f"{app}'s latest delivery here ({when}) got HTTP {code}: "
+                            f"{app_deliveries.rejected(code)}, so it wakes nothing",
+                            f"`{app_deliveries.fix(loop)}` (writes the route's secret onto the App's "
+                            f"webhook) if it is the secret, else the gateway's log; then {ping}")
+    return f"latest delivery {code}"
 
 
 def check_leftover_hooks(loop: dict, offline: bool) -> doctor.Check:
