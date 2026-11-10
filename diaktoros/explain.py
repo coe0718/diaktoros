@@ -9,7 +9,7 @@ import time
 from types import SimpleNamespace
 
 from . import config, gate, gate_decisions, gate_failures, gh, pr_hold, review_kick, run_supervisor
-from . import explain_next, situation, transition
+from . import drain, explain_next, situation, transition
 from . import state as state_mod
 from .util import iso_at
 
@@ -600,6 +600,8 @@ def _push_and_queue(c) -> None:
     # A queue entry the gate declined (a duplicate of a terminal turn) is a confirmed answer the
     # drain leaves as is (drain.py, gate.is_declined_hold): it waits for no slot, any seat (#1610).
     c.queued_declined = bool(c.queued_seat) and gate.is_declined_hold({"reason": c.queued_reason})
+    # An unverified route POST: the drain never re-sends it (drain.is_route_uncertain, #1512).
+    c.queued_uncertain = bool(c.queued_seat) and drain.is_route_uncertain({"reason": c.queued_reason})
 
 
 def _blockers(c) -> None:
@@ -765,6 +767,9 @@ def _queue_blockers(c, declined: bool) -> None:
         c.blockers.append(f"declined: the gate declined the {c.queued_seat} turn for head "
                           f"{c.short} ({c.queued_reason}) — not capacity; nothing restarts it "
                           "by itself")
+    elif c.queued_uncertain:
+        c.blockers.append(f"unverified route POST: the {c.queued_seat} entry for head {c.short} "
+                          f"({c.queued_reason}) is never re-sent by a sweep or drain")
     elif c.queued_seat:
         c.blockers.append(f"no capacity: queued with the {c.queued_seat} seat — {c.queued_reason}")
     elif c.full_seat:

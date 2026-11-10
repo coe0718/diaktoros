@@ -324,6 +324,26 @@ class AfterEnabling(Steps):
         self.assertEqual(started, 1)
         self.assertEqual(fire.call_args.args[1], "pull_request_review")
 
+    def test_an_uncertain_route_entry_is_no_automatic_start(self):
+        # #1512: an unverified route POST was promised the next sweep or drain; the drain
+        # leaves it for manual reconciliation, so explain names that hold instead.
+        from diaktoros import drain as drain_mod
+        self.set_push(False)
+        reason = drain_mod.ROUTE_UNCERTAIN
+        report = self.report(queued=reason)
+        action = report["next"]["action"]
+        self.assertNotIn("then starts the fix run", action)
+        self.assertNotIn("slot frees", action)
+        self.assertIn("safety hold", action)
+        self.assertFalse([b for b in report["blockers"] if "no capacity" in b], report["blockers"])
+        self.st.queue_add("fixer", f"{fg.REPO}#7", fg.HEAD, "url", reason)
+        self.set_push(True)
+        self.assertIn("safety hold", self.report(queued=reason)["next"]["action"])
+        started, fire = self.drain()                           # what the step says: left as is
+        self.assertEqual(started, 0)
+        fire.assert_not_called()
+        self.assertEqual(self.st.queue_items("fixer")[f"{fg.REPO}#7"]["reason"], reason)
+
     def ledgered(self, state, error="", seat="fixer"):
         """A ``seat`` turn (the fixer's by default) at this head in ``state``, and the queue entry
         the gate declined it with."""

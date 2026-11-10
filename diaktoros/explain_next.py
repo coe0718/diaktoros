@@ -300,6 +300,15 @@ def _ended_turn_recovery(c) -> str:
     return f"`retry` has nothing to re-arm ({why}): fix it by hand"
 
 
+def _uncertain_hold(c) -> str:
+    """The safety hold on an unverified route POST (#1512): the drain leaves it as is, so neither
+    a sweep, a drain nor a freed slot starts it; a person reconciles it first."""
+    return (f"a safety hold ({c.queued_reason}): its route POST may have been sent unanswered, so "
+            "no watchdog sweep, drain or freed slot re-sends it — check `hermes dk status --loop "
+            f"{c.loop['id']}` and the run ledger for a run at this head, then remove the entry or "
+            "re-deliver the event by hand")
+
+
 def _declined_step(c) -> tuple[str, str]:
     """Next event for a fixer queue entry the gate declined (a duplicate of a terminal turn) once
     no push-off step applies (#1613): drain leaves such an entry as is (drain.py), so a freed
@@ -347,6 +356,10 @@ def _next_push_off(c) -> tuple[str, str] | None:
                   "restarts it. " + (f"Run `{enable}`, then {rearm} re-arms it; or fix it by hand"
                                      if rearm else f"`retry` has nothing to re-arm ({why}): fix "
                                      "it by hand") + ", push, and re-request review")
+    elif c.push_off_held and c.queued_seat == "fixer" and c.queued_uncertain:
+        action = (f"operator decision: unattended fixer pushes are off for this loop, and the queued "
+                  f"fixer entry for head {c.short} is {_uncertain_hold(c)}. Run `{enable}` only "
+                  "after that; or fix it by hand, push, and re-request review")
     elif c.push_off_held and c.queued_seat == "fixer":
         # Only the push-off hold is started by a sweep or drain alone; a capacity (or other)
         # entry waits for a fixer slot too, and the gate holds it while pushes are off (shadow).
@@ -439,6 +452,9 @@ def _next_lock(c) -> tuple[str, str] | None:
                   "— no freed slot starts it. " + (f"{rearm} re-arms it" if rearm else
                                                    f"`retry` has nothing to re-arm ({why})")
                   + "; or re-drive this head by hand")
+    elif c.queued_uncertain:
+        kind = "operator"
+        action = f"the queued {c.queued_seat} entry for head {c.short} is {_uncertain_hold(c)}"
     elif c.queued_seat:
         kind = "release"
         action = (f"a {c.queued_seat} slot frees — the queued run starts then (a verdict or a handoff "

@@ -21,6 +21,16 @@ from . import config, gate, gh, review_kick, routes, transition
 from . import state as state_mod
 from .util import log
 
+# The reason a queue entry carries once its route POST may have been sent unanswered: the drain
+# leaves it for manual reconciliation and never re-sends it (``explain`` reads the same test).
+ROUTE_UNCERTAIN = "route delivery uncertain — manual reconciliation required"
+
+
+def is_route_uncertain(entry: object) -> bool:
+    """Whether a queue entry is held as an unverified route POST (never re-sent by a drain)."""
+    reason = entry.get("reason") if isinstance(entry, dict) else None
+    return isinstance(reason, str) and reason.startswith("route delivery uncertain —")
+
 
 def drain(loop: dict, st: state_mod.LoopState, seat: str, quiet: bool = False, *,
           expected: list | None = None, report: list | None = None) -> int:
@@ -144,7 +154,7 @@ def _wake(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: dict,
         # newer request replaced it, and this drain left nothing marked (#1450).
         if current == entry and st.queue_replace_if(
                 seat, key, entry, entry["head"], entry.get("url", ""),
-                "route delivery uncertain — manual reconciliation required"):
+                ROUTE_UNCERTAIN):
             note(key, "left", "the gate left it queued: marked an unverified POST — manual "
                               "reconciliation required")
         return True
@@ -161,7 +171,7 @@ def _wake(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry: dict,
         return False
     if current == entry and (attempted or posted):
         st.queue_replace_if(seat, key, entry, entry["head"], entry.get("url", ""),
-                            "route delivery uncertain — manual reconciliation required")
+                            ROUTE_UNCERTAIN)
         note(key, "uncertain", "the route POST may have been sent without the gate's answer")
     else:
         if give_back is not None:
@@ -182,7 +192,7 @@ def _in_flight(st: state_mod.LoopState, seat: str, key: str, entry: dict):
     if isinstance(at, (int, float)) and time.time() - at < DRAIN_CLAIM_S:
         return "left", "a confirmed drain is sending it", None
     if not st.queue_replace_if(seat, key, entry, entry.get("head", ""), entry.get("url", ""),
-                               "route delivery uncertain — manual reconciliation required"):
+                               ROUTE_UNCERTAIN):
         return _changed(st, seat, key)       # the mark did not land: nothing was marked (#1450)
     log(f"drain: {key} was claimed by a drain that never answered — manual reconciliation required")
     return "left", "an unverified POST — manual reconciliation required", None
@@ -226,7 +236,7 @@ def _drain_check(loop: dict, st: state_mod.LoopState, seat: str, key: str, entry
     ``fire`` is ``(number, head, event, payload, tag)`` when the route should be woken;
     otherwise None, and ``outcome`` is ``left`` or ``dropped`` with the reason. The checks,
     their order and their log lines are the drain's own."""
-    if str(entry.get("reason") or "").startswith("route delivery uncertain —"):
+    if is_route_uncertain(entry):
         log(f"drain: {key} has an unverified POST — manual reconciliation required")
         return "left", "an unverified POST — manual reconciliation required", None
     if isinstance(entry.get("drain"), dict):
