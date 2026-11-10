@@ -257,9 +257,10 @@ def check_read_token(loop: dict) -> doctor.Check:
                             credentials.reader_fix(loop))
     if util.login_entry(config.credentials_map(loop), name) is None:
         return doctor.Check("read_token", doctor.MISMATCH, f"read_token names {name!r}, which has no token file",
-                            f"run `hermes dk set --loop <id> --token {name}=/path/to/pat` (or --app "
-                            f"{name}=APP_ID:/abs/key.pem for a GitHub App reader): the gates read every "
-                            "PR state as this login")
+                            # #2265: `set --token` alone refuses the current reader; with
+                            # --read-token naming it, the mapping is the reader's own.
+                            f"run `{credentials.reader_fix(loop, name)}`: the gates read every PR "
+                            "state as this login")
     problem = credentials.reader_problem(loop)
     if problem:
         # The broker refuses every write while the reader is a seat, so a loop in this shape

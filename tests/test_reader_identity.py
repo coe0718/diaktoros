@@ -23,6 +23,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import cli, config, doctor
+from diaktoros.config import credentials
 from diaktoros.doctor import identity_checks
 from diaktoros.cli import operations as cli_operations
 from diaktoros.cli import common as cli_common  # noqa: E402
@@ -528,6 +529,27 @@ class ReaderIdentityTests(_Loop):
         absent = identity_checks.check_read_token(loop)
         self.assertEqual(absent.status, doctor.ABSENT)
         self.assertIn(app.format("<that login>"), absent.fix)
+
+    def test_an_unmapped_reader_is_told_a_set_that_runs(self):
+        # #2265: doctor's fix for a named reader with no credential named `set --token READER=…`,
+        # which set refuses for the current reader; with --read-token it runs.
+        rc, out = self.run_cli(self.init_argv())
+        self.assertEqual(rc, 0, out)
+        data = json.loads(self.loop_file().read_text())
+        data["tokens"] = {k: v for k, v in data["tokens"].items() if k.lower() != READER.lower()}
+        self.loop_file().write_text(json.dumps(data))
+        check = identity_checks.check_read_token(config.load_id("widgets"))
+        self.assertEqual(check.status, doctor.MISMATCH)
+        self.assertIn(credentials.reader_fix(config.load_id("widgets"), READER), check.fix)
+        self.assertIn(f"--read-token {READER} --token {READER}=", check.fix)
+        pat = self.pat("read2")
+        self.refused(["set", "--loop", "widgets", "--token", f"{READER}={pat}"],
+                     r"is a seat or the current reader")
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--read-token", READER,
+                                "--token", f"{READER}={pat}"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(identity_checks.check_read_token(config.load_id("widgets")).status,
+                         doctor.VERIFIED)
 
     def test_set_read_token_refusals(self):
         rc, out = self.run_cli(self.init_argv())
