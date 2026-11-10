@@ -443,21 +443,22 @@ def cmd_migrate(args) -> int:
         with migrate.hold() as left:
             if left is not None:
                 print(f"migrate: picking up — {migrate.describe(left)}")
-            return _migrate(args)
+            return _migrate(args, left)
     except migrate.MigrationBusy as exc:
         print(f"cannot migrate: {exc}")
         return 2
 
 
-def _migrate(args) -> int:
+def _migrate(args, left: dict | None = None) -> int:
     """Run the migration steps. The backup ``migrate`` takes first is its undo, so it stays locked
     (``backup.create(using=...)``) until the migration ends: a backup another process runs in the
-    meantime cannot prune it away (#1079)."""
+    meantime cannot prune it away (#1079). ``left`` is what an interrupted migration left (the
+    marker ``hold`` found): the backup records it, so restoring it keeps the install paused (#1054)."""
     with contextlib.ExitStack() as using:
-        return _migrate_steps(args, using)
+        return _migrate_steps(args, using, left)
 
 
-def _migrate_steps(args, using: contextlib.ExitStack) -> int:
+def _migrate_steps(args, using: contextlib.ExitStack, left: dict | None = None) -> int:
     from .. import backup, migrate, run_supervisor
     try:
         loops = config.all_loops()
@@ -470,7 +471,7 @@ def _migrate_steps(args, using: contextlib.ExitStack) -> int:
         # Before the first move (#496): migrate has no undo, the archive is the undo.
         pruned: list[pathlib.Path] = []
         try:
-            archive = backup.create(pruned=pruned, using=using)
+            archive = backup.create(pruned=pruned, using=using, held=True, half_moved=left)
         except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
             print(f"cannot migrate: the backup before it failed ({exc}); nothing was moved")
             return 2
@@ -592,6 +593,9 @@ def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
     lines += [f"restore: NOT FINISHED — credential file missing: {line}"
               for line in backup.missing_tokens(manifest)]
     lines += [f"restore: will overwrite {name}" for name in backup.existing(manifest)]
+    if manifest.get("migrating"):
+        lines.append("restore: the archive was taken while a migration was unfinished (its "
+                     "records may be half moved): the install stays paused after the restore")
     lines += [f"restore: writes a loop state directory outside the Hermes home: {path}"
               for path in backup.outside_state_dirs(manifest)]
     problems = backup.unsafe(manifest,
@@ -613,6 +617,10 @@ def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
         return 0
     backup.put_files(archive, manifest)
     lines.append(f"restore: {len(manifest['files'])} file(s) put back")
+    if isinstance(manifest.get("migrating"), dict):
+        migrate.keep_paused(manifest["migrating"])      # #1054: the pause these records need
+        lines.append("restore: NOT FINISHED — the install is paused by the restored migration "
+                     "marker; run `hermes dk migrate` to finish the move")
     if manifest.get("routes"):
         routes.restore_entries(manifest["routes"])
         lines.append(f"restore: {len(manifest['routes'])} route entr(ies) put back")

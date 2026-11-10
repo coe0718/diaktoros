@@ -351,9 +351,21 @@ def _listed_files(loops: list[dict]) -> tuple[list[tuple[pathlib.Path, pathlib.P
     return files, skipped
 
 
+def _manifest(loops: list[dict], skipped: list[str], half_moved: dict | None) -> dict:
+    """``create``'s manifest before any member is added; ``migrating`` is ``half_moved``."""
+    return {"version": VERSION, "created": time.time(), "loops": [l["id"] for l in loops],
+            "files": [], "skipped": skipped,
+            "state_dirs": sorted({str(config.state_dir(l)) for l in loops}),
+            "routes": {name: entry for name, entry in routes.all_routes().items()
+                       if isinstance(entry, dict) and route_intent.owned(entry)},
+            "cron": watchdog_job(),
+            "tokens": {l["id"]: token_paths(l) for l in loops}, "migrating": half_moved}
+
+
 def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
            pruned: list[pathlib.Path] | None = None,
-           using: contextlib.ExitStack | None = None) -> pathlib.Path:
+           using: contextlib.ExitStack | None = None, *, held: bool = False,
+           half_moved: dict | None = None) -> pathlib.Path:
     """Write the archive and return its path. Refuses to overwrite a file.
 
     A default-named archive (no ``out``) is followed by ``prune(keep)``; what it deleted is
@@ -363,20 +375,21 @@ def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
     no other run's ``prune`` can take it while it is written, chmodded or pruned around. With
     ``using`` (an ``ExitStack`` the caller owns) the lock is kept until the caller closes the
     stack, so a caller that goes on to read or print the archive has it for as long as it needs
-    it; without, the lock ends when ``create`` returns."""
+    it; without, the lock ends when ``create`` returns.
+
+    Refused while ``migrate``'s marker exists (#1054, ``migrate.snapshot_refusal``), unless the
+    caller holds it (``held``: ``migrate``'s own backup), which passes an interrupted run's
+    marker as ``half_moved``: ``restore`` puts it back."""
     check_keep(keep)
+    from . import migrate  # noqa: PLC0415 - the pause marker's owner
+    if not held and migrate.snapshot_refusal():
+        raise BackupError(migrate.snapshot_refusal())
     chosen = bool(out)
     out = (pathlib.Path(out).expanduser() if chosen else default_out()).absolute()
     loops = config.all_loops()
     files, skipped = _listed_files(loops)
     ledger = run_supervisor.production_ledger()
-    manifest = {"version": VERSION, "created": time.time(), "loops": [l["id"] for l in loops],
-                "files": [], "skipped": skipped,
-                "state_dirs": sorted({str(config.state_dir(l)) for l in loops}),
-                "routes": {name: entry for name, entry in routes.all_routes().items()
-                           if isinstance(entry, dict) and route_intent.owned(entry)},
-                "cron": watchdog_job(),
-                "tokens": {l["id"]: token_paths(l) for l in loops}}
+    manifest = _manifest(loops, skipped, half_moved)
     out.parent.mkdir(parents=True, exist_ok=True)
     fd, out = _open_new(out, chosen)
     try:

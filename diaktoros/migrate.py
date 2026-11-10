@@ -129,14 +129,42 @@ def hold():
         except BlockingIOError:
             raise MigrationBusy(describe(migrating() or {})) from None
         left = migrating()
-        state_mod._atomic_write(path, {"pid": os.getpid(), "started": time.time()})
+        mine = {"pid": os.getpid(), "started": time.time()}
+        state_mod._atomic_write(path, mine)
         yield left
         # Only a normal exit clears the marker (#766): an exception (KeyboardInterrupt too) may
         # come after a step committed, and migration has no global rollback, so the pause stays
         # until a re-run finishes. Callers refuse before any write by returning, not raising.
-        path.unlink(missing_ok=True)
+        # A marker that is no longer the one written here was put back by ``keep_paused`` (a
+        # restore of an archive taken mid-migration, #1054): it stays.
+        if migrating() == mine:
+            path.unlink(missing_ok=True)
     finally:
         os.close(fd)
+
+
+def snapshot_refusal() -> str:
+    """Why a backup must not be taken now, or ``""`` (#1054).
+
+    While the marker exists (a migrate or restore holds it, or one died holding it) records may
+    be half moved, and they are only safe under the pause. A snapshot of them restored later
+    would come back with no marker, and the loop would run on them unpaused. ``migrate``'s own
+    backup is taken under its own marker and does not ask this; it records what an interrupted
+    run left instead (``backup.create``'s ``half_moved``)."""
+    info = migrating()
+    if info is None:
+        return ""
+    return (f"the install is paused by a migration or restore ({describe(info)}); its records "
+            "may be half moved and would be restored without the pause — back up once it has "
+            "finished")
+
+
+def keep_paused(info: dict) -> None:
+    """Put the marker back after restoring an archive taken mid-migration (#1054), so the
+    install stays paused until ``migrate`` runs again and finishes the move. ``hold`` leaves a
+    marker it did not write in place when it exits."""
+    state_mod._atomic_write(marker_path(), {"pid": info.get("pid"), "started": info.get("started"),
+                                            "restored": time.time()})
 
 
 def _hermes_config() -> dict:
