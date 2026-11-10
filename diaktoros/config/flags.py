@@ -12,6 +12,7 @@ _BOOLEANS = {
                             "dismiss the change request it overruled)",
     "adjudicator_file_issues": " (true files the findings a ruling lets through as issues)",
     "change_proof": " (true runs a reviewed head's changed tests on its merge base and at the head)",
+    "main_flake_rerun": " (true reruns main's failed jobs once when they look like a flake)",
     "fix_ci": " (true hands a failed required check on a fixer's PR to the fixer)",
     "ci_webhook": " (true acts on a finished CI run when GitHub reports it, not at the next sweep)",
     "comment_webhook": " (true wakes the issue fixer on a maintainer's reply when GitHub reports it)",

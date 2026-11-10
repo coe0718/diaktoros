@@ -80,7 +80,7 @@ def _flag_changes(args, loop: dict, host: str | None) -> dict:
                   "review_after_ci", "fix_ci", "ci_webhook", "comment_webhook", "protection_webhook",
                   "fixer_scope_lock",
                   "adjudicator_approves", "adjudicator_file_issues", "change_proof",
-                  "review_only_update")}}
+                  "main_flake_rerun", "review_only_update")}}
     if (wanted["review_only_update"] and not loop.get("review_only_update")
             and not getattr(args, "acknowledge_branch_push", False)):
         print(BRANCH_PUSH_REFUSAL)

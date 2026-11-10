@@ -52,7 +52,8 @@ from .util import atomic_write, log, now_iso, register_lock
 # happened; the same strings are what `--observer-events` accepts and what the ledger stores.
 EVENTS = ("opened", "handoff", "verdict", "approved", "escalation", "ruling", "stall", "closed",
           "triaged", "fixing", "fixed", "failed", "held", "conflict", "ci_failed", "updated",
-          "main_red", "stale_approval", "human_paths", "ready_set", "protection", "ci_declined")
+          "main_red", "stale_approval", "human_paths", "ready_set", "protection", "ci_declined",
+          "main_flaked")
 # The issue-side events (#231) name an issue, not a PR: their link is /issues/N and they carry no
 # head. ``failed`` (any isolated run's first failed attempt, and its final state) names whichever
 # the run was about.
@@ -88,7 +89,7 @@ EMOJI = {"opened": "📬", "handoff": "🔧", "verdict": "🔍", "approved": "�
          "triaged": "🏷", "fixing": "🛠", "fixed": "📦", "failed": "❌", "held": "⏸",
          "conflict": "🔀", "ci_failed": "🔴", "updated": "🔁", "main_red": "🚨",
          "stale_approval": "🕸", "human_paths": "🧑", "ready_set": "🚦", "protection": "🛡",
-         "ci_declined": "🙅"}
+         "ci_declined": "🙅", "main_flaked": "🎲"}
 LABEL = {"opened": "opened — first look", "handoff": "fix pushed · review requested",
          "verdict": "review posted", "approved": "approved",
          "escalation": "loop stopped — cap spent", "ruling": "adjudicator ruled",
@@ -100,7 +101,8 @@ LABEL = {"opened": "opened — first look", "handoff": "fix pushed · review req
          "updated": "base merged in", "main_red": "main is red",
          "stale_approval": "approval is stale", "human_paths": "needs a human approval",
          "ready_set": "ready-to-merge set changed", "protection": "base protection changed",
-         "ci_declined": "CI fix declined, no push"}
+         "ci_declined": "CI fix declined, no push",
+         "main_flaked": "main flaked — rerun green"}
 
 # A stale claim may have reached the gateway before its sender died. Never replay it:
 # without a receiver-side idempotency guarantee, a replay can ping twice.
