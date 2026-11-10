@@ -173,7 +173,8 @@ def cmd_history(args) -> int:
     answers, shadow reviews, rulings, filed issues and writes from the ledger and the state dir,
     plus review bodies, commits and comments from GitHub unless ``--offline``. Read-only; every
     free text passes the loop's redactor. ``--since DATE --out DIR`` writes each merged PR's
-    cycle since then to its own file (``history_batch``). Exit 2 on a bad flag set or no loop."""
+    cycle since then to its own file (``history_batch``). Exit 2 on a bad flag set, no loop, or
+    an ``--out`` that cannot be written (#2204)."""
     from .. import history, history_batch, history_render, run_supervisor, selftest, stats
     from .operations import _one_loop
     if (args.pr is None) == (args.since is None) or (args.since is None) != (args.out is None):
