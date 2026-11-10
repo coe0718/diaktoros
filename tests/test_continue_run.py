@@ -46,9 +46,14 @@ class Continue(Base):
                                        (self.reviews, ""))),
                 (broker, mock.patch.object(broker, "open_issue_pr", self.open_pr)),
                 (broker, mock.patch.object(broker, "request_issue_pr_review", self.request)),
+                (broker, mock.patch.object(broker, "authorize_issue_fix", self.authorize)),
                 (safe_push, mock.patch.object(safe_push, "open_branch", self.no_push))):
             fake.start()
             self.addCleanup(fake.stop)
+
+    def authorize(self, loop, **kw):
+        self.authorized = getattr(self, "authorized", 0) + 1
+        return "fix"
 
     def no_push(self, *a, **k):
         self.writes.append("PUSH")
@@ -295,6 +300,56 @@ class Continue(Base):
                 self.assertIn("stays quarantined", lines[-1])
                 self.assertEqual(self.run_state(), "uncertain")
                 self.assertEqual(self.fix()["state"], "pushed")
+
+    def live_policy(self, loop, live_issue):
+        """Run ``continue`` through the real ``broker.authorize_issue_fix`` (#1051): the
+        identities verify, the reader sees ``live_issue``, no dependency holds."""
+        with mock.patch.object(broker, "authorize_issue_fix", self.real_authorize), \
+                mock.patch.object(broker, "_verify_identities", lambda *a, **k: None), \
+                mock.patch.object(gh, "api", lambda *a, **k: live_issue), \
+                mock.patch("diaktoros.issue_deps.hold_reason", lambda loop, n: ""):
+            return continue_run.run(loop, self.sup, self.run_id)
+
+    real_authorize = staticmethod(broker.authorize_issue_fix)
+
+    def assert_refused(self, ok, lines, why):
+        self.assertFalse(ok)
+        self.assertEqual(self.writes, [])
+        self.assertIn("stays quarantined", lines[-1])
+        self.assertIn(why, lines[-1])
+        self.assertEqual(self.fix()["state"], "pushed")
+        self.assertEqual(self.run_state(), "uncertain")
+
+    def test_continue_writes_only_what_live_policy_authorizes(self):
+        """#1051: `continue` re-authorizes like the seat's open_pr: the operator's switch off, the
+        maintainer's fix label withdrawn or an author off the allowlist each refuse every write."""
+        off = config.normalize({**self.raw, "unattended_fixer_push": False})
+        self.assert_refused(*self.live_policy(off, issue()), "not enabled by the host operator")
+        self.assert_refused(*self.live_policy(self.loop, issue(labels=("bug",))),
+                            "no longer on the issue")
+        self.assert_refused(*self.live_policy(self.loop, issue(author="mallory")),
+                            "not in triage.authors")
+        ok, _ = self.live_policy(self.loop, issue())
+        self.assertTrue(ok)
+        self.assertEqual(self.writes, ["open_pr", "request_review"])
+
+    def test_dry_run_names_the_policy_refusal(self):
+        args = argparse.Namespace(loop="widgets", run=self.run_id, dry_run=True)
+        off = config.normalize({**self.raw, "unattended_fixer_push": False})
+        out = io.StringIO()
+        with mock.patch.object(config, "load_id", return_value=off), \
+                mock.patch.object(operations, "_ledger_path", return_value=self.db), \
+                mock.patch.object(broker, "authorize_issue_fix", self.real_authorize), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(operations.cmd_continue(args), 2)
+        self.assertIn("not authorized now", out.getvalue())
+        self.assertEqual(self.writes, [])
+
+    def test_nothing_missing_needs_no_authorization(self):
+        self.prs = [self.pr(5, requested_reviewers=[{"login": "review"}])]
+        ok, _ = continue_run.run(self.loop, self.sup, self.run_id)
+        self.assertTrue(ok)
+        self.assertEqual(getattr(self, "authorized", 0), 0)
 
     def test_unread_github_stays_quarantined(self):
         with mock.patch.object(gh, "fetch", lambda *a, **k: (None, "timeout")):
