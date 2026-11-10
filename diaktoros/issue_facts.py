@@ -24,7 +24,10 @@ REFERENCED_MAX = 10          # other issues read per turn; the rest are counted,
 LABELS_MAX = 10
 
 _CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d{1,10})\b", re.IGNORECASE)
-HEADING = re.compile(r"^\s{0,3}(?:#{1,6}\s*|\*\*)?\s*Requirements\b[\s:*]*$", re.IGNORECASE)
+# The heading may carry a note after it, ``## Requirements (all met)``, ``— met`` or ``: met``
+# (#2199: a refused heading cost shadow turns their last steps); a sentence never matches.
+HEADING = re.compile(r"^\s{0,3}(?:#{1,6}\s*|\*\*)?\s*Requirements\b\**"
+                     r"(?:\s*\([^)]*\)|\s+[-–—]\s.*|\s*:.*)?[\s:*]*$", re.IGNORECASE)
 _ANY_HEADING = re.compile(r"^\s{0,3}(?:#{1,6}\s+\S|\*\*[^*]+\*\*\s*:?\s*$)")
 # An issue number is at most 10 digits: a longer run is no reference, so ``int`` never meets
 # one (past 4300 digits it raises: review on #1948).
@@ -240,7 +243,8 @@ def check(loop: dict, number: int, verdict: str, body: str) -> str:
     items = requirements(body)
     if not items:
         return (f"this PR closes issue(s) {', '.join('#' + str(n) for n in numbers)}: the review "
-                "needs a `Requirements` section giving each requirement `met` (with evidence), "
+                "needs a `Requirements` section (a heading line such as `## Requirements`, then one "
+                "line per requirement) giving each requirement `met` (with evidence), "
                 "`not met` or `deferred to #N`; nothing was written, resubmit")
     statuses = [found for found in (_STATUS.search(line) for line in items) if found]
     if not statuses:

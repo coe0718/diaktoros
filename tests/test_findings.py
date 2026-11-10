@@ -129,6 +129,21 @@ class Findings(unittest.TestCase):
                 self.assertIn("no such finding F9", reason)
                 self.assertNotIn("open finding", reason)
 
+    def test_a_first_round_refusal_says_it_is_the_first_round_and_names_the_line(self):
+        # #2199: round-1 bodies with state lines or a repeated id cost shadow turns their steps.
+        with mock.patch.object(findings, "changed_files", return_value={"src/a.py"}):
+            stated = findings.check(self.loop, {}, 9, H1, "F1: src/a.py:3: leak\nF1: open\n")
+            self.assertIn("no such finding F1", stated)
+            self.assertIn("first review round", stated)
+            twice = findings.check(self.loop, {}, 9, H1,
+                                   "F1: src/a.py:3: leak\nF2: src/b.py: x\nF2: src/c.py: y\n")
+            self.assertIn("F2 appears twice", twice)
+            self.assertIn("'F2: src/c.py: y'", twice)
+            self.assertIn("first review round", twice)
+            later = findings.check(self.loop, self.st.findings_get(7), 7, H2,
+                                   "F1: fixed\nF2: fixed\nF9: fixed\n")
+            self.assertNotIn("first review round", later)
+
     def test_new_finding_starting_with_a_state_word_is_recorded(self):
         findings.record(self.loop, 7, H2,
                         "F1: fixed\nF2: open\nF3: open file handle leaks in x.py\n"

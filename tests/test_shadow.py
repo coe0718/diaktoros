@@ -421,8 +421,8 @@ class ProductionTurn(unittest.TestCase):
             kwargs["observed"]["submissions"] = list(submissions)
             return rc
 
-        def prompt(loop, row, reviews, marker=None, change=None):
-            self.seen.update(prompt_seat=row["seat"], reviews=list(reviews))
+        def prompt(loop, row, reviews, marker=None, change=None, steps=None):
+            self.seen.update(prompt_seat=row["seat"], reviews=list(reviews), prompt_steps=steps)
             return "PROMPT"
         pr = pr or {"number": 8, "state": "open", "draft": False,
                     "head": {"sha": HEAD, "ref": "fix-8"}, "user": {"login": "fixer"}}
@@ -887,6 +887,8 @@ class ProductionTurn(unittest.TestCase):
                                       "seats": {**RAW["seats"], "shadow": {"max_steps": 150}}})
         self.run_shadow([{"verdict": "APPROVE", "body": "ok", "authorized": True}])
         self.assertEqual(self.seen["steps"], 150)
+        # #2199: its prompt names the same budget the turn runs with, not the reviewer's.
+        self.assertEqual(self.seen["prompt_steps"], 150)
 
 
 LOOP_ID = "shadows"
