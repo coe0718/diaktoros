@@ -83,20 +83,42 @@ def ruling_issues_section(loop: dict) -> str:
         'Name each in your ruling.')
 
 
-def _standing_section(loop: dict, seat: str) -> str:
+def _standing_section(loop: dict, seat: str, steps: int | None = None) -> str:
     """The seat's section that is the same in every round: the fixer's always-run check, the
-    adjudicator's follow-up issues (#1864)."""
-    from .. import prompts
+    adjudicator's follow-up issues (#1864), a review's step budget (#2199)."""
+    from .. import config, prompts
     if seat == 'fixer':
         return prompts.fixer_check_section(loop)
+    if seat == 'reviewer':
+        return prompts.step_budget(steps or config.max_steps(loop, 'reviewer'))
     return ruling_issues_section(loop) if seat == 'adjudicator' else ''
 
 
-def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, shadow=_READ) -> str:
+def _reviewer_facts(loop: dict, row, change, counted, facts: dict) -> tuple:
+    """Add the reviewer's facts to ``facts`` (who answers the verdict, the round, the issue
+    labels) and return the fixer's published answers with a note when they were unreadable."""
+    from .. import config, gh
+    # A review-only PR has no fixer: its author answers the verdict (#191). Only a login on
+    # the validated review-only list is named, never free GitHub text.
+    if change is not None and change.author in config.review_only(loop):
+        facts['fixer_agent'] = f"the PR's author ({change.author})"
+    facts['round'] = len(counted) + 1 if counted is not None else 'unknown (reviews unreadable)'
+    facts['issue_labels'] = issue_labels_fact(loop)
+    comments, _error = gh.issue_comments_read(loop, row['pr'])
+    if comments is None:
+        # A review can still be done without them; say so rather than imply there are none.
+        return None, ('\n\n(The fixer\'s published answers could not be read for this turn; '
+                      'earlier verdicts may already have been answered.)')
+    return comments, ''
+
+
+def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, shadow=_READ,
+                    steps: int | None = None) -> str:
     """Render the role's isolated prompt from host facts plus the bounded PR record. ``shadow``
     is the shadow review already read for an adjudicator's shadow escalation
-    (``newest_shadow_review``); left out, it is read here."""
-    from .. import config, gate, gh, prompts
+    (``newest_shadow_review``); left out, it is read here. ``steps`` is the step budget of a
+    shadow prompted as the reviewer; left out, a review gets the reviewer seat's."""
+    from .. import gate, gh, prompts
     seat = row['seat']
     seats = loop.get('seats') or {}
     counted = gate.verdicts(reviews, loop) if isinstance(reviews, list) else None
@@ -106,24 +128,14 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, shadow=_
              'fixer_agent': (seats.get('fixer') or {}).get('agent') or 'the fixer'}
     comments, note = None, ''
     if seat == 'reviewer':
-        # A review-only PR has no fixer: its author answers the verdict (#191). Only a login on
-        # the validated review-only list is named, never free GitHub text.
-        if change is not None and change.author in config.review_only(loop):
-            facts['fixer_agent'] = f"the PR's author ({change.author})"
-        facts['round'] = len(counted) + 1 if counted is not None else 'unknown (reviews unreadable)'
-        facts['issue_labels'] = issue_labels_fact(loop)
-        comments, error = gh.issue_comments_read(loop, row['pr'])
-        if comments is None:
-            # A review can still be done without them; say so rather than imply there are none.
-            note = ('\n\n(The fixer\'s published answers could not be read for this turn; '
-                    'earlier verdicts may already have been answered.)')
+        comments, note = _reviewer_facts(loop, row, change, counted, facts)
     elif seat == 'fixer':
         latest = gate.latest_effective_review_at_head(reviews, loop, row['head'])
         facts['round'] = len(counted) if counted else 'unknown'
         facts['reviewer'] = gate.reviewer_login(latest) if latest else 'the reviewer'
     else:
         comments = _adjudicator_facts(loop, row, marker, facts)
-    text = prompts.render_isolated(seat, **facts) + _standing_section(loop, seat)
+    text = prompts.render_isolated(seat, **facts) + _standing_section(loop, seat, steps)
     round_at = None
     if seat in ('reviewer', 'fixer', 'adjudicator'):
         # #1649: everything above this line and the issue section are the same in every round of

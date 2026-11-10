@@ -44,8 +44,10 @@ class Setting(unittest.TestCase):
         self.assertIn("broker_client file_issue", text)
         self.assertIn("on an ACCEPT every such finding you let through", text)
         self.assertIn("`bug`, `P3`", text)
-        self.assertEqual(turn_prompts._standing_section({"adjudicator_file_issues": True},
-                                                        "reviewer"), "")
+        # The reviewer's standing section is its step budget (#2199), never the ruling's issues.
+        reviewer = turn_prompts._standing_section({"adjudicator_file_issues": True}, "reviewer")
+        self.assertNotIn("file_issue", reviewer)
+        self.assertNotIn("on an ACCEPT", reviewer)
 
 
 class Record(unittest.TestCase):

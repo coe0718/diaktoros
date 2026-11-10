@@ -640,6 +640,23 @@ def before_this_round(prompt: str, text: str) -> 'Prompt':
     return Prompt(prompt[:at] + text + prompt[at:], at + len(text))
 
 
+# #2199: shadow turns settled a verdict and ran out of steps fixing a refused body. The model was
+# never told its budget, so it spent the steps on probes and had none left to resubmit.
+STEP_RESERVE = 10
+
+
+def step_budget(steps: int) -> str:
+    """The review seat's step budget as an instruction: submit by ``steps - STEP_RESERVE`` (half
+    the budget at least), so a refused body still has steps left to fix and resubmit."""
+    submit_by = max(steps // 2, steps - STEP_RESERVE)
+    return (f"\n\n**Your step budget.** This turn has {steps} agent steps, and a turn that runs "
+            "out of them before the broker accepts its review loses the whole review. Submit by "
+            f"step {submit_by} at the latest, with what you have verified (the rest goes under "
+            "`Not verified:`), and keep the steps after that for a resubmit: when the broker "
+            "refuses a body it writes nothing and says why. Run probes and tests only as far as "
+            "that leaves room for.")
+
+
 ISOLATED = {"reviewer": ISOLATED_REVIEWER, "fixer": ISOLATED_FIXER,
             "adjudicator": ISOLATED_ADJUDICATOR, "triage": ISOLATED_TRIAGE,
             "issue_fixer": ISOLATED_ISSUE_FIX, "conflict": ISOLATED_CONFLICT, "ci_fix": ISOLATED_CI_FIX}

@@ -171,7 +171,10 @@ reader's ETag cache makes a repeat free); the rest are counted. This applies whe
 closes an issue; `owner/repo#N` (another repository) is not read.
 
 A review of such a PR must contain a `Requirements` section with one line per requirement, each
-marked:
+marked. The section starts at a line that is the heading alone (`## Requirements`,
+`**Requirements:**`) or the heading with a note after it (`## Requirements (all met)`,
+`## Requirements — met`, `Requirements: met`); a sentence that merely starts with the word is
+not one. Each requirement is marked:
 
 - `met`, with the evidence;
 - `not met` — a blocking finding (number it `F<n>`) and therefore REQUEST_CHANGES;

@@ -82,6 +82,23 @@ class IssueFacts(unittest.TestCase):
         with mock.patch.object(gh, "api", return_value=None):
             self.assertIn("could not read", issue_facts.check(LOOP, 7, "APPROVE", "x"))
 
+    def test_a_heading_with_a_note_after_it_is_accepted(self):
+        # #2199: shadow turns lost their last steps to these exact headings being refused.
+        for heading in ("## Requirements (all met)", "## Requirements — met", "## Requirements - met",
+                        "**Requirements:** all met", "**Requirements** (all met)",
+                        "**Requirements:**", "Requirements: met"):
+            with self.subTest(heading):
+                body = f"{heading}\n- one: met (a.py:3)\n"
+                self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
+
+    def test_a_sentence_is_still_not_a_heading(self):
+        for line in ("Requirements are met.", "Requirements-based tests pass", "The Requirements",
+                     "- Requirements: met"):
+            with self.subTest(line):
+                body = f"{line}\n- one: met (a.py:3)\n"
+                reason = issue_facts.check(LOOP, 7, "APPROVE", body)
+                self.assertIn("## Requirements", reason)
+
 
 class Prompts(unittest.TestCase):
     def test_issue_fix_prompt_shows_maintainer_comments_not_strangers(self):
