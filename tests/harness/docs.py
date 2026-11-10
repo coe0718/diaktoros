@@ -150,7 +150,9 @@ def _argv(command: str) -> list[str] | None:
         return None
     if not tokens or tokens[0].startswith("-") or "..." in tokens:
         return None
-    return tokens
+    # A shell redirect or pipe ends the command (`--json > stats.json`, #2253).
+    ends = [i for i, token in enumerate(tokens) if token in (">", ">>", "|", "&&", ";")]
+    return tokens[:ends[0]] if ends else tokens
 
 
 def _rejects(parser: argparse.ArgumentParser, tokens: list[str], depth: int = 0) -> str | None:

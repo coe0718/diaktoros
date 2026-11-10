@@ -683,6 +683,13 @@
     .history-round { margin: 28px 0 0; font-size: 16px; }
     .history-viewer .case-timeline p { overflow-wrap: anywhere; }
     .history-viewer[hidden], .history-viewer [hidden] { display: none !important; }
+    .caught { margin-top: 44px; border-top: 1px solid var(--line); padding-top: 28px; }
+    .caught h3 { margin: 0 0 4px; }
+    .caught .caught-lead { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .caught-prs, .caught-facts { color: var(--muted); }
+    .caught-prs a { color: var(--text); font-weight: 700; }
+    .caught-facts { padding-left: 18px; }
+    .caught[hidden], .caught [hidden] { display: none !important; }
 
     .callout {
       padding: 28px;
@@ -1022,6 +1029,21 @@
         <div class="stat" role="listitem"><div class="stat-num stat-date" data-site="generated">2026-11-03</div><div class="stat-label">Page updated</div></div>
       </div>
       <p class="stats-freshness">Counts update live from GitHub on every visit; the checked-in snapshot fills gaps.</p>
+      <div class="caught" id="caught" aria-labelledby="caught-title" hidden>
+        <h3 id="caught-title">What the second opinion caught</h3>
+        <p class="case-note">A second reviewer model, the shadow, reviews heads beside the reviewer. When it asks for changes the reviewer did not, the arbiter rules. These are the loop&rsquo;s own counts, published from its run ledger.</p>
+        <div class="case-summary caught-lead">
+          <div><strong id="caught-stopped">0</strong><span>Approved by the reviewer, stopped before merge</span></div>
+          <div><strong id="caught-overruled">0</strong><span>Times the arbiter sided with the reviewer instead</span></div>
+        </div>
+        <p class="caught-prs" id="caught-prs"></p>
+        <ul class="caught-facts" id="caught-facts"></ul>
+        <table class="history-findings" id="caught-models" hidden>
+          <thead><tr><th>Reviewer model</th><th>Verdicts</th><th>Approve share</th><th>Shadow asked for changes</th><th>Arbiter: upheld / overruled</th><th>Dates</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="history-note" id="caught-window"></p>
+      </div>
       <div class="proof-points">
         <article class="proof-point">
           <h3>Watch a real run.</h3>
@@ -1143,6 +1165,7 @@ hermes dk setup --repo "owner/repository"</code></pre>
     }());
   </script>
 <script src="history.js" defer></script>
+<script src="stats.js" defer></script>
 <script src="poster.js"></script>
 <script>document.getElementById("diaktoros-poster").src=window.DIAKTOROS_POSTER;</script>
 <script>

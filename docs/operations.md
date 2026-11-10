@@ -735,6 +735,25 @@ The ledger's turn timings exist only on the host, which is why the page is built
 repository that wants GitHub-side numbers alone can compute them in a scheduled Actions workflow
 instead; the ledger's columns are not on GitHub.
 
+### The project site's "What the second opinion caught"
+
+The launch page's section on what the shadow review and the arbiter caught (#2253) comes from
+`--public`, refreshed by hand like the run viewer. On the host:
+
+```bash
+hermes dk stats --loop "<loop-id>" --public --json > stats.json
+python3 docs/site/publish-stats.py stats.json      # writes docs/site/stats.json
+```
+
+`--public` prints counts, dates and public PR numbers only, over the whole ledger unless
+`--since` says otherwise: never a title, body, turn output, token count, cost, login or local
+path. It reads the repository's closed issues and PRs once, as the reader, for which findings
+were closed as completed and how long merged PRs took. `publish-stats.py` refuses an unknown
+schema, a value of the wrong type or anything that looks like a credential, with nothing written.
+`--models` (on both commands) adds a per-reviewer-model comparison; without it on the publish
+step, a models section is dropped. Commit `docs/site/stats.json` to show the section; with no
+such file it stays hidden.
+
 ## Moving to a renamed plugin or repository
 
 Hermes knows a plugin by its manifest name. A plugin installed under a new name therefore starts

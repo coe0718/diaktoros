@@ -232,14 +232,22 @@ hermes dk stats --loop "<loop-id>" --since 30d --github --html ~/stats/index.htm
 scripts or remote assets. Both hold totals and timings only, with no error text, paths or prompt
 content, so they are safe to publish: see [Publishing stats](operations.md#publishing-stats).
 
+`--public --json` prints only what the project site's "What the second opinion caught" section
+publishes (#2253): heads the reviewer approved that the shadow and the arbiter stopped before
+merge, rulings that overruled the shadow, findings filed and closed, and the review cycle, as
+counts, dates and PR numbers. `--models` adds a per-reviewer-model comparison. See
+[operations](operations.md#the-project-sites-what-the-second-opinion-caught).
+
 <!-- flags:stats -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
-| `--since` | `SINCE` | `7d` | window start: 7d, 24h or a date like 2026-09-28 (default 7d) |
+| `--since` | `SINCE` |  | window start: 7d, 24h or a date like 2026-09-28 (default 7d; with --public, the whole ledger) |
 | `--github` |  |  | also read the window's PRs and reviews from GitHub, as the reader (one request per PR) |
 | `--json` |  |  | print the data as JSON |
 | `--html` | `FILE` |  | also write one self-contained HTML page to FILE |
+| `--public` |  |  | with --json: only what the site may publish, what the shadow and arbiter caught, as counts and PR numbers (#2253) |
+| `--models` |  |  | with --public: add the reviewer-model comparison |
 <!-- /flags -->
 
 ### calls
