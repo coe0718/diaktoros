@@ -356,12 +356,12 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `ci_failed` | A required check is red at a loop PR's current head: once per head, naming the failed check(s) and linking the run. |
 | `updated` | With `review_only_update` on, the host merged the base into a review-only PR's branch and pushed it (clean merge only). |
 | `main_red` | A required check is red at the head of the base branch: once per main head, naming the failed check(s) and the PRs merged since main's last green head (marked partial when GitHub truncated the compare). Urgent tier. |
-| `main_flaked` | With `main_flake_rerun` on, a red main head that looked like a flake was rerun once and passed: once per main head, naming the test(s). Routine tier (#1784). |
 | `stale_approval` | A loop PR is approved at head H, and a required check at H is then red, cancelled, or never reported within 30 minutes of the approval: once per PR and head. Urgent tier. |
 | `human_paths` | The reviewer would approve, but the diff touches a `human_paths` glob (or is too large to list), so the approval is left to a person: once per PR and head. Urgent tier. |
 | `ready_set` | The set `hermes dk ready` lists changed (including becoming empty): once per change, found by the watchdog sweep; the first sweep records it silently. Routine tier. |
 | `protection` | A branch protection rule or ruleset that may cover the base changed, and the base no longer requires a check the loop expects (`required_checks`, and `diaktoros/review` when posted): once per set of lost checks, naming them. Only with `protection_webhook` on (#683). Urgent tier. |
 | `ci_declined` | A CI-fix turn declined to push because no push of this PR fixes the failure (a file over a size limit, or a failure outside the PR), naming the kind, the fixer's reason and the maintainer's move: once per run (#1526). Urgent tier. |
+| `main_flaked` | With `main_flake_rerun` on, a red main head that looked like a flake was rerun once and passed: once per main head, naming the test(s). Routine tier (#1784). |
 
 ```bash
 hermes dk set --loop "<loop-id>" --observer-profile "<observer-profile>"
