@@ -218,8 +218,7 @@ def check_token(login: str, raw: str) -> doctor.Check:
     path = pathlib.Path(str(raw)).expanduser()
     if not path.exists():
         return doctor.Check(f"token:{login}", doctor.ABSENT, f"no file at {path}",
-                            f"write the PAT for {login} to {path} (chmod 600), or run `hermes "
-                            f"dk set --loop <id> --token {login}=<a path that exists>`")
+                            f"write the PAT for {login} to {path} (chmod 600)")   # #2256
     if not path.is_file():
         return doctor.Check(f"token:{login}", doctor.MISMATCH, f"{path} is not a file",
                             f"point --token {login} at a regular file holding the PAT")
