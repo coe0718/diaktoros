@@ -311,7 +311,7 @@ class CITestsBroker(pv.Broker):
             return {"total_count": len(self.runs), "check_runs": self.runs}
         if path.split("?")[0].endswith("/status"):
             return {"state": "success", "statuses": []}
-        if path.endswith("/actions/jobs/11"):
+        if path.endswith(("/actions/jobs/11", "/actions/jobs/12")):
             return {"head_sha": self.job_head, "run_id": self.job_run_id, "status": self.job_status}
         if path.endswith("/actions/runs/5"):
             return {"head_sha": self.job_head, "head_repository": {"full_name": self.run_repo}}
@@ -363,6 +363,20 @@ class CITestsBroker(pv.Broker):
         self.loop["required_checks"] = []
         reply, _ = self.block("test_it_parses_as_an_es_module")
         self.assertTrue(reply["ok"])
+
+    def test_a_block_on_a_test_one_required_job_failed_is_written(self):
+        # #1064: one passed required job's log shows the test failing (a retry-until-green step),
+        # another shows it ok; the worst result stands, so the broker does not refuse the block.
+        self.runs = [run("tests (3.11)", id=11), run("tests (3.14)", id=12)]
+        self.loop["required_checks"] = ["tests (3.11)", "tests (3.14)"]
+        failed = LOG_OK.replace("test_it_parses_as_an_es_module (test_desktop.Surface) ... ok",
+                                "test_it_parses_as_an_es_module (test_desktop.Surface) ... FAIL")
+        logs = {"/actions/jobs/11/logs": failed, "/actions/jobs/12/logs": LOG_OK}
+        with mock.patch.object(gh, "read_text", side_effect=lambda loop, path, **k: next(
+                text for end, text in logs.items() if path.endswith(end))):
+            reply, _ = self.block("test_it_parses_as_an_es_module")
+        self.assertTrue(reply["ok"], reply)
+        self.assertEqual([p["event"] for p in self.posts], ["REQUEST_CHANGES"])
 
     def log_reads(self):
         """Count the job-log reads of the prompt's read, then the broker's refusal check (#1805)."""
@@ -503,6 +517,37 @@ class CITestsUnit(unittest.TestCase):
             got = ci_tests.read(LOOP, state, names, HEAD)
         self.assertEqual(set(got), {f"test_m.C.test_j{i}" for i in ids.values()})
         self.assertEqual(sum(p.endswith("/actions/runs/7") for p in calls), 1)
+
+    def read_jobs(self, logs):
+        """``ci_tests.read`` over passed required jobs 100, 101, ... whose logs are ``logs``."""
+        names = [f"unit ({i})" for i in range(len(logs))]
+        ids = {name: 100 + i for i, name in enumerate(names)}
+
+        def api(loop, path, method="GET", body=None, login=None):
+            if "/actions/jobs/" in path:
+                return {"head_sha": HEAD, "run_id": 7}
+            if path.endswith("/actions/runs/7"):
+                return {"head_sha": HEAD, "head_repository": {"full_name": pv.REPO}}
+            raise AssertionError(path)
+
+        def log(loop, path, login=None, limit=None):
+            return logs[int(path.split("/actions/jobs/")[1].split("/")[0]) - 100]
+
+        state = ci.CIState(passed=list(names), ids=ids)
+        with mock.patch.object(gh, "api", side_effect=api), \
+             mock.patch.object(gh, "read_text", side_effect=log):
+            return ci_tests.read(LOOP, state, names, HEAD)
+
+    def test_a_failure_in_one_required_job_is_not_erased_by_anothers_ok(self):
+        # #1064: across jobs the worst result stands, as within one log, in either order; an
+        # ok still beats a skip, and the refusal no longer fires for the failed test.
+        fail = "test_x (m.C.test_x) ... FAIL\ntest_s (m.C.test_s) ... skipped 'x'\n"
+        ok = "test_x (m.C.test_x) ... ok\ntest_s (m.C.test_s) ... ok\n"
+        for logs in ([fail, ok], [ok, fail]):
+            got = self.read_jobs(logs)
+            self.assertEqual(got, {"m.C.test_x": "FAIL", "m.C.test_s": "ok"}, logs)
+            self.assertEqual(ci_tests.refusal(
+                got, "REQUEST_CHANGES", "F1: x.py:1: m.C.test_x was not run in this sandbox"), "")
 
     def test_refusal_ignores_an_ambiguous_short_name(self):
         res = ci_tests.parse(self.DUP)

@@ -443,21 +443,22 @@ def cmd_migrate(args) -> int:
         with migrate.hold() as left:
             if left is not None:
                 print(f"migrate: picking up — {migrate.describe(left)}")
-            return _migrate(args)
+            return _migrate(args, left)
     except migrate.MigrationBusy as exc:
         print(f"cannot migrate: {exc}")
         return 2
 
 
-def _migrate(args) -> int:
+def _migrate(args, left: dict | None = None) -> int:
     """Run the migration steps. The backup ``migrate`` takes first is its undo, so it stays locked
     (``backup.create(using=...)``) until the migration ends: a backup another process runs in the
-    meantime cannot prune it away (#1079)."""
+    meantime cannot prune it away (#1079). ``left`` is what an interrupted migration left (the
+    marker ``hold`` found): the backup records it, so restoring it keeps the install paused (#1054)."""
     with contextlib.ExitStack() as using:
-        return _migrate_steps(args, using)
+        return _migrate_steps(args, using, left)
 
 
-def _migrate_steps(args, using: contextlib.ExitStack) -> int:
+def _migrate_steps(args, using: contextlib.ExitStack, left: dict | None = None) -> int:
     from .. import backup, migrate, run_supervisor
     try:
         loops = config.all_loops()
@@ -470,7 +471,7 @@ def _migrate_steps(args, using: contextlib.ExitStack) -> int:
         # Before the first move (#496): migrate has no undo, the archive is the undo.
         pruned: list[pathlib.Path] = []
         try:
-            archive = backup.create(pruned=pruned, using=using)
+            archive = backup.create(pruned=pruned, using=using, held=True, half_moved=left)
         except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
             print(f"cannot migrate: the backup before it failed ({exc}); nothing was moved")
             return 2
@@ -585,14 +586,15 @@ def _restore_cron(job: dict | None) -> list[str]:
     return [f"cron: job {job['name']!r} created ({job['schedule']}, deliver {job['deliver']})"]
 
 
-def _pre_restore_snapshot() -> pathlib.Path | None:
+def _pre_restore_snapshot(left: dict | None = None) -> pathlib.Path | None:
     """Back up the live install before a restore overwrites it (#1049), through ``backup.create``
     as an ``--out`` archive (so it prunes nothing and is never pruned), and return its path. On
     failure print why and return None: the restore then writes nothing, since without the
-    snapshot a mistaken or failed restore would leave no way back."""
+    snapshot a mistaken or failed restore would leave no way back. It is taken under restore's
+    own marker (``held``), recording what an interrupted run left (``left``, #1054)."""
     from .. import backup
     try:
-        return backup.create(backup.pre_restore_out())
+        return backup.create(backup.pre_restore_out(), held=True, half_moved=left)
     except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
         print(f"cannot restore: the backup of the live install before it failed ({exc}); "
               "nothing was written — fix what it names (a loop file that does not load can be "
@@ -600,13 +602,16 @@ def _pre_restore_snapshot() -> pathlib.Path | None:
         return None
 
 
-def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
+def _restore(args, manifest: dict, archive: pathlib.Path, left: dict | None = None) -> int:
     from .. import backup, migrate
     lines = [f"restore: {len(manifest['files'])} file(s), {len(manifest.get('routes') or {})} "
              f"route(s), loops: {', '.join(manifest.get('loops') or []) or 'none'}"]
     lines += [f"restore: NOT FINISHED — credential file missing: {line}"
               for line in backup.missing_tokens(manifest)]
     lines += [f"restore: will overwrite {name}" for name in backup.existing(manifest)]
+    if manifest.get("migrating"):
+        lines.append("restore: the archive was taken while a migration was unfinished (its "
+                     "records may be half moved): the install stays paused after the restore")
     lines += [f"restore: writes a loop state directory outside the Hermes home: {path}"
               for path in backup.outside_state_dirs(manifest)]
     problems = backup.unsafe(manifest,
@@ -627,12 +632,16 @@ def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
                                  "dry run: nothing was written"]))
         return 0
     if backup.existing(manifest):
-        snapshot = _pre_restore_snapshot()
+        snapshot = _pre_restore_snapshot(left)
         if snapshot is None:
             return 2
         lines.append(f"restore: the install as it was is in {snapshot}")
     backup.put_files(archive, manifest)
     lines.append(f"restore: {len(manifest['files'])} file(s) put back")
+    if isinstance(manifest.get("migrating"), dict):
+        migrate.keep_paused(manifest["migrating"])      # #1054: the pause these records need
+        lines.append("restore: NOT FINISHED — the install is paused by the restored migration "
+                     "marker; run `hermes dk migrate` to finish the move")
     if manifest.get("routes"):
         routes.restore_entries(manifest["routes"])
         lines.append(f"restore: {len(manifest['routes'])} route entr(ies) put back")
@@ -659,7 +668,7 @@ def cmd_restore(args) -> int:
         manifest = backup.read_manifest(archive)
         if args.dry_run:
             return _restore(args, manifest, archive)
-        with migrate.hold():
+        with migrate.hold() as left:
             busy = migrate.runs_in_flight()
             if busy:
                 print(f"cannot restore: {busy} run(s) are in flight or uncertain; wait for them "
@@ -671,7 +680,7 @@ def cmd_restore(args) -> int:
                       + "\n  ".join(clash[:20])
                       + (f"\n  … {len(clash) - 20} more" if len(clash) > 20 else ""))
                 return 2
-            return _restore(args, manifest, archive)
+            return _restore(args, manifest, archive, left)
     except (migrate.MigrationBusy, migrate.RunsUnknown) as exc:
         print(f"cannot restore: {exc}")
         return 2

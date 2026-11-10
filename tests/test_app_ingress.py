@@ -48,6 +48,11 @@ class Flow(app_cli.Base):
         patch = mock.patch.object(github_app, "_as_app", side_effect=as_app)
         patch.start()
         self.addCleanup(patch.stop)
+        # The App's delivery log (#1239 part 2, test_app_deliveries): empty unless a test says.
+        from diaktoros import app_deliveries
+        patch = mock.patch.object(app_deliveries, "latest", return_value=(None, ""))
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def loop(self):
         return config.load_id("widgets")
@@ -386,13 +391,15 @@ class Flow(app_cli.Base):
         rc, out = self.run_cli(["arm", "--loop", "widgets"])
         self.assertEqual(rc, 0, out)
 
-    def test_selftest_skips_the_repo_hook_step_and_uninstall_sees_leftovers(self):
+    def test_selftest_reads_the_apps_log_not_repo_hooks_and_uninstall_sees_leftovers(self):
         from diaktoros import route_intent, selftest
         report = selftest.Report(out=io.StringIO())
         with mock.patch.object(selftest.gh, "hooks_read") as read:
             selftest.check_hook_signatures(report, self.loop())
         read.assert_not_called()
-        self.assertEqual([r[2] for r in report.results], [selftest.SKIP])
+        # #1239 part 2: the App's own log is the evidence; it holds nothing for this repo yet.
+        self.assertEqual([r[2] for r in report.results], [selftest.WARN])
+        self.assertIn("no deliveries for this repository", report.results[0][3])
         seats = route_intent.routes_of(self.loop())
         self.assertEqual(cli_common._hook_route_names(self.loop()),
                          {seats["reviewer"], seats["fixer"]})

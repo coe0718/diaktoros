@@ -1303,11 +1303,9 @@ def check_hook_signatures(report: Report, loop: dict, *, ping: bool = False,
     from . import hook_ping
     step = "hooks"
     if config.app_ingress(loop):
-        # #1239: no repo hooks on purpose. doctor's hooks line names any left from before the
-        # switch; the App webhook's own deliveries are read in #1239's part 2.
-        report.add(step, "hooks:signature", SKIP,
-                   f"no repo hooks on purpose: events arrive through {loop.get('ingress_app')}'s "
-                   f"webhook (`hermes dk app-webhook --loop {loop['id']}` checks it)")
+        # #1239: no repo hooks on purpose (doctor's hooks line names any left from before the
+        # switch); the App's own webhook log is the evidence instead.
+        check_app_signature(report, loop, ping=ping)
         return
     hooks, error = gh.hooks_read(loop, loop.get("read_token"))
     if hooks is None:
@@ -1359,6 +1357,33 @@ def check_hook_signatures(report: Report, loop: dict, *, ping: bool = False,
             report.add(step, name, PASS, f"{seat}: {found} — signature accepted")
 
 
+def check_app_signature(report: Report, loop: dict, *, ping: bool = False) -> None:
+    """Does the ingress App's webhook secret verify at the gateway (#1239 part 2)? Read-only by
+    default: doctor's evidence, the gateway's answer to this repository's latest delivery in the
+    App's log. With ``ping``, GitHub redelivers the App's newest ping, which authenticates at the
+    gateway and wakes no gate."""
+    from . import app_deliveries, hook_ping
+    step, name, app = "hooks", "app-webhook:signature", loop.get("ingress_app")
+    if ping:
+        status, line = app_deliveries.ping(loop)
+        mark = {hook_ping.OK: PASS, hook_ping.REJECTED: FAIL, hook_ping.ERROR: FAIL,
+                hook_ping.SILENT: WARN}[status]
+        if status == hook_ping.ERROR and line.startswith("⚠️"):
+            mark = WARN
+        report.add(step, name, mark, line[2:].strip(),
+                   app_deliveries.fix(loop) if mark == FAIL else "")
+        return
+    found = hook_checks.check_app_deliveries(loop)
+    if isinstance(found, doctor.Check):
+        _from_doctor(report, step, found)
+    elif found.startswith("no deliveries"):
+        report.add(step, name, WARN, f"{app}: {found}",
+                   f"`hermes dk selftest --loop {loop['id']} --no-model --ping` redelivers the "
+                   "App's newest ping, if GitHub still holds one")
+    else:
+        report.add(step, name, PASS, f"{app}: {found} — signature accepted")
+
+
 def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: bool = False,
         timeout: int | None = DEFAULT_TIMEOUT, out=None, runtime_file: Path | None = None,
         resolver=None, ping: bool = False, ping_login: str | None = None) -> int:
@@ -1371,7 +1396,9 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
     runtime_file = Path(runtime_file or runtime_path())
     redact = redactor_for(loop)
     report = Report(out, redact)
-    github_scope = ("GitHub: reads only, plus one write: --ping asks GitHub to ping each loop hook"
+    github_scope = (("GitHub: reads only, plus one write: --ping asks GitHub to redeliver the "
+                     "App's newest ping" if config.app_ingress(loop) else
+                     "GitHub: reads only, plus one write: --ping asks GitHub to ping each loop hook")
                     if ping else "GitHub: reads only, nothing is posted")
     report.text(f"[{loop['id']}] {loop['repo']} — isolated-path selftest "
                 f"({github_scope}; no token or key is printed)")
@@ -1408,7 +1435,9 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
             run_live_turn(report, loop, settings, live_pr, timeout, seats.get("reviewer"))
         else:
             report.add("live-turn", "turn:reviewer", SKIP, "pass --live-turn --pr N to run one")
-        report.step("8. Repo hooks: does each secret verify at the gateway?"
+        report.step(("8. The App's webhook: does its secret verify at the gateway?"
+                     if config.app_ingress(loop) else
+                     "8. Repo hooks: does each secret verify at the gateway?")
                     + ("" if ping else " (recorded deliveries; --ping to test now)"))
         if not ping:
             check_hook_signatures(report, loop)

@@ -835,16 +835,18 @@ class Retention(Base):
         self.assertEqual(stat.S_IMODE(slow.stat().st_mode), 0o600)
         self.assertEqual(self.names(folder), sorted([slow.name, fast.name]))
 
-    def newer_backup_while(self, hook_owner, hook_name, stamp="20200102-000000"):
+    def newer_backup_while(self, hook_owner, hook_name, stamp="20200102-000000", held=False):
         """Make ``hook_owner.hook_name`` take a newer default backup (keep=1) when it runs, and
-        return what that backup's ``create`` returned (a list that fills in when the hook runs)."""
+        return what that backup's ``create`` returned (a list that fills in when the hook runs).
+        ``held`` skips the pause check (#1054), as for a backup that passed it just before a
+        migration wrote its marker."""
         real, taken, real_strftime = getattr(hook_owner, hook_name), [], backup.time.strftime
 
         def hook(*args, **kw):
             with mock.patch.object(backup.time, "strftime",
                                    side_effect=lambda fmt: stamp if fmt == "%Y%m%d-%H%M%S"
                                    else real_strftime(fmt)):
-                taken.append(backup.create(keep=1))
+                taken.append(backup.create(keep=1, held=held))
             return real(*args, **kw)
         patch = mock.patch.object(hook_owner, hook_name, hook)
         patch.start()
@@ -869,9 +871,10 @@ class Retention(Base):
 
     def test_migrate_holds_its_backup_until_the_migration_ends(self):
         """``migrate`` has no undo but its pre-move archive; a default backup another process
-        takes mid-migration (keep=1) must not prune it."""
+        takes mid-migration (keep=1) must not prune it. Such a backup is refused under the
+        marker (#1054); one that checked just before the marker was written still gets here."""
         folder = self.old("diaktoros-backup-20190101-000000.tar.gz")
-        taken = self.newer_backup_while(migrate, "settings_step")
+        taken = self.newer_backup_while(migrate, "settings_step", held=True)
         with mock.patch.object(backup.time, "strftime", side_effect=lambda fmt: "20200101-000000"), \
                 mock.patch.object(migrate, "shim_step", return_value=[]), \
                 mock.patch.object(migrate, "files_step", return_value=[]), \
@@ -1330,6 +1333,66 @@ class AllOrNothing(Base):
         code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=False)
         self.assertEqual(code, 0, text)
         self.assertEqual(list(backup.backups_dir().glob("diaktoros-pre-restore-*")), [])
+
+
+class BackupUnderTheMarker(Base):
+    """#1054: no snapshot of records that are only safe under the pause loses that pause."""
+
+    def plant_marker(self):
+        migrate.marker_path().parent.mkdir(parents=True, exist_ok=True)
+        migrate.marker_path().write_text(json.dumps({"pid": 999999, "started": 1}))
+
+    def test_backup_command_refuses_while_the_marker_is_held(self):
+        self.plant_marker()
+        out = self.root / "mid.tar.gz"
+        code, text = self.run_cmd(cli.cmd_backup, out=str(out))
+        self.assertEqual(code, 2, text)
+        self.assertIn("paused by a migration or restore", text)
+        self.assertFalse(out.exists())
+        with self.assertRaises(backup.BackupError):
+            backup.create(self.root / "direct.tar.gz")
+
+    def test_backup_command_refuses_while_a_restore_holds_the_marker(self):
+        with migrate.hold():
+            code, text = self.run_cmd(cli.cmd_backup, out=str(self.root / "mid.tar.gz"))
+        self.assertEqual(code, 2, text)
+        self.assertFalse((self.root / "mid.tar.gz").exists())
+
+    def test_migrate_picking_up_records_the_marker_and_restore_keeps_the_pause(self):
+        self.plant_marker()
+        with _stubbed_migrate_steps():
+            code, text = self.run_cmd(cli.cmd_migrate, dry_run=False)
+        self.assertIn("picking up", text)
+        archive = next((self.root / "home" / "backups").glob("*.tar.gz"))
+        self.assertEqual(backup.read_manifest(archive)["migrating"], {"pid": 999999, "started": 1})
+        self.assertIsNone(migrate.migrating())            # that migrate finished the move
+        code, text = self.run_cmd(cli.cmd_restore, file=str(archive), dry_run=False, force=True)
+        self.assertEqual(code, 1, text)
+        self.assertIn("stays paused", text)
+        self.assertIn("NOT FINISHED", text)
+        held = migrate.migrating()
+        self.assertIsNotNone(held)                        # the restored records stay paused
+        self.assertEqual(held["started"], 1)
+
+    def test_a_clean_archive_restores_without_a_marker(self):
+        out = self.root / "clean.tar.gz"
+        self.assertEqual(self.run_cmd(cli.cmd_backup, out=str(out))[0], 0)
+        self.assertIsNone(backup.read_manifest(out)["migrating"])
+        code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        self.assertEqual(code, 0, text)
+        self.assertIsNone(migrate.migrating())
+
+
+def _stubbed_migrate_steps():
+    """Every migrate step but the backup stubbed out, so ``cmd_migrate`` writes only its archive."""
+    stack = contextlib.ExitStack()
+    for patch in (mock.patch.object(migrate, "settings_step", return_value=[]),
+                  mock.patch.object(migrate, "shim_step", return_value=[]),
+                  mock.patch.object(migrate, "files_step", return_value=[]),
+                  mock.patch.object(migrate, "repo_step", return_value=[]),
+                  mock.patch.object(cli_lifecycle, "_move_watchdog_job", return_value=[])):
+        stack.enter_context(patch)
+    return stack
 
 
 class InterruptedKeepsThePause(Base):

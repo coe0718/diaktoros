@@ -1242,6 +1242,14 @@ The archive holds the routes' HMAC secrets, so restored hooks keep working. It i
 `0600`, the command warns about it, and the secrets are never printed. It leaves out GitHub
 tokens (PATs), Hermes profiles and model logins. It never overwrites a file.
 
+It refuses (exit `2`, nothing written) while `migrate`'s pause marker exists: a `migrate`,
+`restore` or `update --apply` is running, or a `migrate` died before it finished (#1054). The
+records may then be half moved, and they are only safe under the pause, which an archive would
+not carry. Back up once the migration has finished. `migrate`'s own backup is the exception: it
+is taken under its own marker, and when it picks up an interrupted run it records that run's
+marker in the archive, so restoring that archive leaves the install paused (`NOT FINISHED`, exit
+`1`) until `migrate` runs again.
+
 Retention (#1079): a backup written to the default place (`$HERMES_HOME/backups`, no `--out`)
 is followed by deleting the oldest archives written there (`diaktoros-backup-<stamp>[-n].tar.gz`,
 regular files only) beyond the newest `--keep N` (default 10; `0` keeps every archive). Such an
@@ -1346,7 +1354,7 @@ hermes dk restore "<archive-file>"
 Proves the isolated turn path step by step: the runtime file and its paths, the bubblewrap
 sandbox (no network, no credentials visible inside), each seat's model, the GitHub identities,
 the broker and the run ledger. It never writes to GitHub, except `--ping`, which asks GitHub to
-ping the hooks.
+ping the hooks (on a loop with `ingress: app-webhook`, to redeliver the App's newest ping).
 
 Run it in three stages, each one costing a little more:
 
@@ -1381,7 +1389,7 @@ It is ignored for ordinary tiny probes. Live turn verdicts never post a review o
 | `--pr` | `PR` |  | dry-run the reviewer write authorization on this PR |
 | `--no-model` |  |  | skip the one tiny real completion (costs a few tokens) |
 | `--live-turn` |  |  | with --pr: run one real isolated reviewer turn whose verdict is printed and never posted |
-| `--ping` |  |  | ask GitHub to ping each loop hook and report whether the gateway accepted its signature (the selftest's only GitHub write) |
+| `--ping` |  |  | ask GitHub to ping each loop hook (an App-webhook loop: to redeliver the App's newest ping) and report whether the gateway accepted its signature (the selftest's only GitHub write) |
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose credential may ping hooks: a token with admin:repo_hook or repo, or a GitHub App with Webhooks: Read and write |
 | `--timeout` | `TIMEOUT` |  | live turn budget in seconds (default: the loop's reviewer turn_budget_s — the budget the production worker enforces) |
 <!-- /flags -->
@@ -1969,7 +1977,9 @@ hermes dk trace --loop "<loop-id>" --payload "<payload-json-file>" --event pull_
 
 - `--delivery` takes the GUID from the hook's **Recent Deliveries** page on GitHub (repo →
   Settings → Webhooks → the hook → Recent Deliveries), or its numeric id. Reading deliveries
-  needs hook read access (`--admin-token`).
+  needs hook read access (`--admin-token`). On a loop with `ingress: app-webhook` there are no
+  repo hooks: the delivery comes from the App's own log (the App's settings → Advanced → Recent
+  Deliveries), read with the App's key, and runs through the App's dispatcher (`gate_app.py`).
 - `--payload` replays a payload you saved to a file instead.
 
 The last line is the outcome: `would start a reviewer run` (or `would queue a … run`),
@@ -2046,9 +2056,10 @@ hermes dk cancel --loop "<loop-id>" --run "<run-id>"
 
 - **Not started yet** (pending, blocked, waiting, claimed): cancelled at once, unless it already
   holds any write-ahead record: a review receipt, a push intent or confirmation, a ruling, a
-  dispute, a CI-fix decline, a triage result, an issue fix, or a reviewer-filed issue whose
-  outcome is unknown. Then it ends `uncertain` instead and is never replayed, and the output
-  says `after it may have written`. Inspect and reconcile it; don't `retry` it.
+  dispute, a CI-fix decline, a fixer's answers comment, a triage result, an issue fix, or a
+  reviewer-filed issue whose outcome is unknown. Then it ends `uncertain` instead and is never
+  replayed, and the output says `after it may have written`. Inspect and reconcile it; don't
+  `retry` it.
 - **Launching or running:** the worker that owns the turn stops it, within a few seconds. It
   kills the sandbox the same way the turn budget does, and frees the seat. An adjudicator's
   breach marker is handed back. The command waits up to 30 seconds and prints how the run ended.

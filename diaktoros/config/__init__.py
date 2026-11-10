@@ -1424,12 +1424,15 @@ def app_ingress(loop: dict) -> bool:
     return loop.get("ingress") == "app-webhook" and bool(loop.get("ingress_app"))
 
 
+APP_ROUTE_PREFIX = "dk-app-"
+
+
 def app_route(loop: dict) -> str:
     """The host-level route an App's webhook delivers to: one per App, shared by every loop whose
     events that App delivers (``dk-app-<slug>``). ``""`` for a repo-hooks loop."""
     if not app_ingress(loop):
         return ""
-    return "dk-app-" + str(loop["ingress_app"]).lower().removesuffix("[bot]")
+    return APP_ROUTE_PREFIX + str(loop["ingress_app"]).lower().removesuffix("[bot]")
 
 
 def merge_check_on(loop: dict) -> bool:

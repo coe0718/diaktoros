@@ -497,6 +497,10 @@ def write_records(con, run_id: str) -> str | None:
     - ``rulings``: a ruling (adjudicator; the optional PR comment follows it)
     - ``disputes``: a recorded dispute
     - ``declines``: a CI fix's recorded decline (#1526; its answers comment follows it)
+    - ``fixer_answers``: a fixer's answers comment, in any state ('posting' is committed
+      before the POST; 'uncertain' means its outcome is unknown: reconcile, never replay,
+      #1052). An answers-only run (a dispute, a partial view) holds no push intent, so this
+      row is its only write-ahead record
     - ``triage_results``: a triage result (triage; its labels and comment follow it)
     - ``issue_fixes``: a recorded issue fix
     - ``filed_issues``: a reviewer-filed issue whose outcome is ambiguous ('recorded' or
@@ -518,6 +522,9 @@ def write_records(con, run_id: str) -> str | None:
         return 'dispute recorded'
     if con.execute('SELECT 1 FROM declines WHERE run_id=?', (run_id,)).fetchone():
         return 'CI-fix decline recorded'
+    answers = con.execute('SELECT state FROM fixer_answers WHERE run_id=?', (run_id,)).fetchone()
+    if answers is not None:
+        return f"fixer answers {answers['state']}"
     if con.execute('SELECT 1 FROM triage_results WHERE run_id=?', (run_id,)).fetchone():
         return 'triage recorded'
     if con.execute('SELECT 1 FROM issue_fixes WHERE run_id=?', (run_id,)).fetchone():

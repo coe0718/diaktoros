@@ -172,7 +172,8 @@ class NotStarted(Base):
         # PR-seat records. A kind added there without a phrase here fails the first assert.
         phrases = {'runs': 'a push intent or confirmation', 'review_receipts': 'a review receipt',
                    'rulings': 'a ruling', 'disputes': 'a dispute',
-                   'declines': 'a CI-fix decline', 'triage_results': 'a triage result',
+                   'declines': 'a CI-fix decline', 'fixer_answers': "a fixer's answers comment",
+                   'triage_results': 'a triage result',
                    'issue_fixes': 'an issue fix',
                    'filed_issues': 'a reviewer-filed issue whose outcome is unknown'}
         doc = run_supervisor.write_records.__doc__
