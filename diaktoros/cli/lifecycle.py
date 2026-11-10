@@ -587,7 +587,7 @@ def _restore_cron(job: dict | None) -> list[str]:
 
 
 def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
-    from .. import backup, migrate
+    from .. import backup, migrate, restore_checks
     lines = [f"restore: {len(manifest['files'])} file(s), {len(manifest.get('routes') or {})} "
              f"route(s), loops: {', '.join(manifest.get('loops') or []) or 'none'}"]
     lines += [f"restore: NOT FINISHED — credential file missing: {line}"
@@ -597,10 +597,10 @@ def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
         lines.append("restore: the archive was taken while a migration was unfinished (its "
                      "records may be half moved): the install stays paused after the restore")
     lines += [f"restore: writes a loop state directory outside the Hermes home: {path}"
-              for path in backup.outside_state_dirs(manifest)]
-    problems = backup.unsafe(manifest,
-                             allowed_state_dirs=getattr(args, "allow_state_dir", None) or (),
-                             archive=archive)
+              for path in restore_checks.outside_state_dirs(manifest)]
+    problems = restore_checks.unsafe(manifest,
+                                     allowed_state_dirs=getattr(args, "allow_state_dir", None) or (),
+                                     archive=archive)
     if problems:
         print("\n".join(lines + [f"restore: REFUSED — {p}" for p in problems[:20]]
                          + ["nothing was written"]))
