@@ -491,7 +491,11 @@ def fixer_answers_upheld(loop: dict, number: int) -> bool:
 def shadow_fix_owed(loop: dict, marker, head: str, db=None) -> bool:
     """Whether this head's breach marker is a shadow escalation (#1004) the adjudicator upheld
     (REJECT, ``upheld_shadow_ruling``) and the fixer answers it (``fixer_answers_upheld``): its
-    findings go to the fixer, so no person is waited for (#1353). The shadow hold still stands."""
+    findings go to the fixer, so no person is waited for (#1353). The shadow hold still stands,
+    so this is False with ``shadow.escalate`` off: ``shadow_state`` gives no hold then, and the
+    escalation's own line is the only thing that keeps the ruled head from reading ready."""
+    if not config.shadow_escalate(loop):
+        return False
     m = marker if isinstance(marker, dict) else {}
     if str(m.get("head") or "") != head or (m.get("escalated") or {}).get("by") != SHADOW_ESCALATION:
         return False

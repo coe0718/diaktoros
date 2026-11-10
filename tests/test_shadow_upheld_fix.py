@@ -114,6 +114,34 @@ class Operator(ruling.Base):
         self.assertEqual(report["next"]["kind"], "fixer-push", report["next"])
         self.assertNotIn("your decision", report["next"]["action"])
 
+    def escalate_off(self):
+        self.loop = {**self.loop, "unattended_fixer_push": True,
+                     "shadow": {**self.loop["shadow"], "escalate": False}}
+
+    def test_ready_still_holds_it_with_shadow_escalate_off(self):
+        # Shadow review of #2254 (F1): with ``shadow.escalate`` off there is no shadow-hold line,
+        # so the escalation's own FAILURE is the only hold; the merge check must not read success.
+        from diaktoros import merge_check, ready
+        self.upheld_marker()
+        self.escalate_off()
+        self.assertFalse(gate.shadow_fix_owed(self.loop, self.st.breach_get(7), fg.HEAD,
+                                              db=self.db))
+        why = self.ready()
+        self.assertTrue(any(w.startswith("escalated:") and "a person decides" in w for w in why),
+                        why)
+        pr = {**fg.LIVE, "user": {"login": "fixer"}}
+        with mock.patch.object(gh, "pr", return_value=pr), \
+                mock.patch.object(ready.gate_failures, "open_for", return_value=[]):
+            kinds = ready.assess_kinds(self.loop, self.st, pr, ruling.APPROVED, None, None)
+        self.assertEqual(merge_check.decide(kinds)[0], merge_check.FAILURE, kinds)
+
+    def test_explain_still_leaves_it_to_you_with_shadow_escalate_off(self):
+        self.upheld_marker()
+        self.escalate_off()
+        report = self.explain()
+        self.assertTrue(any(b.startswith("ruled:") for b in report["blockers"]), report["blockers"])
+        self.assertNotEqual(report["next"]["kind"], "fixer-push", report["next"])
+
     def test_explain_still_leaves_it_to_you_where_no_fixer_takes_it(self):
         self.upheld_marker()
         report = self.explain()                                               # push off
