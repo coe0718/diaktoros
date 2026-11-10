@@ -311,12 +311,17 @@ class ExplainKinds(unittest.TestCase):
         # #546: a branch must not invent a conclusion nobody checks for.
         import ast
         import inspect
-        tree = ast.parse(inspect.getsource(explain))      # the whole module: explain's _next_* pieces
-        used = {node.value.value for node in ast.walk(tree)
-                if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
-                and isinstance(node.value.value, str)
-                and any(isinstance(t, ast.Name) and t.id == "kind" for t in node.targets)}
-        self.assertTrue(used, "no kind assignments found: the scan is broken")
+        from diaktoros import explain_next
+        used = set()
+        for module in (explain, explain_next):    # whole modules: the next step moved (#2261)
+            tree = ast.parse(inspect.getsource(module))
+            found = {node.value.value for node in ast.walk(tree)
+                     if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+                     and isinstance(node.value.value, str)
+                     and any(isinstance(t, ast.Name) and t.id == "kind" for t in node.targets)}
+            if module is explain_next:
+                self.assertTrue(found, "no kind assignments in explain_next: the scan is broken")
+            used |= found
         self.assertEqual(sorted(used - set(explain.EXPLAIN_KINDS)), [])
 
 

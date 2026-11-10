@@ -152,6 +152,14 @@ def reader_fix(loop: dict, login: str = "") -> str:
             f"(or --app {account}=APP_ID:/abs/key.pem for a GitHub App reader)")
 
 
+def seat_fix(loop: dict, seat: str) -> str:
+    """How a seat (reviewer, fixer) gets a credential: through the plugin settings and `apply`,
+    since `set --token` and `set --app` refuse a seat's login. A PAT file or a GitHub App, both
+    named (#2240)."""
+    return (f"set {seat}_token_file (a PAT) or {seat}_app_id and {seat}_app_key_file (a GitHub "
+            f"App) in the plugin settings, then run `hermes dk apply --loop {loop.get('id') or '<id>'}`")
+
+
 def verify_reader(loop: dict) -> None:
     """Refuse a reader that is not its own account, naming the four-identity rule."""
     problem = reader_problem(loop)
@@ -213,9 +221,11 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
             continue                       # a loop that predates this check keeps loading
         login = config.seat_login(loop, seat).lower()
         if login and util.login_entry(tokens, login) is None:
-            raise config.ConfigError(f"{where}: no token mapped for the {seat} login {login!r} — add "
-                              f"--token {login}=/path/to/pat (its own PAT file, never the "
-                              "reader's)")
+            # #2255: `set --token` refuses a seat's login, so an existing loop maps it the settings way.
+            raise config.ConfigError(f"{where}: no token mapped for the {seat} login {login!r} — give "
+                              f"it its own credential, never the reader's: with `init`, --token "
+                              f"{login}=/path/to/pat or --app {login}=APP_ID:/abs/key.pem; on an "
+                              f"existing loop, {seat_fix(loop, seat)}")
     if roles & {"read", "adjudicator", *config.SEAT_KEYS}:
         verify_reader(loop)
     if roles & set(config.SEAT_KEYS):

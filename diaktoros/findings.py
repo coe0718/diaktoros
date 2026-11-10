@@ -116,6 +116,9 @@ def check(loop: dict, entry: dict, number: int, head: str, body: str, verdict: s
     """The reason this review must be refused, or ''. Reads only; writes nothing."""
     known = entry.get("findings") if isinstance(entry.get("findings"), dict) else {}
     lines = parse(body, known)
+    # #2199: a first-round body that gave states or repeated an id cost shadow turns their steps.
+    first = ("" if known else " This is the PR's first review round: no finding has a state yet, "
+             "so number each finding once (F1, F2, …) and give no `fixed`/`open` lines.")
     stated = {}
     new = []
     for fid, kind, rest in lines:
@@ -124,12 +127,14 @@ def check(loop: dict, entry: dict, number: int, head: str, body: str, verdict: s
         elif kind != "new":
             return (f"no such finding {fid}: '{fid}: {kind}' states a finding that was never "
                     "recorded; check the id (a new finding needs a description, not just a "
-                    "state); nothing was written, resubmit")
+                    f"state); nothing was written, resubmit.{first}")
         elif fid in known:
             return (f"finding {fid} already exists: give it a state ({'/'.join(STATES)}) rather "
                     "than restating it; nothing was written, resubmit")
         elif fid in [n[0] for n in new]:
-            return f"finding {fid} appears twice; nothing was written, resubmit"
+            line = fid + ("" if rest.startswith(":") else " ") + rest[:80]
+            return (f"finding {fid} appears twice (the second: '{line}'); nothing was written, "
+                    f"resubmit.{first}")
         else:
             new.append((fid, rest))
     if verdict == "APPROVE":

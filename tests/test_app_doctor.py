@@ -103,6 +103,33 @@ class Doctor(AppLoop):
         self.assertIn(f"reader {BOT_READ}", got.detail)
         self.assertIn(f"reviewer {BOT_REV}", got.detail)
 
+    def test_an_unmapped_seat_is_told_the_settings_way_for_a_pat_or_an_app(self):
+        # #2240: `set --token`/`--app` refuse a seat's login, so the remedy is the settings form.
+        self.loop["tokens"].pop(tfs.FIX)
+        env = config.profile_dir(config.seat_profile(self.loop, "fixer")) / ".env"
+        for gh_token in (False, True):
+            if gh_token:
+                env.parent.mkdir(parents=True, exist_ok=True)
+                env.write_text("GH_TOKEN=x\n")
+            got = identity_checks.check_credential(self.loop, "fixer")
+            self.assertEqual(got.status, doctor.ABSENT, got.detail)
+            self.assertIn(credentials.seat_fix(self.loop, "fixer"), got.fix)
+            self.assertIn("fixer_app_id and fixer_app_key_file (a GitHub App)", got.fix)
+            self.assertNotIn("--token", got.fix)
+
+    def test_an_unmapped_triage_login_is_told_a_pat_or_an_app(self):
+        # #2240: its own login maps with `set --token` or `set --app`; the reviewer's, the seat way.
+        self.loop["triage"] = {**self.loop.get("triage", {}), "route": "widgets-triage",
+                               "login": "acme-triage", "authors": ["fix-acct"], "labels": ["bug"]}
+        got = {c.name: c for c in seat_checks.check_triage(self.loop)}["credential:triage"]
+        self.assertEqual(got.status, doctor.ABSENT, got.detail)
+        self.assertIn("--token acme-triage=/path/to/pat` (or --app acme-triage=APP_ID:", got.fix)
+        self.loop["triage"].pop("login")
+        self.loop["apps"].pop(BOT_REV)
+        got = {c.name: c for c in seat_checks.check_triage(self.loop)}["credential:triage"]
+        self.assertEqual(got.fix, "triage labels as the reviewer seat: "
+                         + credentials.seat_fix(self.loop, "reviewer"))
+
     def test_an_app_triage_login_and_adjudicator_read_as_verified(self):
         self.loop["triage"] = {**self.loop.get("triage", {}), "route": "widgets-triage",
                                "authors": ["fix-acct"], "labels": ["bug"]}
@@ -369,6 +396,15 @@ class Selftest(AppLoop):
         self.assertFalse(ok)
         self.assertEqual(rows["github:read"][4], credentials.reader_fix(self.loop, "LOGIN"))
         self.assertIn("--app LOGIN=APP_ID:/abs/key.pem", rows["github:read"][4])
+
+    def test_an_unmapped_seat_is_told_the_settings_way(self):
+        # #2240: not `set --token`, which refuses a seat's login.
+        self.loop["tokens"].pop(tfs.FIX)
+        ids = {BOT_REV: 346013884, BOT_READ: 346012008}
+        ok, rows = self.identities(lambda login: {"login": login, "id": ids[login],
+                                                  "type": "Bot", "app_id": 9})
+        self.assertFalse(ok)
+        self.assertEqual(rows["github:fixer"][4], credentials.seat_fix(self.loop, "fixer"))
 
     def test_app_identities_resolve_to_their_bots_without_user(self):
         ids = {BOT_REV: 346013884, BOT_READ: 346012008}

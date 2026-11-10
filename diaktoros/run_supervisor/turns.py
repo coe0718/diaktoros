@@ -1109,6 +1109,28 @@ class ClaimAndLaunch:
                 # The shadow sees what the real reviewer saw when both were queued (#218): a
                 # review posted since, the real one's included, would tell it the answer.
                 reviews = [r for r in reviews if _before_shadow_queued(r, row['created'])]
+        prompt, prompt_row, change, shadow = self._verdict_prompt(loop, row, reviews, marker)
+        # Host-owned, before launch (#93, #110): whether this seat sees the whole change, in
+        # the ledger (explain, the receipt claim) and in the scope the broker is built from.
+        # Nothing inside the namespace can reach either.
+        partial = change.partial if change else ''
+        self.record_view(turn.run_id, turn.owner, partial)
+        scope = self._verdict_scope(row, prompt_row, head, partial, shadow)
+        if row['seat'] == 'adjudicator':
+            from .. import state as state_mod
+            # Last step before launch: mark the breach as being ruled on. Anyone else's
+            # claim (a legacy gateway route included) refuses this one.
+            if state_mod.state_for(loop).breach_start(row['pr'], row['head'],
+                                                     marker['rounds']) is None:
+                raise ValueError('breach marker already claimed or replaced')
+            turn.breach = (state_mod.state_for(loop), marker['rounds'])
+        return _Launch(prompt, scope, change=change)
+
+    @staticmethod
+    def _verdict_prompt(loop: dict, row, reviews, marker) -> tuple:
+        """The verdict seat's prompt, and what the launch needs from building it: the row it was
+        prompted as, the change it saw and the shadow review a ruling's prompt showed."""
+        from .. import config
         # The reviewer and fixer see the change itself (#50); the adjudicator needs both
         # sides' comments. A read that failed is transient (retry); a moved head is not.
         # The shadow is prompted as the reviewer it shadows.
@@ -1127,6 +1149,9 @@ class ClaimAndLaunch:
                     and ((marker or {}).get('escalated') or {}).get('by') == 'shadow'):
                 shadow = turn_prompts.newest_shadow_review(row)
                 extra = {'shadow': shadow}
+            elif row['seat'] == run_supervisor.SHADOW:
+                # Prompted as the reviewer, but told its own step budget (#2199).
+                extra = {'steps': config.max_steps(loop, run_supervisor.SHADOW)}
             prompt = turn_prompts.isolated_prompt(loop, prompt_row, reviews, marker, change,
                                                   **extra)
         except ValueError as exc:
@@ -1134,21 +1159,7 @@ class ClaimAndLaunch:
                     or str(exc).startswith('PR files unreadable'):
                 raise run_supervisor.RetryableError(str(exc)) from None
             raise
-        # Host-owned, before launch (#93, #110): whether this seat sees the whole change, in
-        # the ledger (explain, the receipt claim) and in the scope the broker is built from.
-        # Nothing inside the namespace can reach either.
-        partial = change.partial if change else ''
-        self.record_view(turn.run_id, turn.owner, partial)
-        scope = self._verdict_scope(row, prompt_row, head, partial, shadow)
-        if row['seat'] == 'adjudicator':
-            from .. import state as state_mod
-            # Last step before launch: mark the breach as being ruled on. Anyone else's
-            # claim (a legacy gateway route included) refuses this one.
-            if state_mod.state_for(loop).breach_start(row['pr'], row['head'],
-                                                     marker['rounds']) is None:
-                raise ValueError('breach marker already claimed or replaced')
-            turn.breach = (state_mod.state_for(loop), marker['rounds'])
-        return _Launch(prompt, scope, change=change)
+        return prompt, prompt_row, change, shadow
 
     def _verdict_scope(self, row, prompt_row, head: dict, partial: str, shadow):
         """The broker scope of a review, fix or ruling turn, built from the ledger row. It names

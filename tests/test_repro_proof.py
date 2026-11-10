@@ -261,7 +261,20 @@ class Proof(unittest.TestCase):
         self.assertEqual(proof["hunk_tests"], ["tests.test_it"])
         self.assertEqual(sorted(h["status"] for h in proof["hunks"]),
                          [repro_proof.GUARDED, repro_proof.UNGUARDED])
-        self.assertIn("against the test files the fix changed", repro_proof.section(proof))
+        text = repro_proof.section(proof)
+        self.assertIn("against the test files the fix changed", text)
+        # #1094: the fallback runs the changed tests against the fix only; the introduction
+        # must not claim the named tests ran against the original head.
+        self.assertNotIn("ran the tests the fixer named against the original head", text)
+        self.assertIn("nothing ran against the original head", text)
+        self.assertIn("against the fix only", text)
+
+    def test_with_nothing_run_the_introduction_says_nothing_ran(self):
+        # #1094: NONE NAMED with no changed test file runs nothing anywhere.
+        proof = repro_proof.prove(Path("."), manifest({"a.py": "x"}), [], run_unittest)
+        text = repro_proof.section(proof)
+        self.assertNotIn("ran the tests the fixer named", text)
+        self.assertIn("nothing ran against the original head or against the fix", text)
 
     def test_with_no_test_every_source_hunk_is_listed_past_the_cap(self):
         # Review on #1092 (F2, P1): the no-test fallback cut the list at HUNKS_MAX, and the rest

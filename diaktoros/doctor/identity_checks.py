@@ -133,9 +133,8 @@ def check_credential(loop: dict, seat: str) -> doctor.Check:
                             f"nonempty GH_TOKEN in {env}, but no mapped token file for "
                             f"{login or seat}; a profile environment alone does not provide the "
                             "gate's configured GitHub identity, and the sandboxed seat never sees it",
-                            f"map a token file for {login or '<login>'}: run `hermes dk set --loop <id> "
-                            f"--token {login or '<login>'}=/path/to/pat`, or set {seat}_token_file in the "
-                            "plugin settings and run apply; then remove GH_TOKEN from that .env")
+                            f"map a credential for {login or '<login>'}: "
+                            f"{credentials.seat_fix(loop, seat)}; then remove GH_TOKEN from that .env")
     who = login or f"the {seat} seat"
     mapped = gh.token_path(loop, login) if login else None
     if mapped is not None:
@@ -145,10 +144,10 @@ def check_credential(loop: dict, seat: str) -> doctor.Check:
     # Seats write only through the host broker with a mapped token file; a GH_TOKEN in the
     # profile's .env is never used, so it is not offered as a fix.
     return doctor.Check(f"credential:{seat}", doctor.ABSENT,
-                        f"no token file mapped for {who!r} (a GH_TOKEN in {env} would not be used)",
-                        f"run `hermes dk set --loop <id> --token {login or '<login>'}=/path/to/pat`, or set "
-                        f"{seat}_token_file in the plugin settings and run apply — without one the seat "
-                        "cannot push or post a verdict")
+                        f"no token file or GitHub App mapped for {who!r} (a GH_TOKEN in {env} would "
+                        "not be used)",
+                        f"{credentials.seat_fix(loop, seat)} — without one the seat cannot push or post "
+                        "a verdict")
 
 
 def check_adjudicator_identity(loop: dict) -> doctor.Check | None:
@@ -219,8 +218,7 @@ def check_token(login: str, raw: str) -> doctor.Check:
     path = pathlib.Path(str(raw)).expanduser()
     if not path.exists():
         return doctor.Check(f"token:{login}", doctor.ABSENT, f"no file at {path}",
-                            f"write the PAT for {login} to {path} (chmod 600), or run `hermes "
-                            f"dk set --loop <id> --token {login}=<a path that exists>`")
+                            f"write the PAT for {login} to {path} (chmod 600)")   # #2256
     if not path.is_file():
         return doctor.Check(f"token:{login}", doctor.MISMATCH, f"{path} is not a file",
                             f"point --token {login} at a regular file holding the PAT")
@@ -259,9 +257,10 @@ def check_read_token(loop: dict) -> doctor.Check:
                             credentials.reader_fix(loop))
     if util.login_entry(config.credentials_map(loop), name) is None:
         return doctor.Check("read_token", doctor.MISMATCH, f"read_token names {name!r}, which has no token file",
-                            f"run `hermes dk set --loop <id> --token {name}=/path/to/pat` (or --app "
-                            f"{name}=APP_ID:/abs/key.pem for a GitHub App reader): the gates read every "
-                            "PR state as this login")
+                            # #2265: `set --token` alone refuses the current reader; with
+                            # --read-token naming it, the mapping is the reader's own.
+                            f"run {credentials.reader_fix(loop, name)}: the gates read every PR "
+                            "state as this login")     # unquoted, as reader_fix's other callers (#2268)
     problem = credentials.reader_problem(loop)
     if problem:
         # The broker refuses every write while the reader is a seat, so a loop in this shape

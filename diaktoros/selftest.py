@@ -851,6 +851,16 @@ def _roles(loop: dict) -> list[tuple[str, str]]:
     return roles
 
 
+def _unmapped_fix(loop: dict, role: str, login: str) -> str:
+    """How ``role``'s login gets a PAT or a GitHub App (#2240): a seat's through the settings."""
+    if role in config.SEAT_KEYS:
+        return credentials.seat_fix(loop, role)
+    if role == "read":
+        return credentials.reader_fix(loop, login)
+    return (f"run `hermes dk set --loop <id> --token {login}=/path/to/pat` (or --app "
+            f"{login}=APP_ID:/abs/key.pem)")
+
+
 def check_identities(report: Report, loop: dict) -> bool:
     """Step 4. Returns True when every identity resolved to its own principal."""
     step = "identities"
@@ -904,7 +914,7 @@ def check_identities(report: Report, loop: dict) -> bool:
         if not raw:
             ok = False
             report.add(step, name, FAIL, f"{login}: no token file mapped",
-                       f"run `hermes dk set --loop <id> --token {login}=/path/to/pat` (chmod 600)")
+                       _unmapped_fix(loop, role, login))
             continue
         check = identity_checks.check_token(login, raw)
         if check.status != doctor.VERIFIED:

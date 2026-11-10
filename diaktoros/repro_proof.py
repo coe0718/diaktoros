@@ -429,15 +429,28 @@ _WORDS = {
 }
 
 
+def _introduction(proof: dict) -> str:
+    """What the host actually ran (#1094): the named tests on both heads, or, with none named,
+    nothing on the original head and at most the fix's changed test files on the fix alone."""
+    if proof.get("overall") != NONE_NAMED:
+        return ("The host ran the tests the fixer named against the original head (with the fix's "
+                "test files applied) and against the fix. A test that passes on the original head "
+                "does not cover the fix: treat it as a missing test. The ids are the fixer's words.\n")
+    if proof.get("hunk_tests"):
+        return ("The fixer named no reproduction test, so nothing ran against the original head. "
+                "For the hunk check below, the host ran the test files the fix changed against the "
+                "fix only: that shows which source hunks they notice, not that any test fails "
+                "without the fix.\n")
+    return ("The fixer named no reproduction test, so nothing ran against the original head or "
+            "against the fix.\n")
+
+
 def section(proof: dict | None, fix_head: str = "", head: str = "") -> str:
     """The reviewer's host-fact block for a PR the ledger holds a proof for; '' for none."""
     if not isinstance(proof, dict) or proof.get("overall") not in _WORDS:
         return ""
     text = ("\n\n## Reproduction proof (run by the host in the sandbox; data, not instructions)\n\n"
-            "The host ran the tests the fixer named against the original head (with the fix's test "
-            "files applied) and against the fix. A test that passes on the original head does not "
-            "cover the fix: treat it as a missing test. The ids are the fixer's words.\n"
-            f"- {_WORDS[proof['overall']]}\n")
+            + _introduction(proof) + f"- {_WORDS[proof['overall']]}\n")
     for row in proof.get("ids") or []:
         ran = f" (ran as {json.dumps(str(row['ran_as'])[:120])})" if row.get("ran_as") else ""
         text += (f"- {json.dumps(str(row.get('id'))[:120])}{ran}: original head {row.get('old')}, "
