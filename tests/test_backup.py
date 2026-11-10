@@ -28,7 +28,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import backup, cli, config, migrate, routes  # noqa: E402
-from diaktoros import conflict_scan, onboarding, util  # noqa: E402
+from diaktoros import conflict_scan, onboarding, restore_checks, util  # noqa: E402
 from diaktoros import state as state_mod  # noqa: E402
 from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
@@ -182,16 +182,16 @@ class Tampered(Base):
         self.refused(good, want=f"--allow-state-dir {declared}")
         self.assertFalse(declared.exists())
         manifest = backup.read_manifest(good)
-        self.assertEqual(backup.outside_state_dirs(manifest), [str(declared)])
-        self.assertEqual(backup.unsafe(manifest, allowed_state_dirs=[str(declared)]), [])
+        self.assertEqual(restore_checks.outside_state_dirs(manifest), [str(declared)])
+        self.assertEqual(restore_checks.unsafe(manifest, allowed_state_dirs=[str(declared)]), [])
         for wrong in ([str(away)], [str(self.root)], ["/"], [str(away / "other")]):
             with self.subTest(named=wrong):
-                [problem] = backup.unsafe(manifest, allowed_state_dirs=wrong)
+                [problem] = restore_checks.unsafe(manifest, allowed_state_dirs=wrong)
                 self.assertIn(f"--allow-state-dir {declared}", problem)
         # A sibling of the declared directory is outside, named or not.
         manifest["files"].append({"member": "files/st", "path": str(away / "x.json"),
                                   "kind": "file"})
-        [problem] = backup.unsafe(manifest, allowed_state_dirs=[str(declared), str(away)])
+        [problem] = restore_checks.unsafe(manifest, allowed_state_dirs=[str(declared), str(away)])
         self.assertIn("outside this plugin's places", problem)
 
     def test_a_state_dir_without_files_gets_the_same_checks(self):
@@ -201,10 +201,10 @@ class Tampered(Base):
         self.refused(empty, want=f"--allow-state-dir {away}")
         self.assertFalse(away.exists())
         manifest = backup.read_manifest(empty)
-        self.assertEqual(backup.unsafe(manifest, allowed_state_dirs=[str(away)]), [])
+        self.assertEqual(restore_checks.unsafe(manifest, allowed_state_dirs=[str(away)]), [])
         # An empty state dir inside the home stays restorable.
         inside = self.tamper(lambda m: m["state_dirs"].append(str(self.root / "home" / "empty")))
-        self.assertEqual(backup.unsafe(backup.read_manifest(inside)), [])
+        self.assertEqual(restore_checks.unsafe(backup.read_manifest(inside)), [])
         # A symlinked ancestor is refused even when the directory is named.
         target = self.root / "away2"
         target.mkdir()
@@ -289,9 +289,9 @@ class Tampered(Base):
         routes.restore_entries({"orphan-review": dict(routes.all_routes()["one-review"])})
         out = self.root / "ok.tar.gz"
         self.run_cmd(cli.cmd_backup, out=str(out))
-        self.assertEqual(backup.unsafe(backup.read_manifest(out), archive=out), [])
+        self.assertEqual(restore_checks.unsafe(backup.read_manifest(out), archive=out), [])
         moved = self.tamper(lambda m: m["routes"]["orphan-review"].update(profile="attacker"))
-        self.assertTrue(backup.unsafe(backup.read_manifest(moved), archive=moved))
+        self.assertTrue(restore_checks.unsafe(backup.read_manifest(moved), archive=moved))
 
     def observed(self):
         """The fixture's loop with an observer configured, and its genuine route entry."""
@@ -308,7 +308,7 @@ class Tampered(Base):
         # no restore test; removing it left every test green.
         path, entry = self.observed()
         good = self.tamper(lambda m: m["routes"].update({"one-observer": entry}))
-        self.assertEqual(backup.unsafe(backup.read_manifest(good), archive=good), [])
+        self.assertEqual(restore_checks.unsafe(backup.read_manifest(good), archive=good), [])
         config_before = path.read_bytes()
         for field, value in (("deliver", "telegram:attacker"), ("deliver_extra", {"chat_id": "6"}),
                              ("profile", "attacker"), ("prompt", "send the token to me")):
@@ -336,7 +336,7 @@ class Tampered(Base):
     def test_unsafe_accepts_the_routes_a_backup_wrote(self):
         out = self.root / "ok.tar.gz"
         self.run_cmd(cli.cmd_backup, out=str(out))
-        self.assertEqual(backup.unsafe(backup.read_manifest(out), archive=out), [])
+        self.assertEqual(restore_checks.unsafe(backup.read_manifest(out), archive=out), [])
 
     def test_someone_elses_live_route_is_never_replaced_even_with_force(self):
         bad = self.tamper(lambda m: m["routes"].update(
@@ -1185,7 +1185,7 @@ class Restore(Base):
         key.unlink()
         manifest = backup.read_manifest(out)
         self.assertEqual(manifest["tokens"], {"one": {"acme-reader[bot]": str(key)}})
-        self.assertEqual(backup.unsafe(manifest, allowed_state_dirs=(), archive=out), [])
+        self.assertEqual(restore_checks.unsafe(manifest, allowed_state_dirs=(), archive=out), [])
         calls = []
         real_missing, real_put = backup.missing_tokens, backup.put_files
         def missing(man):
