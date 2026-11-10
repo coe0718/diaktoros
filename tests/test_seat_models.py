@@ -674,6 +674,24 @@ class DoctorAndModels(Base):
         self.assertIn("more than one loop is configured", texts["many"])
         self.assertNotIn("no loops configured", texts["many"])
 
+    def test_models_seat_shadow_uses_the_shadow_profile(self):
+        # #1071: --seat rejected "shadow" although config.seat_profile resolves it.
+        from diaktoros.cli import reports
+        parser = argparse.ArgumentParser()
+        reports.add_models(parser.add_subparsers())
+        args = parser.parse_args(["models", "--seat", "shadow"])
+        self.loop = {**self.loop, "shadow": {"profile": "rev"}}
+        self.write_runtime(self.settings)
+        out = io.StringIO()
+        with redirect_stdout(out), mock.patch.object(config, "all_loops", return_value=[self.loop]):
+            rc = args.func(args)
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertIn("profile rev (seat shadow)", out.getvalue())
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(args.func(argparse.Namespace(profile=None, seat=None, loop=None)), 2)
+        self.assertIn("--seat reviewer|fixer|adjudicator|shadow", out.getvalue())
+
     def test_models_is_loud_about_unknown_providers_and_profiles(self):
         rc, text = self.models(profile="adj")
         self.assertEqual(rc, 1)

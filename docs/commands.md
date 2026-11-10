@@ -1501,7 +1501,7 @@ not supply models. The Hermes example's `-p` selects which profile's model to ch
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--profile-name` | `PROFILE` |  | Hermes profile name |
-| `--seat` | `reviewer` \| `fixer` \| `adjudicator` |  | use this seat's profile from the loop config |
+| `--seat` | `reviewer` \| `fixer` \| `adjudicator` \| `shadow` |  | use this seat's profile from the loop config |
 | `--loop` | `LOOP` |  | loop id for --seat (default: the only loop) |
 <!-- /flags -->
 

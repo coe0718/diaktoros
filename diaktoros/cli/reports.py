@@ -218,6 +218,11 @@ def cmd_history(args) -> int:
     return 0
 
 
+# The seats ``models --seat`` resolves through ``config.seat_profile``; the parser's choices and
+# the usage error both read this one list (#1071).
+MODELS_SEATS = ("reviewer", "fixer", "adjudicator", "shadow")
+
+
 def cmd_models(args) -> int:
     """Read-only: what a profile's provider offers, from Hermes's model catalog (issue #32).
 
@@ -227,7 +232,7 @@ def cmd_models(args) -> int:
     from .. import seat_model
     from ..doctor import hook_checks, seat_checks
     if bool(args.profile) == bool(args.seat):
-        print("pass exactly one of --profile-name NAME or --seat reviewer|fixer|adjudicator")
+        print(f"pass exactly one of --profile-name NAME or --seat {'|'.join(MODELS_SEATS)}")
         return 2
     profile, seat = args.profile, args.seat
     if seat:
@@ -383,7 +388,7 @@ def add_models(sub) -> None:  # noqa: ANN001
     # Never `--profile`/`-p`: `hermes` takes those from anywhere on its command line to switch
     # its own profile, so the plugin would never see them.
     models.add_argument("--profile-name", dest="profile", help="Hermes profile name")
-    models.add_argument("--seat", choices=("reviewer", "fixer", "adjudicator"),
+    models.add_argument("--seat", choices=MODELS_SEATS,
                         help="use this seat's profile from the loop config")
     models.add_argument("--loop", help="loop id for --seat (default: the only loop)")
     models.set_defaults(func=cmd_models)
