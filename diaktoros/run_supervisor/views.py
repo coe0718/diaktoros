@@ -200,6 +200,51 @@ def turn_state(db: str | Path, repo: str, pr: int, head: str, seat: str) -> str 
         return None
 
 
+# A turn's own words in the merge check (#753): one clause, bounded under GitHub's 140-character
+# status description with the reason it follows.
+TURN_NOTE_MAX = 90
+
+
+def turn_note(db: str | Path, repo: str, pr: int, head: str, seat: str) -> str:
+    """The newest ``seat`` turn at this PR head as one clause for the merge check, ``ready`` and
+    ``explain`` (#753): queued, running, held (its host-written ``held:`` line, which says when a
+    pacing hold resumes), waiting to retry, failed, cancelled or uncertain. "" when there is none,
+    it succeeded, or the ledger can't be read: the note never changes what the check decides."""
+    from .. import gh, pacing
+    try:
+        con = read_only_connect(db)
+        if con is None:
+            return ''
+        try:
+            row = con.execute("SELECT state, error, retries, retry_at FROM runs WHERE repo=? AND "
+                              "pr=? AND head=? AND seat=? ORDER BY created DESC LIMIT 1",
+                              (repo, pr, head, seat)).fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return ''
+    if row is None:
+        return ''
+    state, error, retries, retry_at = row
+    error = gh.one_line(error or '', TURN_NOTE_MAX)
+    turn = f"{'issue fix' if seat == 'issue_fixer' else seat} turn"
+    if state == 'pending':
+        return f"{turn} queued"
+    if state in ('claimed', 'launching', 'running'):
+        return f"{turn} running"
+    if state == 'waiting' and error.startswith('held: '):
+        return f"{turn} {error}"
+    if state == 'waiting':
+        at = f", next check {pacing.when(retry_at)}" if type(retry_at) in (int, float) else ''
+        return (f"{turn} waiting to retry (attempt {(retries or 0) + 1} of "
+                f"{run_supervisor.MAX_RETRIES}){at}")
+    if state in ('failed', 'cancelled'):
+        return f"{turn} {state}: {error or 'no reason recorded'}"
+    if state == 'uncertain':
+        return f"{turn} outcome uncertain: a person checks it"
+    return ''
+
+
 def ruling_at(db: str | Path, repo: str, pr: int, head: str,
               turn_key: str | None = None) -> str | None:
     """The newest recorded ruling's verdict on this PR head, read-only, or None. With
