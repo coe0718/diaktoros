@@ -361,7 +361,8 @@ def add_selftest(sub) -> None:  # noqa: ANN001
                        help="with --pr: run one real isolated reviewer turn whose verdict is "
                             "printed and never posted")
     check.add_argument("--ping", action="store_true",
-                       help="ask GitHub to ping each loop hook and report whether the gateway "
+                       help="ask GitHub to ping each loop hook (an App-webhook loop: to "
+                            "redeliver the App's newest ping) and report whether the gateway "
                             "accepted its signature (the selftest's only GitHub write)")
     check.add_argument("--admin-token", default="",
                        help="login whose credential may ping hooks: a token with "

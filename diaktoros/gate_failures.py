@@ -1105,10 +1105,14 @@ def _record_overrun(_signum, _frame):
 
 
 def _route_of(gate: str, payload) -> str:
-    """The loop's route for ``gate`` (for the re-deliver hint); empty when it cannot be told."""
+    """The loop's route for ``gate`` (for the re-deliver hint); empty when it cannot be told. A
+    loop on its App's webhook got the event through the App's route (#1239), not the seat's."""
     try:
+        from . import config
         from .route_intent import routes_of
         loop = _loop_for(payload)
+        if loop and config.app_ingress(loop):
+            return config.app_route(loop)
         return routes_of(loop).get(gate.removeprefix("gate_"), "") if loop else ""
     except Exception:  # noqa: BLE001 - the hint then names the route generically
         return ""
@@ -1358,6 +1362,12 @@ def redeliver_hint(entry: dict) -> str:
     route = str(entry.get("route") or "") or f"<the loop's {seat} route>"
     what = " ".join(x for x in (str(entry.get("action") or ""),
                                 f"#{entry['pr']}" if entry.get("pr") else "") if x)
+    from .config import APP_ROUTE_PREFIX
+    if route.startswith(APP_ROUTE_PREFIX):
+        # #1239: an App's webhook has no repo hook; its log is in the App's own settings.
+        return (f"re-deliver it from GitHub: the {route.removeprefix(APP_ROUTE_PREFIX)} App's "
+                f"settings → Advanced → Recent Deliveries → the {what or 'failed'} delivery → "
+                "Redeliver")
     return (f"re-deliver it from GitHub: the repo's Settings → Webhooks → the hook ending in "
             f"/webhooks/{route} → Recent Deliveries → the {what or 'failed'} delivery → Redeliver")
 

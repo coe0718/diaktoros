@@ -122,14 +122,25 @@ The lines that matter in App mode:
 | `doctor` line | What green means | If it isn't green |
 | --- | --- | --- |
 | `hooks` | "none, on purpose": events arrive through the App's webhook | It names the leftover repo hooks by id; delete them |
-| `app-webhook` | The App's webhook posts to this loop's route with every event it needs | `hermes dk app-webhook --loop ID --set`, and subscribe to any missing event in the App's settings (Permissions & events) |
+| `app-webhook` | The App's webhook posts to this loop's route with every event it needs, and the gateway accepted this repository's latest delivery in the App's own log (`latest delivery 200`; with none yet, the secret is unproven) | `hermes dk app-webhook --loop ID --set`, and subscribe to any missing event in the App's settings (Permissions & events). A latest delivery answered 401 is a secret that isn't the route's: `--set` writes the route's secret onto the App |
 | `gateway-script:dk-app-…` | The gateway can run the route's script | `hermes dk apply --loop ID` writes it |
 | `merge-check` | The base requires `diaktoros/review`, pinned to the reviewer App | `hermes dk protect --loop ID` |
 | `credential:<seat>`, `app:<login>` | Each App's key is private and its installation can reach the repository | Install the App on the repository, or accept a new permission on its installation |
 | `app-live:<login>` | The key signs as that App and the App is installed on the repository (read with the App's own JWT) | A wrong key or App id, or an App not installed here, is red. ⚠️ "no HTTP answer" means the network, DNS or a proxy stopped the read, so the key and the installation were not checked: fix the connection and run `doctor` again (`doctor --offline` also shows ⚠️, "not probed") |
 
 `arm` won't say "armed" until the App's route is installed, the gateway can run its script, and
-the App's webhook would deliver. `selftest` skips the repo-hook step for an App loop.
+the App's webhook would deliver.
+
+The App's own delivery log (its settings → Advanced → Recent Deliveries, or
+`GET /app/hook/deliveries` with its JWT) takes the place of a repo hook's:
+
+- `selftest`'s webhook step judges the gateway's answer to this repository's latest delivery, as
+  `doctor` does. `selftest --ping` asks GitHub to redeliver the App's newest ping. An App's webhook
+  has no ping endpoint, and GitHub keeps recent deliveries only, so when the log holds no ping
+  nothing is sent: a real event is never redelivered, since that would run a gate again.
+- `trace --delivery` takes a GUID or id from the App's log. A delivery for another repository the
+  App serves is refused. `trace --payload` runs the App's dispatcher, as the gateway would.
+- A gate failure's redelivery hint points at the App's Recent Deliveries, not a repo hook.
 
 ## 5. The first PR
 
