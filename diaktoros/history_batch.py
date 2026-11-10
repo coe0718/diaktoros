@@ -4,12 +4,15 @@ once (the site's run viewer, #1749) instead of one PR at a time.
 
 The PRs are the ones the run ledger has a turn for since the date. Each is collected whole (its
 turns before the date included) and written only when GitHub says it merged; with ``--offline``
-the merge cannot be read, so every PR with a turn is written and the listing says so. Nothing is
-written outside ``DIR``; a file of the same name is replaced.
+the merge cannot be read, so a PR is written whether it merged or not and the listing says so.
+A write that fails stops the export there, keeping the files before it. Nothing is written
+outside ``DIR``; a file of the same name is replaced.
 """
 from __future__ import annotations
 
+import errno
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -56,6 +59,7 @@ def export(loop: dict, db: Path, since: float, out: Path, fmt: str, offline: boo
     numbers, gap = prs_since(db, loop["repo"], since)
     result: dict = {"written": [], "skipped": [], "failed": None, "gap": gap}
     if not numbers:
+        _writable(out)      # an unwritable DIR refuses even when there is nothing to write (#2204)
         return result
     out.mkdir(parents=True, exist_ok=True)
     for number in numbers:
@@ -72,6 +76,18 @@ def export(loop: dict, db: Path, since: float, out: Path, fmt: str, offline: boo
             break
         result["written"].append({"pr": number, "file": name})
     return result
+
+
+def _writable(out: Path) -> None:
+    """Raise the OSError ``mkdir`` and a write would raise for ``out``, without creating it: its
+    nearest existing part must be a directory this process can write to."""
+    for part in (out, *out.parents):
+        if part.exists():
+            if not part.is_dir():
+                raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(part))
+            if not os.access(part, os.W_OK):
+                raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(part))
+            return
 
 
 def listing(result: dict, out: Path, offline: bool) -> str:

@@ -1642,7 +1642,8 @@ hermes dk history --loop "<loop-id>" --since 2026-11-01 --out cycles --format js
 `DATE` (`7d`, `24h` or `2026-11-01`) to its own file in `DIR`: `pr-N.json`, `pr-N.md` or
 `pr-N.txt`, each exactly what `--pr N` prints in that format, with the PR's whole cycle (turns
 before the date included). It lists what it wrote and which PRs it skipped as not merged. With
-`--offline` the merge is not read, so every PR with a turn in the window is written. A file of the
+`--offline` the merge is not read, so a PR with a turn in the window is written whether it merged or
+not. A file of the
 same name in `DIR` is replaced; nothing is written anywhere else. Use it to publish several cycles
 to the site's run viewer at once.
 
@@ -1650,7 +1651,7 @@ to the site's run viewer at once.
 archive: a findings table, a heading per round, and links to each review, commit, comment, answers
 and filed issue. `--format json` gives the same data for tools, with a `schema` number that changes only
 when a key is renamed, removed or changes meaning. No output names a local path: an absolute path
-(`/…`, `~/…` or a Windows `C:\…`, doubled slashes included) or a `file://` URL in a free text, such
+(`/…`, `~/…`, a Windows `C:\…` or a `\\server\share\…` share, doubled slashes included) or a `file://` URL in a free text, such
 as a failed turn's output tail, is cut to its last part (`…/state.json`). A path may hold spaces, so the cut goes to its last `/` and can take a few words
 before it with it. `--offline` leaves GitHub out and
 lists what that leaves missing. It exits `2` when no loop can be chosen, or when it gets neither
