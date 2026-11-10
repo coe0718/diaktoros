@@ -15,6 +15,7 @@ import io
 import json
 import os
 import pathlib
+import stat
 import sys
 import unittest
 from contextlib import redirect_stdout
@@ -109,6 +110,17 @@ class TraceIsTheLiveGate(Base):
         # The drain the gate runs is reported, not performed, and its refusal is not a gate line.
         self.assertIn("would start: ", out)
         self.assertNotIn("trace: dry run", out)
+
+    def test_a_socket_or_fifo_in_the_state_directories_is_left_out_of_the_copy(self):
+        # Live: the gateway keeps gateway.loop-tick.<pid>.sock in $HERMES_HOME/state, and the
+        # copy failed with "[Errno 6] No such device or address", so every trace did.
+        specials = [t.HOME / "state" / "gateway.loop-tick.1.sock", t.STATE_DIR / "a.fifo"]
+        for path, kind in zip(specials, (stat.S_IFSOCK, stat.S_IFIFO)):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            os.mknod(path, kind | 0o600)
+            self.addCleanup(path.unlink, missing_ok=True)
+        out = self.trace(payload("review_requested", "stranger", requested=t.SEAT))
+        self.assertIn("outcome:   declined — sender stranger is not a fixer", out)
 
     def test_an_eligible_event_with_a_runtime_file_would_start_a_run(self):
         runtime = t.HOME / "diaktoros-runtime.json"
