@@ -31,7 +31,7 @@ import subprocess
 import sys
 import time
 
-from . import config, gh, isolation, observer, stale_approval, state as state_mod
+from . import base_merge, config, gh, isolation, observer, stale_approval, state as state_mod
 from .util import log, note_gate_hold, now_iso, silence
 from . import envnames
 
@@ -951,9 +951,14 @@ def review_cap_hit(loop: dict, st, number: int, head: str, rounds: int, author: 
 def reviewed_at_head(reviews: list, loop: dict, head: str) -> bool:
     """A submitted verdict at this head, not a comment, draft, or dismissed review. The
     adjudicator's approval on its ACCEPT is one (#905): dismissing the change request it
-    overruled must not make the head look unreviewed, or a fresh review would start."""
-    return any(gh.review_state(r) in {"APPROVED", "CHANGES_REQUESTED"}
-               for r in reviews_at_head(reviews, loop, head) + ruled_approvals(reviews, loop, head))
+    overruled must not make the head look unreviewed, or a fresh review would start. So is an
+    approval the host's base merge carried to it (#1785)."""
+    return any(gh.review_state(r) in {"APPROVED", "CHANGES_REQUESTED"} for r in _verdicts_at(reviews, loop, head))
+
+
+def _verdicts_at(reviews: list, loop: dict, head: str) -> list:
+    return (reviews_at_head(reviews, loop, head) + ruled_approvals(reviews, loop, head)
+            + base_merge.carried(loop, reviews, head))
 
 
 def reviews_at_head(reviews: list, loop: dict, head: str) -> list:
@@ -1052,10 +1057,11 @@ def latest_effective_review_at_head(reviews: list, loop: dict, head: str) -> dic
 
     REST order is not a verdict. Dismissed reviews and comments do not supersede a verdict;
     an unfamiliar state or undatable verdict cannot authorize a merge instruction. The
-    adjudicator's approval on its ACCEPT ruling (``ruled_approvals``, #905) counts too.
+    adjudicator's approval on its ACCEPT ruling (``ruled_approvals``, #905) counts too, and so
+    does an approval a base merge carried here (``base_merge.carried``, #1785).
     """
     candidates = []
-    for review in reviews_at_head(reviews, loop, head) + ruled_approvals(reviews, loop, head):
+    for review in _verdicts_at(reviews, loop, head):
         state = gh.review_state(review)
         if state in NOT_VERDICTS:
             continue

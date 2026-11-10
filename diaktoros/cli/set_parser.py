@@ -74,7 +74,8 @@ def _set_switch_flags(change) -> None:  # noqa: ANN001
                                        "overruled; off stops it; needs the adjudicator comment login"),
             ("--adjudicator-file-issues", "file the findings a ruling lets through as issues, by the reader, labelled adjudicator-found; off stops it"),
             ("--change-proof", "run each reviewed head's changed tests on its merge base and at the head, and show the reviewer; off stops it"),
-            ("--main-flake-rerun", "rerun main's failed CI jobs once when they look like a flake, before a red-main notice; off stops it")):
+            ("--main-flake-rerun", "rerun main's failed CI jobs once when they look like a flake, before a red-main notice; off stops it"),
+            ("--update-behind", "merge the base into a loop PR that fell behind, keeping its approval when the merge touches nothing the PR changed; needs unattended fixer pushes; off stops it")):
         change.add_argument(flag, choices=("on", "off"), default=None, help=text)
 
 

@@ -389,3 +389,41 @@ def check_main_flake_rerun(loop: dict, offline: bool = False) -> doctor.Check | 
                         f"on — a red main that looks like a flake is rerun once as {login} before "
                         "its notice (a fine-grained token also needs Actions: write; a refused "
                         "rerun is said in the main_red notice)")
+
+
+def check_update_behind(loop: dict, offline: bool = False) -> doctor.Check | None:
+    """The host's base merges into behind loop PRs (#1785, ``update_behind``); ``None`` when the
+    setting is off. On, the fixer seat must push, and GitHub must report a PR ``behind``."""
+    if not config.update_behind(loop):
+        return None
+    lid = str(loop.get("id") or "<id>")
+    off = f"`hermes dk set --loop {lid} --update-behind off`"
+    if not config.unattended_fixer_push_enabled(loop):
+        return doctor.Check("update-behind", doctor.MISMATCH,
+                            "on, but unattended fixer pushes are off, so the host pushes nothing",
+                            f"`{config.fixer_push_enable_command(loop)}`, or {off}")
+    login = config.seat_login(loop, "fixer")
+    if offline:
+        return doctor.Check("update-behind", doctor.UNKNOWN,
+                            f"on — {login} merges {loop['base']} into behind loop PRs; its access "
+                            "and the base's protection were not probed (--offline)")
+    repo = gh.api(loop, f"/repos/{loop['repo']}", login=login)
+    perms = repo.get("permissions") if isinstance(repo, dict) else None
+    if not isinstance(perms, dict) or perms.get("push") is not True:
+        return doctor.Check("update-behind", doctor.MISMATCH,
+                            f"on, but {login}'s token cannot push to {loop['repo']} (or could not "
+                            "be read), so a base merge would be refused",
+                            f"give {login} write access to {loop['repo']}, or {off}")
+    strict, unread = doctor.base_requires_up_to_date(loop)
+    if strict is not True:
+        why = (f"{loop['base']} does not require branches to be up to date" if strict is False
+               else f"could not read whether {loop['base']} requires up-to-date branches ({unread})")
+        return doctor.Check("update-behind", doctor.UNKNOWN,
+                            f"on — {login} can push, but {why}: GitHub then never reports a PR "
+                            "`behind`, so the host merges nothing",
+                            f"require branches to be up to date before merging on {loop['base']} "
+                            "(branch protection or a ruleset: 'strict required status checks')")
+    return doctor.Check("update-behind", doctor.VERIFIED,
+                        f"on — {login} merges {loop['base']} into a behind loop PR when the merge "
+                        "is clean; an approved head's approval carries over only when the base's "
+                        "new commits touch nothing the PR changed")

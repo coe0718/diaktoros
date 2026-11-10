@@ -8,7 +8,8 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
-from . import config, gate, gate_decisions, gate_failures, gh, pr_hold, review_kick, run_supervisor
+from . import base_merge, config, gate, gate_decisions, gate_failures, gh, pr_hold, review_kick
+from . import run_supervisor
 from . import drain, explain_next, situation, transition
 from . import state as state_mod
 from .util import iso_at
@@ -487,7 +488,8 @@ def _budget(c) -> None:
                     f"{last.get('submitted_at') or 'at an unrecorded time'} by "
                     f"{gate.reviewer_login(last) or 'an unrecorded reviewer'}")
     elif c.approved:
-        c.budget = f"{c.spent}/{c.cap} verdicts spent · approved at head {c.short}"
+        c.budget = (f"{c.spent}/{c.cap} verdicts spent · approved at head {c.short}"
+                    + base_merge.said(c.loop, c.latest))
     elif c.head_states:
         c.budget = (f"{c.spent}/{c.cap} verdicts spent · a non-verdict review at head {c.short} "
                     f"({'/'.join(c.head_states)}) — reviewer gate still accepts a fresh request")

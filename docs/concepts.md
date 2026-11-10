@@ -188,6 +188,8 @@ PR that closes no issue is unaffected.
 
 `cap` defaults to 3 and must be at least 2. The gate counts **CHANGES_REQUESTED** reviews by allowlisted reviewers from GitHub history. Approvals end the relevant situation; a comment neither counts nor wakes the fixer. With cap 3, the ordinary path permits three changes-requested verdicts and at most two intervening fixes. The third escalates instead of buying a third fix. A new commit does not erase the accumulated review budget.
 
+An approval belongs to the head it was given at, with one exception (#1785, `update_behind`, off by default). When a loop PR that was ready to merge falls behind its base and the host merges the base in, the approval carries over to the merged head only under an exact tree identity: the base's new commits touch no path the PR changed, and the merged tree is the base's with the PR's diff applied. The carry-over is recorded with both heads, so the reviewer gate, `ready`, the merge check, `explain` and the shadow all read the same fact, and CI must still pass at the new head. A merge that touches a file the PR changed is reviewed as usual.
+
 Reviewer findings are graded P0–P3 and classified as blocking or issue-tier. Blocking findings request changes; the reviewer files nonblocking ones as issues itself (#247), and with `adjudicator_file_issues` the adjudicator's ruling does too (#1864). An adjudicator ruling is not a GitHub approval or a merge instruction enforced by the plugin.
 
 ## The switches

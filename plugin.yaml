@@ -369,6 +369,11 @@ config_schema:
     type: bool
     default: false
     description: "On: before a red-main notice, the watchdog reruns main's failed CI jobs once when they look like a flake (every failing test passed in a sibling job of the same head, or every failure is a timeout), as the first maintainer whose token the loop holds, never a seat (#1784). A rerun that passes sends a routine main_flaked notice naming the test; a second red sends main_red, saying a rerun was tried. Never on a PR. Off: every red main is a main_red notice."
+  update_behind:
+    label: "Bring a behind loop PR up to date"
+    type: bool
+    default: false
+    description: "On: when a loop PR falls behind its base (GitHub reports it once the base requires branches to be up to date), the host merges the base into it as the fixer seat, if no turn of the PR is queued or running and the merge is clean (#1785). When the head before was approved and ready to merge but for being behind, and the base's new commits touch nothing the PR changed, the approval carries over to the merged head, which still needs green CI; otherwise the new head is reviewed as usual. Needs unattended fixer pushes. Off: a behind loop PR waits for a person or the fixer."
   change_proof:
     label: "Prove the changed tests"
     type: bool
