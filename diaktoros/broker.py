@@ -78,9 +78,9 @@ def _verify_identities(loop: dict, identities: tuple, names: str, *,
         raise denied(f"{names} must use distinct identities")
     mapped = [gh.credential_path(loop, identity) for identity in identities]
     if any(path is None for path in mapped):
-        raise denied(f"{names} token mappings required")
+        raise denied(f"{names} credential mappings required")
     if len({path.resolve() for path in mapped}) != len(identities):
-        raise denied(f"{names} must use distinct token files")
+        raise denied(f"{names} must use distinct credential files")
     principals = []
     for identity in identities:
         try:
@@ -146,7 +146,7 @@ def authorize(loop: dict, *, repo: str, number: int, head: str, role: str,
     login = ((loop.get("seats") or {}).get(role) or {}).get("login")
     reader = loop.get("read_token")
     if not login or not reader or not gh.credential_path(loop, login) or not gh.credential_path(loop, reader):
-        raise BrokerDenied("explicit seat and read token mappings required")
+        raise BrokerDenied("explicit seat and read credential mappings required")
     seats = loop.get("seats") or {}
     _verify_identities(loop, (reader, (seats.get("reviewer") or {}).get("login"),
                               (seats.get("fixer") or {}).get("login")),
@@ -308,7 +308,7 @@ def authorize_ruling_comment(loop: dict, *, repo: str, number: int, head: str,
 
     A sibling of :func:`authorize`, not a relaxation of it: the reviewer/fixer role and
     operation table there is unchanged. Only an *optional* ``seats.adjudicator.login`` can
-    comment, and only if it is a fourth identity — distinct login, distinct token file and a
+    comment, and only if it is a fourth identity — distinct login, distinct credential file and a
     distinct principal (``/user`` for a PAT; ``/app`` and ``/users/<slug>[bot]`` for a GitHub
     App) from the reader and both seats — at a live PR that is still the
     open, non-draft, same-repository, unapproved head the ruling was made on.
@@ -403,7 +403,7 @@ def authorize_triage(loop: dict, *, repo: str, number: int) -> str:
     if not login or login.casefold() == reader.casefold():
         raise BrokerDenied("no triage identity distinct from the reader")
     if gh.credential_path(loop, login) is None:
-        raise BrokerDenied("triage token mapping required")
+        raise BrokerDenied("triage credential mapping required")
     _verify_identities(loop, (reader, login), "the reader and triage")
     try:
         issue_inputs.triage_issue(loop, number)

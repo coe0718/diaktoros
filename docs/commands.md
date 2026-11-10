@@ -1555,7 +1555,7 @@ either way.
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` | **required** | loop id |
-| `--admin-token` | `ADMIN_TOKEN` |  | login whose token can manage rulesets (admin access; default: the reader) |
+| `--admin-token` | `ADMIN_TOKEN` |  | login whose credential can manage rulesets: a token with admin access, or a GitHub App with Administration: Read and write (default: the reader) |
 | `--remove` |  |  | delete the loop's ruleset instead; nothing else is touched |
 | `--dry-run` |  |  | print what would be written, write nothing |
 <!-- /flags -->
@@ -1642,8 +1642,9 @@ hermes dk history --loop "<loop-id>" --since 2026-11-01 --out cycles --format js
 `DATE` (`7d`, `24h` or `2026-11-01`) to its own file in `DIR`: `pr-N.json`, `pr-N.md` or
 `pr-N.txt`, each exactly what `--pr N` prints in that format, with the PR's whole cycle (turns
 before the date included). It lists what it wrote and which PRs it skipped as not merged. With
-`--offline` the merge is not read, so every PR with a turn in the window is written unless a write
-fails (see below). A file of the same name in `DIR` is replaced; nothing is written anywhere else. Use it to publish several cycles
+`--offline` the merge is not read, so a PR with a turn in the window is written whether it merged or
+not. A file of the
+same name in `DIR` is replaced; nothing is written anywhere else. Use it to publish several cycles
 to the site's run viewer at once.
 
 `--format markdown` gives the same timeline as a document, for a PR comment, a write-up or an

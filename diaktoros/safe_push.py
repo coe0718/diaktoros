@@ -964,7 +964,7 @@ def update_branch(loop: dict, *, repo: str, number: int, head: str, branch: str,
     reader = loop.get("read_token")
     if (not login or not reader or not gh.credential_path(loop, login) or not gh.credential_path(loop, reader)
             or login.casefold() == str(reader).casefold()):
-        raise broker.BrokerDenied("explicit seat and read token mappings required")
+        raise broker.BrokerDenied("explicit seat and read credential mappings required")
     if not isinstance(branch, str) or len(branch) > 200 or not all(
             SEGMENT.fullmatch(part) and not part.startswith(".") and not part.endswith(".")
             and ".." not in part and not part.endswith(".lock") for part in branch.split("/")):
