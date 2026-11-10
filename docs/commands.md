@@ -1242,6 +1242,14 @@ The archive holds the routes' HMAC secrets, so restored hooks keep working. It i
 `0600`, the command warns about it, and the secrets are never printed. It leaves out GitHub
 tokens (PATs), Hermes profiles and model logins. It never overwrites a file.
 
+It refuses (exit `2`, nothing written) while `migrate`'s pause marker exists: a `migrate`,
+`restore` or `update --apply` is running, or a `migrate` died before it finished (#1054). The
+records may then be half moved, and they are only safe under the pause, which an archive would
+not carry. Back up once the migration has finished. `migrate`'s own backup is the exception: it
+is taken under its own marker, and when it picks up an interrupted run it records that run's
+marker in the archive, so restoring that archive leaves the install paused (`NOT FINISHED`, exit
+`1`) until `migrate` runs again.
+
 Retention (#1079): a backup written to the default place (`$HERMES_HOME/backups`, no `--out`)
 is followed by deleting the oldest archives written there (`diaktoros-backup-<stamp>[-n].tar.gz`,
 regular files only) beyond the newest `--keep N` (default 10; `0` keeps every archive). Such an
