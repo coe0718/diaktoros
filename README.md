@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/assets/diaktoros-logo.png" alt="Diaktoros" width="600"></p>
+<p align="center"><img src="docs/assets/diaktoros-logo.webp" alt="Diaktoros" width="600"></p>
 
 # Diaktoros
 
