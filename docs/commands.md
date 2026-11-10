@@ -749,7 +749,9 @@ for the reader (shadows included), an adjudicator run for the adjudicator. `--ad
 drops the adjudicator's login, so it counts as moving that login (even alongside
 `--adjudicator-login` naming the same one). The check runs before
 anything is written, so a refused `set` changes nothing, `--adjudicator off`/`--adjudicator-profile`
-included. Other settings are not held up.
+included. Other settings are not held up. A write that fails after the adjudication change is
+written (an observer or App route, say) exits 2 and says the adjudication change stays written;
+check `status` before running `set` again, since a route written before the failure may stay too.
 Blank clone/base strings are ignored, not deletion requests. Seat concurrency/budget flags
 pin overrides; changing the loop default afterwards does not remove those pins.
 Observer destination/host changes refuse unsettled notices; see [Observer](observer.md).
