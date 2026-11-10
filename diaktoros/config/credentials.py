@@ -152,6 +152,14 @@ def reader_fix(loop: dict, login: str = "") -> str:
             f"(or --app {account}=APP_ID:/abs/key.pem for a GitHub App reader)")
 
 
+def seat_fix(loop: dict, seat: str) -> str:
+    """How a seat (reviewer, fixer) gets a credential: through the plugin settings and `apply`,
+    since `set --token` and `set --app` refuse a seat's login. A PAT file or a GitHub App, both
+    named (#2240)."""
+    return (f"set {seat}_token_file (a PAT) or {seat}_app_id and {seat}_app_key_file (a GitHub "
+            f"App) in the plugin settings, then run `hermes dk apply --loop {loop.get('id') or '<id>'}`")
+
+
 def verify_reader(loop: dict) -> None:
     """Refuse a reader that is not its own account, naming the four-identity rule."""
     problem = reader_problem(loop)

@@ -27,6 +27,13 @@ def review(state):
             "user": {"login": "rev", "id": 7}}
 
 
+def spent_cap(n=3):
+    """``n`` of the reviewer's change requests at the head, older than ``review``'s approval: a
+    parked cap marker holds only while these reach the cap (#1468)."""
+    return [{**review("CHANGES_REQUESTED"), "id": i + 2,
+             "submitted_at": f"2025-12-0{i + 1}T00:00:00Z"} for i in range(n)]
+
+
 class KindsBase(unittest.TestCase):
     """The fixture only (no tests), shared by Kinds and Stacked."""
 
@@ -159,18 +166,45 @@ class Kinds(KindsBase):
         state_mod._atomic_write(self.st.breach, {"acme/widgets#7": {
             "pr": 7, "head": HEAD, "rounds": 3, "cap": 3, "reason": "r", "at": "now",
             "status": "awaiting-adjudication"}})
+        at_cap = spent_cap() + [review("APPROVED")]        # the cap is still spent (#1468)
         with mock.patch.object(explain, "_ruled", return_value=None):
             # No adjudicator route: no ruling ever comes, so a person decides (shadow, #1225).
-            self.assertEqual(self.kind_of("no adjudicator route: a person decides"),
-                             ready.FAILURE)
+            self.assertEqual(self.kind_of("no adjudicator route: a person decides",
+                                          reviews=at_cap), ready.FAILURE)
             self.loop["adjudicator"] = {"route": "w-breach"}
-            self.assertEqual(self.kind_of("escalated: parked awaiting adjudication"),
-                             ready.PENDING)
+            self.assertEqual(self.kind_of("escalated: parked awaiting adjudication",
+                                          reviews=at_cap), ready.PENDING)
         with mock.patch.object(explain, "_ruled", return_value="REJECT"):
             # #1245: once ruled, the reason names the ruling, never "awaiting" (live trial #18).
-            self.assertEqual(self.kind_of("the adjudicator ruled REJECT at head aaaaaaa"),
-                             ready.FAILURE)
-            self.assertFalse(any("awaiting" in text for _, text in self.kinds()))
+            self.assertEqual(self.kind_of("the adjudicator ruled REJECT at head aaaaaaa",
+                                          reviews=at_cap), ready.FAILURE)
+            self.assertFalse(any("awaiting" in text for _, text in self.kinds(reviews=at_cap)))
+
+    def test_a_cap_marker_the_live_count_no_longer_reaches_does_not_hold(self):
+        # #1468: a dismissed verdict or a raised cap ends a parked cap marker (gate.breach_holds),
+        # as in the watchdog and explain. A cap still spent, unreadable reviews and an operator's
+        # escalation keep holding.
+        self.st.breach.parent.mkdir(parents=True, exist_ok=True)
+        marker = {"pr": 7, "head": HEAD, "rounds": 3, "cap": 3, "reason": "r", "at": "now"}
+        spent = spent_cap()
+        for status in ("awaiting-adjudication", "adjudicating"):
+            with self.subTest(status=status), \
+                    mock.patch.object(explain, "_ruled", return_value=None):
+                state_mod._atomic_write(self.st.breach, {"acme/widgets#7": {**marker,
+                                                                            "status": status}})
+                self.assertEqual(self.kinds(), [])          # approved at 0 of 3: expired
+                self.loop["cap"] = 4                         # a raised cap ends it too
+                self.assertEqual(self.kinds(reviews=spent + [review("APPROVED")]), [])
+                self.loop["cap"] = 3
+                self.assertEqual(self.kind_of("no adjudicator route",
+                                              reviews=spent + [review("APPROVED")]), ready.FAILURE)
+                unread = ready.assess_kinds(self.loop, self.st, self.pr, None,
+                                            ci.CIState(passed=["tests"]), CLEAN)
+                self.assertIn((ready.FAILURE, "escalated, and this loop has no adjudicator "
+                                              "route: a person decides"), unread)
+                state_mod._atomic_write(self.st.breach, {"acme/widgets#7": {
+                    **marker, "status": status, "escalated": {"by": "op"}}})
+                self.assertEqual(self.kind_of("no adjudicator route"), ready.FAILURE)
 
     def test_the_shadow_states_kind_is_carried(self):
         for kind in (ready.PENDING, ready.FAILURE):

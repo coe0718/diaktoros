@@ -180,20 +180,32 @@ def assess_kinds(loop: dict, st, pr: dict, reviews, ci_state,
             add(FAILURE, "open gate failure: " + explain.gate_failure_line(entry)[:200])
     except Exception as exc:
         add(PENDING, f"gate-failure ledger unreadable: {type(exc).__name__}")
-    held = st.human_hold(number, head)
-    if isinstance(held, dict):
-        add(FAILURE, f"waiting for a person: {held.get('why') or 'touches human_paths'}")
-    marker = st.breach_get(number)
-    if not gate.is_ruled_approval(latest, loop):   # #905: approved on the ACCEPT, no person waits
-        why.extend(_escalation(loop, number, head, marker))
-    shadow_kind, shadow_held, _note = gate.shadow_state(loop, number, head, marker=marker)
-    if shadow_held:
-        add(shadow_kind or PENDING, "shadow review: " + shadow_held)
+    why.extend(_held_for_a_ruling(loop, st, number, head, reviews, latest))
     # The hold blocks only while the fresh review is still owed. ``reviews`` above are already the
     # host-receipted post-boundary ones, so an approval found there ends the hold's veto, as in
     # the gates (#791). An unreadable review list never counts as approved.
     if not approved and transition.hold(st, number, head):
         add(PENDING, "same-head base retarget hold")
+    return why
+
+
+def _held_for_a_ruling(loop: dict, st, number: int, head: str, reviews,
+                       latest) -> list[tuple[str, str]]:
+    """What holds the head for a person or a ruling: a human-paths hold, an escalation or parked
+    cap marker (``_escalation``), and the shadow review. ``reviews`` are the effective reviews
+    (``None`` when unreadable) and ``latest`` the head's effective verdict."""
+    why: list[tuple[str, str]] = []
+    held = st.human_hold(number, head)
+    if isinstance(held, dict):
+        why.append((FAILURE, f"waiting for a person: {held.get('why') or 'touches human_paths'}"))
+    marker = st.breach_get(number)
+    # The live verdict count, as the watchdog and explain count it; None when unreadable.
+    spent = len(gate.verdicts(reviews, loop)) if isinstance(reviews, list) else None
+    if not gate.is_ruled_approval(latest, loop):   # #905: approved on the ACCEPT, no person waits
+        why.extend(_escalation(loop, number, head, marker, spent))
+    shadow_kind, shadow_held, _note = gate.shadow_state(loop, number, head, marker=marker)
+    if shadow_held:
+        why.append((shadow_kind or PENDING, "shadow review: " + shadow_held))
     return why
 
 
@@ -206,18 +218,25 @@ def _not_approved(loop: dict, st, number: int, head: str, reviews: list, author:
     return said
 
 
-def _escalation(loop: dict, number: int, head: str, marker) -> list[tuple[str, str]]:
+def _escalation(loop: dict, number: int, head: str, marker,
+                spent: int | None) -> list[tuple[str, str]]:
     """An escalated or parked head waits for its ruling; once it is in, the decision is the
     operator's. With no adjudicator route no ruling ever comes: a person decides (shadow, #1225).
     The reason says which (#1245): a stale "awaiting" after the ruling misled. An upheld shadow
-    review the fixer answers waits on no person: the shadow line says so (#1353)."""
+    review the fixer answers waits on no person: the shadow line says so (#1353).
+
+    A parked cap marker holds the head only while ``gate.breach_holds`` says so (#1468): a
+    dismissed verdict or a raised cap ends it, as in the watchdog and ``explain``. ``spent`` is
+    the live verdict count, ``None`` when the reviews are unreadable: the marker then still
+    holds, since nothing shows it has expired. An operator's escalation stands either way."""
     if gate.shadow_overruled(loop, marker, head):        # #1004: ACCEPT, approval stands
         return []
     if gate.shadow_fix_owed(loop, marker, head):         # #1004 part 3: REJECT, the fixer answers
         return []
-    if not (gate.escalated(marker, head) or gate.breach_delivery_status(
-            marker if isinstance(marker, dict) else {}, head) in {"awaiting-adjudication",
-                                                                  "adjudicating"}):
+    parked = gate.breach_delivery_status(marker if isinstance(marker, dict) else {}, head) in {
+        "awaiting-adjudication", "adjudicating"}
+    if not (gate.escalated(marker, head) or parked and (
+            spent is None or gate.breach_holds(marker, head, spent, loop["cap"]))):
         return []
     ruled = explain._ruled(loop, number, head)
     if ruled:
