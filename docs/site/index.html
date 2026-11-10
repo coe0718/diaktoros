@@ -105,9 +105,10 @@
       align-items: end;
     }
 
+    .mast-logo-wrap { display: block; }
     .mast-logo {
       display: block;
-      width: min(380px, 100%);
+      width: min(400px, 100%);
       height: auto;
       margin: 0 0 30px;
     }
@@ -743,7 +744,7 @@
       .shell { width: min(100% - 22px, 500px); }
       h1 { font-size: clamp(42px, 15vw, 62px); }
       .mast { padding-top: 34px; }
-      .mast-logo { width: min(280px, 100%); margin-bottom: 24px; }
+      .mast-logo { width: min(300px, 100%); margin-bottom: 24px; }
       .lead { font-size: 17px; }
       .actions { flex-direction: column; }
       .button { width: 100%; }
@@ -768,7 +769,10 @@
   <main>
     <section class="shell mast" aria-labelledby="hero-title">
       <div>
-        <img class="mast-logo" src="docs/assets/diaktoros-logo.webp" width="1200" height="747" alt="Diaktoros" />
+        <picture class="mast-logo-wrap">
+          <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diaktoros-logo-hero-dark.webp" />
+          <img class="mast-logo" src="docs/assets/diaktoros-logo-hero-light.webp" width="840" height="516" alt="Diaktoros" />
+        </picture>
         <p class="kicker">Built for Hermes Agent&nbsp;·&nbsp;<span data-site="version">v0.5.0</span></p>
         <h1 id="hero-title">Your agents write the code.<br><em>Diaktoros keeps the work moving.</em></h1>
         <p class="lead">An autonomous development loop for Hermes that takes issues through implementation, independent code review, fixes, CI checks, and dispute resolution—while keeping the final merge in human hands.</p>
