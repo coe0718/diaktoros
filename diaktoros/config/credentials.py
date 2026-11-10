@@ -221,9 +221,11 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
             continue                       # a loop that predates this check keeps loading
         login = config.seat_login(loop, seat).lower()
         if login and util.login_entry(tokens, login) is None:
-            raise config.ConfigError(f"{where}: no token mapped for the {seat} login {login!r} — add "
-                              f"--token {login}=/path/to/pat (its own PAT file, never the "
-                              "reader's)")
+            # #2255: `set --token` refuses a seat's login, so an existing loop maps it the settings way.
+            raise config.ConfigError(f"{where}: no token mapped for the {seat} login {login!r} — give "
+                              f"it its own credential, never the reader's: with `init`, --token "
+                              f"{login}=/path/to/pat or --app {login}=APP_ID:/abs/key.pem; on an "
+                              f"existing loop, {seat_fix(loop, seat)}")
     if roles & {"read", "adjudicator", *config.SEAT_KEYS}:
         verify_reader(loop)
     if roles & set(config.SEAT_KEYS):

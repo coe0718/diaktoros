@@ -17,7 +17,8 @@ from ..config import settings_form
 def _check(args, loop: dict):
     """``set --adjudicator-profile P`` / ``--adjudicator-route NAME`` / ``--adjudicator off``,
     checked and not yet written (#1972): ``set`` writes it with ``_commit`` only once its other
-    flags have passed their checks, so a refused ``set`` writes nothing.
+    flags have passed their checks, so a refused check writes nothing (a route write after
+    ``_commit`` can still refuse: #2212).
 
     Returns 2 when refused and 0 when there is nothing to change (both said here), or the
     plan ``_commit`` writes: its ``updated`` is the loop as the change leaves it.

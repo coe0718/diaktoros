@@ -168,6 +168,18 @@ class Credentials(Base):
         with self.assertRaisesRegex(config.ConfigError, "no token mapped for the reviewer"):
             credentials.verify_credentials(self.loop, {"reviewer"})
 
+    def test_an_unmapped_seat_is_told_init_flags_or_the_settings_way(self):
+        # #2255: `set --token` refuses a seat's login; init takes --token or --app, and an
+        # existing loop maps a seat through the plugin settings and `apply`.
+        self.loop["apps"] = {}
+        login = config.seat_login(self.loop, "reviewer").lower()
+        with self.assertRaises(config.ConfigError) as caught:
+            credentials.verify_credentials(self.loop, {"reviewer"})
+        said = str(caught.exception)
+        self.assertIn(f"with `init`, --token {login}=/path/to/pat or --app {login}=APP_ID:", said)
+        self.assertIn(credentials.seat_fix(self.loop, "reviewer"), said)
+        self.assertNotIn("set --", said)
+
 
 @unittest.skipUnless(OPENSSL, "openssl is not installed here")
 class Signing(Base):
