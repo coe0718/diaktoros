@@ -1217,7 +1217,10 @@ and the URLs its repo hooks post to. Each hook is pinged on its new route before
 is removed. See [renaming a loop](operations.md#renaming-a-loop).
 
 The install is paused while it runs: gates defer their deliveries for a later re-drive, and the
-worker and the watchdog wait.
+worker and the watchdog wait. If it dies before it finishes, the pause stays until `migrate` runs
+again; the watchdog sweep then sends each loop's observer one urgent `held` notice naming the
+marker file and the command (#1077). A loop with no observer configured, or whose state
+directory is missing, gets only the cron line.
 
 Exit `1` means a step was refused or isn't finished, and the line says why. Running it again
 finishes what an interrupted run began.

@@ -8,6 +8,7 @@ from __future__ import annotations
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import argparse
 import contextlib
+import fcntl
 import io
 import json
 import os
@@ -143,12 +144,65 @@ class Paused(fg.Base):
         api.assert_not_called()
         self.assertEqual(sup.get("d")["state"], "pending")
 
+    def hold_lock(self) -> None:
+        """Make the marker a live migrate's: hold its lock, as a running ``migrate`` does."""
+        fd = os.open(migrate.lock_path(), os.O_CREAT | os.O_RDWR, 0o600)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+    def sweep(self, drain: bool = False) -> str:
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            watchdog.run(argparse.Namespace(loop=None, drain=drain, seat="reviewer"), 60)
+        return out.getvalue()
+
     def test_the_watchdog_sweeps_nothing(self):
+        self.hold_lock()
         with mock.patch.object(config, "readable_loops") as loops, \
-                contextlib.redirect_stdout(io.StringIO()) as out:
-            watchdog.run(argparse.Namespace(loop=None, drain=False, seat="reviewer"), 60)
+                mock.patch.object(watchdog.observer, "notify") as notify:
+            out = self.sweep()
         loops.assert_not_called()
-        self.assertIn("paused", out.getvalue())
+        notify.assert_not_called()                 # a live migrate needs nobody (#1077)
+        self.assertIn("paused", out)
+        self.assertIn("is running", out)
+
+    def test_a_dead_migrate_sends_an_urgent_held_notice_naming_the_remedy(self):
+        # #1077: the pid is gone and no run holds the lock, so the pause lasts until someone
+        # runs migrate again. The sweep still sweeps nothing, but it tells the operator.
+        (self.root / "state").mkdir(exist_ok=True)
+        with mock.patch.object(watchdog.observer, "notify") as notify, \
+                mock.patch.object(watchdog, "sweep_loop") as swept:
+            out = self.sweep()
+        swept.assert_not_called()
+        self.assertIn("did not finish", out)
+        notify.assert_called_once()
+        (loop, _st, event, number, head), kw = notify.call_args
+        self.assertEqual((loop["id"], event, number, head), ("one", "held", 0, ""))
+        self.assertTrue(watchdog.observer.is_urgent(event))
+        self.assertIn(str(migrate.marker_path()), kw["outcome"])
+        self.assertIn("hermes dk migrate", kw["outcome"])
+        self.assertEqual(kw["identity"], "migrate:1")
+        with mock.patch.object(watchdog.observer, "notify") as again:
+            self.sweep(drain=True)                 # a drain prints and sends nothing
+        again.assert_not_called()
+
+    def test_the_dead_migrate_notice_is_sent_once_per_marker(self):
+        # Through the real observer ledger: the next sweep finds it recorded and posts nothing.
+        (self.root / "state").mkdir(exist_ok=True)
+        self.loop["observer"] = {"route": "watch"}
+        with mock.patch.object(config, "readable_loops", return_value=([self.loop], [])), \
+                mock.patch.object(watchdog.observer, "configured", return_value=""), \
+                mock.patch.object(watchdog.observer, "_deliver", return_value=True) as sent:
+            self.sweep()
+            self.sweep()
+        sent.assert_called_once()
+        self.assertTrue(sent.call_args.kwargs.get("urgent", sent.call_args.args[-1]))
+
+    def test_a_dead_migrate_notice_skips_a_loop_whose_state_dir_is_gone(self):
+        # A half-moved state directory must not be recreated by the observer ledger.
+        with mock.patch.object(watchdog.observer, "notify") as notify:
+            self.sweep()
+        notify.assert_not_called()
+        self.assertFalse((self.root / "state").exists())
 
 
 class DeferredRedrive(fg.Base):
