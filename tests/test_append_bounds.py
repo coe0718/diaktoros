@@ -128,14 +128,36 @@ def _is_append_call(call: ast.Call) -> bool:
         return True
     owner = func.value.id if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) else None
     if name == "fdopen" or (name == "open" and (isinstance(func, ast.Name) or owner in _OPEN_MODULES)):
-        position, unread = 1, True        # open(path, mode), io.open(...), os.fdopen(fd, mode)
-    elif name == "open" and owner != "os":
-        position, unread = 0, False       # <path>.open(mode); a tarfile/opener .open(x) is not
+        position = 1                      # open(path, mode), io.open(...), os.fdopen(fd, mode)
+    elif name == "open" and owner not in _NOT_PATH_OPENS and _may_be_path_open(call):
+        position = 0                      # <path>.open(mode), a variable mode included
     else:
         return False
     modes = [kw.value for kw in call.keywords if kw.arg == "mode"] + call.args[position:position + 1]
-    return any(_mode_is_append(mode) if unread else
-               isinstance(mode, ast.Constant) and _mode_is_append(mode) for mode in modes)
+    return any(_mode_is_append(mode) for mode in modes)
+
+
+# Owners whose ``.open`` is not ``Path.open``: ``os.open`` (its ``O_APPEND`` is judged apart) and
+# modules whose ``open`` takes a name first, its mode (if any) after it.
+_NOT_PATH_OPENS = {"os", "tarfile", "zipfile", "shelve", "dbm", "webbrowser", "wave", "sunau"}
+# The parameters of ``Path.open(mode='r', buffering=-1, encoding=None, errors=None, newline=None)``.
+_PATH_OPEN_KEYWORDS = {"mode", "buffering", "encoding", "errors", "newline"}
+
+
+def _may_be_path_open(call: ast.Call) -> bool:
+    """Could ``<x>.open(...)`` be ``Path.open`` with a mode? The scan cannot tell what ``x`` is, so
+    only arguments ``Path.open`` cannot take rule it out: a keyword it has no parameter for (a URL
+    opener's ``timeout``, tarfile's ``fileobj``), a string second argument (``buffering`` is an
+    int, so ``x.open(name, "r:gz")`` is not it), more than five positionals, or no mode at all
+    (the default ``"r"``). Anything else counts, a variable first argument included: it may be
+    the mode, and a false alarm only asks for a registry entry, where a miss is an unbounded file
+    (#2302 review)."""
+    if any(kw.arg not in _PATH_OPEN_KEYWORDS for kw in call.keywords) or len(call.args) > 5:
+        return False
+    second = call.args[1] if len(call.args) > 1 else None
+    if isinstance(second, ast.Constant) and isinstance(second.value, str):
+        return False
+    return bool(call.args) or any(kw.arg == "mode" for kw in call.keywords)
 
 
 def _is_o_append(node) -> bool:
@@ -212,13 +234,19 @@ class Guard(unittest.TestCase):
                   "def by_name(p):\n    os.open(p, getattr(os, 'O_APPEND'))\n"
                   "def io_open(p):\n    io.open(p, 'a'); codecs.open(p, mode='a')\n"
                   "def unread(p, m):\n    open(p, m)\n"
+                  "def path_unread(p, mode):\n    p.open(mode).write('x')\n"
+                  "def path_kw_unread(p, mode):\n    p.open(mode=mode, encoding='utf-8')\n"
                   "def two(p):\n    open(p, 'a').write('x')\n    open(p, 'a').write('y')\n"
                   "def not_appends(p, opener, tarfile):\n    open(p); open(p, 'w'); p.open('rb'); "
-                  "os.open(p, os.O_RDONLY); io.open(p, 'rb'); opener.open(p); tarfile.open(p, 'r')\n")
+                  "os.open(p, os.O_RDONLY); io.open(p, 'rb'); opener.open(p, timeout=30); "
+                  "opener.open(p, data, 30, cafile=None); tarfile.open(p, 'r'); "
+                  "tarfile.open(fileobj=p, mode='w:gz'); x.open(p, 'r:gz'); p.open(); "
+                  "p.open(encoding='utf-8'); p.open('w')\n")
         self.assertEqual(dict(append_sites(source, "x.py")),
                          {"x.py::a": 1, "x.py::b": 1, "x.py::C.c": 1, "x.py::d": 1, "x.py::e": 1,
                           "x.py::f": 1, "x.py::kw": 1, "x.py::var": 1, "x.py::by_name": 1,
-                          "x.py::io_open": 2, "x.py::unread": 1, "x.py::two": 2})
+                          "x.py::io_open": 2, "x.py::unread": 1, "x.py::path_unread": 1,
+                          "x.py::path_kw_unread": 1, "x.py::two": 2})
 
     def test_a_second_open_in_a_registered_function_fails_the_guard(self):
         """The review's case: ``corpus.record`` is registered for its one ``append_keeping``; an

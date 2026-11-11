@@ -398,6 +398,28 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(log.stat().st_size, run_supervisor.WORKER_LOG_MAX)
         self.assertTrue(log.read_bytes()[-10:].startswith(b"diaktoros "))
 
+    def test_a_log_rotated_before_the_worker_caps_it_is_still_capped(self):
+        """#2302 review: another spawn may rotate the log after this one opened it and before
+        its worker reaches ``cap_stderr``. The worker then holds the ``.1``, which is no longer
+        the log's path; the identity ``_spawn`` passes (``waits.LOG_ENV``) still caps it."""
+        sup = self.supervisor()
+        log = self.root / "ledger.sqlite.workers.log"
+        rotated = log.with_name(log.name + ".1")
+        log.write_bytes(b"x" * (run_supervisor.WORKER_LOG_MAX - 10))   # in cap: not rotated
+        (self.root / "ledger.sqlite").write_bytes(b"")   # replaced: the worker writes its line
+        real_popen = subprocess.Popen
+
+        def popen(*args, **kwargs):
+            os.replace(log, rotated)         # a concurrent spawn's rotation, before the child runs
+            log.write_bytes(b"")
+            return real_popen(*args, **kwargs)
+        with patch("diaktoros.run_supervisor.subprocess.Popen", side_effect=popen):
+            sup._spawn()
+        self.assertEqual(_WORKERS[-1].wait(timeout=WORKER_EXIT_TIMEOUT), 0)
+        self.assertEqual(rotated.stat().st_size, run_supervisor.WORKER_LOG_MAX)
+        self.assertTrue(rotated.read_bytes()[-10:].startswith(b"diaktoros "))
+        self.assertEqual(log.stat().st_size, 0)
+
     def test_a_chatty_worker_writes_no_more_than_the_cap(self):
         """#2302: four times WORKER_LOG_MAX and a traceback written through a worker's stderr,
         the log's own descriptor, leave the log at the cap; written to a rotated ``.1`` it

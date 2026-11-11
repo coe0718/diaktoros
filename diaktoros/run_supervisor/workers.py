@@ -282,6 +282,10 @@ class WorkerLifecycle:
         app_tokens.prepare(host_home)     # and share the host's App tokens (#1780)
         run_supervisor._WORKERS[:] = [worker for worker in run_supervisor._WORKERS if worker.poll() is None]
         log = self._worker_log()
+        if log is not None:
+            # Which file the worker's stderr is, as opened here: it caps that one even if
+            # another spawn rotates the path first (waits.cap_stderr, #2302).
+            env[waits.LOG_ENV] = waits.identity(log.fileno())
         try:
             # ``python -m`` puts the current directory first on sys.path, ahead of PYTHONPATH:
             # started from a checkout of another revision, the worker would run that code

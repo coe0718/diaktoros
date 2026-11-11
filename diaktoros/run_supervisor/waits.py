@@ -20,7 +20,13 @@ import sys
 import time
 from pathlib import Path
 
+from .. import envnames
+
 REASON_MAX = 300
+# Set by ``_spawn`` in a worker's environment when its stderr is the worker log: the log's
+# ``<device>:<inode>`` as the host opened it, so ``cap_stderr`` caps that file even if a later
+# spawn rotated the path away before the worker got there (#2302).
+LOG_ENV = envnames.name("WORKER_LOG")
 # Read from each of the log and its one rotation (the host rotates past 256 KB): enough to hold
 # a run's last wait line however chatty the workers' stderr since.
 READ_BYTES = 1 << 20
@@ -78,15 +84,19 @@ def cap_stderr(db: Path) -> bool:
     ``_spawn`` hands a worker the log's descriptor and the host only checks its size at its next
     spawn, so without this a chatty worker grows it without bound, and after a rotation it would
     keep growing the ``.1`` it still holds (its size, read from the descriptor, is past the cap,
-    so nothing more is written to it). A stderr that is not the log's inode is left alone.
+    so nothing more is written to it). Which file the worker holds is told by ``LOG_ENV``, the
+    identity ``_spawn`` read from the descriptor it handed over, not by the log's path: another
+    spawn may rotate the log between that hand-over and this call, and the ``.1`` the worker then
+    holds is capped all the same (#2302 review). Without ``LOG_ENV`` (a stderr not set up by
+    ``_spawn``) the log's current inode is compared. Any other stderr is left alone.
     Not covered: bytes written to descriptor 2 natively (a fatal interpreter error as the
     process dies) or by a child that inherits it (the worker's children capture or discard
     their stderr); and two workers appending at once can each pass the check before the other
     writes, so the log can pass the cap by at most one write per concurrent worker."""
     try:
         fd = sys.stderr.fileno()
-        held, log = os.fstat(fd), os.stat(log_path(Path(db)))
-        if not stat.S_ISREG(held.st_mode) or (held.st_dev, held.st_ino) != (log.st_dev, log.st_ino):
+        held = os.fstat(fd)
+        if not stat.S_ISREG(held.st_mode) or not _is_the_log(held, db):
             return False
     except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
         return False
@@ -95,6 +105,22 @@ def cap_stderr(db: Path) -> bool:
                                   errors="backslashreplace", line_buffering=True,
                                   write_through=True)
     return True
+
+
+def identity(fd: int) -> str:
+    """The ``LOG_ENV`` value naming the file open at ``fd``: its device and inode."""
+    held = os.fstat(fd)
+    return f"{held.st_dev}:{held.st_ino}"
+
+
+def _is_the_log(held: os.stat_result, db: Path) -> bool:
+    """Is ``held`` (a stderr's stat) the worker log ``_spawn`` handed over, as ``LOG_ENV`` names
+    it, or failing that the log at its path now?"""
+    marked = os.environ.get(LOG_ENV)
+    if marked:
+        return marked == f"{held.st_dev}:{held.st_ino}"
+    log = os.stat(log_path(Path(db)))
+    return (held.st_dev, held.st_ino) == (log.st_dev, log.st_ino)
 
 
 def _utc(at) -> str:
