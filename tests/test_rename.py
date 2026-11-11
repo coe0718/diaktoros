@@ -1,24 +1,19 @@
 """The rename to Diaktoros (#425, stage 1): new names everywhere a person sees one, old ones still read.
 
-`hermes diaktoros`, its short name `hermes dk`, and — until v0.6.0 — the old `hermes review-loop`,
-which runs the same verbs and says once that it was renamed. What the loop wrote under the old
-name stays readable: an old footer is still stripped from review history, an old gate shim is
+`hermes diaktoros` and its short name `hermes dk`; the old `hermes review-loop` alias went in
+v0.6.0, the release it named (#1089). What the loop wrote under the old name stays readable: an old footer is still stripped from review history, an old gate shim is
 still ours (stale, so rewritten, never refused as foreign), and a loop naming the old qualified
 skill is read as the new one.
 """
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
-import argparse
-import contextlib
-import io
 import os
 import pathlib
 import re
 import sys
 import tempfile
 import unittest
-from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -37,12 +32,6 @@ class Ctx:
         self.commands[name] = setup
 
 
-def parse(ctx: Ctx, name: str, *argv: str):
-    parser = argparse.ArgumentParser(prog=f"hermes {name}")
-    ctx.commands[name](parser)
-    return parser.parse_args(list(argv))
-
-
 class Commands(unittest.TestCase):
     def setUp(self):
         saved = cli_common._PARSER
@@ -51,49 +40,17 @@ class Commands(unittest.TestCase):
         self.ctx = Ctx()
         cli.register_cli(self.ctx, settings={})
 
-    def test_three_names_with_the_full_one_registered_last(self):
-        self.assertEqual(list(self.ctx.commands), ["review-loop", "dk", "diaktoros"])
+    def test_two_names_with_the_full_one_registered_last(self):
+        self.assertEqual(list(self.ctx.commands), ["dk", "diaktoros"])
 
-    def run_verb(self, name):
-        args = parse(self.ctx, name, "list")
-        with contextlib.redirect_stdout(io.StringIO()), \
-                contextlib.redirect_stderr(io.StringIO()) as err, \
-                mock.patch.object(config, "all_loops", return_value=[]):
-            args.func(args)
-        return err.getvalue()
-
-    def test_the_old_name_runs_the_same_verbs_and_says_it_was_renamed(self):
-        self.assertIn(cli.RENAMED_NOTE, self.run_verb("review-loop"))
-        for name in ("dk", "diaktoros"):
-            self.assertNotIn(cli.RENAMED_NOTE, self.run_verb(name))
-        bare = parse(self.ctx, "review-loop")
-        with contextlib.redirect_stdout(io.StringIO()), \
-                contextlib.redirect_stderr(io.StringIO()) as err:
-            bare.func(bare)
-        self.assertIn(cli.RENAMED_NOTE, err.getvalue())
-
-    def test_the_rename_note_names_the_release_that_removes_the_old_name(self):
-        """#1089: "a later release" had no end; the note, README and operations doc name one."""
-        release = f"v{cli.RENAMED_REMOVED_IN}"
-        self.assertIn(f"removed in {release}", self.run_verb("review-loop"))
-        self.assertNotIn("later release", cli.RENAMED_NOTE)
+    def test_the_old_name_is_gone_in_the_release_it_named(self):
+        """#1089: the alias promised "until v0.6.0" is not registered, and the docs say so."""
+        self.assertNotIn("review-loop", self.ctx.commands)
+        self.assertFalse(hasattr(cli, "RENAMED_NOTE"))
         for doc in (ROOT / "README.md", ROOT / "docs" / "operations.md"):
             text = " ".join(doc.read_text(encoding="utf-8").split())
-            self.assertIn(f"as an alias until {release}, which removes it", text, doc)
-
-    def test_the_old_name_is_gone_by_the_release_it_names(self):
-        """Releasing ``RENAMED_REMOVED_IN`` with the alias still registered turns this red."""
-        def parts(version):
-            return tuple(int(n) for n in re.findall(r"\d+", version)[:3])
-        import diaktoros
-        if parts(diaktoros.__version__) >= parts(cli.RENAMED_REMOVED_IN):
-            self.assertNotIn("review-loop", self.ctx.commands)
-
-    def test_the_old_name_never_becomes_the_parser_verbs_run_through(self):
-        parse(self.ctx, "diaktoros")
-        real = cli_common._PARSER
-        parse(self.ctx, "review-loop")
-        self.assertIs(cli_common._PARSER, real)
+            self.assertIn("`hermes review-loop` was removed in v0.6.0", text, doc)
+            self.assertNotIn("as an alias until", text, doc)
 
 
 class Signature(unittest.TestCase):
