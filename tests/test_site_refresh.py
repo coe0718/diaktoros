@@ -221,6 +221,25 @@ class SiteRefreshTests(unittest.TestCase):
         missing = keys - set(data)
         self.assertFalse(missing, f"data.json missing keys used by the page: {missing}")
 
+    def test_hardcoded_fallbacks_match_snapshot(self):
+        """Every hardcoded data-site value in the HTML must equal the
+        checked-in data.json value, formatted as the page's num() would
+        show it, so a release stamp that regenerates data.json can't
+        leave the last-resort tier a release behind (#2345)."""
+        import re
+        html = (SITE / "index.html").read_text()
+        data = json.loads((SITE / "data.json").read_text())
+        pairs = re.findall(r'data-site="(\w+)">([^<]*)<', html)
+        self.assertTrue(pairs, "no hardcoded data-site values found in index.html")
+        stale = []
+        for key, shown in pairs:
+            want = data.get(key)
+            if isinstance(want, int) and not isinstance(want, bool):
+                want = f"{want:,}"
+            if shown != want:
+                stale.append(f"{key}: html {shown!r} != data.json {want!r}")
+        self.assertFalse(stale, "hardcoded fallbacks disagree with data.json:\n" + "\n".join(stale))
+
     def test_freshness_note_present(self):
         """The proof strip's freshness note must exist in the HTML and
         be written by the refresh script, so a stat the page could not
