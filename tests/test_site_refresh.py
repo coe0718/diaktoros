@@ -132,19 +132,116 @@ def extract_refresh_script():
 
 class _FallbackParser(HTMLParser):
     """Collect (key, text) for every element carrying a data-site
-    attribute, wherever that attribute sits among the element's others."""
+    attribute, wherever that attribute sits among the element's others.
+
+    It keeps a stack of open elements and closes them the way a browser's
+    tree builder does in the cases a page can rely on: a void element never
+    opens, `<x/>` on a non-void element still opens it, an end tag closes
+    the nearest matching open element in scope (and everything opened
+    inside it), an end tag with no match closes nothing, HTML's optional
+    end tags (`li`, `dd`/`dt`, `p`, `option`, table rows and cells,
+    headings) are implied by the start tags that imply them, and whatever
+    is still open when the document ends is closed there. Not modelled:
+    the adoption agency algorithm (misnested formatting tags such as
+    `<b><i></b></i>`) and foster parenting of text misplaced in a table."""
+
+    # Elements with no end tag; they never open an element.
+    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+            "link", "meta", "source", "track", "wbr"}
+    # The spec's "has an element in scope" boundaries.
+    SCOPE = {"applet", "caption", "html", "table", "td", "th", "marquee",
+             "object", "template"}
+    # The spec's "special" elements: an li/dd/dt start tag stops looking
+    # for an open li/dd/dt to close at any of these but address, div, p.
+    SPECIAL = {"address", "applet", "area", "article", "aside", "base",
+               "basefont", "bgsound", "blockquote", "body", "br", "button",
+               "caption", "center", "col", "colgroup", "dd", "details",
+               "dir", "div", "dl", "dt", "embed", "fieldset", "figcaption",
+               "figure", "footer", "form", "frame", "frameset", "h1", "h2",
+               "h3", "h4", "h5", "h6", "head", "header", "hgroup", "hr",
+               "html", "iframe", "img", "input", "keygen", "li", "link",
+               "listing", "main", "marquee", "menu", "meta", "nav",
+               "noembed", "noframes", "noscript", "object", "ol", "p",
+               "param", "plaintext", "pre", "script", "search", "section",
+               "select", "source", "style", "summary", "table", "tbody",
+               "td", "template", "textarea", "tfoot", "th", "thead",
+               "title", "tr", "track", "ul", "wbr", "xmp"}
+    HEADINGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+    # Start tags that close an open <p> (in button scope).
+    CLOSES_P = {"address", "article", "aside", "blockquote", "center",
+                "details", "dialog", "dir", "div", "dl", "fieldset",
+                "figcaption", "figure", "footer", "form", "header",
+                "hgroup", "hr", "li", "dd", "dt", "listing", "main", "menu",
+                "nav", "ol", "p", "pre", "search", "section", "summary",
+                "table", "ul", "xmp", "plaintext"} | HEADINGS
+    # Table start tags: the open elements each one closes, and the
+    # elements at which the search for one stops.
+    TABLE_CLOSES = {
+        "td": ({"td", "th"}, {"tr", "table", "template", "html"}),
+        "th": ({"td", "th"}, {"tr", "table", "template", "html"}),
+        "tr": ({"tr", "td", "th"}, {"tbody", "thead", "tfoot", "table",
+                                    "template", "html"}),
+        "tbody": ({"tbody", "thead", "tfoot", "tr", "td", "th"},
+                  {"table", "template", "html"}),
+        "thead": ({"tbody", "thead", "tfoot", "tr", "td", "th"},
+                  {"table", "template", "html"}),
+        "tfoot": ({"tbody", "thead", "tfoot", "tr", "td", "th"},
+                  {"table", "template", "html"}),
+    }
+    # End tags that close nothing here: content can follow them, and the
+    # end of the document closes whatever is left.
+    NO_CLOSE = {"body", "html"}
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.pairs = []
-        self._open = []  # [key, depth, text parts] per open data-site element
+        self._stack = []  # [tag, data-site key or None, text parts]
 
-    # Elements with no end tag; they must not deepen an open frame.
-    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input",
-            "link", "meta", "source", "track", "wbr"}
+    def _pop_to(self, index):
+        """Close the element at `index` and everything opened inside it,
+        recording each data-site element's collected text."""
+        while len(self._stack) > index:
+            _, key, parts = self._stack.pop()
+            if key is not None:
+                self.pairs.append((key, "".join(parts)))
+
+    def _find(self, wanted, stop):
+        """Index of the innermost open element in `wanted`, searching
+        outwards and giving up at an element in `stop`; None if absent."""
+        for index in range(len(self._stack) - 1, -1, -1):
+            tag = self._stack[index][0]
+            if tag in wanted:
+                return index
+            if tag in stop:
+                return None
+        return None
+
+    def _close_found(self, wanted, stop):
+        """Close the innermost open element in `wanted` (see `_find`)."""
+        index = self._find(wanted, stop)
+        if index is not None:
+            self._pop_to(index)
+
+    def _close_implied(self, tag):
+        """Close the elements whose end tag HTML lets this start tag imply."""
+        if tag in self.CLOSES_P:
+            self._close_found({"p"}, self.SCOPE | {"button"})
+        if tag in ("li", "dd", "dt"):
+            wanted = {"li"} if tag == "li" else {"dd", "dt"}
+            self._close_found(wanted, self.SPECIAL - {"address", "div", "p"} - wanted)
+        elif tag in self.HEADINGS:
+            if self._stack and self._stack[-1][0] in self.HEADINGS:
+                self._pop_to(len(self._stack) - 1)
+        elif tag in ("option", "optgroup"):
+            closes = {"option"} if tag == "option" else {"option", "optgroup"}
+            while self._stack and self._stack[-1][0] in closes:
+                self._pop_to(len(self._stack) - 1)
+        elif tag in self.TABLE_CLOSES:
+            self._close_found(*self.TABLE_CLOSES[tag])
 
     def handle_starttag(self, tag, attrs):
         key = dict(attrs).get("data-site")
+        self._close_implied(tag)
         if tag in self.VOID:
             # A void element has no content, so it shows no fallback
             # text (None); its key still counts, as the page's selector
@@ -152,29 +249,30 @@ class _FallbackParser(HTMLParser):
             if key is not None:
                 self.pairs.append((key, None))
             return
-        for frame in self._open:
-            frame[1] += 1
-        if key is not None:
-            self._open.append([key, 1, []])
+        self._stack.append([tag, key, []])
 
     def handle_startendtag(self, tag, attrs):
         """Treat `<x/>` as a start tag only. `<br/>` is one void tag, and
         HTML ignores the slash on a non-void `<span/>` (it still opens an
-        element), so the default start-plus-end would close frames early."""
+        element), so the default start-plus-end would close it at once."""
         self.handle_starttag(tag, attrs)
 
     def handle_endtag(self, tag):
-        if tag in self.VOID:
-            return  # a stray `</br>` closes nothing
-        for frame in self._open:
-            frame[1] -= 1
-        while self._open and self._open[-1][1] <= 0:
-            key, _, parts = self._open.pop()
-            self.pairs.append((key, "".join(parts)))
+        """Close the nearest open `tag` in scope. A void end tag (`</br>`)
+        or one with no open match finds nothing and closes nothing."""
+        if tag in self.NO_CLOSE:
+            return
+        self._close_found({tag}, self.SCOPE - {tag})
 
     def handle_data(self, data):
-        for frame in self._open:
-            frame[2].append(data)
+        for _, key, parts in self._stack:
+            if key is not None:
+                parts.append(data)
+
+    def close(self):
+        """The end of the document closes every element still open."""
+        super().close()
+        self._pop_to(0)
 
 
 def hardcoded_fallbacks(html):
@@ -326,9 +424,9 @@ class SiteRefreshTests(unittest.TestCase):
         the page's selector, so the key coverage check must see it."""
         html = (SITE / "index.html").read_text()
         data = json.loads((SITE / "data.json").read_text())
-        anchor = f'data-site="stars">{data["stars"]:,}<'
+        anchor = f'data-site="stars">{data["stars"]:,}</div>'
         self.assertIn(anchor, html)
-        mutated = html.replace(anchor, anchor + '/span><input data-site="ghost" title="x"><span>', 1)
+        mutated = html.replace(anchor, anchor + '<input data-site="ghost" title="x">', 1)
         self.assertIn(("ghost", None), hardcoded_fallbacks(mutated))
         self.assertEqual(missing_snapshot_keys(mutated, data), {"ghost"})
         self.assertEqual(stale_fallbacks(mutated, data), stale_fallbacks(html, data))
@@ -344,6 +442,52 @@ class SiteRefreshTests(unittest.TestCase):
         mutated = html.replace(original, f'data-site="stars" title="stars">{data["stars"]:,}<br/>999<')
         self.assertTrue(any(line.startswith("stars:") for line in stale_fallbacks(mutated, data)),
                         "text after a self-closing <br/> was not checked")
+
+    def test_fallback_check_sees_elements_with_implied_end_tags(self):
+        """HTML lets `</li>` (and `</p>`, `</td>`, `</dd>`, `</option>`)
+        be omitted. A data-site element whose end tag is implied must
+        still be found by both guards, with only its own text."""
+        html = (SITE / "index.html").read_text()
+        data = json.loads((SITE / "data.json").read_text())
+        lists = ('<ul><li data-site="ghost" title="x">x<li>y<li>z<li>w</ul>'
+                 '<ul><li data-site="stars" title="x">999<li>y<li>z<li>w</ul>')
+        self.assertIn("</body>", html)
+        mutated = html.replace("</body>", lists + "</body>", 1)
+        found = hardcoded_fallbacks(mutated)
+        self.assertIn(("ghost", "x"), found)
+        self.assertIn(("stars", "999"), found)
+        self.assertEqual(missing_snapshot_keys(mutated, data), {"ghost"})
+        stale = stale_fallbacks(mutated, data)
+        self.assertTrue(any(line.startswith("stars: html '999'") for line in stale), stale)
+        for snippet, want in [
+            ('<p data-site="k">1<p>2', ("k", "1")),
+            ('<p data-site="k">1<div>2</div>', ("k", "1")),
+            ('<table><tr><td data-site="k">1<td>2</table>', ("k", "1")),
+            ('<table><tr><td data-site="k">1<tr><td>2</table>', ("k", "1")),
+            ('<dl><dt>a<dd data-site="k">1<dt>b<dd>2</dl>', ("k", "1")),
+            ('<select><option data-site="k">1<option>2</select>', ("k", "1")),
+            ('<ul><li data-site="k">1<ul><li>2</ul>3<li>4</ul>', ("k", "123")),
+            ('<div data-site="k">1', ("k", "1")),  # closed by end of document
+        ]:
+            with self.subTest(snippet=snippet):
+                self.assertEqual(hardcoded_fallbacks(snippet), [want])
+
+    def test_fallback_check_keeps_self_closed_non_void_open(self):
+        """HTML ignores the slash on a non-void `<span/>`: the span stays
+        open and the text after it is its content, so it must be checked."""
+        self.assertEqual(hardcoded_fallbacks('<span data-site="stars"/>999</span>'),
+                         [("stars", "999")])
+        self.assertEqual(hardcoded_fallbacks('<div data-site="stars">11<span/>999</div>'),
+                         [("stars", "11999")])
+
+    def test_fallback_check_ignores_unmatched_end_tags(self):
+        """A void end tag (`</br>`, `</img>`) or any end tag with no open
+        element to match closes nothing, so it can't hide later text."""
+        for stray in ("</br>", "</img>", "</input>", "</div>", "</p>"):
+            with self.subTest(stray=stray):
+                self.assertEqual(
+                    hardcoded_fallbacks(f'<span data-site="stars">11{stray}999</span>'),
+                    [("stars", "11999")])
 
     def test_freshness_note_present(self):
         """The proof strip's freshness note must exist in the HTML and
