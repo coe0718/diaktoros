@@ -139,13 +139,17 @@ def _authorize(loop: dict, plan: dict) -> None:
     """Re-authorize the planned writes against live policy (#1051), as the seat's own
     ``open_pr`` is: ``broker.authorize_issue_fix`` (issue fixes on, distinct verified
     identities, the issue still open by an allowlisted author with the fix label, no
-    dependency hold). A denial is a conflict, so the dry run says it and ``run`` writes nothing.
+    dependency hold). A denial is a conflict, so the dry run says it and ``run`` writes nothing;
+    an issue GitHub could not be read for is worded as not checked, not as refused (#2335).
     With no stage planned nothing is written, so recording a finished fix needs no check."""
     if not plan["stages"]:
         return
     fix = plan["fix"]
     try:
         broker.authorize_issue_fix(loop, repo=fix["repo"], number=fix["number"])
+    except broker.BrokerUnchecked as exc:
+        plan["conflicts"].append(f"the issue fix could not be checked now: {exc}")
+        plan["stages"] = []
     except broker.BrokerDenied as exc:
         plan["conflicts"].append(f"the issue fix is not authorized now: {exc}")
         plan["stages"] = []
