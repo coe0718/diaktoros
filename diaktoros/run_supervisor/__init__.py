@@ -35,7 +35,7 @@ from .turns import _ClaimRead, _Launch, _Turn   # the state classes, still reach
 
 SILENT = "[SILENT]"
 # Worker stderr (one diagnostic line, or a traceback) goes to <ledger>.workers.log, rotated
-# once to .1 by the host when it passes this size.
+# once to .1 by the host when it reaches this size; a worker never writes past it (#2302).
 WORKER_LOG_MAX = 256 * 1024
 REVIEWED_PR_INELIGIBLE = 'reviewed_pr_ineligible:'
 ACTIVE = ("claimed", "launching", "running", "uncertain")
@@ -1145,10 +1145,18 @@ def main():
         return
     if a.command is None or a.capacity is None or a.lease is None or a.timeout is None:
         p.error('worker requires command, capacity, lease and timeout')
+    _worker(a)
+
+
+def _worker(a) -> None:
+    """The spawned worker (``_fixture-worker`` / ``_production-worker``): run one claim, then
+    linger for CI. Its stderr is the worker log the host opened for it, cut at WORKER_LOG_MAX
+    (#2302)."""
     # A worker never creates host state (create=False, hostdirs.ensure). If the ledger or a
     # state dir is gone, replaced or unusable, before or during the run, it logs one line
     # (to <ledger>.workers.log, which the host opened for it) and exits 0.
     os.environ[WORKER_ENV] = "1"
+    waits.cap_stderr(Path(a.db))
     try:
         if a.operation == "_fixture-worker":
             if envnames.get("TEST_FIXTURE") != "1":

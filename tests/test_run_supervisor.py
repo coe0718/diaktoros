@@ -384,6 +384,57 @@ class Lifecycle(unittest.TestCase):
                          run_supervisor.WORKER_LOG_MAX + 1)
         self.assertEqual(log.stat().st_mode & 0o777, 0o600)
 
+    def test_a_worker_never_grows_its_log_past_the_cap(self):
+        """#2302: the size check at the host's spawn is not the only bound. A spawned worker
+        holds the log's descriptor as its stderr; what it writes there stops at WORKER_LOG_MAX
+        with no further spawn (``waits.cap_stderr``, called by ``main``)."""
+        sup = self.supervisor()
+        log = self.root / "ledger.sqlite.workers.log"
+        log.write_bytes(b"x" * (run_supervisor.WORKER_LOG_MAX - 10))   # in cap: not rotated
+        (self.root / "ledger.sqlite").write_bytes(b"")   # replaced: the worker writes its line
+        sup._spawn()
+        self.assertEqual(_WORKERS[-1].wait(timeout=WORKER_EXIT_TIMEOUT), 0)
+        self.assertFalse((self.root / "ledger.sqlite.workers.log.1").exists())
+        self.assertEqual(log.stat().st_size, run_supervisor.WORKER_LOG_MAX)
+        self.assertTrue(log.read_bytes()[-10:].startswith(b"diaktoros "))
+
+    def test_a_chatty_worker_writes_no_more_than_the_cap(self):
+        """#2302: four times WORKER_LOG_MAX and a traceback written through a worker's stderr,
+        the log's own descriptor, leave the log at the cap; written to a rotated ``.1`` it
+        still holds, nothing more."""
+        db = self.root / "ledger.sqlite"
+        log = self.root / "ledger.sqlite.workers.log"
+        log.write_bytes(b"started\n")
+        code = ("import os, sys\nfrom pathlib import Path\nfrom diaktoros import run_supervisor\n"
+                "from diaktoros.run_supervisor import waits\n"
+                "db = Path(sys.argv[1])\n"
+                "log = waits.log_path(db)\n"
+                "assert waits.cap_stderr(db)\n"
+                "if sys.argv[2] == 'rotate':          # the host's next spawn rotates it\n"
+                "    os.replace(log, log.with_name(log.name + '.1'))\n"
+                "    log.write_bytes(b'')\n"
+                "for _ in range(4):\n"
+                "    sys.stderr.write('y' * run_supervisor.WORKER_LOG_MAX)\n"
+                "raise ValueError('a traceback too')\n")
+        plugin = Path(run_supervisor.__file__).resolve().parents[2]
+        env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(plugin), "HOME": str(self.root)}
+
+        def worker(how):
+            with log.open("ab") as stderr:
+                done = subprocess.run([sys.executable, "-c", code, str(db), how], stderr=stderr,
+                                      env=env, cwd=str(plugin), timeout=60, check=False)
+            self.assertEqual(done.returncode, 1)          # the traceback, not the assert
+
+        worker("stay")
+        self.assertEqual(log.stat().st_size, run_supervisor.WORKER_LOG_MAX)
+        worker("stay")                                     # full: a second worker adds nothing
+        self.assertEqual(log.stat().st_size, run_supervisor.WORKER_LOG_MAX)
+        log.write_bytes(b"started\n")
+        worker("rotate")                                   # its held .1 stops at the cap too
+        self.assertEqual(log.with_name(log.name + ".1").stat().st_size,
+                         run_supervisor.WORKER_LOG_MAX)
+        self.assertEqual(log.stat().st_size, 0)
+
     def test_worker_that_finds_no_ledger_leaves_its_line_in_the_log(self):
         sup = self.supervisor()
         (self.root / "ledger.sqlite").write_bytes(b"")  # replaced: a worker must refuse it

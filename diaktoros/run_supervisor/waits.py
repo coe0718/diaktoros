@@ -12,8 +12,10 @@ for the run is compared first. Best effort: a failure here never changes how a r
 """
 from __future__ import annotations
 
+import io
 import os
 import re
+import stat
 import sys
 import time
 from pathlib import Path
@@ -31,13 +33,68 @@ def log_path(db: Path) -> Path:
     return db.with_name(db.name + ".workers.log")
 
 
+def room(size: int) -> int:
+    """Bytes a writer that never rotates may still add to a worker log of ``size`` bytes: what is
+    left under ``WORKER_LOG_MAX`` (#2302). The one statement of the cap for every writer of the
+    log: the host rotates it once to ``.1`` when it has none left (``_worker_log``), ``note``
+    appends a wait line only while there is some, and a worker's stderr is cut to it
+    (``cap_stderr``)."""
+    from .. import run_supervisor
+    return max(0, run_supervisor.WORKER_LOG_MAX - size)
+
+
 def within_cap(path: Path) -> bool:
     """May a writer that never rotates append to the worker log at ``path``? Only to an existing
-    file no larger than ``WORKER_LOG_MAX`` (#2302). The host rotates it once to ``.1`` past that
-    size when it spawns; a worker (``WorkerLifecycle._worker_log``) and ``note`` never grow it
-    further. The one statement of the cap for every writer of the log."""
-    from .. import run_supervisor
-    return path.is_file() and path.stat().st_size <= run_supervisor.WORKER_LOG_MAX
+    file with ``room`` left (#2302)."""
+    return path.is_file() and room(path.stat().st_size) > 0
+
+
+class _CappedLog(io.RawIOBase):
+    """The worker log's descriptor, written only up to its ``room``: a write past it is cut at
+    the cap, and once the file is full the rest is dropped until the host rotates it (#2302)."""
+
+    def __init__(self, fd: int):
+        super().__init__()
+        self.fd = fd
+
+    def writable(self) -> bool:
+        return True
+
+    def fileno(self) -> int:
+        return self.fd
+
+    def write(self, data) -> int:
+        data = bytes(data)
+        left = room(os.fstat(self.fd).st_size)
+        if left:
+            os.write(self.fd, data[:left])
+        return len(data)
+
+
+def cap_stderr(db: Path) -> bool:
+    """In a worker, bound what its Python code writes to its stderr (prints, tracebacks,
+    warnings) when that stderr is the worker log of the ledger ``db`` (#2302). Whether it did.
+
+    ``_spawn`` hands a worker the log's descriptor and the host only checks its size at its next
+    spawn, so without this a chatty worker grows it without bound, and after a rotation it would
+    keep growing the ``.1`` it still holds (its size, read from the descriptor, is past the cap,
+    so nothing more is written to it). A stderr that is not the log's inode is left alone.
+    Not covered: bytes written to descriptor 2 natively (a fatal interpreter error as the
+    process dies) or by a child that inherits it (the worker's children capture or discard
+    their stderr); and two workers appending at once can each pass the check before the other
+    writes, so the log can pass the cap by at most one write per concurrent worker."""
+    try:
+        fd = sys.stderr.fileno()
+        held, log = os.fstat(fd), os.stat(log_path(Path(db)))
+        if not stat.S_ISREG(held.st_mode) or (held.st_dev, held.st_ino) != (log.st_dev, log.st_ino):
+            return False
+    except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
+        return False
+    sys.stderr.flush()
+    sys.stderr = io.TextIOWrapper(io.BufferedWriter(_CappedLog(fd)), encoding="utf-8",
+                                  errors="backslashreplace", line_buffering=True,
+                                  write_through=True)
+    return True
 
 
 def _utc(at) -> str:
