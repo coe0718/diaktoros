@@ -45,8 +45,15 @@ ALLOWED = {
            "this one spelling in that child's environment, so there is no old name to miss"),
 }
 
-_FALLBACK = re.compile(r"""(?:environ\s*(?:\.get\s*\(|\[)|getenv\s*\()\s*(?:key\s*=\s*)?"""
-                       r"""['"]((?:DIAKTOROS_|REVIEW_LOOP_)\w*)['"]""")
+# A read in a script that does not parse: ``environ.get(``, ``environ[`` or ``getenv(``, then a
+# prefixed literal or an ``envnames.name("X")`` key. A subscript followed by ``=`` is a write.
+_FALLBACK = re.compile(r"""(?:environ\s*(?:\.get\s*\(|(?P<sub>\[))|getenv\s*\()\s*(?:key\s*=\s*)?"""
+                       r"""(?:['"](?P<lit>(?:DIAKTOROS_|REVIEW_LOOP_)\w*)['"]"""
+                       r"""|envnames\.name\(\s*['"](?P<short>\w*)['"]\s*\))""")
+_WRITE = re.compile(r"""\s*\]\s*=(?!=)""")
+# What an f-string interpolation becomes when its script is parsed: each is tried, since no one
+# placeholder fits every position (``{indent}os...`` wants nothing, ``{name} = ...`` a name).
+_PLACEHOLDERS = ("_", "", "0")
 
 
 def _is_environ(node) -> bool:
@@ -71,15 +78,29 @@ def bound_names(tree) -> dict[str, str]:
     """Names assigned an ``envnames.name(...)`` value or a prefixed literal: ``X_ENV = ...``."""
     bound = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
-                and isinstance(node.targets[0], ast.Name):
-            value = node.value
-            key = _name_call(value) or (
-                value.value if isinstance(value, ast.Constant) and isinstance(value.value, str)
-                and value.value.startswith(PREFIXES) else None)
-            if key:
-                bound[node.targets[0].id] = key
+        target = _bound_target(node)
+        if target is None:
+            continue
+        value = node.value
+        key = _name_call(value) or (
+            value.value if isinstance(value, ast.Constant) and isinstance(value.value, str)
+            and value.value.startswith(PREFIXES) else None)
+        if key:
+            bound[target] = key
     return bound
+
+
+def _bound_target(node):
+    """The name a binding assigns to: ``X = v``, ``X: str = v`` or ``(X := v)``, else ``None``."""
+    if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+            and isinstance(node.targets[0], ast.Name):
+        return node.targets[0].id
+    if isinstance(node, ast.AnnAssign) and node.value is not None \
+            and isinstance(node.target, ast.Name):
+        return node.target.id
+    if isinstance(node, ast.NamedExpr):
+        return node.target.id
+    return None
 
 
 def _key(node, bound):
@@ -117,13 +138,41 @@ def _read_key(node, bound):
     return None
 
 
-def _script_text(node):
-    """The source a string constant or f-string holds (an interpolation becomes ``0``)."""
+def _script_texts(node) -> list[str]:
+    """The source a string constant holds, or an f-string's once per ``_PLACEHOLDERS`` entry."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
+        return [node.value]
     if isinstance(node, ast.JoinedStr):
-        return "".join(v.value if isinstance(v, ast.Constant) else "0" for v in node.values)
-    return None
+        return ["".join(v.value if isinstance(v, ast.Constant) else hole for v in node.values)
+                for hole in _PLACEHOLDERS]
+    return []
+
+
+def _fallback_reads(source: str) -> list[str]:
+    """The covered reads a script that does not parse holds, by pattern; writes are skipped."""
+    found = []
+    for m in _FALLBACK.finditer(source):
+        if m["sub"] and _WRITE.match(source, m.end()):
+            continue
+        found.append(m["lit"] or "DIAKTOROS_" + m["short"])
+    return found
+
+
+def _script_reads(texts: list[str], depth: int) -> list[tuple[str, str]]:
+    """The reads in a generated script given as candidate texts: the reading of the candidate
+    that parses with the most reads, or, when none parses, the pattern search of the first."""
+    best = None
+    for text in texts:
+        try:
+            ast.parse(textwrap.dedent(text))
+        except SyntaxError:
+            continue
+        reads = direct_reads(text, None, depth)
+        if best is None or len(reads) > len(best):
+            best = reads
+    if best is None:
+        best = [(key, SCRIPT) for key in _fallback_reads(texts[0])]
+    return [(k, SCRIPT) for k, _ in best]
 
 
 def direct_reads(source: str, bound=None, depth: int = 0) -> list[tuple[str, str]]:
@@ -134,7 +183,7 @@ def direct_reads(source: str, bound=None, depth: int = 0) -> list[tuple[str, str
     except SyntaxError:
         if depth == 0:
             return []
-        return [(key, SCRIPT) for key in _FALLBACK.findall(source)]
+        return [(key, SCRIPT) for key in _fallback_reads(source)]
     bound = {**(bound or {}), **bound_names(tree)}
     kind = SCRIPT if depth else CODE
     inner = {id(v) for n in ast.walk(tree) if isinstance(n, ast.JoinedStr) for v in n.values}
@@ -144,9 +193,9 @@ def direct_reads(source: str, bound=None, depth: int = 0) -> list[tuple[str, str
         if key:
             found.append((key, kind))
             continue
-        text = None if id(node) in inner else _script_text(node)
-        if depth < 2 and text and ("environ" in text or "getenv" in text):
-            found.extend((k, SCRIPT) for k, _ in direct_reads(text, None, depth + 1))
+        texts = [] if id(node) in inner else _script_texts(node)
+        if depth < 2 and texts and ("environ" in texts[0] or "getenv" in texts[0]):
+            found.extend(_script_reads(texts, depth + 1))
     return found
 
 
@@ -197,6 +246,10 @@ class EnvReadsViaEnvnames(unittest.TestCase):
             'os.environ.get(envnames.name("X"))': "DIAKTOROS_X",
             'os.environ[envnames.name("X")]': "DIAKTOROS_X",
             'X_ENV = envnames.name("X")\nos.environ.get(X_ENV)': "DIAKTOROS_X",
+            # F1 (round 2): an annotated binding is a binding too.
+            'X_ENV: str = envnames.name("X")\nos.environ.get(X_ENV)': "DIAKTOROS_X",
+            'X_ENV: str = "DIAKTOROS_X"\nos.getenv(X_ENV)': "DIAKTOROS_X",
+            'if (X_ENV := envnames.name("X")):\n    os.environ[X_ENV]': "DIAKTOROS_X",
             'os.environ.get(gate_failures.REDRIVE_ENV)': "DIAKTOROS_GATE_REDRIVE",
         }
         bound = {"REDRIVE_ENV": "DIAKTOROS_GATE_REDRIVE"}
@@ -211,6 +264,11 @@ class EnvReadsViaEnvnames(unittest.TestCase):
             # An interpolation that splits a statement: no fragment parses alone (F4).
             "S = f\"value = os.getenv('DIAKTOROS_X')\\nprint({42})\\n\"": "DIAKTOROS_X",
             "S = f\"v = [os.getenv('DIAKTOROS_X'), {n}\"": "DIAKTOROS_X",   # unparsable script
+            # F4 (round 2): an interpolated name; ``0`` alone would not parse, and the pattern
+            # search used to miss an envnames.name key.
+            "S = f\"{prefix} = os.getenv(envnames.name('X'))\\n\"": "DIAKTOROS_X",
+            "S = f\"v = os.environ[envnames.name('X')] + {s}\\n\"": "DIAKTOROS_X",
+            "S = f\"v = [os.environ.get(envnames.name('X')), {n}\"": "DIAKTOROS_X",  # unparsable
         }
         for source, key in cases.items():
             with self.subTest(source=source):
@@ -224,6 +282,21 @@ class EnvReadsViaEnvnames(unittest.TestCase):
                        'os.environ["DIAKTOROS_X"] = "1"', 'print("DIAKTOROS_X")'):
             with self.subTest(source=source):
                 self.assertEqual(direct_reads(source), [])
+
+    def test_writes_in_generated_scripts_pass(self):
+        # F4 (round 2): a generated script that only sets the variable reads nothing, whether
+        # its interpolation sits where ``0`` would not parse or the script does not parse at all.
+        for source in ("S = f\"{name} = 1\\nos.environ['DIAKTOROS_X'] = {value!r}\\n\"",
+                       "S = f\"{name} = os.environ\\nos.environ['DIAKTOROS_X'] = '1'\\n\"",
+                       "S = f\"v = [{n}\\nos.environ['DIAKTOROS_X'] = '1'\\n\""):
+            with self.subTest(source=source):
+                self.assertEqual(direct_reads(source), [])
+
+    def test_an_annotated_bound_name_fails_the_scan(self):
+        # F1 (round 2), through the scan the guard runs: ``X_ENV: str = envnames.name(...)``.
+        hits = self.scan_tree({"diaktoros/a.py": 'import os\nfrom . import envnames\n'
+                               'A_ENV: str = envnames.name("A")\nv = os.environ.get(A_ENV)\n'})
+        self.assertEqual(stray(hits), [(("diaktoros/a.py", "DIAKTOROS_A", CODE), 1)])
 
     def scan_tree(self, files: dict[str, str]):
         tmp = tempfile.TemporaryDirectory()
@@ -282,6 +355,33 @@ class OldSpellingIsRead(unittest.TestCase):
                 self.assertTrue(app_ingress.redriven())
         with self.env():
             self.assertFalse(app_ingress.redriven())
+
+    def run_gate(self, **values):
+        """``gate_failures.run`` with a gate that completes: the ``redrive`` it settles with."""
+        import io
+        from diaktoros import gate_failures
+        settled = []
+        with self.env(**values), \
+                mock.patch.object(gate_failures, "signal"), \
+                mock.patch.object(sys, "stdin", io.StringIO("{}")), \
+                mock.patch.object(gate_failures, "effective_timeout", return_value=(None, [])), \
+                mock.patch.object(gate_failures, "_migration", return_value=None), \
+                mock.patch.object(gate_failures.gh, "begin_gate"), \
+                mock.patch.object(gate_failures.gh, "end_gate", return_value=[]), \
+                mock.patch.object(gate_failures, "_resolve_completed",
+                                  side_effect=lambda *a: settled.append(a[2])):
+            with self.assertRaises(SystemExit) as done:
+                gate_failures.run("gate_reviewer", lambda: None)
+        self.assertEqual(done.exception.code, 0)
+        (redrive,) = settled
+        return redrive
+
+    def test_a_completed_gate_sees_the_redrive_mark_in_either_spelling(self):
+        # F5 (round 2): the mark reaches ``_resolve_completed`` through ``gate_failures.run``.
+        for name in ("DIAKTOROS_GATE_REDRIVE", "REVIEW_LOOP_GATE_REDRIVE"):
+            with self.subTest(name=name):
+                self.assertEqual(self.run_gate(**{name: "k1"}), "k1")
+        self.assertFalse(self.run_gate())
 
 
 if __name__ == "__main__":
