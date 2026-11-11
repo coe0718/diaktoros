@@ -118,6 +118,25 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
     return _dismiss(loop, sup, ruling, reviews, number, branch, row.get("overruled"), log)
 
 
+# The steps of acting on an ACCEPT that are finished, either way: nothing more is written for them.
+SETTLED = ("posted", "none", "denied")
+
+
+def unsettled(loop: dict, number: int, head: str) -> str:
+    """Why acting on the ACCEPT at ``head`` is not finished, or '' (#2364): an approval or a
+    dismissal not settled yet, or a record that can't be read. ``base_merge`` waits on it: a merge
+    moves the head, and the sweep acts only on a ruling at the current head."""
+    rows, error = views.ruled_approvals(production_ledger(), loop["repo"], number, head)
+    if error:
+        return f"the record of acting on the adjudicator's ACCEPT can't be read ({error[:120]})"
+    for row in rows:
+        for step in ("approve", "dismiss"):
+            state = row.get(step) or "pending"
+            if state not in SETTLED:
+                return f"the adjudicator's ACCEPT is still being acted on ({step}: {state})"
+    return ""
+
+
 POSTING_STALE_S = 300   # a write is answered in well under this: a posting step older is cut off
 
 
