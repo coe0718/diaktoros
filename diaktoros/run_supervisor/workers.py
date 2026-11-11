@@ -25,7 +25,7 @@ import time
 
 from .. import envnames, run_supervisor, util
 from ..hostdirs import WORKER_ENV, in_worker
-from . import claims
+from . import claims, waits
 
 
 def process_state(pid: int | None, launched: float | None) -> str:
@@ -302,14 +302,14 @@ class WorkerLifecycle:
         (whose recover() also spawns) only appends to an existing, unrotated log and never
         creates one; failing that its worker's stderr is discarded, as before.
         """
-        path = self.db.with_name(self.db.name + ".workers.log")
+        path = waits.log_path(self.db)
         flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
         try:
             if in_worker():
-                if not path.is_file() or path.stat().st_size > run_supervisor.WORKER_LOG_MAX:
+                if not waits.within_cap(path):
                     return None
             else:
-                if path.is_file() and path.stat().st_size > run_supervisor.WORKER_LOG_MAX:
+                if path.is_file() and not waits.within_cap(path):
                     os.replace(path, path.with_name(path.name + ".1"))
                 flags |= os.O_CREAT
             return os.fdopen(os.open(path, flags, 0o600), "ab")

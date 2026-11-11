@@ -7,7 +7,8 @@ REQUEST_CHANGES **and** the finding's regex (case-insensitive) matches inside a 
 line (``F<n>: ...``, #475): a mention in an APPROVE, or in prose, is not a catch. The replay is a
 first look: it is shown no earlier review or answer. Only a PR's final head can be replayed yet.
 Replay is on demand (``hermes dk corpus``) and runs no-write, like ``selftest --live-turn``.
-Scores are appended to ``<state>/corpus_scores.jsonl`` per prompt revision and model.
+Scores are appended to ``<state>/corpus_scores.jsonl`` per prompt revision and model, pruned to the
+last ``SCORES_KEEP`` runs (#2302).
 """
 from __future__ import annotations
 
@@ -16,7 +17,13 @@ import re
 import time
 from pathlib import Path
 
+from . import util
+
 SCORES_FILE = "corpus_scores.jsonl"
+# The file holds one line per `hermes dk corpus` run; `--history` lists them. Older runs than
+# this are pruned on the next record (#2302): enough to compare many prompt revisions and models.
+SCORES_KEEP = 500
+SCORES_LOCK = util.register_lock("corpus_scores.lock")      # its flock file, beside it
 
 
 class CorpusError(ValueError):
@@ -102,14 +109,14 @@ def replay(cases: list[dict], review) -> list[dict]:
 
 
 def record(path: Path, prompt_rev: str, model: str, results: list[dict], now=None) -> dict:
-    """Append one run's scores, keyed by prompt revision and model."""
+    """Append one run's scores, keyed by prompt revision and model; keep the last SCORES_KEEP."""
     entry = {"at": time.time() if now is None else now, "prompt_rev": prompt_rev, "model": model,
              "caught": sum(len(r["caught"]) for r in results),
              "missed": sum(len(r["missed"]) for r in results), "cases": results}
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a") as out:
-        out.write(json.dumps(entry, sort_keys=True) + "\n")
+    util.append_keeping(path, json.dumps(entry, sort_keys=True) + "\n", SCORES_KEEP,
+                        path.with_name(SCORES_LOCK))
     return entry
 
 

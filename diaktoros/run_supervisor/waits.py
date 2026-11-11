@@ -31,6 +31,15 @@ def log_path(db: Path) -> Path:
     return db.with_name(db.name + ".workers.log")
 
 
+def within_cap(path: Path) -> bool:
+    """May a writer that never rotates append to the worker log at ``path``? Only to an existing
+    file no larger than ``WORKER_LOG_MAX`` (#2302). The host rotates it once to ``.1`` past that
+    size when it spawns; a worker (``WorkerLifecycle._worker_log``) and ``note`` never grow it
+    further. The one statement of the cap for every writer of the log."""
+    from .. import run_supervisor
+    return path.is_file() and path.stat().st_size <= run_supervisor.WORKER_LOG_MAX
+
+
 def _utc(at) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(at))) if at else "-"
 
@@ -78,6 +87,8 @@ def note(sup, run_id) -> None:
                 f"head={str(row['head'] or '')[:7]} seat={row['seat']} run={row['id']} "
                 f"retries={retries} retry_at={_utc(row['retry_at'])} reason={reason}\n")
         if path.is_file():
+            if not within_cap(path):   # past the cap: only the host's rotation makes room (#2302)
+                return
             fd = os.open(path, os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0))
             with os.fdopen(fd, "a", encoding="utf-8") as fh:
                 fh.write(line)
