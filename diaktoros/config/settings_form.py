@@ -303,10 +303,12 @@ SETTINGS_SCHEMA: dict = {
                "description": "What each model costs, for the cost estimate in stats (#1790): "
                               "MODEL=INPUT/CACHED/OUTPUT in US dollars per million tokens, the "
                               "model as stats names it, e.g. 'deepseek-flash=0.14/0.014/0.28'. A "
-                              "model with no entry is shown as unpriced, never $0; a subscription "
-                              "model has no per-token price to enter. The loop never fetches "
-                              "prices. Blank = not set here (an unset table means every model is "
-                              "unpriced)"},
+                              "model with no entry is shown as unpriced, never $0. A subscription "
+                              "model is MODEL=subscription (shown as subscription, left out of "
+                              "spend), or MODEL=subscription:INPUT/CACHED/OUTPUT with its API list "
+                              "prices, which adds an API-equivalent figure, never counted as "
+                              "spend. The loop never fetches prices. Blank = not set here (an "
+                              "unset table means every model is unpriced)"},
     "generated": {"label": "Generated files (PATH[,PATH]=COMMAND, ';;' between entries)",
                   "type": "str", "default": "",
                   "description": "Generated files the host regenerates when a PR's only merge "

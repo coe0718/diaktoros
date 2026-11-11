@@ -234,8 +234,11 @@ def _rows_settings(schema, rows, enable, loop) -> None:  # noqa: ANN001
            on=bool(loop.get("generated")), off="a conflict in a generated file gets a fixer turn")
     schema("ci_coverage", ("ci_coverage",), lists.ci_coverage_text(loop.get("ci_coverage")) or _UNSET,
            on=bool(loop.get("ci_coverage")), off="the reviewer is not told what a green check covers")
+    subscribed = prices.subscriptions(loop.get("prices"))
     schema("prices", ("prices",), prices.prices_text(loop.get("prices")) or _UNSET,
-           on=bool(loop.get("prices")), off="every model is unpriced in stats")
+           on=bool(loop.get("prices")), off="every model is unpriced in stats",
+           note=("on a subscription, no per-token bill: " + ", ".join(subscribed)
+                 if subscribed else ""))
     schema("fixer_check", ("fixer_check",), loop.get("fixer_check") or _UNSET,
            on=bool(loop.get("fixer_check")), off="the fixer runs no always-run check")
 
