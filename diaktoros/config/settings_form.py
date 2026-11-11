@@ -297,7 +297,8 @@ SETTINGS_SCHEMA: dict = {
                                    "or missing one does not. Only a check that gates (named in "
                                    "required checks, when that is set) can be cited. Blank = not "
                                    "set here (an unset map means the reviewer is told nothing)"},
-    "prices": {"label": "Model prices (MODEL=INPUT/CACHED/OUTPUT, $ per million tokens, commas "
+    "prices": {"label": "Model prices (MODEL=INPUT/CACHED/OUTPUT, MODEL=subscription or "
+                        "MODEL=subscription:INPUT/CACHED/OUTPUT, $ per million tokens, commas "
                         "between)",
                "type": "str", "default": "",
                "description": "What each model costs, for the cost estimate in stats (#1790): "
