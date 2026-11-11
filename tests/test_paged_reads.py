@@ -2,14 +2,19 @@
 
 A full first page read as the whole list was a real bug three times (#558 hooks, #559 reviews,
 #562 annotations). This scan finds every string (f-strings included, docstrings not) holding
-``per_page=100`` in ``diaktoros/`` and ``scripts/`` by AST. A site passes only when:
+``per_page=100`` in ``diaktoros/`` and ``scripts/`` by AST, and judges each string on its own
+(#2299 review F1: one paged read in a function used to clear every other read in it). A string
+passes only when that string itself reaches ``gh._read_pages``:
 
-* its function calls ``gh._read_pages`` (directly, or as ``_read_pages`` inside ``gh``); or
-* its function builds a path that ``gh`` passes straight into ``_read_pages`` (``hooks_path``,
-  ``reviews_path``); or
-* it is registered below, keyed ``"path::function"``, with the reason it is safe: in
-  ``SINGLE_PAGE`` (one page is enough, or a full page is refused as incomplete) or in
-  ``PAGED_BY_HAND`` (the site pages itself, bounded, and never calls a prefix whole).
+* it is inside the path argument of a ``_read_pages`` call in its own function (a nested function
+  is a scope of its own); or
+* it is assigned to a name whose every use is that path argument; or
+* it is returned by a path builder (``hooks_path``, ``reviews_path``) whose every call anywhere
+  is that path argument, or only shown in text or a failure record; or
+* it is registered below, keyed ``"path::function::text"`` (f-string fields as ``{}``), with the
+  reason it is safe: in ``SINGLE_PAGE`` (one page is enough, or a full page is refused as
+  incomplete) or in ``PAGED_BY_HAND`` (the site pages itself, bounded, and never calls a prefix
+  whole). An entry covers one string: a new read in a registered function is a new site.
 
 A registry entry that matches no site fails too, so the registry cannot rot.
 
@@ -34,62 +39,44 @@ MARK = "per_page=100"
 SCANNED = ("diaktoros", "scripts")
 READER = "_read_pages"
 
+# Keyed "path::function::path text" (an f-string's fields shown as ``{}``), so each entry covers
+# one string, not every read in its function; a second identical string in one function is
+# "...#2" and needs its own entry (#2299 review F1).
 SINGLE_PAGE = {
-    "diaktoros/continue_run.py::inspect":
+    "diaktoros/continue_run.py::inspect::/repos/{}/pulls?state=all&per_page=100&head={}":
         "filtered to one head branch: the run needs exactly one PR, and more than one on the "
         "first page is already reported as a conflict",
-    "diaktoros/cli/common.py::_hook_listing":
+    "diaktoros/cli/common.py::_hook_listing::/repos/{}/hooks?per_page=100":
         "a full page (100 hooks or more) raises HookAccessError as an incomplete listing; a "
         "short page is the whole list",
 }
 
 PAGED_BY_HAND = {
-    "diaktoros/ci.py::_runner_shutdown":
+    "diaktoros/ci.py::_runner_shutdown::/repos/{}/check-runs/{}/annotations?per_page=100&page={}":
         "pages to ci.MAX_PAGES; a failed page is 'no marker' only after every page read (#562)",
-    "diaktoros/ci.py::read":
-        "pages by total_count to ci.MAX_PAGES; more check runs than read is None, never green",
-    "diaktoros/ci.py::_read_statuses":
-        "pages by total_count to ci.MAX_PAGES; fewer contexts than total_count is None",
-    "diaktoros/doctor/__init__.py::_read_list":
+    "diaktoros/ci.py::read::/repos/{}/commits/{}/check-runs?per_page=100&page={}":
+        "pages to total_count (or, with no usable total_count, to a short page) within "
+        "ci.MAX_PAGES; more check runs than read is None, never green",
+    "diaktoros/ci.py::_read_statuses::/repos/{}/commits/{}/status?per_page=100&page={}":
+        "pages to a short page or total_count within ci.MAX_PAGES; fewer contexts than "
+        "total_count is None",
+    "diaktoros/doctor/__init__.py::_read_list::{}?per_page=100&page={}":
         "pages until a short page; a failed page or 100 full pages is unknown",
-    "diaktoros/doctor/hook_checks.py::_hook_listing":
+    "diaktoros/doctor/hook_checks.py::_hook_listing::/repos/{}/hooks?per_page=100":
         "pages until a short page; a failed or malformed page is None (unknown)",
-    "diaktoros/stats.py::github":
+    "diaktoros/stats.py::github::/repos/{}/pulls?state=all&sort=created&direction=desc"
+    "&per_page=100&page={}":
         "pages newest first until the window ends; past GITHUB_PAGES_MAX it says 'capped'",
-    "diaktoros/trace.py::fetch_delivery":
+    "diaktoros/trace.py::fetch_delivery::{}?per_page=100&page={}":
         "searches MAX_DELIVERY_PAGES pages per hook and says that bound when nothing matched",
-    "diaktoros/cli/lifecycle.py::_hook_find_command":
+    "diaktoros/cli/lifecycle.py::_hook_find_command::repos/{}/hooks?per_page=100":
         "not a read: a printed `gh api --paginate` command, and gh reads every page",
 }
 
-
-def _docstrings(tree: ast.AST) -> set[int]:
-    """The ids of the docstring nodes and every other bare string statement."""
-    return {id(node.value) for node in ast.walk(tree)
-            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)}
-
-
-def _called(node: ast.AST, name: str) -> bool:
-    """Whether ``node`` contains a call to ``name`` (bare or as an attribute)."""
-    for call in ast.walk(node):
-        if isinstance(call, ast.Call):
-            func = call.func
-            if (isinstance(func, ast.Name) and func.id == name) or (
-                    isinstance(func, ast.Attribute) and func.attr == name):
-                return True
-    return False
-
-
-def _feeders(tree: ast.AST) -> set[str]:
-    """Names of functions called inside the arguments of a ``_read_pages`` call: path builders
-    whose path is read in full (``_read_pages(loop, hooks_path(loop), ...)``)."""
-    names = set()
-    for call in ast.walk(tree):
-        if isinstance(call, ast.Call) and _called_name(call) == READER:
-            for arg in list(call.args) + [k.value for k in call.keywords]:
-                names |= {_called_name(inner) for inner in ast.walk(arg)
-                          if isinstance(inner, ast.Call)}
-    return names - {None}
+DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+# Where a path builder's result may go besides ``_read_pages``: into text (an f-string field)
+# or into the record of a failed read. Neither reads the listing.
+NOT_A_READ = {"record_failure"}
 
 
 def _called_name(call: ast.Call) -> str | None:
@@ -98,44 +85,144 @@ def _called_name(call: ast.Call) -> str | None:
         func.attr if isinstance(func, ast.Attribute) else None)
 
 
-def sites(source: str, rel: str) -> dict[str, bool]:
-    """``{"rel::function": paged}`` for every function holding a ``per_page=100`` string."""
-    tree = ast.parse(source)
-    skip, feeders = _docstrings(tree), _feeders(tree)
-    found: dict[str, bool] = {}
+def _own(scope: ast.AST):
+    """Every node of ``scope`` outside its nested functions and classes (they are scopes of
+    their own: an outer ``_read_pages`` call says nothing about an inner read)."""
+    stack = list(ast.iter_child_nodes(scope))
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, DEFS):
+            stack.extend(ast.iter_child_nodes(node))
 
-    def visit(node, scope):
+
+def _scopes(tree: ast.Module):
+    """``(qualified name, node)`` for the module and every function and class in it."""
+    out = [("<module>", tree)]
+
+    def visit(node, prefix):
         for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                visit(child, scope + [child])
-                continue
-            for inner in ast.walk(child):
-                if (isinstance(inner, ast.Constant) and isinstance(inner.value, str)
-                        and MARK in inner.value and id(inner) not in skip):
-                    funcs = [s for s in scope if not isinstance(s, ast.ClassDef)]
-                    name = ".".join(s.name for s in scope) or "<module>"
-                    outer = funcs[0] if funcs else None
-                    paged = outer is not None and (
-                        _called(outer, READER) or outer.name in feeders)
-                    key = f"{rel}::{name}"
-                    found[key] = found.get(key, True) and paged
+            if isinstance(child, DEFS):
+                out.append((prefix + child.name, child))
+                visit(child, prefix + child.name + ".")
+            else:
+                visit(child, prefix)
+    visit(tree, "")
+    return out
 
-    visit(tree, [])
+
+def _path_arg(call: ast.Call) -> ast.AST | None:
+    """The ``path`` argument of a ``_read_pages(loop, path, ...)`` call."""
+    if len(call.args) > 1:
+        return call.args[1]
+    return next((k.value for k in call.keywords if k.arg == "path"), None)
+
+
+def _reader_paths(nodes) -> list[ast.AST]:
+    return [arg for node in nodes if isinstance(node, ast.Call) and _called_name(node) == READER
+            for arg in [_path_arg(node)] if arg is not None]
+
+
+def _ids(node: ast.AST) -> set[int]:
+    return {id(inner) for inner in ast.walk(node)}
+
+
+def _text(node: ast.AST) -> str:
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value if isinstance(v, ast.Constant) else "{}" for v in node.values)
+    return node.value
+
+
+def _strings(scope: ast.AST) -> list[ast.AST]:
+    """Each string in ``scope`` holding ``MARK`` (an f-string as one), docstrings excluded."""
+    nodes = list(_own(scope))
+    skip = {id(n.value) for n in nodes
+            if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)}
+    skip |= {id(v) for n in nodes if isinstance(n, ast.JoinedStr) for v in n.values}
+    found = [n for n in nodes if isinstance(n, ast.JoinedStr) and any(
+        isinstance(v, ast.Constant) and MARK in str(v.value) for v in n.values)]
+    found += [n for n in nodes if isinstance(n, ast.Constant) and isinstance(n.value, str)
+              and MARK in n.value and id(n) not in skip]
+    return sorted(found, key=lambda n: (n.lineno, n.col_offset))
+
+
+def _into_reader_by_name(site: ast.AST, nodes: list, reader_args: set[int]) -> bool:
+    """``path = "...per_page=100..."`` whose every later use is the path ``_read_pages`` reads
+    (``path += ...`` may extend it): a name also handed to another read is not paged."""
+    for node in nodes:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name) and id(site) in _ids(node.value)):
+            name = node.targets[0].id
+            loads = [n for n in nodes if isinstance(n, ast.Name) and n.id == name
+                     and isinstance(n.ctx, ast.Load)]
+            return bool(loads) and all(id(n) in reader_args for n in loads)
+    return False
+
+
+def _feeders(trees: dict[str, ast.Module]) -> set[str]:
+    """Path builders whose every call, anywhere scanned, is the path ``_read_pages`` reads (or
+    is only shown or recorded): ``hooks_path`` and ``reviews_path``."""
+    uses: dict[str, set[str]] = {}         # name -> {"read", "shown", "other"}
+    for tree in trees.values():
+        parents = {id(c): p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
+        reader_args = {id(arg) for arg in _reader_paths(ast.walk(tree))}
+        for call in ast.walk(tree):
+            if not isinstance(call, ast.Call) or _called_name(call) is None:
+                continue
+            use, node = "read" if id(call) in reader_args else "other", call
+            while use == "other" and id(node) in parents:
+                node = parents[id(node)]
+                if isinstance(node, ast.JoinedStr) or (
+                        isinstance(node, ast.Call) and _called_name(node) in NOT_A_READ):
+                    use = "shown"
+            uses.setdefault(_called_name(call), set()).add(use)
+    return {name for name, kinds in uses.items() if "read" in kinds and "other" not in kinds}
+
+
+def sites(sources: dict[str, str]) -> dict[str, bool]:
+    """``{"rel::function::text": paged}`` for every ``per_page=100`` string in ``sources``
+    (``{rel: source}``). A string is paged only when that string itself reaches ``_read_pages``:
+    inside its path argument, through a name used for nothing else, or returned by a path
+    builder (``_feeders``) whose every call is such an argument."""
+    trees = {rel: ast.parse(source) for rel, source in sources.items()}
+    feeders = _feeders(trees)
+    found: dict[str, bool] = {}
+    for rel, tree in trees.items():
+        for qualname, scope in _scopes(tree):
+            nodes = list(_own(scope))
+            reader_args = set().union(*(_ids(a) for a in _reader_paths(nodes)))
+            exact_args = {id(a) for a in _reader_paths(nodes)}
+            returned = set().union(*(_ids(n.value) for n in nodes
+                                     if isinstance(n, ast.Return) and n.value is not None))
+            for site in _strings(scope):
+                key = base = f"{rel}::{qualname}::{_text(site)}"
+                count = 1
+                while key in found:
+                    count += 1
+                    key = f"{base}#{count}"
+                found[key] = (id(site) in reader_args
+                              or _into_reader_by_name(site, nodes, exact_args)
+                              or (id(site) in returned and isinstance(scope, ast.FunctionDef)
+                                  and scope.name in feeders))
     return found
 
 
 def scan() -> dict[str, bool]:
-    found: dict[str, bool] = {}
+    sources = {}
     for top in SCANNED:
         for path in sorted((ROOT / top).rglob("*.py")):
-            rel = path.relative_to(ROOT).as_posix()
-            found.update(sites(path.read_text(encoding="utf-8"), rel))
-    return found
+            if "__pycache__" not in path.parts:
+                sources[path.relative_to(ROOT).as_posix()] = path.read_text(encoding="utf-8")
+    return sites(sources)
 
 
 def unpaged(found: dict[str, bool]) -> list[str]:
     registered = {**SINGLE_PAGE, **PAGED_BY_HAND}
     return sorted(key for key, paged in found.items() if not paged and key not in registered)
+
+
+def _one(source: str, rel: str = "diaktoros/new.py") -> list[str]:
+    return unpaged(sites({rel: source}))
 
 
 class Scan(unittest.TestCase):
@@ -149,17 +236,26 @@ class Scan(unittest.TestCase):
         found = scan()
         for key, why in {**SINGLE_PAGE, **PAGED_BY_HAND}.items():
             with self.subTest(key=key):
-                self.assertIn(key, found, "stale entry: no per_page=100 string there any more")
+                self.assertIn(key, found, "stale entry: no such per_page=100 string any more")
                 self.assertFalse(found[key], "this site reads through _read_pages now: drop it")
                 self.assertGreater(len(why.split()), 3)
 
     def test_the_scan_sees_the_known_paged_sites(self):
         found = scan()
-        for key in ("diaktoros/gh.py::issue_comments_read", "diaktoros/gh.py::hooks_path",
-                    "diaktoros/gh.py::open_issues_read", "diaktoros/issue_deps.py::met",
-                    "diaktoros/gh.py::branch_rules_read", "diaktoros/gh.py::rulesets_read"):
-            self.assertTrue(found.get(key), key)
-        self.assertNotIn("diaktoros/gh.py::_read_pages", found)        # a docstring, not a read
+        for key in ("diaktoros/gh.py::issue_comments_read::/repos/{}/issues/{}/comments"
+                    "?per_page=100",
+                    "diaktoros/gh.py::hooks_path::/repos/{}/hooks?per_page=100",
+                    "diaktoros/gh.py::reviews_path::{}/reviews?per_page=100",
+                    "diaktoros/gh.py::pr_files_read::{}/files?per_page=100",
+                    "diaktoros/stats_public.py::closed_listing::/repos/{}/issues?state=closed"
+                    "&per_page=100",
+                    "diaktoros/issue_deps.py::met::/repos/{}/issues/{}/events?per_page=100",
+                    "diaktoros/gh.py::branch_rules_read::/repos/{}/rules/branches/{}"
+                    "?per_page=100",
+                    "diaktoros/gh.py::rulesets_read::/repos/{}/rulesets?per_page=100"
+                    "&includes_parents=false"):
+            self.assertIs(found.get(key), True, key)
+        self.assertFalse([k for k in found if "::_read_pages::" in k])   # a docstring
 
     def test_a_new_unpaged_read_fails_it(self):
         for source in (
@@ -168,10 +264,53 @@ class Scan(unittest.TestCase):
                 'class C:\n    def m(self, loop):\n'
                 '        p = f"/x?state=all&per_page=100&page={1}"\n        return gh.api(loop, p)\n'):
             with self.subTest(source=source):
-                self.assertTrue(unpaged(sites(source, "diaktoros/new.py")))
+                self.assertTrue(_one(source))
         paged = ('def f(loop):\n    return gh._read_pages(loop, f"/r/{loop}/x?per_page=100", '
                  '"x", 3)\n')
-        self.assertEqual(unpaged(sites(paged, "diaktoros/new.py")), [])
+        self.assertEqual(_one(paged), [])
+        by_name = ('def f(loop):\n    path = f"/r/{loop}/x?per_page=100"\n    path += "&a=1"\n'
+                   '    return gh._read_pages(loop, path, "x", 3)\n')
+        self.assertEqual(_one(by_name), [])
+
+    def test_a_paged_read_does_not_cover_an_unpaged_one_beside_it(self):
+        # The review's counterexample: one _read_pages call used to clear every site in f.
+        mixed = ('def f(loop):\n    gh._read_pages(loop, "/safe?per_page=100", "x", 3)\n'
+                 '    return gh.fetch(loop, "/unsafe?per_page=100")\n')
+        self.assertEqual(_one(mixed), ["diaktoros/new.py::f::/unsafe?per_page=100"])
+
+    def test_an_outer_paged_read_does_not_cover_a_nested_function(self):
+        nested = ('def f(loop):\n    def g():\n        return gh.api(loop, "/in?per_page=100")\n'
+                  '    return gh._read_pages(loop, "/out?per_page=100", "x", 3), g\n')
+        self.assertEqual(_one(nested), ["diaktoros/new.py::f.g::/in?per_page=100"])
+
+    def test_a_name_read_both_paged_and_unpaged_is_unpaged(self):
+        shared = ('def f(loop):\n    p = "/x?per_page=100"\n'
+                  '    gh._read_pages(loop, p, "x", 3)\n    return gh.fetch(loop, p)\n')
+        self.assertEqual(_one(shared), ["diaktoros/new.py::f::/x?per_page=100"])
+
+    def test_a_path_builder_also_read_unpaged_is_unpaged(self):
+        builder = 'def hp(loop):\n    return "/hooks?per_page=100"\n'
+        paged = builder + 'def r(loop):\n    return _read_pages(loop, hp(loop), "h", 3)\n'
+        self.assertEqual(_one(paged), [])
+        shown = paged + 'def s(loop):\n    log(f"GET {hp(loop)}")\n'
+        self.assertEqual(_one(shown), [])
+        self.assertEqual(_one(paged + 'def u(loop):\n    return api(loop, hp(loop))\n'),
+                         ["diaktoros/new.py::hp::/hooks?per_page=100"])
+
+    def test_a_new_read_in_a_registered_function_fails_it(self):
+        rel = "diaktoros/continue_run.py"
+        source = (ROOT / rel).read_text(encoding="utf-8")
+        self.assertEqual(_one(source, rel), [])
+        anchor = "    pr = None\n"
+        self.assertEqual(source.count(anchor), 1)
+        for extra, key in (
+                ('gh.fetch(loop, f"/repos/{repo}/issues?per_page=100")',
+                 f"{rel}::inspect::/repos/{{}}/issues?per_page=100"),
+                ('gh.fetch(loop, f"/repos/{repo}/pulls?state=all&per_page=100&head={branch}")',
+                 f"{rel}::inspect::/repos/{{}}/pulls?state=all&per_page=100&head={{}}#2")):
+            with self.subTest(extra=extra):
+                added = source.replace(anchor, f"{anchor}    {extra}\n")
+                self.assertEqual(_one(added, rel), [key])
 
 
 def full(n, **item):
