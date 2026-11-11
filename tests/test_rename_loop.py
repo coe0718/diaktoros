@@ -180,7 +180,7 @@ class Paused(fg.Base):
         self.assertTrue(watchdog.observer.is_urgent(event))
         self.assertIn(str(migrate.marker_path()), kw["outcome"])
         self.assertIn("hermes dk migrate", kw["outcome"])
-        self.assertEqual(kw["identity"], "migrate:1")
+        self.assertEqual(kw["identity"], "migrate-marker:started=1")
         with mock.patch.object(watchdog.observer, "notify") as again:
             self.sweep(drain=True)                 # a drain prints and sends nothing
         again.assert_not_called()
@@ -196,6 +196,66 @@ class Paused(fg.Base):
             self.sweep()
         sent.assert_called_once()
         self.assertTrue(sent.call_args.kwargs.get("urgent", sent.call_args.args[-1]))
+
+    def test_an_unreadable_marker_and_one_without_started_are_two_notices(self):
+        # #2329: through the sweep and the real observer ledger, a readable marker with no
+        # `started` must not be suppressed by an earlier unreadable marker's notice.
+        (self.root / "state").mkdir(exist_ok=True)
+        self.loop["observer"] = {"route": "watch"}
+        with mock.patch.object(config, "readable_loops", return_value=([self.loop], [])), \
+                mock.patch.object(watchdog.observer, "configured", return_value=""), \
+                mock.patch.object(watchdog.observer, "_deliver", return_value=True) as sent:
+            migrate.marker_path().write_text("not json")
+            self.sweep()
+            migrate.marker_path().write_text(json.dumps({"pid": 999999}))
+            self.sweep()
+        self.assertEqual(sent.call_count, 2)
+
+    def test_no_accepted_start_value_shares_a_fallback_notice_identity(self):
+        # Review of #2361: a hand-edited marker may carry any JSON `started`, including the
+        # fallback words themselves. Each of these is a distinct fact, so through the sweep and
+        # the real observer ledger each one is delivered; the last repeat is deduplicated.
+        (self.root / "state").mkdir(exist_ok=True)
+        self.loop["observer"] = {"route": "watch"}
+        markers = ["not json", {"pid": 999999}, {"pid": 999998, "started": "unknown-start"},
+                   {"pid": 999997, "started": "unreadable"}, {"pid": 999996, "started": 0},
+                   {"pid": 999995, "started": "0"}, {"pid": 999994, "started": 1}]
+        with mock.patch.object(config, "readable_loops", return_value=([self.loop], [])), \
+                mock.patch.object(watchdog.observer, "configured", return_value=""), \
+                mock.patch.object(watchdog.observer, "_deliver", return_value=True) as sent:
+            for marker in markers + [{"pid": 999993, "started": "unreadable"}]:
+                migrate.marker_path().write_text(
+                    marker if isinstance(marker, str) else json.dumps(marker))
+                self.sweep()
+        self.assertEqual(sent.call_count, len(markers))
+
+    def test_a_key_an_earlier_version_left_in_the_ledger_suppresses_no_new_notice(self):
+        # Review of #2361 (F2): the ledger keeps a key for 30 days across an upgrade. Seed it
+        # with every key the earlier identity builders gave a marker (the base's
+        # `migrate:{started or 'unreadable'}` and the earlier `migrate:started=<JSON>`), each
+        # through the real observer.notify, then sweep markers whose new identity could spell
+        # one of them: each must still be delivered.
+        (self.root / "state").mkdir(exist_ok=True)
+        self.loop["observer"] = {"route": "watch"}
+        st = watchdog.state_mod.state_for(self.loop)
+        old_keys = ["migrate:unreadable", "migrate:unknown-start", "migrate:1", "migrate:1.5",
+                    'migrate:started="unknown-start"', 'migrate:started="unreadable"',
+                    "migrate:started=1", 'migrate:started="1.5"']
+        markers = ["not json", {"pid": 999999}, {"pid": 999998, "started": "unknown-start"},
+                   {"pid": 999997, "started": "unreadable"}, {"pid": 999996, "started": 1},
+                   {"pid": 999995, "started": 1.5}, {"pid": 999994, "started": "1.5"}]
+        with mock.patch.object(config, "readable_loops", return_value=([self.loop], [])), \
+                mock.patch.object(watchdog.observer, "configured", return_value=""), \
+                mock.patch.object(watchdog.observer, "_deliver", return_value=True) as sent:
+            for key in old_keys:
+                watchdog.observer.notify(self.loop, st, "held", 0, "", identity=key,
+                                         outcome="install paused — seeded", next_turn="you")
+            self.assertEqual(sent.call_count, len(old_keys))
+            for marker in markers:
+                migrate.marker_path().write_text(
+                    marker if isinstance(marker, str) else json.dumps(marker))
+                self.sweep()
+        self.assertEqual(sent.call_count, len(old_keys) + len(markers))
 
     def test_a_dead_migrate_notice_skips_a_loop_whose_state_dir_is_gone(self):
         # A half-moved state directory must not be recreated by the observer ledger.
