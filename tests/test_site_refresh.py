@@ -144,15 +144,28 @@ class _FallbackParser(HTMLParser):
             "link", "meta", "source", "track", "wbr"}
 
     def handle_starttag(self, tag, attrs):
+        key = dict(attrs).get("data-site")
         if tag in self.VOID:
+            # A void element has no content, so it shows no fallback
+            # text (None); its key still counts, as the page's selector
+            # finds it and the snapshot must cover it.
+            if key is not None:
+                self.pairs.append((key, None))
             return
         for frame in self._open:
             frame[1] += 1
-        key = dict(attrs).get("data-site")
         if key is not None:
             self._open.append([key, 1, []])
 
+    def handle_startendtag(self, tag, attrs):
+        """Treat `<x/>` as a start tag only. `<br/>` is one void tag, and
+        HTML ignores the slash on a non-void `<span/>` (it still opens an
+        element), so the default start-plus-end would close frames early."""
+        self.handle_starttag(tag, attrs)
+
     def handle_endtag(self, tag):
+        if tag in self.VOID:
+            return  # a stray `</br>` closes nothing
         for frame in self._open:
             frame[1] -= 1
         while self._open and self._open[-1][1] <= 0:
@@ -173,11 +186,19 @@ def hardcoded_fallbacks(html):
     return parser.pairs
 
 
+def missing_snapshot_keys(html, data):
+    """Return the set of data-site keys the page uses (on any element,
+    void ones included) that data.json does not provide."""
+    return {key for key, _ in hardcoded_fallbacks(html)} - set(data)
+
+
 def stale_fallbacks(html, data):
     """List every hardcoded data-site value that differs from data.json,
     formatted as the page's num() would show it."""
     stale = []
     for key, shown in hardcoded_fallbacks(html):
+        if shown is None:
+            continue  # a void element shows no text to go stale
         want = data.get(key)
         if isinstance(want, int) and not isinstance(want, bool):
             want = f"{want:,}"
@@ -274,7 +295,7 @@ class SiteRefreshTests(unittest.TestCase):
         keys = {key for key, _ in hardcoded_fallbacks(html)}
         self.assertTrue(keys, "no data-site keys found in index.html")
         data = json.loads((SITE / "data.json").read_text())
-        missing = keys - set(data)
+        missing = missing_snapshot_keys(html, data)
         self.assertFalse(missing, f"data.json missing keys used by the page: {missing}")
 
     def test_hardcoded_fallbacks_match_snapshot(self):
@@ -299,6 +320,30 @@ class SiteRefreshTests(unittest.TestCase):
         self.assertIn(("stars", "999"), hardcoded_fallbacks(mutated))
         self.assertTrue(any(line.startswith("stars:") for line in stale_fallbacks(mutated, data)),
                         "stale stars value after a later attribute was not reported")
+
+    def test_snapshot_key_check_sees_void_elements(self):
+        """A data-site key on a void element (an input) is still found by
+        the page's selector, so the key coverage check must see it."""
+        html = (SITE / "index.html").read_text()
+        data = json.loads((SITE / "data.json").read_text())
+        anchor = f'data-site="stars">{data["stars"]:,}<'
+        self.assertIn(anchor, html)
+        mutated = html.replace(anchor, anchor + '/span><input data-site="ghost" title="x"><span>', 1)
+        self.assertIn(("ghost", None), hardcoded_fallbacks(mutated))
+        self.assertEqual(missing_snapshot_keys(mutated, data), {"ghost"})
+        self.assertEqual(stale_fallbacks(mutated, data), stale_fallbacks(html, data))
+
+    def test_fallback_check_reads_past_self_closing_void_tag(self):
+        """A self-closing `<br/>` inside a data-site element must not end
+        that element early and hide the text after it."""
+        self.assertEqual(hardcoded_fallbacks('<span data-site="stars">11<br/>999</span>'),
+                         [("stars", "11999")])
+        html = (SITE / "index.html").read_text()
+        data = json.loads((SITE / "data.json").read_text())
+        original = f'data-site="stars">{data["stars"]:,}<'
+        mutated = html.replace(original, f'data-site="stars" title="stars">{data["stars"]:,}<br/>999<')
+        self.assertTrue(any(line.startswith("stars:") for line in stale_fallbacks(mutated, data)),
+                        "text after a self-closing <br/> was not checked")
 
     def test_freshness_note_present(self):
         """The proof strip's freshness note must exist in the HTML and
