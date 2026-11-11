@@ -588,6 +588,31 @@ def hooks_read(loop: dict, login: str | None = None) -> tuple[list[dict] | None,
     return _read_pages(loop, hooks_path(loop), "hook", MAX_PR_PAGES, login=login)
 
 
+# A branch's rules and a repository's rulesets (#2299): 1,000 of either at most.
+MAX_RULE_PAGES = 10
+
+
+def branch_rules_read(loop: dict, base: str,
+                      login: str | None = None) -> tuple[list[dict] | None, str]:
+    """Every rule that applies to ``base`` (all pages), or ``(None, reason)``.
+
+    A 404 on the first page is GitHub saying the branch has no rules, read as ``([], "")`` as
+    the callers always have; a failed later page leaves the whole listing unknown (#2299).
+    """
+    path = f"/repos/{loop['repo']}/rules/branches/{base}?per_page=100"
+    rules, error = _read_pages(loop, path, "branch rule", MAX_RULE_PAGES, login=login)
+    if rules is None and re.match(r"branch rule page 1: HTTP 404\b", error):
+        return [], ""
+    return rules, error
+
+
+def rulesets_read(loop: dict, login: str | None = None) -> tuple[list[dict] | None, str]:
+    """Every ruleset of the repository itself (all pages), or ``(None, reason)`` — never a
+    prefix, in which the loop's own ruleset could be missing (#2299)."""
+    return _read_pages(loop, f"/repos/{loop['repo']}/rulesets?per_page=100&includes_parents=false",
+                       "ruleset", MAX_RULE_PAGES, login=login)
+
+
 def pr(loop: dict, number: int):
     return api(loop, pr_path(loop, number))
 
