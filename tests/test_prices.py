@@ -294,5 +294,135 @@ class Estimate(unittest.TestCase):
                 elif got["bound"] == "at least":
                     self.assertLessEqual(read, cost, (price, out_price, tokens_in, tokens_out))
 
+
+SUB = "claude-opus-5-5=subscription"
+SUB_API = "gpt-6.1-terra=subscription:3/0.3/15"
+WANT_SUBS = {"claude-opus-5-5": {"subscription": True},
+             "gpt-6.1-terra": {"subscription": True, "input": 3.0, "cached": 0.3, "output": 15.0}}
+
+
+class SubscriptionSetting(unittest.TestCase):
+    """#2241: a model on a subscription, with or without its API list prices."""
+
+    def test_both_forms_round_trip_through_the_file_the_line_and_the_form(self):
+        table = {**WANT, **WANT_SUBS}
+        self.assertEqual(config.normalize(trc.raw(prices={
+            "Claude-Opus-5-5": {"subscription": True},
+            "gpt-6.1-terra": {"subscription": True, "input": 3, "cached": 0.3, "output": 15},
+            **WANT}))["prices"], table)
+        line = f"{SUB}, {ENTRY}, {SUB_API}"
+        parsed = prices.parse_prices(prices.split_prices(line), "t")
+        self.assertEqual(parsed, table)
+        text = prices.prices_text(parsed)
+        self.assertEqual(text, f"{ENTRY}, {SUB}, {SUB_API}")        # per-token models first
+        self.assertEqual(prices.parse_prices(prices.split_prices(text), "t"), table)
+        self.assertEqual(prices.subscriptions(parsed), ["claude-opus-5-5", "gpt-6.1-terra"])
+        self.assertEqual(settings_form.apply_settings(trc.raw(), {"prices": line})["prices"],
+                         table)
+
+    def test_a_malformed_subscription_is_refused(self):
+        for name, bad in (("some prices", {"m": {"subscription": True, "input": 1}}),
+                          ("not a boolean", {"m": {"subscription": "true"}}),
+                          ("one is not true", {"m": {"subscription": 1}}),
+                          ("false", {"m": {"subscription": False}}),
+                          ("an unknown key", {"m": {"subscription": True, "plan": "max"}}),
+                          ("a bad price", {"m": {"subscription": True, "input": -1,
+                                                 "cached": 0, "output": 0}})):
+            with self.subTest(name), self.assertRaisesRegex(config.ConfigError, "'prices'"):
+                config.normalize(trc.raw(prices=bad))
+        for bad in ("m=subscription:", "m=subscription:1/2", "m=subscription:1/2/x",
+                    "m=subs", "m=", "m=1/2/3:4", "m=subscription:1/2/3/4"):
+            with self.subTest(bad), self.assertRaises(config.ConfigError):
+                prices.parse_prices([bad], "t")
+
+
+class SubscriptionCli(unittest.TestCase):
+    setUpClass = classmethod(thp.Cli.setUpClass.__func__)
+    tearDownClass = classmethod(thp.Cli.tearDownClass.__func__)
+    setUp = thp.Cli.setUp
+    cli = thp.Cli.cli
+    init = thp.Cli.init
+    written = Cli.written
+
+    def test_init_set_apply_setup_and_show_carry_both_forms(self):
+        rc, out = self.init("--price", SUB, "--price", SUB_API)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.written(), WANT_SUBS)
+        rc, out = self.cli("set", "--loop", thp.LOOP_ID, "--price", ENTRY, "--price", SUB)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.written(), {**WANT, "claude-opus-5-5": {"subscription": True}})
+        rc, out = self.cli("set", "--loop", thp.LOOP_ID, "--price", "m=subscription:1/2")
+        self.assertEqual(rc, 2, out)
+        rc, out = self.cli("apply", "--loop", thp.LOOP_ID, settings={"prices": SUB_API})
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.written(), {"gpt-6.1-terra": WANT_SUBS["gpt-6.1-terra"]})
+        rc, out = self.cli("show", "--loop", thp.LOOP_ID)
+        self.assertIn(SUB_API, out)
+        self.assertIn("on a subscription, no per-token bill: gpt-6.1-terra", out)
+        args = t.parser_for({"prices": f"{SUB}, {SUB_API}"}).parse_args(
+            ["setup", "--repo", t.REPO])
+        argv, _ = cli_setup._setup_init_argv(args, t.REPO, thp.LOOP_ID, interactive=False)
+        self.assertEqual([a for a in argv if a.startswith("--price")],
+                         [f"--price={SUB}", f"--price={SUB_API}"])
+
+
+class SubscriptionStats(unittest.TestCase):
+    """#2241 through the ledger: what ``stats`` says of a subscription model."""
+    REPO = Estimate.REPO
+    report = Estimate.report
+    TURNS = [("shadow", "deepseek-flash", {"tokens_in": 1_000_000, "tokens_out": 100_000,
+                                           "cache_read": 900_000}),
+             ("fixer", "claude-opus-5-5", {"tokens_in": 2_000_000, "tokens_out": 10_000,
+                                           "cache_read": 1_000_000}),
+             ("reviewer", "gpt-6.1-terra", {"tokens_in": 1_000_000, "tokens_out": 100_000,
+                                            "cache_read": 500_000}),
+             ("triage", "glm", {"tokens_in": 1_000, "tokens_out": 10, "cache_read": 0})]
+
+    def test_a_subscription_model_is_said_and_left_out_of_spend(self):
+        report = self.report(self.TURNS, {**WANT, "claude-opus-5-5": {"subscription": True}})
+        rows = {row["seat"]: row for row in report["usage"]}
+        self.assertEqual(rows["fixer"]["estimate"], {"subscription": True})
+        self.assertIsNone(rows["triage"]["estimate"])                  # no entry: unpriced
+        self.assertIsNone(rows["fixer"]["api_equivalent"])
+        text = stats.text(report)
+        fixer = next(line for line in text.splitlines() if "claude-opus-5-5" in line)
+        self.assertIn("subscription", fixer)
+        self.assertNotIn("unpriced", fixer)
+        self.assertNotIn("$", fixer)
+        self.assertIn("unpriced", next(line for line in text.splitlines() if " glm " in line))
+        # Spend is the per-token model's alone: $0.0546 (see the #1790 test above).
+        self.assertIn("estimated spend (per-token models): $0.0546", text)
+        self.assertNotIn(stats.API_HEAD, text)                          # no API prices given
+        self.assertNotIn("API-equivalent of", text)
+
+    def test_api_prices_add_a_column_and_a_total_never_added_to_spend(self):
+        report = self.report(self.TURNS, {**WANT, **WANT_SUBS})
+        rows = {row["seat"]: row for row in report["usage"]}
+        # 500k uncached at 3, 500k cached at 0.3, 100k out at 15: $3.15.
+        self.assertAlmostEqual(rows["reviewer"]["api_equivalent"]["dollars"], 3.15)
+        self.assertEqual(rows["reviewer"]["estimate"], {"subscription": True})
+        self.assertIsNone(rows["fixer"]["api_equivalent"])           # marked, but no API prices
+        self.assertAlmostEqual(report["spend"]["dollars"], 0.0546)
+        self.assertAlmostEqual(report["api_equivalent"]["dollars"], 3.15)
+        text = stats.text(report)
+        self.assertIn(stats.API_HEAD, text)
+        self.assertIn("estimated spend (per-token models): $0.0546", text)
+        self.assertIn("API-equivalent of the subscription models (not spent): $3.1500", text)
+        self.assertIn("API-equivalent of the subscription models (not spent): $3.1500",
+                      stats.as_html(report))
+
+    def test_a_total_keeps_a_shared_bound_and_says_about_when_they_differ(self):
+        row = {"model": "m", "tokens_in": 1_000_000, "tokens_out": 0, "cache_read": 0,
+               "cached_of": 0}
+        most = prices.estimate(row, {"m": {"input": 1, "cached": 0.5, "output": 0}})
+        least = prices.estimate(row, {"m": {"input": 1, "cached": 2, "output": 0}})
+        exact = prices.estimate({**row, "cached_of": 1_000_000},
+                                {"m": {"input": 1, "cached": 2, "output": 0}})
+        self.assertEqual(prices.estimate_text(prices.total([most, exact])), "at most $2.0000")
+        self.assertEqual(prices.estimate_text(prices.total([least, least])), "at least $2.0000")
+        self.assertEqual(prices.estimate_text(prices.total([exact])), "$1.0000")
+        self.assertEqual(prices.estimate_text(prices.total([most, least])), "about $2.0000")
+        self.assertIsNone(prices.total([]))
+
 if __name__ == "__main__":
     unittest.main()

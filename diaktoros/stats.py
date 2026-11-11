@@ -199,16 +199,44 @@ def cache_share(row: dict) -> str:
 
 
 def _usage_rows(report: dict) -> list[list[str]]:
+    api = _has_api_equivalent(report)
     return [[row["seat"], row["model"], str(row["turns"]), f"{row['tokens_in']:,}",
              f"{row['tokens_out']:,}",
              cache_share(row),
              f"{row['cost']:.4f}" if row["costed"] else "unknown",
              prices.estimate_text(row.get("estimate"))]
+            + ([_api_text(row.get("api_equivalent"))] if api else [])
             for row in report.get("usage") or []]
 
 
 USAGE_HEAD = ["seat", "model", "turns", "tokens in", "tokens out", "cached input (provider-reported)",
               "cost (provider-reported)", "cost (estimated from prices)"]
+API_HEAD = "API-equivalent (subscription, not spent)"
+
+
+def _has_api_equivalent(report: dict) -> bool:
+    return any(row.get("api_equivalent") for row in report.get("usage") or [])
+
+
+def _usage_head(report: dict) -> list[str]:
+    """The usage table's columns: the API-equivalent one only when a row has a figure (#2241)."""
+    return USAGE_HEAD + ([API_HEAD] if _has_api_equivalent(report) else [])
+
+
+def _api_text(figure: dict | None) -> str:
+    return prices.estimate_text(figure) if figure else ""
+
+
+def usage_totals(report: dict) -> list[str]:
+    """The lines under the usage table (#2241): estimated spend, summed over per-token models
+    only, and the subscription models' API-equivalent, on its own line and never added to it."""
+    out = []
+    if report.get("spend"):
+        out.append(f"estimated spend (per-token models): {prices.estimate_text(report['spend'])}")
+    if report.get("api_equivalent"):
+        out.append("API-equivalent of the subscription models (not spent): "
+                   + prices.estimate_text(report["api_equivalent"]))
+    return out
 
 
 def revisions(db: Path, repo: str, since: float) -> dict | None:
@@ -435,6 +463,13 @@ def collect(loop: dict, db: Path, since: float, with_github: bool,
     table = prices.prices(loop)
     for row in report["usage"] or []:    # #1790: no provider reports a cost; the operator's prices
         row["estimate"] = prices.estimate(row, table)
+        row["api_equivalent"] = prices.api_equivalent(row, table)       # #2241
+    spent = [row["estimate"] for row in report["usage"] or []
+             if row["estimate"] and not row["estimate"].get(prices.SUBSCRIPTION)]
+    for key, figure in (("spend", prices.total(spent)), ("api_equivalent", prices.total(
+            [row["api_equivalent"] for row in report["usage"] or [] if row["api_equivalent"]]))):
+        if figure:          # only when there is one: a missing ledger keeps the pinned payload
+            report[key] = figure
     cache_turns = cache_by_turn(db, loop["repo"], since)
     if cache_turns is not None:       # a missing ledger keeps the pinned desktop payload as it was
         report["cache_turns"] = cache_turns
@@ -1401,8 +1436,8 @@ def text(report: dict) -> str:
         out += ["", "Tokens per seat and model (counted by the inference proxy; cost where the "
                 "provider reported it, and estimated from the loop's prices: uncached input, "
                 "cached input and output; 'at most' or 'at least' where some turns did not "
-                "report their cache)",
-                *_table(USAGE_HEAD, _usage_rows(report))]
+                "report their cache; 'subscription' is a model with no per-token bill)",
+                *_table(_usage_head(report), _usage_rows(report)), *usage_totals(report)]
     if report.get("cache_turns"):
         out += ["", "Prompt cache per turn, oldest first (compare the rounds of one PR)",
                 *_table(CACHE_HEAD, _cache_turn_rows(report))]
@@ -1489,7 +1524,8 @@ def as_html(report: dict) -> str:
         parts.append('<p class="sub">No turns in this window.</p>')
     if report.get("usage"):
         parts.append("<h2>Tokens per seat and model</h2>")
-        parts.append(_html_table(USAGE_HEAD, _usage_rows(report)))
+        parts.append(_html_table(_usage_head(report), _usage_rows(report)))
+        parts += [f'<p class="sub">{esc(line)}</p>' for line in usage_totals(report)]
     if report.get("cache_turns"):
         parts.append("<h2>Prompt cache per turn</h2>")
         parts.append(_html_table(CACHE_HEAD, _cache_turn_rows(report)))
