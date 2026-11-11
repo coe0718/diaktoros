@@ -9,7 +9,8 @@ stage ``continue`` can do, so no push can happen twice. Anything the records and
 disagree on stays quarantined, with the facts listed. Before any stage writes, the fix is
 re-authorized against live policy (``broker.authorize_issue_fix``, #1051): the operator's
 switch, the identity checks, the issue's author and fix label and its dependency holds bind
-``continue`` as they bind the seat's own ``open_pr``.
+``continue`` as they bind the seat's own ``open_pr``, and so does its plan-first rule
+(``fix_hold.plan_required``, #2336) before the PR is opened.
 
 ``from_chat`` is the reply path (``continue N``): a sender who is not one of the loop's
 maintainers is ignored without a trace.
@@ -139,16 +140,35 @@ def _authorize(loop: dict, plan: dict) -> None:
     """Re-authorize the planned writes against live policy (#1051), as the seat's own
     ``open_pr`` is: ``broker.authorize_issue_fix`` (issue fixes on, distinct verified
     identities, the issue still open by an allowlisted author with the fix label, no
-    dependency hold). A denial is a conflict, so the dry run says it and ``run`` writes nothing.
-    With no stage planned nothing is written, so recording a finished fix needs no check."""
+    dependency hold). Opening the PR also needs what the seat's ``open_pr`` needs beyond that
+    (#2336): no plan owed on a plan-first issue (``fix_hold.plan_required``). A denial is a
+    conflict, so the dry run says it and ``run`` writes nothing. With no stage planned nothing
+    is written, so recording a finished fix needs no check."""
     if not plan["stages"]:
         return
     fix = plan["fix"]
     try:
         broker.authorize_issue_fix(loop, repo=fix["repo"], number=fix["number"])
+        if "open_pr" in plan["stages"]:
+            _check_plan(loop, fix["number"])
     except broker.BrokerDenied as exc:
         plan["conflicts"].append(f"the issue fix is not authorized now: {exc}")
         plan["stages"] = []
+
+
+def _check_plan(loop: dict, number: int) -> None:
+    """Deny opening the PR while the live issue needs an approved plan first: the one rule
+    (``fix_hold.plan_required``) the seat's ``open_pr`` checks before its branch and PR
+    writes (``broker_issues``), read the same way (the live issue, the loop's state)."""
+    from . import fix_hold, run_supervisor, state as state_mod
+    from .run_supervisor import issue_inputs
+    try:
+        live = issue_inputs.issue_fix_issue(loop, number)
+    except (run_supervisor.RetryableError, ValueError) as exc:
+        raise broker.BrokerDenied(str(exc)) from None
+    if fix_hold.plan_required(state_mod.state_for(loop), number, live):
+        raise broker.BrokerDenied("this issue needs a plan first (plan-first label or a large "
+                                  "body) and no maintainer has approved one with /loop approve")
 
 
 def review_stage(loop: dict) -> str:

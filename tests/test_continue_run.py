@@ -333,6 +333,30 @@ class Continue(Base):
         self.assertTrue(ok)
         self.assertEqual(self.writes, ["open_pr", "request_review"])
 
+    def test_continue_does_not_open_a_pr_a_plan_first_issue_owes_a_plan_for(self):
+        """#2336: the seat's plan-first rule binds `continue` too: a `plan-first` label or a
+        large body with no approved plan refuses the PR; a maintainer's approval lets it open."""
+        from diaktoros import fix_hold, state as state_mod
+        self.assert_refused(*self.live_policy(self.loop, issue(labels=("agent-fix",
+                                                                        "plan-first"))),
+                            "needs a plan first")
+        big = "x" * (fix_hold.PLAN_BODY_MAX + 1)
+        self.assert_refused(*self.live_policy(self.loop, issue(body=big)), "needs a plan first")
+        st = state_mod.state_for(self.loop)
+        st.fix_ask_set(12, "plan", 100, "the plan")
+        st.fix_ask_resolve(12, "/loop approve", "jeremy", approve=True)
+        ok, _ = self.live_policy(self.loop, issue(labels=("agent-fix", "plan-first")))
+        self.assertTrue(ok)
+        self.assertEqual(self.writes, ["open_pr", "request_review"])
+
+    def test_a_plan_first_issue_still_gets_its_review_requested(self):
+        """#2336: the plan rule guards opening the PR only; a PR already open (opened past the
+        seat's own gate) still gets its review handoff."""
+        self.prs = [self.pr(5)]
+        ok, _ = self.live_policy(self.loop, issue(labels=("agent-fix", "plan-first")))
+        self.assertTrue(ok)
+        self.assertEqual(self.writes, ["request_review"])
+
     def test_dry_run_names_the_policy_refusal(self):
         args = argparse.Namespace(loop="widgets", run=self.run_id, dry_run=True)
         off = config.normalize({**self.raw, "unattended_fixer_push": False})
