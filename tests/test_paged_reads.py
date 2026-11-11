@@ -6,11 +6,12 @@ A full first page read as the whole list was a real bug three times (#558 hooks,
 (#2299 review F1: one paged read in a function used to clear every other read in it). A string
 passes only when that string itself reaches ``gh._read_pages``:
 
-* it is inside the path argument of a ``_read_pages`` call in its own function (a nested function
-  is a scope of its own); or
-* it is assigned to a name whose every use is that path argument; or
+* it is part of the path argument of a ``_read_pages`` call in its own function (a nested
+  function is a scope of its own), as the argument itself, an f-string field or a ``+``
+  operand, never inside another call's arguments; or
+* it is assigned to a name whose every use is part of that path argument; or
 * it is returned by a path builder (``hooks_path``, ``reviews_path``) whose every call anywhere
-  is that path argument, or only shown in text or a failure record; or
+  is part of that path argument, or only text for ``log`` or a failure record; or
 * it is registered below, keyed ``"path::function::text"`` (f-string fields as ``{}``), with the
   reason it is safe: in ``SINGLE_PAGE`` (one page is enough, or a full page is refused as
   incomplete) or in ``PAGED_BY_HAND`` (the site pages itself, bounded, and never calls a prefix
@@ -74,9 +75,11 @@ PAGED_BY_HAND = {
 }
 
 DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-# Where a path builder's result may go besides ``_read_pages``: into text (an f-string field)
-# or into the record of a failed read. Neither reads the listing.
-NOT_A_READ = {"record_failure"}
+# Where a path builder's result may go besides ``_read_pages``: a log line or the record of a
+# failed read, directly or through the text built for one. Neither reads the listing. Text
+# built for anything else (``gh.fetch(loop, f"{hooks_path(loop)}&a=1")``) is a read (#2299
+# review F1, round 2).
+NOT_A_READ = {"record_failure", "log"}
 
 
 def _called_name(call: ast.Call) -> str | None:
@@ -118,13 +121,28 @@ def _path_arg(call: ast.Call) -> ast.AST | None:
     return next((k.value for k in call.keywords if k.arg == "path"), None)
 
 
+def _path_parts(node: ast.AST):
+    """``node`` and every node whose text becomes part of it as a path: the fields of an
+    f-string and the operands of ``+`` or ``%``. A call's arguments are not part of its result,
+    so ``_read_pages(loop, fetch(loop, "/x?per_page=100"), ...)`` does not page that string."""
+    yield node
+    if isinstance(node, ast.JoinedStr):
+        for value in node.values:
+            yield from _path_parts(value)
+    elif isinstance(node, ast.FormattedValue):
+        yield from _path_parts(node.value)
+    elif isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
+        yield from _path_parts(node.left)
+        yield from _path_parts(node.right)
+
+
+def _part_ids(node: ast.AST) -> set[int]:
+    return {id(part) for part in _path_parts(node)}
+
+
 def _reader_paths(nodes) -> list[ast.AST]:
     return [arg for node in nodes if isinstance(node, ast.Call) and _called_name(node) == READER
             for arg in [_path_arg(node)] if arg is not None]
-
-
-def _ids(node: ast.AST) -> set[int]:
-    return {id(inner) for inner in ast.walk(node)}
 
 
 def _text(node: ast.AST) -> str:
@@ -151,7 +169,7 @@ def _into_reader_by_name(site: ast.AST, nodes: list, reader_args: set[int]) -> b
     (``path += ...`` may extend it): a name also handed to another read is not paged."""
     for node in nodes:
         if (isinstance(node, ast.Assign) and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name) and id(site) in _ids(node.value)):
+                and isinstance(node.targets[0], ast.Name) and id(site) in _part_ids(node.value)):
             name = node.targets[0].id
             loads = [n for n in nodes if isinstance(n, ast.Name) and n.id == name
                      and isinstance(n.ctx, ast.Load)]
@@ -159,23 +177,33 @@ def _into_reader_by_name(site: ast.AST, nodes: list, reader_args: set[int]) -> b
     return False
 
 
+def _use(call: ast.Call, parents: dict[int, ast.AST], reader_parts: set[int]) -> str:
+    """Where a call's result ends up: ``"read"`` when it is part of the path ``_read_pages``
+    reads, ``"shown"`` when the text it is part of is only an argument of a ``NOT_A_READ`` call,
+    ``"other"`` for anything else (an f-string handed to ``fetch`` is a read of one page)."""
+    if id(call) in reader_parts:
+        return "read"
+    node = call                    # climb to the whole text this call's result is part of
+    while id(node) in parents and id(node) in _part_ids(parents[id(node)]):
+        node = parents[id(node)]
+    consumer = parents.get(id(node))
+    if (isinstance(consumer, ast.Call) and _called_name(consumer) in NOT_A_READ
+            and node in consumer.args):
+        return "shown"
+    return "other"
+
+
 def _feeders(trees: dict[str, ast.Module]) -> set[str]:
     """Path builders whose every call, anywhere scanned, is the path ``_read_pages`` reads (or
-    is only shown or recorded): ``hooks_path`` and ``reviews_path``."""
+    is only logged or recorded): ``hooks_path`` and ``reviews_path``."""
     uses: dict[str, set[str]] = {}         # name -> {"read", "shown", "other"}
     for tree in trees.values():
         parents = {id(c): p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
-        reader_args = {id(arg) for arg in _reader_paths(ast.walk(tree))}
+        reader_parts = set().union(*(_part_ids(a) for a in _reader_paths(ast.walk(tree))))
         for call in ast.walk(tree):
-            if not isinstance(call, ast.Call) or _called_name(call) is None:
-                continue
-            use, node = "read" if id(call) in reader_args else "other", call
-            while use == "other" and id(node) in parents:
-                node = parents[id(node)]
-                if isinstance(node, ast.JoinedStr) or (
-                        isinstance(node, ast.Call) and _called_name(node) in NOT_A_READ):
-                    use = "shown"
-            uses.setdefault(_called_name(call), set()).add(use)
+            if isinstance(call, ast.Call) and _called_name(call) is not None:
+                uses.setdefault(_called_name(call), set()).add(
+                    _use(call, parents, reader_parts))
     return {name for name, kinds in uses.items() if "read" in kinds and "other" not in kinds}
 
 
@@ -190,9 +218,8 @@ def sites(sources: dict[str, str]) -> dict[str, bool]:
     for rel, tree in trees.items():
         for qualname, scope in _scopes(tree):
             nodes = list(_own(scope))
-            reader_args = set().union(*(_ids(a) for a in _reader_paths(nodes)))
-            exact_args = {id(a) for a in _reader_paths(nodes)}
-            returned = set().union(*(_ids(n.value) for n in nodes
+            reader_args = set().union(*(_part_ids(a) for a in _reader_paths(nodes)))
+            returned = set().union(*(_part_ids(n.value) for n in nodes
                                      if isinstance(n, ast.Return) and n.value is not None))
             for site in _strings(scope):
                 key = base = f"{rel}::{qualname}::{_text(site)}"
@@ -201,7 +228,7 @@ def sites(sources: dict[str, str]) -> dict[str, bool]:
                     count += 1
                     key = f"{base}#{count}"
                 found[key] = (id(site) in reader_args
-                              or _into_reader_by_name(site, nodes, exact_args)
+                              or _into_reader_by_name(site, nodes, reader_args)
                               or (id(site) in returned and isinstance(scope, ast.FunctionDef)
                                   and scope.name in feeders))
     return found
@@ -296,6 +323,35 @@ class Scan(unittest.TestCase):
         self.assertEqual(_one(shown), [])
         self.assertEqual(_one(paged + 'def u(loop):\n    return api(loop, hp(loop))\n'),
                          ["diaktoros/new.py::hp::/hooks?per_page=100"])
+
+    def test_a_path_builder_inside_an_unpaged_fstring_read_is_unpaged(self):
+        # #2299 review F1, round 2: an f-string around the builder used to count as "shown",
+        # whatever read it. Driven through the real tree and the real gh.hooks_path.
+        sources = {p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8")
+                   for top in SCANNED for p in sorted((ROOT / top).rglob("*.py"))
+                   if "__pycache__" not in p.parts}
+        self.assertEqual(unpaged(sites(sources)), [])
+        hooks = "diaktoros/gh.py::hooks_path::/repos/{}/hooks?per_page=100"
+        for read in ('gh.fetch(loop, f"{gh.hooks_path(loop)}&active=1")',
+                     'gh.fetch(loop, gh.hooks_path(loop) + "&active=1")',
+                     'gh.log(f"x {gh.fetch(loop, f\'{gh.hooks_path(loop)}&a=1\')}")'):
+            with self.subTest(read=read):
+                added = {**sources, "diaktoros/new.py":
+                         f"from diaktoros import gh\ndef read_hooks(loop):\n    return {read}\n"}
+                self.assertEqual(unpaged(sites(added)), [hooks])
+        logged = 'def s(loop):\n    gh.log(f"GET {gh.hooks_path(loop)} failed")\n'
+        self.assertEqual(unpaged(sites({**sources, "diaktoros/new.py": logged})), [])
+
+    def test_a_string_read_by_another_call_inside_the_path_is_unpaged(self):
+        inner = ('def f(loop):\n    return gh._read_pages('
+                 'loop, gh.fetch(loop, "/bad?per_page=100"), "h", 3)\n')
+        self.assertEqual(_one(inner), ["diaktoros/new.py::f::/bad?per_page=100"])
+        named = ('def f(loop):\n    p = gh.fetch(loop, "/bad?per_page=100")\n'
+                 '    return gh._read_pages(loop, p, "h", 3)\n')
+        self.assertEqual(_one(named), ["diaktoros/new.py::f::/bad?per_page=100"])
+        joined = ('def f(loop):\n    return gh._read_pages(loop, f"{loop}" + "/ok?per_page=100",'
+                  ' "h", 3)\n')
+        self.assertEqual(_one(joined), [])
 
     def test_a_new_read_in_a_registered_function_fails_it(self):
         rel = "diaktoros/continue_run.py"
