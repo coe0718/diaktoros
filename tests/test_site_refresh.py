@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SITE = ROOT / "docs" / "site"
@@ -129,6 +130,62 @@ def extract_refresh_script():
     return html[start:end]
 
 
+class _FallbackParser(HTMLParser):
+    """Collect (key, text) for every element carrying a data-site
+    attribute, wherever that attribute sits among the element's others."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.pairs = []
+        self._open = []  # [key, depth, text parts] per open data-site element
+
+    # Elements with no end tag; they must not deepen an open frame.
+    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+            "link", "meta", "source", "track", "wbr"}
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.VOID:
+            return
+        for frame in self._open:
+            frame[1] += 1
+        key = dict(attrs).get("data-site")
+        if key is not None:
+            self._open.append([key, 1, []])
+
+    def handle_endtag(self, tag):
+        for frame in self._open:
+            frame[1] -= 1
+        while self._open and self._open[-1][1] <= 0:
+            key, _, parts = self._open.pop()
+            self.pairs.append((key, "".join(parts)))
+
+    def handle_data(self, data):
+        for frame in self._open:
+            frame[2].append(data)
+
+
+def hardcoded_fallbacks(html):
+    """Return [(data-site key, hardcoded text)] for every data-site
+    element in the page, parsed as HTML so attribute order doesn't matter."""
+    parser = _FallbackParser()
+    parser.feed(html)
+    parser.close()
+    return parser.pairs
+
+
+def stale_fallbacks(html, data):
+    """List every hardcoded data-site value that differs from data.json,
+    formatted as the page's num() would show it."""
+    stale = []
+    for key, shown in hardcoded_fallbacks(html):
+        want = data.get(key)
+        if isinstance(want, int) and not isinstance(want, bool):
+            want = f"{want:,}"
+        if shown != want:
+            stale.append(f"{key}: html {shown!r} != data.json {want!r}")
+    return stale
+
+
 class SiteRefreshTests(unittest.TestCase):
     def run_scenario(self, scenario):
         tmpdir = tempfile.mkdtemp()
@@ -213,9 +270,8 @@ class SiteRefreshTests(unittest.TestCase):
     def test_snapshot_covers_every_page_key(self):
         """Every data-site key in the HTML must exist in data.json,
         or the snapshot fallback silently misses it."""
-        import re
         html = (SITE / "index.html").read_text()
-        keys = set(re.findall(r'data-site="(\w+)"', html))
+        keys = {key for key, _ in hardcoded_fallbacks(html)}
         self.assertTrue(keys, "no data-site keys found in index.html")
         data = json.loads((SITE / "data.json").read_text())
         missing = keys - set(data)
@@ -226,19 +282,23 @@ class SiteRefreshTests(unittest.TestCase):
         checked-in data.json value, formatted as the page's num() would
         show it, so a release stamp that regenerates data.json can't
         leave the last-resort tier a release behind (#2345)."""
-        import re
         html = (SITE / "index.html").read_text()
         data = json.loads((SITE / "data.json").read_text())
-        pairs = re.findall(r'data-site="(\w+)">([^<]*)<', html)
-        self.assertTrue(pairs, "no hardcoded data-site values found in index.html")
-        stale = []
-        for key, shown in pairs:
-            want = data.get(key)
-            if isinstance(want, int) and not isinstance(want, bool):
-                want = f"{want:,}"
-            if shown != want:
-                stale.append(f"{key}: html {shown!r} != data.json {want!r}")
+        self.assertTrue(hardcoded_fallbacks(html), "no hardcoded data-site values found in index.html")
+        stale = stale_fallbacks(html, data)
         self.assertFalse(stale, "hardcoded fallbacks disagree with data.json:\n" + "\n".join(stale))
+
+    def test_fallback_check_sees_attributes_after_data_site(self):
+        """An element whose data-site is followed by another attribute must
+        still be checked, so a stale value there fails the check (#2349)."""
+        html = (SITE / "index.html").read_text()
+        data = json.loads((SITE / "data.json").read_text())
+        original = f'data-site="stars">{data["stars"]:,}<'
+        self.assertIn(original, html)
+        mutated = html.replace(original, 'data-site="stars" title="stars">999<')
+        self.assertIn(("stars", "999"), hardcoded_fallbacks(mutated))
+        self.assertTrue(any(line.startswith("stars:") for line in stale_fallbacks(mutated, data)),
+                        "stale stars value after a later attribute was not reported")
 
     def test_freshness_note_present(self):
         """The proof strip's freshness note must exist in the HTML and
