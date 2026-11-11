@@ -236,8 +236,8 @@ def fix_history(loop: dict, number: int, db=None) -> str:
             "instructions)\n\nCI-fix turns pushed these without a review. Check that none of "
             "them weakened, skipped or removed a test (a loosened assertion, a skip marker, a "
             "deleted case or file); one that did is a blocking finding.\n")
-    commits, _ = gh.fetch(loop, f"/repos/{loop['repo']}/pulls/{number}/commits?per_page=100",
-                          login=loop["read_token"])
+    # Every page (#2299): a CI fix past the first 100 commits is still on the PR.
+    commits, _ = gh.pr_commits_read(loop, number)
     if not isinstance(commits, list):
         return head + "(the CI-fix commits could not be read: check the test changes in the diff)"
     out = []
