@@ -8,9 +8,11 @@ whose event is not a literal fails unless ``ALLOWED`` names its function and say
 literals that reach an allowed call are then checked instead (see ``ALLOWED``).
 
 The scan fails closed on what it cannot read (review of #2356): the observer module or its
-``notify`` imported under another name is followed; a starred or ``**`` argument that could carry
-the event fails; an allowed function must pass its ``event`` variable unchanged, bound only in the
-forms the scan reads; an allowed wrapper's callers are found by name, by ``module.name`` and
+``notify`` imported under another name, or reached through a package alias (``dk.observer``),
+is followed, and the module passed on as a value (``obs = observer``) fails; a starred or ``**``
+argument that could carry the event fails; an allowed function must pass its ``event`` variable
+unchanged, bound only in the forms the scan reads (any other binding, ``def event`` included,
+fails); an allowed wrapper's callers are found by name, by ``module.name`` and
 through ``from ... import`` (aliases too), and any other reference to the wrapper fails.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
@@ -43,11 +45,11 @@ ALLOWED = {
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
 
 
-def _observer_names(tree):
-    """``(modules, functions)``: the local names ``tree`` binds to the observer module
-    (``observer``, ``from . import observer as obs``, ``import diaktoros.observer as obs``) and to
-    its ``notify`` (``from .observer import notify as send``). File-wide, so it over-matches."""
-    modules, functions = {"observer"}, set()
+def _observer_imports(tree):
+    """``(modules, functions)``: the local names an import in ``tree`` binds to the observer
+    module (``from . import observer as obs``, ``import diaktoros.observer as obs``) and to its
+    ``notify`` (``from .observer import notify as send``). File-wide, so it over-matches."""
+    modules, functions = set(), set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             module = node.module or ""
@@ -63,6 +65,13 @@ def _observer_names(tree):
     return modules, functions
 
 
+def _observer_names(tree):
+    """``(modules, functions)`` as ``_observer_imports`` reads them, with ``observer`` always a
+    module name (a call ``observer.notify`` counts however the name got there)."""
+    modules, functions = _observer_imports(tree)
+    return modules | {"observer"}, functions
+
+
 def _dotted(node):
     """``a.b.c`` for a chain of names and attributes, else ``None``."""
     if isinstance(node, ast.Name):
@@ -75,14 +84,35 @@ def _dotted(node):
 
 def _is_notify_ref(node, names):
     """``node`` names the observer's ``notify``: ``<module alias>.notify``,
-    ``diaktoros.observer.notify`` or a name ``notify`` was imported as."""
+    ``<anything>.observer.notify`` (``diaktoros.observer.notify``, or ``dk.observer.notify``
+    after ``import diaktoros as dk``) or a name ``notify`` was imported as."""
     modules, functions = names
     if isinstance(node, ast.Name):
         return node.id in functions
     if isinstance(node, ast.Attribute) and node.attr == "notify":
-        owner = _dotted(node.value)
-        return owner in modules or owner == "diaktoros.observer"
+        owner = node.value
+        return _dotted(owner) in modules or (
+            isinstance(owner, ast.Attribute) and owner.attr == "observer")
     return False
+
+
+def _module_escapes(tree):
+    """The nodes in ``tree`` that hand the observer module itself on instead of reading an
+    attribute of it (``obs = observer``, ``f(observer)``, ``getattr(dk.observer, "notify")``).
+    Through such a name a notify call cannot be told from any other, so the scan fails on each.
+    The module is ``<anything>.observer`` or a name an import binds to it."""
+    imported, _ = _observer_imports(tree)
+    parent = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    escapes = []
+    for node in ast.walk(tree):
+        is_module = ((isinstance(node, ast.Name) and node.id in imported)
+                     or (isinstance(node, ast.Attribute) and node.attr == "observer"))
+        if not is_module or not isinstance(node.ctx, ast.Load):
+            continue
+        up = parent.get(node)
+        if not (isinstance(up, ast.Attribute) and up.value is node):
+            escapes.append(node)
+    return escapes
 
 
 def _is_observer_notify(node, names=({"observer"}, set())):
@@ -146,32 +176,44 @@ def _bound(target, value, found, read):
             _bound(elt, value.elts[i] if pairs else None, found, read)
 
 
+# String fields that never bind a name: an attribute, a call's ``name=``, a constant, a
+# ``from`` module path. Every other string field of a node is treated as a possible binding.
+_NOT_BINDINGS = {(ast.Attribute, "attr"), (ast.keyword, "arg"), (ast.Constant, "value"),
+                 (ast.Constant, "kind"), (ast.ImportFrom, "module")}
+
+
+def _names_bound(node):
+    """The names ``node`` could bind. Read generically from its string fields, so a form not
+    listed here (``def event``, ``class event``, a ``match`` capture, an ``except ... as``, a
+    nested parameter, or a syntax added later) still counts; a ``Name`` only when stored or
+    deleted, an import by the name it binds, and ``global``/``nonlocal`` by their lists."""
+    if isinstance(node, ast.Name):
+        return [] if isinstance(node.ctx, ast.Load) else [node.id]
+    if isinstance(node, ast.alias):
+        return [node.asname or node.name.split(".")[0]]
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return list(node.names)
+    return [value for field, value in ast.iter_fields(node)
+            if isinstance(value, str) and (type(node), field) not in _NOT_BINDINGS]
+
+
 def _event_bindings(fn):
     """What ``fn``'s body binds ``event`` to, one entry per binding: the literal, or ``None`` for
-    a binding the scan cannot read (a non-literal value, ``+=``, a ``for``/``with``/``except``/
-    walrus target, an import, a nested parameter, ``global``/``nonlocal``). ``fn``'s own
-    parameters are not included (see ``_own_params``)."""
-    found, read = [], set()
+    a binding the scan cannot read: a non-literal value, ``+=``, a ``for``/``with``/``except``/
+    walrus target, an import, a nested parameter, ``def``/``class event`` (a decorator can make
+    it any value), ``global``/``nonlocal``, and anything else ``_names_bound`` finds. ``fn``'s
+    own parameters are not included (see ``_own_params``)."""
+    found, read = [], {id(fn)} | {id(a) for a in _own_params(fn)}
     for node in ast.walk(fn):
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 _bound(target, node.value, found, read)
         elif isinstance(node, ast.AnnAssign) and node.value is not None:
             _bound(node.target, node.value, found, read)
-    own = {id(a) for a in _own_params(fn)}
-    for node in ast.walk(fn):
-        if isinstance(node, ast.AnnAssign) and node.value is None:
+        elif isinstance(node, ast.AnnAssign):
             read.add(id(node.target))    # ``event: str`` alone binds nothing at run time
-        unread = (
-            (isinstance(node, ast.Name) and node.id == "event"
-             and isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in read)
-            or (isinstance(node, ast.arg) and node.arg == "event" and id(node) not in own)
-            or (isinstance(node, ast.ExceptHandler) and node.name == "event")
-            or (isinstance(node, ast.alias) and (node.asname or node.name) == "event")
-            or (isinstance(node, (ast.Global, ast.Nonlocal)) and "event" in node.names)
-            or (isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name == "event"))
-        if unread:
-            found.append(None)
+    found += [None for node in ast.walk(fn)
+              if id(node) not in read and "event" in _names_bound(node)]
     return found
 
 
@@ -239,6 +281,9 @@ def _scan_notify(path, tree, wrappers):
     problems += [f"{path}:{node.lineno}: observer notify referenced, not called: its event "
                  "cannot be checked" for node in ast.walk(tree)
                  if _is_notify_ref(node, names) and id(node) not in called]
+    problems += [f"{path}:{node.lineno}: the observer module is passed on as "
+                 f"{ast.unparse(node)!r}, so its notify calls cannot be found: call "
+                 "`observer.notify(...)` on it directly" for node in _module_escapes(tree)]
     return problems, calls
 
 
@@ -426,6 +471,33 @@ class ScanBypasses(unittest.TestCase):
     def test_notify_referenced_without_a_call_fails(self):
         planted = "from . import observer as obs\nsend = obs.notify\n"
         self.assertFlags({"diaktoros/planted.py": planted}, "referenced, not called")
+
+    def test_decorated_definition_rebinding_event_fails(self):
+        # Review 2 of #2356: a decorator rebinds ``event`` to any value, here an unknown one.
+        for definition in ("def event():\n                pass\n",
+                           "class event:\n                pass\n"):
+            self.assertFlags(edited(
+                "diaktoros/run_supervisor/notices.py", 'event = "failed"\n',
+                'event = "failed"\n            @(lambda fn: "no-such-event")\n'
+                f'            {definition}'), "other than a literal")
+
+    def test_observer_reached_through_a_package_alias_fails(self):
+        # Review 2 of #2356: ``import diaktoros as dk`` then ``dk.observer.notify(...)``.
+        planted = ("import diaktoros as dk\n\n\ndef f(loop, st):\n"
+                   "    dk.observer.notify(loop, st, 'no-such-event', 1)\n")
+        self.assertFlags({"diaktoros/planted.py": planted},
+                         "diaktoros/planted.py:5: unknown observer event 'no-such-event'")
+
+    def test_observer_module_passed_on_fails(self):
+        # Review 2 of #2356: ``obs = observer; obs.notify(...)`` and the like hide the call.
+        for header, line in (("from . import observer", "obs = observer"),
+                             ("import diaktoros as dk", "obs = dk.observer"),
+                             ("from . import observer as o", "send = getattr(o, 'notify')"),
+                             ("from . import observer", "relay(observer)")):
+            planted = (f"{header}\n\n\ndef f(loop, st):\n    {line}\n"
+                       "    obs.notify(loop, st, 'no-such-event', 1)\n")
+            self.assertFlags({"diaktoros/planted.py": planted},
+                             "diaktoros/planted.py:5: the observer module is passed on")
 
 
 if __name__ == "__main__":
