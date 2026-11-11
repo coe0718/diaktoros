@@ -1260,7 +1260,7 @@ def run(gate: str, main: Callable[[], None]) -> None:
     except Exception:
         payload = None
     key = fingerprint(gate, raw)
-    redrive = os.environ.get(REDRIVE_ENV, "")
+    redrive = envnames.get("GATE_REDRIVE", "")  # either spelling (#2300)
     if not kind:
         _resolve_completed(payload, key, redrive, started_wall)
         raise SystemExit(code)
