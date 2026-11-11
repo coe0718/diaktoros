@@ -232,7 +232,7 @@ class UninstallRefusalTest(Base):
         rc, out = self.cli("uninstall", "--loop", "widgets")
         self.assertEqual(rc, 2, out)
         self.assertTrue(LOOP_FILE.exists())
-        self.assertIn(f"gh api 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
+        self.assertIn(f"gh api --paginate 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
 
     def test_keep_hooks_is_an_explicit_opt_out(self):
         self.fresh_install()
@@ -309,7 +309,7 @@ class HostlessTest(Base):
         self.assertNotIn("gh api -X DELETE", out)
         self.assertNotIn("still live. Delete them", out)
         self.assertIn("another install's", out)
-        self.assertIn(f"gh api 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
+        self.assertIn(f"gh api --paginate 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
         self.assertIn("--host https://your-gateway.example", out)
         self.assertEqual(sorted(hook["id"] for hook in self.hooks()), ids)
         self.assertTrue(LOOP_FILE.exists())
@@ -632,7 +632,7 @@ class PurgeTest(Base):
         self.assertEqual(rc, 2, out)
         self.assertIn("each seat needs its own route", out)
         self.assertIn("it may still have live repo hooks and a watchdog job; nothing was touched", out)
-        self.assertIn(f"gh api 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
+        self.assertIn(f"gh api --paginate 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
         self.assertIn("hermes cron remove job1", out)
         self.assertEqual(len(self.hooks()), 2)
 
@@ -677,7 +677,7 @@ class PurgeTest(Base):
         self.assertIn("every DELETE was accepted, but the hook listing could not be read back", out)
         self.assertNotIn("still live", out)
         self.assertNotIn("gh api -X DELETE", out)
-        self.assertIn(f"gh api 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
+        self.assertIn(f"gh api --paginate 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
         self.assertTrue(LOOP_FILE.exists())
 
     def test_no_hooks_of_ours_and_a_failed_read_back_is_unconfirmed_not_live(self):
@@ -700,7 +700,7 @@ class PurgeTest(Base):
                       out)
         self.assertNotIn("still live", out)
         self.assertNotIn("gh api -X DELETE", out)
-        self.assertIn(f"gh api 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
+        self.assertIn(f"gh api --paginate 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
         self.assertTrue(LOOP_FILE.exists())
 
     def test_a_hook_that_appears_during_uninstall_is_caught(self):
@@ -746,7 +746,7 @@ class PurgeTest(Base):
             self.assertNotIn("still live", out)
             self.assertNotIn("gh api -X DELETE", out)
             self.assertIn("check each one's URL before deleting anything", out)
-            self.assertIn(f"gh api 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
+            self.assertIn(f"gh api --paginate 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
 
     def test_a_failed_delete_is_live_and_an_accepted_one_unconfirmed(self):
         # Recorded as they fail, not recovered from the failure prose: hook A's DELETE fails and
