@@ -162,8 +162,8 @@ name.
 
 Between turns:
 
-1. `hermes plugins disable hermes-review-loop`, so the two plugins don't both claim
-   `hermes review-loop`. Its gates keep running by path until step 4 repoints them.
+1. `hermes plugins disable hermes-review-loop`. Its gates keep running by path until step 4
+   repoints them.
 2. Install Diaktoros: `hermes plugins install diaktoros` from the catalog, or a pinned commit with
    `hermes plugins install coe0718/diaktoros --force --ref <full sha>`.
 3. `hermes plugins enable diaktoros`.
@@ -180,8 +180,7 @@ Between turns:
    [moving to a renamed plugin or repository](#moving-to-a-renamed-plugin-or-repository).
 5. `hermes dk doctor`. When it's green, `hermes plugins remove hermes-review-loop`.
 
-From step 3, `hermes review-loop` works as an alias until v0.6.0, which removes it. Each use says
-it was renamed and names that release.
+`hermes review-loop` was removed in v0.6.0. From step 3, use `hermes dk`.
 
 ## What the loop signs
 

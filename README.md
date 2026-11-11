@@ -182,7 +182,7 @@ hermes dk set --loop ID --change-proof on
 Diaktoros was called hermes-review-loop before v0.2.0. **Hermes knows a plugin by its name, and the name changed.** Installing Diaktoros puts it in a new folder, `diaktoros`, beside your `hermes-review-loop`. It isn't enabled until you enable it under its new name. Your loops keep running through the old plugin until `migrate` points them at the new one. Between turns:
 
 ```bash
-hermes plugins disable hermes-review-loop        # so the two don't both claim `hermes review-loop`
+hermes plugins disable hermes-review-loop        # the old plugin; its gates keep running by path until migrate
 hermes plugins install diaktoros                 # from the catalog; or: coe0718/diaktoros --force --ref <sha>
 hermes plugins enable diaktoros
 hermes dk migrate --dry-run                      # what moves: settings, file names, the watchdog job
@@ -191,7 +191,7 @@ hermes dk doctor                                 # green? then:
 hermes plugins remove hermes-review-loop
 ```
 
-`hermes review-loop` keeps working, as an alias until v0.6.0, which removes it. Each use says it was renamed. [Operations](docs/operations.md#upgrading-from-hermes-review-loop) has the details.
+`hermes review-loop` was removed in v0.6.0: use `hermes dk`. [Operations](docs/operations.md#upgrading-from-hermes-review-loop) has the details.
 
 ## Advanced: Claude subscription seats (DirectSDK)
 

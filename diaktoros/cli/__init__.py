@@ -123,22 +123,6 @@ from .triage_command import cmd_triage  # noqa: F401
 # -- verbs ----------------------------------------------------------------------
 
 
-# The release that drops ``hermes review-loop`` (#1089). The rename shipped in 0.2.0 and the alias
-# was promised "for one release"; it now names its end. README.md and docs/operations.md name the
-# same release, and tests/test_rename.py fails once ``__version__`` reaches it with the alias kept.
-RENAMED_REMOVED_IN = "0.6.0"
-RENAMED_NOTE = ("note: `hermes review-loop` is now `hermes dk` (short for `hermes diaktoros`); "
-                f"the old name will be removed in v{RENAMED_REMOVED_IN}")
-
-
-def _renamed(func):
-    """``func`` run through the old command name: the rename note on stderr, then the verb."""
-    def run(args):  # noqa: ANN001
-        print(RENAMED_NOTE, file=sys.stderr)
-        return func(args)
-    return run
-
-
 # Every ``hermes dk`` command after ``list`` and ``init`` (those two need the settings), in the
 # order help lists them: a new command adds its registrar here, and ``register_cli`` stays as is.
 _COMMANDS = (
@@ -160,7 +144,8 @@ _COMMANDS = (
 
 
 def register_cli(ctx, settings: dict | None = None) -> None:
-    """Wire ``hermes diaktoros``, its short name ``hermes dk``, and the old ``hermes review-loop``.
+    """Wire ``hermes diaktoros`` and its short name ``hermes dk`` (``hermes review-loop`` went in
+    v0.6.0, #1089).
 
     ``settings`` is the plugin-level settings form. It supplies the defaults a new loop starts
     from, and what ``apply`` pushes onto an existing loop; it never rewrites a loop behind the
@@ -198,25 +183,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                    "~/.hermes/diaktoros.d/, and it drives two webhook routes, two GitHub hooks "
                    "and (optionally) one cron watchdog job.")
 
-    def deprecated(parser) -> None:  # noqa: ANN001
-        """``hermes review-loop`` (#425): the same commands, each saying once that it was renamed.
-
-        It never becomes ``_PARSER``: verbs one command runs for another go through the real name.
-        """
-        kept = cli_common._PARSER
-        setup(parser)
-        cli_common._PARSER = kept if kept is not None else parser
-        if parser.get_default("func") is not None:          # the bare command prints its usage
-            parser.set_defaults(func=_renamed(parser.get_default("func")))
-        for action in parser._subparsers._group_actions if parser._subparsers else ():
-            for verb in action.choices.values():
-                func = verb.get_default("func")
-                if func is not None:
-                    verb.set_defaults(func=_renamed(func))
-
-    # The old name first and the full name last: a host that keeps one registration keeps that one.
-    ctx.register_cli_command("review-loop", "Renamed: use `hermes dk` (Diaktoros)", deprecated,
-                             description=description)
+    # The full name last: a host that keeps one registration keeps that one.
     ctx.register_cli_command("dk", summary + " (short for `hermes diaktoros`)", setup,
                              description=description)
     ctx.register_cli_command("diaktoros", summary, setup, description=description)
