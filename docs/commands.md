@@ -2118,6 +2118,16 @@ the maintainer's fix label and no unmet prerequisite. A refusal keeps the run qu
 printed (also by `--dry-run`); with no stage left to write, nothing is checked and the run is
 only recorded and released.
 
+A PR stage also needs the plan-first rule the broker's `open_pr` applies (#2334): an issue with
+the `plan-first` label or a body over 4,000 characters needs a maintainer's approved plan. It is
+checked on the same issue read that authorizes the fix, so a label added in between cannot slip
+through, and a missing local approval record refuses too. To recover, `--post-plan` posts one
+fixer comment on the issue presenting the pushed branch (a compare link) as the plan, ending
+with the `/loop approve` line, and opens a plan ask tied to the run (it counts toward the
+issue's three asks and is refused while another ask is open). The watchdog sweep or the comment
+webhook reads a maintainer's `/loop approve` after it, records the approval and, since the
+branch is already pushed, queues no new fix turn; run `continue` again to open the PR.
+
 A review counts as given only when the reviewer has a verdict (approval or change request) at the
 PR's **current head**, the gate's own rule: a verdict at an older head does not hide a head nobody
 has reviewed. With a **GitHub App reviewer** GitHub cannot be asked for a review (it answers 201
@@ -2142,6 +2152,7 @@ this repository ships no such gateway hook, so only the CLI fires today.
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
 | `--run` | `RUN` | **required** | the issue-fix run id (`status` lists it) |
 | `--dry-run` |  |  | only inspect and say what the next step would be |
+| `--post-plan` |  |  | for a run refused only for want of an approved plan (plan-first): post its pushed branch on the issue as the plan to approve |
 <!-- /flags -->
 
 ### drain

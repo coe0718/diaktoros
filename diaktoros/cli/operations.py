@@ -540,6 +540,10 @@ def cmd_continue(args) -> int:
         plan = continue_run.inspect(loop, sup, args.run)
         print("\n".join(plan["facts"] + [continue_run.offer(plan, loop["id"], args.run)]))
         return 0 if not plan["conflicts"] else 2
+    if getattr(args, "post_plan", False):
+        ok, lines = continue_run.post_plan(loop, sup, args.run)
+        print("\n".join(lines))
+        return 0 if ok else 2
     ok, lines = continue_run.run(loop, sup, args.run)
     print("\n".join(lines))
     return 0 if ok else 2
@@ -1100,6 +1104,9 @@ def add_continue(sub) -> None:  # noqa: ANN001
     cont.add_argument("--run", required=True, help="the issue-fix run id (`status` lists it)")
     cont.add_argument("--dry-run", action="store_true",
                       help="only inspect and say what the next step would be")
+    cont.add_argument("--post-plan", action="store_true",
+                      help="for a run refused only for want of an approved plan (plan-first): "
+                           "post its pushed branch on the issue as the plan to approve")
     cont.set_defaults(func=cmd_continue)
 
 

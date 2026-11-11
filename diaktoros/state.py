@@ -1153,9 +1153,13 @@ class LoopState:
             change(data)
             self._save_strict(self.dir / "fix-asks.json", data)
 
-    def fix_ask_set(self, number: int, kind: str, comment_id: int, text: str) -> None:
+    def fix_ask_set(self, number: int, kind: str, comment_id: int, text: str,
+                    run: str = "") -> None:
+        """Open an ask. ``run``: the issue-fix run whose pushed branch ``continue`` posted as
+        the plan (#2334); its approval is recorded, and no new fix turn is queued for it."""
         def change(data):
-            data["open"][str(number)] = {"kind": kind, "comment_id": comment_id, "text": text}
+            data["open"][str(number)] = {"kind": kind, "comment_id": comment_id, "text": text,
+                                         **({"run": run} if run else {})}
             data["count"][str(number)] = data["count"].get(str(number), 0) + 1
             data["handoff"].pop(str(number), None)
         self._fix_ask_edit(change)

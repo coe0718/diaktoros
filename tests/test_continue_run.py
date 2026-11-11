@@ -301,13 +301,21 @@ class Continue(Base):
                 self.assertEqual(self.run_state(), "uncertain")
                 self.assertEqual(self.fix()["state"], "pushed")
 
+    def real_policy(self, live_issue):
+        """The real ``broker.authorize_issue_fix`` (#1051) with ``live_issue`` as the reader's
+        read: the identities verify, no dependency holds."""
+        stack = contextlib.ExitStack()
+        for patch in (mock.patch.object(broker, "authorize_issue_fix", self.real_authorize),
+                      mock.patch.object(broker, "_verify_identities", lambda *a, **k: None),
+                      mock.patch.object(gh, "api", lambda *a, **k: live_issue),
+                      mock.patch("diaktoros.issue_deps.hold_reason", lambda loop, n: "")):
+            stack.enter_context(patch)
+        return stack
+
     def live_policy(self, loop, live_issue):
         """Run ``continue`` through the real ``broker.authorize_issue_fix`` (#1051): the
         identities verify, the reader sees ``live_issue``, no dependency holds."""
-        with mock.patch.object(broker, "authorize_issue_fix", self.real_authorize), \
-                mock.patch.object(broker, "_verify_identities", lambda *a, **k: None), \
-                mock.patch.object(gh, "api", lambda *a, **k: live_issue), \
-                mock.patch("diaktoros.issue_deps.hold_reason", lambda loop, n: ""):
+        with self.real_policy(live_issue):
             return continue_run.run(loop, self.sup, self.run_id)
 
     real_authorize = staticmethod(broker.authorize_issue_fix)
@@ -335,24 +343,83 @@ class Continue(Base):
 
     def test_continue_applies_the_plan_first_gate_of_the_seats_open_pr(self):
         """#2334: a pushed fix of a plan-first issue (the label, or a body over PLAN_BODY_MAX)
-        gets no PR from `continue` until a maintainer approved a plan, as the broker's own
-        open_pr refuses it (fix_hold.plan_required)."""
-        from diaktoros import fix_hold, state as state_mod
+        gets no PR from `continue` with no approved plan (none recorded locally either), as the
+        broker's own open_pr refuses it (fix_hold.plan_required); the dry run names the way out."""
+        from diaktoros import fix_hold
         labelled = issue(labels=("agent-fix", fix_hold.PLAN_LABEL))
         large = issue(body="x" * (fix_hold.PLAN_BODY_MAX + 1))
         for live in (labelled, large):
             with self.subTest(labels=live["labels"], body=len(live["body"])), \
                     mock.patch.object(gh, "fetch", self.fetch_with(live)):
-                plan = continue_run.inspect(self.loop, self.sup, self.run_id)
+                with self.real_policy(live):
+                    plan = continue_run.inspect(self.loop, self.sup, self.run_id)
                 self.assertEqual(plan["stages"], [])
-                self.assertIn("needs a plan first", continue_run.offer(plan, "widgets",
-                                                                       self.run_id))
+                said = continue_run.offer(plan, "widgets", self.run_id)
+                self.assertIn("needs a plan first", said)
+                self.assertIn("--post-plan", said)
                 self.assert_refused(*self.live_policy(self.loop, live), "needs a plan first")
-        state_mod.state_for(self.loop).fix_ask_resolve(12, "/loop approve", "jeremy", True)
+
+    def test_the_plan_rule_reads_the_issue_that_authorized_the_fix(self):
+        """#2334 review F2: the label lands between inspect's issue read and the authorizing
+        read. The plan rule is applied to the authorizing (newer) read, so nothing is opened."""
+        from diaktoros import fix_hold
+        labelled = issue(labels=("agent-fix", fix_hold.PLAN_LABEL))
+        with mock.patch.object(gh, "fetch", self.fetch_with(issue())):    # inspect's older read
+            self.assert_refused(*self.live_policy(self.loop, labelled), "needs a plan first")
+
+    def plan_comment(self, loop, *, repo, number, login, body):
+        self.writes.append("plan_comment")
+        self.posted = body
+        return 500
+
+    def approve_after_plan(self, labelled, comments):
+        """``continue --post-plan`` through the CLI for a refused plan-first run, then the
+        maintainer's ``comments`` on the issue as GitHub lists them."""
+        self.comments = comments
+        args = argparse.Namespace(loop="widgets", run=self.run_id, dry_run=False, post_plan=True)
+        with mock.patch.object(gh, "fetch", self.fetch_with(labelled)), self.real_policy(labelled), \
+                mock.patch.object(broker, "post_issue_comment", self.plan_comment), \
+                mock.patch.object(config, "load_id", return_value=self.loop), \
+                mock.patch.object(operations, "_ledger_path", return_value=self.db), \
+                contextlib.redirect_stdout(io.StringIO()):
+            return operations.cmd_continue(args)
+
+    def test_a_plan_first_fix_recovers_through_a_posted_plan_and_a_real_approve(self):
+        """#2334 review F1: `--post-plan` posts the pushed branch as the plan (one fixer comment
+        ending in the /loop approve line) and opens a plan ask; the watchdog sweep reads a
+        maintainer's `/loop approve` after it from the issue's comments, records the approval
+        and queues no new turn (the branch is pushed); `continue` then opens the PR."""
+        from diaktoros import fix_hold, gate, state as state_mod
+        st = state_mod.state_for(self.loop)
+        labelled = issue(labels=("agent-fix", fix_hold.PLAN_LABEL))
+        self.assertEqual(self.approve_after_plan(labelled, []), 0)
+        self.assertEqual(self.writes, ["plan_comment"])
+        self.assertIn(BRANCH, self.posted)
+        self.assertIn(f"exactly `{fix_hold.APPROVE}`", self.posted)
+        self.assertEqual(st.fix_ask_open()[12]["run"], self.run_id)
+        self.assertEqual(self.approve_after_plan(labelled, []), 2)   # an ask is open: no 2nd post
+        self.assertEqual(self.writes, ["plan_comment"])
+        self.writes = []
+        queued = []
+        comments = [{"id": 499, "user": {"login": "jeremy"}, "body": "/loop approve"},  # before
+                    {"id": 501, "user": {"login": "owner"}, "body": "/loop approve"}]  # not maint.
+        with mock.patch.object(gh, "issue_comments_read", lambda loop, n: (comments, "")), \
+                mock.patch.object(gate, "enqueue_isolated", lambda *a, **k: queued.append(a)):
+            fix_hold.sweep_asks(self.loop, st, [])
+            self.assertFalse(st.fix_plan_approved(12))
+            self.assert_refused(*self.live_policy(self.loop, labelled), "needs a plan first")
+            comments.append({"id": 502, "user": {"login": "Jeremy"}, "body": "/loop approve"})
+            fix_hold.sweep_asks(self.loop, st, [])
+        self.assertTrue(st.fix_plan_approved(12))
+        self.assertEqual((st.fix_ask_open(), queued), ({}, []))
         with mock.patch.object(gh, "fetch", self.fetch_with(labelled)):
-            ok, _ = self.live_policy(self.loop, labelled)
-        self.assertTrue(ok)
+            ok, lines = self.live_policy(self.loop, labelled)
+        self.assertTrue(ok, lines)
         self.assertEqual(self.writes, ["open_pr", "request_review"])
+
+    def test_post_plan_refuses_a_run_that_needs_no_plan(self):
+        self.assertEqual(self.approve_after_plan(issue(), []), 2)
+        self.assertEqual(self.writes, [])
 
     def fetch_with(self, live):
         """``fetch`` with the issue read as ``live``; the branch and PRs as in ``fetch``."""

@@ -182,6 +182,13 @@ def sweep_asks(loop: dict, st, lines: list[str], only: int | None = None) -> Non
             continue
         login, body = found
         st.fix_ask_resolve(number, body[:ASK_REPLY_MAX], login, ask.get("kind") == "plan")
+        if ask.get("run"):
+            # #2334: `continue` posted a pushed fix as the plan. The approval is recorded above;
+            # the branch is already pushed, so no fresh turn: `continue` opens its PR.
+            st.fix_ask_drop(number)
+            log(f"issue #{number}: {login} approved the plan of run {ask['run']}; finish it with "
+                f"`hermes dk continue --loop {loop['id']} --run {ask['run']}`")
+            continue
         try:
             issue_inputs.issue_fix_issue(loop, number)
             base, outcome = queue_fix(loop, number, f"issue-fix:ask{st.fix_ask_count(number)}")
