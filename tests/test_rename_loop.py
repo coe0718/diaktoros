@@ -197,6 +197,20 @@ class Paused(fg.Base):
         sent.assert_called_once()
         self.assertTrue(sent.call_args.kwargs.get("urgent", sent.call_args.args[-1]))
 
+    def test_an_unreadable_marker_and_one_without_started_are_two_notices(self):
+        # #2329: through the sweep and the real observer ledger, a readable marker with no
+        # `started` must not be suppressed by an earlier unreadable marker's notice.
+        (self.root / "state").mkdir(exist_ok=True)
+        self.loop["observer"] = {"route": "watch"}
+        with mock.patch.object(config, "readable_loops", return_value=([self.loop], [])), \
+                mock.patch.object(watchdog.observer, "configured", return_value=""), \
+                mock.patch.object(watchdog.observer, "_deliver", return_value=True) as sent:
+            migrate.marker_path().write_text("not json")
+            self.sweep()
+            migrate.marker_path().write_text(json.dumps({"pid": 999999}))
+            self.sweep()
+        self.assertEqual(sent.call_count, 2)
+
     def test_a_dead_migrate_notice_skips_a_loop_whose_state_dir_is_gone(self):
         # A half-moved state directory must not be recreated by the observer ledger.
         with mock.patch.object(watchdog.observer, "notify") as notify:

@@ -1087,6 +1087,15 @@ def not_drained(loop: dict, armed, error: str) -> str:
     return f"{loop['id']}: {what} — nothing drained"
 
 
+def migrate_identity(held: dict) -> str:
+    """The observer identity of a held marker's notice (#2329): an unreadable marker and a
+    readable one without a start time are different facts with different wording, so they
+    must not share one ledger key — the first would suppress the second for the retention."""
+    if held.get("unreadable"):
+        return "migrate:unreadable"
+    return f"migrate:{held.get('started') or 'unknown-start'}"
+
+
 def notify_dead_migrate(held: dict) -> None:
     """One urgent ``held`` notice per loop for a migrate that died holding the pause (#1077).
 
@@ -1098,7 +1107,7 @@ def notify_dead_migrate(held: dict) -> None:
     from diaktoros import migrate
     outcome = (f"install paused — {migrate.describe(held)} (marker {migrate.marker_path()}; "
                "run `hermes dk migrate`)")
-    identity = f"migrate:{held.get('started') or 'unreadable'}"
+    identity = migrate_identity(held)
     loops, _refused = config.readable_loops()
     for loop in loops:
         try:
