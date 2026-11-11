@@ -1093,18 +1093,25 @@ def migrate_identity(held: dict) -> str:
     readable one without a start time are different facts with different wording, so they
     must not share one ledger key — the first would suppress the second for the retention.
 
-    The namespace is disjoint by construction: the two fallback states are bare words, a
-    numeric start (what ``migrate.hold`` writes) is its number as before, and any other
-    ``started`` value a hand-edited marker carries is ``started=<its JSON>`` — so no accepted
-    start value (``"unreadable"``, ``"unknown-start"``, ``0`` …) can spell a fallback key."""
+    The namespace is disjoint by construction, within this version and against every key an
+    earlier version can have left in the ledger for its 30-day retention (#2361). Those were all
+    ``migrate:<str(started) or 'unreadable'>``, or ``migrate:...`` from an earlier build of this
+    function; every key here starts with ``migrate-marker:``, which none of them can (they differ
+    at the ninth character). Under that prefix the two fallback states are bare words and any
+    ``started`` the marker carries (the number ``migrate.hold`` writes, or whatever a
+    hand-edited marker holds) is ``started=<its JSON>``, so no accepted start value
+    (``"unreadable"``, ``"unknown-start"``, ``0``, ``"1"`` …) can spell a fallback key or
+    another value's key, and no old key can suppress a new notice. Even the number keeps no
+    old key: before the upgrade, a string start ``"1.5"`` wrote ``migrate:1.5`` too.
+
+    The cost of the new prefix: a dead marker an earlier version already notified, still held
+    at the upgrade, is notified once more after it, a repeat and never a suppression."""
     if held.get("unreadable"):
-        return "migrate:unreadable"
+        return "migrate-marker:unreadable"
     since = held.get("started")
     if since is None:
-        return "migrate:unknown-start"
-    if isinstance(since, (int, float)) and not isinstance(since, bool):
-        return f"migrate:{since}"
-    return f"migrate:started={json.dumps(since, sort_keys=True)}"
+        return "migrate-marker:unknown-start"
+    return f"migrate-marker:started={json.dumps(since, sort_keys=True)}"
 
 
 def notify_dead_migrate(held: dict) -> None:
