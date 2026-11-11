@@ -68,12 +68,11 @@ def read(loop: dict, login: str | None = None) -> Protection:
     """The base's requirements for the merge check and for approvals."""
     base = str(loop.get("base") or "main")
     found = Protection()
-    rules = gh.request(loop, f"/repos/{loop['repo']}/rules/branches/{base}?per_page=100",
-                       login=login)
-    if rules.status != 404 and (rules.error or not isinstance(rules.data, list)):
-        found.unread.append(f"rulesets ({gh.one_line(rules.error or 'no rule list')})")
-    elif isinstance(rules.data, list):
-        for rule in rules.data:
+    rules, error = gh.branch_rules_read(loop, base, login=login)
+    if rules is None:
+        found.unread.append(f"rulesets ({gh.one_line(error)})")
+    else:
+        for rule in rules:
             params = rule.get("parameters") if isinstance(rule, dict) else None
             if not isinstance(params, dict):
                 continue
@@ -133,11 +132,10 @@ def ruleset_body(loop: dict) -> dict:
 
 def _own_ruleset(loop: dict, login: str | None) -> tuple[int | None, str]:
     """The id of the loop's ruleset (``None`` when there is none), or why it could not be read."""
-    listed = gh.request(loop, f"/repos/{loop['repo']}/rulesets?per_page=100&includes_parents=false",
-                        login=login)
-    if listed.error or not isinstance(listed.data, list):
-        return None, gh.one_line(listed.error or "no ruleset list")
-    for ruleset in listed.data:
+    listed, error = gh.rulesets_read(loop, login=login)
+    if listed is None:                    # never a prefix: a later page may hold ours (#2299)
+        return None, gh.one_line(error)
+    for ruleset in listed:
         if isinstance(ruleset, dict) and ruleset.get("name") == RULESET_NAME \
                 and type(ruleset.get("id")) is int:
             return ruleset["id"], ""

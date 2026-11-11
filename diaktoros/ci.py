@@ -94,8 +94,11 @@ def read(loop: dict, head: str) -> CIState | None:
                 continue
             if name not in latest or (run.get("id") or 0) > (latest[name].get("id") or 0):
                 latest[name] = run
+        # The last page is the one that reaches total_count or, with no usable total_count, a
+        # short one. A full page with no count proves nothing, so the next page is read (#2299):
+        # a failed run on it must not hide behind a green first page.
         total = reply.get("total_count")
-        if not isinstance(total, int) or page * 100 >= total:
+        if (page * 100 >= total) if type(total) is int else len(reply["check_runs"]) < 100:
             break
     else:
         return None   # more check runs than we read: never call a partial view green
