@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import json
 import os
 import pathlib
 import re
@@ -1090,10 +1091,20 @@ def not_drained(loop: dict, armed, error: str) -> str:
 def migrate_identity(held: dict) -> str:
     """The observer identity of a held marker's notice (#2329): an unreadable marker and a
     readable one without a start time are different facts with different wording, so they
-    must not share one ledger key — the first would suppress the second for the retention."""
+    must not share one ledger key — the first would suppress the second for the retention.
+
+    The namespace is disjoint by construction: the two fallback states are bare words, a
+    numeric start (what ``migrate.hold`` writes) is its number as before, and any other
+    ``started`` value a hand-edited marker carries is ``started=<its JSON>`` — so no accepted
+    start value (``"unreadable"``, ``"unknown-start"``, ``0`` …) can spell a fallback key."""
     if held.get("unreadable"):
         return "migrate:unreadable"
-    return f"migrate:{held.get('started') or 'unknown-start'}"
+    since = held.get("started")
+    if since is None:
+        return "migrate:unknown-start"
+    if isinstance(since, (int, float)) and not isinstance(since, bool):
+        return f"migrate:{since}"
+    return f"migrate:started={json.dumps(since, sort_keys=True)}"
 
 
 def notify_dead_migrate(held: dict) -> None:

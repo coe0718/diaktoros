@@ -211,6 +211,24 @@ class Paused(fg.Base):
             self.sweep()
         self.assertEqual(sent.call_count, 2)
 
+    def test_no_accepted_start_value_shares_a_fallback_notice_identity(self):
+        # Review of #2361: a hand-edited marker may carry any JSON `started`, including the
+        # fallback words themselves. Each of these is a distinct fact, so through the sweep and
+        # the real observer ledger each one is delivered; the last repeat is deduplicated.
+        (self.root / "state").mkdir(exist_ok=True)
+        self.loop["observer"] = {"route": "watch"}
+        markers = ["not json", {"pid": 999999}, {"pid": 999998, "started": "unknown-start"},
+                   {"pid": 999997, "started": "unreadable"}, {"pid": 999996, "started": 0},
+                   {"pid": 999995, "started": "0"}, {"pid": 999994, "started": 1}]
+        with mock.patch.object(config, "readable_loops", return_value=([self.loop], [])), \
+                mock.patch.object(watchdog.observer, "configured", return_value=""), \
+                mock.patch.object(watchdog.observer, "_deliver", return_value=True) as sent:
+            for marker in markers + [{"pid": 999993, "started": "unreadable"}]:
+                migrate.marker_path().write_text(
+                    marker if isinstance(marker, str) else json.dumps(marker))
+                self.sweep()
+        self.assertEqual(sent.call_count, len(markers))
+
     def test_a_dead_migrate_notice_skips_a_loop_whose_state_dir_is_gone(self):
         # A half-moved state directory must not be recreated by the observer ledger.
         with mock.patch.object(watchdog.observer, "notify") as notify:
