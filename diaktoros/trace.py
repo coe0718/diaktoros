@@ -45,12 +45,16 @@ def _skip(src: str, names: list[str]) -> set[str]:
     """``_SKIP_NAMES``, plus every entry that is not a file, a directory or a symlink, or that is
     gone by the time it is looked at. A socket or FIFO a live process keeps in the state
     directory (the gateway's ``gateway.loop-tick.<pid>.sock``) cannot be copied, and no gate
-    reads one, so it failed the whole trace."""
+    reads one, so it failed the whole trace.
+
+    Only a vanished entry (``FileNotFoundError``) is skipped for failing to stat. Any other stat
+    failure (a permission error on an entry the gate may read) raises, as ``copytree`` would
+    have, so the trace fails rather than judging a copy silently missing a file (#2338)."""
     skip = set(_SKIP_NAMES(src, names))
     for name in names:
         try:
             mode = os.lstat(os.path.join(src, name)).st_mode
-        except OSError:
+        except FileNotFoundError:
             skip.add(name)
             continue
         if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
