@@ -1,4 +1,14 @@
 {
  "schema": 1,
- "cycles": []
+ "cycles": [
+  {
+   "pr": 1955,
+   "repo": "coe0718/diaktoros",
+   "state": "merged",
+   "merged_at": 1793929913.0,
+   "rounds": 3,
+   "findings": 1,
+   "rulings": 0
+  }
+ ]
 }
