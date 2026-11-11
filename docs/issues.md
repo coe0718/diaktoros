@@ -216,7 +216,9 @@ instead of at the next sweep.
 
 An issue is **plan-first** when it carries the `plan-first` label or its body is longer than
 4,000 characters. It must have an approved plan before any PR: the broker refuses `open_pr` until
-a maintainer posts `/loop approve`, and the fixer's prompt says so. The approval is remembered per
+a maintainer posts `/loop approve`, and the fixer's prompt says so. `hermes dk continue` applies
+the same rule (#2334): it does not open the PR of a pushed plan-first fix without an approved
+plan; the run stays quarantined with that reason. The approval is remembered per
 issue, so later fix turns may publish.
 
 The host does not merge. GitHub's `Fixes #N` closing behavior applies when the PR is

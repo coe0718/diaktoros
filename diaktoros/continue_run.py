@@ -9,7 +9,8 @@ stage ``continue`` can do, so no push can happen twice. Anything the records and
 disagree on stays quarantined, with the facts listed. Before any stage writes, the fix is
 re-authorized against live policy (``broker.authorize_issue_fix``, #1051): the operator's
 switch, the identity checks, the issue's author and fix label and its dependency holds bind
-``continue`` as they bind the seat's own ``open_pr``.
+``continue`` as they bind the seat's own ``open_pr``, and so does the plan-first rule
+(``fix_hold.plan_required``, #2334): a PR stage waits for a maintainer-approved plan.
 
 ``from_chat`` is the reply path (``continue N``): a sender who is not one of the loop's
 maintainers is ignored without a trace.
@@ -111,7 +112,7 @@ def inspect(loop: dict, sup, run_id: str) -> dict:
         plan["stages"] = ["open_pr", review_stage(loop)]
     else:
         _review_stage(loop, plan, pr)
-    _authorize(loop, plan)
+    _authorize(loop, plan, issue)
     return plan
 
 
@@ -135,12 +136,15 @@ def _check_pr(loop: dict, plan: dict, pr: dict, sha: str | None) -> None:
                          f"#{pr.get('number')}")
 
 
-def _authorize(loop: dict, plan: dict) -> None:
+def _authorize(loop: dict, plan: dict, issue: dict | None) -> None:
     """Re-authorize the planned writes against live policy (#1051), as the seat's own
     ``open_pr`` is: ``broker.authorize_issue_fix`` (issue fixes on, distinct verified
     identities, the issue still open by an allowlisted author with the fix label, no
-    dependency hold). A denial is a conflict, so the dry run says it and ``run`` writes nothing.
-    With no stage planned nothing is written, so recording a finished fix needs no check."""
+    dependency hold), and for a PR stage the plan-first rule the broker's ``open_pr`` applies
+    (``fix_hold.plan_required`` on the live ``issue``, #2334). A denial is a conflict, so the
+    dry run says it and ``run`` writes nothing. With no stage planned nothing is written, so
+    recording a finished fix needs no check."""
+    from . import fix_hold, state as state_mod
     if not plan["stages"]:
         return
     fix = plan["fix"]
@@ -148,6 +152,14 @@ def _authorize(loop: dict, plan: dict) -> None:
         broker.authorize_issue_fix(loop, repo=fix["repo"], number=fix["number"])
     except broker.BrokerDenied as exc:
         plan["conflicts"].append(f"the issue fix is not authorized now: {exc}")
+        plan["stages"] = []
+        return
+    if "open_pr" in plan["stages"] and fix_hold.plan_required(
+            state_mod.state_for(loop), fix["number"], issue):
+        plan["conflicts"].append(
+            f"issue #{fix['number']} needs a plan first: it is plan-first (the "
+            f"`{fix_hold.PLAN_LABEL}` label or a body over {fix_hold.PLAN_BODY_MAX} characters) "
+            f"and no maintainer has approved a plan (`{fix_hold.APPROVE}`)")
         plan["stages"] = []
 
 

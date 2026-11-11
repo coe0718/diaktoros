@@ -333,6 +333,35 @@ class Continue(Base):
         self.assertTrue(ok)
         self.assertEqual(self.writes, ["open_pr", "request_review"])
 
+    def test_continue_applies_the_plan_first_gate_of_the_seats_open_pr(self):
+        """#2334: a pushed fix of a plan-first issue (the label, or a body over PLAN_BODY_MAX)
+        gets no PR from `continue` until a maintainer approved a plan, as the broker's own
+        open_pr refuses it (fix_hold.plan_required)."""
+        from diaktoros import fix_hold, state as state_mod
+        labelled = issue(labels=("agent-fix", fix_hold.PLAN_LABEL))
+        large = issue(body="x" * (fix_hold.PLAN_BODY_MAX + 1))
+        for live in (labelled, large):
+            with self.subTest(labels=live["labels"], body=len(live["body"])), \
+                    mock.patch.object(gh, "fetch", self.fetch_with(live)):
+                plan = continue_run.inspect(self.loop, self.sup, self.run_id)
+                self.assertEqual(plan["stages"], [])
+                self.assertIn("needs a plan first", continue_run.offer(plan, "widgets",
+                                                                       self.run_id))
+                self.assert_refused(*self.live_policy(self.loop, live), "needs a plan first")
+        state_mod.state_for(self.loop).fix_ask_resolve(12, "/loop approve", "jeremy", True)
+        with mock.patch.object(gh, "fetch", self.fetch_with(labelled)):
+            ok, _ = self.live_policy(self.loop, labelled)
+        self.assertTrue(ok)
+        self.assertEqual(self.writes, ["open_pr", "request_review"])
+
+    def fetch_with(self, live):
+        """``fetch`` with the issue read as ``live``; the branch and PRs as in ``fetch``."""
+        def fetch(loop, path, method="GET", body=None, login=None):
+            if "/git/ref/heads/" in path or "/pulls?" in path:
+                return Continue.fetch(self, loop, path, method, body, login)
+            return live, ""
+        return fetch
+
     def test_dry_run_names_the_policy_refusal(self):
         args = argparse.Namespace(loop="widgets", run=self.run_id, dry_run=True)
         off = config.normalize({**self.raw, "unattended_fixer_push": False})
