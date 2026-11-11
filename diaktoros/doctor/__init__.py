@@ -701,10 +701,10 @@ def base_requires_up_to_date(loop: dict) -> tuple[bool | None, str]:
     neither answer settles it."""
     base = str(loop.get("base") or "main")
     unread = []
-    rules = gh.request(loop, f"/repos/{loop['repo']}/rules/branches/{base}?per_page=100")
-    if rules.status != 404 and (rules.error or not isinstance(rules.data, list)):
-        unread.append(f"rulesets: {gh.one_line(rules.error or 'no rule list')}")
-    for rule in rules.data if isinstance(rules.data, list) else ():
+    rules, error = gh.branch_rules_read(loop, base)
+    if rules is None:
+        unread.append(f"rulesets: {gh.one_line(error)}")
+    for rule in rules or ():
         params = rule.get("parameters") if isinstance(rule, dict) else None
         if (isinstance(rule, dict) and rule.get("type") == "required_status_checks"
                 and isinstance(params, dict)
@@ -938,11 +938,11 @@ def check_branch_protection(loop: dict, offline: bool) -> Check | None:
     # "Branch not protected" to the classic read, so both are read and their checks merged.
     have: set[str] = set()
     unread = []
-    rules = gh.request(loop, f"/repos/{loop['repo']}/rules/branches/{base}?per_page=100")
-    if rules.status != 404 and (rules.error or not isinstance(rules.data, list)):
-        unread.append(f"rulesets ({gh.one_line(rules.error or 'no rule list')})")
-    elif isinstance(rules.data, list):
-        for rule in rules.data:
+    rules, error = gh.branch_rules_read(loop, base)
+    if rules is None:
+        unread.append(f"rulesets ({gh.one_line(error)})")
+    else:
+        for rule in rules:
             if isinstance(rule, dict) and rule.get("type") == "required_status_checks":
                 params = rule.get("parameters") if isinstance(rule.get("parameters"), dict) else {}
                 have |= {str(c.get("context")) for c in params.get("required_status_checks") or []

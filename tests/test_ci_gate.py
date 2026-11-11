@@ -145,6 +145,25 @@ class Read(unittest.TestCase):
         self.assertIsNone(read(runs=["x"])[0])
         self.assertIsNone(read(runs=[run("a")], total=1000)[0])   # never call a partial view green
 
+    def test_a_full_page_without_a_total_count_reads_the_next_page(self):
+        # #2299 review F2: 100 green runs and no (or a malformed) total_count on page 1 used to
+        # end the read there, so a failed run on page 2 was never seen and CI read green.
+        green = [run(f"ok{i}", id=i + 1) for i in range(100)]
+        pages = {1: green, 2: [run("tests", conclusion="failure", id=500)]}
+        for total in (None, "many", 100.0):
+            def answer(loop, path, method="GET", body=None, login=None, total=total):
+                if "/check-runs" in path:
+                    reply = {"check_runs": pages.get(int(path.split("&page=")[1]), [])}
+                    return reply if total is None else {**reply, "total_count": total}
+                return {"state": "success", "statuses": [], "total_count": 0}
+            with self.subTest(total=total), mock.patch.object(gh, "api", side_effect=answer):
+                state = ci.read(LOOP, HEAD)
+                self.assertEqual(state.failed, ["tests"])
+                self.assertFalse(state.green)
+        # Every page full and still no count: past MAX_PAGES it is unknown, never green.
+        with mock.patch.object(gh, "api", return_value={"check_runs": green}):
+            self.assertIsNone(ci.read(LOOP, HEAD))
+
     def test_no_checks_is_not_a_failure(self):
         state, _ = read()
         self.assertTrue(state.green)

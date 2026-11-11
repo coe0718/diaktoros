@@ -63,7 +63,7 @@ class Handler(unittest.TestCase):
         self.classic = None                               # no classic protection (404)
         self.reads, self.notices = [], []
 
-    def request(self, _loop, path, **_kw):
+    def request(self, _loop, path, *_args, **_kw):
         self.reads.append(path)
         if "/rules/branches/" in path:
             return (gh.Response(None, "HTTP 502", 502, {}) if self.rules == "unreadable" else
