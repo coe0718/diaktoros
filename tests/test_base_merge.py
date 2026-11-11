@@ -15,10 +15,13 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
+import types
 import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from diaktoros import base_merge, broker, ci, config, gate, gh, observer, ready  # noqa: E402
 from diaktoros import ruled_approval, safe_push, watch_conflicts  # noqa: E402
 from diaktoros.run_supervisor import views  # noqa: E402
@@ -314,13 +317,66 @@ class Ruled(Base):
         self.assertTrue(gate.reviewed_at_head(self.reviews, self.loop, new))
         self.assertIn("carries over", self.notices[0][1]["outcome"])
 
+    def test_no_record_of_the_newest_ruling_yet_waits(self):
+        # Review of #2375, F1: an approval posted by hand, before the sweep has recorded anything,
+        # still has its dismissal to come.
+        self.rows = []
+        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head),
+                         "the adjudicator's ACCEPT has not been acted on yet")
+        self.assertEqual(self.update(), "")
+        self.assertEqual(self.remote_head(), self.head)
+
+    def test_an_older_rulings_pending_step_waits_on_nothing(self):
+        # F2: a superseded ruling's pending step is never acted on again; only its write on the
+        # wire holds the head.
+        self.ruling = {"head": self.head, "verdict": "ACCEPT", "run_id": "r2"}
+        self.rows = [{"ruling": "r1", "approve": "posted", "dismiss": "pending"},
+                     {"ruling": "r2", "approve": "none", "dismiss": "posted"}]
+        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head), "")
+        self.rows[0]["dismiss"] = "posting"
+        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head),
+                         "the adjudicator's ACCEPT is still being acted on (dismiss: posting)")
+
+    def latest_id(self, head):
+        latest = gate.latest_effective_review_at_head(self.reviews, self.loop, head)
+        return latest and latest["id"]
+
     def test_a_later_ruling_voids_the_carried_approval(self):
         self.settle()
         new = self.update()
-        self.ruling = {"head": self.head, "verdict": "REJECT", "run_id": "r2"}
-        self.assertIsNone(gate.latest_effective_review_at_head(self.reviews, self.loop, new))
-        self.ruling = {"head": new, "verdict": "ACCEPT", "run_id": "r3"}   # a ruling at the new head
-        self.assertIsNone(gate.latest_effective_review_at_head(self.reviews, self.loop, new))
+        for ruling in ({"head": self.head, "verdict": "REJECT", "run_id": "r2"},
+                       {"head": new, "verdict": "ACCEPT", "run_id": "r3"}):   # at the new head
+            self.ruling = {"head": self.head, "verdict": "ACCEPT", "run_id": "r1"}
+            self.assertEqual(self.latest_id(new), 21)       # carried, until the newer ruling
+            self.ruling = ruling
+            self.assertIsNone(self.latest_id(new))
+
+    def test_the_watchdog_judges_the_carried_head_approved_and_raises_no_breach(self):
+        # F4: at the cap, a head with no verdict is handed to adjudication again (#2354's second
+        # ruling); the carried approval is what the sweep reads instead.
+        import watchdog
+        self.loop["cap"] = 1
+        self.loop["adjudicator"] = {"route": "adj"}    # a spent cap is handed off
+        self.settle()
+        new = self.update()
+        # The verdict that spent the cap, at the head before the one ruled on.
+        self.reviews.insert(0, approval("e" * 40, review_id=5, state="CHANGES_REQUESTED",
+                                        at="2026-11-09T01:00:00Z"))
+        c = types.SimpleNamespace(loop=self.loop, st=self.st, alerts=[], pr_failures=[],
+                                  unjudged=set(), conflicts=[], conflict_live={}, unknown=[],
+                                  breach={}, current_heads={"7": {"observed_at": 1.0}},
+                                  marker_grace=60, grace={"fixer": 60, "reviewer": 60},
+                                  now=time.time(), due=lambda key: True)
+        live = {**self.live, "mergeable_state": "clean", "head": {**self.live["head"], "sha": new}}
+        with mock.patch.object(watchdog, "_held", return_value=False), \
+                mock.patch.object(gh, "pr", return_value=live), \
+                mock.patch.object(gh, "reviews", return_value=list(self.reviews)), \
+                mock.patch.object(watchdog, "_approved") as approved, \
+                mock.patch.object(gate, "breach", return_value="new") as breach:
+            watchdog._judge_pr(c, {"title": "t"}, 7, new, "fix")
+        breach.assert_not_called()
+        approved.assert_called_once()
+        self.assertEqual(c.alerts, [])
 
 
 class Routing(Base):
