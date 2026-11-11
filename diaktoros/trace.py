@@ -19,6 +19,7 @@ import os
 import pathlib
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -36,8 +37,25 @@ EVENT_ROLE = {"pull_request": "reviewer", "pull_request_review": "fixer", "issue
 MAX_DELIVERY_PAGES = 3
 # Not copied: the crate cache and isolated run trees are large and no gate reads them; the ledger
 # is copied by sqlite's backup API rather than byte for byte.
-_SKIP = shutil.ignore_patterns("deps", "isolated-runs", "*.sqlite", "*.sqlite-wal",
-                               "*.sqlite-shm", "*.sqlite-journal")
+_SKIP_NAMES = shutil.ignore_patterns("deps", "isolated-runs", "*.sqlite", "*.sqlite-wal",
+                                     "*.sqlite-shm", "*.sqlite-journal")
+
+
+def _skip(src: str, names: list[str]) -> set[str]:
+    """``_SKIP_NAMES``, plus every entry that is not a file, a directory or a symlink, or that is
+    gone by the time it is looked at. A socket or FIFO a live process keeps in the state
+    directory (the gateway's ``gateway.loop-tick.<pid>.sock``) cannot be copied, and no gate
+    reads one, so it failed the whole trace."""
+    skip = set(_SKIP_NAMES(src, names))
+    for name in names:
+        try:
+            mode = os.lstat(os.path.join(src, name)).st_mode
+        except OSError:
+            skip.add(name)
+            continue
+        if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
+            skip.add(name)
+    return skip
 
 _HARNESS = textwrap.dedent('''
     import atexit, json, os, runpy, subprocess, sys, urllib.error, urllib.parse, urllib.request
@@ -117,7 +135,7 @@ def _copy_home(loop: dict, dst: pathlib.Path) -> tuple[pathlib.Path, dict[str, s
     if routes.subs_path().is_file():      # the route registry, wherever this host keeps it
         shutil.copy2(routes.subs_path(), dst / "webhook_subscriptions.json")
     if (root / "state").is_dir():
-        shutil.copytree(root / "state", dst / "state", ignore=_SKIP, symlinks=True)
+        shutil.copytree(root / "state", dst / "state", ignore=_skip, symlinks=True)
     source = config.host_path("ledger", root)
     ledger = dst / source.relative_to(root)
     if source.is_file():
@@ -139,7 +157,7 @@ def _copy_home(loop: dict, dst: pathlib.Path) -> tuple[pathlib.Path, dict[str, s
             except ValueError:      # a custom state_dir outside the home: copy it beside the rest
                 copy = dst / "external" / path.stem
                 if state_dir.is_dir():
-                    shutil.copytree(state_dir, copy, ignore=_SKIP, symlinks=True)
+                    shutil.copytree(state_dir, copy, ignore=_skip, symlinks=True)
                 raw["state_dir"] = str(copy)
                 real[str(copy)] = str(state_dir)
         (configs / path.name).write_text(json.dumps(raw))
