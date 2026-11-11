@@ -8,6 +8,7 @@ skill is read as the new one.
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import ast
 import os
 import pathlib
 import re
@@ -51,6 +52,14 @@ class Commands(unittest.TestCase):
             text = " ".join(doc.read_text(encoding="utf-8").split())
             self.assertIn("`hermes review-loop` was removed in v0.6.0", text, doc)
             self.assertNotIn("as an alias until", text, doc)
+
+    def test_the_plugin_entry_docstring_names_only_registered_commands(self):
+        """#2343: the plugin entry point's docstring names no command register_cli dropped."""
+        doc = ast.get_docstring(ast.parse((ROOT / "__init__.py").read_text(encoding="utf-8")))
+        named = re.findall(r"``hermes ([\w-]+)``", doc)
+        self.assertIn("diaktoros", named)
+        for name in named:
+            self.assertIn(name, self.ctx.commands, name)
 
 
 class Signature(unittest.TestCase):
