@@ -169,7 +169,15 @@ def post_plan(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
     like the seat's ``--ask plan`` (``fix_hold.posted_ask``), opens a plan ask tied to this run;
     a maintainer's ``/loop approve`` after it is read by the usual sweep or webhook
     (``fix_hold.sweep_asks``), which records the approval, and ``continue`` then opens the PR.
-    Refused when anything else stands in the way, an ask is already open, or the asks are spent."""
+    Refused when anything else stands in the way, another ask is open, or the asks are spent.
+
+    The ask is reserved (``State.fix_ask_claim``) before the comment is posted, and the reserve,
+    the post and the record all run under ``config.push_policy_lock``, the lock the seat's own
+    ``issue_comment --ask`` checks, posts and records under: two ``--post-plan`` calls, or one
+    and a seat, never both post (review F3). A reservation whose comment was not confirmed (a
+    lost response, a failed state write, a crash) stays open as ``pending``, which no reply
+    resolves; calling this again for the same run reconciles it: it adopts the fixer's comment
+    carrying this run's ``plan_marker`` if GitHub has one, and posts only if not (review F4)."""
     from . import fix_hold, state as state_mod
     plan = inspect(loop, sup, run_id)
     lines = list(plan["facts"])
@@ -179,25 +187,69 @@ def post_plan(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
                                f"to post ({why})"]
     fix, st = plan["fix"], state_mod.state_for(loop)
     number = fix["number"]
-    try:
-        fix_hold.check_ask(st, number)
-        login = broker.authorize_issue_fix(loop, repo=fix["repo"], number=number)
-    except (ValueError, broker.BrokerDenied) as exc:
-        return False, lines + [f"no plan posted: {exc}"]
     text = (f"Run `{run_id}` pushed a fix for this issue to `{fix['branch']}` at "
             f"`{str(fix['new_head'])[:12]}`, but the issue needs an approved plan before a PR. "
             f"The plan is that branch as it stands: https://github.com/{fix['repo']}/compare/"
             f"{loop['base']}...{quote(fix['branch'], safe='/')}")
-    try:
-        comment = broker.post_issue_comment(loop, repo=fix["repo"], number=number, login=login,
-                                            body=fix_hold.posted_ask("plan", text))
-    except Exception as exc:
-        return False, lines + [f"plan comment failed or unconfirmed ({exc}); check the issue "
-                               "before posting again"]
-    st.fix_ask_set(number, "plan", comment, text, run=run_id)
+    with config.push_policy_lock():
+        try:
+            login = broker.authorize_issue_fix(loop, repo=fix["repo"], number=number)
+            ask = st.fix_ask_claim(number, "plan", text, run_id, fix_hold.check_ask)
+        except (ValueError, broker.BrokerDenied) as exc:
+            return False, lines + [f"no plan posted: {exc}"]
+        failed = _post_claimed_plan(loop, st, fix, login, run_id, ask)
+    if failed:
+        return False, lines + [failed]
     return True, lines + [f"posted the plan on issue #{number}; once a maintainer replies "
                           f"`{fix_hold.APPROVE}`, `hermes dk continue --loop {loop['id']} --run "
                           f"{run_id}` opens the PR"]
+
+
+def plan_marker(run_id: str) -> str:
+    """The hidden first line that ties a posted plan comment to its run, so a retry finds it."""
+    return f"<!-- diaktoros plan of run {run_id} -->"
+
+
+def _adopt_plan_comment(loop: dict, number: int, login: str, run_id: str) -> tuple[int | None, str]:
+    """``(id, "")`` of the oldest comment by ``login`` carrying ``run_id``'s ``plan_marker``,
+    ``(None, "")`` when there is none, ``(None, why)`` when the comments are unreadable."""
+    comments, error = gh.issue_comments_read(loop, number)
+    if comments is None:
+        return None, error or "unreadable"
+    for comment in sorted((c for c in comments if isinstance(c, dict) and type(c.get("id")) is int),
+                          key=lambda c: c["id"]):
+        user = comment.get("user")
+        author = str(user.get("login") or "") if isinstance(user, dict) else ""
+        if author.casefold() == login.casefold() and plan_marker(run_id) in str(comment.get("body") or ""):
+            return comment["id"], ""
+    return None, ""
+
+
+def _post_claimed_plan(loop: dict, st, fix: dict, login: str, run_id: str, ask: dict) -> str:
+    """Post (or adopt) the comment of the plan ask ``post_plan`` reserved and record its id;
+    the refusal line, or ``""``. A reservation left ``pending`` by an earlier call is first
+    matched against the issue's comments (``_adopt_plan_comment``), so a comment that was posted
+    but never recorded is adopted, not posted twice. Any failure leaves it ``pending``."""
+    from . import fix_hold
+    number, again = fix["number"], "; the plan ask stays reserved: run `--post-plan` again"
+    comment = None
+    if ask.get("reconcile"):
+        comment, error = _adopt_plan_comment(loop, number, login, run_id)
+        if error:
+            return f"no plan posted: the issue's comments are unreadable ({error}){again}"
+    if comment is None:
+        body = f"{plan_marker(run_id)}\n{fix_hold.posted_ask('plan', ask['text'])}"
+        try:
+            comment = broker.post_issue_comment(loop, repo=fix["repo"], number=number,
+                                                login=login, body=body)
+        except Exception as exc:
+            return (f"plan comment failed or unconfirmed ({exc}){again}, which adopts the "
+                    "comment if GitHub has it")
+    try:
+        st.fix_ask_confirm(number, run_id, comment)
+    except Exception as exc:
+        return f"plan comment {comment} posted but not recorded ({exc}){again}, which adopts it"
+    return ""
 
 
 def review_stage(loop: dict) -> str:

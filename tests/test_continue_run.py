@@ -421,6 +421,100 @@ class Continue(Base):
         self.assertEqual(self.approve_after_plan(issue(), []), 2)
         self.assertEqual(self.writes, [])
 
+    def test_competing_post_plans_post_one_plan(self):
+        """#2334 review F3: a second `--post-plan` that starts while the first is posting (its
+        check already passed in the old code) waits for the lock and then finds the issue's one
+        ask taken: one comment, one ask, counted once."""
+        import threading
+        from diaktoros import fix_hold, state as state_mod
+        st = state_mod.state_for(self.loop)
+        labelled = issue(labels=("agent-fix", fix_hold.PLAN_LABEL))
+        results, second = [], []
+
+        def compete(loop, **kw):
+            if not second:              # the first caller is mid-post: start the second one
+                second.append(threading.Thread(target=lambda: results.append(
+                    continue_run.post_plan(self.loop, self.sup, self.run_id)[0])))
+                second[0].start()
+                second[0].join(1)       # it must wait for the first: it may not post meanwhile
+            return self.plan_comment(loop, **kw)
+        with mock.patch.object(gh, "fetch", self.fetch_with(labelled)), self.real_policy(labelled), \
+                mock.patch.object(broker, "post_issue_comment", compete):
+            first, _ = continue_run.post_plan(self.loop, self.sup, self.run_id)
+            second[0].join(10)
+        self.assertEqual((first, results), (True, [False]))
+        self.assertEqual(self.writes, ["plan_comment"])
+        self.assertEqual(st.fix_ask_count(12), 1)
+        self.assertEqual(st.fix_ask_open()[12]["comment_id"], 500)
+
+    def post_plan_with(self, labelled, comments, post=None):
+        """``--post-plan`` with the issue's comments as GitHub lists them, and the POST replaced
+        by ``post`` when given."""
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(gh, "issue_comments_read",
+                                              lambda loop, n: (comments, "")))
+        if post:
+            stack.enter_context(mock.patch.object(Continue, "plan_comment", post))
+        with stack:
+            return self.approve_after_plan(labelled, comments)
+
+    def test_an_unrecorded_plan_comment_is_adopted_not_posted_again(self):
+        """#2334 review F4: the plan comment posts but recording its ask fails. The reservation
+        stays open (`pending`), so no other ask can start and no `/loop approve` resolves it;
+        `--post-plan` again finds the run's comment on the issue and adopts it: no 2nd post."""
+        from diaktoros import continue_run, fix_hold, gate, state as state_mod
+        st = state_mod.state_for(self.loop)
+        labelled = issue(labels=("agent-fix", fix_hold.PLAN_LABEL))
+
+        def disk_full(state, path, data):
+            ask = ((data.get("open") or {}).get("12") or {}) if isinstance(data, dict) else {}
+            if path.name == "fix-asks.json" and type(ask.get("comment_id")) is int:
+                raise OSError("disk full")              # the write that records the comment
+            return real_save(state, path, data)
+        real_save = state_mod.LoopState._save_strict
+        with mock.patch.object(state_mod.LoopState, "_save_strict", disk_full):
+            self.assertEqual(self.post_plan_with(labelled, []), 2)
+        self.assertEqual(self.writes, ["plan_comment"])
+        self.assertTrue(st.fix_ask_open()[12]["pending"])
+        self.assertRaises(ValueError, fix_hold.check_ask, st, 12)      # the seat is held off too
+        on_issue = [{"id": 500, "user": {"login": "fix"}, "body": self.posted},
+                    {"id": 501, "user": {"login": "Jeremy"}, "body": "/loop approve"}]
+        with mock.patch.object(gh, "issue_comments_read", lambda loop, n: (on_issue, "")), \
+                mock.patch.object(gate, "enqueue_isolated", lambda *a, **k: None):
+            fix_hold.sweep_asks(self.loop, st, [])
+        self.assertFalse(st.fix_plan_approved(12))                    # unconfirmed: not resolved
+        self.assertTrue(self.posted.startswith(continue_run.plan_marker(self.run_id)))
+        self.assertEqual(self.post_plan_with(labelled, on_issue[:1]), 0)
+        self.assertEqual(self.writes, ["plan_comment"])                  # adopted, not reposted
+        self.assertEqual(st.fix_ask_open()[12]["comment_id"], 500)
+        self.assertNotIn("pending", st.fix_ask_open()[12])
+        self.assertEqual(st.fix_ask_count(12), 1)
+
+    def test_a_lost_post_response_is_reconciled_by_the_next_post_plan(self):
+        """#2334 review F4: the POST's response is lost. If GitHub has the comment the retry
+        adopts it; if not, the retry posts it once. Either way one ask, counted once."""
+        from diaktoros import fix_hold, state as state_mod
+        st = state_mod.state_for(self.loop)
+        labelled = issue(labels=("agent-fix", fix_hold.PLAN_LABEL))
+
+        def lost(s, loop, **kw):
+            s.writes.append("plan_comment")
+            s.posted = kw["body"]
+            raise broker.BrokerDenied("GitHub comment write did not return a successful response")
+        for landed in (True, False):
+            with self.subTest(landed=landed):
+                st.fix_ask_drop(12)
+                st.kv_set_strict(st.dir / "fix-asks.json", {})
+                self.writes = []
+                self.assertEqual(self.post_plan_with(labelled, [], post=lost), 2)
+                self.assertTrue(st.fix_ask_open()[12]["pending"])
+                on_issue = [{"id": 500, "user": {"login": "fix"}, "body": self.posted}] \
+                    if landed else []
+                self.assertEqual(self.post_plan_with(labelled, on_issue), 0)
+                self.assertEqual(self.writes, ["plan_comment"] * (1 if landed else 2))
+                self.assertEqual(st.fix_ask_open()[12]["comment_id"], 500)
+                self.assertEqual(st.fix_ask_count(12), 1)
+
     def fetch_with(self, live):
         """``fetch`` with the issue read as ``live``; the branch and PRs as in ``fetch``."""
         def fetch(loop, path, method="GET", body=None, login=None):

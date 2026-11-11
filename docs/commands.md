@@ -2124,7 +2124,12 @@ checked on the same issue read that authorizes the fix, so a label added in betw
 through, and a missing local approval record refuses too. To recover, `--post-plan` posts one
 fixer comment on the issue presenting the pushed branch (a compare link) as the plan, ending
 with the `/loop approve` line, and opens a plan ask tied to the run (it counts toward the
-issue's three asks and is refused while another ask is open). The watchdog sweep or the comment
+issue's three asks and is refused while another ask is open). The ask is reserved before the
+comment is posted, under the lock the seat's own `--ask` uses, so two `--post-plan` calls, or one
+and a fixer turn, never both post. If the comment's outcome is unknown or its ask could not be
+recorded, the reservation stays open as pending (`status` says so; no reply resolves it, and no
+other ask can start): run `--post-plan` again, which adopts the run's comment if GitHub has it
+(found by a hidden marker naming the run) and posts only if not. The watchdog sweep or the comment
 webhook reads a maintainer's `/loop approve` after it, records the approval and, since the
 branch is already pushed, queues no new fix turn; run `continue` again to open the PR.
 
