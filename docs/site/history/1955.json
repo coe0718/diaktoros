@@ -1,0 +1,167 @@
+{
+ "schema": 1,
+ "repo": "coe0718/diaktoros",
+ "loop": "diaktoros",
+ "pr": 1955,
+ "state": "merged",
+ "merged": {
+  "at": 1793929913.0,
+  "by": "coe0718"
+ },
+ "gaps": [],
+ "missing": [],
+ "findings": [
+  {
+   "id": "F1",
+   "severity": "P2",
+   "category": "requirement",
+   "outcome": "fixed",
+   "raised": 2,
+   "settled": 3,
+   "ruling": ""
+  }
+ ],
+ "rounds": [
+  {
+   "round": 1,
+   "head": "30953579e029ee88175e0b0832b6a4cb1e604890",
+   "events": [
+    {
+     "at": 1793926912.6157644,
+     "kind": "issue-fix",
+     "who": "issue-fix",
+     "text": "opened from issue #1271",
+     "link": ""
+    },
+    {
+     "at": 1793926914.0,
+     "kind": "commit",
+     "who": "drey-coe1",
+     "text": "commit 86508f2: conflict_person: let whole-file conflict records lapse so a later base is tried (#1271)",
+     "link": "https://github.com/coe0718/diaktoros/commit/86508f2196f87bb3ed2c000907d4fef57e55eae2"
+    },
+    {
+     "at": 1793926918.349122,
+     "kind": "write",
+     "who": "issue_fixer",
+     "login": "drey-coe1",
+     "text": "open pr",
+     "link": ""
+    },
+    {
+     "at": 1793926919.219401,
+     "kind": "write",
+     "who": "issue_fixer",
+     "login": "drey-coe1",
+     "text": "request review",
+     "link": ""
+    }
+   ]
+  },
+  {
+   "round": 2,
+   "head": "86508f2196f87bb3ed2c000907d4fef57e55eae2",
+   "events": [
+    {
+     "at": 1793927392.7179043,
+     "kind": "turn",
+     "who": "reviewer",
+     "text": "turn succeeded (gpt-6.1-terra \u00b7 277k tok)",
+     "link": ""
+    },
+    {
+     "at": 1793927562.6875315,
+     "kind": "review",
+     "who": "reviewer",
+     "login": "vex-coe",
+     "text": "CHANGES_REQUESTED (review 5794417667) \u2014 F1 [requirement]: diaktoros/conflict_person.py:60: P2 \u2014 blocks. Existing whole-file refusals never lapse, so the PR does not fix the already-stuck heads described by #1271. Old records have `at` and a reason but no `until`; `get` treats th\u2026",
+     "link": "https://github.com/coe0718/diaktoros/pull/1955#pullrequestreview-5794417667"
+    },
+    {
+     "at": 1793927580.922417,
+     "kind": "turn",
+     "who": "shadow",
+     "text": "turn cancelled (model unknown)",
+     "gap": "ended without a write on record",
+     "link": "",
+     "withheld": true
+    },
+    {
+     "at": 1793927591.4333875,
+     "kind": "turn",
+     "who": "fixer",
+     "text": "turn succeeded (claude-opus-5-5 \u00b7 567k tok)",
+     "link": ""
+    },
+    {
+     "at": 1793928907.7133088,
+     "kind": "write",
+     "who": "fixer",
+     "login": "drey-coe1",
+     "text": "pushed 82e8166: Lapse whole-file conflict records written before #1271 by their reason and at (review F1)",
+     "link": ""
+    },
+    {
+     "at": 1793928924.8605182,
+     "kind": "answers",
+     "who": "fixer",
+     "text": "answers (posted): F1 (old-format whole-file records never lapse): fixed. - diaktoros/conflict_person.py: `get` now gets the lapse time from a new helper, `_until`. If a record has `until`, that value is used, as before. If a record has no `until` (written b\u2026",
+     "link": "#issuecomment-6674390817"
+    },
+    {
+     "at": 1793928925.0,
+     "kind": "comment",
+     "who": "drey-coe1",
+     "text": "comment: <!-- diaktoros:fixer-answers run=d25ffd18392b4a80b0cb3d454451cac4 head=82e8166632cadf831e0793dae851e36560ee681c base=86508f2196f87bb3ed2c000907d4fef57e55eae2 --> **Fixer's answers to the review of `86508f2196f8`** \u2014 pushed as `82e8166632ca\u2026",
+     "link": "https://github.com/coe0718/diaktoros/pull/1955#issuecomment-6674390817"
+    }
+   ]
+  },
+  {
+   "round": 3,
+   "head": "82e8166632cadf831e0793dae851e36560ee681c",
+   "events": [
+    {
+     "at": 1793928928.2035134,
+     "kind": "write",
+     "who": "fixer",
+     "login": "drey-coe1",
+     "text": "request review",
+     "link": ""
+    },
+    {
+     "at": 1793929443.2883832,
+     "kind": "turn",
+     "who": "reviewer",
+     "text": "turn succeeded (gpt-6.1-terra \u00b7 293k tok)",
+     "link": ""
+    },
+    {
+     "at": 1793929577.6801264,
+     "kind": "review",
+     "who": "reviewer",
+     "login": "vex-coe",
+     "text": "APPROVED (review 5794677234) \u2014 F1: fixed \u2014 Legacy whole-file records are recognized by their original reason and expire from their recorded time; old workflow records remain permanent. The new test reproduces the finding: `PYTHONPATH=\u2026/tests:/work python \u2026/agent\u2026",
+     "link": "https://github.com/coe0718/diaktoros/pull/1955#pullrequestreview-5794677234"
+    },
+    {
+     "at": 1793929583.0093768,
+     "kind": "turn",
+     "who": "shadow",
+     "text": "turn succeeded (deepseek-flash \u00b7 1136k tok)",
+     "link": ""
+    },
+    {
+     "at": 1793929765.8312957,
+     "kind": "shadow",
+     "who": "shadow",
+     "text": "APPROVE (deepseek-flash)",
+     "link": "",
+     "withheld": true
+    }
+   ]
+  }
+ ],
+ "markdown": "# Review history of [coe0718/diaktoros#1955](https://github.com/coe0718/diaktoros/pull/1955)\n\nLoop `diaktoros`. Times are UTC. Merged 11-06 01:51 by coe0718.\n\n## Findings\n\n| ID | Severity | Category | Raised | Outcome |\n| --- | --- | --- | --- | --- |\n| F1 | P2 | requirement | round 2 | fixed at round 3 |\n\n## Round 1 @ [`3095357`](https://github.com/coe0718/diaktoros/commit/30953579e029ee88175e0b0832b6a4cb1e604890)\n\n- **11-06 01:01** issue-fix: opened from issue #1271\n- **11-06 01:01** drey-coe1: commit 86508f2: conflict_person: let whole-file conflict records lapse so a later base is tried (#1271) ([link](https://github.com/coe0718/diaktoros/commit/86508f2196f87bb3ed2c000907d4fef57e55eae2))\n- **11-06 01:01** issue_fixer (drey-coe1): open pr\n- **11-06 01:01** issue_fixer (drey-coe1): request review\n\n## Round 2 @ [`86508f2`](https://github.com/coe0718/diaktoros/commit/86508f2196f87bb3ed2c000907d4fef57e55eae2)\n\n- **11-06 01:09** reviewer: turn succeeded (gpt-6.1-terra \u00b7 277k tok)\n- **11-06 01:12** reviewer (vex-coe): CHANGES_REQUESTED (review 5794417667) \u2014 F1 [requirement]: diaktoros/conflict_person.py:60: P2 \u2014 blocks. Existing whole-file refusals never lapse, so the PR does not fix the already-stuck heads described by #1271. Old records have `at` and a reason but no `until`; `get` treats th\u2026 ([link](https://github.com/coe0718/diaktoros/pull/1955#pullrequestreview-5794417667))\n- **11-06 01:13** shadow: turn cancelled (model unknown) \u2014 *gap: ended without a write on record*\n- **11-06 01:13** fixer: turn succeeded (claude-opus-5-5 \u00b7 567k tok)\n- **11-06 01:35** fixer (drey-coe1): pushed 82e8166: Lapse whole-file conflict records written before #1271 by their reason and at (review F1)\n- **11-06 01:35** fixer: answers (posted): F1 (old-format whole-file records never lapse): fixed. - diaktoros/conflict_person.py: `get` now gets the lapse time from a new helper, `_until`. If a record has `until`, that value is used, as before. If a record has no `until` (written b\u2026 ([link](https://github.com/coe0718/diaktoros/pull/1955#issuecomment-6674390817))\n- **11-06 01:35** drey-coe1: comment: <!-- diaktoros:fixer-answers run=d25ffd18392b4a80b0cb3d454451cac4 head=82e8166632cadf831e0793dae851e36560ee681c base=86508f2196f87bb3ed2c000907d4fef57e55eae2 --> **Fixer's answers to the review of `86508f2196f8`** \u2014 pushed as `82e8166632ca\u2026 ([link](https://github.com/coe0718/diaktoros/pull/1955#issuecomment-6674390817))\n\n## Round 3 @ [`82e8166`](https://github.com/coe0718/diaktoros/commit/82e8166632cadf831e0793dae851e36560ee681c)\n\n- **11-06 01:35** fixer (drey-coe1): request review\n- **11-06 01:44** reviewer: turn succeeded (gpt-6.1-terra \u00b7 293k tok)\n- **11-06 01:46** reviewer (vex-coe): APPROVED (review 5794677234) \u2014 F1: fixed \u2014 Legacy whole-file records are recognized by their original reason and expire from their recorded time; old workflow records remain permanent. The new test reproduces the finding: `PYTHONPATH=\u2026/tests:/work python \u2026/agent\u2026 ([link](https://github.com/coe0718/diaktoros/pull/1955#pullrequestreview-5794677234))\n- **11-06 01:46** shadow: turn succeeded (deepseek-flash \u00b7 1136k tok)\n- **11-06 01:49** shadow: APPROVE (deepseek-flash)\n",
+ "published": "2026-11-11"
+}
