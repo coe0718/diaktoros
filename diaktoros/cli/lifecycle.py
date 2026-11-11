@@ -45,7 +45,8 @@ def _hook_find_command(loop: dict) -> str:
     names = "|".join(sorted(cli_common._hook_route_names(loop)))
     jq = f'.[] | select(.config.url | test("/webhooks/({names})/?$")) | .id'
     repo = loop["repo"]
-    return (f"gh api {shlex.quote(f'repos/{repo}/hooks?per_page=100')} "
+    # --paginate: a repo with more than 100 hooks lists every page, not the first (#2299).
+    return (f"gh api --paginate {shlex.quote(f'repos/{repo}/hooks?per_page=100')} "
             f"--jq {shlex.quote(jq)}")
 
 
