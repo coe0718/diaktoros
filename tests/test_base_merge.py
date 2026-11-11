@@ -20,7 +20,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diaktoros import base_merge, broker, ci, config, gate, gh, observer, ready  # noqa: E402
-from diaktoros import safe_push, watch_conflicts  # noqa: E402
+from diaktoros import ruled_approval, safe_push, watch_conflicts  # noqa: E402
+from diaktoros.run_supervisor import views  # noqa: E402
 from diaktoros import state as state_mod  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.doctor import identity_checks  # noqa: E402
@@ -210,7 +211,7 @@ class NotReady(Base):
         new = self.update()
         self.assertTrue(new)
         self.assertIsNone(self.carried(new))
-        self.assertIn("was not approved by the reviewer", self.notices[0][1]["outcome"])
+        self.assertIn("was not approved by the reviewer or on an ACCEPT ruling", self.notices[0][1]["outcome"])
 
     def test_a_head_held_by_anything_but_behind_carries_nothing(self):
         self.left = ["required checks not green — failed: tests"]
@@ -263,6 +264,63 @@ class Waits(Base):
         self.setUp()
         self.loop["unattended_fixer_push"] = False
         self.assert_waits()
+
+
+class Ruled(Base):
+    """#2364 (seen on #2354): the adjudicator's approval on its ACCEPT ruling (#905) at the head.
+    The sweep approves, then dismisses the change request it overruled, both at that head; a merge
+    in between stranded the change request, and the new head went for a second ruling."""
+
+    def setUp(self):
+        super().setUp()
+        self.loop["seats"]["adjudicator"] = {"login": "adj"}
+        self.overruled = approval(self.head, review_id=11, state="CHANGES_REQUESTED")
+        self.ruled = approval(self.head, review_id=21, login="adj", at="2026-11-10T02:00:00Z")
+        self.reviews = [self.overruled, self.ruled]
+        self.ruling = {"head": self.head, "verdict": "ACCEPT", "run_id": "r1"}
+        self.rows, self.error = [{"ruling": "r1", "approve": "posted", "dismiss": "pending"}], ""
+        for name, read in (("ruling_row", lambda *a: self.ruling),
+                           ("ruled_approvals", lambda *a: (self.rows, self.error))):
+            patch = mock.patch.object(views, name, side_effect=read)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def settle(self):
+        self.rows[0]["dismiss"] = "posted"
+        self.reviews = [{**self.overruled, "state": "DISMISSED"}, self.ruled]
+
+    def test_the_merge_waits_until_the_approval_and_dismissal_are_settled(self):
+        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head),
+                         "the adjudicator's ACCEPT is still being acted on (dismiss: pending)")
+        self.assertEqual(self.update(), "")
+        self.assertEqual(self.remote_head(), self.head)
+        for state in ("posting", "uncertain"):
+            self.rows[0]["dismiss"] = state
+            self.assertEqual(self.update(), "")
+        self.rows, self.error = [], "OperationalError: disk I/O error"   # unreadable is not settled
+        self.assertIn("can't be read", ruled_approval.unsettled(self.loop, 7, self.head))
+        self.assertEqual(self.update(), "")
+        self.assertEqual(self.remote_head(), self.head)
+
+    def test_once_settled_a_clean_merge_carries_the_ruled_approval(self):
+        self.settle()
+        new = self.update()
+        self.assertEqual(new, self.remote_head())
+        self.assertEqual(self.carried(new)["review"], 21)
+        latest = gate.latest_effective_review_at_head(self.reviews, self.loop, new)
+        # The watchdog reads an approved head here, so a spent cap raises no second breach.
+        self.assertEqual((latest["id"], latest["carried_from"], gh.review_state(latest)),
+                         (21, self.head, "APPROVED"))
+        self.assertTrue(gate.reviewed_at_head(self.reviews, self.loop, new))
+        self.assertIn("carries over", self.notices[0][1]["outcome"])
+
+    def test_a_later_ruling_voids_the_carried_approval(self):
+        self.settle()
+        new = self.update()
+        self.ruling = {"head": self.head, "verdict": "REJECT", "run_id": "r2"}
+        self.assertIsNone(gate.latest_effective_review_at_head(self.reviews, self.loop, new))
+        self.ruling = {"head": new, "verdict": "ACCEPT", "run_id": "r3"}   # a ruling at the new head
+        self.assertIsNone(gate.latest_effective_review_at_head(self.reviews, self.loop, new))
 
 
 class Routing(Base):
