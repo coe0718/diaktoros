@@ -1,17 +1,18 @@
-"""``hermes dk update`` (#904): what an update picks up, and optionally the update itself.
+"""``hermes dk update`` (#904): what an update picks up. It only reads.
 
 Hermes's own ``plugins check-updates`` reports a pinned install as up to date. This reads GitHub's
 compare of the installed commit with the target through ``doctor.compare_plugin`` — the reading
 doctor's ``plugin-version`` check takes — and lists the commits and the merged PRs between them.
+
+It installs nothing (the catalog review of v0.6.0): a catalog install moves only to a commit the
+catalog has reviewed, through its re-pinned ``sha`` and ``hermes plugins update diaktoros``, so the
+plugin carries no updater of its own. The report names that command.
 """
 from __future__ import annotations
 
 import re
-import shlex
-import subprocess
 
 from .. import doctor, gh
-from . import common as cli_common
 from .operations import _one_loop
 
 PR_LIST_MAX = 20
@@ -45,8 +46,9 @@ def merged_prs(commits) -> list[tuple[int, str]]:
     return list(found.items())
 
 
-def install_line(sha: str) -> str:
-    return f"hermes plugins install {doctor.UPSTREAM_REPO} --force --ref {shlex.quote(sha)}"
+# How to update: through Hermes, which moves a catalog install to the commit the catalog reviewed.
+INSTALL_LINE = "hermes plugins update diaktoros"
+INSTALL_NOTE = "(a catalog install moves to the commit the catalog has reviewed, which may be older)"
 
 
 def _plural(n: int, word: str) -> str:
@@ -105,68 +107,25 @@ def _report(loop: dict, target: str) -> tuple[str, str, bool]:
         if comparison.status == "diverged":
             print("           (the installed commit is not on the target's history: the target "
                   "also drops commits the install has)")
-    if sha:
-        print(f"install:   {install_line(sha)}")
-    else:
-        print(f"install:   {install_line(target)}   (the target was not resolved to a commit; "
-              "pin it by hand to be exact)")
+    print(f"install:   {INSTALL_LINE}   {INSTALL_NOTE}")
     return installed, sha, readable
 
 
 def cmd_update(args) -> int:
-    """Show what an update picks up; with ``--apply`` install it, then run doctor."""
-    from .. import migrate
+    """Show what an update picks up, and the command that updates."""
     loop = _one_loop(args)
     if loop is None:
         return 2
-    target = args.ref or "main"
-    _installed, sha, _readable = _report(loop, target)
-    if not args.apply:
-        return 0
-    if not sha:
-        print("not applied: the target could not be resolved to a commit, so there is nothing "
-              "exact to install; run the install line above by hand, or retry online")
-        return 2
-    hermes = cli_common._hermes_bin()
-    if not hermes:
-        print("not applied: the `hermes` executable was not found; run the install line above")
-        return 2
-    try:
-        # The marker pauses the gates and the worker for the install, and a lock a second
-        # migrate or update cannot take: the same guard `restore` uses for swapping host files.
-        with migrate.hold():
-            busy = migrate.runs_in_flight()
-            if busy:
-                print(f"not applied: {busy} run(s) are in flight or uncertain; reinstalling now "
-                      "would swap code under a live worker. Wait for them (or reconcile them), "
-                      "then run update --apply again")
-                return 2
-            cmd = [hermes, "plugins", "install", doctor.UPSTREAM_REPO, "--force", "--ref", sha]
-            print(f"running: {shlex.join(cmd)}")
-            if subprocess.run(cmd).returncode != 0:
-                print("update FAILED: the install command did not succeed; the installed plugin "
-                      "is as the command left it — check `hermes plugins list`")
-                return 1
-    except (migrate.MigrationBusy, migrate.RunsUnknown) as exc:
-        print(f"not applied: {exc}")
-        return 2
-    now = doctor.installed_commit()
-    print(f"installed now: {now[:7] if now else 'unreadable'}"
-          + ("" if now == sha else f" (expected {sha[:7]})"))
-    # A fresh process: this one still holds the old code.
-    doc = subprocess.run([hermes, "dk", "doctor", "--loop", loop["id"]])
-    return 0 if now == sha and doc.returncode == 0 else 1
+    _report(loop, args.ref or "main")
+    return 0
 
 
 def add_update(sub) -> None:  # noqa: ANN001
     """The ``update`` subcommand's parser, registered by ``cli.register_cli`` (#904)."""
     update = sub.add_parser("update", help="Show how many commits and which merged PRs an update "
-                                           "picks up; with --apply, install it and run doctor")
+                                           "picks up (read-only)")
     update.add_argument("--loop", help="loop id whose read token queries GitHub (default: the "
                                        "only configured loop)")
     update.add_argument("--ref", default="", metavar="SHA|TAG",
                         help="the commit or tag to update to (default: main's head)")
-    update.add_argument("--apply", action="store_true",
-                        help="run the install line, then doctor, and report the new commit; "
-                             "refused while a loop turn is running")
     update.set_defaults(func=cmd_update)

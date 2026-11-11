@@ -1,11 +1,14 @@
-"""#904: ``hermes dk update`` lists the commits and merged PRs an update picks up, and with
-``--apply`` installs it, runs doctor, and refuses while a run is live."""
+"""#904: ``hermes dk update`` lists the commits and merged PRs an update picks up. It only reads:
+the catalog review of v0.6.0 asked for no in-app updater (``--apply`` is gone), and the line it
+prints is ``hermes plugins update diaktoros``, which moves a catalog install only to a reviewed
+commit."""
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import argparse
 import contextlib
 import io
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -13,7 +16,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import cli, config, doctor, gh, migrate  # noqa: E402
+from diaktoros import cli, config, doctor, gh  # noqa: E402
 from diaktoros.cli import update as cli_update  # noqa: E402
 
 OLD = "7292c9d" + "0" * 33
@@ -83,14 +86,16 @@ class UpdateCommand(unittest.TestCase):
         self.assertIn("#898 the fail-then-pass proof resolves test IDs", out)
         self.assertIn("#876 Fix a thing", out)
         self.assertLess(out.index("#898"), out.index("#876"))        # newest first
-        self.assertIn(f"hermes plugins install coe0718/diaktoros --force --ref {NEW}", out)
+        self.assertIn("install:   hermes plugins update diaktoros", out)
         self.assertIn(f"installed: {OLD[:7]}", out)
 
-    def test_ref_is_the_target_and_the_default_check_installs_nothing(self):
-        with mock.patch.object(cli_update.subprocess, "run") as run:
+    def test_ref_is_the_target_and_the_check_installs_nothing(self):
+        with mock.patch.object(subprocess, "run") as run, \
+                mock.patch.object(subprocess, "Popen") as popen:
             rc, out = self.run_update("--ref", "v0.3.0")
         self.assertEqual(rc, 0)
         run.assert_not_called()
+        popen.assert_not_called()
         self.assertTrue(any(p.endswith(f"/compare/{OLD}...v0.3.0") for p in self.calls), self.calls)
         self.assertIn("target:    v0.3.0", out)
 
@@ -131,7 +136,7 @@ class UpdateCommand(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("unknown", out)
         self.assertNotRegex(out, r"\d+ commits")
-        self.assertIn("hermes plugins install coe0718/diaktoros --force --ref", out)
+        self.assertIn("install:   hermes plugins update diaktoros", out)
 
     def test_not_a_checkout_is_unknown_and_never_compares(self):
         self.installed_sha = ""
@@ -139,74 +144,24 @@ class UpdateCommand(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("installed: unknown", out)
         self.assertFalse(any("/compare/" in p for p in self.calls))
-        self.assertIn("hermes plugins install coe0718/diaktoros --force --ref", out)
+        self.assertIn("install:   hermes plugins update diaktoros", out)
 
-    # --- --apply ---
-    def apply(self, busy=0, installed_after=NEW, install_rc=0, doctor_rc=0, runs_error=None):
-        ran = []
-
-        def fake_run(cmd, **kw):
-            ran.append(cmd)
-            self.installed_sha = installed_after if "install" in cmd else self.installed_sha
-            return mock.Mock(returncode=install_rc if "install" in cmd else doctor_rc)
-        flight = (mock.patch.object(migrate, "runs_in_flight", side_effect=runs_error)
-                  if runs_error else mock.patch.object(migrate, "runs_in_flight", return_value=busy))
-        with flight, mock.patch.object(cli_update.cli_common, "_hermes_bin", return_value="/bin/hermes"), \
-             mock.patch.object(cli_update.subprocess, "run", side_effect=fake_run):
-            rc, out = self.run_update("--apply")
-        return rc, out, ran
-
-    def test_apply_installs_then_runs_doctor_and_reports_the_new_commit(self):
-        rc, out, ran = self.apply()
+    # --- no updater (the catalog review of v0.6.0) ---
+    def test_there_is_no_apply_and_no_reinstall_line(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.run_update("--apply")
+        rc, out = self.run_update()
         self.assertEqual(rc, 0, out)
-        self.assertEqual(ran[0], ["/bin/hermes", "plugins", "install", "coe0718/diaktoros",
-                                  "--force", "--ref", NEW])
-        self.assertEqual(ran[1][:4], ["/bin/hermes", "dk", "doctor", "--loop"])
-        self.assertIn(f"installed now: {NEW[:7]}", out)
+        self.assertNotIn("--force", out)
+        self.assertNotIn("plugins install", out)
+        source = (ROOT / "diaktoros" / "cli" / "update.py").read_text()
+        self.assertNotIn("subprocess", source)
 
-    def test_apply_refuses_while_a_run_is_live(self):
-        rc, out, ran = self.apply(busy=2)
-        self.assertEqual(rc, 2)
-        self.assertEqual(ran, [])
-        self.assertIn("2 run(s) are in flight", out)
-
-    def test_apply_refuses_when_the_ledger_cannot_be_read(self):
-        rc, out, ran = self.apply(runs_error=migrate.RunsUnknown("ledger unreadable"))
-        self.assertEqual(rc, 2)
-        self.assertEqual(ran, [])
-        self.assertIn("ledger unreadable", out)
-
-    def test_apply_with_a_failed_install_runs_no_doctor(self):
-        rc, out, ran = self.apply(install_rc=1)
-        self.assertEqual(rc, 1)
-        self.assertEqual(len(ran), 1)
-        self.assertIn("update FAILED", out)
-
-    def test_apply_fails_when_the_commit_is_not_the_expected_one(self):
-        rc, out, ran = self.apply(installed_after=OLD)
-        self.assertEqual(rc, 1)
-        self.assertIn("expected", out)
-
-    def test_apply_fails_when_doctor_fails(self):
-        rc, out, ran = self.apply(doctor_rc=1)
-        self.assertEqual(rc, 1)
-
-    def test_apply_offline_installs_nothing(self):
-        self.fail_compare = "URLError: no network"
-        with mock.patch.object(gh, "request", return_value=gh.Response(None, "URLError", None, {})):
-            rc, out, ran = self.apply()
-        self.assertEqual(rc, 2)
-        self.assertEqual(ran, [])
-        self.assertIn("not applied", out)
-        self.assertIn("hermes plugins install coe0718/diaktoros --force --ref", out)
-
-    def test_apply_holds_the_migrate_lock(self):
-        with mock.patch.object(migrate, "hold", side_effect=migrate.MigrationBusy("a migrate is running")):
-            with mock.patch.object(cli_update.subprocess, "run") as run, \
-                 mock.patch.object(cli_update.cli_common, "_hermes_bin", return_value="/bin/hermes"):
-                rc, out = self.run_update("--apply")
-        self.assertEqual(rc, 2)
-        run.assert_not_called()
+    def test_docs_name_no_apply_and_the_hermes_update(self):
+        text = " ".join((ROOT / "docs" / "commands.md").read_text().split())
+        section = text[text.index("### update"):text.index("### migrate")]
+        self.assertNotIn("--apply", section)
+        self.assertIn("hermes plugins update diaktoros", section)
 
     # --- helpers ---
     def test_merged_prs(self):
@@ -234,7 +189,7 @@ class UpdateCommand(unittest.TestCase):
         cli.register_cli(ctx, settings={})
         parser = argparse.ArgumentParser()
         ctx.setup(parser)
-        args = parser.parse_args(["update", "--apply", "--ref", "v1"])
+        args = parser.parse_args(["update", "--ref", "v1"])
         self.assertIs(args.func, cli_update.cmd_update)
 
 
