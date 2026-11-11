@@ -1,11 +1,17 @@
 """Every ``observer.notify`` call names an event in ``observer.EVENTS`` (#2301).
 
 ``observer.notify`` logs and drops an event it does not know, so a misspelled event at a new call
-site sends nothing. This scans every ``observer.notify(...)`` call in ``diaktoros/`` and
-``scripts/`` (in the style of ``tests/test_state_junk.py::ExplainKinds``): the event argument,
+site sends nothing. This scans every call to ``notify`` on the observer module in ``diaktoros/``
+and ``scripts/`` (in the style of ``tests/test_state_junk.py::ExplainKinds``): the event argument,
 positional (the third) or ``event=``, must be a string literal in ``observer.EVENTS``. A call
 whose event is not a literal fails unless ``ALLOWED`` names its function and says why; the
 literals that reach an allowed call are then checked instead (see ``ALLOWED``).
+
+The scan fails closed on what it cannot read (review of #2356): the observer module or its
+``notify`` imported under another name is followed; a starred or ``**`` argument that could carry
+the event fails; an allowed function must pass its ``event`` variable unchanged, bound only in the
+forms the scan reads; an allowed wrapper's callers are found by name, by ``module.name`` and
+through ``from ... import`` (aliases too), and any other reference to the wrapper fails.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import ast
@@ -20,9 +26,11 @@ from diaktoros import observer  # noqa: E402
 EVENT_POS = 2  # notify(loop, st, event, number, ...)
 
 # (file, enclosing function) -> (why the event is not a literal, how its literals are checked).
-# ``("assigned", None)``: every string assigned to ``event`` in that function is checked.
-# ``("param", index)``: the function forwards its ``event`` parameter; every call to it by name,
-# anywhere scanned, must pass a known literal at that position (or ``event=``).
+# ``("assigned", None)``: every binding of ``event`` in that function must be a string literal
+# assignment (``event = "x"``, ``event: str = "x"``, ``event, k = "x", …``) and is checked.
+# ``("param", index)``: the function forwards its ``event`` parameter (at ``index``) unchanged;
+# every call to it, anywhere scanned, must pass a known literal at that position (or ``event=``).
+# Either way the notify call must pass the bare name ``event``.
 ALLOWED = {
     ("diaktoros/run_supervisor/notices.py", "failure_notice"):
         ("the event (failed or held) depends on the run's state", ("assigned", None)),
@@ -32,20 +40,68 @@ ALLOWED = {
         ("a wrapper for the issue-side triaged and fixed notices", ("param", 2)),
 }
 
+_FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
 
-def _is_observer_notify(node):
-    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "notify" and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "observer")
+
+def _observer_names(tree):
+    """``(modules, functions)``: the local names ``tree`` binds to the observer module
+    (``observer``, ``from . import observer as obs``, ``import diaktoros.observer as obs``) and to
+    its ``notify`` (``from .observer import notify as send``). File-wide, so it over-matches."""
+    modules, functions = {"observer"}, set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                if alias.name == "observer":
+                    modules.add(alias.asname or alias.name)
+                elif module.split(".")[-1] == "observer" and alias.name in ("notify", "*"):
+                    functions.add(alias.asname or "notify")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[-1] == "observer" and alias.asname:
+                    modules.add(alias.asname)
+    return modules, functions
+
+
+def _dotted(node):
+    """``a.b.c`` for a chain of names and attributes, else ``None``."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        inner = _dotted(node.value)
+        return None if inner is None else f"{inner}.{node.attr}"
+    return None
+
+
+def _is_notify_ref(node, names):
+    """``node`` names the observer's ``notify``: ``<module alias>.notify``,
+    ``diaktoros.observer.notify`` or a name ``notify`` was imported as."""
+    modules, functions = names
+    if isinstance(node, ast.Name):
+        return node.id in functions
+    if isinstance(node, ast.Attribute) and node.attr == "notify":
+        owner = _dotted(node.value)
+        return owner in modules or owner == "diaktoros.observer"
+    return False
+
+
+def _is_observer_notify(node, names=({"observer"}, set())):
+    return isinstance(node, ast.Call) and _is_notify_ref(node.func, names)
 
 
 def _event_arg(call, pos):
-    """The event argument of ``call``: positional at ``pos`` or ``event=``; ``None`` if absent."""
+    """The event argument of ``call``: positional at ``pos`` or ``event=``; ``None`` if absent.
+    Raises ``ValueError`` when a ``*`` or ``**`` argument could be the event, which the scan
+    cannot read (``notify(*(loop, st), "x", …)`` sends ``"x"``, not the fourth argument)."""
+    if any(isinstance(arg, ast.Starred) for arg in call.args[:pos + 1]):
+        raise ValueError("a starred argument could carry the event")
     if len(call.args) > pos:
         return call.args[pos]
     for kw in call.keywords:
         if kw.arg == "event":
             return kw.value
+    if any(kw.arg is None for kw in call.keywords):
+        raise ValueError("a ** argument could carry the event")
     return None
 
 
@@ -69,100 +125,199 @@ def _functions(tree):
 
     def visit(node, name):
         for child in ast.iter_child_nodes(node):
-            inner = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) \
-                else name
+            inner = child.name if isinstance(child, _FUNCS) else name
             owner[child] = inner
             visit(child, inner)
     visit(tree, None)
     return owner
 
 
-def _assigned_events(fn):
-    """The string literals ``fn`` assigns to ``event``: ``event = "x"`` or ``event, k = "x", …``.
-    Any other assignment to ``event`` yields ``None``, which the scan reports as unknown."""
-    found = []
+def _bound(target, value, found, read):
+    """Record what assigning ``value`` to ``target`` binds ``event`` to: the literal, or
+    ``None`` when it is not one (or the unpacking cannot be matched up)."""
+    if isinstance(target, ast.Name):
+        if target.id == "event":
+            found.append(_literal(value))
+            read.add(id(target))
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        pairs = (isinstance(value, (ast.Tuple, ast.List)) and len(value.elts) == len(target.elts)
+                 and not any(isinstance(e, ast.Starred) for e in target.elts + value.elts))
+        for i, elt in enumerate(target.elts):
+            _bound(elt, value.elts[i] if pairs else None, found, read)
+
+
+def _event_bindings(fn):
+    """What ``fn``'s body binds ``event`` to, one entry per binding: the literal, or ``None`` for
+    a binding the scan cannot read (a non-literal value, ``+=``, a ``for``/``with``/``except``/
+    walrus target, an import, a nested parameter, ``global``/``nonlocal``). ``fn``'s own
+    parameters are not included (see ``_own_params``)."""
+    found, read = [], set()
     for node in ast.walk(fn):
-        if not isinstance(node, ast.Assign):
-            continue
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id == "event":
-                found.append(_literal(node.value))
-            elif isinstance(target, ast.Tuple):
-                for i, elt in enumerate(target.elts):
-                    if isinstance(elt, ast.Name) and elt.id == "event":
-                        value = node.value
-                        found.append(_literal(value.elts[i]) if isinstance(value, ast.Tuple)
-                                     and len(value.elts) == len(target.elts) else None)
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                _bound(target, node.value, found, read)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            _bound(node.target, node.value, found, read)
+    own = {id(a) for a in _own_params(fn)}
+    for node in ast.walk(fn):
+        if isinstance(node, ast.AnnAssign) and node.value is None:
+            read.add(id(node.target))    # ``event: str`` alone binds nothing at run time
+        unread = (
+            (isinstance(node, ast.Name) and node.id == "event"
+             and isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in read)
+            or (isinstance(node, ast.arg) and node.arg == "event" and id(node) not in own)
+            or (isinstance(node, ast.ExceptHandler) and node.name == "event")
+            or (isinstance(node, ast.alias) and (node.asname or node.name) == "event")
+            or (isinstance(node, (ast.Global, ast.Nonlocal)) and "event" in node.names)
+            or (isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name == "event"))
+        if unread:
+            found.append(None)
     return found
+
+
+def _own_params(fn):
+    """``fn``'s parameters, positional ones first in order."""
+    args = fn.args
+    rest = [a for a in (args.vararg, args.kwarg) if a is not None]
+    return args.posonlyargs + args.args + args.kwonlyargs + rest
+
+
+def _check_allowed(fn, call, how, pos, where):
+    """Problems with an allowed non-literal notify ``call`` in ``fn``: it must pass the bare name
+    ``event``, bound only as ``how`` says (see ``ALLOWED``)."""
+    sent = _event_arg(call, EVENT_POS)
+    if not (isinstance(sent, ast.Name) and sent.id == "event"):
+        shown = ast.unparse(sent) if sent is not None else "nothing"
+        return [f"{where}: {fn.name} sends {shown!r}, not its `event` variable unchanged"]
+    found, params = _event_bindings(fn), _own_params(fn)
+    if how == "param":
+        positional = fn.args.posonlyargs + fn.args.args
+        problems = [] if len(positional) > pos and positional[pos].arg == "event" else [
+            f"{where}: {fn.name}'s parameter {pos} is not `event`: fix ALLOWED"]
+        return problems + [f"{where}: {fn.name} rebinds its `event` parameter"] * bool(found)
+    problems = [f"{where}: {fn.name} takes `event` as a parameter, which cannot be checked"] * \
+        any(a.arg == "event" for a in params)
+    if not found:
+        problems.append(f"{where}: no event literals assigned in {fn.name}: scan is broken")
+    return problems + [f"{where}: {fn.name} binds `event` to something other than a literal"
+                       for v in found if v is None] + [
+        f"{where}: unknown observer event {v!r} assigned in {fn.name}"
+        for v in found if v is not None and v not in observer.EVENTS]
+
+
+def _scan_notify(path, tree, wrappers):
+    """Problems with the observer notify calls in one file, and how many there are. An allowed
+    wrapper is added to ``wrappers`` (``(file, function) -> event position``)."""
+    problems, calls, names, owner = [], 0, _observer_names(tree), _functions(tree)
+    called = set()
+    for node in ast.walk(tree):
+        if not _is_observer_notify(node, names):
+            continue
+        calls += 1
+        called.add(id(node.func))
+        where = f"{path}:{node.lineno}"
+        try:
+            values = _literals(_event_arg(node, EVENT_POS))
+        except ValueError as exc:
+            problems.append(f"{where}: {exc}")
+            continue
+        if values is not None:
+            problems += [f"{where}: unknown observer event {v!r}"
+                         for v in values if v not in observer.EVENTS]
+            continue
+        func = owner.get(node)
+        allowed = ALLOWED.get((path, func))
+        if allowed is None:
+            problems.append(f"{where}: event is not a string literal (in {func}); "
+                            "pass a literal or add an ALLOWED entry saying why")
+            continue
+        how, pos = allowed[1]
+        fn = next(n for n in ast.walk(tree) if isinstance(n, _FUNCS) and n.name == func)
+        problems += _check_allowed(fn, node, how, pos, where)
+        if how == "param":
+            wrappers[(path, func)] = pos
+    problems += [f"{path}:{node.lineno}: observer notify referenced, not called: its event "
+                 "cannot be checked" for node in ast.walk(tree)
+                 if _is_notify_ref(node, names) and id(node) not in called]
+    return problems, calls
+
+
+def _wrapper_names(tree, path, wrappers):
+    """Local name -> wrapper ``(file, function)`` in this file: the wrapper's own name in its
+    file, and any ``from ... import name [as alias]`` of a wrapper's name (any module: it
+    over-matches rather than miss one)."""
+    local = {name: (where, name) for where, name in wrappers if where == path}
+    by_name = {name: (where, name) for where, name in wrappers}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in by_name:
+                    local[alias.asname or alias.name] = by_name[alias.name]
+    return local
+
+
+def _wrapper_target(func, local, by_name):
+    """The wrapper ``func`` refers to: a local name of one, or ``<anything>.<wrapper name>``."""
+    if isinstance(func, ast.Name) and isinstance(func.ctx, ast.Load):
+        return local.get(func.id)
+    if isinstance(func, ast.Attribute):
+        return by_name.get(func.attr)
+    return None
+
+
+def _scan_wrapper_calls(path, tree, wrappers):
+    """Problems with the calls to allowed wrappers in one file: each must pass a known literal
+    event, and a wrapper may be referenced only to call it."""
+    problems, called = [], set()
+    local = _wrapper_names(tree, path, wrappers)
+    by_name = {name: (where, name) for where, name in wrappers}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        target = _wrapper_target(node.func, local, by_name)
+        if target is None:
+            continue
+        called.add(id(node.func))
+        where = f"{path}:{node.lineno}"
+        try:
+            values = _literals(_event_arg(node, wrappers[target]))
+        except ValueError as exc:
+            problems.append(f"{where}: {target[1]}: {exc}")
+            continue
+        if values is None:
+            problems.append(f"{where}: {target[1]}'s event is not a string literal")
+            continue
+        problems += [f"{where}: unknown observer event {v!r}"
+                     for v in values if v not in observer.EVENTS]
+    problems += [f"{path}:{node.lineno}: wrapper referenced, not called: its event cannot be "
+                 "checked" for node in ast.walk(tree)
+                 if _wrapper_target(node, local, by_name) and id(node) not in called]
+    return problems
 
 
 def scan(sources):
     """Problems in ``sources`` ({relative path: source text}), and the count of notify calls."""
     problems, calls, wrappers, trees = [], 0, {}, {}
     for path, text in sources.items():
-        tree = trees[path] = ast.parse(text)
-        owner = _functions(tree)
-        for node in ast.walk(tree):
-            if not _is_observer_notify(node):
-                continue
-            calls += 1
-            where = f"{path}:{node.lineno}"
-            values = _literals(_event_arg(node, EVENT_POS))
-            if values is not None:
-                problems += [f"{where}: unknown observer event {v!r}"
-                             for v in values if v not in observer.EVENTS]
-                continue
-            func = owner.get(node)
-            allowed = ALLOWED.get((path, func))
-            if allowed is None:
-                problems.append(f"{where}: event is not a string literal (in {func}); "
-                                "pass a literal or add an ALLOWED entry saying why")
-                continue
-            how, pos = allowed[1]
-            if how == "param":
-                wrappers[(path, func)] = pos
-                continue
-            fn = next(n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef,
-                      ast.AsyncFunctionDef)) and n.name == func)
-            found = _assigned_events(fn)
-            if not found:
-                problems.append(f"{where}: no event literals assigned in {func}: scan is broken")
-            problems += [f"{where}: unknown observer event {v!r} assigned in {func}"
-                         for v in found if v not in observer.EVENTS]
+        trees[path] = ast.parse(text)
+        found, count = _scan_notify(path, trees[path], wrappers)
+        problems, calls = problems + found, calls + count
     for path, tree in trees.items():
-        for node in ast.walk(tree):
-            target = _wrapper_called(node, path, wrappers)
-            if target is None:
-                continue
-            values = _literals(_event_arg(node, wrappers[target]))
-            if values is None:
-                problems.append(f"{path}:{node.lineno}: {target[1]}'s event is not a string "
-                                "literal")
-                continue
-            problems += [f"{path}:{node.lineno}: unknown observer event {v!r}"
-                         for v in values if v not in observer.EVENTS]
+        problems += _scan_wrapper_calls(path, tree, wrappers)
     return problems, calls
-
-
-def _wrapper_called(node, path, wrappers):
-    """The ``(file, function)`` of the allowed wrapper ``node`` calls, or ``None``: by bare name
-    within the wrapper's own file, or as ``module.name`` from anywhere."""
-    if not isinstance(node, ast.Call):
-        return None
-    func = node.func
-    for where, name in wrappers:
-        if isinstance(func, ast.Name) and func.id == name and where == path:
-            return where, name
-        if (isinstance(func, ast.Attribute) and func.attr == name
-                and isinstance(func.value, ast.Name)
-                and func.value.id == pathlib.PurePosixPath(where).stem):
-            return where, name
-    return None
 
 
 def repo_sources():
     files = sorted((ROOT / "diaktoros").rglob("*.py")) + sorted((ROOT / "scripts").rglob("*.py"))
     return {p.relative_to(ROOT).as_posix(): p.read_text() for p in files}
+
+
+def edited(path, old, new):
+    """The repo's sources with ``old`` replaced once by ``new`` in ``path``."""
+    sources = repo_sources()
+    assert sources[path].count(old) == 1, f"{old!r} not found once in {path}"
+    sources[path] = sources[path].replace(old, new)
+    return sources
 
 
 class ObserverEventLiterals(unittest.TestCase):
@@ -176,8 +331,8 @@ class ObserverEventLiterals(unittest.TestCase):
         sources = repo_sources()
         for path, func in ALLOWED:
             tree = ast.parse(sources[path])
-            owner = _functions(tree)
-            self.assertTrue(any(_is_observer_notify(n) and owner.get(n) == func
+            owner, names = _functions(tree), _observer_names(tree)
+            self.assertTrue(any(_is_observer_notify(n, names) and owner.get(n) == func
                                 for n in ast.walk(tree)), f"stale ALLOWED entry {path}:{func}")
 
     def test_planted_unknown_event_fails(self):
@@ -202,6 +357,75 @@ class ObserverEventLiterals(unittest.TestCase):
             "def h(loop, scope):\n    broker_ipc._issue_notice(loop, scope, 'trigaed', 'x')\n")
         problems, _ = scan(sources)
         self.assertEqual(problems, ["diaktoros/planted.py:2: unknown observer event 'trigaed'"])
+
+
+class ScanBypasses(unittest.TestCase):
+    """Review of #2356: each of these sent an unchecked event and the scan passed."""
+
+    def assertFlags(self, sources, text):
+        problems, _ = scan(sources)
+        self.assertTrue(problems, "the planted bypass passed the scan")
+        self.assertTrue(any(text in p for p in problems), problems)
+
+    def test_annotated_reassignment_in_assigned_function_fails(self):
+        # F1: ``event: str = "..."`` after ``event = "failed"`` in failure_notice.
+        self.assertFlags(edited("diaktoros/run_supervisor/notices.py", 'event = "failed"\n',
+                                'event = "failed"\n            event: str = "no-such-event"\n'),
+                         "'no-such-event'")
+
+    def test_other_rebinding_in_assigned_function_fails(self):
+        # F1: any binding the scan cannot read (here ``+=``) fails rather than being skipped.
+        self.assertFlags(edited("diaktoros/run_supervisor/notices.py", 'event = "failed"\n',
+                                'event = "failed"\n            event += "-typo"\n'),
+                         "other than a literal")
+
+    def test_wrapper_forwarding_an_expression_fails(self):
+        # F1: the wrapper sends ``event + "-typo"``, not the parameter its callers are checked on.
+        old = "observer.notify(loop, state_mod.state_for(loop), event, scope.number"
+        self.assertFlags(edited("diaktoros/broker_ipc.py", old, old.replace(
+            ", event,", ', event + "-typo",')), "not its `event` variable unchanged")
+
+    def test_wrapper_rebinding_its_parameter_fails(self):
+        old = "    from . import observer, state as state_mod\n    try:\n        observer.notify("
+        self.assertFlags(edited("diaktoros/broker_ipc.py", old, old.replace(
+            "    try:\n", '    event = "no-such-event"\n    try:\n')), "rebinds its `event`")
+
+    def test_wrapper_imported_by_name_fails(self):
+        # F2: ``from .broker_ipc import _issue_notice`` (and an alias) in another module.
+        for imported, called in (("_issue_notice", "_issue_notice"),
+                                 ("_issue_notice as note", "note")):
+            sources = repo_sources()
+            sources["diaktoros/planted.py"] = (
+                f"from .broker_ipc import {imported}\n\n\ndef h(loop, scope):\n"
+                f"    {called}(loop, scope, 'no-such-event', 'outcome')\n")
+            self.assertFlags(sources, "diaktoros/planted.py:5: unknown observer event")
+
+    def test_wrapper_referenced_without_a_call_fails(self):
+        sources = repo_sources()
+        sources["diaktoros/planted.py"] = (
+            "from . import broker_ipc\nsend = broker_ipc._issue_notice\n")
+        self.assertFlags(sources, "wrapper referenced, not called")
+
+    def test_starred_arguments_fail(self):
+        # F3: at run time the third argument is 'no-such-event', not the fourth 'held'.
+        for call in ("observer.notify(*(loop, st), 'no-such-event', 'held')",
+                     "observer.notify(loop, st, **kw)"):
+            self.assertFlags({"diaktoros/planted.py": f"def f(loop, st, kw):\n    {call}\n"},
+                             "argument could carry the event")
+
+    def test_observer_module_alias_fails(self):
+        # F4: the observer module, or its notify, under another name.
+        for header, call in (("from . import observer as obs", "obs.notify"),
+                             ("import diaktoros.observer as obs", "obs.notify"),
+                             ("from .observer import notify as send", "send"),
+                             ("import diaktoros.observer", "diaktoros.observer.notify")):
+            planted = f"{header}\n\n\ndef f(loop, st):\n    {call}(loop, st, 'no-such-event', 1)\n"
+            self.assertFlags({"diaktoros/planted.py": planted},
+                             "diaktoros/planted.py:5: unknown observer event 'no-such-event'")
+
+    def test_notify_referenced_without_a_call_fails(self):
+        planted = "from . import observer as obs\nsend = obs.notify\n"
+        self.assertFlags({"diaktoros/planted.py": planted}, "referenced, not called")
 
 
 if __name__ == "__main__":
