@@ -1286,7 +1286,8 @@ def breach(loop: dict, st: state_mod.LoopState, number: int, head: str, rounds: 
            reason: str, *, escalated: dict | None = None) -> str:
     """Park the PR at ``head`` for a ruling and wake the adjudicator; the marker's outcome.
 
-    ``escalated`` (#459): the operator asked for a ruling before the cap was spent; the marker
+    ``escalated`` (#459): someone asked for a ruling instead of another round, at or before the
+    cap (a shadow escalation can land at it, #2444); the marker
     records who and why, and that is what holds the head instead of a spent cap."""
     entry = {
         "pr": number, "head": head, "rounds": rounds, "cap": loop["cap"],

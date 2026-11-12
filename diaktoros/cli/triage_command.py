@@ -124,7 +124,7 @@ def cmd_triage(args) -> int:
             return 0
         if not (loop.get("triage") or {}).get("route"):
             print(f"refused: issue triage is off on {loop['id']}, so {', '.join(given)} would "
-                  "change nothing; add --enable (with --triage-profile, --author, --labels) "
+                  f"change nothing; add --enable (with {', '.join(config.TRIAGE_ENABLE_FLAGS)}) "
                   "to turn it on")
             return 2
         args.enable = True      # triage is on: apply the flags as --enable would (#527)
