@@ -131,7 +131,7 @@ def _cap_held(turn: _Turn, seat: str, cap: int) -> None:
     from .. import pacing
     turn.paced_until = pacing.next_midnight()
     label = 'review-only' if seat == pacing.REVIEW_ONLY_SEAT else seat
-    turn.error = (f"held: {label} daily turn cap ({cap}) reached — resumes "
+    turn.error = (f"held: {label} {run_supervisor.DAILY_TURN_CAP} ({cap}) reached — resumes "
                   f"{pacing.when(turn.paced_until)}")
 
 
@@ -694,7 +694,8 @@ class ClaimAndLaunch:
         token_cap = config.seat_daily_tokens(loop, row['seat'])
         if token_cap is not None and pacing.tokens_today(loop['id'], budget_seat) >= token_cap:
             turn.paced_until = pacing.next_midnight()
-            turn.error = (f"held: {row['seat']} daily token budget ({token_cap}) reached — "
+            turn.error = (f"held: {row['seat']} {run_supervisor.DAILY_TOKEN_BUDGET} "
+                          f"({token_cap}) reached — "
                           f"resumes {pacing.when(turn.paced_until)}")
             return False
         return ro_turn

@@ -56,10 +56,13 @@ class LedgerExplanations(unittest.TestCase):
         self.assertNotIn('PRIVATE', json.dumps(explanation).upper())
         self.assertNotIn('ghp_', json.dumps(explanation))
 
-    def test_pacing_ci_and_caps_remain_partial_without_structured_policy_reason(self):
-        for error in ('held: waiting for CI', 'held: reviewer usage window (provider)',
-                      'held: reviewer daily turn cap reached', 'held: human path',
-                      'held: isolated worker unavailable', 'held: conflict', 'held: escalation'):
+    def test_unstructured_hold_prose_stays_partial_without_a_policy_reason(self):
+        # Only the host's own hold lines (run_supervisor.waiting_hold) are structured; a held:
+        # line no writer produces, or a lookalike, is never classified from its prose.
+        for error in ('held: waiting for ci', 'held: reviewer usage window', 'held: human path',
+                      'held: isolated worker unavailable', 'held: conflict', 'held: escalation',
+                      'waiting for CI', 'reviewer daily turn cap reached', 'transient error',
+                      'held: private /home/private ghp_SECRET'):
             with self.subTest(error=error):
                 result = views.hold_explanation(self.row(error=error))
                 self.assertEqual(result['reason_code'], 'run_waiting')
@@ -67,6 +70,93 @@ class LedgerExplanations(unittest.TestCase):
                 self.assertEqual(result['automatic_resume'], 'unknown')
                 self.assertEqual(result['operator_action'], 'inspect')
                 self.assertNotIn(error, result['text'])
+
+    # One line per structured hold, each made by its real writer (#674).
+    def writer_lines(self):
+        from types import SimpleNamespace
+        from diaktoros import pacing
+        from diaktoros.run_supervisor import turns
+        cap = SimpleNamespace(paced_until=None, error=None)
+        turns._cap_held(cap, 'reviewer', 3)
+        review_only = SimpleNamespace(paced_until=None, error=None)
+        turns._cap_held(review_only, pacing.REVIEW_ONLY_SEAT, 2)
+        running = SimpleNamespace(cancelled=[], failed=[], missing=[], pending=['tests'])
+        return {
+            'ci_wait': turns._ci_hold_text('a' * 40, running, False, False, False),
+            'provider_window': pacing.hold_line('reviewer', 'openai-codex', 1234.0),
+            'provider_unavailable': pacing.hold_line('reviewer', 'openai-codex', 1234.0,
+                                                     pacing.UNAVAILABLE + ' (empty stream)'),
+            'daily_cap': cap.error,
+            'review_only_cap': review_only.error,
+        }
+
+    def test_host_hold_lines_get_their_structured_reason(self):
+        expected = {'ci_wait': ('ci_wait', 'ci_checks_or_new_head', 'after_event'),
+                    'provider_window': ('provider_window', 'provider_window_reset',
+                                        'after_recorded_time'),
+                    'provider_unavailable': ('provider_window', 'provider_window_reset',
+                                             'after_recorded_time'),
+                    'daily_cap': ('daily_cap', 'daily_cap_reset', 'after_recorded_time'),
+                    'review_only_cap': ('daily_cap', 'daily_cap_reset', 'after_recorded_time')}
+        for name, error in self.writer_lines().items():
+            with self.subTest(name=name):
+                result = views.hold_explanation(self.row(error=error, due=1234))
+                self.assertEqual((result['reason_code'], result['waiting_for'],
+                                  result['automatic_resume']), expected[name])
+                # The time-based holds name their next eligible time; the event-based one names
+                # its event (and keeps the recorded recheck, which is when CI is read again).
+                self.assertEqual(result['next_eligible_start'], 1234)
+                self.assertIn('Recorded earliest recheck: 1970-01-01T00:20:34Z.', result['text'])
+                self.assertEqual(result['operator_action'], 'inspect')
+                self.assertNotIn(error, result['text'])
+        token = 'held: fixer ' + run_supervisor.DAILY_TOKEN_BUDGET + ' (10) reached — resumes 00:00'
+        self.assertEqual(run_supervisor.waiting_hold(token), 'daily_cap')
+        self.assertIn('daily_tokens', run_supervisor.hold_remedy('fixer', token))
+
+    def test_a_structured_hold_with_write_evidence_is_never_resumed_or_replayed(self):
+        for name, error in self.writer_lines().items():
+            for state, write in (('waiting', 'push intent'), ('uncertain', None),
+                                 ('uncertain', 'push intent')):
+                row = dict(self.row(error=error, due=1234), state=state, write=write)
+                with self.subTest(name=name, state=state, write=write):
+                    result = views.hold_explanation(row)
+                    self.assertEqual(result['reason_code'], 'external_write_guard')
+                    self.assertEqual(result['waiting_for'], 'operator_inspection')
+                    self.assertEqual(result['automatic_resume'], 'never')
+                    self.assertIsNone(result['next_eligible_start'])
+                    advice = views.next_step(row, 'widgets')
+                    self.assertIn('inspect', advice)
+                    for replay in ('hermes dk retry', '--clear-hold', 'raise the cap', 'recheck'):
+                        self.assertNotIn(replay, advice)
+
+    def test_structured_holds_reach_cli_and_desktop_identically(self):
+        for name, error in self.writer_lines().items():
+            with self.subTest(name=name):
+                row = self.row(error=error, due=1234)
+                explanation = views.hold_explanation(row)
+                with mock.patch.object(config, 'readable_loops', return_value=([self.loop], [])), \
+                        mock.patch.object(run_supervisor, 'production_ledger', return_value=self.db), \
+                        mock.patch.object(operations, '_ledger_path', return_value=self.db):
+                    view = desktop_api.pr_view('widgets', 7)
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        operations._print_ledger_runs(self.loop, 7, 'run: ', 10)
+                self.assertEqual(view['stuck'][0]['explanation'], explanation)
+                self.assertEqual(view['stuck'][0]['next'], views.next_step(row, 'widgets'))
+                self.assertIn(explanation['text'], out.getvalue())
+                self.assertIn(views.next_step(row, 'widgets'), out.getvalue())
+
+    def test_desktop_validator_mirrors_the_host_tables(self):
+        # The Desktop rebuilds the text from the same copy and pairings: one host table, no
+        # second wording of a reason in the plugin.
+        plugin = (pathlib.Path(__file__).resolve().parents[1] / 'desktop/plugin.js').read_text()
+        body = plugin[plugin.index('function validHoldExplanation'):plugin.index('function usePr(')]
+        for code, copy in views.HOLD_COPY.items():
+            self.assertIn(f"{code}: {copy!r}", body)
+        for waiting, copy in views.WAITING_FOR_COPY.items():
+            self.assertIn(f"{waiting}: {copy!r}", body)
+        for code, waiting, resume in views.HOLD_REASONS.values():
+            self.assertIn(f"{code}: [{waiting!r}, {resume!r}, true]", body)
 
     def test_uncertain_or_write_evidence_never_offers_replay_or_a_start(self):
         for state in ('waiting', 'failed', 'uncertain', 'cancelled'):
@@ -148,6 +238,9 @@ class LedgerExplanations(unittest.TestCase):
                  'run_cancelled': self.row(state='cancelled', error=run_supervisor.POLICY_CANCELLATIONS[0]),
                  'external_write_guard': self.row(state='uncertain')}
         cases['unknown'] = dict(cases['run_waiting'], state='future_state')
+        lines = self.writer_lines()
+        for name in ('ci_wait', 'provider_window', 'daily_cap'):
+            cases[name] = self.row(error=lines[name])
         result = {name: views.hold_explanation(row) for name, row in cases.items()}
         fixture = pathlib.Path(__file__).parent / 'fixtures/desktop_hold_explanations.json'
         self.assertEqual(result, json.loads(fixture.read_text()))

@@ -132,6 +132,25 @@ class Hold(sm.Worker):
         self.assertEqual((seen["role"], row[0]), ("reviewer", "succeeded"))
 
 
+    def explained(self) -> dict:
+        """The held row as status, explain and the Desktop read it (#674)."""
+        from diaktoros.run_supervisor import views
+        rows = views.read_only_view(self.root / "ledger.sqlite", "acme/widgets", 7)
+        self.assertEqual(len(rows), 1)
+        return views.hold_explanation(rows[0])
+
+    def test_a_ci_hold_explains_as_an_event_wait(self):
+        # #674: the event-based hold names the event it needs, not a promised start.
+        self.held()
+        result = self.explained()
+        self.assertEqual((result["reason_code"], result["waiting_for"], result["automatic_resume"]),
+                         ("ci_wait", "ci_checks_or_new_head", "after_event"))
+        self.assertIn("Waiting for: CI checks to settle or a new head.", result["text"])
+        with ledger.connect(self.root / "ledger.sqlite") as con:
+            due = con.execute("SELECT retry_at FROM runs").fetchone()[0]
+        self.assertEqual(result["next_eligible_start"], due)
+
+
 class ConflictHold(Hold):
     """A PR that conflicts with its base gets no CI from GitHub: hold, spend nothing."""
 
@@ -155,6 +174,14 @@ class ConflictHold(Hold):
                                           "— GitHub runs no CI on it"))
         with ledger.connect(self.root / "ledger.sqlite") as con:
             self.assertEqual(con.execute("SELECT retries FROM runs").fetchone()[0], 0)
+
+    def test_a_conflict_hold_explains_as_the_same_event_wait(self):
+        # #674: a conflict is a CI hold whose event is a new head (the merge push).
+        self.dirty()
+        result = self.explained()
+        self.assertEqual((result["reason_code"], result["waiting_for"]),
+                         ("ci_wait", "ci_checks_or_new_head"))
+        self.assertIn("a new head queues a fresh run instead", result["text"])
 
     def test_a_dirty_hold_emits_one_person_needed_notice(self):
         pr = {"number": 7, "state": "open", "draft": False, "head": {"sha": sm.HEAD, "ref": "f"},

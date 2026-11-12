@@ -63,5 +63,44 @@
     "next_eligible_start": null,
     "operator_action": "inspect",
     "text": "The ledger does not establish a supported hold explanation. Ledger only (partial). Waiting for: unknown. Recorded earliest recheck: unknown."
+  },
+  "ci_wait": {
+    "schema": 1,
+    "reason_code": "ci_wait",
+    "run_id": "00000000000000000000000000000001",
+    "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "evidence_source": "run_ledger",
+    "completeness": "partial",
+    "waiting_for": "ci_checks_or_new_head",
+    "automatic_resume": "after_event",
+    "next_eligible_start": 1234.0,
+    "operator_action": "inspect",
+    "text": "Recorded run is held for CI at its recorded head; a new head queues a fresh run instead. Ledger only (partial). Waiting for: CI checks to settle or a new head. Recorded earliest recheck: 1970-01-01T00:20:34Z."
+  },
+  "provider_window": {
+    "schema": 1,
+    "reason_code": "provider_window",
+    "run_id": "00000000000000000000000000000001",
+    "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "evidence_source": "run_ledger",
+    "completeness": "partial",
+    "waiting_for": "provider_window_reset",
+    "automatic_resume": "after_recorded_time",
+    "next_eligible_start": 1234.0,
+    "operator_action": "inspect",
+    "text": "Recorded run is held: its provider account is closed (a usage window or an unavailable provider). Ledger only (partial). Waiting for: the provider account to reopen. Recorded earliest recheck: 1970-01-01T00:20:34Z."
+  },
+  "daily_cap": {
+    "schema": 1,
+    "reason_code": "daily_cap",
+    "run_id": "00000000000000000000000000000001",
+    "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "evidence_source": "run_ledger",
+    "completeness": "partial",
+    "waiting_for": "daily_cap_reset",
+    "automatic_resume": "after_recorded_time",
+    "next_eligible_start": 1234.0,
+    "operator_action": "inspect",
+    "text": "Recorded run is held: its seat's daily turn cap or token budget is reached. Ledger only (partial). Waiting for: the daily cap to reset. Recorded earliest recheck: 1970-01-01T00:20:34Z."
   }
 }

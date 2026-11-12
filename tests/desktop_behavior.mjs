@@ -322,6 +322,35 @@ test('hold contract: malformed nested provenance identity actions and secret pro
   h.dispose()
 })
 
+// #674: the host's structured ledger holds (CI, provider window, daily cap) keep one pairing each.
+test('hold contract: structured policy holds render with their own wait, resume and recheck pairing', async () => {
+  const { h, data } = await holdDrawer()
+  for (const name of ['ci_wait', 'provider_window', 'daily_cap']) {
+    const next = structuredClone(data); next.stuck[0].explanation = structuredClone(holdWriterFixtures[name])
+    h.respond(next); assert.equal(await h.options.pr.queryFn(), next)
+    h.queries.pr = h.good(next); h.render('page')
+    assert.ok(h.text(h.tree()).includes(holdWriterFixtures[name].text))
+  }
+  for (const [name, mutate] of [
+    ['provider_window', e => { e.automatic_resume = 'unknown' }],
+    ['provider_window', e => { e.waiting_for = 'host_recheck' }],
+    ['daily_cap', e => { e.automatic_resume = 'after_event' }],
+    ['daily_cap', e => { e.reason_code = 'provider_window' }],
+    ['ci_wait', e => { e.waiting_for = 'daily_cap_reset' }],
+    ['ci_wait', e => { e.text = e.text.replace('CI checks to settle or a new head', 'ci checks or new head') }],
+    ['external_write_guard', e => { e.automatic_resume = 'after_recorded_time' }],
+    ['external_write_guard', e => { e.next_eligible_start = 1234 }],
+    ['run_failed', e => { e.waiting_for = 'ci_checks_or_new_head' }]]) {
+    const broken = structuredClone(data); broken.stuck[0].explanation = structuredClone(holdWriterFixtures[name])
+    mutate(broken.stuck[0].explanation); h.respond(broken)
+    await assert.rejects(h.options.pr.queryFn(), /Invalid pr response/)
+  }
+  assert.equal(h.retryCalls.length, 0)
+  const dialog = [h.flatten(h.tree()).find(n => n.type === 'Dialog')]
+  assert.equal(h.buttons(dialog).filter(n => h.text([n]) === 'Retry').length, 0)
+  h.dispose()
+})
+
 test('drawer: a validation-rejected /pr response is not reported as the backend not answering (#1162)', async () => {
   const { h, data } = await holdDrawer()
   const broken = structuredClone(data); broken.stuck[0].explanation.text = '/home/private ghp_secret'; h.respond(broken)

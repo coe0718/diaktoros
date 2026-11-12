@@ -370,13 +370,19 @@ def account_hold(error: str) -> bool:
     return pacing.closed_account(error)
 
 
+# The words a daily-cap ``held:`` line carries (#219, #480): its writers in ``turns`` and the
+# readers below (``hold_remedy``, ``waiting_hold``) share them, so one wording decides all three.
+DAILY_TURN_CAP = "daily turn cap"
+DAILY_TOKEN_BUDGET = "daily token budget"
+
+
 def hold_remedy(seat: str, error: str) -> str:
     """The setting that lifts a daily-cap hold, or '' for a hold no cap explains (a usage
     window). The review-only cap is its own setting: on the reviewer seat it used to be given the
     reviewer's general cap, which does not lift it (live on #605, 2026-10-10)."""
-    if "daily token budget" in error:
+    if DAILY_TOKEN_BUDGET in error:
         return "seats.<seat>.daily_tokens in the loop file or the settings form (blank = none)"
-    if "daily turn cap" not in error:
+    if DAILY_TURN_CAP not in error:
         return ""
     if "review-only daily turn cap" in error:
         return "set --review-only-daily N (0 = no cap)"
@@ -385,6 +391,26 @@ def hold_remedy(seat: str, error: str) -> str:
             "reviewer": "set --reviewer-daily-turns N",
             "fixer": "set --fixer-daily-turns N"}.get(
         seat, "seats.adjudicator.daily_turns in the loop file")
+
+
+def waiting_hold(error: object) -> str:
+    """Which host-written hold a waiting run's recorded ``error`` is (#674), or '' when it is
+    none of them: ``ci`` (``CI_HOLD``, an event-based wait for checks or a new head),
+    ``provider_window`` (``pacing.hold_line``'s closed account: a usage window or an unavailable
+    provider, which ``retry --clear-hold`` reopens) or ``daily_cap`` (a seat's daily turn cap or
+    token budget, until local midnight). Only the writers' own prefixes and marks decide, the
+    ones ``next_step``, the observer's held notice and the ledger's SQL already key on: any other
+    ``held:`` line, a retry backoff or a read failure is ''. The caller decides that the row is
+    waiting and that no write evidence overrides it; this never grants a retry."""
+    if not isinstance(error, str) or not error.startswith("held: "):
+        return ""
+    if error.startswith(CI_HOLD):
+        return "ci"
+    if account_hold(error):
+        return "provider_window"
+    if DAILY_TURN_CAP in error or DAILY_TOKEN_BUDGET in error:
+        return "daily_cap"
+    return ""
 
 
 def retryable(exc: BaseException) -> bool:
