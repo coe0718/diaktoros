@@ -69,8 +69,8 @@ def woken_by_repo_hook() -> bool:
 
 def redriven() -> bool:
     """Whether this process is a watchdog re-drive (``gate_failures.redrive`` sets its mark)."""
-    from . import gate_failures
-    return bool(os.environ.get(gate_failures.REDRIVE_ENV))
+    from . import envnames
+    return bool(envnames.get("GATE_REDRIVE"))  # either spelling (#2300)
 
 
 def paused_reason(loop: dict) -> str:
