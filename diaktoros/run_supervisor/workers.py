@@ -242,15 +242,17 @@ def _leave(mark: Path, fd: int, gate: int | None) -> None:
     ``GATE_WAIT`` is a holder that has stopped (#1842), possibly a signaler that has found the
     mark held and will signal when it resumes: the worker does not go on to work then, but
     ends in its wait (``_end_in_wait``), so the wait is bounded and no signal reaches it at
-    work. Only an error locking the gate (not contention) lets it leave without the lock; it
-    then leaves the gate, which it may not remove without the lock, to the next sweep."""
+    work. An error locking the gate is treated the same way: it does not show that no signaler
+    holds it (#1842 round 2, F1)."""
     locked = False
     if gate is not None:
         try:
             locked = _flock_within(gate, GATE_WAIT)
         except OSError:
-            locked = None                   # not contention: no signaler holds it
-        if locked is False:
+            # An error is no proof that nobody holds the gate: a signaler that has found the
+            # mark held may, so ownership unknown is treated as held (#1842 round 2, F1).
+            locked = False
+        if not locked:
             _end_in_wait(mark)
     os.close(fd)                            # releases the lock: the mark stops counting here
     _unlink(mark)

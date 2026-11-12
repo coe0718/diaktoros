@@ -536,6 +536,29 @@ class LingerMark(unittest.TestCase):
             with workers.lingering(db):
                 self.assertTrue(orphan.exists())
 
+    def test_an_error_locking_the_gate_on_the_way_out_never_lets_the_worker_go_to_work(self):
+        # #1842 round 2, F1: an EIO on the departing lock says nothing about who holds the
+        # gate; a signaler may. The worker must end in its wait, still marked, not go on.
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "runs.sqlite"
+            ended = []
+
+            class Ended(Exception):
+                pass
+
+            def end_in_wait(mark):
+                ended.append(workers._held(mark))       # still marked when it ends
+                raise Ended
+
+            erroring = patch.object(workers, "_flock_within", side_effect=OSError(5, "EIO"))
+            with patch.object(workers, "_end_in_wait", end_in_wait), self.assertRaises(Ended):
+                try:
+                    with workers.lingering(db):         # marked; only the way out errs
+                        erroring.start()
+                finally:
+                    erroring.stop()
+            self.assertEqual(ended, [True])
+
     def test_a_mark_that_cannot_be_removed_does_not_stop_the_worker(self):
         # F3 of #1823: unlink denied at the sweep on entry and at the removal on exit.
         with tempfile.TemporaryDirectory() as tmp:
