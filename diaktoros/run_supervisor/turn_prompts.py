@@ -271,8 +271,15 @@ SHADOW_BODY_MAX = 24000
 
 def adjudication_situation(marker: dict) -> str:
     """Why this head is before the adjudicator, for its prompt (#1004): the template used to
-    say "none an approval at this head" whatever woke it, wrong for a shadow escalation."""
-    by = ((marker or {}).get('escalated') or {}).get('by')
+    say "none an approval at this head" whatever woke it, wrong for a shadow escalation.
+    An ``escalated`` record with no recognised ``by`` is the operator's, and only no
+    ``escalated`` at all is the spent cap, as ``stats.escalations`` and ``gate.breach`` read it
+    (#1896)."""
+    escalated = (marker or {}).get('escalated')
+    if not escalated:
+        return ("none an approval at this head — the budget is spent, which is why this is a "
+                "ruling and not another round")
+    by = escalated.get('by') if isinstance(escalated, dict) else None
     if by == 'shadow':
         return ("the reviewer **approved** this head, but the shadow seat, a second reviewer "
                 "model that writes nothing, requested changes at it. Rule on the shadow review's "
@@ -282,10 +289,7 @@ def adjudication_situation(marker: dict) -> str:
     if by == 'dispute':
         return ("the fixer answered the latest verdict as not a defect and pushed nothing — the "
                 "sides disagree, which is why this is a ruling and not another round")
-    if by:
-        return "the operator asked for a ruling at this head before the budget was spent"
-    return ("none an approval at this head — the budget is spent, which is why this is a ruling "
-            "and not another round")
+    return "the operator asked for a ruling at this head before the budget was spent"
 
 
 def newest_shadow_review(row):

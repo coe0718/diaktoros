@@ -514,6 +514,23 @@ class Prompts(Base):
         # The ruling reads the code at /work; it is not handed the reviewer's change record.
         self.assertNotIn("## The change under review", text)
 
+    def test_an_escalation_with_no_by_is_the_operators_not_a_spent_cap(self):
+        # #1896: a nonempty `escalated` with no `by` (legacy or malformed) is the operator's in
+        # stats.escalations and the breach notice; the ruling's prompt said the budget was spent.
+        from diaktoros import ci, issue_facts
+        row = {"seat": "adjudicator", "repo": REPO, "pr": 7, "head": HEAD}
+        prompts = {}
+        for name, marker in (("no-by", {"rounds": 1, "escalated": {"reason": "no by"}}),
+                             ("cap", {"rounds": 3, "reason": "3/3 verdicts, no approval"})):
+            with mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
+                    mock.patch.object(ci, "read", return_value=ci.CIState()), \
+                    mock.patch.object(issue_facts, "section", return_value=""):
+                prompts[name] = " ".join(
+                    turn_prompts.isolated_prompt(self.loop, row, [], marker).split())
+        self.assertIn("the operator asked for a ruling", prompts["no-by"])
+        self.assertNotIn("the budget is spent", prompts["no-by"])
+        self.assertIn("the budget is spent", prompts["cap"])
+
     def test_every_role_renders_without_placeholders(self):
         for role in ("reviewer", "fixer", "adjudicator"):
             with self.subTest(role):
