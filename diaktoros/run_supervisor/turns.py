@@ -80,7 +80,7 @@ def _ci_hold_text(head: str, checks, fixing: bool, red: bool, review_only: bool)
                f"{len(checks.cancelled)} check(s) cancelled, re-run them on "
                f"GitHub ({ci._names(checks.cancelled[:5])})"
                if checks.cancelled and not red else
-               f"{len(checks.failed)} check(s) failed, the fixer is taking them first"
+               f"{len(checks.failed)} {run_supervisor.CI_FIXER_FIRST}"
                if fixing else
                f"{len(checks.failed)} {run_supervisor.CI_FAILED_WAIT} "
                f"({ci._names(checks.failed[:5])}); "

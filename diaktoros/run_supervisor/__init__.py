@@ -386,6 +386,9 @@ _CI_LINE = re.compile(re.escape(CI_HOLD) + r" on [0-9a-f]{7} — (.+)", re.S)
 CI_FAILED_WAIT = ("required check(s) failed — the review starts when they pass (re-run them on "
                   "GitHub) or a new head is pushed")
 CI_DRAFT_WAIT = "the PR is a draft, waiting for ready"
+# A fixer's red head while its CI-fix turn goes first (#539), after its failed count. Only that
+# turn order ends at CI_WAIT_MAX_S: the same failed checks then hold the review as a red head's.
+CI_FIXER_FIRST = "check(s) failed, the fixer is taking them first"
 
 
 def daily_hold_line(label: str, what: str, cap: int, resumes: str) -> str:
@@ -418,12 +421,14 @@ def hold_remedy(seat: str, error: str) -> str:
 
 def waiting_hold(error: object) -> str:
     """Which host-written hold a waiting run's recorded ``error`` is (#674), or '' when it is
-    none of them: ``ci`` (``ci_hold_line``: checks running, missing or cancelled, a fixer taking a
-    red head, or a base conflict; it ends at a CI event, a new head, or CI_WAIT_MAX_S, whichever
-    comes first), ``ci_failed`` (``CI_FAILED_WAIT``: no time limit, only green checks or a new
-    head end it), ``provider_window`` (``pacing.hold_line``'s closed account) or ``daily_cap``
-    (``daily_hold_line``, until local midnight). Only those writers' exact line structure
-    decides: any other ``held:`` line, a lookalike that merely mentions their words, the shadow's
+    none of them: ``ci`` (``ci_hold_line``: checks running, missing or cancelled, or a base
+    conflict; this wait ends at a CI event, a new head, or CI_WAIT_MAX_S, whichever comes first,
+    though failed checks may still hold the review after it), ``ci_fixer_first``
+    (``CI_FIXER_FIRST``: the fixer goes first until CI_WAIT_MAX_S at the latest; the failed checks
+    then hold it with no time limit), ``ci_failed`` (``CI_FAILED_WAIT``: no time limit, only green
+    checks or a new head end it), ``provider_window`` (``pacing.hold_line``'s closed account) or
+    ``daily_cap`` (``daily_hold_line``, until local midnight). Only those writers' exact line
+    structure decides: any other ``held:`` line, a lookalike that merely mentions their words, the shadow's
     draft wait, a retry backoff or a read failure is ''. The caller decides that the row is
     waiting and that no write evidence overrides it; this never grants a retry."""
     if not isinstance(error, str):
@@ -432,6 +437,8 @@ def waiting_hold(error: object) -> str:
     if ci_line is not None:
         if ci_line[1] == CI_DRAFT_WAIT:
             return ""
+        if re.fullmatch(r"\d+ " + re.escape(CI_FIXER_FIRST), ci_line[1]):
+            return "ci_fixer_first"
         return ("ci_failed" if re.match(r"\d+ " + re.escape(CI_FAILED_WAIT) + r"(?: |\Z)",
                                         ci_line[1]) else "ci")
     from .. import pacing

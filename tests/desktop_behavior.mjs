@@ -323,12 +323,14 @@ test('hold contract: malformed nested provenance identity actions and secret pro
 })
 
 // #674: the host's structured ledger holds (CI, provider window, daily cap) keep one pairing each.
-// A bounded CI wait is after_event_or_timeout; only a red head's hold is after_event (#2398 F3).
+// A bounded CI wait is after_event_or_timeout; a red head's hold, and a fixer's red head whose
+// turn order alone is bounded, are after_event (#2398 F3).
 test('hold contract: structured policy holds render with their own wait, resume and recheck pairing', async () => {
   const { h, data } = await holdDrawer()
   assert.equal(holdWriterFixtures.ci_wait.automatic_resume, 'after_event_or_timeout')
   assert.equal(holdWriterFixtures.ci_failed_wait.automatic_resume, 'after_event')
-  for (const name of ['ci_wait', 'ci_failed_wait', 'provider_window', 'daily_cap']) {
+  assert.equal(holdWriterFixtures.ci_fixer_first_wait.automatic_resume, 'after_event')
+  for (const name of ['ci_wait', 'ci_fixer_first_wait', 'ci_failed_wait', 'provider_window', 'daily_cap']) {
     const next = structuredClone(data); next.stuck[0].explanation = structuredClone(holdWriterFixtures[name])
     h.respond(next); assert.equal(await h.options.pr.queryFn(), next)
     h.queries.pr = h.good(next); h.render('page')
@@ -341,7 +343,10 @@ test('hold contract: structured policy holds render with their own wait, resume 
     ['daily_cap', e => { e.reason_code = 'provider_window' }],
     ['ci_wait', e => { e.waiting_for = 'daily_cap_reset' }],
     ['ci_wait', e => { e.automatic_resume = 'after_event' }],
-    ['ci_wait', e => { e.text = e.text.replace(', for at most the CI wait limit', '') }],
+    ['ci_wait', e => { e.text = e.text.replace(', but failed required checks can still hold it after that, with no time limit', '') }],
+    ['ci_fixer_first_wait', e => { e.automatic_resume = 'after_event_or_timeout' }],
+    ['ci_fixer_first_wait', e => { e.reason_code = 'ci_failed_wait' }],
+    ['ci_fixer_first_wait', e => { e.text = e.text.replace('; the failed checks still hold it after that, with no time limit', '') }],
     ['ci_failed_wait', e => { e.automatic_resume = 'after_event_or_timeout' }],
     ['ci_failed_wait', e => { e.reason_code = 'ci_wait' }],
     ['ci_failed_wait', e => { e.waiting_for = 'ci_checks_or_new_head' }],

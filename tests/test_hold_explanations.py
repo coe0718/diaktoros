@@ -141,14 +141,16 @@ class LedgerExplanations(unittest.TestCase):
         }
 
     # The (reason_code, waiting_for, automatic_resume) each writer's line must explain as. A CI
-    # wait ends at its event or CI_WAIT_MAX_S (turns._ci_hold_reason, the shadow gate); only a red
-    # head's hold has no time limit (#1110), so only it is 'after_event'.
+    # wait ends at its event or CI_WAIT_MAX_S (turns._ci_hold_reason, the shadow gate); a red
+    # head's hold has no time limit (#1110), so it is 'after_event', and so is a fixer's red head,
+    # where only the fixer's turn order ends at the limit (review of #2398, F3).
     CI_TIMED = ('ci_wait', 'ci_checks_or_new_head', 'after_event_or_timeout')
+    CI_FIXER = ('ci_fixer_first_wait', 'failed_checks_pass_or_new_head', 'after_event')
     CI_RED = ('ci_failed_wait', 'failed_checks_pass_or_new_head', 'after_event')
     WINDOW = ('provider_window', 'provider_window_reset', 'after_recorded_time')
     CAP = ('daily_cap', 'daily_cap_reset', 'after_recorded_time')
     EXPECTED = {'ci_wait': CI_TIMED, 'ci_missing': CI_TIMED, 'ci_cancelled': CI_TIMED,
-                'ci_fixer_first': CI_TIMED, 'ci_conflict': CI_TIMED, 'shadow_ci_wait': CI_TIMED,
+                'ci_fixer_first': CI_FIXER, 'ci_conflict': CI_TIMED, 'shadow_ci_wait': CI_TIMED,
                 'ci_failed_wait': CI_RED, 'ci_failed_fixer_done': CI_RED,
                 'provider_window': WINDOW, 'provider_unavailable': WINDOW,
                 'daily_cap': CAP, 'review_only_cap': CAP}
@@ -178,7 +180,12 @@ class LedgerExplanations(unittest.TestCase):
                 self.assertEqual(result['next_eligible_start'], 1234)
                 self.assertEqual(result['operator_action'], 'inspect')
                 self.assertNotIn(error, result['text'])
-        self.assertIn('for at most the CI wait limit', views.HOLD_COPY['ci_wait'])
+        # Each bound is the current wait's, never the whole hold's (review of #2398, F3).
+        self.assertIn('this wait ends at the CI wait limit at the latest, but failed required '
+                      'checks can still hold it after that, with no time limit',
+                      views.HOLD_COPY['ci_wait'])
+        self.assertIn('the fixer goes first for at most the CI wait limit; the failed checks still '
+                      'hold it after that, with no time limit', views.HOLD_COPY['ci_fixer_first_wait'])
         self.assertIn('with no time limit', views.HOLD_COPY['ci_failed_wait'])
         token = 'held: fixer ' + run_supervisor.DAILY_TOKEN_BUDGET + ' (10) reached — resumes 00:00'
         self.assertEqual(run_supervisor.waiting_hold(token), 'daily_cap')
@@ -337,6 +344,7 @@ class LedgerExplanations(unittest.TestCase):
         lines = self.writer_lines()
         for name in ('ci_wait', 'ci_failed_wait', 'provider_window', 'daily_cap'):
             cases[name] = self.row(error=lines[name])
+        cases['ci_fixer_first_wait'] = self.row(error=lines['ci_fixer_first'])
         result = {name: views.hold_explanation(row) for name, row in cases.items()}
         fixture = pathlib.Path(__file__).parent / 'fixtures/desktop_hold_explanations.json'
         self.assertEqual(result, json.loads(fixture.read_text()))

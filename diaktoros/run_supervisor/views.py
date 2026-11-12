@@ -380,12 +380,16 @@ def describe_run(row: dict, loop_id: str = 'LOOP') -> str:
 # ``run_supervisor.waiting_hold``: what it waits for and how it resumes. A time-based hold
 # (provider window, daily cap) resumes at its recorded time, which ``next_eligible_start``
 # names; an event-based one (CI) names the event in ``waiting_for``. Most CI waits are also
-# time-bound: past ``run_supervisor.CI_WAIT_MAX_S`` the host stops holding for CI whether or not
-# the event came (``after_event_or_timeout``); only a red head's hold has no limit. Either way
-# the host only rechecks it then: a start still depends on host eligibility, and ``next_step``
-# stays the one piece of advice.
+# time-bound: past ``run_supervisor.CI_WAIT_MAX_S`` that wait ends whether or not the event came
+# (``after_event_or_timeout``). The bound is the current wait's, not the hold's: failed checks
+# can still hold the review then (a red head's hold has no limit), so the copy says so. A fixer's
+# red head is held by those failed checks from the start, so its hold is ``after_event`` and
+# only its turn order (the fixer first) is bounded (review of #2398, F3). Either way the host
+# only rechecks it then: a start still depends on host eligibility, and ``next_step`` stays the
+# one piece of advice.
 HOLD_REASONS = {
     'ci': ('ci_wait', 'ci_checks_or_new_head', 'after_event_or_timeout'),
+    'ci_fixer_first': ('ci_fixer_first_wait', 'failed_checks_pass_or_new_head', 'after_event'),
     'ci_failed': ('ci_failed_wait', 'failed_checks_pass_or_new_head', 'after_event'),
     'provider_window': ('provider_window', 'provider_window_reset', 'after_recorded_time'),
     'daily_cap': ('daily_cap', 'daily_cap_reset', 'after_recorded_time'),
@@ -396,8 +400,13 @@ HOLD_REASONS = {
 HOLD_COPY = {
     'external_write_guard': 'Recorded run has external write evidence or an uncertain outcome.',
     'run_waiting': 'Recorded run is waiting; the policy-specific reason is not structured yet.',
-    'ci_wait': ('Recorded run is held for CI at its recorded head, for at most the CI wait limit; '
-                'a new head queues a fresh run instead.'),
+    'ci_wait': ('Recorded run is held for CI at its recorded head; this wait ends at the CI wait '
+                'limit at the latest, but failed required checks can still hold it after that, '
+                'with no time limit; a new head queues a fresh run instead.'),
+    'ci_fixer_first_wait': ('Recorded run is held for failed required checks at its recorded head '
+                            'while the fixer takes them first; the fixer goes first for at most '
+                            'the CI wait limit; the failed checks still hold it after that, with '
+                            'no time limit; a new head queues a fresh run instead.'),
     'ci_failed_wait': ('Recorded run is held for failed required checks at its recorded head, '
                        'with no time limit; a new head queues a fresh run instead.'),
     'provider_window': ('Recorded run is held: its provider account is closed (a usage window or '

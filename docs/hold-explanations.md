@@ -58,7 +58,7 @@ disclosure. Empty turn/verdict/waiting claims are shown only for a successfully 
 | `evidence_source` | `run_ledger`; not current GitHub, runtime health or a delivery receipt. |
 | `completeness` | `partial`: a ledger snapshot; current admission facts are not established. |
 | `waiting_for` | `host_recheck`, `operator_inspection`, `unknown`, or a structured hold's own condition: `ci_checks_or_new_head` or `failed_checks_pass_or_new_head` (event), `provider_window_reset` or `daily_cap_reset` (time). |
-| `automatic_resume` | `never` for external-write replay guards; `after_event` for an event-based hold with no time limit (a red head's CI hold); `after_event_or_timeout` for an event-based hold that also ends at a time limit (every other CI hold, at `CI_WAIT_MAX_S`); `after_recorded_time` for a time-based hold; otherwise `unknown`. Each reason code has exactly one pairing. |
+| `automatic_resume` | `never` for external-write replay guards; `after_event` for an event-based hold with no time limit (a red head's CI hold, including a fixer's red head while the fixer goes first); `after_event_or_timeout` for an event-based wait that also ends at a time limit (every other CI wait, at `CI_WAIT_MAX_S`; the limit ends that wait, not necessarily the hold, see `ci_wait`); `after_recorded_time` for a time-based hold; otherwise `unknown`. Each reason code has exactly one pairing. |
 | `next_eligible_start` | Compatibility field name for recorded earliest recheck (`retry_at`) epoch seconds for a waiting, non-write-guarded row, or null; not a start promise. For a time-based hold it is the recorded reset (window end, local midnight); for the CI hold it is the next CI read. Finite, nonnegative and bounded to the public datetime epoch range. |
 | `operator_action` | `inspect` only. This is guidance, not an executable command or permission. |
 | `text` | Host-generated bounded rendering of recorded facts only; never next-action advice, error, path, account, credential or write-evidence prose. |
@@ -78,13 +78,21 @@ remain visible, but its explanation cannot claim head binding.
 
 - `run_waiting`: the ledger records waiting; the cause/event is not structured here (a retry
   backoff, a claim-read backoff, or any `held:` line no structured writer below produced).
-- `ci_wait`: a turn held by `ci_hold_line` for running, cancelled or missing checks, a fixer
-  taking a red head first, or a head that conflicts with its base (the reviewer's hold and the
-  shadow's gate). Waits for CI checks to settle or a new head, **or** for `CI_WAIT_MAX_S` from
-  the queueing (the shadow: from the approval it waited for) to pass, whichever comes first
-  (`after_event_or_timeout`): past the limit the host stops holding for CI, so a reviewer reviews
-  anyway and a shadow review is skipped. A new head queues a fresh run rather than resuming this
-  one.
+- `ci_wait`: a turn held by `ci_hold_line` for running, cancelled or missing checks, or a head
+  that conflicts with its base (the reviewer's hold and the shadow's gate). Waits for CI checks
+  to settle or a new head, **or** for `CI_WAIT_MAX_S` from the queueing (the shadow: from the
+  approval it waited for) to pass, whichever comes first (`after_event_or_timeout`). The limit
+  ends this wait, not necessarily the hold: a reviewer whose required checks have failed by then
+  is still held by them as `ci_failed_wait`, with no time limit (a cancelled check beside a
+  fixer's red head, a conflicting head whose checks failed earlier, or a running check that
+  fails). Otherwise a reviewer reviews anyway, and a shadow review is skipped. The copy says so.
+  A new head queues a fresh run rather than resuming this one.
+- `ci_fixer_first_wait`: a reviewer turn on a fixer's red head while the fixer's CI-fix turn
+  goes first (`run_supervisor.CI_FIXER_FIRST`, #539). Only that turn order is bounded: it ends
+  at `CI_WAIT_MAX_S` at the latest (or when the fixer's turn ends without a new head), and the
+  same failed checks then hold the review as `ci_failed_wait`. So the hold itself has no time
+  limit (`after_event`): it waits for the failed checks to pass or a new head (the fixer's push).
+  Review of #2398, F3.
 - `ci_failed_wait`: a reviewer turn held for failed required checks that no fixer takes (a
   review-only PR, or the fixer's CI fixes are done, #1110). No time limit (`after_event`): it
   waits for the failed checks to pass (a re-run) or a new head, past `CI_WAIT_MAX_S` as well.
@@ -164,7 +172,8 @@ The structured-hold cases are made by their real writers (`turns._cap_held`, `pa
 outages, daily caps, token budgets, running CI and base conflicts. Unrecognised `held:` prose,
 including lookalikes one edit away from a writer's line, stays `run_waiting`; a CI wait's time
 limit and a red hold's lack of one are both exercised through the production worker
-(`test_review_after_ci`, `test_red_ci_hold`), and every hold line with write evidence or an
+(`test_review_after_ci`, `test_red_ci_hold`), as is each bounded wait's hand-over to the
+unbounded red hold at the limit (`test_red_ci_hold`: fixer first, a cancelled check, a conflict), and every hold line with write evidence or an
 uncertain state stays a write guard with no recheck or replay advice. The future-state fixture is an explicit
 compatibility unit case, not a writer-produced policy state. No test starts a real worker or contacts GitHub.
 

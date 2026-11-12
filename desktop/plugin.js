@@ -319,7 +319,8 @@ function validHoldExplanation(value, head7) {
   const copy = {
     external_write_guard: 'Recorded run has external write evidence or an uncertain outcome.',
     run_waiting: 'Recorded run is waiting; the policy-specific reason is not structured yet.',
-    ci_wait: 'Recorded run is held for CI at its recorded head, for at most the CI wait limit; a new head queues a fresh run instead.',
+    ci_wait: 'Recorded run is held for CI at its recorded head; this wait ends at the CI wait limit at the latest, but failed required checks can still hold it after that, with no time limit; a new head queues a fresh run instead.',
+    ci_fixer_first_wait: 'Recorded run is held for failed required checks at its recorded head while the fixer takes them first; the fixer goes first for at most the CI wait limit; the failed checks still hold it after that, with no time limit; a new head queues a fresh run instead.',
     ci_failed_wait: 'Recorded run is held for failed required checks at its recorded head, with no time limit; a new head queues a fresh run instead.',
     provider_window: 'Recorded run is held: its provider account is closed (a usage window or an unavailable provider).',
     daily_cap: "Recorded run is held: its seat's daily turn cap or token budget is reached.",
@@ -338,6 +339,7 @@ function validHoldExplanation(value, head7) {
     external_write_guard: ['operator_inspection', 'never', false],
     run_waiting: ['host_recheck', 'unknown', true],
     ci_wait: ['ci_checks_or_new_head', 'after_event_or_timeout', true],
+    ci_fixer_first_wait: ['failed_checks_pass_or_new_head', 'after_event', true],
     ci_failed_wait: ['failed_checks_pass_or_new_head', 'after_event', true],
     provider_window: ['provider_window_reset', 'after_recorded_time', true],
     daily_cap: ['daily_cap_reset', 'after_recorded_time', true],

@@ -145,7 +145,7 @@ class Hold(sm.Worker):
         result = self.explained()
         self.assertEqual((result["reason_code"], result["waiting_for"], result["automatic_resume"]),
                          ("ci_wait", "ci_checks_or_new_head", "after_event_or_timeout"))
-        self.assertIn("for at most the CI wait limit", result["text"])
+        self.assertIn("this wait ends at the CI wait limit at the latest", result["text"])
         self.assertIn("Waiting for: CI checks to settle or a new head.", result["text"])
         with ledger.connect(self.root / "ledger.sqlite") as con:
             due = con.execute("SELECT retry_at FROM runs").fetchone()[0]

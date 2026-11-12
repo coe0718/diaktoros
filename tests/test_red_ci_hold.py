@@ -105,6 +105,65 @@ class Hold(sm.Base):
                 self.assertIn("with no time limit", result["text"])
                 self.assertEqual(result["next_eligible_start"], rows[0]["retry_at"])
 
+    def explained_across_the_ci_wait(self, checks, **pr_extra) -> list[tuple[dict, str]]:
+        """A fixer's red head (``fix_ci`` on, a CI-fix turn just queued) held by the real
+        worker, before ``CI_WAIT_MAX_S`` and past it: each recorded row's explanation and line."""
+        from diaktoros.run_supervisor import views
+        loop = {**self.loop, "fix_ci": True, "unattended_fixer_push": True, "fixers": ["fix"]}
+        pr = {"number": 7, "state": "open", "draft": False, "user": {"login": "fix"},
+              "head": {"sha": sm.HEAD, "ref": "fix-7"}, "base": {"ref": "main"}, **pr_extra}
+        seen = []
+        for wait in (3600, 0):
+            with mock.patch.object(run_supervisor, "CI_WAIT_MAX_S", wait), \
+                    mock.patch.object(ci, "read", return_value=checks), \
+                    mock.patch.object(ci_fix, "rows", return_value=[]), \
+                    mock.patch("diaktoros.gate.enqueue_isolated", return_value="enqueued"), \
+                    mock.patch.object(observer, "notify"):
+                launched, row, _ = self.run_seat("reviewer", loop=loop, pr=pr)
+            self.assertEqual((launched, row[0]), ({}, "waiting"), wait)
+            rows = views.read_only_view(self.root / "ledger.sqlite", "acme/widgets", 7)
+            self.assertEqual(len(rows), 1)
+            seen.append((views.hold_explanation(rows[0]), row[1]))
+        return seen
+
+    def structured(self, result: dict) -> tuple:
+        return result["reason_code"], result["waiting_for"], result["automatic_resume"]
+
+    def test_a_fixer_first_hold_is_bounded_only_for_its_current_reason(self):
+        # Review of #2398 round 2, F3: past CI_WAIT_MAX_S the fixer no longer goes first, but the
+        # same failed checks then hold the review with no time limit (#1110). So the fixer-first
+        # explanation bounds only the fixer's turn order, never the whole hold.
+        (before, line), (after, _) = self.explained_across_the_ci_wait(RED)
+        self.assertIn("the fixer is taking them first", line)
+        self.assertEqual(self.structured(before), ("ci_fixer_first_wait",
+                                                   "failed_checks_pass_or_new_head", "after_event"))
+        self.assertIn("while the fixer takes them first; the fixer goes first for at most the "
+                      "CI wait limit; the failed checks still hold it after that, with no time "
+                      "limit", before["text"])
+        self.assertNotIn("held for CI at its recorded head, for at most", before["text"])
+        self.assertEqual(self.structured(after), ("ci_failed_wait",
+                                                  "failed_checks_pass_or_new_head", "after_event"))
+        self.assertIn("with no time limit", after["text"])
+
+    def test_other_bounded_ci_waits_say_a_red_hold_can_outlast_them(self):
+        # The same transition from the two other CI waits that can sit on a fixer's red head: a
+        # cancelled check beside it, and a base conflict (no CI runs, the red result stays).
+        # Their line cannot tell, so the wait is bounded and a red hold is named as what may follow.
+        cancelled = ci.CIState(failed=["verticals"], cancelled=["lint"])
+        for name, checks, extra in (("cancelled", cancelled, {}),
+                                    ("conflict", RED, {"mergeable_state": "dirty"})):
+            with self.subTest(name):
+                (before, line), (after, _) = self.explained_across_the_ci_wait(checks, **extra)
+                self.assertIn("cancelled" if name == "cancelled" else "conflicts with main", line)
+                self.assertEqual(self.structured(before), ("ci_wait", "ci_checks_or_new_head",
+                                                           "after_event_or_timeout"))
+                self.assertIn("this wait ends at the CI wait limit at the latest, but failed "
+                              "required checks can still hold it after that, with no time limit",
+                              before["text"])
+                self.assertEqual(self.structured(after), ("ci_failed_wait",
+                                                          "failed_checks_pass_or_new_head",
+                                                          "after_event"))
+
     def test_a_rerun_that_passes_is_reviewed(self):
         for wait in (3600, 0):
             with self.subTest(wait=wait), mock.patch.object(run_supervisor, "CI_WAIT_MAX_S", wait):
