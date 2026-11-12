@@ -120,6 +120,59 @@ class Junk(unittest.TestCase):
         self.assertEqual(transition.start_fresh_review(st.loop, st, 7, live=live),
                          ("skip", "transition time unreadable — cannot name its one fresh turn"))
 
+    def test_turn_key_keeps_the_exact_key_of_every_integer_time(self):
+        """Review of #2433, F1: ``finite_time`` decides *whether* ``at`` is a time; the key keeps
+        the stored integer's exact arithmetic, so a persisted turn is not renamed (a float would
+        round ``10**16 + 1``) and a large finite integer is not an ``OverflowError`` either. A
+        float whose milliseconds overflow is unnamable, the same skip as any unreadable time."""
+        name = lambda at: transition.turn_key({"at": at, "from_base": "parent"})
+        self.assertEqual(name(10 ** 16 + 1), "retarget:parent:10000000000000001000")
+        self.assertEqual(name(10 ** 307), f"retarget:parent:{10 ** 310}")
+        self.assertEqual(name(1.5), "retarget:parent:1500")
+        self.assertIsNone(name(1e307))                       # float * 1000 is inf: no key
+        # Through the retarget sweep's entry point: the exact key reaches the enqueue.
+        st = self.st
+        live = {"number": 7, "state": "open", "draft": False, "head": {"sha": HEAD},
+                "base": {"ref": "main"}, "user": {"login": "f"}}
+        for at, want in [(10 ** 16 + 1, ("enqueued", "retarget:parent:10000000000000001000")),
+                         (10 ** 307, ("enqueued", f"retarget:parent:{10 ** 310}")),
+                         (1e307, ("skip", "transition time unreadable — cannot name its one "
+                                          "fresh turn"))]:
+            with self.subTest(at=at):
+                st.transitions_file.unlink(missing_ok=True)      # a hold is fixed per head
+                st.transition_set(7, {"head": HEAD, "from_base": "parent", "at": at,
+                                      "old_review_ids": []})
+                with mock.patch.object(gate, "enqueue_isolated", return_value="enqueued") as enq:
+                    self.assertEqual(transition.start_fresh_review(st.loop, st, 7, live=live),
+                                     want)
+                if want[0] == "enqueued":
+                    self.assertEqual(enq.call_args.kwargs["turn_key"], want[1])
+
+    def test_an_inflight_or_delivery_time_past_the_float_range_is_no_time(self):
+        """Review of #2433, F2: ``_clock`` reads in-flight marks and delivery leases; a bare
+        ``10**400`` there is unageable (absent, pruned, holding no lease), never an overflow."""
+        st, mark = self.st, f"review:7:{HEAD}"
+        st.inflight_file.write_text('{"' + mark + '": 1' + "0" * 400 + "}")
+        self.assertIsInstance(json.loads(st.inflight_file.read_text())[mark], int)
+        self.assertFalse(st.inflight(mark))                  # the read: absent
+        self.assertEqual(st.inflight_at(mark), 0.0)
+        st.inflight_file.write_text('{"' + mark + '": 1' + "0" * 400 + ', "other": 1'
+                                    + "0" * 400 + "}")
+        st.inflight(mark, record=True)                       # the prune drops "other"
+        kept = json.loads(st.inflight_file.read_text())
+        self.assertEqual(set(kept), {mark})
+        self.assertTrue(st.inflight(mark))
+        # The delivery lease: an oversized delivery_at holds nothing, so both writers proceed.
+        entry = {"pr": 7, "head": HEAD, "rounds": 3, "cap": 3, "reason": "cap"}
+        pending = {**entry, "status": "delivery-pending", "delivery_token": "t"}
+        big = json.dumps(pending)[:-1] + ', "delivery_at": 1' + "0" * 400 + "}"
+        st.breach.write_text('{"' + KEY + '": ' + big + "}")
+        self.assertIsInstance(st.breach_get(7)["delivery_at"], int)
+        self.assertIs(state._delivery_in_flight(st.breach_get(7)), False)
+        self.assertEqual(st.breach_deliver(7, dict(entry), lambda: True, lambda _: True), "retry")
+        st.breach.write_text('{"' + KEY + '": ' + big + "}")
+        self.assertTrue(st.breach_clear_pending(7, HEAD))
+
     def test_inflight_mark_ahead_of_the_clock_is_expired_and_pruned(self):
         """#940: a future-dated mark (clock stepped back, ms stamp) is not inside every TTL."""
         st, mark = self.st, f"review:7:{HEAD}"

@@ -13,6 +13,7 @@ merely lists after the boundary (a human's, a manual one) stays diagnostic.
 """
 from __future__ import annotations
 
+import math
 import time
 
 from . import gh, review_receipt
@@ -83,10 +84,17 @@ def turn_key(entry):
     redelivered webhook names the same turn and dedups on the ledger's unique
     repo/PR/head/seat/turn index. A later transition at a new head gets a new key.
     """
-    at = finite_time(entry.get("at")) if isinstance(entry, dict) else None
+    raw = entry.get("at") if isinstance(entry, dict) else None
+    at = finite_time(raw)
     if at is None or at <= 0:
         return None
-    return f"retarget:{str(entry.get('from_base') or '?')[:64]}:{int(at * 1000)}"
+    # ``finite_time`` only decides whether ``at`` is a time (#1839). The key keeps the stored
+    # value's own arithmetic: an ``int`` stays exact (a float would round past 2**53 and rename
+    # a persisted turn), and a float whose milliseconds overflow is unnamable, not a raise.
+    millis = raw * 1000
+    if isinstance(millis, float) and not math.isfinite(millis):
+        return None
+    return f"retarget:{str(entry.get('from_base') or '?')[:64]}:{int(millis)}"
 
 
 def ledger_path():
