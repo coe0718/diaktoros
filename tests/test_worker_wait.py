@@ -199,6 +199,57 @@ class EndLingeringWorkers(unittest.TestCase):
         self.assertEqual(proc.wait(10), -signal.SIGTERM)
         self.assertEqual(proc.stdout.read(), "")        # and it never printed 'working'
 
+    # The worker of the two tests below: a short GATE_WAIT, a wait it leaves on '<db>.wake'.
+    LEAVING = ("import os, sys, time; from pathlib import Path\n"
+               "from diaktoros.run_supervisor import workers\n"
+               "workers.GATE_WAIT = 0.3\n"
+               "with workers.lingering(Path(sys.argv[1])):\n"
+               "    print('marked', flush=True)\n"
+               "    while not os.path.exists(sys.argv[1] + '.wake'): time.sleep(0.01)\n"
+               "    print('leaving', flush=True)\n"
+               "print('working', flush=True); time.sleep(60)")
+
+    def test_a_signaler_stopped_past_the_deadline_never_signals_a_worker_at_work(self):
+        # #1842 round 1, F1: the signaler has found the mark held and stops, holding the gate,
+        # for longer than GATE_WAIT. The worker must not go on to work and be signalled there.
+        proc = self.start(self.LEAVING, str(self.db))
+        self.assertEqual(proc.stdout.readline().strip(), "marked")
+        real, early = workers._held, []
+
+        def held_then_stopped_past_the_deadline(mark):
+            held = real(mark)                           # the signaler has seen the mark held...
+            Path(str(self.db) + ".wake").touch()        # ...the worker tries to leave...
+            self.assertEqual(proc.stdout.readline().strip(), "leaving")
+            early.extend(select.select([proc.stdout], [], [], 1.5)[0])   # ...past its deadline
+            return held
+
+        with patch.object(workers, "_held", held_then_stopped_past_the_deadline):
+            workers.signal_lingerer(self.db, proc.pid, signal.SIGTERM)
+        self.assertEqual(proc.wait(10), -signal.SIGTERM)
+        self.assertEqual(proc.stdout.read(), "", "the worker went on to work and was signalled")
+
+    def test_a_gate_held_past_the_deadline_ends_the_worker_in_its_wait_and_is_swept_later(self):
+        # #1842 round 1, F2: the way out is bounded: the worker ends in its wait (never at work),
+        # its mark stops counting, the gate it could not lock is kept, and a later sweep takes it.
+        proc = self.start(self.LEAVING, str(self.db))
+        self.assertEqual(proc.stdout.readline().strip(), "marked")
+        gate_path = Path(str(workers.linger_mark(self.db, proc.pid)) + ".end")
+        gate = os.open(gate_path, os.O_RDONLY)
+        self.addCleanup(os.close, gate)
+        fcntl.flock(gate, fcntl.LOCK_EX)                # a holder that has stopped
+        Path(str(self.db) + ".wake").touch()
+        self.assertEqual(proc.stdout.readline().strip(), "leaving")
+        self.assertEqual(proc.wait(10), -signal.SIGTERM)    # bounded, and ended in its wait
+        self.assertEqual(proc.stdout.read(), "")
+        self.assertEqual(workers.lingering_pids(self.db), set())
+        self.assertTrue(gate_path.exists())             # not removed without its lock
+        with workers.lingering(self.db):                # still locked: a sweep leaves it
+            self.assertTrue(gate_path.exists())
+        fcntl.flock(gate, fcntl.LOCK_UN)
+        with workers.lingering(self.db):
+            self.assertFalse(gate_path.exists())
+            self.assertFalse(workers.linger_mark(self.db, proc.pid).exists())
+
     def test_a_stale_mark_does_not_vouch_for_a_process_that_reused_its_pid(self):
         # F2 of #1823: the lingerer was killed and left its mark; a hung process under the same
         # root now holds that PID. Nothing holds the mark's lock, so the new one is not ended,
@@ -460,6 +511,19 @@ class LingerMark(unittest.TestCase):
             with workers.lingering(db):
                 self.assertFalse(orphan.exists())
             self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_a_name_with_non_ascii_digits_is_ignored_not_fatal(self):
+        # #1842 round 1, F3: '²'.isdigit() is true but int('²') raises; such files are not ours.
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "runs.sqlite"
+            others = [Path(tmp) / "runs.sqlite.linger.\u00b2.end",
+                      Path(tmp) / "runs.sqlite.linger.\u00b2",
+                      Path(tmp) / "runs.sqlite.linger.\u0663"]     # int() takes this one: 3
+            for path in others:
+                path.write_text("")
+            with workers.lingering(db):
+                self.assertEqual(workers.lingering_pids(db), {os.getpid()})
+            self.assertTrue(all(path.exists() for path in others))
 
     def test_an_orphan_gate_locked_by_someone_else_is_left(self):
         # #1842 (3): the sweep of an orphan gate is made under its lock, without waiting for it.

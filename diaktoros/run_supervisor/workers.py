@@ -17,6 +17,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -66,7 +67,9 @@ def _named(db: Path, suffix: str = '') -> dict[int, Path]:
         return {}
     pids = {path: path.name[len(prefix):len(path.name) - len(suffix)] for path in paths
             if path.name.startswith(prefix) and path.name.endswith(suffix)}
-    return {int(pid): path for path, pid in pids.items() if pid.isdigit()}
+    # ASCII digits only: str.isdigit() also takes characters such as '²' that int() refuses,
+    # and an unrelated file so named must be ignored, not stop every lingerer (#1842).
+    return {int(pid): path for path, pid in pids.items() if pid.isascii() and pid.isdigit()}
 
 
 def _marks(db: Path) -> dict[int, Path]:
@@ -212,17 +215,43 @@ def _sweep(mark: Path) -> None:
         os.close(gate)
 
 
+def _end_in_wait(mark: Path) -> None:
+    """End this process inside its wait, still marked, as an authorised signal would (#1842).
+    ``_leave`` calls it when someone holds the gate past ``GATE_WAIT``: that holder may be a
+    ``signal_lingerer`` stopped after it found the mark held, which sends its signal when it
+    resumes, without checking again. Had the worker gone on to work, that signal would end it
+    at work. The wait is one that is safe to end by SIGTERM, so ending it here is what that
+    signal would have done; the kernel drops the mark's lock, and the next lingerer sweeps the
+    files. A SIGTERM handler installed elsewhere does not let the worker go on: it exits."""
+    with contextlib.suppress(Exception):
+        print(f'diaktoros worker {os.getpid()}: the gate {mark.name}{_GATE} was held past '
+              f'{GATE_WAIT} s as it left its wait; ending in the wait (#1842)',
+              file=sys.stderr, flush=True)
+    with contextlib.suppress(ValueError, OSError):
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)       # only possible on the main thread
+    with contextlib.suppress(OSError):
+        os.kill(os.getpid(), signal.SIGTERM)
+    os._exit(128 + signal.SIGTERM)
+
+
 def _leave(mark: Path, fd: int, gate: int | None) -> None:
     """Leave the lingering state: take the gate's lock, which waits out a signal being sent under
     it (#1830), then release the mark and remove both files. A signal sent under the gate has
     been delivered by the time this gets the lock, so a worker selected while asleep dies on
     the way out of its sleep rather than going on to work. A gate still held after
-    ``GATE_WAIT`` is a holder that has stopped (#1842): the worker leaves anyway, and its gate,
-    which it may not remove without the lock, is left for the next lingerer's sweep."""
+    ``GATE_WAIT`` is a holder that has stopped (#1842), possibly a signaler that has found the
+    mark held and will signal when it resumes: the worker does not go on to work then, but
+    ends in its wait (``_end_in_wait``), so the wait is bounded and no signal reaches it at
+    work. Only an error locking the gate (not contention) lets it leave without the lock; it
+    then leaves the gate, which it may not remove without the lock, to the next sweep."""
     locked = False
     if gate is not None:
-        with contextlib.suppress(OSError):
+        try:
             locked = _flock_within(gate, GATE_WAIT)
+        except OSError:
+            locked = None                   # not contention: no signaler holds it
+        if locked is False:
+            _end_in_wait(mark)
     os.close(fd)                            # releases the lock: the mark stops counting here
     _unlink(mark)
     if gate is not None:
