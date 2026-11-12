@@ -477,6 +477,9 @@ def _migrate_steps(args, using: contextlib.ExitStack, left: dict | None = None) 
             print(f"cannot migrate: the backup before it failed ({exc}); nothing was moved")
             return 2
         print(f"backup: {archive} (restore with `hermes dk restore {shlex.quote(str(archive))}`)")
+        left_out = _left_out(archive)
+        if left_out:
+            print(f"backup: {left_out}")
         print(f"backup: {backup.WARNING}")
         if pruned:
             print(f"backup: removed {len(pruned)} older default-named archive(s) beyond the "
@@ -556,12 +559,24 @@ def cmd_backup(args) -> int:
         if pruned:
             print(f"removed {len(pruned)} older default-named archive(s) beyond the newest "
                   f"{keep}: " + ", ".join(p.name for p in pruned))
-        left_out = backup.read_manifest(archive).get("skipped") or []
+        left_out = _left_out(archive)
         if left_out:
-            print(f"left out ({len(left_out)} temp-named file(s), assumed a writer's scratch): "
-                  + ", ".join(left_out[:5]) + (" ..." if len(left_out) > 5 else ""))
+            print(left_out)
         print(f"warning: {backup.WARNING}")
         return 0
+
+
+def _left_out(archive: pathlib.Path) -> str | None:
+    """The line ``backup`` and ``migrate``'s automatic backup both print for the files the archive
+    left out (its manifest's ``skipped``: a writer's in-progress temp files, and listed files that
+    were gone by the time they were read), or None when it left none out (#1694)."""
+    from .. import backup
+    left_out = backup.read_manifest(archive).get("skipped") or []
+    if not left_out:
+        return None
+    return (f"left out ({len(left_out)} file(s): a writer's in-progress temp files, or files "
+            "removed while the backup ran): "
+            + ", ".join(left_out[:5]) + (" ..." if len(left_out) > 5 else ""))
 
 
 def _restore_cron(job: dict | None) -> list[str]:
@@ -587,15 +602,20 @@ def _restore_cron(job: dict | None) -> list[str]:
     return [f"cron: job {job['name']!r} created ({job['schedule']}, deliver {job['deliver']})"]
 
 
-def _pre_restore_snapshot(left: dict | None = None) -> pathlib.Path | None:
+def _pre_restore_snapshot(left: dict | None = None,
+                          writes: frozenset[str] = frozenset()) -> pathlib.Path | None:
     """Back up the live install before a restore overwrites it (#1049), through ``backup.create``
     as an ``--out`` archive (so it prunes nothing and is never pruned), and return its path. On
     failure print why and return None: the restore then writes nothing, since without the
     snapshot a mistaken or failed restore would leave no way back. It is taken under restore's
-    own marker (``held``), recording what an interrupted run left (``left``, #1054)."""
+    own marker (``held``), recording what an interrupted run left (``left``, #1054). A path the
+    restore is about to write (``writes``) that vanishes while the snapshot reads it fails the
+    snapshot, so the restore writes nothing: unlike a plain ``backup`` (#1694), the undo archive
+    must hold every listed file the restore can overwrite (#2413)."""
     from .. import backup
     try:
-        return backup.create(backup.pre_restore_out(), held=True, half_moved=left)
+        return backup.create(backup.pre_restore_out(), held=True, half_moved=left,
+                             must_read=writes)
     except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
         print(f"cannot restore: the backup of the live install before it failed ({exc}); "
               "nothing was written — fix what it names (a loop file that does not load can be "
@@ -607,7 +627,7 @@ def _restore(args, manifest: dict, archive: pathlib.Path, left: dict | None = No
     from .. import backup, migrate, restore_checks
     lines = [f"restore: {len(manifest['files'])} file(s), {len(manifest.get('routes') or {})} "
              f"route(s), loops: {', '.join(manifest.get('loops') or []) or 'none'}"]
-    lines += [f"restore: NOT FINISHED — credential file missing: {line}"
+    lines += [f"restore: NOT FINISHED — credential file problem: {line}"
               for line in backup.missing_tokens(manifest)]
     lines += [f"restore: will overwrite {name}" for name in backup.existing(manifest)]
     if manifest.get("migrating"):
@@ -633,7 +653,7 @@ def _restore(args, manifest: dict, archive: pathlib.Path, left: dict | None = No
                                  "dry run: nothing was written"]))
         return 0
     if backup.existing(manifest):
-        snapshot = _pre_restore_snapshot(left)
+        snapshot = _pre_restore_snapshot(left, frozenset(f["path"] for f in manifest["files"]))
         if snapshot is None:
             return 2
         lines.append(f"restore: the install as it was is in {snapshot}")

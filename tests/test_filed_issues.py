@@ -458,6 +458,22 @@ class Prompt(unittest.TestCase):
                 self.assertIn("send the type label alone" if most == 1 else "send a type label and a priority label", text)
                 self.assertNotIn("exactly one priority label", text)
 
+    def test_a_type_only_list_is_not_asked_for_a_priority_label(self):
+        """#1697: a list with no priority label (["bug"]) cannot carry one, so neither the
+        reviewer's prompt nor its tool text may ask for a priority label unconditionally."""
+        import test_ci_coverage as tcc
+        import test_required_checks as trc
+        from diaktoros import trusted_turn
+        loop = config.normalize({**trc.raw(), "id": "w"})
+        loop["triage"] = {"labels": ["bug"], "max_labels": 3}
+        with mock.patch.object(gh, "api", return_value=None):
+            text = " ".join(tcc.reviewer_prompt(loop, None).split())
+        self.assertIn("`bug` (at most 3 per issue; send a type label)", text)
+        self.assertNotIn("priorities are `P0`–`P3`", text)
+        self.assertIn("a priority label, `P0`–`P3`, only when the list has one", text)
+        tools = " ".join(trusted_turn.tool_instructions("reviewer").split())
+        self.assertIn("a priority label only when the list has one and the cap leaves room", tools)
+
 
 class ClientBounds(unittest.TestCase):
     """The sandbox client refuses a bad title or body before it sends anything, so the turn's one
