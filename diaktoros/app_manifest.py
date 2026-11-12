@@ -28,6 +28,8 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from .util import write_all
+
 GITHUB = "https://github.com"
 ROLES = ("reader", "reviewer", "fixer", "adjudicator")
 WAIT_S = 600                    # how long one App's browser round trip may take
@@ -129,9 +131,7 @@ def write_key(key_dir: Path, slug: str, pem: str) -> Path:
     path = key_dir / f"{slug}.pem"
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        data = memoryview(pem.encode())
-        while data:                        # os.write may write less than it was given
-            data = data[os.write(fd, data):]
+        write_all(fd, pem.encode(), f"short write to the App key {path}")
     finally:
         os.close(fd)
     return path
