@@ -264,6 +264,11 @@ class ModeContracts(Tmp):
                  ({"thinking": {"type": "adaptive"}, "output_config": {"effort": {"x": 1}}},
                   None),
                  ({"thinking": {"type": "adaptive"}, "output_config": {"effort": "a b"}}, None),
+                 # Review of #2456, F1: a present-but-null key is malformed, not absent.
+                 ({"output_config": None}, None),
+                 ({"thinking": {"type": "adaptive"}, "output_config": None}, None),
+                 ({"thinking": {"type": "adaptive"}, "output_config": {"effort": None}}, None),
+                 ({"output_config": {"effort": None}}, None),
                  ({"thinking": {"type": "mystery"}}, None),
                  ({"thinking": "adaptive", "output_config": {"effort": "low"}}, None))
         for extra, want in cases:

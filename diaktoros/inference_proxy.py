@@ -629,10 +629,14 @@ def thinking_level(body: bytes, contract: Contract) -> str | None:
             return None
         # Adaptive thinking, or a request stating only an effort, carries its level in
         # output_config.effort (#1929).
-        output_config = payload.get('output_config')
-        if output_config is not None and not isinstance(output_config, dict):
+        # A key that is present but null is not an absent key: an explicit null output_config
+        # or effort is unreadable, so unknown, never off or adaptive (review of #2456, F1).
+        output_config = payload.get('output_config', {})
+        if not isinstance(output_config, dict):
             return None    # an output_config we cannot read: unknown, never off
-        effort = output_config.get('effort') if output_config is not None else None
+        if 'effort' in output_config and output_config['effort'] is None:
+            return None
+        effort = output_config.get('effort')
         if effort is None:
             if thinking is None:
                 return 'off'
