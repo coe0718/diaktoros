@@ -1045,8 +1045,10 @@ is on this machine — a non-loopback peer, or any forwarding header at all (`Fo
 any `X-Forwarded-*` such as `-For`, `-Host` or `-Proto`, and `X-Real-IP`; present is what counts, so an empty one refuses
 too) gets 403 — because the dashboard is the surface Caddy exposes off-host. Desktop then
 requests validated offline health for that loop and discloses “GitHub not probed from this
-caller”. A transport failure or HTTP 503 also falls back, labeled “GitHub probe unavailable”
-(not evidence of a GitHub outage). Offline results show local checks only; unprobed checks are
+caller”. A transport failure also falls back, labeled “GitHub probe unavailable”
+(not evidence of a GitHub outage); an HTTP 503 falls back labeled “Probed health read failed
+(HTTP 503)”, which names no origin: the route maps any unexpected error in the probed read
+(local or network) to 503, and a proxy can return one too. Offline results show local checks only; unprobed checks are
 not passing. If both reads fail, the panel shows unavailable or retains last-good data with a
 bounded failure disclosure. Refresh GitHub explicitly retries the probe first. The stable
 per-loop ten-minute cache has no automatic retries, polling or socket invalidation; see
