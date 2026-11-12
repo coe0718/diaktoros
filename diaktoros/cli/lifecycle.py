@@ -556,6 +556,7 @@ def cmd_backup(args) -> int:
             print(f"cannot back up: {exc}")
             return 2
         print(f"backup written: {archive}")
+        _record_future_dated(backup)
         if pruned:
             print(f"removed {len(pruned)} older default-named archive(s) beyond the newest "
                   f"{keep}: " + ", ".join(p.name for p in pruned))
@@ -564,6 +565,27 @@ def cmd_backup(args) -> int:
             print(left_out)
         print(f"warning: {backup.WARNING}")
         return 0
+
+
+def _record_future_dated(backup) -> None:
+    """Record and name every archive in the backups directory dated past the clock-skew allowance
+    (#1905), so ``doctor``'s ``backup:fresh`` never counts it as recent once the clock reaches its
+    date. A record that cannot be written is said, never a failed backup: the archive is whole."""
+    try:
+        found = backup.record_future_dated()
+    except backup.FutureRecordError as exc:     # left as it is: rewriting it forgets what it named
+        print(f"warning: {exc}; it was left unchanged and archives were not checked for a future "
+              f"date. doctor's backup:fresh reads unknown until it is repaired or removed")
+        return
+    except OSError as exc:
+        print(f"warning: could not record future-dated archives in {backup.backups_dir()} "
+              f"({exc}); doctor may later count one as a recent backup")
+        return
+    if found:
+        print(f"warning: {len(found)} archive(s) in {backup.backups_dir()} dated more than "
+              f"{backup.CLOCK_SKEW_S // 3600} hours in the future (a wrong clock when written?): "
+              + ", ".join(p.name for p in found)
+              + "; recorded, so doctor's backup:fresh will never count them as a recent backup")
 
 
 def _left_out(archive: pathlib.Path) -> str | None:
