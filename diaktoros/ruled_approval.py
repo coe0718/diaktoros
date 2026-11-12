@@ -129,10 +129,6 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
     return _dismiss(loop, sup, ruling, reviews, number, branch, row.get("overruled"), log)
 
 
-# The steps of acting on an ACCEPT that are finished, either way: nothing more is written for them.
-SETTLED = ("posted", "none", "denied")
-
-
 def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool = True) -> str:
     """Why acting on an ACCEPT at ``head`` is not finished, or '' (#2364). ``base_merge`` waits on
     it: a merge moves the head, and the sweep acts only on a ruling at the current head.
@@ -140,7 +136,8 @@ def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool 
     * Any ruling's write that may be on the wire at this head (``posting``, ``uncertain``) holds
       it, whichever verdict is now the head's latest: once the head moves, nothing reconciles it.
     * Then the newest ruling decides, as ``_act`` does, when it is an ACCEPT at this head: a step
-      not yet posted, none or denied is not settled; no record yet is not settled while a change
+      ``_act`` will still take waits (the approval while pending, then the dismissal while
+      pending, unless the approval was denied); no record yet is not settled while a change
       request is still there to dismiss (``overruled``: the sweep has not acted, or an approval
       was posted by hand), and is nothing owed when there is none. An older ruling's pending step
       is never acted on again, so it waits on nothing.
@@ -171,9 +168,13 @@ def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool 
         if overruled(reviews, loop, head, ruling.get("created") or 0) is None:
             return ""                          # no change request to dismiss: nothing to act on
         return "the adjudicator's ACCEPT has not been acted on yet"
-    for step in ("approve", "dismiss"):
-        if (state := mine.get(step) or "pending") not in SETTLED:
-            return f"the adjudicator's ACCEPT is still being acted on ({step}: {state})"
+    # Only what ``_act`` still takes: the approval, then the dismissal, while the dismissal is
+    # pending and the approval was not denied (a denied approval leaves its dismissal pending for
+    # good: left for a person, #2375 review F10). Posting/uncertain steps are the scan above.
+    approve, dismiss = mine.get("approve") or "pending", mine.get("dismiss") or "pending"
+    if dismiss == "pending" and approve != "denied":
+        step, state = ("approve", approve) if approve == "pending" else ("dismiss", dismiss)
+        return f"the adjudicator's ACCEPT is still being acted on ({step}: {state})"
     return ""
 
 
