@@ -562,8 +562,9 @@ TOOLS = {
                  f'most {broker_client.FILED_ISSUE_BODY_MAX // 1024} KiB with the evidence and '
                  '`file:line`, labels only from the list in your instructions, none if no list is '
                  'given, otherwise what the list line in your instructions says to send (a type '
-                 'label is one that is not P0, P1, …; a priority label only if the cap leaves '
-                 'room beside the type); '
+                 'label is one that is not P0, P1, …; a priority label beside the type only if '
+                 'the cap leaves room for it, and one priority label when the list has no type '
+                 'label at all); '
                  f'at most {broker_filing.FILED_ISSUES_MAX} per review). It files as your account '
                  'and answers with the issue number; a title already filed from this PR is '
                  'refused. A blocking finding is never an issue: it is REQUEST_CHANGES. '),
