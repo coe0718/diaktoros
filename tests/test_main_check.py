@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from diaktoros import ci, gh, main_check, observer, state as state_mod  # noqa: E402
+from diaktoros import ci, gh, main_check, observer, pr_refs, state as state_mod  # noqa: E402
 
 LOOP = {"repo": "acme/widgets", "base": "main", "read_token": "reader", "required_checks": []}
 RED = ci.CIState(failed=["tests"], passed=["lint"], urls={"tests": "https://x/run/1"})
@@ -114,6 +114,23 @@ class MainCheck(unittest.TestCase):
         (_args, kw), = self.notices
         self.assertNotIn("partial", kw["outcome"])
         self.assertIn("merged since main's last green head: #11, #12", kw["outcome"])
+
+    def test_a_trailing_ref_is_named_with_the_subject_only_caveat(self):
+        """#1699: a direct push like ``update docs (#123)`` names an issue, not a merged PR; the
+        notice must say its list is read from commit subjects, not state it as fact."""
+        compare = {"commits": [{"commit": {"message": "update docs (#123)"}}], "total_commits": 1}
+        self.assertFalse(self.run_sweep("a" * 40, GREEN))
+        self.assertTrue(self.run_sweep("b" * 40, RED, compare=compare))
+        (_args, kw), = self.notices
+        self.assertIn("#123", kw["outcome"])
+        self.assertIn(pr_refs.CAVEAT, kw["outcome"])
+
+    def test_no_named_pr_needs_no_caveat(self):
+        compare = {"commits": [{"commit": {"message": "direct push"}}], "total_commits": 1}
+        self.assertFalse(self.run_sweep("a" * 40, GREEN))
+        self.assertTrue(self.run_sweep("b" * 40, RED, compare=compare))
+        (_args, kw), = self.notices
+        self.assertNotIn(pr_refs.CAVEAT, kw["outcome"])
 
     def test_missing_total_commits_is_partial(self):
         no_total = {"commits": COMPARE["commits"]}

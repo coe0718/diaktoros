@@ -16,7 +16,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from diaktoros import broker, config, review_only_conflict, safe_push  # noqa: E402
+from diaktoros import broker, config, pr_refs, review_only_conflict, safe_push  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 
 REPO = "acme/widgets"
@@ -110,6 +110,22 @@ class Notice(Base):
         self.assertIn("#428, #430", text)
         self.assertIn("the conflict is in one file: a.py", text)
         self.assertIn("git fetch origin && git switch feat && git merge origin/main", text)
+
+    def test_the_merged_prs_carry_the_subject_only_caveat(self):
+        """#1699: the numbers come from commit subjects, so a direct push ending in ``(#N)``
+        would be named too; the notice must say so rather than call them merged PRs outright."""
+        text = review_only_conflict.message(self.loop, "owner", self.facts())
+        self.assertIn(f"#428, #430 ({pr_refs.CAVEAT})", text)
+
+    def test_one_reader_for_every_subject(self):
+        """The notice and ``update`` read a subject the same way (``pr_refs.pr_number``)."""
+        from diaktoros.cli import update as cli_update
+        for subject, want in (("update docs (#123)", [123]), ("Merge pull request #5 from a/b", [5]),
+                              ("Merge pull request #57x", []), ("no ref", [])):
+            self.assertEqual(review_only_conflict.merged_prs([("s", subject)]), want)
+            self.assertEqual(pr_refs.pr_number(subject), want[0] if want else 0)
+            got = cli_update.merged_prs([{"commit": {"message": subject}}])
+            self.assertEqual([n for n, _t in got], want)
 
     def test_a_dry_merge_pushes_nothing(self):
         before = git("--git-dir", self.remote, "rev-parse", "feat")
