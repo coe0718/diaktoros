@@ -295,10 +295,14 @@ def _count_active(db: pathlib.Path, repo: str | None = None) -> int:
         finally:
             con.close()
     except sqlite3.Error as exc:
-        raise RunsUnknown(
-            f"the run ledger {db} exists but could not be read ({exc}), so active runs "
+        raise RunsUnknown(_unreadable(db, exc)) from exc
+
+
+def _unreadable(db: pathlib.Path, exc: sqlite3.Error) -> str:
+    """Why a ledger that exists but raised ``exc`` rules no run out (#767), and what to do."""
+    return (f"the run ledger {db} exists but could not be read ({exc}), so active runs "
             "cannot be ruled out; stop the workers, then restore the ledger from a backup or "
-            "move the damaged file aside (or retry if it was locked)") from exc
+            "move the damaged file aside (or retry if it was locked)")
 
 
 def busy_runs(db: pathlib.Path, repo: str) -> int:
@@ -309,9 +313,19 @@ def busy_runs(db: pathlib.Path, repo: str) -> int:
 
 
 def _move_ledger(db: pathlib.Path, old: str, new: str, *, dry_run: bool) -> tuple[int, str]:
-    """Rows moved (or that would be); a refusal reason instead while a run is in flight."""
+    """Rows moved (or that would be); a refusal reason instead while a run is in flight, or
+    when the ledger exists but cannot be read (#1702: the reason ``busy_runs`` raises as
+    ``RunsUnknown``, never a raw ``sqlite3.Error``)."""
     if not db.exists():
         return 0, ""
+    try:
+        return _move_ledger_rows(db, old, new, dry_run=dry_run)
+    except sqlite3.Error as exc:
+        return 0, _unreadable(db, exc)
+
+
+def _move_ledger_rows(db: pathlib.Path, old: str, new: str, *, dry_run: bool) -> tuple[int, str]:
+    """``_move_ledger`` on a ledger file that exists, in one ``BEGIN IMMEDIATE`` transaction."""
     con = sqlite3.connect(db, timeout=LOCK_WAIT_S, isolation_level=None)
     try:
         con.execute("BEGIN IMMEDIATE")

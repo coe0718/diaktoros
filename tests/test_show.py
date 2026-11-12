@@ -137,6 +137,49 @@ class ShowTests(_Base):
             _, apps, _, _ = settings_form.select_credentials(loop, settings)
             self.assertEqual(apps[bot]["key_file"] != stored, unapplied, (stored, held, apps))
 
+    def test_a_key_path_with_dotdot_segments_is_not_called_unapplied(self):
+        # #1695: a hand-written loop path `/k/x/../a.pem` names the same file as the form's `/k/a.pem`.
+        self.assertNotIn("not applied", self._key_note("/keys/sub/../rev-app.pem", "/keys/rev-app.pem"))
+        self.assertNotIn("not applied", self._key_note("/keys/rev-app.pem", "/keys/sub/../rev-app.pem"))
+        self.assertIn("not applied", self._key_note("/keys/sub/../other.pem", "/keys/rev-app.pem"))
+
+    def test_a_dotdot_after_a_symlinked_directory_is_still_called_unapplied(self):
+        # review of #2415 F1: `/a/link/../key.pem` with `link` -> `/b/c` opens `/b/key.pem`, not
+        # `/a/key.pem`; apply would switch to the form's key, so show must say "not applied".
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            for d in ("a/sub", "b/c"):
+                os.makedirs(os.path.join(tmp, d))
+            os.symlink(os.path.join(tmp, "b", "c"), os.path.join(tmp, "a", "link"))
+            for rel, body in (("a/key.pem", "KEY A"), ("b/key.pem", "KEY B")):
+                with open(os.path.join(tmp, rel), "w") as fh:
+                    fh.write(body)
+            held = os.path.join(tmp, "a", "key.pem")
+            via_link = os.path.join(tmp, "a", "link", "..", "key.pem")
+            via_dir = os.path.join(tmp, "a", "sub", "..", "key.pem")
+            with open(via_link) as a, open(held) as b:
+                self.assertNotEqual(a.read(), b.read())
+            self.assertIn("not applied", self._key_note(via_link, held))
+            self.assertNotIn("not applied", self._key_note(via_dir, held))   # a real dir: same file
+
+    def test_a_padded_form_login_and_app_id_are_not_called_unapplied(self):
+        # #1695: apply reads the form through config.seat_mapping, which strips login and app_id.
+        bot = "review-seat[bot]"
+        self._key_note("/keys/rev-app.pem", "/keys/rev-app.pem")       # loop: login bot, App 42
+        form = {"reviewer_login": f" {bot} ", "reviewer_app_id": " 42 ",
+                "reviewer_app_key_file": "/keys/rev-app.pem"}
+        self.assertEqual(config.seat_mapping(form)["reviewer"]["login"], bot)
+        rc, out = self.run_cli(["show", "--loop", "widgets", "--json"], form)
+        self.assertEqual(rc, 0, out)
+        rows = {row["name"]: row for row in json.loads(out)["settings"]}
+        self.assertNotIn("not applied", rows["reviewer_login"]["note"])
+        self.assertNotIn("not applied", rows["reviewer_app_id"]["note"])
+        form["reviewer_app_id"] = " 43 "                                  # a different id still is
+        rc, out = self.run_cli(["show", "--loop", "widgets", "--json"], form)
+        rows = {row["name"]: row for row in json.loads(out)["settings"]}
+        self.assertIn("not applied", rows["reviewer_app_id"]["note"])
+
     def test_every_loop_key_is_shown(self):
         rows = self.rows()
         covered = {n.split(".")[0] for n in rows}
