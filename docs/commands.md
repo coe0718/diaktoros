@@ -1130,7 +1130,10 @@ whose clock is) is not counted as recent, since it would stay "fresh" long after
 nothing else there, the warning says so. `hermes dk backup` names any such archive it finds there
 and records it in `$HERMES_HOME/backups/.future-dated.json` (#1905), so it is still not counted once
 the real clock reaches its date; one that no `backup` run saw while it was ahead cannot be told from
-a recent archive. A backup covers the whole install, so every loop's report
+a recent archive. If that record is damaged (not the JSON it writes), `doctor` reads `unknown` and
+`backup` warns and leaves it unchanged, rather than forgetting what it named; overlapping `backup`
+runs update it while holding a `flock` on the `backups` directory itself, which serializes them
+only where the filesystem supports `flock`. A backup covers the whole install, so every loop's report
 carries the same line, and `--offline` does
 not skip it (it reads only local files).
 

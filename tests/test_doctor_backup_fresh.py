@@ -326,6 +326,93 @@ class FutureDatedRecorded(Base):
         self.assertNotEqual(newest[0].name, backup.FUTURE_RECORD)
         self.assertEqual(ahead[0].name, "future.tar.gz")
 
+    # -- #2446 review: overlapping backups (F1), a damaged record (F2), a failed write (F3) --
+
+    def test_overlapping_backups_keep_each_others_entries(self):
+        """F1: run A scans before b.tar.gz arrives, run B records a and b, then A writes. Without
+        one lock over scan/read/write, A's stale write drops b, and doctor later trusts it."""
+        import threading
+        a = self.archive("a.tar.gz", age_days=-3650)
+        scanned, go = threading.Event(), threading.Event()
+        real = backup._archives
+        first = threading.Lock()
+
+        def archives():
+            found = real()
+            if first.acquire(blocking=False):        # run A only: pause after its scan
+                scanned.set()
+                go.wait(5)
+            return found
+
+        results = {}
+        with mock.patch.object(backup, "_archives", archives):
+            run_a = threading.Thread(target=lambda: results.setdefault(
+                "a", backup.record_future_dated()))
+            run_a.start()
+            self.assertTrue(scanned.wait(5))
+            b = self.archive("b.tar.gz", age_days=-3649)      # arrives after A's scan
+            run_b = threading.Thread(target=lambda: results.setdefault(
+                "b", backup.record_future_dated()))
+            run_b.start()
+            run_b.join(0.5)          # without the lock B finishes here, before A writes
+            go.set()
+            run_a.join(5)
+            run_b.join(5)
+        recorded = json.loads((self.dir / backup.FUTURE_RECORD).read_text())
+        self.assertEqual(sorted(recorded), ["a.tar.gz", "b.tar.gz"], results)
+        self.assertEqual(recorded["b.tar.gz"], b.stat().st_mtime)
+        check = self.at(b.stat().st_mtime)       # the clock reaches b: still not a recent backup
+        self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
+        self.assertIn(a.name, check.detail)
+
+    def damage(self, content: bytes) -> pathlib.Path:
+        future = self.archive("future.tar.gz", age_days=-3650)
+        self.run_backup()
+        for path in self.dir.glob("diaktoros-backup-*.tar.gz"):
+            path.unlink()               # only the future-dated file is left
+        (self.dir / backup.FUTURE_RECORD).write_bytes(content)
+        return future
+
+    def test_a_damaged_record_is_never_read_as_empty(self):
+        """F2: malformed JSON, non-UTF-8 bytes and a wrong shape each leave ``doctor`` unknown
+        through ``check_loop`` once the clock reaches the archive, and ``backup`` warns, still
+        succeeds, and leaves the record's bytes as they were."""
+        for content in (b"{not json", b"\xff\xfe\x00garbage", b"[1, 2]",
+                        b'{"future.tar.gz": "soon"}'):
+            with self.subTest(content=content):
+                future = self.damage(content)
+                with mock.patch.object(backup_checks.time, "time",
+                                       return_value=future.stat().st_mtime):
+                    found = [c for c in doctor.check_loop(_loop(), offline=True)
+                             if c.name == "backup:fresh"]
+                self.assertEqual(found[0].status, doctor.UNKNOWN, found[0].detail)
+                self.assertIn("is damaged", found[0].detail)
+                self.assertNotIn("(within", found[0].detail)
+                text = self.run_backup()             # asserts exit 0
+                self.assertIn("is damaged", text)
+                self.assertIn("left unchanged", text)
+                self.assertEqual((self.dir / backup.FUTURE_RECORD).read_bytes(), content)
+
+    def test_a_record_that_cannot_be_written_warns_and_the_backup_succeeds(self):
+        """F3: the record's write fails; ``cmd_backup`` exits 0, says so, and the archive is whole."""
+        self.archive("future.tar.gz", age_days=-3650)
+        real = backup.util.atomic_write
+
+        def refuse(path, *a, **kw):
+            if pathlib.Path(path).name == backup.FUTURE_RECORD:
+                raise OSError(28, "No space left on device")
+            return real(path, *a, **kw)
+
+        with mock.patch.object(backup.util, "atomic_write", refuse):
+            text = self.run_backup()                 # asserts exit 0
+        self.assertIn("warning: could not record future-dated archives", text)
+        self.assertIn("No space left on device", text)
+        self.assertFalse((self.dir / backup.FUTURE_RECORD).exists())
+        written = [p for p in self.dir.glob("diaktoros-backup-*.tar.gz")]
+        self.assertEqual(len(written), 1)
+        read, problems = backup.verify(written[0])
+        self.assertEqual(problems, [])
+
 
 if __name__ == "__main__":
     unittest.main()

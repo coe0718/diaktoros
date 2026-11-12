@@ -43,6 +43,7 @@ recorded.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import gzip
 import io
 import importlib
@@ -107,7 +108,8 @@ def latest_archive(now: float | None = None) -> tuple[tuple[pathlib.Path, float]
     operator's ``--out`` into this directory counts as much as a default name. The file is not
     opened, so this says a recent archive *exists*, not that it would restore. A directory that
     does not exist is "none"; one that cannot be read raises ``OSError`` — the caller says so
-    rather than reporting a backup that may be there as missing.
+    rather than reporting a backup that may be there as missing. So does a damaged
+    ``FUTURE_RECORD`` (``FutureRecordError``, an ``OSError``): it is never read as empty.
     """
     limit = (time.time() if now is None else now) + CLOCK_SKEW_S
     try:
@@ -151,16 +153,47 @@ def _future_record_path() -> pathlib.Path:
     return backups_dir() / FUTURE_RECORD
 
 
+class FutureRecordError(OSError):
+    """``FUTURE_RECORD`` exists but is not the record ``record_future_dated`` writes (not UTF-8,
+    not JSON, or not ``{name: mtime}``). An ``OSError``, so every caller that already stops on an
+    unreadable backups directory stops on it too. The archives it named can no longer be told
+    apart (#1905 review F2), so it is never read as "nothing recorded" and never overwritten."""
+
+
 def _read_future_record() -> dict[str, float]:
-    """``{archive name: mtime}`` from the record; empty when there is none or it does not parse.
-    A record that exists but cannot be read raises ``OSError``, as an unreadable directory does."""
+    """``{archive name: mtime}`` from the record; empty only when there is no record. A record
+    that cannot be read raises ``OSError``, as an unreadable directory does, and one that does not
+    parse raises ``FutureRecordError``: reading it as empty would let every archive it named count
+    as recent once the clock reaches its date (#1905 review F2)."""
+    path = _future_record_path()
     try:
-        data = json.loads(_future_record_path().read_text())
-    except (FileNotFoundError, ValueError):
+        data = json.loads(path.read_bytes().decode("utf-8"))
+    except FileNotFoundError:
         return {}
-    if not isinstance(data, dict):
-        return {}
-    return {str(k): float(v) for k, v in data.items() if isinstance(v, (int, float))}
+    except ValueError as exc:       # UnicodeDecodeError and JSONDecodeError are both ValueErrors
+        raise FutureRecordError(f"{path} is damaged ({exc})") from exc
+    if not isinstance(data, dict) or not all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) for v in data.values()):
+        raise FutureRecordError(f"{path} is damaged (not an {{archive name: mtime}} object)")
+    return {str(k): float(v) for k, v in data.items()}
+
+
+@contextlib.contextmanager
+def _future_record_locked():
+    """Hold an exclusive ``flock`` on ``backups_dir()`` itself while the caller scans, reads and
+    rewrites ``FUTURE_RECORD``, so two overlapping backups never both start from the old record
+    and the later writer drops the other's entries (#1905 review F1). The directory, not a lock
+    file beside the record: that would be one more file in the directory every listing sees.
+    Raises ``FileNotFoundError`` when the directory does not exist. On a filesystem without
+    ``flock`` the lock does not take (as with ``util.hold_temp``) and overlapping runs are not
+    serialized."""
+    fd = os.open(backups_dir(), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)        # closing the descriptor releases the flock
 
 
 def record_future_dated(now: float | None = None) -> list[pathlib.Path]:
@@ -174,18 +207,24 @@ def record_future_dated(now: float | None = None) -> list[pathlib.Path]:
     anyway, records the file's name with its mtime, and ``latest_archive`` never counts a recorded
     archive whose mtime is unchanged. Entries whose file is gone or was rewritten (another mtime)
     are dropped. Only ``hermes dk backup`` calls this, so an archive that arrives and is caught up
-    with between two backups (or with no backup run in between) is never seen, and not recorded."""
+    with between two backups (or with no backup run in between) is never seen, and not recorded.
+
+    The scan, the read and the write happen under one lock (``_future_record_locked``), so a run
+    that overlaps another starts from the record as the other left it (review F1). A damaged
+    record raises ``FutureRecordError`` and is left as it is: rewriting it would forget what it
+    named (review F2)."""
     limit = (time.time() if now is None else now) + CLOCK_SKEW_S
-    try:
-        current = dict((p.name, m) for p, m in _archives())
-    except FileNotFoundError:
+    if not backups_dir().is_dir():
         return []
-    old = _read_future_record()
-    kept = {name: m for name, m in old.items() if current.get(name) == m}
-    added = [name for name, m in sorted(current.items()) if m > limit and kept.get(name) != m]
-    kept.update({name: current[name] for name in added})
-    if kept != old:
-        util.atomic_write(_future_record_path(), json.dumps(kept, indent=1, sort_keys=True))
+    with _future_record_locked():
+        current = dict((p.name, m) for p, m in _archives())
+        old = _read_future_record()
+        kept = {name: m for name, m in old.items() if current.get(name) == m}
+        added = [name for name, m in sorted(current.items())
+                 if m > limit and kept.get(name) != m]
+        kept.update({name: current[name] for name in added})
+        if kept != old:
+            util.atomic_write(_future_record_path(), json.dumps(kept, indent=1, sort_keys=True))
     return [backups_dir() / name for name in added]
 
 

@@ -42,6 +42,13 @@ def check_backup_fresh() -> doctor.Check:
     now = time.time()
     try:
         newest, ahead = backup.latest_archive(now)
+    except backup.FutureRecordError as exc:     # #1905 review F2: never read as "none recorded"
+        return doctor.Check(name, doctor.UNKNOWN,
+                            f"{exc}, so which archives in {where} were dated in the future cannot "
+                            f"be told and a recent backup cannot be confirmed",
+                            f"repair {backup.FUTURE_RECORD} as a JSON {{archive name: mtime}} "
+                            f"object, or remove it (the archives it named then count by their "
+                            f"date), and run `{command}`")
     except OSError as exc:
         return doctor.Check(name, doctor.UNKNOWN,
                             f"cannot read {where} ({exc}), so a recent backup cannot be confirmed",

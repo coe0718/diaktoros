@@ -571,6 +571,10 @@ def _record_future_dated(backup) -> None:
     date. A record that cannot be written is said, never a failed backup: the archive is whole."""
     try:
         found = backup.record_future_dated()
+    except backup.FutureRecordError as exc:     # left as it is: rewriting it forgets what it named
+        print(f"warning: {exc}; it was left unchanged and archives were not checked for a future "
+              f"date. doctor's backup:fresh reads unknown until it is repaired or removed")
+        return
     except OSError as exc:
         print(f"warning: could not record future-dated archives in {backup.backups_dir()} "
               f"({exc}); doctor may later count one as a recent backup")
