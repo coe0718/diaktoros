@@ -1220,7 +1220,7 @@ class Restore(Base):
         self.wipe()
         key.unlink()
         code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=False)
-        notice = (f"restore: NOT FINISHED — credential file missing: one: credential file for "
+        notice = (f"restore: NOT FINISHED — credential file problem: one: credential file for "
                   f"acme-reader[bot] ({key}): ")
         self.assertIn(notice, text)
         self.assertNotIn("token file missing", text)
@@ -1231,6 +1231,20 @@ class Restore(Base):
         self.assertEqual(config.all_loops()[0]["apps"]["acme-reader[bot]"]["key_file"], str(key))
         code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=True, force=False)
         self.assertIn(notice, text)
+
+    def test_restore_does_not_call_an_existing_unsafe_key_missing(self):
+        """A key that exists but group/other can read is a problem, not a missing file (#1904)."""
+        key = self.app_loop()
+        out = self.take()
+        self.wipe()
+        key.chmod(0o644)
+        code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=False)
+        self.assertEqual(code, 1, text)
+        self.assertTrue(key.exists())
+        self.assertIn(f"restore: NOT FINISHED — credential file problem: one: credential file for "
+                      f"acme-reader[bot] ({key}): ", text)
+        self.assertIn("mode 644", text)
+        self.assertNotIn("missing", text)
 
     def test_restore_checks_credential_files_before_writing_but_never_refuses_on_them(self):
         """What ``backup.token_paths`` says: ``missing_tokens`` runs before ``put_files`` and finds
