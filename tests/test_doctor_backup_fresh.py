@@ -374,11 +374,16 @@ class FutureDatedRecorded(Base):
         return future
 
     def test_a_damaged_record_is_never_read_as_empty(self):
-        """F2: malformed JSON, non-UTF-8 bytes and a wrong shape each leave ``doctor`` unknown
+        """F2: malformed JSON, non-UTF-8 bytes, a wrong shape and (round 2) a NaN, infinite or
+        too-large mtime each leave ``doctor`` unknown
         through ``check_loop`` once the clock reaches the archive, and ``backup`` warns, still
         succeeds, and leaves the record's bytes as they were."""
         for content in (b"{not json", b"\xff\xfe\x00garbage", b"[1, 2]",
-                        b'{"future.tar.gz": "soon"}'):
+                        b'{"future.tar.gz": "soon"}',
+                        # Round 2 F2: numbers the JSON decoder accepts that are no mtime.
+                        b'{"future.tar.gz": NaN}', b'{"future.tar.gz": Infinity}',
+                        b'{"future.tar.gz": -Infinity}', b'{"future.tar.gz": 1e400}',
+                        b'{"future.tar.gz": ' + b"9" * 400 + b"}"):
             with self.subTest(content=content):
                 future = self.damage(content)
                 with mock.patch.object(backup_checks.time, "time",

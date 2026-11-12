@@ -48,6 +48,7 @@ import gzip
 import io
 import importlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -172,10 +173,28 @@ def _read_future_record() -> dict[str, float]:
         return {}
     except ValueError as exc:       # UnicodeDecodeError and JSONDecodeError are both ValueErrors
         raise FutureRecordError(f"{path} is damaged ({exc})") from exc
-    if not isinstance(data, dict) or not all(
-            isinstance(v, (int, float)) and not isinstance(v, bool) for v in data.values()):
+    if not isinstance(data, dict):
         raise FutureRecordError(f"{path} is damaged (not an {{archive name: mtime}} object)")
-    return {str(k): float(v) for k, v in data.items()}
+    return {str(name): _recorded_mtime(path, name, value) for name, value in data.items()}
+
+
+def _recorded_mtime(path: pathlib.Path, name: str, value: object) -> float:
+    """One entry of the record at ``path`` as a finite float mtime, or ``FutureRecordError``.
+
+    The JSON decoder accepts ``NaN`` and ``Infinity``, which never equal an archive's mtime (so the
+    archive would count as recent once the clock reaches it, and the next backup would drop the
+    entry), and integers too large for a float, whose conversion raises ``OverflowError``. Each is
+    a damaged record, never skipped and never a crash (#2446 review round 2, F2)."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise FutureRecordError(f"{path} is damaged (not an {{archive name: mtime}} object)")
+    try:
+        mtime = float(value)
+    except OverflowError:
+        mtime = math.inf
+    if not math.isfinite(mtime):
+        raise FutureRecordError(f"{path} is damaged (the mtime of {name!r} is not a finite "
+                                f"number)")
+    return mtime
 
 
 @contextlib.contextmanager
