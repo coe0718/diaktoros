@@ -636,7 +636,7 @@ def _with_retry(db, repo: str, runs: list[dict], loop: dict) -> list[dict]:
     so the page shows no button rather than a button that would fail.
     """
     def without(reason: str) -> list[dict]:
-        return [dict(run, retry={"eligible": False, "head": "", "reason": reason})
+        return [dict(run, retry={"eligible": False, "head": "", "reason": reason, "target": "head"})
                 for run in runs]
     out = without("no run ledger to read")
     if not runs:
@@ -657,14 +657,15 @@ def _with_retry(db, repo: str, runs: list[dict], loop: dict) -> list[dict]:
         if not run["head"]:
             # A withheld head (``stats.recorded_head``) is not an identity to join on: every
             # malformed row would share '', and a retry could not be confirmed against it.
-            run["retry"] = {"eligible": False, "head": "",
+            run["retry"] = {"eligible": False, "head": "", "target": "head",
                             "reason": "the recorded head is not a valid commit id; no retry offered"}
             continue
         entry = found.get((run["pr"], run["seat"], run["head"], run["state"]))
         if entry is not None:
             run["retry"] = {"eligible": bool(entry["eligible"]),
                             "head": str(entry["head"] or ""),
-                            "reason": _bounded(entry["reason"])}
+                            "reason": _bounded(entry["reason"]),
+                            "target": "issue" if entry.get("target") == "issue" else "head"}
     return out
 
 
@@ -685,11 +686,11 @@ def retry_view(loop_id: str | None, pr: int, seat: str, head: str | None = None)
     seat = str(seat or "")
     if seat not in retry_action.SEATS:
         raise BadRequest("seat must be one of " + ", ".join(retry_action.SEATS))
-    head = str(head or "").strip().lower()
-    if not head:
-        raise BadRequest("head is required: the retry re-arms the head the operator confirmed")
-    if len(head) < 7 or len(head) > 40 or any(c not in "0123456789abcdef" for c in head):
-        raise BadRequest("head must be a commit SHA (7 to 40 hex characters)")
+    try:
+        # A commit SHA, or an issue seat's ``config.TRIAGE_HEAD`` (#1696): the shared owner's rule.
+        head = retry_action.confirmation(seat, head)
+    except ValueError as exc:
+        raise BadRequest(str(exc)) from None
     loop = _loop(loop_id)
     ledger = run_supervisor.production_ledger()
     result = retry_action.perform(loop, pr, seat, ledger=ledger, confirm_head=head or None)
@@ -724,8 +725,9 @@ def _runs_after(db, repo: str, pr: int) -> list[dict]:
             con.close()
     except Exception:
         return []
-    return [{"seat": row["seat"], "head7": str(row["head"] or "")[:7], "state": row["state"]}
-            for row in rows]
+    # The same display rule as ``/now``: a malformed recorded head is withheld, never cut (#1696).
+    return [{"seat": row["seat"], "head7": stats.run_head(row["seat"], row["head"]),
+             "state": row["state"]} for row in rows]
 
 
 def overview_view() -> dict:
@@ -893,7 +895,7 @@ def _findings(loop: dict, pr: int) -> list[dict]:
                     # The host's own ``findings.lines`` strips the separator the reviewer
                     # writes after the id, so the same text reads the same in both places.
                     "text": str(item.get("text") or "").lstrip(" :")[:300],
-                    "head": str(item.get("head") or "")[:7],
+                    "head": stats.recorded_head(item.get("head")),
                     "at": float(at) if isinstance(at, (int, float)) else None,
                     "missed": bool(item.get("missed"))})
     out.sort(key=lambda item: int(item["id"][1:]) if item["id"][1:].isdigit() else 0)
@@ -919,7 +921,7 @@ def _breach(loop: dict, pr: int) -> dict | None:
         return None
     if not isinstance(marker, dict) or not marker:
         return None
-    return {"head": str(marker.get("head") or "")[:7], "status": str(marker.get("status") or ""),
+    return {"head": stats.recorded_head(marker.get("head")), "status": str(marker.get("status") or ""),
             "rounds": marker.get("rounds")}
 
 

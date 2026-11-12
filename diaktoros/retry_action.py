@@ -22,6 +22,7 @@ Nothing here merges, escalates or drains a PR; nothing here reads a token or pos
 """
 from __future__ import annotations
 
+import re
 import time
 
 from . import config, gate, pacing, scope_lock, stats
@@ -55,6 +56,44 @@ def offered(row: dict) -> bool:
     return row["state"] in ("failed", "waiting", "uncertain") or (
         row["state"] == "cancelled" and (policy_cancelled(row["error"])
                                          or operator_cancelled(row["error"])))
+
+
+def identity(seat: str, head) -> str:
+    """The full identity a page's Retry for this row is confirmed against, or ``''`` for none.
+
+    A well-formed recorded head is its own identity. An issue seat's run is recorded at
+    ``config.TRIAGE_HEAD`` (it works on an issue, not a commit), and that exact word is its
+    identity — on an issue seat only (#1696). Anything else is withheld (``stats.run_head``, the
+    one display rule), so it is never a join key or a confirmation.
+    """
+    return str(head) if stats.run_head(seat, head) else ""
+
+
+def confirmation(seat: str, head) -> str:
+    """The head a page posted as its confirmation, normalised; ``ValueError`` when it is none.
+
+    A commit SHA (7 to 40 hex characters) for any seat, or exactly ``config.TRIAGE_HEAD`` for an
+    issue seat (#1696) — never a free-form head. Which run it binds is ``perform``'s decision.
+    """
+    head = str(head or "").strip().lower()
+    if not head:
+        raise ValueError("head is required: the retry re-arms the head the operator confirmed")
+    if seat in ISSUE_SEATS and head == config.TRIAGE_HEAD:
+        return head
+    if not re.fullmatch(r"[0-9a-f]{7,40}", head):
+        raise ValueError("head must be a commit SHA (7 to 40 hex characters)"
+                         + (f", or {config.TRIAGE_HEAD!r} for an issue seat"
+                            if seat in ISSUE_SEATS else ""))
+    return head
+
+
+def confirms(head: str, confirmed) -> bool:
+    """Whether the head a retry would re-arm is the one the operator confirmed: a SHA prefix of
+    it, or — for an issue seat's run — exactly ``config.TRIAGE_HEAD``, never a prefix of it."""
+    confirmed = str(confirmed).strip().lower()
+    if confirmed == config.TRIAGE_HEAD:
+        return head == config.TRIAGE_HEAD
+    return head.startswith(confirmed)
 
 
 def rows_for(con, repo: str, pr: int, seat: str | None = None) -> list[dict]:
@@ -157,15 +196,19 @@ def page_targets(con, repo: str, loop: dict | None = None) -> dict:
         # one verdict for every offered row at the head, from the same function.
         closed = (closed_refusal(loop, pr, [row for row in offerable_rows if row["head"] == head],
                                  listing) if loop is not None else "")
-        # The target is shown only when it is a well-formed recorded head (``stats.recorded_head``,
-        # the one rule): a malformed ledger value never reaches the page as ``head`` or in a reason.
-        shown = head if stats.recorded_head(head) else ""
+        # The target is shown only when it is an identity (``identity``: a well-formed recorded
+        # head, or an issue seat's ``config.TRIAGE_HEAD``): a malformed ledger value never
+        # reaches the page as ``head`` or in a reason.
+        shown = identity(seat, head)
         for row in group:
-            if not stats.recorded_head(row["head"]):
+            if not identity(seat, row["head"]):
                 # No entry: a withheld head is not an identity, so it must never be a join key
                 # (every malformed row would collide on ''); ``desktop_api._with_retry`` words it.
                 continue
-            entry = {"eligible": False, "head": shown, "reason": ""}
+            # ``target`` says what the identity names, so the page labels an issue seat's run
+            # "issue #N" instead of showing a head it does not have (#1696).
+            entry = {"eligible": False, "head": shown, "reason": "",
+                     "target": "issue" if row["head"] == config.TRIAGE_HEAD else "head"}
             if row["head"] != head:
                 entry["reason"] = ("not the newest run for this PR: retry targets "
                                    + (shown[:7] if shown else "a run whose recorded head is withheld"))
@@ -181,7 +224,7 @@ def page_targets(con, repo: str, loop: dict | None = None) -> dict:
                     entry["eligible"] = True
                 else:
                     entry["reason"] = bounded(wrote)
-            key = (row["pr"], row["seat"], str(row["head"] or "")[:7], row["state"])
+            key = (row["pr"], row["seat"], stats.run_head(seat, row["head"]), row["state"])
             if key not in out or (entry["eligible"] and not out[key]["eligible"]):
                 out[key] = entry
     return out
@@ -258,7 +301,7 @@ def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confir
         return out
     # A confirmation is about one run at one head. If that head has moved, refuse rather than
     # silently re-arm whatever is newest now (#371).
-    if confirm_head and not found["head"].startswith(str(confirm_head).strip().lower()):
+    if confirm_head and not confirms(found["head"], confirm_head):
         out["message"] = (f"[{loop['id']}] #{pr}: refused: the run's head moved since you "
                           f"confirmed {str(confirm_head)[:7]} (it is {found['head7']} now) — "
                           "nothing was re-armed; check the row and retry")
@@ -353,6 +396,14 @@ def clear_hold(loop: dict, seat: str, *, ledger=None) -> dict:
     return out
 
 
+def _label(entry: dict, pr: int) -> str:
+    """The page's name for one retried run: ``seat #pr @ head7``, or ``seat on issue #N`` for an
+    issue seat's run, which has no head to name (#1696)."""
+    if entry.get("head") == config.TRIAGE_HEAD:
+        return f"{entry['seat']} on issue #{pr}"
+    return f"{entry['seat']} #{pr} @ {entry['head7']}"
+
+
 def answer(result: dict) -> str:
     """The page's one-line answer about a retry: re-armed, or why not — the host's own words.
 
@@ -360,7 +411,7 @@ def answer(result: dict) -> str:
     (that is ``reveal_errors``' territory, for a terminal).
     """
     if result.get("rearmed"):
-        lines = [f"{entry['seat']} #{result['pr']} @ {entry['head7']} re-armed (was {entry['state']})"
+        lines = [f"{_label(entry, result['pr'])} re-armed (was {entry['state']})"
                  for entry in result["rearmed"]]
         if result.get("refused"):
             lines.append(f"{len(result['refused'])} refused: " + result["refused"][0]["reason"])
@@ -369,6 +420,5 @@ def answer(result: dict) -> str:
         return bounded(" · ".join(lines))
     if result.get("refused"):
         entry = result["refused"][0]
-        return bounded(f"{entry['seat']} #{result['pr']} @ {entry['head7']} "
-                        f"{entry['state']}: {entry['reason']}")
+        return bounded(f"{_label(entry, result['pr'])} {entry['state']}: {entry['reason']}")
     return bounded(result.get("message") or "nothing to retry")

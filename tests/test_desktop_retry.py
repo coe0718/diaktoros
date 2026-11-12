@@ -29,6 +29,7 @@ from diaktoros.run_supervisor import FIXER_NOT_ADMITTED, Supervisor
 REPO = "acme/widgets"
 HEAD = "a" * 40
 OTHER = "b" * 40
+MALFORMED = "ghp_" + "SECRETxxxx"         # a corrupt ledger head: never shown, not even cut
 SECRET = "upstream HTTP 401 Bearer ghp_realtokenvalue /home/someone/.pat exploded"
 
 
@@ -116,7 +117,7 @@ class NowCarriesTheBackendVerdict(Fixture):
     def test_a_failed_pre_write_run_is_retryable_with_the_full_head(self):
         row = self.row("failed", error="retry limit (4 attempts): turn exited with status 3")
         [run] = self.now()["runs"]
-        self.assertEqual(run["retry"], {"eligible": True, "head": HEAD, "reason": ""})
+        self.assertEqual(run["retry"], {"eligible": True, "head": HEAD, "reason": "", "target": "head"})
         self.assertEqual(run["head"], HEAD[:7])
         self.assertEqual(run["state"], "failed")
         self.assertNotIn("exploded", json.dumps(self.now()))   # a run's error text never reaches it
@@ -588,6 +589,146 @@ class ScopeLock(Fixture):
             self.retry(seat="fixer", head=HEAD)          # the newest head is OTHER now
         self.assertFalse(st.scope_holds()[356]["released"])
         self.assertEqual(self.rows()["fixer"]["state"], "failed")
+
+
+class IssueSeatRetry(Fixture):
+    """#1696: a triage run is recorded at ``config.TRIAGE_HEAD``, not a commit. The page offers
+    its retry bound to that identity, on issue seats only, by ``retry_action``'s own rules."""
+
+    def test_a_failed_triage_run_is_offered_and_retried_bound_to_its_issue(self):
+        row = self.row("failed", seat="triage", pr=12, head=config.TRIAGE_HEAD,
+                       error="turn exited with status 3")
+        [run] = self.now()["runs"]
+        self.assertEqual(run["head"], config.TRIAGE_HEAD)
+        self.assertEqual(run["retry"], {"eligible": True, "head": config.TRIAGE_HEAD, "reason": "",
+                                        "target": "issue"})
+        view = self.retry(pr=12, seat="triage", head=config.TRIAGE_HEAD)
+        self.assertEqual(self.state_of(row["id"])["state"], "pending")
+        self.assertIn("triage on issue #12 re-armed (was failed)", view["answer"])
+        self.assertNotIn("@ issue", view["answer"])
+        self.assertEqual(view["runs"], [{"seat": "triage", "head7": config.TRIAGE_HEAD,
+                                         "state": "pending"}])
+
+    def test_the_page_offers_exactly_what_the_shared_plan_would_re_arm(self):
+        # No second rulebook: the button is page_targets', which is plan's verdict per row.
+        for n, state in enumerate(("failed", "uncertain", "running", "waiting"), start=20):
+            self.row(state, seat="triage", pr=n, head=config.TRIAGE_HEAD)
+        con = views.read_only_connect(self.db)
+        try:
+            offered = {n: bool(retry_action.plan(con, REPO, n, "triage")["rearmable"])
+                       for n in range(20, 24)}
+        finally:
+            con.close()
+        shown = {run["pr"]: run["retry"]["eligible"] for run in self.now()["runs"]}
+        self.assertEqual(shown, offered)
+        self.assertEqual(shown, {20: True, 21: False, 22: False, 23: True})
+
+    def test_an_issue_identity_is_exact_and_never_a_prefix(self):
+        # A triage row whose head is not exactly the word is malformed: withheld, and the word
+        # does not confirm it (a prefix match would re-arm a corrupt row).
+        row = self.row("failed", seat="triage", pr=12, head=config.TRIAGE_HEAD)
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET head=? WHERE id=?", (config.TRIAGE_HEAD + "0", row["id"]))
+        [run] = self.now()["runs"]
+        self.assertEqual(run["head"], "")
+        self.assertFalse(run["retry"]["eligible"])
+        with self.assertRaisesRegex(desktop_api.Conflict, "head moved"):
+            self.retry(pr=12, seat="triage", head=config.TRIAGE_HEAD)
+        self.assertEqual(self.state_of(row["id"])["state"], "failed")
+        # An issue fix is recorded at its base commit: the word does not confirm it either.
+        fix = self.row("failed", seat="issue_fixer", pr=13, head=HEAD)
+        with self.assertRaisesRegex(desktop_api.Conflict, "head moved"):
+            self.retry(pr=13, seat="issue_fixer", head=config.TRIAGE_HEAD)
+        self.assertEqual(self.state_of(fix["id"])["state"], "failed")
+        for head in ("issues", "issu", "triage", MALFORMED):
+            with self.subTest(head=head), self.assertRaises(desktop_api.BadRequest):
+                self.retry(pr=12, seat="triage", head=head)
+
+    def test_the_word_never_confirms_a_pr_seat_and_a_malformed_head_is_still_refused(self):
+        self.row("failed")                                   # a reviewer run at a real head
+        with self.assertRaises(desktop_api.BadRequest):
+            self.retry(head=config.TRIAGE_HEAD)
+        # A PR seat's row recorded at the word itself is a malformed head: no button, no retry.
+        bad = self.row("failed", seat="fixer", head=HEAD)
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET head=? WHERE id=?", (config.TRIAGE_HEAD, bad["id"]))
+        fixer = self.rows()["fixer"]
+        self.assertEqual(fixer["head"], "")
+        self.assertFalse(fixer["retry"]["eligible"])
+        self.assertIn("not a valid commit id", fixer["retry"]["reason"])
+        with self.assertRaises(desktop_api.BadRequest):
+            self.retry(seat="fixer", head=config.TRIAGE_HEAD)
+        self.assertEqual(self.state_of(bad["id"])["state"], "failed")
+
+
+class MalformedHeadsAreWithheld(Fixture):
+    """#1696: every Desktop-reachable display of a recorded head goes through the one rule
+    (``stats.recorded_head``): a corrupt ledger or state value is withheld, never cut to 7."""
+
+    def corrupt(self, run_id):
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET head=? WHERE id=?", (MALFORMED, run_id))
+
+    def assertWithheld(self, payload):
+        text = json.dumps(payload)
+        self.assertNotIn(MALFORMED[:7], text)
+        self.assertNotIn("SECRET", text)
+
+    def test_the_retry_read_back_withholds_a_malformed_head(self):
+        self.row("failed")
+        other = self.row("succeeded", seat="fixer")
+        self.corrupt(other["id"])
+        view = self.retry()
+        self.assertWithheld(view)
+        self.assertIn({"seat": "fixer", "head7": "", "state": "succeeded"}, view["runs"])
+        self.assertWithheld(desktop_api._runs_after(self.db, REPO, 356))
+
+    def test_regressions_and_overrides_withhold_a_malformed_head(self):
+        from diaktoros import stats
+        self.row("succeeded")
+        now = time.time()
+        with ledger.connect(self.db) as con:
+            con.execute("INSERT INTO regressions(repo,issue,pr,head,review_id,model,state,created,"
+                        "updated) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (REPO, 7, 356, MALFORMED, 1, "m", "linked", now, now))
+            con.execute("INSERT INTO overrides(repo,pr,head,kind,seat,model,review_id,findings,"
+                        "merged_at,created) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (REPO, 356, MALFORMED, "merged_over_changes", "reviewer", "m", 1, "[]",
+                         now, now))
+        broke = stats.regressions(self.db, REPO, now - 10, now + 10)
+        over = stats.overrides(self.db, REPO, now - 10, now + 10)
+        self.assertEqual(broke["links"][0]["head"], "")
+        self.assertEqual(over["cases"][0]["head"], "")
+        self.assertWithheld([broke, over])
+
+    def test_shadow_reviews_withhold_a_malformed_head_in_pr(self):
+        shadow = self.row("succeeded", seat="shadow")
+        with ledger.connect(self.db) as con:
+            con.execute("INSERT INTO shadow_reviews(run_id,repo,pr,head,model,verdict,body,"
+                        "authorized,created) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (shadow["id"], REPO, 356, MALFORMED, "m", "APPROVE", "", 0, time.time()))
+        view = desktop_api.pr_view("widgets", 356)
+        self.assertEqual([item["head"] for item in view["shadows"]], [""])
+        self.assertWithheld(view)
+
+    def test_findings_and_the_cap_marker_withhold_a_malformed_head_in_pr(self):
+        from diaktoros import state as state_mod
+        self.row("failed")
+        st = state_mod.state_for(self.loop)
+        st.findings_put(356, {"findings": {"F1": {"state": "open", "text": "x", "head": MALFORMED,
+                                                  "at": 1.0}}})
+        st.breach_set(356, {"head": MALFORMED, "status": "escalated", "rounds": 3})
+        view = desktop_api.pr_view("widgets", 356)
+        self.assertEqual([item["head"] for item in view["findings"]], [""])
+        self.assertEqual(view["breach"]["head"], "")
+        self.assertWithheld(view)
+
+    def test_the_stats_cache_turns_withhold_a_malformed_head(self):
+        row = self.row("succeeded", tokens_in=100, cache_read=10, created=time.time())
+        self.corrupt(row["id"])
+        view = desktop_api.stats_view("widgets", "7d")
+        self.assertEqual([turn["head"] for turn in view["cache_turns"]], [""])
+        self.assertWithheld(view)
 
 
 class MalformedSelection(Fixture):
