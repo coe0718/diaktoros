@@ -1,4 +1,4 @@
-"""tests/affected.py: the tests that depend on a change, for a fixer turn (#362).
+"""tools/affected_tests.py (``python3 tests/affected.py``): the tests that depend on a change, for a fixer turn (#362).
 
 Each case is one of this week's red CIs: the change, and the test elsewhere that broke.
 """
@@ -12,8 +12,11 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import affected  # noqa: E402
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+# The selector itself, from tools/ (#1973): the host's base proof copies tests/ from the head, so
+# a test of a selector under tests/ would test the head's selector on the base too.
+sys.path.insert(0, str(ROOT / "tools"))
+import affected_tests as affected  # noqa: E402
 
 
 class Select(unittest.TestCase):
@@ -58,6 +61,20 @@ class Select(unittest.TestCase):
         self.assertIn("test_desktop", selected)
         self.assertNotIn("test_stats", selected)
         self.assertEqual(selected[-1], "run_tests")
+
+    def test_a_base_proof_tests_the_base_selector_1973(self):
+        # The selector lives off the test paths, so the host's base-failure proof
+        # (change_proof.apply_tests) runs these tests against the base's selector. It fails if
+        # the selector goes back under tests/, where it was (tests/affected.py).
+        import _base_proof
+        _base_proof.assert_taken_from_the_base(self, affected.__file__)
+
+    def test_the_command_is_still_tests_affected_py(self):
+        # The fixer_check and docs run `python3 tests/affected.py`: it stays the entry point.
+        done = subprocess.run([sys.executable, str(ROOT / "tests" / "affected.py"),
+                               "tools/js_strip.py"], capture_output=True, text=True, timeout=120)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.split(), affected.select(["tools/js_strip.py"]))
 
     def test_a_package_is_one_module(self):
         # #676: config is a package. A file in it maps to the package, its files' `from ..`

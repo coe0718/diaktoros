@@ -818,6 +818,13 @@ class Package(unittest.TestCase):
                 case.run(result)
                 self.assertFalse(result.wasSuccessful())
 
+    def test_a_base_proof_reads_plugin_js_through_the_base_stripper_1973(self):
+        # The stripper these guards use lives off the test paths, so the host's base-failure
+        # proof (change_proof.apply_tests) runs the head's guards with the base's stripper. It
+        # fails if the stripper goes back into a tests/ module, as it was in test_desktop.py.
+        import _base_proof
+        _base_proof.assert_taken_from_the_base(self, sys.modules[strip_js_comments.__module__].__file__)
+
     def test_first_render_findings_641(self):
         source = PLUGIN_JS.read_text()
         code = strip_js_comments(source)
