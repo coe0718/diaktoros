@@ -12,12 +12,10 @@ from __future__ import annotations
 
 import re
 
-from .. import doctor, gh
+from .. import doctor, gh, pr_refs
 from .operations import _one_loop
 
 PR_LIST_MAX = 20
-_SQUASH = re.compile(r"\s*\(#(\d+)\)\s*$")
-_MERGE = re.compile(r"^Merge pull request #(\d+)\b")
 _INNER_REF = re.compile(r"\s*\(#\d+\)")
 
 
@@ -25,7 +23,8 @@ def merged_prs(commits) -> list[tuple[int, str]]:
     """``(number, title)`` of each PR the commits merged, newest first. A squash or rebase merge
     names it as ``title (#N)``; a merge commit as ``Merge pull request #N`` with the title below.
     A commit that names no PR is counted as a commit only. The subject alone decides which PR a
-    commit is, so a direct push whose subject ends in ``(#N)`` counts as PR #N, issue or not. The
+    commit is (``pr_refs.pr_number``, shared with the notices), so a direct push whose subject
+    ends in ``(#N)`` counts as PR #N, issue or not. The
     shown title is the subject for a squash commit, but for a merge commit it is the first nonblank
     body line, or "" when the body has none. A ``(#N)`` inside the title (a revert of a squash
     commit) is dropped from it."""
@@ -34,15 +33,14 @@ def merged_prs(commits) -> list[tuple[int, str]]:
         message = str(((commit.get("commit") or {}).get("message")) or "")
         lines = message.splitlines()
         first = lines[0] if lines else ""
-        merge = _MERGE.match(first)
-        if merge:
-            title = next((ln.strip() for ln in lines[1:] if ln.strip()), "")
-            found.setdefault(int(merge.group(1)), _INNER_REF.sub("", title).strip())
+        number = pr_refs.pr_number(first)
+        if not number:
             continue
-        squash = _SQUASH.search(first)
-        if squash:
-            title = _INNER_REF.sub("", _SQUASH.sub("", first)).strip()
-            found.setdefault(int(squash.group(1)), title)
+        if pr_refs.MERGE.match(first):
+            title = next((ln.strip() for ln in lines[1:] if ln.strip()), "")
+        else:
+            title = pr_refs.SQUASH.sub("", first)
+        found.setdefault(number, _INNER_REF.sub("", title).strip())
     return list(found.items())
 
 

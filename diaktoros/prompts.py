@@ -298,15 +298,18 @@ What to do:
      file changed in that round, or say `missed earlier` (the stats count those against you).
      GitHub cuts a compare's file list at 300 files without saying so: when a round's list
      reaches 300, any file in the whole PR counts as changed that round, so do not label a
-     finding on a PR file `missed earlier` there. The one exception is a PR past GitHub's
-     3,000-file listing limit: only its first 3,000 files count, so a new finding on a file
-     beyond them is refused unless it says `missed earlier`; use the marker there.
+     finding on a PR file `missed earlier` there. The one exception is a round whose list
+     reaches 300 in a PR past GitHub's 3,000-file listing limit: only the PR's first 3,000
+     files count then, so a new finding on a file beyond them is refused unless it says
+     `missed earlier`; use the marker there. A round whose list stays under 300 counts its
+     own files, past 3,000 or not, so a finding on one of them needs no marker.
    - **issue** — everything else (usually P2/P3): real, but not worth another round. With only
      issue-tier findings the verdict is APPROVE. File each one yourself, before the review,
      through the broker's `file_issue` command (below): a one-line title, the finding with its
      evidence and `file:line` as the body, and labels from {issue_labels}. Each filed issue
      carries the labels the list in parentheses asks for (a type label is a listed label that
-     is not a priority, such as `bug`; priorities are `P0`–`P3`). The broker refuses a label
+     is not a priority, such as `bug`; a priority label, `P0`–`P3`, only when the list has
+     one). The broker refuses a label
      outside the list, more labels than the cap, and, when the list has a type label, an issue
      with none. List what you filed
      in the review under **Issues filed**, with the numbers the broker returned; a finding the
