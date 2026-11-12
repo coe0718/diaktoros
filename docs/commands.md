@@ -1127,7 +1127,10 @@ somewhere else, or a backup taken some other way, is not seen, and the check war
 exists. It does not open the archive, so it shows that one exists, not that it would restore. An
 archive dated more than a day in the future (a wrong clock when it was written, or a copy from a host
 whose clock is) is not counted as recent, since it would stay "fresh" long after the backup: with
-nothing else there, the warning says so. A backup covers the whole install, so every loop's report
+nothing else there, the warning says so. `hermes dk backup` names any such archive it finds there
+and records it in `$HERMES_HOME/backups/.future-dated.json` (#1905), so it is still not counted once
+the real clock reaches its date; one that no `backup` run saw while it was ahead cannot be told from
+a recent archive. A backup covers the whole install, so every loop's report
 carries the same line, and `--offline` does
 not skip it (it reads only local files).
 

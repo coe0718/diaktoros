@@ -34,7 +34,11 @@ has to pass it to get a count other than ``DEFAULT_KEEP``. An output directory s
 For the same reason ``doctor``'s ``backup:fresh`` check (#1081) warns on a fixed age,
 ``FRESH_DAYS``, and reads only ``backups_dir()``: it cannot see an archive written with ``--out``
 elsewhere, nor a backup taken some other way. It does not trust an archive dated more than
-``CLOCK_SKEW_S`` in the future, since that file would stay "fresh" long after the backup.
+``CLOCK_SKEW_S`` in the future, since that file would stay "fresh" long after the backup. Because
+that cutoff moves with the clock, ``hermes dk backup`` records each such archive it sees in
+``FUTURE_RECORD`` (``record_future_dated``, #1905) and ``doctor`` keeps a recorded one apart after
+the clock reaches its date; one that arrives and is caught up with between two backup runs is not
+recorded.
 """
 from __future__ import annotations
 
@@ -61,6 +65,7 @@ VERSION = 1
 MANIFEST = "manifest.json"
 FRESH_DAYS = 30         # doctor's backup:fresh warns when the newest archive is older than this
 CLOCK_SKEW_S = 86400    # an archive dated further ahead than this is not trusted as recent (#1875)
+FUTURE_RECORD = ".future-dated.json"   # in backups_dir(): archives `backup` saw past it (#1905)
 WARNING = ("this archive holds route secrets (webhook HMAC keys): keep it private; "
            "it was written mode 0600 and its contents are never printed")
 
@@ -89,10 +94,12 @@ def latest_archive(now: float | None = None) -> tuple[tuple[pathlib.Path, float]
     """The archives in ``backups_dir()`` as ``(newest, ahead)``, each ``(path, mtime)`` or None.
 
     ``newest`` is the most recently written archive whose mtime is not past ``now`` plus
-    ``CLOCK_SKEW_S`` (``now`` defaults to the current time). ``ahead`` is the latest-dated archive
-    that is past that: written while the host clock was wrong, or copied in from a host whose
+    ``CLOCK_SKEW_S`` (``now`` defaults to the current time) and that ``hermes dk backup`` has not
+    recorded as future-dated (``record_future_dated``). ``ahead`` is the latest-dated archive
+    that is either: written while the host clock was wrong, or copied in from a host whose
     clock is. Its age cannot be told, and trusting it would keep ``doctor`` green for as long as
-    the clock was ahead plus ``FRESH_DAYS``, however long ago the backup really was (#1875), so the
+    the clock was ahead plus ``FRESH_DAYS``, however long ago the backup really was (#1875); a
+    recorded one stays apart after the clock reaches its date (#1905). So the
     caller must not count it as a recent backup. It is returned so that an install holding nothing
     else can be told why, rather than reported as having no archive.
 
@@ -104,26 +111,82 @@ def latest_archive(now: float | None = None) -> tuple[tuple[pathlib.Path, float]
     """
     limit = (time.time() if now is None else now) + CLOCK_SKEW_S
     try:
-        entries = list(os.scandir(backups_dir()))
+        entries = _archives()
     except FileNotFoundError:
         return None, None
+    recorded = _read_future_record()
     newest: tuple[pathlib.Path, float] | None = None
     ahead: tuple[pathlib.Path, float] | None = None
-    for entry in entries:
+    for path, mtime in entries:
+        found = (path, mtime)
+        # Past the allowance now, or seen past it by an earlier ``create`` (#1905): the clock
+        # catching up with the file's date does not make that date its age.
+        if mtime > limit or recorded.get(path.name) == mtime:
+            ahead = found if ahead is None or found[1] > ahead[1] else ahead
+        elif newest is None or mtime > newest[1]:
+            newest = found
+    return newest, ahead
+
+
+def _archives() -> list[tuple[pathlib.Path, float]]:
+    """Every archive in ``backups_dir()`` as ``(path, mtime)``: a regular, non-empty, non-symlink
+    ``*.tar.gz``. Raises ``FileNotFoundError`` when the directory does not exist and ``OSError``
+    when it cannot be read; a file gone between the listing and its ``stat`` is skipped."""
+    found = []
+    for entry in os.scandir(backups_dir()):
         if not entry.name.endswith(".tar.gz") or not entry.is_file(follow_symlinks=False):
             continue
         try:
             info = entry.stat(follow_symlinks=False)
         except OSError:
             continue        # gone between the listing and now
-        if not info.st_size:
-            continue
-        found = (pathlib.Path(entry.path), info.st_mtime)
-        if info.st_mtime > limit:
-            ahead = found if ahead is None or found[1] > ahead[1] else ahead
-        elif newest is None or info.st_mtime > newest[1]:
-            newest = found
-    return newest, ahead
+        if info.st_size:
+            found.append((pathlib.Path(entry.path), info.st_mtime))
+    return found
+
+
+def _future_record_path() -> pathlib.Path:
+    """The record of archives ``hermes dk backup`` saw dated past ``CLOCK_SKEW_S`` (#1905). Not a
+    ``*.tar.gz``, so it is never taken for an archive, and not default-named, so never pruned."""
+    return backups_dir() / FUTURE_RECORD
+
+
+def _read_future_record() -> dict[str, float]:
+    """``{archive name: mtime}`` from the record; empty when there is none or it does not parse.
+    A record that exists but cannot be read raises ``OSError``, as an unreadable directory does."""
+    try:
+        data = json.loads(_future_record_path().read_text())
+    except (FileNotFoundError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): float(v) for k, v in data.items() if isinstance(v, (int, float))}
+
+
+def record_future_dated(now: float | None = None) -> list[pathlib.Path]:
+    """Record every archive in ``backups_dir()`` dated more than ``CLOCK_SKEW_S`` past ``now``
+    (#1905), and return the ones not recorded before.
+
+    ``latest_archive`` sets such a file apart only while its date is still ahead of the clock; once
+    the real clock comes within the allowance it would count as fresh for ``FRESH_DAYS`` more,
+    although no backup was made then. ``doctor`` is read-only and the archive cannot tell (its
+    manifest's ``created`` comes from the same wrong clock), so ``hermes dk backup``, which writes
+    anyway, records the file's name with its mtime, and ``latest_archive`` never counts a recorded
+    archive whose mtime is unchanged. Entries whose file is gone or was rewritten (another mtime)
+    are dropped. Only ``hermes dk backup`` calls this, so an archive that arrives and is caught up
+    with between two backups (or with no backup run in between) is never seen, and not recorded."""
+    limit = (time.time() if now is None else now) + CLOCK_SKEW_S
+    try:
+        current = dict((p.name, m) for p, m in _archives())
+    except FileNotFoundError:
+        return []
+    old = _read_future_record()
+    kept = {name: m for name, m in old.items() if current.get(name) == m}
+    added = [name for name, m in sorted(current.items()) if m > limit and kept.get(name) != m]
+    kept.update({name: current[name] for name in added})
+    if kept != old:
+        util.atomic_write(_future_record_path(), json.dumps(kept, indent=1, sort_keys=True))
+    return [backups_dir() / name for name in added]
 
 
 def _free_name(prefix: str) -> pathlib.Path:

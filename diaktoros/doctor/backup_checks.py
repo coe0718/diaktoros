@@ -13,7 +13,10 @@ here: the check then warns although a backup exists. It says an archive *exists*
 open it, so it does not prove the archive would restore. An archive whose modification time is
 more than ``backup.CLOCK_SKEW_S`` in the future (the clock was wrong when it was written, or it was
 copied from a host whose clock is) is not counted as recent: its age is unknown, and counting it
-would keep the line green for as long as the clock was ahead plus ``FRESH_DAYS`` (#1875). A backup
+would keep the line green for as long as the clock was ahead plus ``FRESH_DAYS`` (#1875). Once the
+real clock comes within ``CLOCK_SKEW_S`` of such a file's date it is still not counted if ``hermes dk
+backup`` saw it while it was ahead: that command records it (``backup.record_future_dated``, #1905).
+One that no backup run saw while it was ahead cannot be told from a recent archive here. A backup
 is of the whole install, not of a loop, so every loop's report carries the same line.
 """
 from __future__ import annotations
@@ -45,10 +48,14 @@ def check_backup_fresh() -> doctor.Check:
                             f"make {where} readable by the user running doctor")
     if newest is None and ahead is not None:
         path, written = ahead
+        if written > now + backup.CLOCK_SKEW_S:
+            when = f"is dated {(written - now) / _DAY_S:.0f} days in the future"
+        else:   # recorded by ``hermes dk backup`` while it was still ahead (#1905)
+            when = "was dated in the future when `hermes dk backup` last saw it"
         return doctor.Check(name, doctor.UNKNOWN,
-                            f"{path.name} in {where} is dated {(written - now) / _DAY_S:.0f} days "
-                            f"in the future (a wrong clock when it was written?), so how old the "
-                            f"newest backup is cannot be told; run `{command}`", f"`{command}`")
+                            f"{path.name} in {where} {when} (a wrong clock when it was written?), "
+                            f"so how old the newest backup is cannot be told; run `{command}`",
+                            f"`{command}`")
     if newest is None:
         return doctor.Check(name, doctor.UNKNOWN,
                             f"no backup archive in {where} — nothing would restore this install; "

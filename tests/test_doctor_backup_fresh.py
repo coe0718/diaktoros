@@ -252,5 +252,80 @@ class ThroughDoctor(Base):
         self.assertEqual(check.status, doctor.VERIFIED, check.detail)
 
 
+class FutureDatedRecorded(Base):
+    """#1905: the skew cutoff moves with the clock, so ``hermes dk backup`` records an archive it
+    sees dated past it, and ``backup:fresh`` keeps that file apart once the clock reaches it."""
+
+    def run_backup(self, **kw) -> str:
+        import argparse
+        from diaktoros import cli
+        raw = {"id": "one", "repo": "acme/one", "fixers": ["fixer"], "reviewers": ["reviewer"],
+               "reviewer_seat": "reviewer", "read_token": "reviewer",
+               "state_dir": str(self.root / "state"),
+               "seats": {"reviewer": {"route": "one-review", "profile": "reviewer"},
+                         "fixer": {"route": "one-fix", "profile": "fixer"}}}
+        (config.config_dir() / "one.json").write_text(json.dumps(raw))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), \
+                mock.patch.object(backup, "watchdog_job", return_value=None):
+            self.assertEqual(cli.cmd_backup(argparse.Namespace(out=None, **kw)), 0)
+        return out.getvalue()
+
+    def at(self, when: float) -> doctor.Check:
+        with mock.patch.object(backup_checks.time, "time", return_value=when):
+            return backup_checks.check_backup_fresh()
+
+    def test_backup_records_it_so_the_clock_reaching_it_is_not_green(self):
+        future = self.archive("future.tar.gz", age_days=-3650)
+        mtime = future.stat().st_mtime
+        text = self.run_backup()
+        self.assertIn("future.tar.gz", text)
+        self.assertIn("in the future", text)
+        # The clock walks from "ahead" into the allowance and past the file's date: the backup
+        # just written is then years old, and the future-dated file must never read as fresh.
+        for days_before in (backup.FRESH_DAYS + 1, 2, 0.5, 0, -1, -backup.FRESH_DAYS + 1):
+            check = self.at(mtime - days_before * DAY)
+            self.assertEqual(check.status, doctor.UNKNOWN, (days_before, check.detail))
+            self.assertNotIn("(within", check.detail)
+
+    def test_check_loop_names_a_recorded_archive_once_the_clock_reaches_it(self):
+        future = self.archive("future.tar.gz", age_days=-3650)
+        self.run_backup()
+        for path in self.dir.glob("diaktoros-backup-*.tar.gz"):
+            path.unlink()               # only the future-dated file is left
+        with mock.patch.object(backup_checks.time, "time",
+                               return_value=future.stat().st_mtime - DAY / 2):
+            found = [c for c in doctor.check_loop(_loop(), offline=True) if c.name == "backup:fresh"]
+        self.assertEqual(found[0].status, doctor.UNKNOWN, found[0].detail)
+        self.assertIn("future.tar.gz", found[0].detail)
+        self.assertIn("in the future when `hermes dk backup` last saw it", found[0].detail)
+
+    def test_an_archive_within_the_allowance_is_not_recorded(self):
+        self.archive("near.tar.gz", age_days=-1 / 24)
+        text = self.run_backup()
+        self.assertNotIn("near.tar.gz", text)
+        self.assertEqual(backup.record_future_dated(), [])
+        self.assertFalse((self.dir / backup.FUTURE_RECORD).exists())
+
+    def test_a_rewritten_or_removed_archive_leaves_the_record(self):
+        future = self.archive("future.tar.gz", age_days=-3650)
+        self.assertEqual(backup.record_future_dated(), [future])
+        self.assertEqual(backup.record_future_dated(), [])          # already recorded
+        # Rewritten under a correct clock (another mtime): an ordinary archive again.
+        self.archive("future.tar.gz", age_days=1)
+        self.assertEqual(backup.latest_archive()[0][0], future)
+        backup.record_future_dated()
+        self.assertEqual(json.loads((self.dir / backup.FUTURE_RECORD).read_text()), {})
+
+    def test_the_record_is_not_an_archive_and_is_never_pruned(self):
+        self.archive("future.tar.gz", age_days=-3650)
+        self.run_backup(keep=1)
+        self.run_backup(keep=1)
+        self.assertTrue((self.dir / backup.FUTURE_RECORD).is_file())
+        newest, ahead = backup.latest_archive()
+        self.assertNotEqual(newest[0].name, backup.FUTURE_RECORD)
+        self.assertEqual(ahead[0].name, "future.tar.gz")
+
+
 if __name__ == "__main__":
     unittest.main()
