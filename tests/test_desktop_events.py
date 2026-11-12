@@ -433,6 +433,38 @@ class Files(unittest.IsolatedAsyncioTestCase):
         target.write_text('{"changed": true}')
         self.assertNotEqual(before, self.snapshot())
 
+    async def test_watcher_skips_a_config_the_loader_refuses_but_keeps_a_hidden_loop(self):
+        # #2389 review F3: the watcher picks config files by the loader's rule. "...json" and
+        # "..json" are no loop, so their state_dirs outside every scanned root are not watched,
+        # while the loadable hidden .legacy.json's is. Main read every *.json, and before 3.14
+        # pathlib gives both names the suffix .json (stems ".." and "."), so it watched them.
+        legacy = self.home / "legacy-state"
+        refused = [self.home / "refused-dots", self.home / "refused-dot"]
+        for name, root in zip(("...json", "..json"), refused):
+            self.assertIsNone(events.config.config_file_id(name))
+            (self.directory / name).write_text(json.dumps({"state_dir": str(root)}))
+        for root in (legacy, *refused):
+            root.mkdir()
+            (root / "watchdog.json").write_text("{}")
+        self.valid_loop(".legacy", state_dir=str(legacy))
+        before = self.snapshot()
+        self.assertFalse(before[1])
+        paths = [path for path, _ in before[0]]
+        for root in refused:
+            self.assertNotIn(str(root / "watchdog.json"), paths)
+        self.assertIn(str(legacy / "watchdog.json"), paths)
+        async with self.manager.subscribe() as queue:
+            await self.settled()
+            self.assertTrue(queue.empty())
+            for root in refused:
+                (root / "watchdog.json").write_text('{"changed": true}')
+            await asyncio.sleep(.3)
+            self.assertTrue(queue.empty(), "a refused config's state_dir is not watched")
+            self.assertEqual(before, self.snapshot())
+            (legacy / "watchdog.json").write_text('{"changed": true}')
+            message = await asyncio.wait_for(queue.get(), 1)
+            self.assertEqual(message, {"event": "invalidate", "version": 1})
+
     def test_watched_loops_are_exactly_the_loops_the_loader_loads(self):
         # One rule (config.config_file_id) for which config files are loops, not a parallel
         # filter in the watcher that drifts from the loader's glob and load_id.
