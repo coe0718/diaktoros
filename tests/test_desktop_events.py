@@ -323,7 +323,8 @@ class Files(unittest.IsolatedAsyncioTestCase):
     async def test_default_state_dir_worker_trees_are_pruned(self):
         # The default state dir is <state_root>/<loop>: its worker trees are pruned like a
         # custom state_dir's (#2146).
-        loop = self.home / "state" / "diaktoros" / "demo"
+        (self.directory / "plain.json").write_text(json.dumps({"tokens": {}}))
+        loop = self.home / "state" / "diaktoros" / "plain"
         for name in events.PRUNED_DIRS:
             (loop / name / "nested").mkdir(parents=True)
             (loop / name / "nested" / "file").write_text("x")
@@ -355,6 +356,60 @@ class Files(unittest.IsolatedAsyncioTestCase):
                 before = self.snapshot()
                 (directory / "nested" / "file").write_text("changed")
                 self.assertNotEqual(before, self.snapshot())
+
+    def under(self, paths, directory):
+        return [p for p in paths if p.startswith(str(directory) + os.sep)]
+
+    def test_state_dir_spelled_with_dotdot_is_pruned_by_identity(self):
+        # A state_dir under the config dir, spelled through "..": the config-dir walk reaches
+        # the same directory under another spelling and must still prune its worker trees,
+        # or a large checkout spends the whole scan budget and every scan overflows.
+        custom, alias = self.directory / "custom", self.directory / "alias"
+        deps = custom / "deps"
+        deps.mkdir(parents=True)
+        alias.mkdir()
+        for n in range(events.MAX_ENTRIES + 100):
+            (deps / f"f{n}").touch()
+        for name, state_dir in (("other", alias / ".." / "custom"), ("gone", self.home / "missing")):
+            (self.directory / f"{name}.json").write_text(json.dumps({"state_dir": str(state_dir)}))
+        paths, overflow = self.snapshot()
+        paths = [path for path, _ in paths]
+        self.assertFalse(overflow)
+        self.assertIn(str(deps), paths)
+        self.assertFalse(self.under(paths, deps))
+        self.assertFalse(self.under(paths, alias / ".." / "custom" / "deps"))
+        self.assertIn(str(alias / ".." / "custom"), paths)   # the configured root is still scanned
+
+    async def test_symlinked_state_dir_is_pruned_by_identity_and_never_followed(self):
+        custom, link = self.directory / "custom", self.directory / "link"
+        (custom / "deps" / "nested").mkdir(parents=True)
+        (custom / "deps" / "nested" / "file").write_text("x")
+        (custom / "watchdog.json").write_text("{}")
+        link.symlink_to(custom, target_is_directory=True)
+        (self.directory / "other.json").write_text(json.dumps({"state_dir": str(link)}))
+        paths = [path for path, _ in self.snapshot()[0]]
+        self.assertIn(str(custom / "deps"), paths)
+        self.assertFalse(self.under(paths, custom / "deps"))
+        self.assertIn(str(custom / "watchdog.json"), paths)
+        self.assertIn(str(link), paths)
+        self.assertFalse(self.under(paths, link), "the walk never follows a symlink")
+
+    async def test_state_dir_equal_to_the_state_root_prunes_only_its_direct_children(self):
+        # #2403: a custom state_dir that is the state root itself is one loop's state dir;
+        # its subdirectories are not other loops' state dirs, so their deps are watched.
+        root = self.home / "state" / "diaktoros"
+        (self.directory / "demo.json").write_text(json.dumps({"state_dir": str(root)}))
+        (root / "deps" / "nested").mkdir(parents=True)
+        (root / "deps" / "nested" / "file").write_text("x")
+        target = root / "artifacts" / "deps" / "watchdog.json"
+        target.parent.mkdir(parents=True)
+        target.write_text("{}")
+        before = self.snapshot()
+        paths = [path for path, _ in before[0]]
+        self.assertFalse(self.under(paths, root / "deps"))
+        self.assertIn(str(target), paths)
+        target.write_text('{"changed": true}')
+        self.assertNotEqual(before, self.snapshot())
 
     async def test_burst_is_rate_limited_and_the_trailing_change_is_never_dropped(self):
         manager = events.DesktopEvents(self.snapshot, interval=.01, min_gap=.3)
