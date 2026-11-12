@@ -434,6 +434,15 @@ class Prompt(unittest.TestCase):
         self.assertNotIn("otherwise one type label and one priority label", tools)
         self.assertIn("what the list line in your instructions says to send", tools)
 
+    def test_the_tool_text_asks_for_a_priority_from_a_priorities_only_list(self):
+        """#1768: for a list with no type label the tool text must not read as "send no
+        priority": it agrees with the list line, which says to send one."""
+        from diaktoros import issue_labels, trusted_turn
+        tools = " ".join(trusted_turn.tool_instructions("reviewer").split())
+        self.assertEqual(issue_labels.label_rule(["P2", "P3"], 1), "send a priority label")
+        self.assertIn("one priority label when the list has no type label at all", tools)
+        self.assertNotIn("a priority label only if the cap leaves room beside the type", tools)
+
     def test_the_prompt_the_reviewer_receives_states_the_cap_and_does_not_demand_two(self):
         """The reviewer's real prompt (``isolated_prompt``) names the loop's label cap, and no
         longer says "exactly one priority label", which a cap of 1 can never satisfy."""
