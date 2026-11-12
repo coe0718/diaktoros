@@ -205,15 +205,25 @@ class Gate(Base):
         self.assertEqual(len(self.enqueued), 1)
         self.assertEqual([x for x in fix_hold.status_lines(self.loop, st) if "#12" in x], [])
 
+    def assert_declined_for(self, cause, line):
+        """#1840: the recorded decline names this subtest's own cause and no other. A case that
+        inherited an earlier case's ``unattended_fixer_push: False`` declines at the pushes check
+        instead, so it would never reach the cause it is meant to exercise."""
+        self.assertIn(cause, line)
+        for other in ("triage.authors", "unattended fixer pushes"):
+            if other != cause:
+                self.assertNotIn(other, line)
+
     def test_a_declined_next_step_says_to_remove_the_label_before_applying_it(self):
         # #1833: the label is still on the issue when the decline is recorded, and GitHub sends a
         # `labeled` event only when one is added: "apply it again" produced no event.
         from diaktoros import observer
         said = []
         st = state_mod.state_for(self.loop)
-        cases = [("author", {}), ("pushes off", {"unattended_fixer_push": False})]
+        cases = [("author", {}, "triage.authors"),
+                 ("pushes off", {"unattended_fixer_push": False}, "unattended fixer pushes")]
         base = self.loop                        # #1840: each case changes only its own key
-        for name, change in cases:
+        for name, change, cause in cases:
             with self.subTest(name):
                 self.loop = {**base, **change}
                 self.live = issue(author="stranger")
@@ -222,6 +232,7 @@ class Gate(Base):
                                        side_effect=lambda *a, **kw: said.append(kw["outcome"])):
                     self.run_gate(self.labeled())
                 (line,) = [x for x in fix_hold.status_lines(self.loop, st) if "#12" in x]
+                self.assert_declined_for(cause, line)
                 for text in (said[0], line):
                     self.assertIn("remove the fix label and apply it again", text)
                     self.assertNotIn("apply the label again", text)
@@ -253,10 +264,10 @@ class Gate(Base):
         # issue decides the step.
         from diaktoros import observer
         st = state_mod.state_for(self.loop)
-        cases = [("pushes off", {"unattended_fixer_push": False}, "owner"),
-                 ("author", {}, "stranger")]
+        cases = [("pushes off", {"unattended_fixer_push": False}, "owner", "unattended fixer pushes"),
+                 ("author", {}, "stranger", "triage.authors")]
         base = self.loop                        # #1840: "author" runs with pushes on
-        for name, change, author in cases:
+        for name, change, author, cause in cases:
             with self.subTest(name):
                 self.loop = {**base, **change}
                 self.live = issue(author=author, labels=())
@@ -266,6 +277,7 @@ class Gate(Base):
                     self.run_gate(self.labeled())
                 self.assertEqual(self.enqueued, [])
                 (line,) = [x for x in fix_hold.status_lines(self.loop, st) if "#12" in x]
+                self.assert_declined_for(cause, line)
                 for text in (said[0], line):
                     self.assertTrue(text.endswith("apply the fix label to the issue"), text)
                     self.assertNotIn("remove the fix label", text)
