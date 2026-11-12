@@ -201,16 +201,6 @@ def _nested_scopes(node):
             yield from _nested_scopes(child)
 
 
-def _names_in(expr, names: set) -> set:
-    """The variables of ``names`` that ``expr`` reads."""
-    return {n.id for n in ast.walk(expr) if isinstance(n, ast.Name) and n.id in names}
-
-
-def _holds_o_append(expr, names: set) -> bool:
-    """Does ``expr`` hold ``O_APPEND``, spelled in it or through a variable of ``names``?"""
-    return any(_is_o_append(n) for n in ast.walk(expr)) or bool(_names_in(expr, names))
-
-
 def _os_open_flags(call: ast.Call):
     """The flags argument of an ``os.open(path, flags, ...)`` call (by position or ``flags=``),
     or None when ``call`` is not ``os.open`` or passes none."""
@@ -222,34 +212,74 @@ def _os_open_flags(call: ast.Call):
     return flags[0] if flags else None
 
 
-def _closure(start: set, step) -> set:
-    """``start`` grown by ``step`` until it stops growing."""
-    names = set(start)
-    while True:
-        grown = names | step(names)
-        if grown == names:
-            return names
-        names = grown
+_DEFS = (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.NamedExpr)
+
+
+class _Bindings:
+    """The assignments to plain names in one scope, and which one each read of a name sees: the
+    last one that ends before the read, in source order (#2379 review). A rebinding hides the
+    earlier value, so in ``flags = os.O_APPEND; helper(flags); flags = os.O_APPEND;
+    os.open(p, flags)`` the open consumes only the second ``O_APPEND``, and after
+    ``flags = os.O_RDONLY`` a later ``os.open(p, flags)`` is not an append open. Branches and
+    loops are read as straight-line code: of two assignments in ``if``/``else`` only the later
+    one reaches a read after both, so the other's ``O_APPEND`` counts on its own (an over-count,
+    which fails the guard rather than hiding a site)."""
+
+    def __init__(self, nodes: list):
+        self.defs = sorted(
+            ((target.id, node) for node in nodes if isinstance(node, _DEFS) and node.value is not None
+             for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+             if isinstance(target, ast.Name)),
+            key=lambda pair: (pair[1].end_lineno, pair[1].end_col_offset))
+        self._holds: dict = {}
+
+    def reaching(self, name: str, read) -> ast.AST | None:
+        """The assignment to ``name`` that a read at node ``read`` sees, or None."""
+        at = (read.lineno, read.col_offset)
+        seen = [node for target, node in self.defs
+                if target == name and (node.end_lineno, node.end_col_offset) <= at]
+        return seen[-1] if seen else None
+
+    def deps(self, expr) -> list:
+        """The assignments that ``expr`` (an expression or an assignment) reads: those of the
+        names its value reads and, for ``x |= ...``, the earlier value of ``x``."""
+        value = expr.value if isinstance(expr, _DEFS) else expr
+        found = [self.reaching(n.id, n) for n in ast.walk(value)
+                 if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
+        if isinstance(expr, ast.AugAssign) and isinstance(expr.target, ast.Name):
+            found.append(self.reaching(expr.target.id, expr))
+        return [d for d in found if d is not None]
+
+    def holds(self, expr) -> bool:
+        """Does ``expr`` hold ``O_APPEND``, spelled in it or through an assignment it reads?"""
+        if id(expr) not in self._holds:
+            value = expr.value if isinstance(expr, _DEFS) else expr
+            self._holds[id(expr)] = (any(_is_o_append(n) for n in ast.walk(value))
+                                     or any(self.holds(d) for d in self.deps(expr)))
+        return self._holds[id(expr)]
+
+    def consumed(self, exprs: list) -> list:
+        """The values of ``exprs`` and of every assignment they read, directly or in a chain."""
+        out, todo, seen = [], list(exprs), set()
+        while todo:
+            expr = todo.pop()
+            if id(expr) not in seen:
+                seen.add(id(expr))
+                out.append(expr.value if isinstance(expr, _DEFS) else expr)
+                todo.extend(self.deps(expr))
+        return out
 
 
 def _o_append_opens(nodes: list) -> int:
     """How many ``O_APPEND`` opens one scope's ``nodes`` hold (#2379): one per ``os.open`` whose
-    flags hold ``O_APPEND``, inline or through a variable assigned from it in this scope, so two
-    opens sharing one flags variable count two; plus one per ``O_APPEND`` mention that no such
-    ``os.open`` consumes."""
-    assigns = [(target.id, node.value) for node in nodes
-               if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)) and node.value is not None
-               for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
-               if isinstance(target, ast.Name)]
-    holding = _closure(set(), lambda names: {name for name, value in assigns
-                                             if _holds_o_append(value, names)})
+    flags hold ``O_APPEND``, inline or through the assignment of a variable that reaches the open
+    (``_Bindings``), so two opens sharing one flags variable count two; plus one per ``O_APPEND``
+    mention that no such ``os.open`` consumes, so an earlier, rebound value passed elsewhere still
+    counts."""
+    bindings = _Bindings(nodes)
     flags = [_os_open_flags(n) for n in nodes if isinstance(n, ast.Call)]
-    counted = [f for f in flags if f is not None and _holds_o_append(f, holding)]
-    used = _closure(set().union(*(_names_in(f, holding) for f in counted)),
-                    lambda names: set().union(*(_names_in(value, holding) for name, value in assigns
-                                                if name in names)))
-    consumed = {id(n) for expr in counted + [value for name, value in assigns if name in used]
-                for n in ast.walk(expr) if _is_o_append(n)}
+    counted = [f for f in flags if f is not None and bindings.holds(f)]
+    consumed = {id(n) for value in bindings.consumed(counted) for n in ast.walk(value) if _is_o_append(n)}
     return len(counted) + sum(1 for n in nodes if _is_o_append(n) and id(n) not in consumed)
 
 
@@ -361,6 +391,32 @@ class Guard(unittest.TestCase):
         source = (ROOT / "diaktoros/run_supervisor/workers.py").read_text()
         grown = source.replace("            return os.fdopen(os.open(path, flags, 0o600), \"ab\")\n",
                                "            os.close(os.open(path, flags, 0o600))\n"
+                               "            return os.fdopen(os.open(path, flags, 0o600), \"ab\")\n")
+        self.assertNotEqual(grown, source, "the scratch edit no longer applies to _worker_log")
+        found = append_sites(grown, "diaktoros/run_supervisor/workers.py")
+        self.assertEqual(sorted((found - registered()).items()), [(key, 1)])
+
+    def test_a_rebound_flags_variable_consumes_only_the_value_that_reaches_the_open(self):
+        """#2379 review: an ``O_APPEND`` value passed to a helper, then rebound, is not consumed
+        by a later ``os.open`` of the new value, so adding that open to a function registered for
+        one site fails the guard; and flags rebound to ``O_RDONLY`` make a plain open. In
+        ``_worker_log`` the first flags, handed to a helper and rebound before the open, become
+        an append site of their own beside the open and its ``os.fdopen``."""
+        before = "def f(p):\n    flags = os.O_APPEND\n    helper(flags)\n"
+        after = before + "    flags = os.O_APPEND\n    os.open(p, flags)\n"
+        self.assertEqual(dict(append_sites(before, "x.py")), {"x.py::f": 1})
+        self.assertEqual(dict(append_sites(after, "x.py")), {"x.py::f": 2})
+        self.assertEqual(dict(append_sites(
+            "def r(p):\n    flags = os.O_APPEND\n    os.open(p, flags)\n"
+            "    flags = os.O_RDONLY\n    os.open(p, flags)\n"
+            "def s(p):\n    flags = os.O_WRONLY\n    flags = flags | os.O_APPEND\n    os.open(p, flags)\n"
+            "def t(p):\n    flags = os.O_APPEND\n    flags |= os.O_CREAT\n    os.open(p, flags)\n", "x.py")),
+            {"x.py::r": 1, "x.py::s": 1, "x.py::t": 1})
+        key = "diaktoros/run_supervisor/workers.py::WorkerLifecycle._worker_log"
+        source = (ROOT / "diaktoros/run_supervisor/workers.py").read_text()
+        grown = source.replace("            return os.fdopen(os.open(path, flags, 0o600), \"ab\")\n",
+                               "            helper(flags)\n"
+                               "            flags = os.O_WRONLY | os.O_APPEND\n"
                                "            return os.fdopen(os.open(path, flags, 0o600), \"ab\")\n")
         self.assertNotEqual(grown, source, "the scratch edit no longer applies to _worker_log")
         found = append_sites(grown, "diaktoros/run_supervisor/workers.py")
