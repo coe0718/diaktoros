@@ -52,16 +52,19 @@ def check_app_identity(loop: dict, login: str, name: str) -> doctor.Check:
                         f"{kind} (the App and its installation: app-live:{login})")
 
 
-def _app_unreachable(name: str, login: str, read: str, response: gh.Response) -> doctor.Check | None:
+def _app_unreachable(name: str, login: str, read: str, response: gh.Response,
+                     unread: str) -> doctor.Check | None:
     """UNKNOWN when ``read`` (the App read just made) got no HTTP answer at all (a network
-    outage, DNS, a timeout), else ``None``. Without a status GitHub said nothing about the key or
-    the installation, so neither is blamed: the PAT checks read the same state as UNKNOWN
-    (``gh.failure_hint``), not as a credential to regenerate."""
+    outage, DNS, a timeout), else ``None``. Without a status GitHub said nothing about what the
+    read was for, so it is not blamed: the PAT checks read the same state as UNKNOWN
+    (``gh.failure_hint``), not as a credential to regenerate. ``unread`` is the clause that says
+    what was left unread (#1922): after ``GET /app`` failed both the key and the installation,
+    after the installation read only the installation (``/app`` already verified the key)."""
     if response.status is not None or response.data is not None or not response.error:
         return None
     return doctor.Check(name, doctor.UNKNOWN,
                         f"{login}: {read} as the App got no HTTP answer ({gh.one_line(response.error)}) — "
-                        "the key and the installation were not read",
+                        f"{unread}",
                         "check the host reaches api.github.com (network, DNS, proxy) and run doctor again; "
                         "the key file is not implicated")
 
@@ -84,7 +87,8 @@ def check_app_live(loop: dict, login: str, offline: bool) -> doctor.Check:
         return doctor.Check(name, doctor.MISMATCH, f"{login}: {exc}", "check the key file is this App's private key")
     found = app.data if isinstance(app.data, dict) else {}
     if not found:
-        silent = _app_unreachable(name, login, "GET /app", app)
+        silent = _app_unreachable(name, login, "GET /app", app,
+                                  "the key and the installation were not read")
         if silent:
             return silent
         return doctor.Check(name, doctor.MISMATCH, f"{login}: GET /app as the App failed ({app.error or 'no answer'})",
@@ -98,7 +102,9 @@ def check_app_live(loop: dict, login: str, offline: bool) -> doctor.Check:
                             f"name the identity {found.get('slug')}[bot]")
     installation = where.data.get("id") if isinstance(where.data, dict) else None
     if type(installation) is not int:
-        silent = _app_unreachable(name, login, f"GET /repos/{loop['repo']}/installation", where)
+        silent = _app_unreachable(name, login, f"GET /repos/{loop['repo']}/installation", where,
+                                  "the installation was not read (GET /app signed with the key "
+                                  "just fine)")
         if silent:
             return silent
         return doctor.Check(name, doctor.ABSENT, f"{login}: App {found.get('slug')} is not installed on "
