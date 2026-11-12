@@ -87,6 +87,22 @@ class IntentRecordTest(Fixture):
         self.assertEqual(self.subs.read_bytes(), before)
         self.assertTrue(any("intent record unreadable" in line for line in lines), lines)
 
+    def test_non_utf8_record_heals_nothing_and_alerts(self):
+        """#1701: a record whose bytes are not UTF-8 is unreadable, not a traceback."""
+        self.install()
+        target = route_intent.path(self.loop)
+        garbage = b'{"routes": {"\xff\xfe": {"secret": "s"}}}'
+        target.write_bytes(garbage)
+        self.native(lambda d: d.pop("widgets-review"))
+        before = self.subs.read_bytes()
+        with self.assertRaisesRegex(route_intent.IntentError, "is unreadable"):
+            route_intent.load(self.loop)
+        self.assertEqual(route_intent.load_or_empty(self.loop), {})
+        lines = route_intent.heal(self.loop)
+        self.assertEqual(self.subs.read_bytes(), before)
+        self.assertEqual(target.read_bytes(), garbage)
+        self.assertTrue(any("intent record unreadable" in line for line in lines), lines)
+
 
 class SelfHealTest(Fixture):
     def test_erased_route_restored_with_same_secret_and_alert(self):

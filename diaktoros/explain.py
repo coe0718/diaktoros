@@ -565,8 +565,13 @@ def _seat_needs(c) -> None:
     c.fixer_turn = turns.get("fixer")     # any ledger state: a lock or mark with no run has none
     # Uncertain or ended with no push: not live, whatever lock or mark still stands over it.
     c.fixer_ended = bool(c.fixer_turn) and c.fixer_turn not in run_supervisor.NOT_ENDED
-    c.fixer_rearm = explain_next.fixer_retry(c) if c.fixer_ended else ("", "", False)   # the retry plan (#1514)
-    c.redeliver = c.fixer_ended and not c.cap_spent and explain_next.redelivery_rearms(c)  # intake's own rule
+    # The retry plan (#1514), with the rows it re-arms (#2410 review F2).
+    c.fixer_rearm = explain_next.fixer_retry(c) if c.fixer_ended else ("", "", False, ())
+    # A redelivery is decided on the gate's verdict turn (turn key ''), which need not be the
+    # newest row shown above: a shadow-fix, CI-fix or conflict turn shares the head (#1615).
+    c.redelivery, c.gate_turn, c.fixer_key = (explain_next.redelivery_outcome(c) if c.fixer_ended
+                                              else ("", None, ""))
+    c.redeliver = c.fixer_ended and not c.cap_spent and bool(c.redelivery)   # intake's own rule
     # A fix for this head: a lock on an old head cannot finish it (#1481 review).
     # An uncertain fixer turn is no live fix: nothing will push, and the sweep reads it so (#1495).
     c.fix_live = (("fixer" in c.held and "fixer" not in c.stale_held) or c.inflight_fix
@@ -689,24 +694,26 @@ def _gate_blockers(c) -> None:
 
 def _ended_rearm(c) -> str:
     """What re-arms an ended fixer turn once pushes are on, as its step says: a redelivery waits
-    out a live in-flight mark (#1514 F3), a retry does not."""
+    out a live in-flight mark (#1514 F3), a retry does not. The redelivery is named by the turn it
+    is decided on (``explain_next.redelivery_effect``, #1615)."""
     marked = " the in-flight fix mark expires" if c.inflight_fix else ""
+    opts = " once the loop opts in"
     if c.redeliver and not marked:
-        return "a redelivered verdict re-arms it once the loop opts in"
+        return "a redelivered verdict " + explain_next.redelivery_effect(c, opts)
     if c.fixer_rearm[0]:
-        return ("retry re-arms it once the loop opts in"
+        return ("retry " + explain_next.retry_effect(c, opts)
                 + (f" (a redelivered verdict waits until{marked})" if c.redeliver else ""))
     if c.redeliver:
-        return f"a redelivered verdict re-arms it once the loop opts in and{marked}"
-    return "a redelivered verdict is a duplicate the ledger refuses"
+        return "a redelivered verdict " + explain_next.redelivery_effect(c, f"{opts} and{marked}")
+    return "a redelivered verdict " + explain_next.redelivery_effect(c)
 
 
 def _run_blockers(c) -> None:
     """Guards on the runs: push-off, capacity, stale queues and locks, a missing run."""
     declined = c.queued_seat == "fixer" and c.queued_declined
     if c.push_off and c.fixer_ended and not c.ruling:
-        c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the fixer turn at head {c.short} is "
-                          f"{c.fixer_turn} with no fix pushed — "
+        c.blockers.append(f"{config.FIXER_PUSH_HOLD}: {explain_next.shown_turn(c)} at head "
+                          f"{c.short} is {c.fixer_turn} with no fix pushed — "
                           + _ended_rearm(c))
     elif c.push_off and c.fix_live and not c.ruling:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the fixer turn at head {c.short} cannot "
