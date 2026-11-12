@@ -665,7 +665,7 @@ These four keys are mandatory non-empty strings; extra top-level runtime keys ar
 
 ### Reasoning effort
 
-A seat thinks as hard as its own Hermes profile says: `agent.reasoning_effort` in the profile's `config.yaml` (`minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, or `none`), read with the seat's model and written into the sandboxed Hermes's config for every turn (#874). Unset, the turn takes Hermes's default (`medium`). Doctor's `model:<seat>` line names it (`· reasoning high`), refuses a value Hermes would not accept, and the ledger records what each turn's first request actually asked for (the thinking level, #513).
+A seat thinks as hard as its own Hermes profile says: `agent.reasoning_effort` in the profile's `config.yaml` (`minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, or `none`), read with the seat's model and written into the sandboxed Hermes's config for every turn (#874). Unset, the turn takes Hermes's default (`medium`). Doctor's `model:<seat>` line names it (`· reasoning high`), refuses a value Hermes would not accept, and the ledger records what each turn's first request actually asked for (the thinking level, #513: `budget:<tokens>`, `effort:<level>`, `off`, or `adaptive` for a Claude request using adaptive thinking without an `output_config.effort`; Claude's adaptive thinking is read from `output_config.effort`, #1929; an `output_config` or `effort` that is malformed or explicitly `null` is recorded as unknown, NULL, never `off`).
 
 Before #874 the sandbox config had no `agent:` section, so no seat's setting reached its turns: a reviewer set to `high` reviewed at `medium`, and a Claude-subscription fixer sent no reasoning at all.
 
