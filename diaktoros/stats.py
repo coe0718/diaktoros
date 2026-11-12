@@ -342,10 +342,7 @@ def recorded_head(value) -> str:
 
 
 def run_head(seat, value) -> str:
-    """A run's head as a view shows it and the page joins and confirms on (#1696): its
-    ``recorded_head``, or ``config.TRIAGE_HEAD`` itself for an issue seat's run recorded at it —
-    an issue seat works on an issue, not a commit, and the ledger records that word in place of
-    a head. Only that exact word and only on an issue seat; anything else malformed is ``''``."""
+    """``recorded_head``, but an issue seat's exact ``config.TRIAGE_HEAD`` is kept (#1696)."""
     from .run_supervisor import ISSUE_SEATS
     if seat in ISSUE_SEATS and value == config.TRIAGE_HEAD:
         return config.TRIAGE_HEAD
