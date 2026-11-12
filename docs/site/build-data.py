@@ -12,6 +12,7 @@ the previous snapshot is kept.
 import json
 import os
 import sys
+import time
 import urllib.request
 from datetime import datetime, timezone
 
@@ -20,6 +21,11 @@ REPO = "diaktoros"
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "data.json")
 API = "https://api.github.com"
+# stats/commit_activity answers an empty body (HTTP 202) while GitHub
+# computes it. Ask again a few times before retaining the previous count,
+# because retaining it also holds back the snapshot date (#1773).
+ACTIVITY_ATTEMPTS = 4
+ACTIVITY_WAIT = 5  # seconds between attempts
 
 
 def api(path):
@@ -53,6 +59,28 @@ def _rel_time(iso):
     return "%dy ago" % (months // 12)
 
 
+def commit_activity():
+    """Weekly commit activity, asking again while GitHub still computes it.
+
+    Returns the list of weeks, or an empty list when every attempt came
+    back empty (the caller then keeps the previous count and date). An
+    error on the last attempt propagates to the caller.
+    """
+    path = "/repos/%s/%s/stats/commit_activity" % (OWNER, REPO)
+    for attempt in range(ACTIVITY_ATTEMPTS):
+        if attempt:
+            time.sleep(ACTIVITY_WAIT)
+        try:
+            weeks = api(path)
+        except Exception:
+            if attempt == ACTIVITY_ATTEMPTS - 1:
+                raise
+            continue
+        if weeks:
+            return weeks
+    return []
+
+
 def main():
     prev = {}
     if os.path.exists(OUT):
@@ -81,9 +109,9 @@ def main():
         data["prs_open"] = count("repo:%s/%s+type:pr+is:open" % (OWNER, REPO))
 
         try:
-            weeks = api("/repos/%s/%s/stats/commit_activity" % (OWNER, REPO))
-            # The endpoint returns an empty list while it computes; a
-            # zero there would overwrite a real snapshot with nothing.
+            weeks = commit_activity()
+            # Still empty after every retry: a zero there would
+            # overwrite a real snapshot with nothing.
             activity_ok = False
             if weeks:
                 data["commits_year"] = sum(w["total"] for w in weeks)
@@ -104,7 +132,10 @@ def main():
         # commit count was actually refreshed, or a retained count would
         # wear a newer date than its own (Vex, PR #1750 rounds 2-3). A
         # retained count with no earlier date stays undated: stamping
-        # it today would claim an age nobody knows.
+        # it today would claim an age nobody knows. commit_activity()
+        # asks the still-computing endpoint again first, so the date is
+        # held back only when every attempt this run came back empty
+        # (#1773).
         if activity_ok:
             data["generated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         data.pop("error", None)
