@@ -160,11 +160,17 @@ def _next_review_only(c) -> tuple[str, str] | None:
     return kind, action
 
 
+def _below_cap_escalation(c) -> bool:
+    """Whether an operator escalation, not a spent cap, holds this head for a ruling (#1887):
+    the same ``gate.escalated`` that ``gate.breach_holds`` and ``c.parked`` read."""
+    return not c.cap_spent and gate.escalated(c.marker, c.head)
+
+
 def _next_ruling(c) -> tuple[str, str] | None:
     """Next event while adjudication delivery is pending, ruled, or parked."""
     if c.pending_delivery and not c.adjudicated:
         kind = "adjudication"
-        action = explain._adjudication_next(c.loop, c.head)
+        action = explain._adjudication_next(c.loop, c.head, escalated=_below_cap_escalation(c))
     elif c.pending_delivery:
         kind = "retry"
         action = (f"retry adjudicator delivery for head {c.short} on the next armed watchdog sweep "
@@ -175,7 +181,7 @@ def _next_ruling(c) -> tuple[str, str] | None:
                   "on the PR) — merge, close, or push a new head, which starts a fresh review")
     elif c.parked:
         kind = "adjudication"
-        action = explain._adjudication_next(c.loop, c.head)
+        action = explain._adjudication_next(c.loop, c.head, escalated=_below_cap_escalation(c))
     else:
         return None
     return kind, action

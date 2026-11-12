@@ -59,14 +59,20 @@ def _minutes_since(when: float, now: float) -> int:
     return max(0, int((now - when) / 60)) if when else 0
 
 
-def _adjudication_next(loop: dict, head: str) -> str:
-    """The one thing left when the budget is spent: a ruling, or a human if nobody can rule."""
+def _adjudication_next(loop: dict, head: str, escalated: bool = False) -> str:
+    """The one thing left when the budget is spent: a ruling, or a human if nobody can rule.
+
+    ``escalated``: an operator escalation holds this head below the verdict cap (#1887), so the
+    gates stop because of that escalation, not the cap; the action then names the escalation.
+    """
     short = head[:7] if head else "?"
     if not (loop.get("adjudicator") or {}).get("route"):
         return ("human adjudication: this loop has no adjudicator route, so the breach marker is "
                 "the only record — rule by hand, then merge or close")
+    why = ("the operator's escalation stops both gates below the cap" if escalated
+           else "both gates stop at the cap")
     return (f"human adjudication: the adjudicator rules at head {short} and reports; nothing else "
-            f"fires for this PR (both gates stop at the cap)")
+            f"fires for this PR ({why})")
 
 def _ruled(loop: dict, number: int, head: str) -> str | None:
     """The adjudicator's verdict at this head, if it has ruled (the watchdog reads the same)."""

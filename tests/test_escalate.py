@@ -446,6 +446,18 @@ class ParkedReviewOnly(Base):
         self.assertIn("the adjudicator rules at head", report["next"]["action"])
         self.assertNotIn("pushes a fix", report["next"]["action"])
 
+    def test_a_below_cap_escalation_is_not_attributed_to_the_cap(self):
+        """#1887: parked below the cap, the gates stop for the escalation, not the cap."""
+        report = self.explain()
+        self.assertLess(report["spent"], report["cap"])
+        action = report["next"]["action"]
+        self.assertNotIn("stop at the cap", action)
+        self.assertIn("the operator's escalation stops both gates below the cap", action)
+
+    def test_at_the_cap_the_action_still_names_the_cap(self):
+        self.assertIn("both gates stop at the cap", explain._adjudication_next(
+            {"adjudicator": {"route": "x"}}, HEAD))
+
     def test_once_ruled_the_decision_is_the_operators(self):
         report = self.explain(ruled="REJECT")
         self.assertEqual(report["next"]["kind"], "operator", report["next"])
