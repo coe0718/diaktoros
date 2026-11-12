@@ -49,12 +49,12 @@ Defaults are for a fresh form; existing loops retain values when a field is abse
 | `cap` | int / `3` | Whole verdict count >= 2 | `cap`; at the cap, a configured adjudicator can rule. The cap counts verdicts, not pushes. |
 | `reviewer_concurrency` | int / `1` | Whole number >= 1 | Effective reviewer capacity; see inheritance below. Above 1 requires a nonblank clone unless the runtime file exists (see configuration). |
 | `fixer_concurrency` | int / `1` | Whole number >= 1 | Effective fixer capacity; above 1 requires a nonblank clone unless the runtime file exists. Does not enable unattended pushes. |
-| `shadow_concurrency` | str / `""` | Whole number >= 1, or blank | `seats.shadow.concurrency`: shadow reviews that may run at once; the rest queue. Always the seat's own value, since the loop-level `concurrency` does not reach this seat. Takes effect only while the loop has a shadow profile. Blank keeps the loop's own value (default 1). |
-| `triage_concurrency` | str / `""` | Whole number >= 1, or blank | `seats.triage.concurrency`: issue triages that may run at once; the rest queue. Always the seat's own value (the loop default does not reach it). Takes effect only while the loop has issue triage on. Blank keeps the loop's own value (default 1). |
+| `shadow_concurrency` | str / `""` | Whole number >= 1, or blank | `seats.shadow.concurrency`: shadow reviews that may run at once; the rest queue. Always the seat's own value, since the loop-level `concurrency` does not reach this seat. Takes effect only while the loop has a shadow profile. Above 1 it needs `clone` or the isolated worker's runtime file, like reviewer/fixer. Blank keeps the loop's own value (default 1). |
+| `triage_concurrency` | str / `""` | Whole number >= 1, or blank | `seats.triage.concurrency`: issue triages that may run at once; the rest queue. Always the seat's own value (the loop default does not reach it). Takes effect only while the loop has issue triage on. Above 1 it needs `clone` or the isolated worker's runtime file, like reviewer/fixer. Blank keeps the loop's own value (default 1). |
 | `clone` | str / `""` | Local clone path | `clone`; a blank form keeps the loop's clone. Actual checkout usability is a separate doctor/selftest check. |
 | `base` | str / `main` | Branch string | `base`; gates use it to select PR targets. The loader does not enforce full Git ref syntax. |
-| `grace_min` | int / `35` | Integer minutes; use positive values | `grace_min`; watchdog quiet-head grace is at least the relevant seat's full worst-case turn. No explicit positive range is enforced here. |
-| `ttl_min` | int / `45` | Integer minutes; use positive values | `ttl_min`; a seat claim survives at least its whole turn, including recorded budget. No explicit positive range is enforced here. |
+| `grace_min` | int / `35` | Whole minutes 1–525600 | `grace_min`; watchdog quiet-head grace is at least the relevant seat's full worst-case turn. Anything else in the loop file is refused when it loads. |
+| `ttl_min` | int / `45` | Whole minutes 1–525600 | `ttl_min`; a seat claim survives at least its whole turn, including recorded budget. Anything else in the loop file is refused when it loads. |
 | `inflight_ttl_min` | int / `10` | Integer minutes; use positive values | `inflight_ttl_min`; age limit for duplicate-head in-flight marks. No explicit positive range is enforced here. |
 | `turn_budget_s` | int / `900` | Seconds 60–14400 | `turn_budget_s`; wall-clock model turn budget. Existing per-seat overrides win, and queued runs keep recorded budgets. |
 | `host` | str / `""` | HTTP(S) gateway origin, optional port, no path/query/fragment/userinfo | `host`; required for route installation. HTTPS recommended. Blank does not erase an existing origin. Applying a changed origin can move remote hooks and is refused while observer notices are unsettled. |
@@ -167,7 +167,7 @@ never touches the working-seat pins. Blank keeps the stored value.
 
 `set --concurrency` subsequently affects only unpinned working seats. A form that explicitly
 owns both seat values can reconcile their pins again. Adjudicator/triage do not inherit the
-working-seat concurrency default. Concurrency above 1 requires a clone for reviewer/fixer
+working-seat concurrency default. Concurrency above 1 requires a clone for reviewer/fixer, and for shadow/triage
 at normalization unless the isolated worker's runtime file (`diaktoros-runtime.json`) exists:
 with it every production turn is sandbox-isolated, so nothing is shared.
 

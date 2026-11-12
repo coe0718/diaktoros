@@ -111,6 +111,25 @@ class Notice(Base):
         self.assertIn("the conflict is in one file: a.py", text)
         self.assertIn("git fetch origin && git switch feat && git merge origin/main", text)
 
+    def test_the_merged_prs_carry_the_subject_only_caveat(self):
+        """#1699: the numbers come from commit subjects, so a direct push ending in ``(#N)``
+        would be named too; the notice must say so rather than call them merged PRs outright."""
+        text = review_only_conflict.message(self.loop, "owner", self.facts())
+        self.assertIn("#428, #430 (read from commit subjects, so a direct push ending in (#N) "
+                      "is counted as a PR too)", text)
+
+    def test_one_reader_for_every_subject(self):
+        """The notice and ``update`` read a subject the same way (``pr_refs.pr_number``)."""
+        from diaktoros import pr_refs
+        from diaktoros.cli import update as cli_update
+        for subject, want in (("update docs (#123)", [123]), ("Merge pull request #5 from a/b", [5]),
+                              ("Merge pull request #57x", []), ("no ref", []),
+                              (f"push (#{'9' * 11})", []), (f"Merge pull request #{'9' * 11}", [])):
+            self.assertEqual(review_only_conflict.merged_prs([("s", subject)]), want)
+            self.assertEqual(pr_refs.pr_number(subject), want[0] if want else 0)
+            got = cli_update.merged_prs([{"commit": {"message": subject}}])
+            self.assertEqual([n for n, _t in got], want)
+
     def test_a_dry_merge_pushes_nothing(self):
         before = git("--git-dir", self.remote, "rev-parse", "feat")
         self.facts()
