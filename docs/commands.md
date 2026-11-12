@@ -2111,7 +2111,9 @@ Before any stage writes, `continue` re-authorizes the fix against live policy ex
 seat's own `open_pr` is (`broker.authorize_issue_fix`, #1051): issue fixes must still be on (the
 operator's switch, which needs `unattended_fixer_push`), the reader, reviewer and fixer must be
 distinct verified accounts, and the issue must still be an open issue by an allowlisted author with
-the maintainer's fix label and no unmet prerequisite. A refusal keeps the run quarantined and is
+the maintainer's fix label and no unmet prerequisite. Opening the PR also obeys the seat's
+plan-first rule (#2336): a `plan-first` issue, or one whose body is past 4,000 characters, with no
+plan a maintainer approved with `/loop approve`, is refused. A refusal keeps the run quarantined and is
 printed (also by `--dry-run`): "not authorized now" when policy refuses, "could not be checked
 now" when GitHub could not be read for the issue (an outage, #2335); with no stage left to
 write, nothing is checked and the run is only recorded and released.
