@@ -15,7 +15,7 @@ import re
 import sys
 import time
 
-from . import gh, hostdirs
+from .. import gh, hostdirs
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
@@ -176,7 +176,7 @@ def authorize(loop: dict, *, repo: str, number: int, head: str, role: str,
                                              if isinstance(login, str) and login}):
             raise BrokerDenied("PR author is not an authorized fixer")
         if require_verdict:
-            from . import gate
+            from .. import gate
             reviews = gh.reviews(loop, number)
             if not isinstance(reviews, list):
                 raise BrokerDenied("cannot verify latest fixer verdict")
@@ -189,7 +189,7 @@ def authorize(loop: dict, *, repo: str, number: int, head: str, role: str,
 def _signed(loop: dict, body: str, seat: str, head: str) -> str:
     """``body`` as the loop posts it: with its attribution footer unless the loop opted out
     (#197). Applied here, at the POST, so every write this module sends is signed exactly once."""
-    from . import attribution
+    from .. import attribution
     try:
         return attribution.stamp(loop, body, seat=seat, head=head)
     except attribution.AttributionError as exc:
@@ -244,7 +244,7 @@ def perform(loop: dict, *, repo: str, number: int, head: str, role: str,
         seat = loop.get("reviewer_seat")
         if not seat or seat != ((loop.get("seats") or {}).get("reviewer") or {}).get("login"):
             raise BrokerDenied("reviewer seat mapping missing or inconsistent")
-        from . import config
+        from .. import config
         if config.reviewer_is_app(loop):
             # GitHub ignores a review request for an App bot (#1163): authorized and audited as
             # a request, and the caller delivers it to the reviewer gate itself.
@@ -270,7 +270,7 @@ def _audit(loop: dict, repo: str, number: int, head: str, branch: str,
         return
 
     # Metadata only; never token or model-produced body. Lock an append-only file.
-    from .config import state_dir
+    from ..config import state_dir
     path = state_dir(loop) / "broker-audit.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -324,7 +324,7 @@ def authorize_ruling_comment(loop: dict, *, repo: str, number: int, head: str,
     App) from the reader and both seats — at a live PR that is still the
     open, non-draft, same-repository, unapproved head the ruling was made on.
     """
-    from . import gate
+    from .. import gate
     login = authorize_adjudicator(loop, repo=repo, number=number, head=head, branch=branch)
     reviews = gh.reviews(loop, number)
     if not isinstance(reviews, list):
@@ -339,7 +339,7 @@ def authorize_adjudicator(loop: dict, *, repo: str, number: int, head: str, bran
     """The adjudicator login, cleared to write at this live head, or deny: a fourth identity at
     the open, non-draft, same-repository head of an authorized fixer's PR. The ruling comment
     and the approval on an ACCEPT (#905) both need it; each adds its own checks."""
-    from . import config
+    from .. import config
     if not _REPO.fullmatch(repo) or repo != loop.get("repo"):
         raise BrokerDenied("wrong repository")
     if type(number) is not int or number <= 0 or not _SHA.fullmatch(head):
@@ -369,7 +369,7 @@ def human_paths_check(loop: dict, number: int) -> tuple[str, str]:
     The diff is read live from GitHub, never from the seat or the PR. The reviewer's broker and
     the adjudicator's approval on an ACCEPT (#905) both ask it.
     """
-    from . import config
+    from .. import config
     if not config.human_paths(loop):
         return "", ""
     files, error = gh.pr_files_read(loop, number)
@@ -403,8 +403,8 @@ def authorize_triage(loop: dict, *, repo: str, number: int) -> str:
     issue (not a pull request) by an allowlisted author, with no label from the triage list —
     a person who labelled it first wins, and the triage is skipped.
     """
-    from . import config, run_supervisor
-    from .run_supervisor import issue_inputs
+    from .. import config, run_supervisor
+    from ..run_supervisor import issue_inputs
     if not _REPO.fullmatch(repo) or repo != loop.get("repo"):
         raise BrokerDenied("wrong repository")
     if type(number) is not int or number <= 0:
@@ -456,8 +456,8 @@ def authorize_issue_fix(loop: dict, *, repo: str, number: int, plan_first: bool 
     rule (``fix_hold.plan_required``), else ``PlanRequired``: one read decides both, so a label
     added between two reads cannot slip through (#2334).
     """
-    from . import config, run_supervisor
-    from .run_supervisor import issue_inputs
+    from .. import config, run_supervisor
+    from ..run_supervisor import issue_inputs
     if not _REPO.fullmatch(repo) or repo != loop.get("repo"):
         raise BrokerDenied("wrong repository")
     if type(number) is not int or number <= 0:
@@ -478,7 +478,7 @@ def authorize_issue_fix(loop: dict, *, repo: str, number: int, plan_first: bool 
     except run_supervisor.RetryableError as exc:
         raise BrokerDenied(str(exc)) from None
     if plan_first:
-        from . import fix_hold, state as state_mod
+        from .. import fix_hold, state as state_mod
         if fix_hold.plan_required(state_mod.state_for(loop), number, live):
             raise PlanRequired(
                 f"issue #{number} needs a plan first: it is plan-first (the "
@@ -510,7 +510,7 @@ def issue_pr_labels(loop: dict, issue: dict) -> list[str]:
     host re-read, minus the ones that hand work to the loop — ``triage.fix_label``, every
     ``triage.auto_fix_labels`` entry (set or not in force) and the hold label — so that no label
     on a PR ever reads as a hand-off. Type, priority, area and provenance labels go as they are."""
-    from . import pr_hold
+    from .. import pr_hold
     triage = loop.get("triage") or {}
     triggers = {str(x).casefold() for x in triage.get("auto_fix_labels") or []}
     triggers |= {str(triage.get("fix_label") or "").casefold(), pr_hold.LABEL.casefold()}
@@ -525,8 +525,8 @@ def label_issue_pr(loop: dict, *, repo: str, number: int, pr: int, login: str) -
     (``issue_fix_issue``), never from the model. Best effort: a failure is logged and audited
     (``labels_failed``) and never raised, so the PR open, the review request and the ledger's
     ``opened`` state stand."""
-    from .run_supervisor import issue_inputs
-    from .util import log
+    from ..run_supervisor import issue_inputs
+    from ..util import log
     try:
         labels = issue_pr_labels(loop, issue_inputs.issue_fix_issue(loop, number))
         if not labels:
@@ -547,7 +547,7 @@ def label_issue_pr(loop: dict, *, repo: str, number: int, pr: int, login: str) -
 
 def request_issue_pr_review(loop: dict, *, repo: str, pr: int, login: str) -> None:
     """Ask the loop's reviewer seat to review the issue fix's PR, as the fixer (the handoff)."""
-    from . import config
+    from .. import config
     reviewer = config.seat_login(loop, "reviewer")
     if config.reviewer_is_app(loop):
         # An App reviewer cannot be requested (#1163); the PR's `opened` wakes the reviewer gate.

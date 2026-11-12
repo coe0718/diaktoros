@@ -148,8 +148,22 @@ def reader_fix(loop: dict, login: str = "") -> str:
     reader = login or "<its own login>"
     account = login or "<that login>"
     return (f"hermes dk set --loop {loop.get('id') or '<id>'} --read-token {reader} "
-            f"--token {account}=/path/to/pat "
-            f"(or --app {account}=APP_ID:/abs/key.pem for a GitHub App reader)")
+            f"--token {account}=/path/to/pat (or {reader_app_alternative(login)})")
+
+
+def reader_app_alternative(login: str = "") -> str:
+    """The GitHub App half of a reader fix for ``login`` (#1912).
+
+    ``set --app`` takes only an App's bot login (``<app-slug>[bot]``), so the same-login
+    alternative is offered only when ``login`` is one, or is a placeholder (empty or ``LOGIN``).
+    A concrete login that is not a bot (a person's account) cannot hold an App identity: moving
+    that reader to an App means naming the App's bot login as the reader too, so the alternative
+    changes ``--read-token`` as well.
+    """
+    if not login or login == "LOGIN" or config.APP_LOGIN.match(login.lower()):
+        return f"--app {login or '<that login>'}=APP_ID:/abs/key.pem for a GitHub App reader"
+    return ("for a GitHub App reader, name its bot login instead: --read-token <app-slug>[bot] "
+            f"--app <app-slug>[bot]=APP_ID:/abs/key.pem — {login!r} is not an App's bot login")
 
 
 def seat_fix(loop: dict, seat: str) -> str:

@@ -252,6 +252,43 @@ class FileListUnreadable(Base):
         self.assertIn("HTTP 502", change.record)
         self.assertIn(self.WARNING, change.record)
 
+    def test_a_failed_probe_page_past_the_bound_retries_then_degrades_on_the_last_attempt(self):
+        # #1727: exactly MAX_PR_FILE_PAGES full pages and a probe page that fails with a 5xx is
+        # transient, like a failed page 1: retried, and degraded only on the final attempt.
+        world = World([changed(i) for i in range(100)])
+        world.fail.add(f"{FILES}&page=2")
+        with mock.patch.object(gh, "MAX_PR_FILE_PAGES", 1):
+            with self.assertRaisesRegex(ValueError, "PR files unreadable: PR file page 2, past "
+                                                    "the 1-page bound, could not be read: HTTP 502"):
+                self.change(world)
+            with mock.patch.object(gh, "fetch", side_effect=world.fetch):
+                change = pr_facts.pr_change(self.loop, self.row, final=True)
+        self.assertIn("PR file page 2, past the 1-page bound, could not be read: HTTP 502",
+                      change.record)
+        self.assertNotIn("exceeds", change.record)
+        self.assertIn(self.WARNING, change.record)
+
+    def test_a_refused_malformed_or_longer_probe_page_degrades_at_once(self):
+        # Controls for the test above: a 404 probe, a malformed probe and a probe page that has
+        # items (the listing really is past the bound) are answers, so no retry is asked for.
+        for kind, said in (("gone", "could not be read: HTTP 404"),
+                           ("malformed", "could not be read: invalid PR file list"),
+                           ("longer", "PR file listing exceeds 1 full pages")):
+            with self.subTest(kind):
+                world = World([changed(i) for i in range(101 if kind == "longer" else 100)])
+                fetch = world.fetch
+                if kind == "gone":
+                    world.gone[f"{FILES}&page=2"] = "HTTP 404 {}"
+                elif kind == "malformed":
+                    def fetch(loop, path, *a, _real=world.fetch, **k):
+                        return (({"message": "?"}, "") if path.endswith("&page=2")
+                                else _real(loop, path, *a, **k))
+                with mock.patch.object(gh, "MAX_PR_FILE_PAGES", 1), \
+                     mock.patch.object(gh, "fetch", side_effect=fetch):
+                    change = pr_facts.pr_change(self.loop, self.row)
+                self.assertIn(said, change.record)
+                self.assertIn(self.WARNING, change.record)
+
     def test_a_readable_list_carries_no_warning(self):
         record = self.change(World([changed(1)])).record
         self.assertNotIn("could not read the PR's file list", record)

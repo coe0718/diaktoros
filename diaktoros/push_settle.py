@@ -25,10 +25,10 @@ event re-arms it, unlike an operator reconciliation, which never is.
 from __future__ import annotations
 
 import json
-import math
 from urllib.parse import quote
 
 from . import config, gh
+from .util import finite_time
 
 
 def sweep(loop: dict, prs: list) -> list[str]:
@@ -84,21 +84,6 @@ def _nothing_written(loop: dict, pr: dict | None, run) -> str:
             "broker audit, no live worker")
 
 
-def _attempt_time(at) -> float | None:
-    """An audit record's ``at`` as a finite float, or None when it is not a time.
-
-    ``json.loads`` keeps an integer literal as an ``int``, and ``math.isfinite`` converts it to a
-    float first, raising ``OverflowError`` for one past the float range (#1828): that is an
-    unreadable time, not an error out of the sweep.
-    """
-    if isinstance(at, bool) or not isinstance(at, (int, float)):
-        return None
-    try:
-        return float(at) if math.isfinite(at) else None
-    except OverflowError:
-        return None
-
-
 def _attempted(loop: dict, run) -> bool | None:
     """Whether the broker audit records a push attempt for this PR and head since the run began;
     None when the audit cannot be read whole (an unknown is never "no attempt")."""
@@ -122,7 +107,7 @@ def _attempted(loop: dict, run) -> bool | None:
         if (record.get("phase") == "attempt" and record.get("repo") == loop["repo"]
                 and record.get("pr") == run["pr"] and record.get("old_head") == run["head"]):
             at = record.get("at")
-            at = _attempt_time(at)
+            at = finite_time(at)
             if at is None:
                 # An attempt with no time, or one no comparison can place (NaN, an overflow to
                 # infinity: review of #1802, F4; an integer too large for a float: #1828):

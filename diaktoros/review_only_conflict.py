@@ -1,27 +1,25 @@
 """A review-only author's PR that no longer merges into its base (#191, #412).
 
 The loop never resolves it with a fixer. It says, once per head, what happened and what to run:
-the PR(s) merged since this head last merged (read from the base's new commits), the conflicting
-files (a dry merge on the host, nothing pushed) and the commands. With ``review_only_update`` on,
+the PR(s) merged since this head last merged (read from the subjects of the base's new commits,
+which the notice says), the conflicting files (a dry merge on the host, nothing pushed) and the
+commands. With ``review_only_update`` on,
 the host first tries a clean merge of the base into the head and pushes it with a lease.
 """
 from __future__ import annotations
 
-import re
+from . import broker, config, pr_refs, safe_push
 
-from . import broker, config, safe_push
-
-PR_REF = re.compile(r"\(#(\d+)\)\s*$|^Merge pull request #(\d+)\b")
 SHOWN = 5
 
 
 def merged_prs(commits) -> list[int]:
     """The PR numbers the base's new commits name (squash ``(#N)`` or a merge commit), oldest
-    first. As far as can be told: a commit that names none is not counted."""
+    first. As far as can be told: a commit that names none is not counted, and one whose subject
+    ends in ``(#N)`` counts as PR #N even when it names an issue (``pr_refs``, #1699)."""
     found: list[int] = []
     for _sha, subject in reversed(list(commits or [])):
-        match = PR_REF.search(subject or "")
-        number = int(next(g for g in match.groups() if g)) if match else 0
+        number = pr_refs.pr_number(subject)
         if number and number not in found:
             found.append(number)
     return found
@@ -61,7 +59,7 @@ def cause(loop: dict, facts: dict) -> str:
         return f"{loop['base']} moved since this head (no merged PR could be named)"
     names = ", ".join(f"#{n}" for n in merged[:SHOWN])
     more = f" and {len(merged) - SHOWN} more" if len(merged) > SHOWN else ""
-    return f"merged into {loop['base']} since: {names}{more}"
+    return f"merged into {loop['base']} since: {names}{more} ({pr_refs.CAVEAT})"
 
 
 def files(facts: dict) -> str:

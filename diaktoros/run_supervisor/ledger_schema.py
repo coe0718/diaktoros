@@ -214,7 +214,7 @@ MIGRATIONS = (
     ("prompt_rev", "ALTER TABLE runs ADD COLUMN prompt_rev TEXT", ()),
     ("model", "ALTER TABLE runs ADD COLUMN model TEXT", ()),
     # The thinking level the turn ran at (#513), as the proxy saw its first model request
-    # after the clamp: budget:<tokens>, effort:<level> or off. NULL: unknown.
+    # after the clamp: budget:<tokens>, effort:<level>, adaptive (#1929) or off. NULL: unknown.
     ("thinking", "ALTER TABLE runs ADD COLUMN thinking TEXT", ()),
     # What the turn's model calls used (#480), counted by the inference proxy: tokens in and out,
     # and the cost when the provider reported one. NULL: not recorded (rows from before, or a

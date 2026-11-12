@@ -18,6 +18,8 @@ from diaktoros import ci, gh, main_check, observer, state as state_mod  # noqa: 
 LOOP = {"repo": "acme/widgets", "base": "main", "read_token": "reader", "required_checks": []}
 RED = ci.CIState(failed=["tests"], passed=["lint"], urls={"tests": "https://x/run/1"})
 GREEN = ci.CIState(passed=["tests", "lint"])
+# The literal text, not ``pr_refs.CAVEAT``: the test must run (and fail) where that module is absent.
+CAVEAT = "read from commit subjects, so a direct push ending in (#N) is counted as a PR too"
 COMPARE = {"commits": [{"commit": {"message": "Fix a (#11)\n\nbody"}},
                        {"commit": {"message": "Merge pull request #12 from a/b"}},
                        {"commit": {"message": "direct push"}}],
@@ -114,6 +116,82 @@ class MainCheck(unittest.TestCase):
         (_args, kw), = self.notices
         self.assertNotIn("partial", kw["outcome"])
         self.assertIn("merged since main's last green head: #11, #12", kw["outcome"])
+
+    def test_a_trailing_ref_is_named_with_the_subject_only_caveat(self):
+        """#1699: a direct push like ``update docs (#123)`` names an issue, not a merged PR; the
+        notice must say its list is read from commit subjects, not state it as fact."""
+        compare = {"commits": [{"commit": {"message": "update docs (#123)"}}], "total_commits": 1}
+        self.assertFalse(self.run_sweep("a" * 40, GREEN))
+        self.assertTrue(self.run_sweep("b" * 40, RED, compare=compare))
+        (_args, kw), = self.notices
+        self.assertIn(f"merged since main's last green head: #123 ({CAVEAT})", kw["outcome"])
+
+    def test_the_caveat_survives_long_check_names(self):
+        """#1699, review of #2419: the outcome is bounded, and with long failed check names the
+        caveat after the PR list was cut to ``(read``. The names are clipped instead, so the
+        delivered outcome still ends the list with the whole caveat."""
+        names = [f"{c}" * 100 for c in "abcde"]             # five 100-character check names
+        red = ci.CIState(failed=names, passed=[], urls={names[0]: "https://x/run/1"})
+        compare = {"commits": [{"commit": {"message": "update docs (#123)"}}], "total_commits": 1}
+        self.assertFalse(self.run_sweep("a" * 40, GREEN))
+        self.assertTrue(self.run_sweep("b" * 40, red, compare=compare))
+        (_args, kw), = self.notices
+        outcome = kw["outcome"]
+        self.assertLessEqual(len(outcome), 600)
+        self.assertIn(f"#123 ({CAVEAT})", outcome)
+        self.assertIn("a" * 30, outcome)                     # the first check is still named
+        self.assertTrue(outcome.endswith("https://x/run/1"), outcome)
+
+    def test_a_long_note_is_cut_after_the_caveat_not_through_it(self):
+        """The flake note follows the PR list; when it is long, it is what gets cut."""
+        many = main_check.Merges(list(range(1, 15)), 14, 400)          # partial, over PRS_MAX
+        outcome = main_check._outcome(["x" * 100] * 5, many, "https://x/run/1", " n" * 400)
+        self.assertEqual(len(outcome), 600)
+        self.assertIn(f"#14 (+4 earlier) ({CAVEAT}) — GitHub's compare was truncated", outcome)
+        self.assertIn("this is not the full list", outcome)
+
+    def test_a_merge_subject_without_a_word_boundary_names_no_pr(self):
+        """``Merge pull request #57x`` is no merge commit: it names no PR (the reader every
+        notice and ``update`` share; main_check's own regex used to read it as #57)."""
+        compare = {"commits": [{"commit": {"message": "Merge pull request #57x"}}],
+                   "total_commits": 1}
+        self.assertFalse(self.run_sweep("a" * 40, GREEN))
+        self.assertTrue(self.run_sweep("b" * 40, RED, compare=compare))
+        (_args, kw), = self.notices
+        self.assertNotIn("#57", kw["outcome"])
+        self.assertIn("no PR merges since main's last green head", kw["outcome"])
+
+    def test_oversized_refs_keep_the_outcome_bounded(self):
+        """Review of #2419: subjects are pushed data, so nine direct pushes ending in 500-digit
+        ``(#N)`` made the main_red outcome 4688 characters. A reference no PR number can have
+        names no PR, so the sweep's outcome stays within 600 with the caveat whole."""
+        commits = [{"commit": {"message": f"push {i} (#{str(i) * 500})"}} for i in range(1, 10)]
+        commits += [{"commit": {"message": "Fix b (#77)"}}]
+        compare = {"commits": commits, "total_commits": len(commits)}
+        self.assertFalse(self.run_sweep("a" * 40, GREEN))
+        self.assertTrue(self.run_sweep("b" * 40, RED, compare=compare))
+        (_args, kw), = self.notices
+        outcome = kw["outcome"]
+        self.assertLessEqual(len(outcome), 600, outcome[:200])
+        self.assertIn(f"merged since main's last green head: #77 ({CAVEAT})", outcome)
+        self.assertTrue(outcome.endswith("https://x/run/1"), outcome[-200:])
+
+    def test_a_ref_past_the_int_digit_limit_does_not_crash_the_sweep(self):
+        """A 5000-digit ``(#N)`` is past ``int()``'s 4300-digit limit: the reader raised
+        ValueError and the sweep died before the notice. It names no PR now."""
+        compare = {"commits": [{"commit": {"message": "x (#" + "7" * 5000 + ")"}}],
+                   "total_commits": 1}
+        self.assertFalse(self.run_sweep("a" * 40, GREEN))
+        self.assertTrue(self.run_sweep("b" * 40, RED, compare=compare))
+        (_args, kw), = self.notices
+        self.assertIn("no PR merges since main's last green head", kw["outcome"])
+
+    def test_no_named_pr_needs_no_caveat(self):
+        compare = {"commits": [{"commit": {"message": "direct push"}}], "total_commits": 1}
+        self.assertFalse(self.run_sweep("a" * 40, GREEN))
+        self.assertTrue(self.run_sweep("b" * 40, RED, compare=compare))
+        (_args, kw), = self.notices
+        self.assertNotIn("read from commit subjects", kw["outcome"])
 
     def test_missing_total_commits_is_partial(self):
         no_total = {"commits": COMPARE["commits"]}
