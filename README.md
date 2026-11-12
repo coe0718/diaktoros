@@ -116,7 +116,7 @@ hermes dk setup --repo "<owner>/<repository>"
 
 The plugin is in the [Hermes plugin catalog](https://github.com/NousResearch/hermes-agent/tree/main/plugin-catalog), so `hermes plugins install diaktoros` installs the reviewed release at its pinned commit. Desktop can install it from the catalog too. Catalog updates arrive only through a reviewed pin bump.
 
-The install scanner rates the plugin **caution**. A catalog install accepts that without a prompt, because the catalog reviewed it at admission. Installing from the repository instead (`hermes plugins install coe0718/diaktoros`) gets the current `main`, shows the findings and asks `Install anyway? Only continue if you trust the source. [y/N]`. Typical findings concern subprocess execution (`bwrap`, Git, workers and test fixtures), security-probe code, and setup advice mentioning privileged commands. A caution verdict is not a security audit.
+The install scanner rates the plugin **caution**. A catalog install accepts that without a prompt, because the catalog reviewed it at admission. Typical findings concern subprocess execution (`bwrap`, Git, workers and test fixtures), security-probe code, and setup advice mentioning privileged commands. A caution verdict is not a security audit. To update, run `hermes plugins update diaktoros`: it moves to the commit the catalog has reviewed.
 
 `setup` detects runtime paths, previews `init`, installs the requested wiring, schedules the watchdog and runs `doctor` plus `selftest --no-model`. It asks before arming; **decline arming until ready**. Name a hook admin to create paused hooks. If that answer is blank and hooks are absent, `doctor` fails and setup prints **stopped before arming**, exiting 1; that is expected until you create the hooks manually. Re-running setup on an existing loop keeps its saved settings; use `set` or `apply` to change them.
 
@@ -183,7 +183,7 @@ Diaktoros was called hermes-review-loop before v0.2.0. **Hermes knows a plugin b
 
 ```bash
 hermes plugins disable hermes-review-loop        # the old plugin; its gates keep running by path until migrate
-hermes plugins install diaktoros                 # from the catalog; or: coe0718/diaktoros --force --ref <sha>
+hermes plugins install diaktoros                 # from the catalog, at its reviewed commit
 hermes plugins enable diaktoros
 hermes dk migrate --dry-run                      # what moves: settings, file names, the watchdog job
 hermes dk migrate                                # add --rename-loop OLD=NEW --admin-token LOGIN to rename a loop
