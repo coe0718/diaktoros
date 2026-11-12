@@ -289,6 +289,49 @@ class Gate(Base):
         self.assertEqual(fix_declined.next_step(self.loop, reason),
                          "once that is fixed, apply the fix label to the issue")
 
+    def test_a_label_re_added_between_the_two_reads_says_to_remove_and_reapply(self):
+        # #1841: the gate's eligibility read finds the label gone ("no longer on the issue"), it
+        # is re-added before `declined` reads the issue again and finds it present. That newer
+        # read decides: "apply the fix label" would send no event to a label already there.
+        from diaktoros import observer
+        reads = [issue(labels=()), issue()]                 # first read absent, then present
+        api = gh.api
+
+        def reordered(loop, path, method="GET", body=None, login=None):
+            if path.endswith("/issues/12") and method == "GET" and reads:
+                return reads.pop(0)
+            return api(loop, path, method, body, login)
+        said = []
+        with mock.patch.object(gh, "api", reordered), \
+                mock.patch.object(observer, "notify",
+                                  side_effect=lambda *a, **kw: said.append(kw["outcome"])):
+            self.run_gate(self.labeled())
+        self.assertEqual((reads, self.enqueued), ([], []))
+        st = state_mod.state_for(self.loop)
+        (line,) = [x for x in fix_hold.status_lines(self.loop, st) if "#12" in x]
+        self.assertIn("is no longer on the issue", line)
+        for text in (said[0], line):
+            self.assertTrue(text.endswith("remove the fix label and apply it again"), text)
+            self.assertNotIn("apply the fix label to the issue", text)
+
+    def test_a_decline_recorded_before_the_label_reading_existed_still_reads(self):
+        # #1841: an entry from before the three-state `label` field falls back to its old
+        # `label_gone` flag, then to the reason text; an unreadable issue is `unknown`.
+        from diaktoros import fix_declined
+        st = state_mod.state_for(self.loop)
+        gone = "no longer eligible: the 'agent-fix' label is no longer on the issue"
+        st.kv_set(st.dir / fix_declined.FILE, {
+            "1": {"reason": "the author is not in triage.authors", "at": 1, "label_gone": True},
+            "2": {"reason": gone, "at": 1},
+            "3": {"reason": "the author is not in triage.authors", "at": 1, "label_gone": False}})
+        found = fix_declined.entries(st)
+        self.assertEqual([found[n]["label"] for n in (1, 2, 3)], ["gone", "unknown", "unknown"])
+        self.assertTrue(fix_declined.line(self.loop, 1, found[1]).endswith(fix_declined.APPLY))
+        self.assertTrue(fix_declined.line(self.loop, 2, found[2]).endswith(fix_declined.APPLY))
+        self.assertTrue(fix_declined.line(self.loop, 3, found[3]).endswith(fix_declined.REAPPLY))
+        with mock.patch.object(gh, "api", side_effect=OSError("down")):
+            self.assertEqual(fix_declined.label_state(self.loop, 12), "unknown")
+
     def test_an_issue_filed_by_an_app_reader_is_handed_to_the_fixer(self):
         # #1794 (review of #1804, F4): the reader as a GitHub App, filing as its bot.
         bot = "widgets-reader[bot]"
