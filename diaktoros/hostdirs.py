@@ -20,7 +20,8 @@ class HostStateGone(FileNotFoundError):
 
 
 def in_worker() -> bool:
-    return os.environ.get(WORKER_ENV) == "1"
+    # Either spelling (#2300): envnames.get also reads the old REVIEW_LOOP_ name.
+    return envnames.get("WORKER") == "1"
 
 
 def ensure(path: str | os.PathLike, mode: int = 0o777) -> pathlib.Path:
