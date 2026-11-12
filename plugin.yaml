@@ -295,7 +295,7 @@ config_schema:
     default: ""
     description: "Tells the reviewer what a required check ran, e.g. 'tests (3.14)=full unit suite and harness'. A covering check that is green at the head, as the host read it, moves what it covers out of the review's list of unchecked items; a failed, running or missing one does not. Only a check that gates (named in required checks, when that is set) can be cited. Blank = not set here (an unset map means the reviewer is told nothing)"
   prices:
-    label: "Model prices (MODEL=INPUT/CACHED/OUTPUT, $ per million tokens, commas between)"
+    label: "Model prices (MODEL=INPUT/CACHED/OUTPUT, MODEL=subscription or MODEL=subscription:INPUT/CACHED/OUTPUT, $ per million tokens, commas between)"
     type: str
     default: ""
     description: "What each model costs, for the cost estimate in stats (#1790): MODEL=INPUT/CACHED/OUTPUT in US dollars per million tokens, the model as stats names it, e.g. 'deepseek-flash=0.14/0.014/0.28'. A model with no entry is shown as unpriced, never $0. A subscription model is MODEL=subscription (shown as subscription, left out of spend), or MODEL=subscription:INPUT/CACHED/OUTPUT with its API list prices, which adds an API-equivalent figure, never counted as spend. The loop never fetches prices. Blank = not set here (an unset table means every model is unpriced)"
