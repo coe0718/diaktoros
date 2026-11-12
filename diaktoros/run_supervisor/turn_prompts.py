@@ -43,7 +43,7 @@ def _adjudicator_facts(loop: dict, row, marker, facts: dict) -> list:
     if not isinstance(marker, dict):
         raise ValueError('breach marker required')
     facts['round'] = marker['rounds']
-    facts['reason'] = marker.get('reason') or 'review cap reached without an approval'
+    facts['reason'] = adjudication_reason(marker)
     facts['situation'] = adjudication_situation(marker)
     comments, _error = gh.issue_comments_read(loop, row['pr'])
     if comments is None:
@@ -269,10 +269,37 @@ def reconsider_section(loop: dict, row) -> str:
 SHADOW_BODY_MAX = 24000
 
 
+def adjudication_reason(marker: dict) -> str:
+    """The prompt's "Why it stopped" for a breach marker: its own ``reason``, else a fallback
+    that agrees with ``adjudication_situation`` (#1896). Only a marker with no ``escalated`` at
+    all falls back to the spent cap; an escalation falls back to its nested reason, worded as
+    ``escalate_action`` words a top-level one (``escalated: <why>``). Neither escalation
+    fallback says whether the cap was reached: a shadow or operator escalation can land at the
+    cap too (#2444 F2), so the wording names the escalation and nothing about the count."""
+    marker = marker or {}
+    if marker.get('reason'):
+        return marker['reason']
+    escalated = marker.get('escalated')
+    if not escalated:
+        return 'review cap reached without an approval'
+    why = escalated.get('reason') if isinstance(escalated, dict) else None
+    if why:
+        return f'escalated: {why}'
+    return 'escalated for a ruling'
+
+
 def adjudication_situation(marker: dict) -> str:
     """Why this head is before the adjudicator, for its prompt (#1004): the template used to
-    say "none an approval at this head" whatever woke it, wrong for a shadow escalation."""
-    by = ((marker or {}).get('escalated') or {}).get('by')
+    say "none an approval at this head" whatever woke it, wrong for a shadow escalation.
+    An ``escalated`` record with no recognised ``by`` is the operator's, and only no
+    ``escalated`` at all is the spent cap, as ``stats.escalations`` and ``gate.breach`` read it
+    (#1896). The operator wording does not say whether the budget was spent: an escalation can
+    land at the cap as well as before it (#2444 F2)."""
+    escalated = (marker or {}).get('escalated')
+    if not escalated:
+        return ("none an approval at this head — the budget is spent, which is why this is a "
+                "ruling and not another round")
+    by = escalated.get('by') if isinstance(escalated, dict) else None
     if by == 'shadow':
         return ("the reviewer **approved** this head, but the shadow seat, a second reviewer "
                 "model that writes nothing, requested changes at it. Rule on the shadow review's "
@@ -282,10 +309,8 @@ def adjudication_situation(marker: dict) -> str:
     if by == 'dispute':
         return ("the fixer answered the latest verdict as not a defect and pushed nothing — the "
                 "sides disagree, which is why this is a ruling and not another round")
-    if by:
-        return "the operator asked for a ruling at this head before the budget was spent"
-    return ("none an approval at this head — the budget is spent, which is why this is a ruling "
-            "and not another round")
+    return ("the operator asked for a ruling at this head instead of waiting for another "
+            "round")
 
 
 def newest_shadow_review(row):

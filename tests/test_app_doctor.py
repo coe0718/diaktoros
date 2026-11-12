@@ -232,6 +232,18 @@ class Live(AppLoop):
                 self.assertNotIn("private key", got.fix)
                 self.assertNotIn("is not installed", got.detail)
 
+    def test_the_unknown_detail_names_only_what_was_not_read(self):
+        # #1922: the installation read is made only after /app verified the key, so its
+        # no-answer detail must not say the key was not read.
+        got = self.silent("installation")
+        self.assertEqual(got.status, doctor.UNKNOWN, got.detail)
+        self.assertIn("the installation was not read", got.detail)
+        self.assertIn("GET /app signed with the key", got.detail)
+        self.assertNotIn("the key and the installation were not read", got.detail)
+        got = self.silent("app")
+        self.assertEqual(got.status, doctor.UNKNOWN, got.detail)
+        self.assertIn("the key and the installation were not read", got.detail)
+
     def real(self, call, **urlopen):
         """``call()`` with the real ``_as_app``: only the socket (``urlopen``) and the JWT signer
         are replaced, so the response it builds is the one the check sees."""
