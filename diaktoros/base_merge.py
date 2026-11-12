@@ -7,14 +7,15 @@ when the merge touched nothing the PR changed. With the setting on, the sweep an
 hand each behind loop PR (never a review-only author's: that is ``review_only_update``) to ``act``:
 
 * **The merge.** With no turn of the PR queued or in flight, no change request at the head (the
-  fixer's to answer, or a ruling's at the cap) and no hold for a person or escalation, the host
-  merges the base's tip
+  fixer's to answer, or a ruling's at the cap), no hold for a person or escalation, and no
+  adjudicator's ACCEPT still being acted on (its approval or dismissal not yet settled, #2364:
+  a merge moves the head out from under both), the host merges the base's tip
   into the head as the fixer seat, with a lease on the head (``safe_push.update_branch``, as for a
   review-only PR). Only a clean merge that brings no workflow change is pushed; one that is not is
   remembered for the (head, base tip) pair and not tried again.
 * **The approval carries over.** When the head before was ready to merge but for being behind (the
-  reviewer's approval at the head, and nothing else ``ready`` names: CI, the shadow, a hold, a
-  ruling), and the merge is an exact tree identity (``safe_push.tree_identity``: the base's new
+  reviewer's approval at the head, or the adjudicator's on its ACCEPT ruling, #2364, and nothing
+  else ``ready`` names: CI, the shadow, a hold, a change request still to dismiss), and the merge is an exact tree identity (``safe_push.tree_identity``: the base's new
   commits touch no path the PR changed, and the merged tree is the base's with the PR's diff
   applied), the host records the new head as carried from the old one, before it pushes. ``gate``
   then counts that approval at the new head (``carried``), so the reviewer gate queues no review
@@ -22,7 +23,9 @@ hand each behind loop PR (never a review-only author's: that is ``review_only_up
   must still pass at the new head. Anything short of that is reviewed as usual.
 
 The carried approval is read live, from the PR's reviews: once the approval at the old head is
-dismissed, or a later verdict lands there, nothing is carried.
+dismissed, or a later verdict lands there, nothing is carried. A carried ruled approval also needs
+its ACCEPT to stay the PR's newest ruling at the old head (``gate.ruled_approvals``), so a later
+ruling voids it at the new head too, and the watchdog raises no second breach for a spent cap.
 """
 from __future__ import annotations
 
@@ -53,10 +56,11 @@ def _records(loop: dict) -> dict:
 
 
 def carried(loop: dict, reviews: list, head: str) -> list:
-    """The reviewer's approval the host's base merge carried to ``head``, as a copy at ``head``
-    marked ``carried_from``; ``[]`` when there is none. ``gate`` counts it with the head's own
-    reviews. The approval must still be the old head's latest effective verdict, a reviewer's, on
-    the recorded PR: the carried one is never more than the old head's own."""
+    """The approval the host's base merge carried to ``head``, as a copy at ``head`` marked
+    ``carried_from``; ``[]`` when there is none. ``gate`` counts it with the head's own reviews.
+    The approval must still be the old head's latest effective verdict, the recorded review (the
+    reviewer's, or the adjudicator's on its ACCEPT), on the recorded PR: the carried one is never
+    more than the old head's own."""
     depth = _DEPTH.get()
     record = _records(loop).get(head) if head and depth < CHAIN_MAX else None
     if not isinstance(record, dict) or not isinstance(reviews, list):
@@ -67,7 +71,7 @@ def carried(loop: dict, reviews: list, head: str) -> list:
         latest = gate.latest_effective_review_at_head(reviews, loop, old) if old else None
     finally:
         _DEPTH.reset(token)
-    if (latest is None or gh.review_state(latest) != "APPROVED" or not gate.is_reviewer(latest, loop)
+    if (latest is None or gh.review_state(latest) != "APPROVED"
             or latest.get("id") != record.get("review")
             or gate._review_pr(latest, loop["repo"]) != record.get("number")):
         return []
@@ -122,7 +126,13 @@ def _waits(loop: dict, st, number: int, head: str, live: dict, reviews) -> str:
         # The fixer answers it, or a ruling does at the cap (#1907): a merge would move the head
         # under either, and the merged head would be reviewed with the findings still open.
         return "changes are requested at the head"
-    return ""
+    # #2364: the sweep approves and dismisses at this head; a merge before both settle strands
+    # the overruled change request at a head no ruling names any more. Read whichever verdict is
+    # now the latest: a write still on the wire holds the head too. At a head the approval was
+    # carried to, no change request is left to dismiss: nothing waits.
+    from . import ruled_approval
+    return ruled_approval.unsettled(loop, number, head, reviews,
+                                    ruled=gate.is_ruled_approval(latest, loop))
 
 
 def _in_flight(loop: dict, number: int) -> str:
@@ -145,12 +155,12 @@ def _in_flight(loop: dict, number: int) -> str:
 
 
 def source(loop: dict, st, head: str, live: dict, raw, reviews):
-    """``(review, '')``: the reviewer's approval at ``head`` that may carry over, the head being
-    ready to merge but for being behind; else ``(None, why not)``. ``raw`` is the PR's review
-    list and ``reviews`` the effective ones."""
+    """``(review, '')``: the approval at ``head`` that may carry over (the reviewer's, or the
+    adjudicator's on its ACCEPT), the head being ready to merge but for being behind; else
+    ``(None, why not)``. ``raw`` is the PR's review list and ``reviews`` the effective ones."""
     latest = gate.latest_effective_review_at_head(reviews, loop, head) if isinstance(reviews, list) else None
-    if latest is None or gh.review_state(latest) != "APPROVED" or not gate.is_reviewer(latest, loop):
-        return None, f"{head[:7]} was not approved by the reviewer"
+    if latest is None or gh.review_state(latest) != "APPROVED":
+        return None, f"{head[:7]} was not approved by the reviewer or on an ACCEPT ruling"
     from . import ready
     left = [text for _kind, text in ready.assess_kinds(loop, st, live, raw, ci.read(loop, head), live)
             if text != BEHIND]
