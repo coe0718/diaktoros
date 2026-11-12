@@ -1248,6 +1248,14 @@ The archive holds the routes' HMAC secrets, so restored hooks keep working. It i
 `0600`, the command warns about it, and the secrets are never printed. It leaves out GitHub
 tokens (PATs), Hermes profiles and model logins. It never overwrites a file.
 
+Writer scaffolding is deliberately left out as well: the plugin's lock files (an empty file with
+the name of one of its own locks directly in a state directory; a lock-named file that holds data
+is archived) and in-progress temp files (a writer's temp name that the writer holds open). A file
+that is listed but removed before it is read (for example under a loop's `artifacts/<n>/` by
+cleanup) is left out too instead of failing the backup. The manifest lists each temp and vanished
+file it skipped, and both `backup` and `migrate`'s automatic backup print them as a `left out`
+line; the empty lock files are not listed. None of these are restored.
+
 It refuses (exit `2`, nothing written) while `migrate`'s pause marker exists: a `migrate` or
 `restore` is running, or a `migrate` died before it finished (#1054). The
 records may then be half moved, and they are only safe under the pause, which an archive would
@@ -1306,12 +1314,20 @@ restore and overwrite, reads the archive back like `backup --verify` (exit `2`, 
 if it cannot) and writes nothing. Exit `1` means a step is not finished or `doctor`
 listed a check that is not verified.
 
+Not restored, because the archive does not hold them: GitHub tokens (PATs) and App private keys,
+Hermes profiles, model logins, and the plugin's lock files and in-progress temp files (see
+`backup`; the manifest lists the skipped temp names).
+
 Before it overwrites anything, `restore` backs up the live install to
 `$HERMES_HOME/backups/diaktoros-pre-restore-<stamp>.tar.gz` (#1049) and prints its path;
 restore that archive to undo the restore. It is written like a `backup --out` archive: retention
 (`--keep`) never counts or deletes it, so delete it by hand once it is no longer needed. If that
 backup cannot be taken (for example a live loop file that does not load), the restore is
-refused and nothing is written. A restore onto an install with nothing to overwrite takes no such
+refused and nothing is written. Unlike a plain `backup`, that backup does not skip a file the
+restore is about to overwrite that is removed while it is read: it fails, and the restore is
+refused, so a file recreated in that window is never overwritten without a copy (#2413). The
+file is matched however the archive spells its path (`/./`, repeated slashes). A
+restore onto an install with nothing to overwrite takes no such
 backup. The files are then put back all or none: every member is first written to a temp file
 beside its target, and only when all of them are written are they swapped in; if a swap fails,
 the files already swapped are put back as they were. Route entries and the watchdog job are
@@ -2132,7 +2148,24 @@ comment is posted, under the lock the seat's own `--ask` uses, so two `--post-pl
 and a fixer turn, never both post. If the comment's outcome is unknown or its ask could not be
 recorded, the reservation stays open as pending (`status` says so; no reply resolves it, and no
 other ask can start): run `--post-plan` again, which adopts the run's comment if GitHub has it
-(found by a hidden marker naming the run) and posts only if not. The watchdog sweep or the comment
+(found by a hidden marker naming the run) and posts only if not. That holds even after the run
+stops being refused only for want of a plan (#2381): when the label is removed, the body
+shortened, the branch moved or any other conflict appears, `--post-plan` refuses to post but
+still settles the run's own reservation first. With no comment of the run on the issue, the
+reservation is dropped and does not count toward the three asks. With one, and the plan no
+longer required (the issue, as read now, has no `plan-first` label and no large body, or is
+closed), the ask is closed (still counted), even if another conflict such as a moved branch
+also stands. If the issue still asks for a plan (or cannot be read) and another conflict stands,
+the comment is adopted so `/loop approve` resolves it. If the comments cannot be read it stays
+pending in that case, so run `--post-plan` again; when no plan is needed any more it is closed
+and stays counted, since its comment may be on the issue. When `continue` opens the run's PR, or
+finds it already open, it closes the run's own plan ask the same way, before the review
+request, so a failed review request does not leave it open. If closing it fails (the state
+cannot be written), `continue` still completes the review request and records the run, exits
+non-zero and says so; run `continue` again to close the ask. Another run's ask, or the fixer
+seat's, is never touched. The sweep resolves or closes only the exact ask whose replies it read:
+if that ask was closed and another opened meanwhile, the old reply is ignored.
+The watchdog sweep or the comment
 webhook reads a maintainer's `/loop approve` after it, records the approval and, since the
 branch is already pushed, queues no new fix turn; run `continue` again to open the PR.
 
