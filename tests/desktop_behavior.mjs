@@ -2679,7 +2679,7 @@ function healthFixture(loop = 'fixture-loop') {
 }
 
 for (const [failure, reason] of [[new Error('403: {"detail":"private caller"}'), 'caller'],
-  [new Error('private transport'), 'unreachable'], [new Error('503: {"detail":"private"}'), 'unreachable']]) {
+  [new Error('private transport'), 'unreachable'], [new Error('503: {"detail":"private"}'), 'host']]) {
   test('health fallback retains validated local checks and honest disclosure: ' + failure.message, async () => {
     const h = await harness(); h.render('page')
     const offline = { ...healthFixture(), offline: true, checks: [
@@ -2693,11 +2693,55 @@ for (const [failure, reason] of [[new Error('403: {"detail":"private caller"}'),
     h.queries.health = h.good(data); h.render('page')
     const text = h.text(h.tree())
     assert.match(text, /Local profile requires attention/)
-    assert.match(text, reason === 'caller' ? /GitHub not probed from this caller/ : /GitHub probe unavailable/)
-    assert.doesNotMatch(text, /Automatically read when this loop opens|private caller|private transport/)
+    assert.match(text, { caller: /GitHub not probed from this caller/, unreachable: /GitHub probe unavailable/,
+      host: /Host read failed/ }[reason])
+    assert.doesNotMatch(text, /Automatically read when this loop opens|private caller|private transport|"detail"/)
     h.dispose()
   })
 }
+
+// #1150: the three ways a probed health read can fall short are told apart, never conflated.
+async function healthAfterProbe(probe) {
+  const h = await harness(); h.render('page')
+  h.respond({ ...healthFixture(), offline: true }); probe(h)
+  const data = await h.options.health.queryFn()
+  h.queries.health = h.good(data); h.render('page')
+  return { h, data, text: h.text(h.tree()) }
+}
+
+test('health probe 503 is disclosed as a host local read failure, not a GitHub probe failure', async () => {
+  const { h, data, text } = await healthAfterProbe(h =>
+    h.readFails('&probe=1', new Error('503: {"detail":"Desktop read unavailable; retry the read."}')))
+  assert.equal(data.offline, true); assert.equal(data.probeFailure, 'host')
+  assert.deepEqual(h.calls, ['/health?loop=fixture-loop&probe=1', '/health?loop=fixture-loop'])
+  assert.match(text, /Host read failed: the host could not read this loop’s local state for the probed checks\. Local checks only\./)
+  assert.doesNotMatch(text, /GitHub probe|Desktop read unavailable|retry the read/)
+  // The offline fallback is a verified read: one quiet line, no Retry box.
+  assert.equal(h.buttons(h.tree()).some(b => b.props.children === 'Retry'), false)
+  h.dispose()
+})
+
+test('health probe transport failure keeps the offline unreachable wording', async () => {
+  const { h, data, text } = await healthAfterProbe(h => h.readFails('&probe=1', new Error('private transport')))
+  assert.equal(data.probeFailure, 'unreachable')
+  assert.match(text, /GitHub probe unavailable: the probe request could not be completed\. Local checks only\./)
+  assert.doesNotMatch(text, /Host read failed|private transport/)
+  h.dispose()
+})
+
+test('health GitHub failure inside a successful probe stays a GitHub disclosure', async () => {
+  const h = await harness(); h.render('page')
+  h.respond({ ...healthFixture(), checks: [{ name: 'hooks', status: 'unknown', paused: false, fix: '',
+    detail: 'could not read the complete GitHub hooks listing' }], counts: { unknown: 1 } })
+  const data = await h.options.health.queryFn()
+  assert.equal(data.offline, false); assert.equal(data.probeFailure, null)
+  assert.deepEqual(h.calls, ['/health?loop=fixture-loop&probe=1'])
+  h.queries.health = h.good(data); h.render('page')
+  const text = h.text(h.tree())
+  assert.match(text, /could not read the complete GitHub hooks listing/)
+  assert.doesNotMatch(text, /Host read failed|GitHub probe unavailable|Local checks only/)
+  h.dispose()
+})
 
 test('health fallback rejects malformed, wrong-loop and non-offline replies without inventing checks', async () => {
   const h = await harness(); h.render('page')

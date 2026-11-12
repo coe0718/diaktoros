@@ -409,7 +409,10 @@ function useHealth(loop) {
         // local-only probe guard remain errors; never render transport error text.
         if (status !== 0 && status !== 403 && status !== 503) throw error
         const offline = validate(await call(path), true)
-        return { ...offline, probeFailure: status === 403 ? 'caller' : 'unreachable' }
+        // A 503 is the host's own bounded read failure (its read boundary maps any unexpected
+        // error to it), not a GitHub answer; only no response at all is an unreachable probe.
+        // GitHub's own failures come back inside a successful probe, as unknown checks (#1150).
+        return { ...offline, probeFailure: status === 403 ? 'caller' : status === 503 ? 'host' : 'unreachable' }
       }
       return { ...validate(probed, false), probeFailure: null }
     },
@@ -1060,9 +1063,11 @@ function Health({ loop }) {
           text: health.data && health.data.offline
             ? (health.data.probeFailure === 'caller'
                 ? 'GitHub not probed from this caller. '
-                : health.data.probeFailure === 'unreachable'
-                  ? 'GitHub probe unavailable: the probe request could not be completed. '
-                  : '') + 'Local checks only. This response came back offline: the gateway, the hooks, token expiry and scopes, ' +
+                : health.data.probeFailure === 'host'
+                  ? 'Host read failed: the host could not read this loop’s local state for the probed checks. '
+                  : health.data.probeFailure === 'unreachable'
+                    ? 'GitHub probe unavailable: the probe request could not be completed. '
+                    : '') + 'Local checks only. This response came back offline: the gateway, the hooks, token expiry and scopes, ' +
               'and the labels were left unprobed. Refresh GitHub asks again for the probed set with ' +
               'this loop’s own tokens, from this machine only; hermes dk doctor does the same in a ' +
               'terminal.'
