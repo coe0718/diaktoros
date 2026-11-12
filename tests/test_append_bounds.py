@@ -32,15 +32,23 @@ What the scan covers, and what it does not (perfect static detection is not poss
   ``os.open`` calls sharing one flags variable count two. Branches are followed: an assignment
   counts if it may reach the open on any path (``if``/``else``, ``try``/``except``, ``match``,
   a loop's next pass or ``break``), so a non-append rebinding on one branch does not hide the
-  open; the read errs toward counting more, never fewer (``_Bindings``). An ``O_APPEND`` that
-  reaches no counted ``os.open`` (flags passed to some other helper, a default argument, a value
-  rebound on every path before the open) counts one itself.
-* A flags name the function does not assign is followed outward (#2377): to the enclosing
-  functions' and the module's assignments of it (a module constant, a closure variable), whose
-  ``O_APPEND`` the open then consumes. Flags the scan cannot resolve to append-free ones count as
-  append: a parameter, an import, a ``for`` or ``with`` target, a name nothing binds, a call
-  other than ``getattr(os, "O_...")``, an ``os.open(*args)`` or ``(**kw)``. A false alarm only
-  asks for a registry entry; a miss is an unbounded file.
+  open; the read errs toward counting more, never fewer (``_Bindings``).
+* Flags count as append unless the scan proves them append-free (#2377, ``_flags_may_append``).
+  Append-free are: ``os.O_X`` or ``getattr(os, "O_X"[, default])`` for an ``O_`` flag other than
+  ``O_APPEND`` that the host running the guard defines without the append bit; an int constant
+  without that bit; ``a | b`` and ``a ^ b`` of append-free values, ``a & b`` with one append-free
+  side, ``a if c else b`` and ``a or b`` of append-free values; and a name every value of which
+  is append-free. A name is followed to its innermost binding scope: a lambda, the function,
+  then the enclosing functions and the module (a module constant, a closure variable).
+  Everything else counts as append: any other ``os`` attribute (``os.ST_NOATIME`` is 1024, the
+  Linux ``O_APPEND``), ``~``, ``<<`` (``1 << 10``), ``+`` and every other operator, a parameter
+  (a lambda's included), an import, a ``for``, ``with``, ``except ... as`` or ``match`` capture
+  target, a ``global`` or ``nonlocal`` name, a name nothing binds, any other call, an
+  ``os.open(*args)`` or ``(**kw)``. A false alarm only asks for a registry entry; a miss is an
+  unbounded file. Which bit is ``O_APPEND`` is read on the host running the guard (CI's Linux).
+* A mention of ``O_APPEND`` that reaches no ``os.open`` is not an open and is not counted
+  (#2377). Flags handed to a helper are counted at the helper's own ``os.open``, whose flags
+  parameter the scan cannot resolve, so it counts as append there.
 * Not covered: an opener reached through an alias (``o = open; o(p, "a")``, ``from os import
   open``), or a mode or flags value produced at run time from strings. Those need a reviewer's
   eye.
@@ -146,7 +154,7 @@ _OPEN_MODULES = {"io", "codecs", "builtins", "gzip", "bz2", "lzma", "_io"}
 def _is_append_call(call: ast.Call) -> bool:
     """Does ``call`` open a file in an append mode, or append through ``util.append_keeping``?
     Each caller of that shared helper is its own site: its own file, with its own ``keep``.
-    ``os.open`` is not judged here: its ``O_APPEND``, wherever it is spelled, is (``_is_o_append``)."""
+    ``os.open`` is not judged here: its flags are (``_flags_may_append``)."""
     func = call.func
     name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
     if name == "append_keeping":
@@ -207,15 +215,33 @@ def _body_nodes(scope):
             pending.extend(ast.iter_child_nodes(node))
 
 
+def _params(function) -> set:
+    """The names of a function's or a lambda's parameters."""
+    params = function.args
+    return {a.arg for a in (*params.posonlyargs, *params.args, *params.kwonlyargs,
+                            *filter(None, (params.vararg, params.kwarg)))}
+
+
+def _binds_unreadably(node, name: str) -> bool:
+    """Does ``node`` bind ``name`` other than by an assignment ``_bindings`` reads: an import, a
+    ``def`` or ``class``, an ``except ... as``, a ``match`` capture (``case x``, ``*x``,
+    ``**x``; stored as strings, not ``ast.Name``), a ``global`` or ``nonlocal``?"""
+    return (isinstance(node, (ast.Import, ast.ImportFrom))
+            and any((a.asname or a.name.split(".")[0]) == name for a in node.names)
+            or isinstance(node, _BINDERS) and getattr(node, "name", None) == name
+            or isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar))
+            and node.name == name
+            or isinstance(node, ast.MatchMapping) and node.rest == name
+            or isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names)
+
+
 def _bindings(scope, name: str):
     """The values ``scope`` assigns to ``name`` (``=``, ``|=``, an annotated or ``:=``
     assignment), an empty list when it binds no ``name``, or None when it binds it in a way the
-    scan cannot read (a parameter, an import, a ``for`` or ``with`` target, tuple unpacking)."""
-    if isinstance(scope, _FUNCTIONS):
-        params = scope.args
-        if name in {a.arg for a in (*params.posonlyargs, *params.args, *params.kwonlyargs,
-                                    *filter(None, (params.vararg, params.kwarg)))}:
-            return None
+    scan cannot read (a parameter, a lambda's included, a ``for``, ``with`` or ``match`` target,
+    tuple unpacking, or any form ``_binds_unreadably`` names)."""
+    if isinstance(scope, _FUNCTIONS) and name in _params(scope):
+        return None
     values, read = [], set()
     for node in _body_nodes(scope):
         if isinstance(node, ast.Assign):
@@ -228,10 +254,7 @@ def _bindings(scope, name: str):
             read.add(id(node.target))
     for node in _body_nodes(scope):
         if (isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store)
-                and id(node) not in read
-                or isinstance(node, (ast.Import, ast.ImportFrom))
-                and any((a.asname or a.name.split(".")[0]) == name for a in node.names)
-                or isinstance(node, _BINDERS) and getattr(node, "name", None) == name):
+                and id(node) not in read or _binds_unreadably(node, name)):
             return None
     return values
 
@@ -305,6 +328,7 @@ class _Bindings:
         self.names: dict = {}         # id(assignment) -> the names it binds
         self.reads: dict = {}         # id(read) -> the assignments that may reach it
         self._loops: list = []        # per enclosing loop: [envs at ``break``, at ``continue``]
+        self.scope = scope
         body = scope.body if isinstance(scope, (ast.Module, *_SCOPES)) else []
         for child in ast.iter_child_nodes(scope):
             if not isinstance(child, _SCOPES) and all(child is not s for s in body):
@@ -433,78 +457,85 @@ class _Bindings:
         a name it reads?"""
         return self._spells(expr) or any(id(d) in self._held for d in self.deps(expr))
 
-    def consumed(self, exprs: list) -> list:
-        """The values of ``exprs`` and of every assignment that may reach them, in a chain."""
-        out, todo, seen = [], list(exprs), set()
-        while todo:
-            expr = todo.pop()
-            if id(expr) not in seen:
-                seen.add(id(expr))
-                out.append(expr.value if isinstance(expr, _DEFS) else expr)
-                todo.extend(self.deps(expr))
-        return out
+
+_APPEND_BIT = getattr(os, "O_APPEND", 0)
 
 
-def _mentions(expr) -> set:
-    """The ids of the ``O_APPEND`` mentions in ``expr``."""
-    return {id(n) for n in _own(expr) if _is_o_append(n)}
+def _os_flag_may_append(name: str) -> bool:
+    """Could ``os.<name>`` hold the append bit? Only an ``O_`` open flag this host defines, other
+    than ``O_APPEND``, without that bit is append-free (#2386 review: ``os.ST_NOATIME`` is 1024,
+    the Linux ``O_APPEND``). A flag this host lacks counts as append: its value is unknown."""
+    value = getattr(os, name, None) if name.startswith("O_") and name != "O_APPEND" else None
+    return not isinstance(value, int) or bool(value & _APPEND_BIT)
 
 
-def _flags_may_append(expr, chain, bindings, touched: set, seen=frozenset()) -> bool:
-    """Could the flags ``expr`` include ``O_APPEND``? Yes when it mentions it, and when the scan
-    cannot resolve it to append-free flags (#2377): a name is followed to the values its
-    innermost binding scope in ``chain`` (the module, then the functions enclosing the call, then
-    the call's own scope) gives it: in the call's own scope only those that may reach the read
-    (``bindings``, a ``_Bindings``), in an enclosing one every value. A name that scope binds in a
-    way the scan cannot read, or no scope binds, counts as append. Every ``O_APPEND`` mention it
-    walks through is added to ``touched``. A false alarm only asks for a registry entry; a miss
-    is an unbounded file."""
-    if expr is None:
-        return False
-    touched |= _mentions(expr)
+def _getattr_os(call: ast.Call):
+    """The attribute name and default of ``getattr(os, "NAME"[, default])``, or None."""
+    args = call.args
+    if (isinstance(call.func, ast.Name) and call.func.id == "getattr" and not call.keywords
+            and len(args) in (2, 3) and isinstance(args[0], ast.Name) and args[0].id == "os"
+            and isinstance(args[1], ast.Constant) and isinstance(args[1].value, str)):
+        return args[1].value, (args[2] if args[2:] else None)
+    return None
+
+
+def _flags_may_append(expr, chain, bindings, seen=frozenset()) -> bool:
+    """Could the flags ``expr`` include ``O_APPEND``? Yes unless the scan proves them append-free
+    (#2377, #2386 review): an int without the append bit, an ``os`` open flag without it
+    (``_os_flag_may_append``), ``getattr(os, "O_X", default)`` with both append-free, ``|`` and
+    ``^`` of append-free values, ``&`` with one append-free side, ``a if c else b`` and ``a or
+    b`` of append-free values. Every other operator (``1 << 10`` is ``O_APPEND`` on Linux, as is
+    ``~0``), attribute and call counts as append. A name is followed to the values its innermost
+    binding scope in ``chain`` (the module, then the functions enclosing the call, then the
+    lambdas around it) gives it: in the call's own function only those that may reach the read
+    (``bindings``, a ``_Bindings``), elsewhere every value. A name that scope binds in a way the
+    scan cannot read (a parameter, a ``match`` capture), or that no scope binds, counts as append.
+    A false alarm only asks for a registry entry; a miss is an unbounded file."""
     if _is_o_append(expr):
         return True
     if isinstance(expr, ast.Constant):
-        return isinstance(expr.value, int) and bool(expr.value & getattr(os, "O_APPEND", 0))
+        return not isinstance(expr.value, int) or bool(expr.value & _APPEND_BIT)
     if isinstance(expr, ast.Attribute):              # os.O_WRONLY and the like
-        return not (isinstance(expr.value, ast.Name) and expr.value.id == "os")
-    if isinstance(expr, (ast.BinOp, ast.BoolOp, ast.UnaryOp, ast.IfExp)):
-        parts = [p for p in ast.iter_child_nodes(expr) if isinstance(p, ast.expr)]
-        return any([_flags_may_append(p, chain, bindings, touched, seen) for p in parts])
-    if isinstance(expr, ast.Call):                   # getattr(os, "O_NOFOLLOW", 0)
-        args = expr.args
-        if (isinstance(expr.func, ast.Name) and expr.func.id == "getattr" and not expr.keywords
-                and len(args) in (2, 3) and isinstance(args[0], ast.Name) and args[0].id == "os"
-                and isinstance(args[1], ast.Constant) and isinstance(args[1].value, str)):
-            return _is_o_append(args[1]) or _flags_may_append(args[2] if args[2:] else None,
-                                                             chain, bindings, touched, seen)
-        return True
+        return not (isinstance(expr.value, ast.Name) and expr.value.id == "os"
+                    and not _os_flag_may_append(expr.attr))
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.BitOr, ast.BitXor, ast.BitAnd)):
+        sides = [_flags_may_append(side, chain, bindings, seen) for side in (expr.left, expr.right)]
+        return all(sides) if isinstance(expr.op, ast.BitAnd) else any(sides)
+    if isinstance(expr, (ast.BoolOp, ast.IfExp)):    # the value is one of the operands
+        parts = expr.values if isinstance(expr, ast.BoolOp) else [expr.body, expr.orelse]
+        return any([_flags_may_append(p, chain, bindings, seen) for p in parts])
+    if isinstance(expr, ast.Call) and _getattr_os(expr):     # getattr(os, "O_NOFOLLOW", 0)
+        name, default = _getattr_os(expr)
+        if hasattr(os, name):                        # the attribute, not the default, is used
+            return _os_flag_may_append(name)
+        return default is None or _flags_may_append(default, chain, bindings, seen)
     if isinstance(expr, ast.Name):
-        return _name_may_append(expr, chain, bindings, touched, seen)
+        return _name_may_append(expr, chain, bindings, seen)
     return True
 
 
-def _name_may_append(name, chain, bindings, touched: set, seen) -> bool:
-    """``_flags_may_append`` for a name: the innermost scope of ``chain`` that binds it decides.
-    In the call's own scope (when ``bindings`` is given) the assignments that may reach this read
-    are judged; in an enclosing scope, every value it assigns."""
+def _name_may_append(name, chain, bindings, seen) -> bool:
+    """``_flags_may_append`` for a name: the innermost scope of ``chain`` that binds it decides
+    (a lambda around the call first, so its parameter shadows the function's binding). In the
+    call's own function (``bindings.scope``) the assignments that may reach this read are judged;
+    in any other scope, every value it assigns."""
     for depth in range(len(chain), 0, -1):
         values = _bindings(chain[depth - 1], name.id)
         if values is None:
             return True
         if not values:
             continue
-        if bindings is not None and depth == len(chain):
-            return _defs_may_append(bindings.reads.get(id(name), frozenset()), chain, bindings,
-                                    touched, seen)
+        if bindings is not None and chain[depth - 1] is bindings.scope:
+            return _defs_may_append(bindings.reads.get(id(name), frozenset()), chain[:depth],
+                                    bindings, seen)
         if name.id in seen:                          # flags |= ...: its other values are judged
             return False
-        return any([_flags_may_append(v, chain[:depth], None, touched, seen | {name.id})
+        return any([_flags_may_append(v, chain[:depth], None, seen | {name.id})
                     for v in values])
     return True
 
 
-def _defs_may_append(defs, chain, bindings, touched: set, seen) -> bool:
+def _defs_may_append(defs, chain, bindings, seen) -> bool:
     """May any of the local assignments ``defs`` (``_Bindings``) give ``O_APPEND`` flags? An
     ``x |= ...`` also brings the earlier value of ``x``; an assignment reached again (a loop) is
     judged once. No assignment reaching a name the scope binds counts as append."""
@@ -515,10 +546,10 @@ def _defs_may_append(defs, chain, bindings, touched: set, seen) -> bool:
         if id(d) in seen:
             continue
         inner = seen | {id(d)}
-        results.append(_flags_may_append(d.value, chain, bindings, touched, inner))
+        results.append(_flags_may_append(d.value, chain, bindings, inner))
         if isinstance(d, ast.AugAssign):
             results.append(_defs_may_append(bindings.reads.get(id(d), frozenset()), chain,
-                                            bindings, touched, inner))
+                                            bindings, inner))
     return any(results)
 
 
@@ -528,50 +559,62 @@ def _is_os_open(call: ast.Call) -> bool:
             and isinstance(func.value, ast.Name) and func.value.id == "os")
 
 
-def _o_append_opens(scope, nodes: list, chain: list, consumed: set) -> int:
-    """How many ``O_APPEND`` opens one scope's ``nodes`` hold (#2379, #2377): one per ``os.open``
-    whose flags hold ``O_APPEND``, inline or through any assignment that may reach a variable they
-    read (``_Bindings``), so two opens sharing one flags variable count two, on every branch; or
-    whose flags the scan cannot resolve to append-free ones (``_flags_may_append``: a name
-    followed outward through ``chain``, a parameter, an import, an ``os.open(*args)``). The
-    ``O_APPEND`` mentions such an open reads, in this scope or an enclosing one, are added to
-    ``consumed``; ``append_sites`` counts every other mention one itself, so a value passed
-    elsewhere, or rebound on every path before the open, still counts."""
+def _lambdas_around(scope) -> dict:
+    """id(node) -> the lambdas of ``scope``'s own body that enclose it, outermost first: each is
+    a binding scope of its own for the names the node reads (#2386 review)."""
+    around: dict = {}
+
+    def walk(node, lambdas):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, _SCOPES):
+                continue
+            inner = lambdas + [child] if isinstance(child, ast.Lambda) else lambdas
+            around[id(child)] = inner
+            walk(child, inner)
+
+    walk(scope, [])
+    return around
+
+
+def _o_append_opens(scope, nodes: list, chain: list) -> int:
+    """How many append ``os.open`` calls one scope's ``nodes`` hold (#2379, #2377): one per
+    ``os.open`` whose flags may hold ``O_APPEND`` (``_flags_may_append``: spelled, through any
+    assignment that may reach a variable they read, ``_Bindings``, or not provably append-free),
+    so two opens sharing one flags variable count two, on every branch. A name is followed
+    through the lambdas around the call, then outward through ``chain``. An ``os.open(*args)`` or
+    ``(**kw)`` counts too."""
     bindings = _Bindings(scope)
+    around = _lambdas_around(scope)
     count = 0
     for call in nodes:
         if not (isinstance(call, ast.Call) and _is_os_open(call)):
             continue
-        flags, touched = _os_open_flags(call), set()
+        flags = _os_open_flags(call)
         unreadable = (any(isinstance(a, ast.Starred) for a in call.args)
                       or any(k.arg is None for k in call.keywords))
         if unreadable or flags is not None and (
-                bindings.holds(flags) | _flags_may_append(flags, chain, bindings, touched)):
+                bindings.holds(flags)
+                or _flags_may_append(flags, chain + around.get(id(call), []), bindings)):
             count += 1
-            consumed |= touched
-            if flags is not None:
-                consumed |= {i for value in bindings.consumed([flags]) for i in _mentions(value)}
     return count
 
 
 def append_sites(source: str, relative: str) -> collections.Counter:
     """How many append opens each ``relative::Qualified.function`` of ``source`` holds: an
-    append-mode open, an ``os.open`` whose flags may hold ``O_APPEND``, an ``O_APPEND`` no such
-    open consumes and a call of ``util.append_keeping`` count one each, in the function that
-    makes the call, so a second append in a registered function changes its count (#2302 review,
-    #2379, #2377). The module docstring says which forms are covered and which are not."""
+    append-mode open, an ``os.open`` whose flags may hold ``O_APPEND`` and a call of
+    ``util.append_keeping`` count one each, in the function that makes the call, so a second
+    append in a registered function changes its count (#2302 review, #2379, #2377). A mention of
+    ``O_APPEND`` that reaches no ``os.open`` is not an open (#2377). The module docstring says
+    which forms are covered and which are not."""
     found: collections.Counter = collections.Counter()
-    consumed: set = set()
-    mentions: list = []                  # (site, id of an O_APPEND mention), judged at the end
 
     def visit(node, scope, chain):
         key = f"{relative}::{'.'.join(scope) or '<module>'}"
         nodes = list(_scope_nodes(node))
         count = sum(1 for n in nodes if isinstance(n, ast.Call) and _is_append_call(n))
-        count += _o_append_opens(node, nodes, chain, consumed)
+        count += _o_append_opens(node, nodes, chain)
         if count:
             found[key] += count
-        mentions.extend((key, id(n)) for n in nodes if _is_o_append(n))
         # A class body is not an enclosing scope for the names its methods read.
         outer = chain[:-1] if isinstance(node, ast.ClassDef) else chain
         for child in _nested_scopes(node):
@@ -579,9 +622,6 @@ def append_sites(source: str, relative: str) -> collections.Counter:
 
     tree = ast.parse(source)
     visit(tree, [], [tree])
-    for key, mention in mentions:
-        if mention not in consumed:
-            found[key] += 1
     return found
 
 
@@ -652,7 +692,7 @@ class Guard(unittest.TestCase):
 
     def test_each_os_open_with_append_flags_is_its_own_site(self):
         """#2377: each ``os.open`` counts where it is called, however its flags were built. A bare
-        ``O_APPEND`` mention that reaches no open still counts one itself (#2379)."""
+        ``O_APPEND`` mention that reaches no open is not an open (#2377, #2386 review F3)."""
         shared = ("def f(p):\n    flags=os.O_WRONLY|os.O_APPEND|os.O_CREAT\n"
                   "    a=os.open(p,flags)\n    b=os.open(p+'x',flags)\n")
         self.assertEqual(dict(append_sites(shared, "x.py")), {"x.py::f": 2})
@@ -674,7 +714,48 @@ class Guard(unittest.TestCase):
         self.assertEqual(dict(append_sites(source, "x.py")),
                          {"x.py::grown": 1, "x.py::param": 1, "x.py::unbound": 1,
                           "x.py::imported": 1, "x.py::called": 1, "x.py::outer.inner": 1,
-                          "x.py::starred": 1, "x.py::mention_only": 1})
+                          "x.py::starred": 1})
+        self.assertEqual(dict(append_sites("def f():\n    return os.O_APPEND\n", "x.py")), {})
+
+    def test_flags_that_only_compute_the_append_bit_are_found(self):
+        """#2386 review: flags count as append unless proven append-free. On the real
+        ``_worker_log`` (registered for 2), each extra ``os.open`` below holds the append bit on
+        Linux without spelling ``O_APPEND``, and each must fail the guard: a shift (F1), a lambda
+        parameter shadowing an append-free local (F2), a non-flag ``os`` attribute equal to the
+        bit (F4) and a ``match`` capture shadowing an append-free local (F5). Each is a real
+        append here: the bit is checked against this host's ``os.O_APPEND``."""
+        bit = getattr(os, "O_APPEND", 0)
+        if bit != 1 << 10 or getattr(os, "ST_NOATIME", None) != bit:
+            self.skipTest("the snippets use Linux's O_APPEND value (1024)")
+        relative = "diaktoros/run_supervisor/workers.py"
+        key = f"{relative}::WorkerLifecycle._worker_log"
+        source = (ROOT / relative).read_text()
+        anchor = '            return os.fdopen(os.open(path, flags, 0o600), "ab")\n'
+        self.assertIn(anchor, source)
+        pad = "            "
+        extras = {
+            "shift": f"{pad}os.close(os.open(path, os.O_WRONLY | os.O_CREAT | (1 << 10), 0o600))\n",
+            "lambda": f"{pad}shadow = os.O_RDONLY\n"
+                      f"{pad}(lambda shadow: os.close(os.open(path, shadow, 0o600)))"
+                      "(os.O_WRONLY | os.O_CREAT | 1024)\n",
+            "attribute": f"{pad}os.close(os.open(path, os.O_WRONLY | os.ST_NOATIME, 0o600))\n",
+            "getattr": f"{pad}os.close(os.open(path, getattr(os, 'ST_NOATIME', 0), 0o600))\n",
+            "match": f"{pad}shadow = os.O_RDONLY\n{pad}match 1024:\n{pad}    case shadow:\n"
+                     f"{pad}        os.close(os.open(path, shadow | os.O_WRONLY, 0o600))\n",
+            "invert": f"{pad}os.close(os.open(path, ~os.O_RDONLY & ~os.O_CREAT, 0o600))\n",
+            "add": f"{pad}os.close(os.open(path, os.O_WRONLY + 1024, 0o600))\n",
+        }
+        for name, extra in extras.items():
+            with self.subTest(name):
+                grown = append_sites(source.replace(anchor, extra + anchor), relative)
+                self.assertEqual(sorted((grown - registered()).items()), [(key, 1)])
+        self.assertEqual(dict(append_sites(
+            "def f(p, c):\n    fl = os.O_RDONLY\n    g = lambda fl: os.open(p, fl)\n"
+            "    h = lambda q: os.open(q, fl)\n"
+            "    os.open(p, (os.O_RDONLY | os.O_CREAT) & ~0 ^ 0 if c else 0)\n"
+            "    os.open(p, os.O_RDWR & (1 << 10)); os.open(p, getattr(os, 'O_NOFOLLOW', 0))\n"
+            "    os.open(p, getattr(os, 'O_NO_SUCH_FLAG', 0))\n", "x.py")),
+            {"x.py::f": 1})
 
     def test_a_second_os_open_in_worker_log_fails_the_guard(self):
         """The review's case on the real tree: a second ``os.open(path, flags, 0o600)`` added to
@@ -710,7 +791,7 @@ class Guard(unittest.TestCase):
             "    os.open(path, flags=flags); os.open(path, flags); os.open(path, os.O_RDONLY)\n"
             "def h(path):\n    flags = os.O_WRONLY | os.O_APPEND\n    other = os.O_APPEND\n"
             "    os.open(path, flags)\n    helper(other)\n", "x.py")),
-            {"x.py::f": 2, "x.py::g": 2, "x.py::h": 2})
+            {"x.py::f": 2, "x.py::g": 2, "x.py::h": 1})
         key = "diaktoros/run_supervisor/workers.py::WorkerLifecycle._worker_log"
         source = (ROOT / "diaktoros/run_supervisor/workers.py").read_text()
         grown = source.replace("            return os.fdopen(os.open(path, flags, 0o600), \"ab\")\n",
@@ -721,27 +802,28 @@ class Guard(unittest.TestCase):
         self.assertEqual(sorted((found - registered()).items()), [(key, 1)])
 
     def test_a_rebound_flags_variable_consumes_only_the_value_that_reaches_the_open(self):
-        """#2379 review: an ``O_APPEND`` value passed to a helper, then rebound, is not consumed
-        by a later ``os.open`` of the new value, so adding that open to a function registered for
-        one site fails the guard; and flags rebound to ``O_RDONLY`` make a plain open. In
-        ``_worker_log`` the first flags, handed to a helper and rebound before the open, become
-        an append site of their own beside the open and its ``os.fdopen``."""
+        """#2379 review, under #2377's rule: an ``O_APPEND`` value handed to a helper is not an open
+        where it is spelled (#2377); the helper's own ``os.open`` of its flags parameter counts.
+        A later ``os.open`` of a rebound ``O_APPEND`` value counts; flags rebound to ``O_RDONLY``
+        make a plain open. In ``_worker_log``, a helper defined beside it that opens the flags it
+        is handed is an unregistered append site of its own."""
         before = "def f(p):\n    flags = os.O_APPEND\n    helper(flags)\n"
         after = before + "    flags = os.O_APPEND\n    os.open(p, flags)\n"
-        self.assertEqual(dict(append_sites(before, "x.py")), {"x.py::f": 1})
-        self.assertEqual(dict(append_sites(after, "x.py")), {"x.py::f": 2})
+        helper = "def helper(p, fl):\n    os.open(p, fl)\n"
+        self.assertEqual(dict(append_sites(before, "x.py")), {})
+        self.assertEqual(dict(append_sites(after, "x.py")), {"x.py::f": 1})
+        self.assertEqual(dict(append_sites(before + helper, "x.py")), {"x.py::helper": 1})
         self.assertEqual(dict(append_sites(
             "def r(p):\n    flags = os.O_APPEND\n    os.open(p, flags)\n"
             "    flags = os.O_RDONLY\n    os.open(p, flags)\n"
             "def s(p):\n    flags = os.O_WRONLY\n    flags = flags | os.O_APPEND\n    os.open(p, flags)\n"
             "def t(p):\n    flags = os.O_APPEND\n    flags |= os.O_CREAT\n    os.open(p, flags)\n", "x.py")),
             {"x.py::r": 1, "x.py::s": 1, "x.py::t": 1})
-        key = "diaktoros/run_supervisor/workers.py::WorkerLifecycle._worker_log"
+        key = "diaktoros/run_supervisor/workers.py::WorkerLifecycle._helper"
         source = (ROOT / "diaktoros/run_supervisor/workers.py").read_text()
-        grown = source.replace("            return os.fdopen(os.open(path, flags, 0o600), \"ab\")\n",
-                               "            helper(flags)\n"
-                               "            flags = os.O_WRONLY | os.O_APPEND\n"
-                               "            return os.fdopen(os.open(path, flags, 0o600), \"ab\")\n")
+        anchor = "    def _worker_log(self):\n"
+        grown = source.replace(anchor, "    def _helper(self, path, fl):\n"
+                                       "        return os.open(path, fl, 0o600)\n\n" + anchor)
         self.assertNotEqual(grown, source, "the scratch edit no longer applies to _worker_log")
         found = append_sites(grown, "diaktoros/run_supervisor/workers.py")
         self.assertEqual(sorted((found - registered()).items()), [(key, 1)])
