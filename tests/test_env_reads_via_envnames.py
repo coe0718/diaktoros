@@ -14,12 +14,14 @@ a generated script: an ordinary read of the same name in the same file still fai
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import ast
+import io
 import os
 from pathlib import Path
 import re
 import sys
 import tempfile
 import textwrap
+import tokenize
 import unittest
 from unittest import mock
 
@@ -45,9 +47,13 @@ ALLOWED = {
            "this one spelling in that child's environment, so there is no old name to miss"),
 }
 
-# A read in a script that does not parse: ``environ.get(``, ``environ[`` or ``getenv(``, then a
-# prefixed literal or an ``envnames.name("X")`` key. A subscript followed by ``=`` is a write.
-_FALLBACK = re.compile(r"""(?:environ\s*(?:\.get\s*\(|(?P<sub>\[))|getenv\s*\()\s*(?:key\s*=\s*)?"""
+# A read in a script that does not parse: ``os.environ.get(`` (or a bare ``environ.get(``),
+# ``os.environ[`` (or ``environ[``) or ``os.getenv(``, then a prefixed literal or an
+# ``envnames.name("X")`` key. A subscript followed by ``=`` is a write. The receivers are the
+# ones ``_is_environ``/``_read_key`` accept: ``other.getenv(`` or ``self.environ[`` is not a read
+# (``_fallback_matches`` drops a match glued to a name or a dot before it).
+_FALLBACK = re.compile(r"""(?:(?:os\s*\.\s*)?environ\s*(?:\.get\s*\(|(?P<sub>\[))"""
+                       r"""|os\s*\.\s*getenv\s*\()\s*(?:key\s*=\s*)?"""
                        r"""(?:['"](?P<lit>(?:DIAKTOROS_|REVIEW_LOOP_)\w*)['"]"""
                        r"""|envnames\.name\(\s*['"](?P<short>\w*)['"]\s*\))""")
 _WRITE = re.compile(r"""\s*\]\s*=(?!=)""")
@@ -148,31 +154,181 @@ def _script_texts(node) -> list[str]:
     return []
 
 
-def _fallback_reads(source: str) -> list[str]:
-    """The covered reads a script that does not parse holds, by pattern; writes are skipped."""
+def _fallback_matches(source: str, start: int = 0, end=None,
+                      free=frozenset()) -> list[tuple[int, str]]:
+    """``(offset, variable)`` for each covered read the pattern finds in ``source[start:end]``;
+    writes are skipped, and so is a match glued to a name or a dot before it (``other.getenv``,
+    ``xos.environ``) unless its offset is in ``free``: right after an interpolation, whose
+    placeholder says nothing about what really precedes the read."""
     found = []
-    for m in _FALLBACK.finditer(source):
+    for m in _FALLBACK.finditer(source, start, len(source) if end is None else end):
         if m["sub"] and _WRITE.match(source, m.end()):
             continue
-        found.append(m["lit"] or "DIAKTOROS_" + m["short"])
+        before = source[m.start() - 1] if m.start() else ""
+        if (before.isalnum() or before in "_.") and before and m.start() not in free:
+            continue
+        found.append((m.start(), m["lit"] or "DIAKTOROS_" + m["short"]))
     return found
 
 
-def _script_reads(texts: list[str], depth: int) -> list[tuple[str, str]]:
+def _fallback_reads(source: str) -> list[str]:
+    """The covered reads a script that does not parse holds, by pattern; writes are skipped."""
+    return [key for _, key in _fallback_matches(source)]
+
+
+def _fstring_parts(node) -> list:
+    """An f-string's pieces in order: each literal fragment as a string, each interpolation as
+    ``None``; ``[]`` for anything else."""
+    if not isinstance(node, ast.JoinedStr):
+        return []
+    return [v.value if isinstance(v, ast.Constant) else None for v in node.values]
+
+
+def _script_reads(texts: list[str], depth: int, parts=()) -> list[tuple[str, str]]:
     """The reads in a generated script given as candidate texts: the reading of the candidate
-    that parses with the most reads, or, when none parses, the pattern search of the first."""
-    best = None
-    for text in texts:
+    that parses with the most reads, or, when none parses, the pattern search of the first.
+    An f-string's clean parse does not prove a literal read absent (#2376): an interpolation
+    inside a comment or a string literal can end it (``f"#{newline}os.getenv(...)"`` comments
+    the read out of every placeholder version), so such reads are added
+    (``_reads_a_hole_may_expose``)."""
+    best, hole = None, None
+    for index, text in enumerate(texts):
         try:
             ast.parse(textwrap.dedent(text))
         except SyntaxError:
             continue
         reads = direct_reads(text, None, depth)
         if best is None or len(reads) > len(best):
-            best = reads
+            best, hole = reads, _PLACEHOLDERS[index] if parts else None
     if best is None:
-        best = [(key, SCRIPT) for key in _fallback_reads(texts[0])]
-    return [(k, SCRIPT) for k, _ in best]
+        text, holes = _joined(parts, _PLACEHOLDERS[0]) if parts else (texts[0], [])
+        free = frozenset(h + len(_PLACEHOLDERS[0]) for h in holes)
+        best = [(key, SCRIPT) for _, key in _fallback_matches(text, free=free)]
+    keys = [k for k, _ in best]
+    if hole is not None:
+        keys += _reads_a_hole_may_expose(parts, hole, depth)
+    return [(k, SCRIPT) for k in keys]
+
+
+def _joined(parts: list, hole: str) -> tuple[str, list[int]]:
+    """An f-string's script with ``hole`` for each interpolation (``_fstring_parts``), and the
+    offset of each interpolation in it."""
+    text, holes = "", []
+    for part in parts:
+        if part is None:
+            holes.append(len(text))
+            text += hole
+        else:
+            text += part
+    return text, holes
+
+
+def _reads_a_hole_may_expose(parts: list, hole: str, depth: int) -> list[str]:
+    """The pattern reads that sit in a comment or a string literal of the f-string script (built
+    with ``hole`` for each interpolation) after an interpolation inside that same comment or
+    literal: the interpolation can end it (a newline ends a comment, a quote a string), so the
+    read may run. A comment or literal with no interpolation before the read stays what it is
+    whatever is interpolated, and is not counted. The parse counted none of them as code, so
+    each is a distinct read (#2376), except one the nested scan of a string literal already
+    counts (``_counted_by_nested_scan``)."""
+    text, holes = _joined(parts, hole)
+    found = []
+    free = frozenset(h + len(hole) for h in holes)
+    for begin, end, inner, kind in _inert_spans(text):
+        matches = _fallback_matches(text, *inner, free=free)
+        counted = (_counted_by_nested_scan(text[begin:end], len(matches), depth)
+                   if kind == "string" else [False] * len(matches))
+        for (offset, key), seen in zip(matches, counted):
+            if seen:
+                continue
+            if any(begin < h <= offset for h in holes) and (
+                    kind == "comment" or _tail_may_close(text, offset, end, holes)):
+                found.append(key)
+    return found
+
+
+def _counted_by_nested_scan(token: str, count: int, depth: int) -> list[bool]:
+    """For each of the ``count`` pattern reads in the string literal ``token`` of a generated
+    script at ``depth``, in order: whether ``direct_reads`` already counts it by scanning the
+    literal's value as a nested script (it does below depth 2: every read when the value does
+    not parse, those in code when it does). When the reads cannot be paired (an f-string, a
+    different number of reads), none is taken as counted: a read may be counted twice, never
+    hidden."""
+    unseen = [False] * count
+    try:
+        value = ast.literal_eval(token)
+    except (ValueError, SyntaxError):
+        return unseen
+    if depth >= 2 or not isinstance(value, str):
+        return unseen
+    value = textwrap.dedent(value)
+    matches = _fallback_matches(value)
+    if len(matches) != count:
+        return unseen
+    try:
+        ast.parse(value)
+    except SyntaxError:
+        return [True] * count
+    inert = [inner for _, _, inner, _ in _inert_spans(value)]
+    return [not any(a <= offset < b for a, b in inert) for offset, _ in matches]
+
+
+def _tail_may_close(text: str, offset: int, end: int, holes: list[int]) -> bool:
+    """Whether a read at ``offset`` inside a string literal that ends at ``end`` (after its
+    closing quote) can run once an earlier interpolation has closed the literal. It cannot only
+    when the leftover closing quote then opens a string that never ends: a single-quoted
+    literal whose rest of line (from the read) holds no other interpolation, no ``#``, no
+    second such quote and no line-continuing backslash. Anything else (a triple quote, which can
+    pair with a later one; another interpolation; a ``#`` that comments out the leftover quote)
+    may run the read, so it counts."""
+    quote = text[end - 1]
+    if text[end - 3:end] == quote * 3:
+        return True
+    line_end = text.find("\n", offset)
+    line_end = len(text) if line_end < 0 else line_end
+    tail = text[offset:line_end]
+    return (any(offset < h <= line_end for h in holes) or "#" in tail
+            or tail.count(quote) != 1 or tail.rstrip().endswith("\\"))
+
+
+# Token types whose text the parse never reads as code: a comment, a string literal, and (3.12+)
+# the literal text of an f-string or (3.14+) a t-string.
+_INERT = {tokenize.COMMENT, tokenize.STRING}
+_MIDDLES = {getattr(tokenize, n) for n in ("FSTRING_MIDDLE", "TSTRING_MIDDLE") if hasattr(tokenize, n)}
+_OPENS = {getattr(tokenize, n) for n in ("FSTRING_START", "TSTRING_START") if hasattr(tokenize, n)}
+_CLOSES = {getattr(tokenize, n) for n in ("FSTRING_END", "TSTRING_END") if hasattr(tokenize, n)}
+
+
+def _inert_spans(text: str) -> list[tuple[int, int, tuple[int, int], str]]:
+    """``(begin, end, (start, stop), kind)`` offsets in ``text`` for each comment (kind
+    ``"comment"``) or string literal (``"string"``, or ``"fstring"`` for the literal pieces of
+    an f-string on 3.12+): ``begin``/``end`` bound what an interpolation must sit inside to end
+    it, ``start``/``stop`` the text that is not code. On 3.12+ an f-string is tokenized in
+    pieces, and the whole outermost f-string is the bound (a quote in any piece ends it). A
+    text that does not tokenize has none."""
+    starts = [0]
+    for line in text.splitlines(keepends=True):
+        starts.append(starts[-1] + len(line))
+    spans, opened = [], []
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            begin = starts[tok.start[0] - 1] + tok.start[1]
+            end = starts[tok.end[0] - 1] + tok.end[1]
+            if tok.type in _OPENS:
+                opened.append(begin)
+            elif tok.type in _CLOSES and opened:
+                outer = opened.pop()
+                if not opened:
+                    spans = [(outer, end, inner, c) if b is None else (b, e, inner, c)
+                             for b, e, inner, c in spans]
+            elif tok.type in _MIDDLES:
+                spans.append((None, None, (begin, end), "fstring"))
+            elif tok.type in _INERT:
+                spans.append((begin, end, (begin, end),
+                              "comment" if tok.type == tokenize.COMMENT else "string"))
+    except (tokenize.TokenError, SyntaxError):
+        return []
+    return [span for span in spans if span[0] is not None]
 
 
 def direct_reads(source: str, bound=None, depth: int = 0) -> list[tuple[str, str]]:
@@ -195,7 +351,7 @@ def direct_reads(source: str, bound=None, depth: int = 0) -> list[tuple[str, str
             continue
         texts = [] if id(node) in inner else _script_texts(node)
         if depth < 2 and texts and ("environ" in texts[0] or "getenv" in texts[0]):
-            found.extend(_script_reads(texts, depth + 1))
+            found.extend(_script_reads(texts, depth + 1, _fstring_parts(node)))
     return found
 
 
@@ -269,10 +425,26 @@ class EnvReadsViaEnvnames(unittest.TestCase):
             "S = f\"{prefix} = os.getenv(envnames.name('X'))\\n\"": "DIAKTOROS_X",
             "S = f\"v = os.environ[envnames.name('X')] + {s}\\n\"": "DIAKTOROS_X",
             "S = f\"v = [os.environ.get(envnames.name('X')), {n}\"": "DIAKTOROS_X",  # unparsable
+            # #2376: an interpolated newline un-comments the read; every placeholder version
+            # parses with the read inside a comment.
+            "prefix = \"\\n\"\nS = f\"#{prefix}os.getenv('DIAKTOROS_X')\\n\"": "DIAKTOROS_X",
+            # Found by both the parse and the pattern: still counted once.
+            "S = f\"{indent}v = os.getenv('DIAKTOROS_X')\\n\"": "DIAKTOROS_X",
+            # An indented script (dedented before parsing) with the #2376 shape.
+            "S = f\"\"\"\n    import os\n    #{prefix}os.getenv('DIAKTOROS_X')\n\"\"\"": "DIAKTOROS_X",
         }
         for source, key in cases.items():
             with self.subTest(source=source):
                 self.assertEqual(direct_reads(source), [(key, SCRIPT)])
+
+    def test_a_comment_no_interpolation_can_end_passes(self):
+        # Round 1 F3: the interpolation is on an earlier line (or after the read), so the
+        # example stays commented out whatever it holds; the generated script reads nothing.
+        for source in ("x = 123\nS = f\"v = {x}\\n# os.getenv('DIAKTOROS_X')\\n\"",
+                       "S = f\"v = {x}  # os.getenv('DIAKTOROS_X') {y}\\n\"",
+                       "S = f'v = \"#{x}os.getenv(\\'DIAKTOROS_X\\')\"\\n'"):
+            with self.subTest(source=source):
+                self.assertEqual(direct_reads(source), [])
 
     def test_reads_that_are_fine_pass(self):
         for source in ('envnames.get("X")', 'os.environ.get("HOME")',
@@ -307,6 +479,64 @@ class EnvReadsViaEnvnames(unittest.TestCase):
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             (root / rel).write_text(text)
         return scan(root)
+
+    def test_a_read_uncommented_by_an_interpolation_fails_the_scan(self):
+        # #2376, through the scan the guard runs: every placeholder parse of this f-string
+        # leaves the read in a comment, but the generated script runs it.
+        hits = self.scan_tree({"scripts/gen.py": 'import os\nprefix = "\\n"\n'
+                               'S = f"#{prefix}os.getenv(\'DIAKTOROS_X\')\\n"\n'})
+        self.assertEqual(stray(hits), [(("scripts/gen.py", "DIAKTOROS_X", SCRIPT), 1)])
+
+    def test_an_uncommented_read_beside_a_bound_name_read_counts_twice(self):
+        # Round 1 F2: the parse counts ``os.getenv(X)`` through the bound ``X``; the read an
+        # interpolated newline un-comments is a second read of the same variable, and must not
+        # hide behind the allowlisted single read.
+        source = ('import os\nprefix = "\\n"\n'
+                  'S = f"X = \'DIAKTOROS_GH_STUB\'\\nos.getenv(X)\\n'
+                  '#{prefix}os.getenv(\'DIAKTOROS_GH_STUB\')\\n"\n')
+        hits = self.scan_tree({"diaktoros/trace.py": source})
+        self.assertEqual(stray(hits), [(("diaktoros/trace.py", "DIAKTOROS_GH_STUB", SCRIPT), 2)])
+
+    def test_a_comment_no_interpolation_can_end_passes_the_scan(self):
+        # Round 1 F3, through the scan: a permanently commented-out example is not a read.
+        hits = self.scan_tree({"scripts/gen.py": 'x = 123\n'
+                               'S = f"v = {x}\\n# os.getenv(\'DIAKTOROS_X\')\\n"\n'})
+        self.assertEqual(stray(hits), [])
+
+    def test_a_read_a_hole_lets_out_of_a_string_fails_the_scan(self):
+        # Round 2 F5: ``prefix`` closes the string and ``suffix`` comments out its leftover
+        # quote, so the generated script runs the read; every placeholder parse keeps it inside
+        # the string literal.
+        for gen in ('prefix = \'"\\n\'\nsuffix = "\\n#"\n'
+                    'S = f\'v = "#{prefix}os.getenv(\\\'DIAKTOROS_X\\\'){suffix}"\\n\'\n',
+                    'S = f\'v = "{prefix}os.getenv(\\\'DIAKTOROS_X\\\')  # "\\n\'\n',
+                    'S = f\'\'\'v = """{prefix}\nos.getenv("DIAKTOROS_X")\n"""\n\'\'\'\n'):
+            with self.subTest(gen=gen):
+                hits = self.scan_tree({"scripts/gen.py": gen})
+                self.assertEqual(stray(hits), [(("scripts/gen.py", "DIAKTOROS_X", SCRIPT), 1)])
+
+    def test_a_string_no_interpolation_can_open_passes_the_scan(self):
+        # Round 2 F5, the other side: a string example stays a string when no interpolation sits
+        # before the read inside it, or when closing it would leave an unterminated quote. (A
+        # literal whose value is itself a read is a nested script and counts, as before: these
+        # hold the read in the nested script's comment.)
+        for gen in ('S = f\'{x}\\nv = "# os.getenv(\\\'DIAKTOROS_X\\\')"\\n\'\n',
+                    'S = f\'v = "#{x}os.getenv(\\\'DIAKTOROS_X\\\')"\\n\'\n',
+                    'S = f\'v = "# os.getenv(\\\'DIAKTOROS_X\\\')" + "{x}"\\n\'\n'):
+            with self.subTest(gen=gen):
+                self.assertEqual(stray(self.scan_tree({"scripts/gen.py": gen})), [])
+
+    def test_another_objects_getenv_passes_the_scan(self):
+        # Round 2 F4: only ``os.getenv`` / ``os.environ`` reads count, as in ``_read_key``;
+        # the pattern used on un-commented text must not take ``other.getenv(...)`` for one.
+        for gen in ('prefix = "\\n"\nS = f"#{prefix}other.getenv(\'DIAKTOROS_X\')\\n"\n',
+                    'S = f"#{prefix}self.environ.get(\'DIAKTOROS_X\')\\n"\n',
+                    'S = f"#{prefix}cfg.environ[\'DIAKTOROS_X\']\\n"\n',
+                    'S = f"v = [other.getenv(\'DIAKTOROS_X\'), {n}"\n'):    # unparsable script
+            with self.subTest(gen=gen):
+                self.assertEqual(stray(self.scan_tree({"scripts/gen.py": gen})), [])
+        hits = self.scan_tree({"scripts/gen.py": 'S = f"#{p}os.environ.get(\'DIAKTOROS_X\')\\n"\n'})
+        self.assertEqual(stray(hits), [(("scripts/gen.py", "DIAKTOROS_X", SCRIPT), 1)])
 
     def test_a_new_direct_read_fails_the_scan(self):
         hits = self.scan_tree({"scripts/new.py": 'import os\nos.environ.get("DIAKTOROS_X")\n'})

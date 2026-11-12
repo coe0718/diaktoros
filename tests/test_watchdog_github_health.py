@@ -227,6 +227,52 @@ class Health(unittest.TestCase):
             self.assertNotIn("unknown", said)
 
 
+class ReviewProbeHealth(unittest.TestCase):
+    """#1727: a failed review probe page (past the page bound) reaches the watchdog's health
+    check as the failed read it is, through ``gh.reviews`` and ``finish_reads``."""
+
+    def setUp(self):
+        self.loop = {"id": "widgets", "repo": "acme/widgets", "cooldown_h": 6}
+        self.page = [{"id": i, "user": {"login": "r"}, "state": "COMMENTED"} for i in range(100)]
+
+    def sweeps(self, probe) -> list[list[str]]:
+        """``READ_FAILURE_SWEEPS`` sweeps whose only failed read is PR #7's review probe."""
+        watch: dict = {}
+        out = []
+        for i in range(watch_health.READ_FAILURE_SWEEPS):
+            errors: list[str] = []
+            with mock.patch.object(gh, "MAX_REVIEW_PAGES", 1), \
+                 mock.patch.object(gh, "fetch", side_effect=[(self.page, ""), probe]):
+                self.assertIsNone(gh.reviews(self.loop, 7, errors=errors))
+            lines: list[str] = []
+            health = watch_health.Health([], "rev-coach", False, False)
+            with mock.patch.object(watch_mode, "TEST", False):
+                watch_health.finish_reads(self.loop, watch, time.time() + i * 900, health,
+                                          [(7, e) for e in errors[:1]], lines)
+            out.append(lines)
+        return out
+
+    def test_a_5xx_review_probe_escalates_like_any_5xx_page(self):
+        out = self.sweeps((None, "HTTP 502"))
+        alerts = [[x for x in lines if "cannot read GitHub" in x] for lines in out]
+        self.assertEqual(alerts[:-1], [[]] * (watch_health.READ_FAILURE_SWEEPS - 1), out)
+        self.assertEqual(len(alerts[-1]), 1, out)
+        self.assertIn("#7: review page 2, past the 1-page bound, could not be read: HTTP 502",
+                      alerts[-1][0])
+        self.assertNotIn("exceeds", alerts[-1][0])
+
+    def test_a_malformed_or_longer_review_listing_is_not_an_outage(self):
+        for probe, said in (((["x"], ""), "could not be read: invalid review list"),
+                            ((self.page[:1], ""), "review listing exceeds 1 full pages")):
+            with self.subTest(said):
+                out = self.sweeps(probe)
+                self.assertFalse(any("cannot read GitHub" in x for lines in out for x in lines),
+                                 out)
+                for lines in out:
+                    self.assertTrue(any("could not read reviews" in x and said in x
+                                        for x in lines), out)
+
+
 class Reads(unittest.TestCase):
     """The gh layer: statuses, headers, the tri-state hook answer, and the failure record."""
 
