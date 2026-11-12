@@ -43,7 +43,7 @@ def _adjudicator_facts(loop: dict, row, marker, facts: dict) -> list:
     if not isinstance(marker, dict):
         raise ValueError('breach marker required')
     facts['round'] = marker['rounds']
-    facts['reason'] = marker.get('reason') or 'review cap reached without an approval'
+    facts['reason'] = adjudication_reason(marker)
     facts['situation'] = adjudication_situation(marker)
     comments, _error = gh.issue_comments_read(loop, row['pr'])
     if comments is None:
@@ -267,6 +267,23 @@ def reconsider_section(loop: dict, row) -> str:
 
 
 SHADOW_BODY_MAX = 24000
+
+
+def adjudication_reason(marker: dict) -> str:
+    """The prompt's "Why it stopped" for a breach marker: its own ``reason``, else a fallback
+    that agrees with ``adjudication_situation`` (#1896). Only a marker with no ``escalated`` at
+    all falls back to the spent cap; an escalation falls back to its nested reason, worded as
+    ``escalate_action`` words a top-level one (``escalated: <why>``)."""
+    marker = marker or {}
+    if marker.get('reason'):
+        return marker['reason']
+    escalated = marker.get('escalated')
+    if not escalated:
+        return 'review cap reached without an approval'
+    why = escalated.get('reason') if isinstance(escalated, dict) else None
+    if why:
+        return f'escalated: {why}'
+    return 'escalated for a ruling before the review cap was reached'
 
 
 def adjudication_situation(marker: dict) -> str:

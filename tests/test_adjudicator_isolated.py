@@ -521,15 +521,25 @@ class Prompts(Base):
         row = {"seat": "adjudicator", "repo": REPO, "pr": 7, "head": HEAD}
         prompts = {}
         for name, marker in (("no-by", {"rounds": 1, "escalated": {"reason": "no by"}}),
-                             ("cap", {"rounds": 3, "reason": "3/3 verdicts, no approval"})):
+                             ("bare", {"rounds": 1, "escalated": {"at": "x"}}),
+                             ("cap", {"rounds": 3, "reason": "3/3 verdicts, no approval"}),
+                             ("cap-no-reason", {"rounds": 3})):
             with mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
                     mock.patch.object(ci, "read", return_value=ci.CIState()), \
                     mock.patch.object(issue_facts, "section", return_value=""):
                 prompts[name] = " ".join(
                     turn_prompts.isolated_prompt(self.loop, row, [], marker).split())
-        self.assertIn("the operator asked for a ruling", prompts["no-by"])
-        self.assertNotIn("the budget is spent", prompts["no-by"])
+        for name in ("no-by", "bare"):
+            with self.subTest(name):
+                self.assertIn("the operator asked for a ruling", prompts[name])
+                self.assertNotIn("the budget is spent", prompts[name])
+                # The "Why it stopped" fallback must not blame the cap either (#2444 F1).
+                self.assertNotIn("review cap reached without an approval", prompts[name])
+        self.assertIn("Why it stopped: escalated: no by", prompts["no-by"])
         self.assertIn("the budget is spent", prompts["cap"])
+        self.assertIn("Why it stopped: 3/3 verdicts, no approval", prompts["cap"])
+        self.assertIn("Why it stopped: review cap reached without an approval",
+                      prompts["cap-no-reason"])
 
     def test_every_role_renders_without_placeholders(self):
         for role in ("reviewer", "fixer", "adjudicator"):
