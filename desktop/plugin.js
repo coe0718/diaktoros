@@ -138,12 +138,20 @@ async function readView(path, kind) {
   // The backend's retry verdict for one row (#371): whether a click would re-arm it, the head a
   // retry would target, and — when it would not — the host's own bounded reason. The page draws
   // the button from this and decides nothing itself.
+  // An issue seat's run has no commit (#1696): its target is the issue, and the identity the
+  // backend binds its confirmation to is one plain word, never a SHA-shaped claim.
   const sha = value => typeof value === 'string' && /^[0-9a-f]{7,40}$/.test(value)
+  const word = value => typeof value === 'string' && /^[a-z]{1,16}$/.test(value)
   const retry = value => value === undefined || (object(value) &&
     typeof value.eligible === 'boolean' && typeof value.reason === 'string' &&
-    (value.eligible ? sha(value.head) : (value.head === '' || sha(value.head))))
+    [undefined, 'head', 'issue'].includes(value.target) &&
+    (value.target === 'issue'
+      ? (value.eligible ? word(value.head) : (value.head === '' || word(value.head)))
+      : (value.eligible ? sha(value.head) : (value.head === '' || sha(value.head)))))
+  // A withheld recorded head arrives as '' (the backend never echoes a malformed one): admitted,
+  // and read as unknown, so one bad ledger row cannot blank the whole list.
   const run = value => object(value) && count(value.pr) && value.pr > 0 &&
-    text(value.seat) && text(value.head) && text(value.state) &&
+    text(value.seat) && typeof value.head === 'string' && text(value.state) &&
     ['pending', 'claimed', 'launching', 'running', 'waiting', 'uncertain', 'failed',
       'cancelled'].includes(value.state) &&
     typeof value.why === 'string' && retry(value.retry)
@@ -603,7 +611,7 @@ function RunRow({ run, onOpen, onRetry }) {
         children: [
           jsx('span', { className: 'w-14 shrink-0 font-mono text-(--ui-accent)', children: '#' + run.pr }),
           jsx('span', { className: 'w-20 shrink-0 text-(--ui-text-tertiary)', children: run.seat }),
-          jsx('span', { className: 'w-16 shrink-0 font-mono text-(--ui-text-quaternary)', children: run.head }),
+          jsx('span', { className: 'w-16 shrink-0 font-mono text-(--ui-text-quaternary)', children: run.head || 'unknown' }),
           jsx('span', {
             title: retry && !canRetry && retry.reason ? retry.reason : undefined,
             children: jsx(Badge, { size: 'xs', variant: 'muted', children: run.state })
@@ -655,7 +663,7 @@ function Drawer({ loop, pr, onClose }) {
         jsxs('div', {
           className: 'flex flex-wrap items-center gap-2',
           children: [
-            jsx('span', { className: 'font-mono text-(--ui-text-quaternary)', children: item.head }),
+            jsx('span', { className: 'font-mono text-(--ui-text-quaternary)', children: item.head || 'unknown' }),
             jsx('span', { className: 'text-xs text-(--ui-text-secondary)', children: item.model }),
             jsx(Badge, { size: 'xs', variant: 'muted', children: 'would have ' + item.verdict }),
             jsx(Badge, {
@@ -799,7 +807,7 @@ function Drawer({ loop, pr, onClose }) {
                 d && d.breach
                   ? jsx(Muted, {
                       text:
-                        'Cap spent on ' + d.breach.head + ' (' + d.breach.status + ')' +
+                        'Cap spent on ' + (d.breach.head || 'unknown') + ' (' + d.breach.status + ')' +
                         (d.breach.rounds ? ' after ' + d.breach.rounds + ' round(s)' : '')
                     })
                   : null,
@@ -1674,7 +1682,7 @@ function RightNowPane() {
               jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
                 jsx('span', { className: 'font-mono text-(--ui-accent)', children: '#' + run.pr }),
                 jsx('span', { children: run.seat }),
-                jsx('span', { className: 'break-all font-mono text-(--ui-text-tertiary)', children: run.head }),
+                jsx('span', { className: 'break-all font-mono text-(--ui-text-tertiary)', children: run.head || 'unknown' }),
                 jsx(Badge, { size: 'xs', variant: 'muted', children: run.state })
               ] }),
               jsx('div', { className: 'mt-1 break-words text-(--ui-text-secondary)', children: run.why })
@@ -1781,7 +1789,8 @@ function Page() {
   const askRetry = run => {
     if (!run.retry || !run.retry.eligible) return
     setRetryAnswer(null)
-    setPendingRetry({ loop, pr: run.pr, seat: run.seat, head: run.retry.head, state: run.state })
+    setPendingRetry({ loop, pr: run.pr, seat: run.seat, head: run.retry.head, state: run.state,
+      target: run.retry.target === 'issue' ? 'issue' : 'head' })
   }
   const confirmRetry = async () => {
     const target = pendingRetry
@@ -1816,9 +1825,13 @@ function Page() {
     title: 'Re-arm this run?',
     // The target first, then what it means; the equivalent command on its own line (the dialog
     // keeps paragraph breaks) so a long command is never broken mid-flag by wrapping.
-    description: 'Retry the ' + retryTarget.seat + ' on #' + retryTarget.pr + ' @ ' +
+    // An issue seat's run is named by its issue, not by a head it does not have (#1696).
+    description: (retryTarget.target === 'issue'
+      ? 'Retry the ' + retryTarget.seat + ' on issue #' + retryTarget.pr + ' in loop ' + retryTarget.loop +
+        '. It re-runs that seat for that issue, under the loop budget in force now, and asks the '
+      : 'Retry the ' + retryTarget.seat + ' on #' + retryTarget.pr + ' @ ' +
         String(retryTarget.head).slice(0, 7) + ' in loop ' + retryTarget.loop +
-        '. It re-runs that seat at that head, under the loop budget in force now, and asks the ' +
+        '. It re-runs that seat at that head, under the loop budget in force now, and asks the ') +
         'host to start a worker. A run that may have written is refused, and the host says ' +
         'why.\nSame as: hermes dk retry --loop ' + retryTarget.loop + ' --pr ' +
         retryTarget.pr + ' --seat ' + retryTarget.seat,
