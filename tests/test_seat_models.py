@@ -690,7 +690,28 @@ class DoctorAndModels(Base):
         out = io.StringIO()
         with redirect_stdout(out):
             self.assertEqual(args.func(argparse.Namespace(profile=None, seat=None, loop=None)), 2)
-        self.assertIn("--seat reviewer|fixer|adjudicator|shadow", out.getvalue())
+        self.assertIn("--seat reviewer|fixer|adjudicator|triage|shadow", out.getvalue())
+
+    def test_models_seat_triage_uses_the_triage_profile(self):
+        # #2333: --seat rejected "triage" although config.seat_profile resolves it.
+        from diaktoros.cli import reports
+        self.assertEqual(set(reports.MODELS_SEATS), set(seat_model.SEATS))
+        parser = argparse.ArgumentParser()
+        reports.add_models(parser.add_subparsers())
+        args = parser.parse_args(["models", "--seat", "triage"])
+        self.loop = {**self.loop, "triage": {"profile": "rev"}}
+        self.write_runtime(self.settings)
+        out = io.StringIO()
+        with redirect_stdout(out), mock.patch.object(config, "all_loops", return_value=[self.loop]):
+            rc = args.func(args)
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertIn("profile rev (seat triage)", out.getvalue())
+        # A loop without a triage profile is reported cleanly (exit 1), not a crash.
+        self.loop = {k: v for k, v in self.loop.items() if k != "triage"}
+        out = io.StringIO()
+        with redirect_stdout(out), mock.patch.object(config, "all_loops", return_value=[self.loop]):
+            self.assertEqual(args.func(args), 1)
+        self.assertIn("no Hermes profile is configured for the triage seat", out.getvalue())
 
     def test_models_is_loud_about_unknown_providers_and_profiles(self):
         rc, text = self.models(profile="adj")
