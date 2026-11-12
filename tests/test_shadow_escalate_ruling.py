@@ -195,7 +195,8 @@ class Between(Base):
         return launch, row
 
     def rule(self, scope, verdict="ACCEPT"):
-        from diaktoros import broker_ipc, config, observer
+        from diaktoros import config, observer
+        from diaktoros.broker import ipc as broker_ipc
         raw = b'{"operation":"ruling"}'
         request = {"operation": "ruling", "verdict": verdict, "body": "style, not defects"}
         with mock.patch.object(config, "by_repo", return_value=self.loop), \

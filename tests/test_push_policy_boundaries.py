@@ -8,7 +8,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from diaktoros import broker_ipc, cli, config, ledger
+from diaktoros import cli, config, ledger
+from diaktoros.broker import ipc as broker_ipc
 from diaktoros.cli import common as cli_common  # noqa: E402
 from diaktoros.run_supervisor import Supervisor
 from tests.test_fixer_push_policy import raw_loop

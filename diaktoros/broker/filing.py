@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 
-from . import broker, gh
+from .. import broker, gh
 
 
 # What a reviewer may file from its issue-tier findings (#247): a few short issues, each a title,

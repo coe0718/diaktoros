@@ -248,7 +248,8 @@ class WriteTriageHandoff(Base):
         self.offers = []
 
     def run_write(self, labels=("P3",), post=None, auth=None):
-        from diaktoros import broker, broker_ipc
+        from diaktoros import broker
+        from diaktoros.broker import ipc as broker_ipc
         post = post or mock.Mock(return_value=77)
         patches = [
             mock.patch.object(config, "by_repo", lambda repo: self.loop),

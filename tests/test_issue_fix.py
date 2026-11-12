@@ -27,8 +27,9 @@ sys.path.insert(0, str(ROOT))
 from diaktoros import ledger  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros import state as state_mod  # noqa: E402
-from diaktoros import (broker, broker_ipc, config, fix_hold, gate, gh, observer, run_supervisor,  # noqa: E402
+from diaktoros import (broker, config, fix_hold, gate, gh, observer, run_supervisor,  # noqa: E402
                          seat_model, safe_push, trusted_turn)
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 REPO = "acme/widgets"

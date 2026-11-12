@@ -25,8 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 import test_safe_push as tsp  # noqa: E402
 import test_seat_models as sm  # noqa: E402
-from diaktoros import (broker, broker_ipc, config, contained, gh, ledger,  # noqa: E402
+from diaktoros import (broker, config, contained, gh, ledger,  # noqa: E402
                          run_supervisor, safe_push, trusted_turn)
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros import fixer_answers, wire  # noqa: E402
 from diaktoros.run_supervisor import CONFLICT_KEY, Supervisor  # noqa: E402
 

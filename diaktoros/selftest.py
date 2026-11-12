@@ -50,6 +50,7 @@ import tempfile
 from urllib.parse import urlsplit
 
 from . import config, doctor, envnames, gh, onboarding_record, util
+from .broker import ipc as broker_ipc
 from .config import credentials
 from .doctor import cron_checks, hook_checks, identity_checks
 
@@ -1217,7 +1218,7 @@ def check_ledger(report: Report, loop: dict, runtime_file: Path, settings: dict 
 
 def run_live_turn(report: Report, loop: dict, settings: dict | None, pr: dict | None,
                   timeout: int, reviewer=None) -> None:
-    from . import broker_ipc, gh as gh_mod, trusted_turn
+    from . import gh as gh_mod, trusted_turn
     from .run_supervisor.turn_prompts import isolated_prompt
     from .run_supervisor.pr_facts import effective_reviews, pr_change
     step = "live-turn"

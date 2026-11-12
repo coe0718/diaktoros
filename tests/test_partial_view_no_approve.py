@@ -24,8 +24,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from diaktoros import ledger  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
-from diaktoros import (broker_client, broker_ipc, config, gh, review_receipt,  # noqa: E402
+from diaktoros import (broker_client, config, gh, review_receipt,  # noqa: E402
                          trusted_turn)
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros.run_supervisor import views  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 import test_pr_change as pc  # noqa: E402  (its World fakes gh.fetch for pr_change)

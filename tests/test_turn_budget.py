@@ -24,8 +24,9 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
-from diaktoros import (broker_ipc, cli, config, doctor, explain, gate, gh,  # noqa: E402
+from diaktoros import (cli, config, doctor, explain, gate, gh,  # noqa: E402
                          run_supervisor, seat_model, selftest, trusted_turn)
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros import watch_stacked  # noqa: E402
 from diaktoros import watch_health  # noqa: E402
 from diaktoros import watch_mode  # noqa: E402

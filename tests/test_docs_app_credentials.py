@@ -90,7 +90,8 @@ class DocstringsQualifyUserChecks(unittest.TestCase):
     ``/user``, so no docstring says every identity resolves via ``/user``."""
 
     def test_principal_docstrings_name_the_app_path(self):
-        from diaktoros import broker, broker_ipc, selftest
+        from diaktoros import broker, selftest
+        from diaktoros.broker import ipc as broker_ipc
         from diaktoros.config import credentials
         from diaktoros.doctor import identity_checks
         for owner in (selftest, broker.authorize_ruling_comment,
