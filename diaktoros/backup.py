@@ -387,18 +387,30 @@ def _manifest(loops: list[dict], skipped: list[str], half_moved: dict | None) ->
             "tokens": {l["id"]: token_paths(l) for l in loops}, "migrating": half_moved}
 
 
+def _path_key(path: str | os.PathLike) -> str:
+    """The one spelling ``create`` compares a listed path and a ``must_read`` path by (#2413):
+    the real path of the parent directory plus the normalized last name, so ``/./``, repeated
+    slashes, a leading ``//`` and a symlinked directory on the way all name the same entry. The
+    last name itself is not followed: the entry may be gone, or a symlink, when this is asked.
+    A restore archive's manifest may spell a target any way ``read_manifest`` accepts; the
+    listing spells it as ``pathlib`` does."""
+    head, name = os.path.split(os.path.normpath(os.fspath(path)))
+    return os.path.join(os.path.realpath(head), name)
+
+
 def _add_files(tar: tarfile.TarFile, files: list[tuple[pathlib.Path, pathlib.Path | None, str]],
                manifest: dict, must_read: frozenset[str]) -> None:
     """Add each listed ``(target, source, kind)`` to ``tar`` as ``files/<index>`` and record it
     in ``manifest["files"]``. A listed regular file gone by the read is named in ``skipped``
-    instead (#1694), unless its path is in ``must_read`` (#2413); any other read error, and a
-    vanished ledger snapshot, raises ``BackupError``."""
+    instead (#1694), unless it is a ``must_read`` path (#2413; both compared by ``_path_key``);
+    any other read error, and a vanished ledger snapshot, raises ``BackupError``."""
+    must_read = frozenset(_path_key(path) for path in must_read)
     for index, (target, source, kind) in enumerate(files):
         member = f"files/{index}"
         try:
             tar.add(source, arcname=member, recursive=False)
         except FileNotFoundError as exc:
-            if kind == "file" and str(target) not in must_read:
+            if kind == "file" and _path_key(target) not in must_read:
                 # Removed or renamed away since the listing (a temp renamed into place,
                 # an ``artifacts/<n>/`` file cleaned up): there is nothing left to archive,
                 # so it is left out and named, not a failed backup (#1694).

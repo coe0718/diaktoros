@@ -38,6 +38,25 @@ JOB = {"id": "j1", "name": "diaktoros watchdog", "schedule": {"kind": "interval"
        "deliver": "telegram", "script": "diaktoros-watchdog.py"}
 
 
+def rewrite_manifest(good, bad, change, extra=None):
+    """Copy archive ``good`` to ``bad`` with its manifest passed through ``change`` (in place)
+    and the members in ``extra`` (name to bytes) added: an archive as outside input."""
+    manifest = backup.read_manifest(good)
+    change(manifest)
+    with tarfile.open(good, "r:gz") as src, tarfile.open(bad, "w:gz") as dst:
+        for member in src.getmembers():
+            if member.name != backup.MANIFEST:
+                dst.addfile(member, src.extractfile(member))
+        for name, data in (extra or {}).items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            dst.addfile(info, io.BytesIO(data))
+        raw = json.dumps(manifest).encode()
+        info = tarfile.TarInfo(backup.MANIFEST)
+        info.size = len(raw)
+        dst.addfile(info, io.BytesIO(raw))
+
+
 class Base(fg.Base):
     cron_run = None
 
@@ -124,21 +143,8 @@ class Tampered(Base):
     def tamper(self, change, extra=None):
         good = self.root / "good.tar.gz"
         self.run_cmd(cli.cmd_backup, out=str(good))
-        manifest = backup.read_manifest(good)
-        change(manifest)
         bad = self.root / "bad.tar.gz"
-        with tarfile.open(good, "r:gz") as src, tarfile.open(bad, "w:gz") as dst:
-            for member in src.getmembers():
-                if member.name != backup.MANIFEST:
-                    dst.addfile(member, src.extractfile(member))
-            for name, data in (extra or {}).items():
-                info = tarfile.TarInfo(name)
-                info.size = len(data)
-                dst.addfile(info, io.BytesIO(data))
-            raw = json.dumps(manifest).encode()
-            info = tarfile.TarInfo(backup.MANIFEST)
-            info.size = len(raw)
-            dst.addfile(info, io.BytesIO(raw))
+        rewrite_manifest(good, bad, change, extra)
         return bad
 
     def refused(self, archive, force=True, want=""):
@@ -1444,6 +1450,45 @@ class AllOrNothing(Base):
         self.assertNotIn("the install as it was is in", text)
         self.assertEqual(queue.read_text(), "live-replacement")
         self.assertEqual(list(backup.backups_dir().glob("diaktoros-pre-restore-*")), [])
+
+    def test_an_aliased_target_that_vanishes_under_the_snapshot_still_refuses_the_restore(self):
+        """#2413: the archive is outside input and ``read_manifest`` accepts a target spelled
+        with ``/./`` or repeated slashes; the snapshot must still recognise it as a file the
+        restore writes, so the race refuses the restore and the recreated file survives."""
+        good = self.changed_live_install()
+        queue = self.state / "queue.json"
+        aliases = (f"{self.state}/./queue.json", f"{self.state}//queue.json",
+                   f"{self.state}/.//./queue.json")
+        for index, alias in enumerate(aliases):
+            with self.subTest(alias=alias):
+                queue.write_text('{"newer": true}')
+                out = self.root / f"alias{index}.tar.gz"
+
+                def respell(manifest, alias=alias):
+                    for entry in manifest["files"]:
+                        if entry["path"] == str(queue):
+                            entry["path"] = alias
+                rewrite_manifest(good, out, respell)
+                self.assertIn(alias, {f["path"] for f in backup.read_manifest(out)["files"]})
+                real, raced = backup.tarfile.TarFile.add, []
+
+                def vanish(tar, name, *args, **kw):
+                    if str(name) == str(queue) and not raced:
+                        raced.append(name)
+                        queue.unlink()
+                        try:
+                            return real(tar, name, *args, **kw)
+                        finally:
+                            queue.write_text("live-replacement")
+                    return real(tar, name, *args, **kw)
+                with mock.patch.object(backup.tarfile.TarFile, "add", vanish):
+                    code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False,
+                                              force=True)
+                self.assertTrue(raced, text)
+                self.assertEqual(code, 2, text)
+                self.assertIn("the backup of the live install before it failed", text)
+                self.assertEqual(queue.read_text(), "live-replacement")
+                self.assertEqual(list(backup.backups_dir().glob("diaktoros-pre-restore-*")), [])
 
     def test_a_file_restore_does_not_write_that_vanishes_under_the_snapshot_is_skipped(self):
         """#2413: the undo snapshot keeps #1694's skip for a file the restore does not write."""

@@ -1322,7 +1322,8 @@ restore that archive to undo the restore. It is written like a `backup --out` ar
 backup cannot be taken (for example a live loop file that does not load), the restore is
 refused and nothing is written. Unlike a plain `backup`, that backup does not skip a file the
 restore is about to overwrite that is removed while it is read: it fails, and the restore is
-refused, so a file recreated in that window is never overwritten without a copy (#2413). A
+refused, so a file recreated in that window is never overwritten without a copy (#2413). The
+file is matched however the archive spells its path (`/./`, repeated slashes). A
 restore onto an install with nothing to overwrite takes no such
 backup. The files are then put back all or none: every member is first written to a temp file
 beside its target, and only when all of them are written are they swapped in; if a swap fails,
