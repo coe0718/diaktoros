@@ -411,6 +411,44 @@ class Files(unittest.IsolatedAsyncioTestCase):
         target.write_text('{"changed": true}')
         self.assertNotEqual(before, self.snapshot())
 
+    def valid_loop(self, loop_id, **extra):
+        seats = {seat: {"route": seat, "profile": "default"} for seat in ("reviewer", "fixer")}
+        (self.directory / f"{loop_id}.json").write_text(json.dumps({
+            "id": loop_id, "repo": "acme/widgets", "fixers": ["fixer"],
+            "reviewers": ["reviewer"], "read_token": "reader", "seats": seats, **extra}))
+
+    def test_hidden_loop_the_loader_accepts_has_its_state_dir_watched(self):
+        # #2389 review F2: the loader loads an existing .legacy.json (init only refuses new
+        # leading-dot IDs), so its custom state_dir, outside every scanned root, is watched.
+        legacy = self.home / "legacy-state"
+        legacy.mkdir()
+        target = legacy / "watchdog.json"
+        target.write_text("{}")
+        self.valid_loop(".legacy", state_dir=str(legacy))
+        with mock.patch.object(events.config, "config_dir", return_value=self.directory):
+            self.assertEqual(events.config.load_id(".legacy")["state_dir"], str(legacy))
+        before = self.snapshot()
+        self.assertFalse(before[1])
+        self.assertIn(str(target), [path for path, _ in before[0]])
+        target.write_text('{"changed": true}')
+        self.assertNotEqual(before, self.snapshot())
+
+    def test_watched_loops_are_exactly_the_loops_the_loader_loads(self):
+        # One rule (config.config_file_id) for which config files are loops, not a parallel
+        # filter in the watcher that drifts from the loader's glob and load_id.
+        names = [".legacy", ".", "..", "", "a.b", "plain"]
+        for loop_id in names:
+            self.valid_loop(loop_id, state_dir=str(self.home / f"s{len(loop_id)}{loop_id}"))
+        (self.directory / "upper.JSON").write_text("{}")
+        (self.directory / "temp.json.tmp").write_text("{}")
+        with mock.patch.object(events.config, "config_dir", return_value=self.directory):
+            loaded = {loop["id"] for loop in events.config.readable_loops()[0]}
+        self.assertEqual({".legacy", "a.b", "plain"}, loaded)
+        # demo.json is named like a loop but its content is refused; its state_dir is still
+        # read, as before. The names the loader refuses outright are never read.
+        watched = {events.config.config_file_id(path.name) for path in self.directory.iterdir()}
+        self.assertEqual(loaded | {"demo", None}, watched)
+
     async def test_burst_is_rate_limited_and_the_trailing_change_is_never_dropped(self):
         manager = events.DesktopEvents(self.snapshot, interval=.01, min_gap=.3)
         async with manager.subscribe() as queue:

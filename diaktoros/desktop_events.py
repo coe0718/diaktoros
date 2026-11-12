@@ -55,7 +55,8 @@ def _loop_configs(config_dir: Path, state_root: Path):
     """(custom state_dir roots, every configured loop's state dir, overflow) from config JSON.
 
     Only the state_dir key is read; credential paths mentioned there are never opened. A loop
-    without a state_dir uses its default, <state_root>/<id>, the id being the file's stem.
+    without a state_dir uses its default, <state_root>/<id>. Which files are loops is the
+    loader's rule (config.config_file_id), never a second filter here.
     """
     custom, state_dirs, overflow = set(), set(), False
     config_bytes = MAX_CONFIG_BYTES
@@ -66,7 +67,9 @@ def _loop_configs(config_dir: Path, state_root: Path):
                     overflow = True
                     break
                 path = Path(entry.path)
-                if path.suffix != ".json" or path.name.startswith(".") or path.is_symlink():
+                # The loader's own rule for which files are loops: a hidden .legacy.json is one.
+                loop_id = config.config_file_id(entry.name)
+                if loop_id is None or path.is_symlink():
                     continue
                 try:
                     # A malformed store may contain FIFOs or race a rename. Never
@@ -88,7 +91,7 @@ def _loop_configs(config_dir: Path, state_root: Path):
                     custom.add(Path(raw).expanduser())
                     state_dirs.add(Path(raw).expanduser())
                 elif isinstance(loop, dict) and not raw:
-                    state_dirs.add(state_root / path.stem)
+                    state_dirs.add(state_root / loop_id)
     except OSError:
         pass
     return custom, state_dirs, overflow
