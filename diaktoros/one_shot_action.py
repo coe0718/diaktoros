@@ -266,7 +266,8 @@ def _deps_perform(loop, action, issue, on):
     if action == "depends" and on in record:
         return _result("verified", f"#{issue} waits on #{on}", ok=True)
     if action == "waive" and on not in record:
-        return _result("verified", f"#{issue} no longer waits on #{on}", ok=True)
+        return _result("verified", f"#{issue} no longer waits on #{on}" + (
+            "" if changed == "waived" else "; the waiver could not be recorded in its history"), ok=True)
     return _result("unknown", "the dependency record could not be verified; inspect before retrying")
 
 

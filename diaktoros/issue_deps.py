@@ -179,12 +179,16 @@ def listing(loop: dict, st, issue: int | None = None) -> list[dict]:
 
 def waived(st, issue: int | None = None, *, strict: bool = False) -> list[dict]:
     """``{issue, on, by, at}`` for every recorded waiver (or those of ``issue``), sorted. A state
-    written before waivers were kept has none. ``strict`` raises on an unreadable history."""
+    written before waivers were kept has none. ``strict`` raises on an unreadable history (or
+    dependency record). A waiver whose pair is declared again is not shown: the dependency
+    holds, so it is never "waived" and "waiting" at once (#2399 review F2)."""
     waivers = st.issue_dep_waivers(strict=True) if strict else st.issue_dep_waivers()
+    deps = st.issue_deps(strict=True) if strict else st.issue_deps()
     if issue is not None:
         waivers = {issue: waivers.get(issue) or {}}
     return [{"issue": b, "on": a, "by": record.get("by"), "at": record.get("at")}
-            for b, prerequisites in sorted(waivers.items()) for a, record in sorted(prerequisites.items())]
+            for b, prerequisites in sorted(waivers.items()) for a, record in sorted(prerequisites.items())
+            if a not in (deps.get(b) or {})]
 
 
 def declare_problem(loop: dict, st, issue: int, prerequisite: int) -> tuple[int, str]:
@@ -221,15 +225,19 @@ def declare(loop: dict, st, issue: int, prerequisite: int, by: str = BY_CLI
     return 0, "", added
 
 
-def waive(st, issue: int, prerequisite: int, by: str = BY_CLI) -> bool:
-    """Remove (waive) the dependency, recording who waived it and when; False when there was
-    none. The next sweep releases ``issue`` if nothing else holds it. An unreadable record or
-    waiver history raises ``RecordUnreadable`` and nothing is removed."""
+def waive(st, issue: int, prerequisite: int, by: str = BY_CLI) -> str:
+    """Remove (waive) the dependency, then record who waived it and when: ``""`` when there was
+    none, ``"waived"``, or ``"unrecorded"`` when it was removed but the history write failed
+    (said so, never reported as recorded). The next sweep releases ``issue`` if nothing else
+    holds it. An unreadable record, or a removal that did not land, raises ``RecordUnreadable``
+    and nothing is removed: the dependency still holds and no waiver is shown (#2399 review F2).
+    """
     from .util import now_iso
     try:
-        return st.issue_dep_drop(issue, prerequisite, {"by": by, "at": now_iso()})
+        done = st.issue_dep_drop(issue, prerequisite, {"by": by, "at": now_iso()})
     except Exception:
         raise RecordUnreadable() from None
+    return {"": "", "dropped": "waived"}.get(done, "unrecorded")
 
 
 def blocking(loop: dict, st, issue: int) -> list[tuple[int | None, str]]:

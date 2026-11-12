@@ -1329,21 +1329,27 @@ class LoopState:
                 self._save(self.dir / self.WAIVERS_FILE, self._deps_json(waivers))
             return True
 
-    def issue_dep_drop(self, issue: int, prerequisite: int, waiver: dict | None = None) -> bool:
-        """Remove (waive) the dependency; False when there was none. ``waiver`` (``{"by",
-        "at"}``) is recorded first, so a write that stops half way leaves the dependency
-        declared (still holding), never a silent release. An unreadable record raises."""
+    def issue_dep_drop(self, issue: int, prerequisite: int, waiver: dict | None = None) -> str:
+        """Remove (waive) the dependency: ``""`` when there was none, else ``"dropped"``. Both
+        records are read first (either unreadable raises; nothing is removed). The removal is
+        published first and ``waiver`` (``{"by", "at"}``) recorded after it, so history never
+        shows a waiver whose dependency still holds (#2399 review F2); when that second write
+        fails the answer is ``"unrecorded"``: removed, its history not kept."""
         with self.locked():
             data = self.issue_deps(strict=True)
             if prerequisite not in (data.get(issue) or {}):
-                return False
-            if waiver is not None:
-                waivers = self.issue_dep_waivers(strict=True)
-                waivers.setdefault(issue, {})[prerequisite] = dict(waiver)
-                self._save_strict(self.dir / self.WAIVERS_FILE, self._deps_json(waivers))
+                return ""
+            waivers = None if waiver is None else self.issue_dep_waivers(strict=True)
             del data[issue][prerequisite]
             self._save_strict(self.dir / self.DEPS_FILE, self._deps_json(data))
-            return True
+            if waivers is None:
+                return "dropped"
+            waivers.setdefault(issue, {})[prerequisite] = dict(waiver)
+            try:
+                self._save_strict(self.dir / self.WAIVERS_FILE, self._deps_json(waivers))
+            except Exception:
+                return "unrecorded"
+            return "dropped"
 
     def dep_waits(self) -> list[int]:
         """Issues whose hand-off waits for a prerequisite (#671), re-checked by the sweep."""

@@ -664,9 +664,11 @@ def _depends_write(args, loop: dict, st) -> int:
     """``depends --on`` or ``--waive``: what ``issue_deps`` answers, printed."""
     from .. import issue_deps
     if args.waive is not None:
-        if issue_deps.waive(st, args.issue, args.waive):
+        done = issue_deps.waive(st, args.issue, args.waive)
+        if done:
             print(f"[{loop['id']}] #{args.issue} no longer depends on #{args.waive}; the next "
-                  "watchdog sweep releases it if nothing else holds it")
+                  "watchdog sweep releases it if nothing else holds it"
+                  + ("" if done == "waived" else "; the waiver could not be recorded in its history"))
             return 0
         print(f"[{loop['id']}] refused: #{args.issue} does not depend on #{args.waive}")
         return 1

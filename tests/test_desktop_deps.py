@@ -446,6 +446,74 @@ class Waivers(DepsFixture):
         self.assertTrue(actions.plan(self.loop, "depends", pr=12, on=6)["eligible"])
 
 
+def failing(name):
+    """Every strict save of the state file ``name`` raises ``OSError`` (a full disk, say); the
+    others land."""
+    real = state_mod.LoopState._save_strict
+
+    def save(self, path, data):
+        if path.name == name:
+            raise OSError("/private/state: No space left on device")
+        return real(self, path, data)
+    return mock.patch.object(state_mod.LoopState, "_save_strict", save)
+
+
+class WaiverWrites(DepsFixture):
+    """#2399 review F2: a waiver is reported only once its removal is durable, and never shown
+    beside a dependency that still holds."""
+
+    def waivers_on_page(self):
+        with mock.patch.object(desktop_api, "_loop", return_value=self.loop):
+            return desktop_api.deps_view("widgets")["waivers"]
+
+    def test_a_removal_that_fails_still_waits_and_shows_no_waiver(self):
+        self.depends(12, on=5)
+        self.run_gate(self.labeled())
+        with failing("issue-deps.json"):
+            rc, out = self.depends(12, waive=5)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("could not be read or written — the dependency was not changed", out)
+        self.assertNotIn("/private", out)
+        rc, out = self.depends()
+        self.assertEqual(out, "[widgets] #12 depends on #5: waiting — #5 is still open\n")
+        self.assertEqual((self.st.issue_dep_waivers(), self.waivers_on_page()), ({}, []))
+        fix_hold.sweep(self.loop, self.st)
+        self.assertEqual((self.enqueued, self.st.dep_waits()), ([], [12]))
+
+    def test_a_history_write_that_fails_reports_the_waiver_as_unrecorded(self):
+        self.depends(12, on=5)
+        self.run_gate(self.labeled())
+        with failing("issue-deps-waivers.json"):
+            rc, out = self.depends(12, waive=5)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out, "[widgets] #12 no longer depends on #5; the next watchdog sweep "
+                              "releases it if nothing else holds it; the waiver could not be "
+                              "recorded in its history\n")
+        self.assertEqual(self.st.issue_deps(), {})
+        self.assertEqual(self.depends(), (0, "[widgets] no issue dependencies declared\n"))
+        fix_hold.sweep(self.loop, self.st)
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, tid.BASE, "issue-fix")])
+
+    def test_a_page_waiver_whose_history_write_fails_says_so(self):
+        self.depends(12, on=5)
+        offer = actions.plan(self.loop, "waive", pr=12, on=5)
+        with failing("issue-deps-waivers.json"):
+            result = actions.confirmed_perform(self.loop, "waive", offer["confirmation"], pr=12, on=5)
+        self.assertEqual((result["ok"], result["status"]), (True, "verified"), result)
+        self.assertIn("the waiver could not be recorded in its history", result["reason"])
+        self.assertEqual((self.st.issue_deps(), self.waivers_on_page()), ({}, []))
+
+    def test_declared_again_when_the_old_waiver_cannot_be_cleared_it_only_waits(self):
+        self.depends(12, on=5)
+        self.depends(12, waive=5)
+        with failing("issue-deps-waivers.json"):
+            self.assertEqual(self.depends(12, on=5)[0], 0)
+        self.assertIn(5, self.st.issue_dep_waivers()[12])        # the stale history is still there
+        rc, out = self.depends()
+        self.assertEqual(out, "[widgets] #12 depends on #5: waiting — #5 is still open\n")
+        self.assertEqual(self.waivers_on_page(), [])
+
+
 class WaiverView(DepsFixture):
     """``deps_view``'s waivers: bounded, withheld like ``by``/``at``, and never "none" unread."""
 

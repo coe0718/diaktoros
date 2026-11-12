@@ -1889,12 +1889,17 @@ hermes dk depends --loop "<loop-id>" --issue 42 --waive 41
 Dependencies, waivers and waits are kept in the loop's state directory and survive a restart. Exit
 `1` means it was refused, and the line says why; `2` that it couldn't be answered.
 
-An unreadable dependency record (#2150) is never read as "none declared": every issue's fix is
+An unreadable dependency record (#2150), including valid JSON malformed anywhere inside it (a key
+that is not a positive issue number, an entry that is not a `{by, at}` record), is never read as
+"none declared" or with that part left out: every issue's fix is
 held (no comment is posted for it; `status` names the unreadable record) until the record can be
 read again, and this command says `the issue dependency record could not be read` and exits `2`
 without listing or writing anything. An unreadable waiver history only adds the line `waiver
 history could not be read` to the list, and refuses a `--waive` (exit `2`) without removing the
-dependency.
+dependency. A waive removes the dependency first and records the waiver after it: if the removal
+cannot be written nothing is waived (exit `2`); if only the history write fails, the waive is done
+and its line ends `the waiver could not be recorded in its history`. A waiver is never listed while
+the same dependency is declared.
 
 The Desktop page shows the same list under **Issue dependencies** (`GET /deps`, #1301): each
 row is met, waiting or unknown, with why. It reads GitHub for each prerequisite, so the page reads
