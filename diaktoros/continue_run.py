@@ -40,7 +40,8 @@ def inspect(loop: dict, sup, run_id: str) -> dict:
     ``conflicts`` mean it does nothing."""
     facts: list[str] = []
     conflicts: list[str] = []
-    plan = {"stages": [], "conflicts": conflicts, "facts": facts, "fix": None, "run": None}
+    plan = {"stages": [], "conflicts": conflicts, "facts": facts, "fix": None, "run": None,
+            "plan_needed": None}
     with sup._connect() as con:
         row = con.execute("SELECT id,repo,pr,head,seat,state FROM runs WHERE id=?",
                           (run_id,)).fetchone()
@@ -72,6 +73,7 @@ def inspect(loop: dict, sup, run_id: str) -> dict:
         conflicts.append(f"could not read issue #{number}: {err or 'unreadable'}")
     elif "pull_request" in issue or issue.get("state") != "open":
         conflicts.append(f"issue #{number} is no longer an open issue")
+    plan["plan_needed"] = _plan_needed(loop, number, issue, err)
     ref, err = gh.fetch(loop, f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}")
     sha = None
     if gh.status_of(err) == 404:
@@ -115,6 +117,20 @@ def inspect(loop: dict, sup, run_id: str) -> dict:
         _review_stage(loop, plan, pr)
     _authorize(loop, plan)
     return plan
+
+
+def _plan_needed(loop: dict, number: int, issue, err: str) -> bool | None:
+    """Whether the issue, as ``inspect`` just read it, still needs an approved plan before a PR
+    (``fix_hold.plan_required``, the rule the broker's ``open_pr`` applies); ``None`` when it
+    could not be read. A closed issue, or one that is now a PR, needs none: no plan is possible.
+    ``post_plan`` reads it to settle the run's plan ask even when another conflict stands
+    (#2382 review F2): a conflict alone does not mean a plan is still needed."""
+    from . import fix_hold, state as state_mod
+    if not isinstance(issue, dict) or err:
+        return None
+    if "pull_request" in issue or issue.get("state") != "open":
+        return False
+    return fix_hold.plan_required(state_mod.state_for(loop), number, issue)
 
 
 def _check_pr(loop: dict, plan: dict, pr: dict, sha: str | None) -> None:
@@ -181,14 +197,27 @@ def post_plan(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
     and a seat, never both post (review F3). A reservation whose comment was not confirmed (a
     lost response, a failed state write, a crash) stays open as ``pending``, which no reply
     resolves; calling this again for the same run reconciles it: it adopts the fixer's comment
-    carrying this run's ``plan_marker`` if GitHub has one, and posts only if not (review F4)."""
+    carrying this run's ``plan_marker`` if GitHub has one, and posts only if not (review F4).
+    That reconciling happens whatever the inspection says now (#2381): when the run is no longer
+    refused only for want of a plan, its own reservation is still settled by
+    ``_release_plan_ask`` before the refusal, so a changed label, body or branch cannot strand it.
+    """
     from . import fix_hold, state as state_mod
     plan = inspect(loop, sup, run_id)
     lines = list(plan["facts"])
     if not plan.get("plan_first") or len(plan["conflicts"]) != 1:
         why = "; ".join(plan["conflicts"]) or "no plan is needed"
+        settled = []
+        if plan["fix"] is not None:
+            # The plan is no longer required (no plan-first refusal and no conflict, or the
+            # issue read now says no plan is needed or possible, #2382 review F2): the run's ask
+            # is closed outright. While a conflict hides whether one is still needed (the issue
+            # still asks for a plan, or could not be read), only an unconfirmed one is settled.
+            keep = bool(plan["conflicts"]) and plan.get("plan_needed") is not False
+            settled = [_release_plan_ask(loop, state_mod.state_for(loop), plan["fix"]["number"],
+                                         run_id, keep_adopted=keep)]
         return False, lines + [f"no plan posted: only a run refused for want of a plan has one "
-                               f"to post ({why})"]
+                               f"to post ({why})"] + [s for s in settled if s]
     fix, st = plan["fix"], state_mod.state_for(loop)
     number = fix["number"]
     text = (f"Run `{run_id}` pushed a fix for this issue to `{fix['branch']}` at "
@@ -227,6 +256,48 @@ def _adopt_plan_comment(loop: dict, number: int, login: str, run_id: str) -> tup
         if author.casefold() == login.casefold() and plan_marker(run_id) in str(comment.get("body") or ""):
             return comment["id"], ""
     return None, ""
+
+
+def _release_plan_ask(loop: dict, st, number: int, run_id: str, keep_adopted: bool) -> str:
+    """Settle ``run_id``'s own plan ask on issue ``number`` once it is no longer the way to the
+    run's PR (#2381); the line to report, or ``""`` when the run has no ask open. Another run's
+    or the seat's ask is never touched.
+
+    A ``pending`` reservation is first matched against the issue's comments
+    (``_adopt_plan_comment``): with no marked comment on the issue it is dropped and its count
+    given back, since nothing was asked. With ``keep_adopted`` (a conflict hides whether a plan
+    is still needed) a found comment is adopted, so a maintainer's ``/loop approve`` resolves it
+    as usual, and a confirmed ask stays; without it (the plan is no longer required, or the PR is
+    open) the ask is closed, still counted when its comment is on the issue or may be. Runs under
+    ``config.push_policy_lock``, as a ``--post-plan`` post does."""
+    if not isinstance(st.fix_ask_open().get(number), dict):
+        return ""
+    with config.push_policy_lock():
+        ask = st.fix_ask_open().get(number)
+        if not isinstance(ask, dict) or ask.get("run") != run_id:
+            return ""
+        if not ask.get("pending"):
+            if keep_adopted:
+                return ""
+            st.fix_ask_drop(number, run=run_id)
+            return f"closed run {run_id}'s plan ask on issue #{number}: the plan is not needed now"
+        comment, error = _adopt_plan_comment(loop, number, config.seat_login(loop, "fixer"), run_id)
+        if error and keep_adopted:
+            return (f"run {run_id}'s plan ask on issue #{number} stays pending: the issue's "
+                    f"comments are unreadable ({error}); run `--post-plan` again")
+        if comment is None and not error:
+            st.fix_ask_drop(number, run=run_id, uncount=True)
+            return (f"dropped run {run_id}'s unposted plan reservation on issue #{number} "
+                    "(no plan comment of the run is on the issue)")
+        if keep_adopted:
+            try:
+                st.fix_ask_confirm(number, run_id, comment)
+            except Exception as exc:
+                return f"plan comment {comment} found but not recorded ({exc}); run `--post-plan` again"
+            return (f"adopted plan comment {comment} of run {run_id}; a maintainer's "
+                    "`/loop approve` resolves it")
+        st.fix_ask_drop(number, run=run_id)
+        return f"closed run {run_id}'s plan ask on issue #{number}: the plan is not needed now"
 
 
 def _post_claimed_plan(loop: dict, st, fix: dict, login: str, run_id: str, ask: dict) -> str:
@@ -327,6 +398,29 @@ def _deliver_review(loop: dict, pr: int, sender: str) -> str:
             "watchdog sweep will")
 
 
+def _release_after_pr(loop: dict, number: int, run_id: str, lines: list[str]) -> bool:
+    """The run's PR is open (``continue`` just created it, or found it open): a plan ask
+    ``--post-plan`` opened for this run asks for nothing any more, so close it (#2381) before
+    any later stage, so a failed review request cannot leave it stranded (#2382 review F3).
+
+    Best effort; whether it was settled. A failure (the state lock or the ask file cannot be
+    written) is reported, never raised: the run is claimed ``continuing`` here, and an escaping
+    error would leave that claim as an unknown mid-write that no later ``continue`` resumes
+    (#2382 review F5). The ask stays as it was; the run's remaining stages still complete, and
+    the next ``continue`` (which finds the PR open) or ``--post-plan`` settles the ask."""
+    from . import state as state_mod
+    try:
+        released = _release_plan_ask(loop, state_mod.state_for(loop), number, run_id,
+                                     keep_adopted=False)
+    except Exception as exc:
+        lines.append(f"run {run_id}'s plan ask on issue #{number} not closed "
+                     f"({type(exc).__name__}: {exc}); run `continue` again to close it")
+        return False
+    if released:
+        lines.append(released)
+    return True
+
+
 def run(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
     """Inspect, then complete only the missing stages. ``(ok, lines)``; ok is False when the
     run stays quarantined or a write failed."""
@@ -343,6 +437,9 @@ def run(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
     login = config.seat_login(loop, "fixer")
     pr = plan.get("pr")
     new_head = fix["new_head"]
+    settled = True
+    if pr is not None:
+        settled = _release_after_pr(loop, number, run_id, lines)
     for stage in plan["stages"]:
         if stage == "open_pr":
             issue = gh.fetch(loop, f"/repos/{repo}/issues/{number}")[0] or {}
@@ -357,6 +454,7 @@ def run(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
                 return False, lines + [f"PR create failed or unconfirmed ({exc}); quarantined again"]
             sup.issue_fix_status(run_id, "opened", pr_number=pr)
             lines.append(f"opened PR #{pr}")
+            settled = _release_after_pr(loop, number, run_id, lines)
         else:
             try:
                 broker.request_issue_pr_review(loop, repo=repo, pr=pr, login=login)
@@ -379,7 +477,7 @@ def run(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
             lines.append("run released")
         except ValueError as exc:
             lines.append(f"run left uncertain: {exc}")
-    return True, lines
+    return settled, lines
 
 
 def from_chat(loop: dict, sup, sender: str, text: str) -> tuple[bool, list[str]] | None:

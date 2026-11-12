@@ -58,7 +58,10 @@ again": the label is normally still on the issue when the decline is recorded, G
 still carries the label, so applying it "again" without removing it first changes nothing. The
 exception is a label already gone from the live issue (a delayed delivery), whatever else is
 wrong too (pushes off, author not allowed): the gate reads the issue when it records the decline,
-and the next step is then "apply the fix label to the issue", since adding it is the new event. If
+and the next step is then "apply the fix label to the issue", since adding it is the new event.
+That read decides: a label found present there is told to be removed and applied again even if
+an earlier read recorded it as "no longer on the issue" (it was re-added in between); only when
+the issue can't be read does the reason text decide. If
 the close or unlabel event is missed, the watchdog sweep reads each declined issue (as the
 reader) and settles it when the issue is closed or the label is gone.
 Changing/reopening an issue or editing its text does not launch triage. A durable

@@ -299,10 +299,13 @@ def check_turn_budget(loop: dict) -> Check:
     if "adjudicator" in seats:
         # The breach marker's stall clocks (#98): a ruling in flight is never a stall; one
         # claimed with no live run is, only after the adjudicator's whole turn.
-        marker = int(loop.get("marker_grace_min") or config.DEFAULTS["marker_grace_min"])
+        # The marker grace as the sweep reads it, fractions kept (#2411): a loaded 60.9 is
+        # shown as 60.9, not truncated to a threshold no clock uses.
+        marker_s, ruling_s = config.marker_grace_s(loop), config.adjudicating_stall_s(loop)
+        marker = format(marker_s / 60, ".10g")
+        ruling = marker if ruling_s == marker_s else minutes(ruling_s)
         text += (f"; breach marker: awaiting-adjudication stalls after {marker}m; adjudicating "
-                 "only with no live ruling run, after "
-                 f"{minutes(config.adjudicating_stall_s(loop))}m")
+                 f"only with no live ruling run, after {ruling}m")
     return Check("turn-budget", VERIFIED, text)
 
 
@@ -597,7 +600,9 @@ def check_clone(loop: dict) -> Check:
         return Check("clone", MISMATCH, f"{path} lives inside the loop's artifacts root {root}",
                      "move the clone out of the state directory: the cleanup deletes everything "
                      "under artifacts/, which would be your working copy")
-    parallel = [seat for seat in ("reviewer", "fixer") if config.seat_concurrency(loop, seat) > 1]
+    # The same seats the loader's isolation guard checks (#1693): shadow and triage count too.
+    parallel = [seat for seat in config.capacity_seats(loop)
+                if config.seat_concurrency(loop, seat) > 1]
     note = f" — isolation source for {', '.join(parallel)}" if parallel else ""
     return Check("clone", VERIFIED, f"{path} (git checkout){note}")
 
