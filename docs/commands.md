@@ -2141,7 +2141,9 @@ the comment is adopted so `/loop approve` resolves it. If the comments cannot be
 pending in that case, so run `--post-plan` again; when no plan is needed any more it is closed
 and stays counted, since its comment may be on the issue. When `continue` opens the run's PR, or
 finds it already open, it closes the run's own plan ask the same way, before the review
-request, so a failed review request does not leave it open. Another run's ask, or the fixer
+request, so a failed review request does not leave it open. If closing it fails (the state
+cannot be written), `continue` still completes the review request and records the run, exits
+non-zero and says so; run `continue` again to close the ask. Another run's ask, or the fixer
 seat's, is never touched. The sweep resolves or closes only the exact ask whose replies it read:
 if that ask was closed and another opened meanwhile, the old reply is ignored.
 The watchdog sweep or the comment

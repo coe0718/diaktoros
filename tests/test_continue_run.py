@@ -699,6 +699,41 @@ class Continue(Base):
         self.assertEqual(self.writes, ["plan_comment", "open_pr", "request_review"])
         self.assertEqual((st.fix_ask_open(), st.fix_ask_count(12)), ({}, 0))
 
+    def test_an_ask_cleanup_failure_never_strands_the_run_mid_write(self):
+        """#2382 review F5: the run's PR is open (found open, or just created) and closing the
+        run's plan ask fails (the ask file cannot be written). The run must not be left claimed
+        `continuing`, an unknown mid-write no retry resumes: the review is still requested, the
+        run recorded, and the next `continue` closes the ask."""
+        from diaktoros import fix_hold, state as state_mod
+        for already_open in (False, True):
+            with self.subTest(already_open=already_open):
+                with ledger.connect(self.db) as con:
+                    con.execute("UPDATE issue_fixes SET state='pushed',pr_number=NULL")
+                self.prs = []
+                st = self.lost_plan(issue(labels=("agent-fix", fix_hold.PLAN_LABEL)))
+                if already_open:
+                    self.open_pr_row()
+                self.writes = []
+
+                def full(*a, **k):
+                    raise OSError("disk full")
+                with mock.patch.object(gh, "fetch", self.fetch_with(issue())), \
+                        self.real_policy(issue()), \
+                        mock.patch.object(gh, "issue_comments_read", lambda loop, n: ([], "")):
+                    with mock.patch.object(state_mod.LoopState, "fix_ask_drop", full):
+                        ok, lines = continue_run.run(self.loop, self.sup, self.run_id)
+                    self.assertFalse(ok, lines)
+                    self.assertTrue(any("disk full" in line and "not closed" in line
+                                        for line in lines), lines)
+                    want = ["request_review"] if already_open else ["open_pr", "request_review"]
+                    self.assertEqual(self.writes, want)
+                    self.assertEqual(self.fix()["state"], "requested")
+                    self.assertTrue(st.fix_ask_open()[12]["pending"])
+                    ok, lines = continue_run.run(self.loop, self.sup, self.run_id)
+                self.assertTrue(ok, lines)
+                self.assertEqual(self.writes, want)                 # nothing written twice
+                self.assertEqual((st.fix_ask_open(), st.fix_ask_count(12)), ({}, 0))
+
     def test_the_sweep_never_resolves_an_ask_that_opened_while_it_read_replies(self):
         """#2382 review F1: the sweep snapshots the run's confirmed plan ask and reads its
         replies; meanwhile `continue` closes that ask and the seat opens a new question. The

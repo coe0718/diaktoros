@@ -398,14 +398,27 @@ def _deliver_review(loop: dict, pr: int, sender: str) -> str:
             "watchdog sweep will")
 
 
-def _release_after_pr(loop: dict, number: int, run_id: str, lines: list[str]) -> None:
+def _release_after_pr(loop: dict, number: int, run_id: str, lines: list[str]) -> bool:
     """The run's PR is open (``continue`` just created it, or found it open): a plan ask
     ``--post-plan`` opened for this run asks for nothing any more, so close it (#2381) before
-    any later stage, so a failed review request cannot leave it stranded (#2382 review F3)."""
+    any later stage, so a failed review request cannot leave it stranded (#2382 review F3).
+
+    Best effort; whether it was settled. A failure (the state lock or the ask file cannot be
+    written) is reported, never raised: the run is claimed ``continuing`` here, and an escaping
+    error would leave that claim as an unknown mid-write that no later ``continue`` resumes
+    (#2382 review F5). The ask stays as it was; the run's remaining stages still complete, and
+    the next ``continue`` (which finds the PR open) or ``--post-plan`` settles the ask."""
     from . import state as state_mod
-    released = _release_plan_ask(loop, state_mod.state_for(loop), number, run_id, keep_adopted=False)
+    try:
+        released = _release_plan_ask(loop, state_mod.state_for(loop), number, run_id,
+                                     keep_adopted=False)
+    except Exception as exc:
+        lines.append(f"run {run_id}'s plan ask on issue #{number} not closed "
+                     f"({type(exc).__name__}: {exc}); run `continue` again to close it")
+        return False
     if released:
         lines.append(released)
+    return True
 
 
 def run(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
@@ -424,8 +437,9 @@ def run(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
     login = config.seat_login(loop, "fixer")
     pr = plan.get("pr")
     new_head = fix["new_head"]
+    settled = True
     if pr is not None:
-        _release_after_pr(loop, number, run_id, lines)
+        settled = _release_after_pr(loop, number, run_id, lines)
     for stage in plan["stages"]:
         if stage == "open_pr":
             issue = gh.fetch(loop, f"/repos/{repo}/issues/{number}")[0] or {}
@@ -440,7 +454,7 @@ def run(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
                 return False, lines + [f"PR create failed or unconfirmed ({exc}); quarantined again"]
             sup.issue_fix_status(run_id, "opened", pr_number=pr)
             lines.append(f"opened PR #{pr}")
-            _release_after_pr(loop, number, run_id, lines)
+            settled = _release_after_pr(loop, number, run_id, lines)
         else:
             try:
                 broker.request_issue_pr_review(loop, repo=repo, pr=pr, login=login)
@@ -463,7 +477,7 @@ def run(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
             lines.append("run released")
         except ValueError as exc:
             lines.append(f"run left uncertain: {exc}")
-    return True, lines
+    return settled, lines
 
 
 def from_chat(loop: dict, sup, sender: str, text: str) -> tuple[bool, list[str]] | None:
