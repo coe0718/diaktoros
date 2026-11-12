@@ -40,9 +40,15 @@ values are not part of the response; raw transport text is not rendered.
 If the automatic probe is refused with **403**, the page requests the same loop's offline
 health (`GET /health?loop=<id>`) and discloses **GitHub not probed from this caller**. A remote
 caller therefore retains validated local installation checks without weakening the server's
-local-only credential boundary. A transport failure or HTTP 503 also attempts that offline
-read, with a **GitHub probe unavailable** disclosure: this means the probe could not be obtained,
-not that GitHub itself is down. Offline results are **local checks only**; network checks left
+local-only credential boundary. A transport failure (no response at all) also attempts that
+offline read, with a **GitHub probe unavailable** disclosure: this means the probe could not be
+obtained, not that GitHub itself is down. An HTTP 503 also attempts the offline read and
+discloses only **Probed health read failed (HTTP 503); this response does not say where or
+why**. A 503 names no origin: the route maps every unexpected error anywhere in the probed read
+to it, whether a local read or a network probe that raised, and a proxy in front of the host
+can answer 503 too. So it is attributed neither to GitHub (#1150) nor to the loop's local state.
+GitHub failures `doctor` handles arrive inside a successful probe as unknown checks with their
+own detail. Offline results are **local checks only**; network checks left
 unprobed are unknown, not passing. If both reads fail, the panel is unavailable (or retains
 last-good data with a bounded failure disclosure), never an empty healthy installation.
 
@@ -54,8 +60,8 @@ explicitly retry the **probe first**, even after an offline fallback, for that s
 Before caching either response, its `loop` must match the selection, every check must have a
 known status plus valid detail/fix/paused fields, `read_at` must be valid, and counts must equal
 the checks returned. A probed response must have `offline: false`; a fallback must have
-`offline: true`. The client records the fallback reason as `probeFailure: 'caller'` or
-`probeFailure: 'unreachable'`, without exposing raw errors or treating local checks as proof
+`offline: true`. The client records the fallback reason as `probeFailure: 'caller'`,
+`'http503'` (a 503, origin unknown) or `'unreachable'` (no response), without exposing raw errors or treating local checks as proof
 of GitHub reachability.
 
 The page does not currently re-scope server query keys by active profile/connection, so a
