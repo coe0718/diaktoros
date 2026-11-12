@@ -53,6 +53,13 @@ class Commands(unittest.TestCase):
             self.assertIn("`hermes review-loop` was removed in v0.6.0", text, doc)
             self.assertNotIn("as an alias until", text, doc)
 
+    def test_the_upgrade_steps_do_not_say_update_refuses_a_catalog_install(self):
+        """#2380: Hermes re-pins a catalog install on update; the trap is that it keeps the old name."""
+        text = " ".join((ROOT / "docs" / "operations.md").read_text(encoding="utf-8").split())
+        self.assertNotIn("it refuses a pinned install", text)
+        self.assertIn("it updates the old plugin under its old name", text)
+        self.assertIn("re-pinned to the commit the catalog reviewed", text)
+
     def test_the_plugin_entry_docstring_names_only_registered_commands(self):
         """#2343: the plugin entry point's docstring names no command register_cli dropped."""
         doc = ast.get_docstring(ast.parse((ROOT / "__init__.py").read_text(encoding="utf-8")))

@@ -157,8 +157,9 @@ Diaktoros was called hermes-review-loop before v0.2.0. Hermes keys a plugin by i
 
 Installing Diaktoros therefore creates a **new** plugin folder, `~/.hermes/plugins/diaktoros`, beside
 `hermes-review-loop`, and that plugin isn't enabled yet. `hermes plugins update hermes-review-loop`
-isn't the way: it refuses a pinned install (catalog installs are pinned), and it would keep the old
-name.
+isn't the way: it updates the old plugin under its old name. A catalog install of it is re-pinned to
+the commit the catalog reviewed (the catalog update path, not a refusal), but it stays
+`hermes-review-loop`.
 
 Between turns:
 
