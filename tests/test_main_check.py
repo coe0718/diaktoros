@@ -161,6 +161,31 @@ class MainCheck(unittest.TestCase):
         self.assertNotIn("#57", kw["outcome"])
         self.assertIn("no PR merges since main's last green head", kw["outcome"])
 
+    def test_oversized_refs_keep_the_outcome_bounded(self):
+        """Review of #2419: subjects are pushed data, so nine direct pushes ending in 500-digit
+        ``(#N)`` made the main_red outcome 4688 characters. A reference no PR number can have
+        names no PR, so the sweep's outcome stays within 600 with the caveat whole."""
+        commits = [{"commit": {"message": f"push {i} (#{str(i) * 500})"}} for i in range(1, 10)]
+        commits += [{"commit": {"message": "Fix b (#77)"}}]
+        compare = {"commits": commits, "total_commits": len(commits)}
+        self.assertFalse(self.run_sweep("a" * 40, GREEN))
+        self.assertTrue(self.run_sweep("b" * 40, RED, compare=compare))
+        (_args, kw), = self.notices
+        outcome = kw["outcome"]
+        self.assertLessEqual(len(outcome), 600, outcome[:200])
+        self.assertIn(f"merged since main's last green head: #77 ({CAVEAT})", outcome)
+        self.assertTrue(outcome.endswith("https://x/run/1"), outcome[-200:])
+
+    def test_a_ref_past_the_int_digit_limit_does_not_crash_the_sweep(self):
+        """A 5000-digit ``(#N)`` is past ``int()``'s 4300-digit limit: the reader raised
+        ValueError and the sweep died before the notice. It names no PR now."""
+        compare = {"commits": [{"commit": {"message": "x (#" + "7" * 5000 + ")"}}],
+                   "total_commits": 1}
+        self.assertFalse(self.run_sweep("a" * 40, GREEN))
+        self.assertTrue(self.run_sweep("b" * 40, RED, compare=compare))
+        (_args, kw), = self.notices
+        self.assertIn("no PR merges since main's last green head", kw["outcome"])
+
     def test_no_named_pr_needs_no_caveat(self):
         compare = {"commits": [{"commit": {"message": "direct push"}}], "total_commits": 1}
         self.assertFalse(self.run_sweep("a" * 40, GREEN))

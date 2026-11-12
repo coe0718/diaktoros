@@ -22,6 +22,7 @@ ADVICE = ("GitHub's \"Require branches to be up to date before merging\" protect
           "this class of breakage")
 OUTCOME_MAX = 600       # the main_red notice's outcome is at most this long
 NAMES_MIN = 40          # what the failed check names keep at least, when they are clipped
+LEAD = "main: required check(s) failed: "
 
 
 class Merges(list):
@@ -98,13 +99,13 @@ def _bounded(names: str, since: str, rest: str) -> str:
     characters, with ``since`` (the merged-PR list and its subject-only caveat, #1699) kept whole.
 
     The failed check names are clipped first (to no less than ``NAMES_MIN``), then ``rest`` (the
-    advice, the flake note, the link) is cut at the end: the list is never cut off mid-caveat."""
-    lead = "main: required check(s) failed: "
-    room = max(OUTCOME_MAX - len(lead) - len(since) - len(rest), NAMES_MIN)
+    advice, the flake note, the link) is cut at the end: the list is never cut off mid-caveat.
+    ``since`` fits: at most ``PRS_MAX`` numbers of at most ``pr_refs.DIGITS_MAX`` digits each.
+    The whole is still cut at ``OUTCOME_MAX`` as a hard bound (review of #2419)."""
+    room = max(OUTCOME_MAX - len(LEAD) - len(since) - len(rest), NAMES_MIN)
     if len(names) > room:
         names = names[:room - 1] + "…"
-    head = f"{lead}{names}{since}"
-    return head + rest[:max(OUTCOME_MAX - len(head), 0)]
+    return f"{LEAD}{names}{since}{rest}"[:OUTCOME_MAX]
 
 
 def _remember(st, path, key: str, head) -> None:

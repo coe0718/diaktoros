@@ -10,13 +10,17 @@ from __future__ import annotations
 
 import re
 
-SQUASH = re.compile(r"\s*\(#(\d+)\)\s*$")
-MERGE = re.compile(r"^Merge pull request #(\d+)\b")
+DIGITS_MAX = 10        # GitHub numbers are 32-bit; a longer (#N) is no PR (review of #2419)
+SQUASH = re.compile(rf"\s*\(#(\d{{1,{DIGITS_MAX}}})\)\s*$")
+MERGE = re.compile(rf"^Merge pull request #(\d{{1,{DIGITS_MAX}}})\b")
 CAVEAT = "read from commit subjects, so a direct push ending in (#N) is counted as a PR too"
 
 
 def pr_number(subject: str) -> int:
-    """The PR number a commit subject names (merge commit first, then a trailing ``(#N)``), or 0."""
+    """The PR number a commit subject names (merge commit first, then a trailing ``(#N)``), or 0.
+
+    A reference longer than ``DIGITS_MAX`` digits names no PR: it keeps a pushed subject from
+    growing the notices past their bound (or ``int()`` past its 4300-digit limit)."""
     subject = subject or ""
     match = MERGE.match(subject) or SQUASH.search(subject)
     return int(match.group(1)) if match else 0

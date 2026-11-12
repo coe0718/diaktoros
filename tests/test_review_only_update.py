@@ -123,7 +123,8 @@ class Notice(Base):
         from diaktoros import pr_refs
         from diaktoros.cli import update as cli_update
         for subject, want in (("update docs (#123)", [123]), ("Merge pull request #5 from a/b", [5]),
-                              ("Merge pull request #57x", []), ("no ref", [])):
+                              ("Merge pull request #57x", []), ("no ref", []),
+                              (f"push (#{'9' * 11})", []), (f"Merge pull request #{'9' * 11}", [])):
             self.assertEqual(review_only_conflict.merged_prs([("s", subject)]), want)
             self.assertEqual(pr_refs.pr_number(subject), want[0] if want else 0)
             got = cli_update.merged_prs([{"commit": {"message": subject}}])
