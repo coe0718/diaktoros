@@ -126,13 +126,13 @@ def _waits(loop: dict, st, number: int, head: str, live: dict, reviews) -> str:
         # The fixer answers it, or a ruling does at the cap (#1907): a merge would move the head
         # under either, and the merged head would be reviewed with the findings still open.
         return "changes are requested at the head"
-    if gate.is_ruled_approval(latest, loop):
-        # #2364: the sweep approves and dismisses at this head; a merge before both settle
-        # strands the overruled change request at a head no ruling names any more. At a head
-        # the approval was carried to, no change request is left to dismiss: nothing waits.
-        from . import ruled_approval
-        return ruled_approval.unsettled(loop, number, head, reviews)
-    return ""
+    # #2364: the sweep approves and dismisses at this head; a merge before both settle strands
+    # the overruled change request at a head no ruling names any more. Read whichever verdict is
+    # now the latest: a write still on the wire holds the head too. At a head the approval was
+    # carried to, no change request is left to dismiss: nothing waits.
+    from . import ruled_approval
+    return ruled_approval.unsettled(loop, number, head, reviews,
+                                    ruled=gate.is_ruled_approval(latest, loop))
 
 
 def _in_flight(loop: dict, number: int) -> str:

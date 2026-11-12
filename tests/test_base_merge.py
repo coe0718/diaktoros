@@ -371,6 +371,33 @@ class Ruled(Base):
         self.assertEqual(self.latest_id(second), 21)                 # carried along the chain
         self.assertEqual(self.carried(second)["from"], first)
 
+    def test_an_older_rulings_write_on_the_wire_waits_even_with_no_newest_record(self):
+        # F7: r1's approval may still land at this head; once the head moves nothing reconciles
+        # it, and a late approval there would void the carry. Its pending steps still wait on
+        # nothing.
+        self.ruling = {"head": self.head, "verdict": "ACCEPT", "run_id": "r2", "created": self.ruled_at}
+        self.reviews = [{**self.overruled, "state": "DISMISSED"}, self.ruled]  # nothing to dismiss
+        self.rows = [{"ruling": "r1", "approve": "uncertain", "dismiss": "pending"}]
+        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews),
+                         "the adjudicator's ACCEPT is still being acted on (approve: uncertain)")
+        self.assertEqual(self.update(), "")
+        self.assertEqual(self.remote_head(), self.head)
+        self.rows = [{"ruling": "r1", "approve": "pending", "dismiss": "pending"}]
+        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews), "")
+
+    def test_a_dismissal_on_the_wire_waits_when_the_reviewer_approved_since(self):
+        # F8: the reviewer's own approval is now the head's latest verdict, but the dismissal may
+        # still land; superseded pending work does not wait.
+        self.reviews.append(approval(self.head, review_id=31, at="2026-11-10T03:00:00Z"))
+        self.assertEqual(gate.latest_effective_review_at_head(self.reviews, self.loop, self.head)["id"], 31)
+        self.rows[0]["dismiss"] = "posting"
+        self.assertEqual(self.update(), "")
+        self.assertEqual(self.remote_head(), self.head)
+        self.rows[0]["dismiss"] = "pending"
+        self.ruling = {"head": self.head, "verdict": "REJECT", "run_id": "r2", "created": self.ruled_at}
+        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews, ruled=False), "")
+        self.assertEqual(self.update(), self.remote_head())
+
     def latest_id(self, head):
         latest = gate.latest_effective_review_at_head(self.reviews, self.loop, head)
         return latest and latest["id"]
