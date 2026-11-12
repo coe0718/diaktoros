@@ -157,8 +157,16 @@ Diaktoros was called hermes-review-loop before v0.2.0. Hermes keys a plugin by i
 
 Installing Diaktoros therefore creates a **new** plugin folder, `~/.hermes/plugins/diaktoros`, beside
 `hermes-review-loop`, and that plugin isn't enabled yet. `hermes plugins update hermes-review-loop`
-isn't the way: it refuses a pinned install (catalog installs are pinned), and it would keep the old
-name.
+isn't the way, and what it does depends on how the old plugin was installed:
+- A catalog install takes the catalog update path, not the pinned-install refusal. Hermes looks up
+  the catalog name recorded at install and re-pins to the commit the catalog reviewed for it. If the
+  catalog no longer lists that name, the update is refused ("no longer in the catalog"); Hermes's
+  catalog lists this plugin as `diaktoros`, with no `hermes-review-loop` entry. Where Hermes does
+  find the entry and its manifest name changed, it moves the install and its enabled entry to the
+  new name.
+- A git install pinned to a revision is refused as pinned.
+
+None of these paths runs the migration below (settings, host files, gate shims), so follow the steps.
 
 Between turns:
 
@@ -1038,8 +1046,9 @@ any `X-Forwarded-*` such as `-For`, `-Host` or `-Proto`, and `X-Real-IP`; presen
 too) gets 403 — because the dashboard is the surface Caddy exposes off-host. Desktop then
 requests validated offline health for that loop and discloses “GitHub not probed from this
 caller”. A transport failure also falls back, labeled “GitHub probe unavailable”
-(not evidence of a GitHub outage); an HTTP 503 falls back labeled “Host read failed”, the host's
-own local read failure rather than a GitHub one. Offline results show local checks only; unprobed checks are
+(not evidence of a GitHub outage); an HTTP 503 falls back labeled “Probed health read failed
+(HTTP 503)”, which names no origin: the route maps any unexpected error in the probed read
+(local or network) to 503, and a proxy can return one too. Offline results show local checks only; unprobed checks are
 not passing. If both reads fail, the panel shows unavailable or retains last-good data with a
 bounded failure disclosure. Refresh GitHub explicitly retries the probe first. The stable
 per-loop ten-minute cache has no automatic retries, polling or socket invalidation; see

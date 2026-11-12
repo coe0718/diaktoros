@@ -409,10 +409,10 @@ function useHealth(loop) {
         // local-only probe guard remain errors; never render transport error text.
         if (status !== 0 && status !== 403 && status !== 503) throw error
         const offline = validate(await call(path), true)
-        // A 503 is the host's own bounded read failure (its read boundary maps any unexpected
-        // error to it), not a GitHub answer; only no response at all is an unreachable probe.
-        // GitHub's own failures come back inside a successful probe, as unknown checks (#1150).
-        return { ...offline, probeFailure: status === 403 ? 'caller' : status === 503 ? 'host' : 'unreachable' }
+        // A 503 names no origin: the host maps every unexpected error in the whole probed read to
+        // it (a local read, or a network probe that raised), and a proxy can answer 503 too. So
+        // it is disclosed as what it is, not as GitHub nor as local state (#1150, #2393 F1).
+        return { ...offline, probeFailure: status === 403 ? 'caller' : status === 503 ? 'http503' : 'unreachable' }
       }
       return { ...validate(probed, false), probeFailure: null }
     },
@@ -1063,8 +1063,8 @@ function Health({ loop }) {
           text: health.data && health.data.offline
             ? (health.data.probeFailure === 'caller'
                 ? 'GitHub not probed from this caller. '
-                : health.data.probeFailure === 'host'
-                  ? 'Host read failed: the host could not read this loop’s local state for the probed checks. '
+                : health.data.probeFailure === 'http503'
+                  ? 'Probed health read failed (HTTP 503); this response does not say where or why. '
                   : health.data.probeFailure === 'unreachable'
                     ? 'GitHub probe unavailable: the probe request could not be completed. '
                     : '') + 'Local checks only. This response came back offline: the gateway, the hooks, token expiry and scopes, ' +

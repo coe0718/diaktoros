@@ -2390,6 +2390,24 @@ test('cancel: a stale confirmation says nothing was cancelled; any other failure
   }
 })
 
+// #2149: the same catch names the escalate action. Only the host's exact stale detail proves no
+// write; an interrupted perform's 409 and a transport failure may have escalated.
+test('escalate: a stale confirmation says nothing was escalated; any other failure may have written', async () => {
+  for (const [rejection, expect, refuse] of [
+    [STALE, /HTTP 409 · Confirmation refused: the target changed since the preview, so nothing was escalated\. Read a fresh preview\./, /may have written|stale or unavailable; preview again/],
+    ['409: {"detail":"Action outcome unavailable; inspect state before retrying."}', /could not be verified\. It may have written/, /nothing was escalated|Confirmation refused/],
+    ['network down /private/token ghp_secret', /could not be verified\. It may have written/, /nothing was escalated|Confirmation refused|ghp_secret|\/private\/token/]]) {
+    const h = await harness(); selectAction(h); await previewAction(h)
+    actionButton(h, 'Confirm escalation').props.onClick()
+    h.actionResult(() => Promise.reject(new Error(rejection)))
+    await actionDialog(h).props.onConfirm()
+    assert.equal(h.actionCalls.length, 1)
+    assert.match(h.text(h.tree()), expect); assert.doesNotMatch(h.text(h.tree()), refuse)
+    assert.doesNotMatch(h.text(h.tree()), /Backend verified/)
+    assert.equal(actionButton(h, 'Confirm escalation'), undefined); assert.equal(actionDialog(h), undefined)
+  }
+})
+
 test('cancel: a malformed preview is rejected before any confirmation is offered', async () => {
   for (const bad of [cancelPlan({ head: 'nothex' }), cancelPlan({ seat: 'reviewer' }), cancelPlan({ action: 'escalate' }),
     cancelPlan({ confirmation: '' }), cancelPlan({ pr: 938 }), cancelPlan({ loop: 'other-loop' }), cancelPlan({ eligible: 'yes' })]) {
@@ -2597,6 +2615,28 @@ test('actions: stale dependency confirmation (409) is not success and needs a fr
   await d.props.onConfirm(); assert.equal(h.actionCalls.length, 1)
 })
 
+// #2149: both dependency actions share the catch. Only the exact stale detail says nothing was
+// recorded; an interrupted perform's 409 and a transport failure may have written.
+test('actions: depends and waive say nothing was recorded only for the stale detail; any other failure may have written', async () => {
+  for (const action of ['depends', 'waive']) {
+    const confirmLabel = action === 'depends' ? 'Confirm dependency' : 'Confirm waiver'
+    for (const [rejection, expect, refuse] of [
+      [STALE, /HTTP 409 · Confirmation refused: the target changed since the preview, so nothing was recorded\. Read a fresh preview\./, /may have written|stale or unavailable; preview again/],
+      ['409: {"detail":"Action outcome unavailable; inspect state before retrying."}', /could not be verified\. It may have written/, /nothing was recorded|Confirmation refused/],
+      ['network down /private/token ghp_secret', /could not be verified\. It may have written/, /nothing was recorded|Confirmation refused|ghp_secret|\/private\/token/]]) {
+      const h = await harness(); selectDeps(h, action); await previewDeps(h, depsPlan({ action }))
+      actionButton(h, confirmLabel).props.onClick()
+      h.actionResult(() => Promise.reject(new Error(rejection)))
+      await depsDialog(h).props.onConfirm()
+      assert.equal(h.actionCalls.length, 1, action)
+      assert.match(h.text(h.tree()), expect, action); assert.doesNotMatch(h.text(h.tree()), refuse, action)
+      assert.doesNotMatch(h.text(h.tree()), /Backend verified/, action)
+      assert.equal(actionButton(h, confirmLabel), undefined, action); assert.equal(depsDialog(h), undefined, action)
+      assert.ok(depsInvalidated(h), action)
+    }
+  }
+})
+
 test('actions: malformed dependency previews are rejected before confirmation', async () => {
   const h = await harness(); selectDeps(h)
   for (const extra of [{ on: 6 }, { on: null }, { pr: 13 }, { action: 'waive' }, { seat: 'reviewer' }, { head: 'a'.repeat(40) },
@@ -2679,7 +2719,7 @@ function healthFixture(loop = 'fixture-loop') {
 }
 
 for (const [failure, reason] of [[new Error('403: {"detail":"private caller"}'), 'caller'],
-  [new Error('private transport'), 'unreachable'], [new Error('503: {"detail":"private"}'), 'host']]) {
+  [new Error('private transport'), 'unreachable'], [new Error('503: {"detail":"private"}'), 'http503']]) {
   test('health fallback retains validated local checks and honest disclosure: ' + failure.message, async () => {
     const h = await harness(); h.render('page')
     const offline = { ...healthFixture(), offline: true, checks: [
@@ -2694,7 +2734,7 @@ for (const [failure, reason] of [[new Error('403: {"detail":"private caller"}'),
     const text = h.text(h.tree())
     assert.match(text, /Local profile requires attention/)
     assert.match(text, { caller: /GitHub not probed from this caller/, unreachable: /GitHub probe unavailable/,
-      host: /Host read failed/ }[reason])
+      http503: /Probed health read failed \(HTTP 503\)/ }[reason])
     assert.doesNotMatch(text, /Automatically read when this loop opens|private caller|private transport|"detail"/)
     h.dispose()
   })
@@ -2709,23 +2749,29 @@ async function healthAfterProbe(probe) {
   return { h, data, text: h.text(h.tree()) }
 }
 
-test('health probe 503 is disclosed as a host local read failure, not a GitHub probe failure', async () => {
-  const { h, data, text } = await healthAfterProbe(h =>
-    h.readFails('&probe=1', new Error('503: {"detail":"Desktop read unavailable; retry the read."}')))
-  assert.equal(data.offline, true); assert.equal(data.probeFailure, 'host')
-  assert.deepEqual(h.calls, ['/health?loop=fixture-loop&probe=1', '/health?loop=fixture-loop'])
-  assert.match(text, /Host read failed: the host could not read this loop’s local state for the probed checks\. Local checks only\./)
-  assert.doesNotMatch(text, /GitHub probe|Desktop read unavailable|retry the read/)
-  // The offline fallback is a verified read: one quiet line, no Retry box.
-  assert.equal(h.buttons(h.tree()).some(b => b.props.children === 'Retry'), false)
-  h.dispose()
-})
+// A 503 proves only that the probed read failed: the host maps every unexpected error in the
+// whole read to it (local or a network probe that raised), and a proxy can answer 503 too.
+// (A non-JSON 503 body parses as no status at all and stays the transport wording.)
+for (const [label, failure] of [
+  ['host body', new Error('503: {"detail":"Desktop read unavailable; retry the read."}')],
+  ['no host detail', new Error('503: {"error":"upstream unavailable"}')]]) {
+  test('health probe 503 is disclosed origin-neutrally, never as GitHub or local state: ' + label, async () => {
+    const { h, data, text } = await healthAfterProbe(h => h.readFails('&probe=1', failure))
+    assert.equal(data.offline, true); assert.equal(data.probeFailure, 'http503')
+    assert.deepEqual(h.calls, ['/health?loop=fixture-loop&probe=1', '/health?loop=fixture-loop'])
+    assert.match(text, /Probed health read failed \(HTTP 503\); this response does not say where or why\. Local checks only\./)
+    assert.doesNotMatch(text, /GitHub probe|local state|Host read failed|Desktop read unavailable|retry the read|upstream/)
+    // The offline fallback is a verified read: one quiet line, no Retry box.
+    assert.equal(h.buttons(h.tree()).some(b => b.props.children === 'Retry'), false)
+    h.dispose()
+  })
+}
 
 test('health probe transport failure keeps the offline unreachable wording', async () => {
   const { h, data, text } = await healthAfterProbe(h => h.readFails('&probe=1', new Error('private transport')))
   assert.equal(data.probeFailure, 'unreachable')
   assert.match(text, /GitHub probe unavailable: the probe request could not be completed\. Local checks only\./)
-  assert.doesNotMatch(text, /Host read failed|private transport/)
+  assert.doesNotMatch(text, /HTTP 503|local state|private transport/)
   h.dispose()
 })
 
@@ -2739,7 +2785,7 @@ test('health GitHub failure inside a successful probe stays a GitHub disclosure'
   h.queries.health = h.good(data); h.render('page')
   const text = h.text(h.tree())
   assert.match(text, /could not read the complete GitHub hooks listing/)
-  assert.doesNotMatch(text, /Host read failed|GitHub probe unavailable|Local checks only/)
+  assert.doesNotMatch(text, /HTTP 503|GitHub probe unavailable|Local checks only/)
   h.dispose()
 })
 

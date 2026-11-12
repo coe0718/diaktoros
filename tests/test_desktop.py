@@ -1045,7 +1045,8 @@ class Surface(unittest.TestCase):
         self.assertIn('health fallback retains validated local checks and honest disclosure: private transport', done.stdout)
         self.assertIn('health fallback retains validated local checks and honest disclosure: 503:', done.stdout)
         # #1150: a host 503, no response, and a GitHub failure inside a probe are told apart.
-        self.assertRegex(done.stdout, r"(?m)^ok \d+ - health probe 503 is disclosed as a host local read failure, not a GitHub probe failure$")
+        for label in ('host body', 'no host detail'):
+            self.assertRegex(done.stdout, r"(?m)^ok \d+ - health probe 503 is disclosed origin-neutrally, never as GitHub or local state: " + label + "$")
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - health probe transport failure keeps the offline unreachable wording$")
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - health GitHub failure inside a successful probe stays a GitHub disclosure$")
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - health fallback rejects malformed, wrong-loop and non-offline replies without inventing checks$")
@@ -1076,6 +1077,12 @@ class Surface(unittest.TestCase):
             "actions: stale dependency confirmation (409) is not success and needs a fresh preview",
             "actions: malformed dependency previews are rejected before confirmation",
             "actions: a dependency preview needs both issue numbers and invalid input never reads",
+        ):
+            self.assertRegex(done.stdout, rf"(?m)^ok \d+ - {re.escape(name)}$")
+        # #2149: the stale-409 wording for escalate and both dependency actions, by name.
+        for name in (
+            "escalate: a stale confirmation says nothing was escalated; any other failure may have written",
+            "actions: depends and waive say nothing was recorded only for the stale detail; any other failure may have written",
         ):
             self.assertRegex(done.stdout, rf"(?m)^ok \d+ - {re.escape(name)}$")
 

@@ -59,14 +59,39 @@ def _minutes_since(when: float, now: float) -> int:
     return max(0, int((now - when) / 60)) if when else 0
 
 
-def _adjudication_next(loop: dict, head: str) -> str:
-    """The one thing left when the budget is spent: a ruling, or a human if nobody can rule."""
+# What still fires while an escalation holds a head below its verdict cap, by the marker's
+# ``escalated.by`` (#1887). An operator's or a shadow review's escalation stops both gates
+# (scripts/gate_reviewer.py and scripts/gate_fixer.py silence on ``gate.escalated``); a fixer's
+# dispute stops the fixer gate, but the reviewer gate still takes a maintainer's re-request of
+# the disputed review (scripts/gate_reviewer.py, the ``dispute_key`` exception).
+_BELOW_CAP_HOLD = {
+    gate.OPERATOR_ESCALATION: ("nothing else fires for this PR (the operator's escalation stops "
+                               "both gates below the cap)"),
+    gate.SHADOW_ESCALATION: ("nothing else fires for this PR (the shadow review's escalation "
+                             "stops both gates below the cap)"),
+    "dispute": ("the fixer's dispute holds this head below the cap: the fixer gate starts no fix "
+                "turn, and the reviewer gate reviews it again only if a maintainer re-requests "
+                "the disputed review"),
+}
+
+
+def _adjudication_next(loop: dict, head: str, escalated_by: str = "") -> str:
+    """The one thing left when the budget is spent: a ruling, or a human if nobody can rule.
+
+    ``escalated_by``: who escalated this head below the verdict cap (the breach marker's
+    ``escalated.by``; #1887), so the action names that escalation rather than the cap. Empty
+    means the cap is spent. A source not listed in ``_BELOW_CAP_HOLD`` gets a neutral wording.
+    """
     short = head[:7] if head else "?"
     if not (loop.get("adjudicator") or {}).get("route"):
         return ("human adjudication: this loop has no adjudicator route, so the breach marker is "
                 "the only record — rule by hand, then merge or close")
-    return (f"human adjudication: the adjudicator rules at head {short} and reports; nothing else "
-            f"fires for this PR (both gates stop at the cap)")
+    if not escalated_by:
+        held = "nothing else fires for this PR (both gates stop at the cap)"
+    else:
+        held = _BELOW_CAP_HOLD.get(
+            escalated_by, f"an escalation ({escalated_by}) holds this head below the cap")
+    return f"human adjudication: the adjudicator rules at head {short} and reports; {held}"
 
 def _ruled(loop: dict, number: int, head: str) -> str | None:
     """The adjudicator's verdict at this head, if it has ruled (the watchdog reads the same)."""
@@ -565,8 +590,13 @@ def _seat_needs(c) -> None:
     c.fixer_turn = turns.get("fixer")     # any ledger state: a lock or mark with no run has none
     # Uncertain or ended with no push: not live, whatever lock or mark still stands over it.
     c.fixer_ended = bool(c.fixer_turn) and c.fixer_turn not in run_supervisor.NOT_ENDED
-    c.fixer_rearm = explain_next.fixer_retry(c) if c.fixer_ended else ("", "", False)   # the retry plan (#1514)
-    c.redeliver = c.fixer_ended and not c.cap_spent and explain_next.redelivery_rearms(c)  # intake's own rule
+    # The retry plan (#1514), with the rows it re-arms (#2410 review F2).
+    c.fixer_rearm = explain_next.fixer_retry(c) if c.fixer_ended else ("", "", False, ())
+    # A redelivery is decided on the gate's verdict turn (turn key ''), which need not be the
+    # newest row shown above: a shadow-fix, CI-fix or conflict turn shares the head (#1615).
+    c.redelivery, c.gate_turn, c.fixer_key = (explain_next.redelivery_outcome(c) if c.fixer_ended
+                                              else ("", None, ""))
+    c.redeliver = c.fixer_ended and not c.cap_spent and bool(c.redelivery)   # intake's own rule
     # A fix for this head: a lock on an old head cannot finish it (#1481 review).
     # An uncertain fixer turn is no live fix: nothing will push, and the sweep reads it so (#1495).
     c.fix_live = (("fixer" in c.held and "fixer" not in c.stale_held) or c.inflight_fix
@@ -689,24 +719,26 @@ def _gate_blockers(c) -> None:
 
 def _ended_rearm(c) -> str:
     """What re-arms an ended fixer turn once pushes are on, as its step says: a redelivery waits
-    out a live in-flight mark (#1514 F3), a retry does not."""
+    out a live in-flight mark (#1514 F3), a retry does not. The redelivery is named by the turn it
+    is decided on (``explain_next.redelivery_effect``, #1615)."""
     marked = " the in-flight fix mark expires" if c.inflight_fix else ""
+    opts = " once the loop opts in"
     if c.redeliver and not marked:
-        return "a redelivered verdict re-arms it once the loop opts in"
+        return "a redelivered verdict " + explain_next.redelivery_effect(c, opts)
     if c.fixer_rearm[0]:
-        return ("retry re-arms it once the loop opts in"
+        return ("retry " + explain_next.retry_effect(c, opts)
                 + (f" (a redelivered verdict waits until{marked})" if c.redeliver else ""))
     if c.redeliver:
-        return f"a redelivered verdict re-arms it once the loop opts in and{marked}"
-    return "a redelivered verdict is a duplicate the ledger refuses"
+        return "a redelivered verdict " + explain_next.redelivery_effect(c, f"{opts} and{marked}")
+    return "a redelivered verdict " + explain_next.redelivery_effect(c)
 
 
 def _run_blockers(c) -> None:
     """Guards on the runs: push-off, capacity, stale queues and locks, a missing run."""
     declined = c.queued_seat == "fixer" and c.queued_declined
     if c.push_off and c.fixer_ended and not c.ruling:
-        c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the fixer turn at head {c.short} is "
-                          f"{c.fixer_turn} with no fix pushed — "
+        c.blockers.append(f"{config.FIXER_PUSH_HOLD}: {explain_next.shown_turn(c)} at head "
+                          f"{c.short} is {c.fixer_turn} with no fix pushed — "
                           + _ended_rearm(c))
     elif c.push_off and c.fix_live and not c.ruling:
         c.blockers.append(f"{config.FIXER_PUSH_HOLD}: the fixer turn at head {c.short} cannot "

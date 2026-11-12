@@ -398,6 +398,30 @@ class MaintainerRerequest(Dispute):
         block.assert_not_called()
         self.assertIn("escalated to adjudication", err)
 
+    def test_explain_on_a_dispute_escalation_names_the_dispute_and_the_rerequest(self):
+        # #2443 review F1: below the cap, explain said "the operator's escalation stops both
+        # gates" for a fixer's dispute, while the reviewer gate still takes a maintainer's
+        # re-request of it (test above). The action now names the dispute and that exception.
+        self.dispute()
+        self.loop["adjudicator"] = {"route": "one-breach"}
+        with mock.patch.object(gate, "wake_adjudicator", return_value=True), \
+                mock.patch.object(gate.gh, "pr", return_value=fg.LIVE):
+            outcome = gate.breach(self.loop, self.st, 7, fg.HEAD, 1, "disputed",
+                                  escalated={"by": "dispute", "at": "now", "reason": "r"})
+        self.assertEqual(outcome, "new")
+        facts = {"pr": fg.LIVE, "reviews": VERDICT, "armed": True, "read_at": time.time()}
+        with mock.patch.object(explain, "_ruled", return_value=None):
+            report = explain.explain(self.loop, self.st, 7, facts)
+        self.assertLess(report["spent"], report["cap"])
+        self.assertEqual(report["next"]["kind"], "adjudication", report["next"])
+        action = report["next"]["action"]
+        self.assertNotIn("operator's escalation", action)
+        self.assertNotIn("stops both gates", action)
+        self.assertIn("the fixer's dispute holds this head below the cap", action)
+        self.assertIn("a maintainer re-requests the disputed review", action)
+        block, _ = self.gate()                          # ...and the gate does take it
+        block.assert_called_once()
+
     def test_the_claim_does_not_cancel_the_rereview(self):
         settings = self.root / "runtime.json"
         settings.write_text("{}")
