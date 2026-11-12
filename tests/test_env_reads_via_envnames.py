@@ -160,7 +160,10 @@ def _fallback_reads(source: str) -> list[str]:
 
 def _script_reads(texts: list[str], depth: int) -> list[tuple[str, str]]:
     """The reads in a generated script given as candidate texts: the reading of the candidate
-    that parses with the most reads, or, when none parses, the pattern search of the first."""
+    that parses with the most reads, or, when none parses, the pattern search of the first.
+    An f-string's clean parse does not prove a literal read absent (#2376): an interpolation
+    can change the script's structure (``f"#{newline}os.getenv(...)"`` comments the read out
+    of every placeholder version), so its literal fragments are searched by pattern too."""
     best = None
     for text in texts:
         try:
@@ -172,7 +175,22 @@ def _script_reads(texts: list[str], depth: int) -> list[tuple[str, str]]:
             best = reads
     if best is None:
         best = [(key, SCRIPT) for key in _fallback_reads(texts[0])]
-    return [(k, SCRIPT) for k, _ in best]
+    keys = [k for k, _ in best]
+    if len(texts) > 1:
+        keys += _literal_only_reads(texts[_PLACEHOLDERS.index("")], keys)
+    return [(k, SCRIPT) for k in keys]
+
+
+def _literal_only_reads(fragments: str, keys: list[str]) -> list[str]:
+    """The pattern reads in an f-string's literal fragments (joined with no placeholder) that
+    ``keys`` does not already count: per variable, only as many as the pattern finds beyond it."""
+    extra, counted = [], list(keys)
+    for key in _fallback_reads(fragments):
+        if key in counted:
+            counted.remove(key)
+        else:
+            extra.append(key)
+    return extra
 
 
 def direct_reads(source: str, bound=None, depth: int = 0) -> list[tuple[str, str]]:
@@ -269,6 +287,11 @@ class EnvReadsViaEnvnames(unittest.TestCase):
             "S = f\"{prefix} = os.getenv(envnames.name('X'))\\n\"": "DIAKTOROS_X",
             "S = f\"v = os.environ[envnames.name('X')] + {s}\\n\"": "DIAKTOROS_X",
             "S = f\"v = [os.environ.get(envnames.name('X')), {n}\"": "DIAKTOROS_X",  # unparsable
+            # #2376: an interpolated newline un-comments the read; every placeholder version
+            # parses with the read inside a comment.
+            "prefix = \"\\n\"\nS = f\"#{prefix}os.getenv('DIAKTOROS_X')\\n\"": "DIAKTOROS_X",
+            # Found by both the parse and the pattern: still counted once.
+            "S = f\"{indent}v = os.getenv('DIAKTOROS_X')\\n\"": "DIAKTOROS_X",
         }
         for source, key in cases.items():
             with self.subTest(source=source):
@@ -307,6 +330,13 @@ class EnvReadsViaEnvnames(unittest.TestCase):
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             (root / rel).write_text(text)
         return scan(root)
+
+    def test_a_read_uncommented_by_an_interpolation_fails_the_scan(self):
+        # #2376, through the scan the guard runs: every placeholder parse of this f-string
+        # leaves the read in a comment, but the generated script runs it.
+        hits = self.scan_tree({"scripts/gen.py": 'import os\nprefix = "\\n"\n'
+                               'S = f"#{prefix}os.getenv(\'DIAKTOROS_X\')\\n"\n'})
+        self.assertEqual(stray(hits), [(("scripts/gen.py", "DIAKTOROS_X", SCRIPT), 1)])
 
     def test_a_new_direct_read_fails_the_scan(self):
         hits = self.scan_tree({"scripts/new.py": 'import os\nos.environ.get("DIAKTOROS_X")\n'})
