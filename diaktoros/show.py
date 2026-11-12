@@ -383,14 +383,16 @@ def _rows_observer(obs, schema, rows, loop) -> None:  # noqa: ANN001
 
 def _key_spelling(value: str) -> str:
     """``value`` as ``config.expand_path`` spells it, whitespace kept (a trailing space names another file),
-    with ``..`` segments folded by ``os.path.normpath`` (#1695): a hand-written ``/k/x/../a.pem`` is
-    compared as ``/k/a.pem``, on both sides. (Lexical: a symlinked ``x`` is not followed.)
+    then resolved by ``os.path.realpath`` (#1695), on both sides: a hand-written ``/k/x/../a.pem`` is
+    compared as ``/k/a.pem`` when ``x`` is a plain directory, but a symlinked ``x`` is followed first
+    (``/k/x/..`` is then the link target's parent, another file), as opening the path would. A path
+    that does not exist (yet) is not refused: its missing part is folded lexically.
 
     An unresolvable ``~user`` makes ``Path.expanduser`` raise; ``show`` must still report, so that
     value stays as written (``os.path.expanduser`` left it alone too).
     """
     try:
-        return os.path.normpath(config.expand_path(value))
+        return os.path.realpath(config.expand_path(value))
     except RuntimeError:
         return value
 

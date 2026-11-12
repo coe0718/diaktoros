@@ -143,6 +143,26 @@ class ShowTests(_Base):
         self.assertNotIn("not applied", self._key_note("/keys/rev-app.pem", "/keys/sub/../rev-app.pem"))
         self.assertIn("not applied", self._key_note("/keys/sub/../other.pem", "/keys/rev-app.pem"))
 
+    def test_a_dotdot_after_a_symlinked_directory_is_still_called_unapplied(self):
+        # review of #2415 F1: `/a/link/../key.pem` with `link` -> `/b/c` opens `/b/key.pem`, not
+        # `/a/key.pem`; apply would switch to the form's key, so show must say "not applied".
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            for d in ("a/sub", "b/c"):
+                os.makedirs(os.path.join(tmp, d))
+            os.symlink(os.path.join(tmp, "b", "c"), os.path.join(tmp, "a", "link"))
+            for rel, body in (("a/key.pem", "KEY A"), ("b/key.pem", "KEY B")):
+                with open(os.path.join(tmp, rel), "w") as fh:
+                    fh.write(body)
+            held = os.path.join(tmp, "a", "key.pem")
+            via_link = os.path.join(tmp, "a", "link", "..", "key.pem")
+            via_dir = os.path.join(tmp, "a", "sub", "..", "key.pem")
+            with open(via_link) as a, open(held) as b:
+                self.assertNotEqual(a.read(), b.read())
+            self.assertIn("not applied", self._key_note(via_link, held))
+            self.assertNotIn("not applied", self._key_note(via_dir, held))   # a real dir: same file
+
     def test_a_padded_form_login_and_app_id_are_not_called_unapplied(self):
         # #1695: apply reads the form through config.seat_mapping, which strips login and app_id.
         bot = "review-seat[bot]"
