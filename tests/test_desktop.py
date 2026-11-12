@@ -1060,6 +1060,8 @@ class Surface(unittest.TestCase):
             self.assertRegex(done.stdout, rf"(?m)^ok \d+ - {re.escape(name)}$")
         self.assertIn("palette only: unseen successful cache read expires", done.stdout)
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - records: nested malformed and wrong-loop responses never enter the cache$")
+        # #2293: a host base merge (update_behind) and a reader filing render their audit roles.
+        self.assertRegex(done.stdout, r"(?m)^ok \d+ - records: a host base merge into a behind PR and a reader filing name their audit roles$")
         # #1301: the dependency list and the confirmed depends/waive actions, by name.
         for name in (
             "deps: rows render met, waiting and unknown from their own non-polled, non-socket query",

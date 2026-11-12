@@ -259,6 +259,14 @@ def perform(loop: dict, *, repo: str, number: int, head: str, role: str,
     return result
 
 
+# Every role a ``broker-audit.jsonl`` line is written with: this module's ``_audit``, the shadow
+# reader's filings (``broker_filing``) and ``safe_push``'s receipts (a host merge push is
+# ``review_only_update`` or ``update_behind``). The Desktop's records reader names exactly these
+# and reads any other as ``unknown`` (#2293); a test pins the writers and the page to this list.
+AUDIT_ROLES = ("reviewer", "fixer", "triage", "adjudicator", "issue_fixer", "reader",
+               "review_only_update", "update_behind")
+
+
 def _audit(loop: dict, repo: str, number: int, head: str, branch: str,
            role: str, operation: str, login: str) -> None:
     # The GitHub write already happened; a worker never recreates the loop's state dir to
