@@ -287,6 +287,21 @@ class BrowserRound(unittest.TestCase):
             path = am.write_key(self.key_dir, "w-dk-fixer", PEM)
         self.assertEqual(path.read_text(), PEM)
 
+    def test_a_write_that_makes_no_progress_fails_by_name(self):
+        # #1914: os.write returning 0 is a named failure, not an endless loop. The cap only keeps
+        # the test from hanging on a loop that never checks what os.write returned.
+        calls = []
+
+        def stalled(fd, data):
+            calls.append(1)
+            if len(calls) > 50:
+                raise AssertionError("write_key kept looping on a write that made no progress")
+            return 0
+        with mock.patch.object(am.os, "write", side_effect=stalled):
+            with self.assertRaisesRegex(OSError, "short write to the App key"):
+                am.write_key(self.key_dir, "w-dk-fixer", PEM)
+        self.assertEqual(len(calls), 1)
+
     def test_a_request_to_another_host_name_is_refused(self):
         with self.assertRaisesRegex(am.WizardError, "no answer from GitHub"):
             self.create(roles=("reader",), open_url=self.browser(host_header="evil.example"),

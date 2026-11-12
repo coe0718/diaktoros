@@ -736,6 +736,27 @@ class Retention(Base):
         for gone in self.stamped(2):
             self.assertNotIn(gone, left)
 
+    def test_a_default_named_file_that_is_not_a_tarball_is_neither_counted_nor_deleted(self):
+        """#1883: a junk file (and an empty one) with a default-shaped name passes the name and
+        regular-file checks, so only ``made_by_default``'s read guard keeps the backup from
+        failing after its archive is written, and the file from being counted or pruned."""
+        folder = self.old(*self.stamped(2))
+        junk = "diaktoros-backup-20190101-000000.tar.gz"
+        empty = "diaktoros-backup-20190102-000000.tar.gz"
+        self.plain(junk)
+        (folder / empty).write_bytes(b"")
+        code, text = self.run_cmd(cli.cmd_backup, out=None, keep=1)
+        self.assertEqual(code, 0, text)
+        left = self.names(folder)
+        self.assertEqual(len(left), 3, left)              # the new archive and the two junk files
+        for kept in (junk, empty):
+            self.assertIn(kept, left)
+            self.assertNotIn(kept, text)                  # not reported as removed
+        self.assertEqual((folder / junk).read_text(), "old")
+        self.assertIn("removed 2 older", text)            # the marked ones were pruned as before
+        for gone in self.stamped(2):
+            self.assertNotIn(gone, left)
+
     def test_an_out_archive_is_never_counted_or_pruned(self):
         folder = self.old(*self.stamped(3))
         mine = self.root / "diaktoros-backup-20190101-000000.tar.gz"
@@ -1220,7 +1241,7 @@ class Restore(Base):
         self.wipe()
         key.unlink()
         code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=False)
-        notice = (f"restore: NOT FINISHED — credential file missing: one: credential file for "
+        notice = (f"restore: NOT FINISHED — credential file problem: one: credential file for "
                   f"acme-reader[bot] ({key}): ")
         self.assertIn(notice, text)
         self.assertNotIn("token file missing", text)
@@ -1231,6 +1252,20 @@ class Restore(Base):
         self.assertEqual(config.all_loops()[0]["apps"]["acme-reader[bot]"]["key_file"], str(key))
         code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=True, force=False)
         self.assertIn(notice, text)
+
+    def test_restore_does_not_call_an_existing_unsafe_key_missing(self):
+        """A key that exists but group/other can read is a problem, not a missing file (#1904)."""
+        key = self.app_loop()
+        out = self.take()
+        self.wipe()
+        key.chmod(0o644)
+        code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=False)
+        self.assertEqual(code, 1, text)
+        self.assertTrue(key.exists())
+        self.assertIn(f"restore: NOT FINISHED — credential file problem: one: credential file for "
+                      f"acme-reader[bot] ({key}): ", text)
+        self.assertIn("mode 644", text)
+        self.assertNotIn("missing", text)
 
     def test_restore_checks_credential_files_before_writing_but_never_refuses_on_them(self):
         """What ``backup.token_paths`` says: ``missing_tokens`` runs before ``put_files`` and finds
