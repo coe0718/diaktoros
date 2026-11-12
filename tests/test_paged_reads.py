@@ -164,16 +164,48 @@ def _strings(scope: ast.AST) -> list[ast.AST]:
     return sorted(found, key=lambda n: (n.lineno, n.col_offset))
 
 
-def _into_reader_by_name(site: ast.AST, nodes: list, reader_args: set[int]) -> bool:
-    """``path = "...per_page=100..."`` whose every later use is the path ``_read_pages`` reads
-    (``path += ...`` may extend it): a name also handed to another read is not paged."""
-    for node in nodes:
+def _binds(scope: ast.AST, name: str) -> bool:
+    """Whether a nested function or class makes ``name`` its own (a parameter, an assignment
+    or a nested ``def``/``class`` of that name, not declared ``nonlocal``/``global``)."""
+    nodes = list(_own(scope))
+    if any(isinstance(n, (ast.Nonlocal, ast.Global)) and name in n.names for n in nodes):
+        return False
+    args = getattr(scope, "args", None)
+    if args is not None and name in {a.arg for a in [
+            *args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg] if a}:
+        return True
+    return any((isinstance(n, ast.Name) and n.id == name and not isinstance(n.ctx, ast.Load))
+               or (isinstance(n, DEFS) and n.name == name) for n in nodes)
+
+
+def _name_loads(scope: ast.AST, name: str) -> list[ast.Name]:
+    """Every load of ``name`` that reads ``scope``'s binding: in ``scope`` itself and in the
+    nested functions and classes that capture it (#2363: a closure's ``fetch(loop, path)``
+    reads ``path`` too). A nested function that rebinds ``name`` reads its own, and so do
+    the functions inside it; a class body's binding does not reach its methods."""
+    loads = []
+    for node in _own(scope):
+        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load):
+            loads.append(node)
+        elif isinstance(node, DEFS):
+            if not _binds(node, name):
+                loads += _name_loads(node, name)
+            elif isinstance(node, ast.ClassDef):
+                loads += [n for inner in _own(node) if isinstance(inner, DEFS)
+                          and not _binds(inner, name) for n in _name_loads(inner, name)]
+    return loads
+
+
+def _into_reader_by_name(site: ast.AST, scope: ast.AST) -> bool:
+    """``path = "...per_page=100..."`` whose every later use, nested functions included, is
+    the path ``_read_pages`` reads (``path += ...`` may extend it): a name also handed to
+    another read is not paged."""
+    for node in _own(scope):
         if (isinstance(node, ast.Assign) and len(node.targets) == 1
                 and isinstance(node.targets[0], ast.Name) and id(site) in _part_ids(node.value)):
-            name = node.targets[0].id
-            loads = [n for n in nodes if isinstance(n, ast.Name) and n.id == name
-                     and isinstance(n.ctx, ast.Load)]
-            return bool(loads) and all(id(n) in reader_args for n in loads)
+            loads = _name_loads(scope, node.targets[0].id)
+            paged = set().union(*(_part_ids(a) for a in _reader_paths(ast.walk(scope))))
+            return bool(loads) and all(id(n) in paged for n in loads)
     return False
 
 
@@ -228,7 +260,7 @@ def sites(sources: dict[str, str]) -> dict[str, bool]:
                     count += 1
                     key = f"{base}#{count}"
                 found[key] = (id(site) in reader_args
-                              or _into_reader_by_name(site, nodes, reader_args)
+                              or _into_reader_by_name(site, scope)
                               or (id(site) in returned and isinstance(scope, ast.FunctionDef)
                                   and scope.name in feeders))
     return found
@@ -314,6 +346,24 @@ class Scan(unittest.TestCase):
         shared = ('def f(loop):\n    p = "/x?per_page=100"\n'
                   '    gh._read_pages(loop, p, "x", 3)\n    return gh.fetch(loop, p)\n')
         self.assertEqual(_one(shared), ["diaktoros/new.py::f::/x?per_page=100"])
+
+    def test_a_name_captured_by_a_nested_unpaged_read_is_unpaged(self):
+        # #2363: a closure reading the outer name with fetch read only its first page.
+        closure = ('from diaktoros import gh\ndef f(loop):\n    path = "/unsafe?per_page=100"\n'
+                   '    def first_page():\n        return gh.fetch(loop, path)\n'
+                   '    gh._read_pages(loop, path, "x", 3)\n    return first_page()\n')
+        self.assertEqual(_one(closure), ["diaktoros/new.py::f::/unsafe?per_page=100"])
+        lam = ('def f(loop):\n    path = "/l?per_page=100"\n'
+               '    gh._read_pages(loop, path, "x", 3)\n    return lambda: gh.fetch(loop, path)\n')
+        self.assertEqual(_one(lam), ["diaktoros/new.py::f::/l?per_page=100"])
+        # A closure that pages the name, or one that reads its own rebound name, is fine.
+        paged = ('def f(loop):\n    path = "/p?per_page=100"\n'
+                 '    def g():\n        return gh._read_pages(loop, path, "x", 3)\n    return g()\n')
+        self.assertEqual(_one(paged), [])
+        rebound = ('def f(loop):\n    path = "/r?per_page=100"\n'
+                   '    def g(path):\n        return gh.fetch(loop, path)\n'
+                   '    return gh._read_pages(loop, path, "x", 3), g\n')
+        self.assertEqual(_one(rebound), [])
 
     def test_a_path_builder_also_read_unpaged_is_unpaged(self):
         builder = 'def hp(loop):\n    return "/hooks?per_page=100"\n'
