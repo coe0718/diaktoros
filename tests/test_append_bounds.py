@@ -3,9 +3,9 @@
 #549 was a file the plugin appended to forever. This guard scans every Python source outside the
 suite (``_sources.python_sources``), by AST, for an append open: ``open(..., "a"...)`` (also
 ``io.open``, ``codecs.open`` and the like, and a mode the scan cannot read, such as a variable),
-``<path>.open("a"...)``, ``os.fdopen(..., "a"...)``, any mention of ``O_APPEND`` (so flags passed
-by keyword or built in a variable are found) and a call of the shared append-and-prune
-``util.append_keeping``. Opens are counted, not only the functions that hold them: each
+``<path>.open("a"...)``, ``os.fdopen(..., "a"...)``, an ``os.open`` whose flags hold ``O_APPEND``
+and a call of the shared append-and-prune ``util.append_keeping``. Opens are counted, not only the
+functions that hold them: each
 site, keyed ``path::function``, must be in exactly one registry, with ``OPENS`` giving its count
 where it holds more than one, so a second open added to a registered function fails too:
 
@@ -20,6 +20,18 @@ non-plugin files, all in ``NOT_LOGS``.
 
 A new append site in none of them fails ``test_every_append_site_is_registered``; a registered
 site that no longer exists fails it too, so the registry cannot go stale.
+
+What the scan covers, and what it does not (perfect static detection is not possible, #2379):
+
+* ``os.open`` is counted per call: one for each ``os.open`` whose flags argument (second
+  positional or ``flags=``) holds ``O_APPEND`` (``os.O_APPEND``, a bare ``O_APPEND``,
+  ``getattr(os, "O_APPEND")``) or names a variable assigned (``=``, ``|=``, annotated) in the same
+  function from an expression that holds it, directly or through another such variable. Two
+  ``os.open`` calls sharing one flags variable count two. An ``O_APPEND`` that no counted
+  ``os.open`` consumes (flags passed to some other helper, a default argument) counts one itself.
+* Not covered: an opener reached through an alias (``o = open; o(p, "a")``, ``from os import
+  open``), flags built in another function or module and passed in, or a mode or flags value
+  produced at run time from strings. Those need a reviewer's eye.
 """
 from __future__ import annotations
 
@@ -99,11 +111,12 @@ NOT_LOGS = {
 }
 
 # The number of append opens a registered function holds, where it is more than one (an
-# ``O_APPEND`` flag and the ``os.fdopen(.., "a")`` that wraps the same descriptor count one
-# each). Another open added to the function changes its count, so the guard fails on it.
+# ``os.open`` with ``O_APPEND`` flags and the ``os.fdopen(.., "a")`` that wraps the same descriptor
+# count one each; each ``os.open`` counts, even when several share one flags variable, #2379).
+# Another open added to the function changes its count, so the guard fails on it.
 OPENS = {
     "diaktoros/run_supervisor/waits.py::note": 2,              # os.open(O_APPEND), os.fdopen("a")
-    "diaktoros/run_supervisor/workers.py::WorkerLifecycle._worker_log": 2,   # the same pair
+    "diaktoros/run_supervisor/workers.py::WorkerLifecycle._worker_log": 2,   # os.open(flags), os.fdopen("ab")
 }
 
 
@@ -161,27 +174,101 @@ def _may_be_path_open(call: ast.Call) -> bool:
 
 
 def _is_o_append(node) -> bool:
-    """A mention of ``O_APPEND``: ``os.O_APPEND``, a bare ``O_APPEND`` or ``getattr(os, "O_APPEND")``.
-    Each counts wherever it is, so flags passed by keyword or built in a variable are found."""
+    """A mention of ``O_APPEND``: ``os.O_APPEND``, a bare ``O_APPEND`` or ``getattr(os, "O_APPEND")``."""
     return (isinstance(node, ast.Name) and node.id == "O_APPEND"
             or isinstance(node, ast.Attribute) and node.attr == "O_APPEND"
             or isinstance(node, ast.Constant) and node.value == "O_APPEND")
 
 
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _scope_nodes(node):
+    """Every node of ``node``'s own scope: nested functions and classes, each a site of its own
+    (their decorators and defaults included, as before), are not entered."""
+    for child in ast.iter_child_nodes(node):
+        if not isinstance(child, _SCOPES):
+            yield child
+            yield from _scope_nodes(child)
+
+
+def _nested_scopes(node):
+    """The functions and classes nested directly in ``node``'s scope."""
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, _SCOPES):
+            yield child
+        else:
+            yield from _nested_scopes(child)
+
+
+def _names_in(expr, names: set) -> set:
+    """The variables of ``names`` that ``expr`` reads."""
+    return {n.id for n in ast.walk(expr) if isinstance(n, ast.Name) and n.id in names}
+
+
+def _holds_o_append(expr, names: set) -> bool:
+    """Does ``expr`` hold ``O_APPEND``, spelled in it or through a variable of ``names``?"""
+    return any(_is_o_append(n) for n in ast.walk(expr)) or bool(_names_in(expr, names))
+
+
+def _os_open_flags(call: ast.Call):
+    """The flags argument of an ``os.open(path, flags, ...)`` call (by position or ``flags=``),
+    or None when ``call`` is not ``os.open`` or passes none."""
+    func = call.func
+    if not (isinstance(func, ast.Attribute) and func.attr == "open"
+            and isinstance(func.value, ast.Name) and func.value.id == "os"):
+        return None
+    flags = [kw.value for kw in call.keywords if kw.arg == "flags"] + call.args[1:2]
+    return flags[0] if flags else None
+
+
+def _closure(start: set, step) -> set:
+    """``start`` grown by ``step`` until it stops growing."""
+    names = set(start)
+    while True:
+        grown = names | step(names)
+        if grown == names:
+            return names
+        names = grown
+
+
+def _o_append_opens(nodes: list) -> int:
+    """How many ``O_APPEND`` opens one scope's ``nodes`` hold (#2379): one per ``os.open`` whose
+    flags hold ``O_APPEND``, inline or through a variable assigned from it in this scope, so two
+    opens sharing one flags variable count two; plus one per ``O_APPEND`` mention that no such
+    ``os.open`` consumes."""
+    assigns = [(target.id, node.value) for node in nodes
+               if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)) and node.value is not None
+               for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+               if isinstance(target, ast.Name)]
+    holding = _closure(set(), lambda names: {name for name, value in assigns
+                                             if _holds_o_append(value, names)})
+    flags = [_os_open_flags(n) for n in nodes if isinstance(n, ast.Call)]
+    counted = [f for f in flags if f is not None and _holds_o_append(f, holding)]
+    used = _closure(set().union(*(_names_in(f, holding) for f in counted)),
+                    lambda names: set().union(*(_names_in(value, holding) for name, value in assigns
+                                                if name in names)))
+    consumed = {id(n) for expr in counted + [value for name, value in assigns if name in used]
+                for n in ast.walk(expr) if _is_o_append(n)}
+    return len(counted) + sum(1 for n in nodes if _is_o_append(n) and id(n) not in consumed)
+
+
 def append_sites(source: str, relative: str) -> collections.Counter:
     """How many append opens each ``relative::Qualified.function`` of ``source`` holds: an
-    append-mode open, an ``O_APPEND`` and a call of ``util.append_keeping`` count one each, so a
-    second append in a registered function changes its count (#2302 review)."""
+    append-mode open, an ``os.open`` whose flags hold ``O_APPEND``, an ``O_APPEND`` no such open
+    consumes and a call of ``util.append_keeping`` count one each, so a second append in a
+    registered function changes its count (#2302 review, #2379). The module docstring says which
+    forms are covered and which are not."""
     found: collections.Counter = collections.Counter()
 
     def visit(node, scope):
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                visit(child, scope + [child.name])
-                continue
-            if isinstance(child, ast.Call) and _is_append_call(child) or _is_o_append(child):
-                found[f"{relative}::{'.'.join(scope) or '<module>'}"] += 1
-            visit(child, scope)
+        nodes = list(_scope_nodes(node))
+        count = sum(1 for n in nodes if isinstance(n, ast.Call) and _is_append_call(n))
+        count += _o_append_opens(nodes)
+        if count:
+            found[f"{relative}::{'.'.join(scope) or '<module>'}"] += count
+        for child in _nested_scopes(node):
+            visit(child, scope + [child.name])
 
     visit(ast.parse(source), [])
     return found
@@ -258,6 +345,26 @@ class Guard(unittest.TestCase):
         found = append_sites("def record(p):\n    util.append_keeping(p, 'x', 3, p)\n",
                              "diaktoros/corpus.py")
         self.assertEqual(found - registered(), collections.Counter())
+
+    def test_os_opens_sharing_one_flags_variable_count_each(self):
+        """#2379: two ``os.open`` calls reusing one ``O_APPEND`` flags variable are two opens, so a
+        second open added to ``WorkerLifecycle._worker_log`` (registered for 2) fails the guard."""
+        self.assertEqual(dict(append_sites(
+            "def f(path):\n    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT\n"
+            "    fd = os.open(path, flags, 0o600)\n    extra = os.open(path, flags, 0o600)\n"
+            "def g(path):\n    base = os.O_APPEND\n    flags = base | os.O_WRONLY\n    flags |= os.O_CREAT\n"
+            "    os.open(path, flags=flags); os.open(path, flags); os.open(path, os.O_RDONLY)\n"
+            "def h(path):\n    flags = os.O_WRONLY | os.O_APPEND\n    other = os.O_APPEND\n"
+            "    os.open(path, flags)\n    helper(other)\n", "x.py")),
+            {"x.py::f": 2, "x.py::g": 2, "x.py::h": 2})
+        key = "diaktoros/run_supervisor/workers.py::WorkerLifecycle._worker_log"
+        source = (ROOT / "diaktoros/run_supervisor/workers.py").read_text()
+        grown = source.replace("            return os.fdopen(os.open(path, flags, 0o600), \"ab\")\n",
+                               "            os.close(os.open(path, flags, 0o600))\n"
+                               "            return os.fdopen(os.open(path, flags, 0o600), \"ab\")\n")
+        self.assertNotEqual(grown, source, "the scratch edit no longer applies to _worker_log")
+        found = append_sites(grown, "diaktoros/run_supervisor/workers.py")
+        self.assertEqual(sorted((found - registered()).items()), [(key, 1)])
 
 
 class Bounds(unittest.TestCase):
