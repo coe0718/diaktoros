@@ -115,6 +115,25 @@ def _check_limits(loop: dict, where: str) -> None:
         loop.get("provider_breaker_failures"), where)
     for key in ("cooldown_h", "marker_grace_min"):
         loop[key] = config._positive_number(loop.get(key), key, where)
+    for key in ("grace_min", "ttl_min"):
+        loop[key] = _whole_minutes(loop.get(key), key, where)
+
+
+def _whole_minutes(value, key: str, where: str) -> int:
+    """``grace_min``/``ttl_min``: a whole number of minutes >= 1 (``null`` or ``""`` = the
+    default). ``config.stall_grace_s`` and ``config.seat_ttl_s`` do ``int(...)`` on these in the
+    watchdog sweep, doctor and explain, so a value they cannot read must fail when the loop file
+    loads (#1692). A numeric string (``"40"``, what the settings form pushes) reads as its number,
+    as every other integer setting does (``config._as_int``). The ceiling,
+    ``config.TIMER_MINUTES_MAX``, keeps the sweep's float arithmetic and the seat ledger's
+    ``LoopState.minutes`` reading the same number as ``config.seat_died_after_s``."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return config.DEFAULTS[key]
+    minutes = config._as_int(value, key, where)
+    if not 1 <= minutes <= config.TIMER_MINUTES_MAX:
+        raise config.ConfigError(f"{where}: {key!r} must be a whole number of minutes, "
+                                 f"1-{config.TIMER_MINUTES_MAX}")
+    return minutes
 
 
 def _check_tokens(loop: dict, where: str) -> None:
@@ -126,6 +145,11 @@ def _check_tokens(loop: dict, where: str) -> None:
         if not login.strip():
             raise config.ConfigError(f"{where}: tokens.{login}: the login is empty — name the "
                                      "account this token file belongs to")
+        # Nor a padded one (#1692): no CLI writer keeps the spaces, and util.login_entry would
+        # miss tokens[" rev-bot"] for rev-bot while doctor printed it as a green identity.
+        if login != login.strip():
+            raise config.ConfigError(f"{where}: tokens.{login!r}: the login has leading or "
+                                     f"trailing whitespace — write it as {login.strip()!r}")
         # A relative path would resolve from whatever the current directory is at use time.
         problem = config.relative_path_problem(token_path)
         if problem:
@@ -215,8 +239,10 @@ def _check_isolation(loop: dict, where: str) -> None:
         # Above one run at once, isolation is not a preference: with no clone to isolate from and
         # no isolated worker to launch the turns, two runs would share whatever checkout they
         # find, which is the wrong-verdict bug. Check the effective value per seat, so a
-        # seat-level 2 is caught even when the loop default is 1.
-        for seat in config.SEAT_KEYS:
+        # seat-level 2 is caught even when the loop default is 1. Every seat with its own capacity
+        # counts (``capacity_seats``: reviewer, fixer, and shadow / triage when run or pinned), so
+        # two shadow turns are refused exactly like two reviews (#1693).
+        for seat in config.capacity_seats(loop):
             if config.seat_concurrency(loop, seat) > 1:
                 raise config.ConfigError(
                     f"{where}: seats.{seat}.concurrency > 1 requires 'clone' "
