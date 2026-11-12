@@ -90,6 +90,36 @@ class Junk(unittest.TestCase):
                 st.inflight_clear(mark)
                 st.quarantine(7, HEAD)
 
+    def test_an_at_past_the_float_range_is_no_time_not_an_overflow(self):
+        """#1839: ``json.loads`` keeps ``10**400`` an ``int``; ``math.isfinite`` would raise on it.
+
+        ``mark_at`` and ``turn_key`` read it as "no time", as ``push_settle`` does (#1828), and
+        the entry points behind them -- the watchdog's queue drain and the retarget sweep's
+        fresh-review start -- skip it instead of aborting."""
+        raw = json.loads('{"at": 1' + "0" * 400 + "}")
+        self.assertIsInstance(raw["at"], int)
+        self.assertIsNone(state.mark_at(raw))
+        self.assertIsNone(transition.turn_key({**raw, "from_base": "parent", "to_base": "main"}))
+        self.assertEqual(state.mark_at({"at": 5}), 5.0)                  # a real time still reads
+        self.assertTrue(transition.turn_key({"at": 5, "from_base": "parent"}))
+        # The drain: the junk entry is dropped, the well-formed one behind it kept.
+        st = self.st
+        st.queue_add("reviewer", KEY, HEAD, "u", "busy")
+        data = json.loads(st.pending.read_text())
+        data["reviewer"]["acme/widgets#8"] = {"at": 10 ** 400, "head": HEAD, "url": "u"}
+        st.pending.write_text(json.dumps(data))
+        from diaktoros import drain
+        with mock.patch.object(drain, "_wake", return_value=False):
+            drain.drain(st.loop, st, "reviewer", quiet=True)            # must not raise
+        self.assertEqual(set(st.queue_items("reviewer")), {KEY})
+        # The retarget sweep: an unnamable turn is a skip with its reason, not an OverflowError.
+        st.transition_set(7, {"head": HEAD, "from_base": "parent", "at": 10 ** 400,
+                              "old_review_ids": []})
+        live = {"number": 7, "state": "open", "draft": False, "head": {"sha": HEAD},
+                "base": {"ref": "main"}, "user": {"login": "f"}}
+        self.assertEqual(transition.start_fresh_review(st.loop, st, 7, live=live),
+                         ("skip", "transition time unreadable — cannot name its one fresh turn"))
+
     def test_inflight_mark_ahead_of_the_clock_is_expired_and_pruned(self):
         """#940: a future-dated mark (clock stepped back, ms stamp) is not inside every TTL."""
         st, mark = self.st, f"review:7:{HEAD}"

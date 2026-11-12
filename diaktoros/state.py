@@ -34,7 +34,7 @@ from collections.abc import Callable
 
 from . import config, hostdirs
 from .config import settings_form
-from .util import atomic_write, log, now_iso, register_lock
+from .util import atomic_write, finite_time, log, now_iso, register_lock
 
 # The flock files this module keeps in a loop's state directory, each registered by its writer
 # (``util.register_lock``): ``backup`` leaves out what was registered, from no list of its own.
@@ -125,22 +125,18 @@ def mark_at(entry) -> float | None:
     The one reading rule for ``at`` (#80), shared by ``_mark_live`` and every reader that ages,
     sorts or prints a mark itself — the watchdog's drain and stuck report, ``died_locks``,
     ``status`` and ``explain``: only a finite plain number is a time. A non-dict entry, a string
-    (ISO or numeric), ``null``, a bool, a list or an infinity is junk, which those readers skip
+    (ISO or numeric), ``null``, a bool, a list, an infinity or an integer past the float range
+    (#1839) is junk, which those readers skip
     and the ledger's own prune drops, rather than a ``TypeError`` out of the whole sweep.
     """
     if not isinstance(entry, dict):
         return None
-    at = entry.get("at")
-    if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at):
-        return None
-    return float(at)
+    return finite_time(entry.get("at"))
 
 
 def _clock(value) -> float | None:
     """A bare epoch (an in-flight mark's value), or None when it is not a finite plain number."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        return None
-    return float(value)
+    return finite_time(value)
 
 
 def _inflight_live(value, now: float, ttl_s: float) -> bool:

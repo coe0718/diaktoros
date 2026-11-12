@@ -13,10 +13,10 @@ merely lists after the boundary (a human's, a manual one) stays diagnostic.
 """
 from __future__ import annotations
 
-import math
 import time
 
 from . import gh, review_receipt
+from .util import finite_time
 
 # Why a hold without a baseline can never be released at its head. Shared by every
 # surface that reports it, so the operator reads one reason, not four paraphrases.
@@ -83,8 +83,8 @@ def turn_key(entry):
     redelivered webhook names the same turn and dedups on the ledger's unique
     repo/PR/head/seat/turn index. A later transition at a new head gets a new key.
     """
-    at = entry.get("at") if isinstance(entry, dict) else None
-    if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at) or at <= 0:
+    at = finite_time(entry.get("at")) if isinstance(entry, dict) else None
+    if at is None or at <= 0:
         return None
     return f"retarget:{str(entry.get('from_base') or '?')[:64]}:{int(at * 1000)}"
 
