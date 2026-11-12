@@ -187,6 +187,17 @@ class Repo(fg.Base):
         self.assertIn(f"moved {OLD} → {NEW}", lines[0])
         self.assertEqual(config.load_id("one")["repo"], NEW)
 
+    def test_a_corrupt_ledger_refuses_the_move_instead_of_a_traceback(self):
+        # #1702: a ledger unreadable by repo_step time escaped _move_ledger as a raw
+        # sqlite3.DatabaseError. It is refused with busy_runs's RunsUnknown reason; nothing moves.
+        self.db().parent.mkdir(parents=True, exist_ok=True)
+        self.db().write_bytes(b"not a sqlite database" * 50)
+        lines = self.run_step()
+        self.assertEqual(len(lines), 1)
+        self.assertIn("REFUSED", lines[0])
+        self.assertIn("could not be read", lines[0])
+        self.assertEqual(config.load_id("one")["repo"], OLD)
+
 
 class Writer(fg.Base):
     def test_only_repo_moves_and_the_current_push_policy_stays(self):
@@ -282,8 +293,9 @@ class RunsInFlightUnreadable(fg.Base):
         with self.assertRaises(migrate.RunsUnknown) as caught:
             migrate.busy_runs(path, OLD)
         self.assertIn("no such column", str(caught.exception))
-        with self.assertRaisesRegex(migrate.sqlite3.OperationalError, "no such column"):
-            migrate._move_ledger(path, OLD, NEW, dry_run=False)
+        moved, refused = migrate._move_ledger(path, OLD, NEW, dry_run=False)
+        self.assertEqual(moved, 0)
+        self.assertIn("no such column", refused)
 
     def test_a_ledger_locked_at_query_time_is_not_zero_runs(self):
         # #1465: "database is locked" raised by the SELECT inside _active_runs must fail closed.

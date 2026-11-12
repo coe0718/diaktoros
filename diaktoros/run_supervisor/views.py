@@ -190,14 +190,21 @@ def turn_state(db: str | Path, repo: str, pr: int, head: str, seat: str) -> str 
         if con is None:
             return None
         try:
-            row = con.execute("SELECT state FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
-                              "ORDER BY updated DESC, created DESC LIMIT 1",
-                              (repo, pr, head, seat)).fetchone()
+            row = newest_turn(con, repo, pr, head, seat)
             return row[0] if row else None
         finally:
             con.close()
     except sqlite3.Error:
         return None
+
+
+def newest_turn(con, repo: str, pr: int, head: str, seat: str):
+    """``(state, turn_key)`` of ``seat``'s newest row at this PR head by ``updated``, or None: the
+    row ``turn_state`` reports. ``explain`` reads its key too, to name which of several turns at one
+    head it shows (a shadow-fix, CI-fix or conflict row beside the verdict turn, #1615)."""
+    return con.execute("SELECT state, turn_key FROM runs WHERE repo=? AND pr=? AND head=? AND "
+                       "seat=? ORDER BY updated DESC, created DESC LIMIT 1",
+                       (repo, pr, head, seat)).fetchone()
 
 
 # A turn's own words in the merge check (#753): one clause, bounded under GitHub's 140-character
