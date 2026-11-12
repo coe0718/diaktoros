@@ -27,8 +27,12 @@ What the scan covers, and what it does not (perfect static detection is not poss
   positional or ``flags=``) holds ``O_APPEND`` (``os.O_APPEND``, a bare ``O_APPEND``,
   ``getattr(os, "O_APPEND")``) or names a variable assigned (``=``, ``|=``, annotated) in the same
   function from an expression that holds it, directly or through another such variable. Two
-  ``os.open`` calls sharing one flags variable count two. An ``O_APPEND`` that no counted
-  ``os.open`` consumes (flags passed to some other helper, a default argument) counts one itself.
+  ``os.open`` calls sharing one flags variable count two. Branches are followed: an assignment
+  counts if it may reach the open on any path (``if``/``else``, ``try``/``except``, ``match``,
+  a loop's next pass or ``break``), so a non-append rebinding on one branch does not hide the
+  open; the read errs toward counting more, never fewer (``_Bindings``). An ``O_APPEND`` that
+  reaches no counted ``os.open`` (flags passed to some other helper, a default argument, a value
+  rebound on every path before the open) counts one itself.
 * Not covered: an opener reached through an alias (``o = open; o(p, "a")``, ``from os import
   open``), flags built in another function or module and passed in, or a mode or flags value
   produced at run time from strings. Those need a reviewer's eye.
@@ -213,53 +217,172 @@ def _os_open_flags(call: ast.Call):
 
 
 _DEFS = (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.NamedExpr)
+_LOOPS = (ast.For, ast.AsyncFor, ast.While)
+_TRIES = tuple(getattr(ast, name) for name in ("Try", "TryStar") if hasattr(ast, name))
+
+
+def _merge(*envs) -> dict:
+    """The union of name -> may-reach-assignments maps: every assignment that any path brings."""
+    out: dict = {}
+    for env in envs:
+        for name, defs in env.items():
+            out[name] = out.get(name, frozenset()) | defs
+    return out
+
+
+def _own(node) -> list:
+    """``node`` and every node of its own scope (``_scope_nodes``)."""
+    return [node, *_scope_nodes(node)]
 
 
 class _Bindings:
-    """The assignments to plain names in one scope, and which one each read of a name sees: the
-    last one that ends before the read, in source order (#2379 review). A rebinding hides the
-    earlier value, so in ``flags = os.O_APPEND; helper(flags); flags = os.O_APPEND;
-    os.open(p, flags)`` the open consumes only the second ``O_APPEND``, and after
-    ``flags = os.O_RDONLY`` a later ``os.open(p, flags)`` is not an append open. Branches and
-    loops are read as straight-line code: of two assignments in ``if``/``else`` only the later
-    one reaches a read after both, so the other's ``O_APPEND`` counts on its own (an over-count,
-    which fails the guard rather than hiding a site)."""
+    """The assignments to plain names in one scope, and every one that may reach each read of a
+    name (#2379 reviews). It follows the statements' structure: an assignment hides the earlier
+    value on the path after it, so in ``flags = os.O_APPEND; helper(flags); flags = os.O_APPEND;
+    os.open(p, flags)`` the open reads only the second value. Every path reaches the code after
+    it: both arms of an ``if`` or ``try``, each ``match`` case, a loop's body back to its own top
+    and, through ``break``, to the code after the loop. So after ``flags = os.O_APPEND`` and
+    ``if c: flags = os.O_RDONLY``, ``os.open(p, flags)`` may read either value and is an append
+    open. Where it cannot tell it keeps more assignments, never fewer: ``return``, ``raise`` and
+    ``continue`` are read as falling through too, an ``except`` sees every value its ``try``
+    assigns, a ``:=``, a tuple or ``for`` target or an import does not hide the earlier value. It
+    may over-count, which fails the guard; it does not hide an append open."""
 
-    def __init__(self, nodes: list):
-        self.defs = sorted(
-            ((target.id, node) for node in nodes if isinstance(node, _DEFS) and node.value is not None
-             for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
-             if isinstance(target, ast.Name)),
-            key=lambda pair: (pair[1].end_lineno, pair[1].end_col_offset))
-        self._holds: dict = {}
+    def __init__(self, scope):
+        self.defs: list = []          # every assignment to a plain name, in visiting order
+        self.names: dict = {}         # id(assignment) -> the names it binds
+        self.reads: dict = {}         # id(read) -> the assignments that may reach it
+        self._loops: list = []        # per enclosing loop: [envs at ``break``, at ``continue``]
+        body = scope.body if isinstance(scope, (ast.Module, *_SCOPES)) else []
+        for child in ast.iter_child_nodes(scope):
+            if not isinstance(child, _SCOPES) and all(child is not s for s in body):
+                self._expr(child, {})     # defaults, decorators, annotations: no local value yet
+        self._block(body, {})
+        self._held = self._holding()
 
-    def reaching(self, name: str, read) -> ast.AST | None:
-        """The assignment to ``name`` that a read at node ``read`` sees, or None."""
-        at = (read.lineno, read.col_offset)
-        seen = [node for target, node in self.defs
-                if target == name and (node.end_lineno, node.end_col_offset) <= at]
-        return seen[-1] if seen else None
+    def _see(self, read, env: dict, name: str) -> None:
+        """Record that the values of ``name`` in ``env`` may reach ``read``."""
+        self.reads[id(read)] = self.reads.get(id(read), frozenset()) | env.get(name, frozenset())
 
-    def deps(self, expr) -> list:
-        """The assignments that ``expr`` (an expression or an assignment) reads: those of the
-        names its value reads and, for ``x |= ...``, the earlier value of ``x``."""
+    def _define(self, node, name: str, env: dict, hide: bool = True) -> None:
+        if all(node is not d for d in self.defs):
+            self.defs.append(node)
+        self.names.setdefault(id(node), set()).add(name)
+        env[name] = frozenset({node}) | (frozenset() if hide else env.get(name, frozenset()))
+
+    def _expr(self, node, env: dict) -> None:
+        """The reads (and ``:=`` assignments, which keep the earlier value too) in ``node``."""
+        for n in _own(node):
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
+                self._see(n, env, n.id)
+            elif isinstance(n, ast.NamedExpr):
+                self._define(n, n.target.id, env, hide=False)
+
+    def _block(self, stmts: list, env: dict) -> dict:
+        for stmt in stmts:
+            env = self._stmt(stmt, env)
+        return env
+
+    def _loop(self, stmt, env: dict) -> dict:
+        """A loop's body starts from the values before it or from its own last pass (or a
+        ``continue``), to a fixed point; the code after it sees those and every ``break``."""
+        top = env
+        while True:
+            self._loops.append([[], []])
+            if isinstance(stmt, ast.While):
+                self._expr(stmt.test, top)
+            end = self._block(stmt.body, dict(top))
+            breaks, continues = self._loops.pop()
+            again = _merge(env, end, *continues)
+            if again == top:
+                break
+            top = again
+        return _merge(self._block(stmt.orelse, dict(top)), top, *breaks)
+
+    def _try(self, stmt, env: dict) -> dict:
+        """Each ``except`` may start anywhere in the ``try``: it sees every value the ``try``
+        assigns and the values before it."""
+        done = self._block(stmt.body, dict(env))
+        assigned = [{name: frozenset({d})} for s in stmt.body for n in _own(s)
+                    for d in self.defs if d is n for name in self.names[id(d)]]
+        start = _merge(env, done, *assigned)
+        handled = []
+        for handler in stmt.handlers:
+            if handler.type is not None:
+                self._expr(handler.type, start)
+            handled.append(self._block(handler.body, dict(start)))
+        ends = _merge(self._block(stmt.orelse, dict(done)), *handled)
+        return self._block(stmt.finalbody, _merge(start, ends)) if stmt.finalbody else ends
+
+    def _stmt(self, stmt, env: dict) -> dict:
+        """The values after ``stmt``, recording the reads in it."""
+        if isinstance(stmt, _SCOPES):
+            return env                # a site of its own, decorators and defaults included
+        if isinstance(stmt, ast.If):
+            self._expr(stmt.test, env)
+            return _merge(self._block(stmt.body, dict(env)), self._block(stmt.orelse, dict(env)))
+        if isinstance(stmt, _LOOPS):
+            if not isinstance(stmt, ast.While):
+                self._expr(stmt.iter, env)
+            return self._loop(stmt, env)
+        if isinstance(stmt, _TRIES):
+            return self._try(stmt, env)
+        if isinstance(stmt, (ast.With, ast.AsyncWith)):
+            for item in stmt.items:
+                self._expr(item, env)
+            return self._block(stmt.body, env)
+        if isinstance(stmt, ast.Match):
+            self._expr(stmt.subject, env)
+            cases = []
+            for case in stmt.cases:
+                if case.guard is not None:
+                    self._expr(case.guard, env)
+                cases.append(self._block(case.body, dict(env)))
+            return _merge(env, *cases)
+        if isinstance(stmt, (ast.Break, ast.Continue)) and self._loops:
+            self._loops[-1][isinstance(stmt, ast.Continue)].append(dict(env))
+        self._expr(stmt, env)
+        if isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
+            self._see(stmt, env, stmt.target.id)
+        if isinstance(stmt, _DEFS) and stmt.value is not None:
+            for target in stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]:
+                if isinstance(target, ast.Name):
+                    self._define(stmt, target.id, env)
+        return env
+
+    def deps(self, expr) -> frozenset:
+        """The assignments that may reach a read in ``expr`` (an expression or an assignment):
+        the names its value reads and, for ``x |= ...``, the earlier value of ``x``."""
         value = expr.value if isinstance(expr, _DEFS) else expr
-        found = [self.reaching(n.id, n) for n in ast.walk(value)
-                 if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
-        if isinstance(expr, ast.AugAssign) and isinstance(expr.target, ast.Name):
-            found.append(self.reaching(expr.target.id, expr))
-        return [d for d in found if d is not None]
+        reads = [n for n in _own(value) if isinstance(n, ast.Name)]
+        if isinstance(expr, ast.AugAssign):
+            reads.append(expr)
+        return frozenset().union(*(self.reads.get(id(r), frozenset()) for r in reads))
+
+    def _spells(self, expr) -> bool:
+        value = expr.value if isinstance(expr, _DEFS) else expr
+        return any(_is_o_append(n) for n in _own(value))
+
+    def _holding(self) -> set:
+        """The ids of the assignments whose value holds ``O_APPEND``, to a fixed point (in a
+        loop an assignment may read itself)."""
+        held: set = set()
+        changed = True
+        while changed:
+            changed = False
+            for d in self.defs:
+                if id(d) not in held and (self._spells(d) or any(id(x) in held for x in self.deps(d))):
+                    held.add(id(d))
+                    changed = True
+        return held
 
     def holds(self, expr) -> bool:
-        """Does ``expr`` hold ``O_APPEND``, spelled in it or through an assignment it reads?"""
-        if id(expr) not in self._holds:
-            value = expr.value if isinstance(expr, _DEFS) else expr
-            self._holds[id(expr)] = (any(_is_o_append(n) for n in ast.walk(value))
-                                     or any(self.holds(d) for d in self.deps(expr)))
-        return self._holds[id(expr)]
+        """Does ``expr`` hold ``O_APPEND``, spelled in it or through an assignment that may reach
+        a name it reads?"""
+        return self._spells(expr) or any(id(d) in self._held for d in self.deps(expr))
 
     def consumed(self, exprs: list) -> list:
-        """The values of ``exprs`` and of every assignment they read, directly or in a chain."""
+        """The values of ``exprs`` and of every assignment that may reach them, in a chain."""
         out, todo, seen = [], list(exprs), set()
         while todo:
             expr = todo.pop()
@@ -270,16 +393,16 @@ class _Bindings:
         return out
 
 
-def _o_append_opens(nodes: list) -> int:
+def _o_append_opens(scope, nodes: list) -> int:
     """How many ``O_APPEND`` opens one scope's ``nodes`` hold (#2379): one per ``os.open`` whose
-    flags hold ``O_APPEND``, inline or through the assignment of a variable that reaches the open
-    (``_Bindings``), so two opens sharing one flags variable count two; plus one per ``O_APPEND``
-    mention that no such ``os.open`` consumes, so an earlier, rebound value passed elsewhere still
-    counts."""
-    bindings = _Bindings(nodes)
+    flags hold ``O_APPEND``, inline or through any assignment that may reach a variable they read
+    (``_Bindings``), so two opens sharing one flags variable count two, on every branch; plus one
+    per ``O_APPEND`` mention that reaches no such ``os.open``, so a value passed elsewhere, or
+    rebound on every path before the open, still counts."""
+    bindings = _Bindings(scope)
     flags = [_os_open_flags(n) for n in nodes if isinstance(n, ast.Call)]
     counted = [f for f in flags if f is not None and bindings.holds(f)]
-    consumed = {id(n) for value in bindings.consumed(counted) for n in ast.walk(value) if _is_o_append(n)}
+    consumed = {id(n) for value in bindings.consumed(counted) for n in _own(value) if _is_o_append(n)}
     return len(counted) + sum(1 for n in nodes if _is_o_append(n) and id(n) not in consumed)
 
 
@@ -294,7 +417,7 @@ def append_sites(source: str, relative: str) -> collections.Counter:
     def visit(node, scope):
         nodes = list(_scope_nodes(node))
         count = sum(1 for n in nodes if isinstance(n, ast.Call) and _is_append_call(n))
-        count += _o_append_opens(nodes)
+        count += _o_append_opens(node, nodes)
         if count:
             found[f"{relative}::{'.'.join(scope) or '<module>'}"] += count
         for child in _nested_scopes(node):
@@ -417,6 +540,37 @@ class Guard(unittest.TestCase):
         grown = source.replace("            return os.fdopen(os.open(path, flags, 0o600), \"ab\")\n",
                                "            helper(flags)\n"
                                "            flags = os.O_WRONLY | os.O_APPEND\n"
+                               "            return os.fdopen(os.open(path, flags, 0o600), \"ab\")\n")
+        self.assertNotEqual(grown, source, "the scratch edit no longer applies to _worker_log")
+        found = append_sites(grown, "diaktoros/run_supervisor/workers.py")
+        self.assertEqual(sorted((found - registered()).items()), [(key, 1)])
+
+    def test_a_flags_value_on_any_path_reaches_the_open(self):
+        """#2379 review: a non-append rebinding on one branch (``if``, ``try``, a loop that may
+        ``break`` or run again) does not hide the ``O_APPEND`` value on the other path, so every
+        ``os.open`` that may append counts; flags that are ``O_RDONLY`` on every path do not. In
+        ``_worker_log``, a conditional ``O_RDONLY`` rebinding plus a second ``os.open`` fails
+        the guard."""
+        branch = "def f(p, c):\n    flags = os.O_APPEND\n    if c:\n        flags = os.O_RDONLY\n"
+        self.assertEqual(dict(append_sites(branch + "    os.open(p, flags)\n", "x.py")), {"x.py::f": 1})
+        self.assertEqual(dict(append_sites(branch + "    os.open(p, flags)\n    os.open(p, flags)\n",
+                                           "x.py")), {"x.py::f": 2})
+        self.assertEqual(dict(append_sites(
+            "def t(p):\n    flags = os.O_APPEND\n    try:\n        flags = os.O_RDONLY\n        g()\n"
+            "    except E:\n        pass\n    os.open(p, flags)\n    os.open(p, flags)\n"
+            "def b(p, xs):\n    for x in xs:\n        flags = os.O_APPEND\n        if x:\n            break\n"
+            "        flags = os.O_RDONLY\n    os.open(p, flags)\n    os.open(p, flags)\n"
+            "def w(p, xs):\n    flags = os.O_RDONLY\n    for x in xs:\n        os.open(p, flags)\n"
+            "        os.open(p, flags)\n        flags = os.O_APPEND\n"
+            "def ro(p, c):\n    flags = os.O_RDONLY\n    if c:\n        flags = os.O_WRONLY\n"
+            "    os.open(p, flags)\n    os.open(p, flags)\n", "x.py")),
+            {"x.py::t": 2, "x.py::b": 2, "x.py::w": 2})
+        key = "diaktoros/run_supervisor/workers.py::WorkerLifecycle._worker_log"
+        source = (ROOT / "diaktoros/run_supervisor/workers.py").read_text()
+        grown = source.replace("            return os.fdopen(os.open(path, flags, 0o600), \"ab\")\n",
+                               "            if path.name.endswith(\".ro\"):\n"
+                               "                flags = os.O_RDONLY\n"
+                               "            os.close(os.open(path, flags, 0o600))\n"
                                "            return os.fdopen(os.open(path, flags, 0o600), \"ab\")\n")
         self.assertNotEqual(grown, source, "the scratch edit no longer applies to _worker_log")
         found = append_sites(grown, "diaktoros/run_supervisor/workers.py")
