@@ -134,6 +134,25 @@ class ObserverTierTests(unittest.TestCase):
                                                      "outcome": "held — x", "url": "u"}])
         self.assertIn("#12 (issue) fix held · u", legacy)
 
+    def test_digest_reads_a_fixing_notice_by_its_persisted_kind_not_its_text(self):
+        # #1879 review F1: the kind ``notify`` stores in the ledger is what the digest reads. A held
+        # outcome whose text does not start with "held" must still read "fix held", and a queued
+        # kind wins over text that does start with "held".
+        self.loop["observer"]["digest_min"] = 30
+        self.register()
+        n = observer.notify
+        n(self.loop, self.state, "fixing", 12, HEAD, identity=HEAD, issue=True,
+          outcome="worker unavailable", outcome_kind="held")
+        n(self.loop, self.state, "fixing", 12, HEAD, identity=HEAD, issue=True,
+          outcome="held earlier, now queued", outcome_kind="queued")
+        kinds = sorted(str(e.get("outcome_kind") or "") for e in
+                       json.loads(self.state.observations.read_text())["entries"].values())
+        self.assertEqual(kinds, ["held", "queued"])
+        with patch.object(routes, "fire", return_value=True) as fire:
+            self.assertTrue(observer.flush(self.loop, self.state))
+        lines = fire.call_args.args[2]["_observer"]["message"].splitlines()
+        self.assertTrue(lines[1].startswith("#12 (issue) fix held → handed to fixer · "), lines[1])
+
     def test_digest_labels_number_less_entry_by_event_and_does_not_count_it_as_pr(self):
         self.loop["observer"]["digest_min"] = 30
         self.register()
