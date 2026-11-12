@@ -250,8 +250,8 @@ class Waits(Base):
         con.commit()
         con.close()
         with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=db):
-            self.assertEqual(base_merge._in_flight(self.loop, 7), "a reviewer turn is running")
-            self.assertEqual(base_merge._in_flight(self.loop, 8), "")
+            self.assertEqual(base_merge.in_flight(self.loop, 7), "a reviewer turn is running")
+            self.assertEqual(base_merge.in_flight(self.loop, 8), "")
             self.assert_waits()
 
     def test_a_change_request_at_the_head_or_unread_reviews_wait(self):

@@ -262,7 +262,7 @@ class ClaimAndLaunch:
             elif pr.get('state') == 'closed':
                 read.superseded = 'PR closed before the review started'
             elif (pr.get('head') or {}).get('sha') != row['head']:
-                read.superseded = 'PR head moved before the review started'
+                read.superseded = run_supervisor.REVIEW_HEAD_MOVED
             elif pr.get('state') != 'open' or pr.get('draft') is not False:
                 read.retry_read = True
             else:

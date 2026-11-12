@@ -736,8 +736,9 @@ def _disputed_kind(c: _Sweep, number: int, head: str, spent: int, latest: dict,
 
 def _reviewer_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, boundary,
                    observed_at: float | None, head_postdates_arming: bool) -> str:
-    """No verdict at this head: deliver a pending request the gate never saw (#532), and say
-    the reviewer's stall once its grace is past."""
+    """No verdict at this head: deliver a pending request the gate never saw (#532), or a
+    review a head move cancelled before it started (#2468), and say the reviewer's stall once
+    its grace is past."""
     loop = c.loop
     mins = (c.now - observed_at) / 60 if observed_at is not None else 0.0
     # #532: a request GitHub never announced (the reviewer was already requested when the
@@ -748,10 +749,17 @@ def _reviewer_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, bou
     # turn key; a pending request is not delivered across it.
     # An App reviewer (#1163) never shows as requested: its handoff is always the
     # host's, so a head with no verdict and no run is delivered the same way.
-    if ((review_kick.already_requested(loop, pr) or config.reviewer_is_app(loop))
-            and c.kicks.get(str(number)) != head
-            and not boundary
-            and head_postdates_arming and (watch_mode.TEST or mins >= KICK_AFTER_MIN)):
+    due = (c.kicks.get(str(number)) != head and not boundary
+           and head_postdates_arming and (watch_mode.TEST or mins >= KICK_AFTER_MIN))
+    requested = review_kick.already_requested(loop, pr) or config.reviewer_is_app(loop)
+    # #2468: a review queued at an earlier head and cancelled because the head moved before it
+    # started (a review-only author's push, a base merge by the host or by "Update branch") is
+    # asked for again by nobody: the gate ignores pushes, and only a fixer's push requests the
+    # next review. It follows the head, delivered the same way.
+    moved = (run_supervisor.views.moved_review(config.host_path("ledger"), loop["repo"],
+                                               number, head)
+             if due and not requested else None)
+    if due and (requested or moved):
         try:
             sent = review_kick.kick(loop, pr, head, author, f"sweep-review-{number}")
         except Exception as exc:
@@ -760,8 +768,11 @@ def _reviewer_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, bou
                 f"{type(exc).__name__}: {exc}")
         if sent:
             c.kicks[str(number)] = head
-            log(f"#{number} @ {head[:7]}: a pending review request had started no "
-                "review — delivered it to the reviewer gate")
+            log(f"#{number} @ {head[:7]}: " + (
+                f"the review queued at {moved[:7]} was cancelled when the head moved — "
+                "delivered it for this head" if moved else
+                "a pending review request had started no review — delivered it to the "
+                "reviewer gate"))
     if ((watch_mode.TEST or mins > c.grace["reviewer"]) and head_postdates_arming
             and not live_turn(loop, number, head, "reviewer")):
         return (f"reviewer never posted a verdict — head {head[:7]} observed "

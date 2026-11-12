@@ -112,7 +112,7 @@ def _waits(loop: dict, st, number: int, head: str, live: dict, reviews) -> str:
         return "unattended fixer pushes are off"
     if (pr_head.get("repo") or {}).get("full_name") != loop["repo"] or not pr_head.get("ref"):
         return "a fork branch, which the host cannot push"
-    busy = _in_flight(loop, number)
+    busy = in_flight(loop, number)
     if busy:
         return busy
     if isinstance(st.human_hold(number, head), dict):
@@ -135,9 +135,9 @@ def _waits(loop: dict, st, number: int, head: str, live: dict, reviews) -> str:
                                     ruled=gate.is_ruled_approval(latest, loop))
 
 
-def _in_flight(loop: dict, number: int) -> str:
+def in_flight(loop: dict, number: int) -> str:
     """'' when no turn of this PR is queued or in flight, else what is (an unreadable ledger
-    is not idle)."""
+    is not idle). The review-only update waits on it too (#2468)."""
     from .run_supervisor import production_ledger, views
     path = production_ledger()
     if not path.exists():

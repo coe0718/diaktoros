@@ -42,6 +42,11 @@ ACTIVE = ("claimed", "launching", "running", "uncertain")
 # A run that may still record (or rule): not yet ended. An adjudicator run past these that never
 # ruled files none of the follow-ups it asked for (#1864).
 NOT_ENDED = ("pending", "waiting", "claimed", "launching", "running")
+# A review turn whose PR head moved before it started (the claim's read, or the worker's sweep of
+# waiting rows): cancelled. A fixer's push requests the next review itself; any other move (a
+# review-only author's push, a base merge by the host or by "Update branch") does not, so the
+# watchdog delivers it for the new head (``views.moved_review``).
+REVIEW_HEAD_MOVED = 'PR head moved before the review started'
 MAX_ATTEMPTS = 3
 # Issue #53: a turn that failed before any external write is not dead. It waits
 # (``waiting``, ``retry_at``) with exponential backoff and is relaunched up to MAX_RETRIES
