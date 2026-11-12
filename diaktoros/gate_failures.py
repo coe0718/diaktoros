@@ -897,24 +897,40 @@ def loop_ledger(loop: dict) -> Ledger:
     return Ledger(pathlib.Path(str(loop["state_dir"])).expanduser())
 
 
+def reads_fallback(home: "Ledger | None", spare: "Ledger") -> bool:
+    """Whether the fallback ledger is a second ledger to read next to a loop's own ``home``.
+    The sweep's guard (``home.path != ledger.path``): a loop whose state_dir is the fallback
+    ledger's directory has one ledger, and reading it twice shows one failure twice (#1691)."""
+    return home is None or spare.path != home.path
+
+
+def fallback_shown(loop: dict, home_entries: dict, key, entry: dict) -> bool:
+    """Whether an unresolved fallback-ledger entry is shown next to the loop's own ledger
+    (``home_entries``, every entry it holds, resolved or not). ``open_for`` (so ``explain`` and
+    ``ready``) and the Desktop's failures record both ask this, so they show the same failures.
+
+    Only this loop's repo, never a corrupt-ledger marker (the fallback's own condition), and the
+    sweep's rule (:func:`_same_episode`): the home copy hides this one only when it is the same
+    failure. A newer failure of the same in-process key (the home copy was left open by a
+    recovery that could not take its lock) is shown too (#1592)."""
+    if entry.get("kind") == CORRUPT or entry.get("repo") != str(loop.get("repo") or "").lower():
+        return False
+    return not _same_episode(home_entries.get(key), entry)
+
+
 def open_for(loop: dict, number: int) -> list[dict]:
     """Unresolved failures for one PR: the loop's ledger, plus what the fallback ledger holds
     for this loop's repo (a failure it took when the loop's ledger was busy or unwritable)."""
     home = loop_ledger(loop) if loop.get("state_dir") else None
     found = home.open_for(number) if home else []
     try:
-        home_entries = home.entries() if home else {}
         spare = fallback_ledger()
-        repo = str(loop.get("repo") or "").lower()
+        if not reads_fallback(home, spare):
+            return found
+        home_entries = home.entries() if home else {}
         for e in spare.open_for(number):
-            if e.get("kind") == CORRUPT or e.get("repo") != repo:
-                continue
-            # The sweep's rule (:func:`_same_episode`): the home copy hides this one only when
-            # it is the same failure. A newer failure of the same in-process key (the home
-            # copy was left open by a recovery that could not take its lock) is shown too.
-            if _same_episode(home_entries.get(e.get("id")), e):
-                continue
-            found.append({**e, "held_in": str(spare.path)})
+            if fallback_shown(loop, home_entries, e.get("id"), e):
+                found.append({**e, "held_in": str(spare.path)})
     except Exception as err:  # noqa: BLE001 - explain reports what it can read
         log(f"fallback gate-failure ledger unreadable: {type(err).__name__}: {err}")
     return found
@@ -1135,11 +1151,12 @@ def _wall_start(started: float) -> float:
 
 def record_in_process(gate: str, payload, exc: BaseException, started: float) -> str:
     """Record a gate that crashed or ran out of budget when called in-process (``hermes dk
-    review``, the Desktop's review), which does not go through :func:`run`. Same ledgers, key
-    scheme and entry shape, so ``explain``, ``ready`` and the watchdog sweep see it. It is
-    never re-driven: the watchdog cannot rebuild the operator's call (``--reconsider``), so the
-    entry only alerts. ``started`` is a ``time.monotonic()`` reading. Returns the ledger path,
-    or ``""`` when none could be written. Never raises: it runs on the failure path."""
+    review``; the Desktop's review control is not wired yet), which does not go through
+    :func:`run`. Same ledgers, key scheme and entry shape, so ``explain``, ``ready`` and the
+    watchdog sweep see it. It is never re-driven: the watchdog cannot rebuild the operator's
+    call (``--reconsider``), so the entry only alerts. ``started`` is a ``time.monotonic()``
+    reading. Returns the ledger path, or ``""`` when none could be written. Never raises: it
+    runs on the failure path."""
     try:
         key, _raw = _in_process_key(gate, payload)
         timed_out = isinstance(exc, (gh.GateBudgetExceeded, TimeoutError))
@@ -1388,7 +1405,7 @@ def explain_status(entry: dict) -> str:
 def not_driven(entry: dict, scripts_dir: pathlib.Path | None = None, held: str = "") -> str:
     """Why an unresolved entry is not re-driven, as the operator should read it."""
     if entry.get("via") == IN_PROCESS:
-        return ("not re-driven (an operator's `hermes dk review` or Desktop review, not a webhook "
+        return ("not re-driven (an operator's `hermes dk review`, not a webhook "
                 "delivery) — ask again with `hermes dk review --loop <loop> --pr "
                 f"{entry.get('pr') or '<n>'}`")
     if not entry.get("redrivable"):

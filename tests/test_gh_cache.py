@@ -159,6 +159,24 @@ class Cache(unittest.TestCase):
             self.assertEqual(self.get().data, ["é" * 120])
         self.assertEqual([inm for _m, inm, _a in self.seen], [None, None, '"v1"'])
 
+    def test_a_non_ascii_entry_is_read_as_utf8_under_an_ascii_locale(self):
+        # #1703: store writes UTF-8; lookup must read UTF-8 too, not the locale's encoding (cron
+        # or systemd with LANG unset), or the entry is "corrupt" and the cache silently off.
+        import os
+        import subprocess
+        gh_cache.store("reader", PATH, ["é ✓"], {"etag": '"v1"'})
+        child = ("import json, sys; sys.path.insert(0, sys.argv[1]); "
+                 "from diaktoros import gh_cache; import locale; "
+                 "print(locale.getpreferredencoding(False)); "
+                 "print(json.dumps(gh_cache.lookup('reader', sys.argv[2])))")
+        env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0",
+               "PYTHONCOERCECLOCALE": "0", "PYTHONIOENCODING": "utf-8"}
+        out = subprocess.run([sys.executable, "-c", child, str(Path(__file__).resolve().parents[1]),
+                              PATH], env=env, capture_output=True, text=True, check=True).stdout
+        encoding, found = out.splitlines()
+        self.assertNotIn("utf", encoding.lower().replace("-", ""))   # the locale is not UTF-8
+        self.assertEqual(json.loads(found), {"etag": '"v1"', "data": ["é ✓"]})
+
     def test_a_read_only_process_never_stores_marks_or_prunes(self):
         # #1653 review, F3: doctor, explain, status and the Desktop routes promise to write
         # nothing. Writes are off unless the process is a writer (enable_writes).
