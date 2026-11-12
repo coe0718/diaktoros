@@ -70,7 +70,7 @@ python tests/run_tests.py watchdog
 - `tests/run_tests.py` runs all registered harness groups when no selector is supplied. It uses stubbed GitHub state, a local webhook server and real disposable Git operations.
 - `--list` lists area/group selectors without executing them.
 - `watchdog` is a positional area selector, not a flag or live watchdog launch. Other area/group names must come from `--list`.
-- `python3 tests/affected.py PATH…` lists the test modules a change depends on; `--run` runs them one module at a time and `--budget SECONDS` (default 360) stops starting new ones past that budget, naming what it skipped. This repository's own `fixer_check` is `python3 tests/affected.py --run $CHANGED` (#362), so a fixer turn runs the dependents of its change while CI still runs everything.
+- `python3 tests/affected.py PATH…` lists the test modules a change depends on (the selection itself is `tools/affected_tests.py`, outside `tests/`, so a base-failure proof tests the base selector, #1973); `--run` runs them one module at a time and `--budget SECONDS` (default 360) stops starting new ones past that budget, naming what it skipped. This repository's own `fixer_check` is `python3 tests/affected.py --run $CHANGED` (#362), so a fixer turn runs the dependents of its change while CI still runs everything.
 
 The harness also validates fenced `hermes dk` command examples in README/docs/skill against the CLI parser. Keep commands valid and explain every option next to the example; parser acceptance alone does not verify operational effects.
 
@@ -95,7 +95,7 @@ Hermes frontend/Electron dependency tree. Run the same two commands above from
 the plugin root in a disposable development checkout. Installation needs registry
 access; execution uses local fixtures only. The runner sets the ESM entry itself,
 ignores ambient package/plugin overrides and Node injection options, and requires
-234 executed passes (13 of them named real-cache cases), zero skips/TODOs,
+238 executed passes (13 of them named real-cache cases), zero skips/TODOs,
 and matching TAP plan/summary counts. A mounted-page SDK adapter connects the
 production Health/useHealth call directly to QueryObserver subscriptions: concurrent
 pages, fresh remounts, loop selection, fallback and Retry run without injecting a
