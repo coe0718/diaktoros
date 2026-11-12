@@ -510,7 +510,7 @@ def _scan_stalls(c: _Sweep) -> None:
     # Per seat (#98): each seat's stall waits for its own whole turn, never another seat's.
     c.grace = {seat: 0.0 if watch_mode.TEST else config.stall_grace_s(loop, seat) / 60
                for seat in ("reviewer", "fixer")}
-    c.marker_grace = 0.0 if watch_mode.TEST else float(loop.get("marker_grace_min") or 60)
+    c.marker_grace = 0.0 if watch_mode.TEST else config.marker_grace_s(loop) / 60
     c.breach = st.breach_all()
     c.alerts: list[tuple[int, str, str]] = []
     c.marks = watch.get("alerts") if isinstance(watch.get("alerts"), dict) else {}

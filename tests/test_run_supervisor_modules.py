@@ -38,6 +38,10 @@ ALL_SUBMODULES = tuple(sorted(
 # ``turns`` included (#1332).
 RE_EXPORTS = {"turns": frozenset({"_ClaimRead", "_Turn", "_Launch"})}
 ONE_HOME_SUBMODULES = SUBMODULES + ("turns",)
+# Distinct getattr defaults for the RE_EXPORTS check: an unbound name on either side must never
+# be "the same object" as an unbound (or None) name on the other.
+_MISSING_ON_PACKAGE = object()
+_MISSING_ON_SUBMODULE = object()
 
 
 def _one_home_names() -> set[tuple[str, str]]:
@@ -76,9 +80,20 @@ def _moved_names() -> set[str]:
 
 def _one_home_violations() -> list[str]:
     """One message per one-home name that the package core defines or binds again, or that its
-    submodule does not bind: the enforcement behind test_a_moved_name_has_one_home."""
+    submodule does not bind, and per RE_EXPORTS name the package does not bind to the submodule's
+    own object (#1936): the enforcement behind test_a_moved_name_has_one_home."""
     core = _top_level_names(PACKAGE / "__init__.py")
     problems = []
+    for sub, exempt in sorted(RE_EXPORTS.items()):
+        module = importlib.import_module(f"diaktoros.run_supervisor.{sub}")
+        for name in sorted(exempt):
+            # A unique default on each side, so a name missing from both, or missing from the
+            # package while the submodule binds it to None, never compares identical (#2457).
+            if (name not in _top_level_names(PACKAGE / f"{sub}.py")
+                    or getattr(run_supervisor, name, _MISSING_ON_PACKAGE)
+                    is not getattr(module, name, _MISSING_ON_SUBMODULE)):
+                problems.append(f"RE_EXPORTS exempts {sub}.{name}, but run_supervisor.{name} "
+                                f"does not resolve to it")
     for sub, moved in sorted(_one_home_names()):
         module = importlib.import_module(f"diaktoros.run_supervisor.{sub}")
         if moved in core:
@@ -161,13 +176,62 @@ class Split(unittest.TestCase):
         # turns' own names have one home like any submodule's (#1332); only the package's
         # deliberate re-exports of its state classes (#758) are exempt.
         names = _one_home_names()
-        for name in ("ClaimAndLaunch", "_turn_pool", "_turn_role", "ci_wait_expired"):
+        for name in ("ClaimAndLaunch", "_turn_pool", "_turn_role", "_cap_held", "_ci_hold_text",
+                     "_nudged", "ci_wait_expired"):
             self.assertIn(("turns", name), names)
         for name in ("_ClaimRead", "_Turn", "_Launch"):
             self.assertNotIn(("turns", name), names)
             self.assertIs(getattr(run_supervisor, name), getattr(run_supervisor.turns, name))
         self.assertEqual(set(ONE_HOME_SUBMODULES), set(ALL_SUBMODULES))
         self.assertEqual(set(RE_EXPORTS), {"turns"})
+
+    def test_the_re_exports_are_exactly_the_state_classes(self):
+        # RE_EXPORTS is subtractive, so an extra exempt name silently drops a turns name from the
+        # one-home rules (#1936). The exempt set is pinned to the three state classes (#758):
+        # widening it means changing this line, not only the constant.
+        self.assertEqual(RE_EXPORTS, {"turns": frozenset({"_ClaimRead", "_Turn", "_Launch"})})
+
+    def test_the_one_home_guard_refuses_an_exemption_the_package_does_not_bind(self):
+        # Drives the guard's enforcement (#1936): an exempt name must be one the package really
+        # binds to the submodule's own object. A stale or wrong exemption is refused, so the
+        # exempt set always equals what the package re-exports.
+        from diaktoros.run_supervisor import turns
+        with mock.patch.dict(RE_EXPORTS, {"turns": RE_EXPORTS["turns"] | {"_nudged"}}):
+            self.assertIn("RE_EXPORTS exempts turns._nudged, but run_supervisor._nudged does "
+                          "not resolve to it", _one_home_violations())
+            with mock.patch.object(run_supervisor, "_nudged", lambda: None, create=True):
+                self.assertIn("RE_EXPORTS exempts turns._nudged, but run_supervisor._nudged does "
+                              "not resolve to it", _one_home_violations())
+            with mock.patch.object(run_supervisor, "_nudged", turns._nudged, create=True):
+                self.assertEqual(_one_home_violations(), [])
+        self.assertEqual(_one_home_violations(), [])
+
+    def test_the_one_home_guard_refuses_an_exemption_bound_on_neither_side_or_to_none(self):
+        # #2457 review F1: an exempt name the package does not bind must be refused even when
+        # the submodule's value is None, or when neither side binds it.
+        from diaktoros.run_supervisor import turns
+        refused = ("RE_EXPORTS exempts turns._ClaimRead, but run_supervisor._ClaimRead does not "
+                   "resolve to it")
+        with mock.patch.object(run_supervisor, "_ClaimRead"):
+            delattr(run_supervisor, "_ClaimRead")
+            with mock.patch.object(turns, "_ClaimRead", None):
+                self.assertIn(refused, _one_home_violations())
+            with mock.patch.object(turns, "_ClaimRead"):
+                delattr(turns, "_ClaimRead")
+                self.assertIn(refused, _one_home_violations())
+        self.assertEqual(_one_home_violations(), [])
+
+    def test_the_one_home_guard_refuses_an_exemption_that_is_not_a_submodule_definition(self):
+        # #2457 review F2: an exempt name bound to the same object on both sides is still
+        # refused when the submodule's source does not define it at top level.
+        from diaktoros.run_supervisor import turns
+        shared = object()
+        with mock.patch.dict(RE_EXPORTS, {"turns": RE_EXPORTS["turns"] | {"_not_defined"}}), \
+                mock.patch.object(turns, "_not_defined", shared, create=True), \
+                mock.patch.object(run_supervisor, "_not_defined", shared, create=True):
+            self.assertIn("RE_EXPORTS exempts turns._not_defined, but run_supervisor._not_defined "
+                          "does not resolve to it", _one_home_violations())
+        self.assertEqual(_one_home_violations(), [])
 
     def test_the_one_home_guard_refuses_a_second_binding_of_a_turns_name(self):
         # Drives the guard's enforcement itself (#1933 review): a turns function bound again on

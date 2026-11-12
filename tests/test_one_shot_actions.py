@@ -417,15 +417,51 @@ class DrainExitCodeDocs(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("not drained: ConfigError", err)
 
-    def test_docs_qualify_the_direct_script_exit_1_with_loop(self):
+    # The exit-0 claim must sit in the same sentence as "without `--loop`": a bare
+    # "exits 0" also matches the generic CLI-drain sentence earlier in the paragraph.
+    DIRECT_EXIT_0 = r"(?i)without `--loop`[^.]*?(exits|the exit is) 0"
+
+    def _doc_texts(self):
+        """Yield (name, whitespace-normalized text) for the two drain-exit docs."""
         import pathlib
         import re
         docs = pathlib.Path(__file__).resolve().parent.parent / "docs"
         for name in ("operations.md", "security.md"):
-            text = re.sub(r"\s+", " ", (docs / name).read_text(encoding="utf-8"))
+            yield name, re.sub(r"\s+", " ", (docs / name).read_text(encoding="utf-8"))
+
+    def test_docs_qualify_the_direct_script_exit_1_with_loop(self):
+        for name, text in self._doc_texts():
             self.assertNotRegex(text, r"(?i)--drain` directly exits 1 on a refused loop file", name)
             self.assertRegex(text, r"(?i)without `--loop`", name)
-            self.assertRegex(text, r"(?i)exits? (is )?0", name)
+            self.assertRegex(text, self.DIRECT_EXIT_0, name)
+
+    def _strip_direct_exit_0(self, text):
+        """Return `text` with the direct-script exit-0 clause deleted, as a regression would."""
+        import re
+        stripped = re.sub(r"(?i)(and )?(the exit is|exits) 0(?=[,).])", "", text)
+        return stripped.replace(", so 0 does not rule out a refused file", "")
+
+    def test_docs_test_itself_fails_on_each_doc_without_the_clause(self):
+        """Run the real docs test on each doc with its exit-0 clause dropped: it must go red.
+
+        This drives `test_docs_qualify_the_direct_script_exit_1_with_loop` itself, so putting
+        back a bare `exits? (is )?0` assertion there turns this test red (#1872).
+        """
+        for name, text in list(self._doc_texts()):
+            mutated = [(name, self._strip_direct_exit_0(text))]
+            with self.subTest(doc=name), \
+                    mock.patch.object(self, "_doc_texts", return_value=iter(mutated)):
+                with self.assertRaises(AssertionError):
+                    self.test_docs_qualify_the_direct_script_exit_1_with_loop()
+
+    def test_direct_exit_0_check_fails_when_the_clause_is_dropped(self):
+        """Deleting the direct-script exit-0 clause must turn the docs check red (#1872)."""
+        for name, text in self._doc_texts():
+            stripped = self._strip_direct_exit_0(text)
+            # The generic CLI-drain "exits 0" sentence survives, so a bare pattern stays green...
+            self.assertRegex(stripped, r"(?i)exits? (is )?0", name)
+            # ...but the anchored pattern notices the missing clause.
+            self.assertNotRegex(stripped, self.DIRECT_EXIT_0, name)
 
 
 if __name__ == "__main__":

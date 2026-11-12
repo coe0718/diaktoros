@@ -10,6 +10,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from diaktoros import config  # noqa: E402
 from test_init_concurrency import Base, LOOP_FILE  # noqa: E402
 
 FORM = {"reviewer_max_steps": "120", "fixer_max_steps": "150", "fix_daily_turns": ""}
@@ -48,6 +49,9 @@ class InitTurnKnobsTest(Base):
         self.assertEqual(rc, 2, out)
         found = re.search(r"`hermes dk (triage [^`]*)`", out)
         self.assertIsNotNone(found, out)
+        # #1728: the same spelling the settings form's refusal names.
+        self.assertEqual(found.group(0)[1:-1],
+                         config.triage_enable_command(then="--fix-daily-turns N"))
         filled = {"LOOP": "widgets", "P": "triager", "A": "maint", "L": "bug", "N": "9"}
         argv = [filled.get(word, word) for word in shlex.split(found.group(1))]
         args = run_tests.parser_for().parse_args(argv)

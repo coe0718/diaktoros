@@ -79,7 +79,7 @@ and a PR link. It does not contain the diff, review body, GitHub credentials or 
 | `failed` | An isolated run's first failed attempt (with the retry time) and its terminal `failed`/`uncertain` state | The cause is transient, or a retry will work |
 | `held` | A run is waiting without spending a retry: its seat's daily cap is reached, its provider's usage window is closed, or the provider is unavailable with no 429 (#1325); also when a maintainer's fix label is declined, or a fix push changed files outside its findings (`fixer_scope_lock`); also when a `migrate` died before it finished and left the install paused (#1077: once per loop per interrupted migrate, naming the marker file and `hermes dk migrate`, sent by the watchdog sweep; a loop whose state directory is missing gets none). Says when it resumes and, for a cap, the flag that raises it and the `retry` that runs it sooner | It will run the moment the hold lifts (capacity and pacing still apply) |
 | `ci_failed` | A required check is red at a loop PR's current head, once per head, naming the failed check(s) and linking the run (#306). Found by the watchdog sweep, with no model | With `fix_ci` and unattended fixer pushes on, on a fixer's PR: one fixer turn for that head, which gets the failing jobs' log tails as data. The notice says which CI fix it is ("CI fix 2 of 3"), or that the CI-fix budget is spent (#539). Once the budget is spent, and on a review-only PR, the review waits for green: re-run the check or push (#1110). Otherwise you fix it |
-| `main_red` | A required check is red at the head of the loop's base branch, once per main head, naming the failed check(s) and the PRs merged since main's last green head (marked partial when GitHub truncated the compare). Found by the watchdog sweep, with no model and no GitHub write. GitHub's "Require branches to be up to date before merging" protection prevents this class of breakage | You fix or revert main |
+| `main_red` | A required check is red at the head of the loop's base branch, once per main head, naming the failed check(s) and the PRs merged since main's last green head (marked partial when GitHub truncated the compare; read from commit subjects, so a direct push ending in `(#N)` is counted as a PR too, and the notice says so; a reference of more than 10 digits names no PR; when the notice is too long, the failed check names are shortened first, so that caveat is never cut off). Found by the watchdog sweep, with no model and no GitHub write. GitHub's "Require branches to be up to date before merging" protection prevents this class of breakage | You fix or revert main |
 | `main_flaked` | With `main_flake_rerun` on, a red main head that looked like a flake had its failed jobs rerun once, as a maintainer, and the rerun passed: once per main head, naming the test(s) and why it looked like a flake (#1784). No PR is blamed and no `main_red` is sent; a rerun that fails again sends `main_red`, saying so | Nothing, or file the flaky test |
 | `conflict` | A loop PR no longer merges into its base (GitHub reports a merge conflict), once per head (#303) | With unattended fixer pushes on, a resolving fixer turn: the host merges the base into the head and the fixer resolves the conflicted files (a whole-file conflict, or a base that changed workflow files, ends that run as "needs a person"). While the head's newest verdict requests changes (and the PR is not at its cap or escalated), the turn waits and the notice says the fixer answers first (#1907). With them off, you merge the base by hand. A new head that still conflicts is reported again |
 | `updated` | With `review_only_update` on, the host merged the base into a review-only PR's branch and pushed it (clean merge only); with `update_behind` on, into a loop PR that fell behind, saying whether its approval carried over (#1785) | Nothing: review resumes at the new head through the normal gate, or, with the approval carried, the merge check turns green once CI passes |
@@ -136,7 +136,8 @@ Receipts live in `<state_dir>/observations.json`. Logical keys include loop, PR,
 event and event identity (review/round where applicable); repeated gates/deliveries do
 not create another notice for the same transition. A `fixing` notice's key also carries its
 outcome kind (`queued` or `held`), so a hand-off held at a base and later queued at the same
-base sends two notices; the kind is checked in `observer.key_for`, and an event needs one only if
+base sends two notices (in a digest, two words on the issue's line: `fix held → handed to fixer`,
+#1879); the kind is checked in `observer.key_for`, and an event needs one only if
 it is listed in `observer.OUTCOME_KINDS`. Delivery IDs are retained for safe
 retry so the gateway can also deduplicate a logical send.
 
@@ -201,7 +202,8 @@ no regular digest flush. Known-paused loop hooks skip the loop sweep, so queued 
 can remain owed until normal sweeps resume. That pause also skips route/shim self-heal,
 observer retries and pre-write worker retries, not just digest flush/PR scanning.
 The digest groups by PR or issue, in event order, one line each, keeping outcomes only where
-they matter (changes vs approve), at most 25 lines and then "…and N more":
+they matter (changes vs approve; a `fixing` notice that was held reads `fix held`, not
+`handed to fixer`), at most 25 lines and then "…and N more":
 
 ```
 🗂 [<loop-id>] last 30m — 2 PRs, 1 issue
