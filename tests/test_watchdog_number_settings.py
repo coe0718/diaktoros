@@ -15,6 +15,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from diaktoros import config  # noqa: E402
 
 KEYS = ("cooldown_h", "marker_grace_min")
+MINUTE_KEYS = ("grace_min", "ttl_min")   # whole minutes, read with int() (#1692)
 
 
 def raw_loop(**extra) -> dict:
@@ -66,6 +67,33 @@ class NumberSettingsTest(unittest.TestCase):
                 self.assertEqual(config.normalize(raw_loop(**{key: ""}))[key], config.DEFAULTS[key])
                 row = next(line for line in docs.splitlines() if line.startswith(f"| `{key}` |"))
                 self.assertIn('the empty string `""`', row)
+
+    def test_bad_grace_and_ttl_minutes_are_a_config_error_naming_the_key(self):
+        # Issue #1692: config.stall_grace_s / seat_ttl_s do int(...) mid-sweep.
+        for key in MINUTE_KEYS:
+            for bad in ("abc", "4.5", -1, 0, "0", 2.5, True, [], float("inf"), float("nan")):
+                with self.subTest(key=key, value=bad):
+                    with self.assertRaises(config.ConfigError) as ctx:
+                        config.normalize(raw_loop(**{key: bad}))
+                    self.assertIn(repr(key), str(ctx.exception))
+
+    def test_grace_and_ttl_minutes_read_as_whole_numbers(self):
+        for key in MINUTE_KEYS:
+            for given, kept in (("40", 40), (40, 40), (40.0, 40), (None, config.DEFAULTS[key]),
+                                ("", config.DEFAULTS[key])):
+                with self.subTest(key=key, value=given):
+                    loop = config.normalize(raw_loop(**{key: given}))
+                    self.assertEqual(loop[key], kept)
+                    self.assertIs(type(loop[key]), int)
+
+    def test_a_bad_grace_fails_at_load_not_in_the_watchdog_sweep(self):
+        # The sweep only ever sees a loaded loop: a bad grace_min must stop at load_file.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "widgets.json"
+            path.write_text(json.dumps(raw_loop(grace_min="abc")))
+            with self.assertRaises(config.ConfigError) as ctx:
+                config.load_file(path)
+            self.assertIn("'grace_min'", str(ctx.exception))
 
     def test_positive_numbers_are_kept(self):
         loop = config.normalize(raw_loop(cooldown_h=0.5, marker_grace_min=90))
