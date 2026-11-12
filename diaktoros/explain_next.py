@@ -239,13 +239,15 @@ def retry_effect(c, when: str = "") -> str:
     """What ``retry`` does, as the clause after the retry command (#2410 review F2), with ``when``
     after its verb: "re-arms it" when the turn ``explain`` shows is among the rows the retry plan
     re-arms (``fixer_retry``), else those rows by name and that the turn shown is not one of
-    them — the same shape as ``redelivery_effect``, one wording for the blocker and the step."""
+    them — the same shape as ``redelivery_effect``, one wording for the blocker and the step.
+    The shown turn may be the verdict turn itself (no key) while retry re-arms only another turn
+    at its head, so the verdict turn is compared by its key like any other (#2410 review F2)."""
     rows = c.fixer_rearm[3] if len(c.fixer_rearm) > 3 else ()
     key = str(c.fixer_key or "")
-    if not key or not rows or any(k == key for k, _ in rows):
+    if not rows or any(k == key for k, _ in rows):
         return f"re-arms it{when}"
     names = " and ".join(f"{turn_name(k)} ({state})" for k, state in rows)
-    return f"re-arms {names}{when}, not {shown_turn(c)}"
+    return f"re-arms {names}{when}, not {turn_name(key)}"
 
 
 def redelivery_effect(c, when: str = "") -> str:
@@ -346,14 +348,16 @@ def _ended_turn_step(c, enable: str) -> str:
 
 
 def _other_turn_caution(c) -> str:
-    """The reconcile caution for an uncertain turn shown beside the gate's verdict turn (#1615): a
-    redelivery or retry that re-arms the verdict turn leaves it as it is, and it may have written,
-    so it is reconciled first, as a single uncertain turn is. It leads ``_ended_turn_recovery``,
-    so every step naming that recovery carries it, the declined-entry step too (#2410 review F1)."""
-    if not (c.fixer_key and c.fixer_turn == "uncertain"):
+    """The reconcile caution for an uncertain turn shown beside another turn at its head (#1615).
+    Uncertain is never re-armed, so a redelivery or retry offered beside it re-arms another row —
+    the verdict turn, or a shadow-fix, CI-fix or conflict turn when the verdict turn is the one
+    shown (#2410 review F2) — and leaves the shown turn as it is; it may have written, so it is
+    reconciled first, as a single uncertain turn is. It leads ``_ended_turn_recovery``, so every
+    step naming that recovery carries it, the declined-entry step too (#2410 review F1)."""
+    if c.fixer_turn != "uncertain":
         return ""
-    return (f"for {shown_turn(c)}: " + _reconcile_first(c, "a worker may have written")
-            + "; after that, ")
+    return (f"for {turn_name(str(c.fixer_key or ''))}: "
+            + _reconcile_first(c, "a worker may have written") + "; after that, ")
 
 
 def _ended_turn_recovery(c) -> str:

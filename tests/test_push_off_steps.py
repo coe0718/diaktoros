@@ -352,6 +352,44 @@ class AfterEnabling(Steps):
         self.assertIn("re-arms the verdict turn (failed), not the shadow-fix fixer turn", action)
         self.assert_retry_names_its_rows(sup, plan, action.split(f"(or `{self.retry()}`")[1])
 
+    def test_a_retry_of_another_turn_beside_an_uncertain_verdict_turn_names_it(self):
+        # #2410 review F2 (inverse): the newer, shown row is the verdict turn (no key), uncertain;
+        # retry's plan re-arms only an older failed shadow-fix turn. Step and blocker said retry
+        # "re-arms it" (the uncertain verdict turn) and dropped the reconcile caution for it.
+        from diaktoros import retry_action
+        shadow = f"{run_supervisor.SHADOW_FIX_KEY}1"
+        sup = self.two_rows("uncertain", shadow, "failed")
+        with sup._connect() as con:              # the verdict turn is the newer row, shown
+            con.execute("UPDATE runs SET updated=3 WHERE turn_key=''")
+            plan = retry_action.plan(con, fg.REPO, 7, "fixer")
+        self.assertEqual([(r["turn_key"], r["state"]) for r in plan["rearmable"]], [(shadow, "failed")])
+        self.assertIn("may have written", " ".join(plan["blocked"].values()))
+        for marked in (False, True):
+            with self.subTest(marked=marked):
+                if marked:
+                    self.st.inflight(f"fix:7:{fg.HEAD}", record=True)
+                self.set_push(False)
+                report = self.report(inflight_fix=marked)
+                action = report["next"]["action"]
+                self.assertIn("the fixer turn at head aaaaaaa is uncertain", action)
+                self.assertIn("for the verdict turn: reconcile it first", action)
+                self.assertIn(f"`{self.retry()}` re-arms the shadow-fix fixer turn (failed), not "
+                              "the verdict turn", action)
+                self.assertNotIn("re-arms it", action)
+                ended = [b for b in report["blockers"] if "is uncertain with no fix pushed" in b]
+                self.assertEqual(len(ended), 1, report["blockers"])
+                self.assertIn("retry re-arms the shadow-fix fixer turn (failed) once the loop opts "
+                              "in, not the verdict turn", ended[0])
+                self.assertNotIn("re-arms it", ended[0])
+                if marked:
+                    self.st.inflight_clear(f"fix:7:{fg.HEAD}")
+        self.set_push(True)                      # the real retry re-arms the shadow row only
+        with mock.patch.object(sup, "_spawn"):
+            sup.retry(plan["rearmable"][0]["id"])
+        with sup._connect() as con:
+            states = dict(con.execute("SELECT turn_key, state FROM runs").fetchall())
+        self.assertEqual(states, {"": "uncertain", shadow: "pending"})
+
     def test_a_lock_or_mark_over_an_ended_run_follows_the_ledger_not_the_mark(self):
         # #1510 review F5: a mark or lock can outlive its run (state.py keeps them until cleared
         # or expired); the started-turn step promised retry for a row retry has nothing for.
