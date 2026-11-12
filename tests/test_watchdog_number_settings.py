@@ -28,7 +28,8 @@ def raw_loop(**extra) -> dict:
 class NumberSettingsTest(unittest.TestCase):
     def test_bad_values_are_a_config_error_naming_the_key(self):
         for key in KEYS:
-            for bad in ("abc", "6", -1, 0, True, False, [], float("inf"), float("nan")):
+            for bad in ("abc", "0", "-6", "inf", "nan", "1e400", -1, 0, True, False, [],
+                        float("inf"), float("nan")):
                 with self.subTest(key=key, value=bad):
                     with self.assertRaises(config.ConfigError) as ctx:
                         config.normalize(raw_loop(**{key: bad}))
@@ -94,6 +95,54 @@ class NumberSettingsTest(unittest.TestCase):
             with self.assertRaises(config.ConfigError) as ctx:
                 config.load_file(path)
             self.assertIn("'grace_min'", str(ctx.exception))
+
+    def test_grace_and_ttl_minutes_past_the_ceiling_are_a_config_error(self):
+        # Review of #2411: 10**310 passed the >= 1 check, then overflowed the sweep's float
+        # division and split the seat ledger's TTL from the watchdog's dead-claim threshold.
+        for key in MINUTE_KEYS:
+            for bad in (10 ** 310, float(10 ** 20), 10 ** 7, "10000000"):
+                with self.subTest(key=key, value=bad if isinstance(bad, str) else len(str(bad))):
+                    with self.assertRaises(config.ConfigError) as ctx:
+                        config.normalize(raw_loop(**{key: bad}))
+                    self.assertIn(repr(key), str(ctx.exception))
+        top = getattr(config, "TIMER_MINUTES_MAX", None)
+        self.assertEqual(top, 525_600)      # one year of minutes, the documented ceiling
+        for key in MINUTE_KEYS:
+            self.assertEqual(config.normalize(raw_loop(**{key: top}))[key], top)
+            with self.assertRaisesRegex(config.ConfigError, f"1-{top}"):
+                config.normalize(raw_loop(**{key: top + 1}))
+
+    def test_minutes_that_load_keep_the_sweep_and_seat_ledger_in_agreement(self):
+        # The reviewer's reproduction, through the watchdog sweep's own entry point: any
+        # grace_min/ttl_min that normalize accepts must be one _scan_stalls can divide, and the
+        # seat ledger must read the same TTL the dead-claim threshold uses.
+        from types import SimpleNamespace
+        from unittest import mock
+        from diaktoros import state as state_mod, watch_mode
+        from scripts import watchdog
+        for minutes in (10 ** 310, 525_600):
+            with self.subTest(digits=len(str(minutes))), tempfile.TemporaryDirectory() as tmp:
+                try:
+                    loop = config.normalize(raw_loop(grace_min=minutes, ttl_min=minutes,
+                                                     state_dir=str(pathlib.Path(tmp) / "st")))
+                except config.ConfigError:
+                    continue            # refused at load: nothing downstream ever sees it
+                st = state_mod.LoopState(loop)
+                sweep = SimpleNamespace(loop=loop, st=st, watch={}, prs=[])
+                with mock.patch.object(watch_mode, "TEST", False):
+                    watchdog._scan_stalls(sweep)
+                self.assertEqual(sweep.grace["reviewer"], minutes)
+                self.assertEqual(st.minutes("ttl_min"), minutes)
+                self.assertEqual(2 * st._seat_ttl(), config.seat_died_after_s(loop))
+
+    def test_numeric_strings_read_as_their_number(self):
+        # Issue #1692's open decision: coerce, like _as_int does for the integer settings.
+        for key in KEYS:
+            for given, kept in (("6", 6), (" 6 ", 6), ("0.5", 0.5)):
+                with self.subTest(key=key, value=given):
+                    value = config.normalize(raw_loop(**{key: given}))[key]
+                    self.assertEqual(value, kept)
+                    self.assertIs(type(value), type(kept))
 
     def test_positive_numbers_are_kept(self):
         loop = config.normalize(raw_loop(cooldown_h=0.5, marker_grace_min=90))

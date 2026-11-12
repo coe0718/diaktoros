@@ -441,6 +441,12 @@ def validate_budget(value, what: str, where: str) -> int:
 
 
 DAILY_TURNS_MAX = 1000
+# ``grace_min``/``ttl_min`` ceiling (#1692): one year of minutes. Their readers mix int and float
+# arithmetic (``stall_grace_s(...) / 60`` in the watchdog sweep, ``LoopState.minutes``' float() in
+# the seat ledger), so an integer past float's range crashed the sweep, or the ledger fell back to
+# the default while the watchdog's dead-claim threshold used the huge value. Every whole number up
+# to this bound is exact as a float, so all readers agree on it.
+TIMER_MINUTES_MAX = 525_600
 DAILY_TOKENS_MAX = 10_000_000_000
 
 # Agent steps one isolated turn may take (#271), per role when the seat sets none. A seat that
@@ -1165,12 +1171,30 @@ def _as_int(value, key: str, where: str) -> int:
         raise ConfigError(f"{where}: {key!r} must be a whole number, got {value!r}") from None
 
 
+def _numeric_text(value):
+    """``value`` itself, or a string that spells a number (``"6"``, ``" 0.5 "``) as that number
+    (#1692): an int when it is one, else a float. Text that is not a number comes back unchanged
+    for the caller to refuse."""
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    for read in (int, float):
+        try:
+            return read(text)
+        except (ValueError, OverflowError):   # also an int string past the 4300-digit limit
+            continue
+    return value
+
+
 def _positive_number(value, key: str, where: str):
     """A positive, finite number setting (``null`` or ``""`` = the default), or a ConfigError
-    naming it. The watchdog does ``float(...)``/``int(...)`` on these mid-sweep, so a string,
-    a bool, zero, a negative or ``Infinity``/``NaN`` must fail when the loop file loads."""
+    naming it. The watchdog does ``float(...)``/``int(...)`` on these mid-sweep, so other text,
+    a bool, zero, a negative or ``Infinity``/``NaN`` must fail when the loop file loads. A string
+    that spells a number (``"6"``) is stored as that number, the way ``_as_int`` reads one for the
+    integer settings (#1692)."""
     if value is None or value == "":
         return DEFAULTS[key]
+    value = _numeric_text(value)
     ok = isinstance(value, (int, float)) and not isinstance(value, bool)
     if ok:
         try:

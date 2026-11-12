@@ -124,12 +124,15 @@ def _whole_minutes(value, key: str, where: str) -> int:
     default). ``config.stall_grace_s`` and ``config.seat_ttl_s`` do ``int(...)`` on these in the
     watchdog sweep, doctor and explain, so a value they cannot read must fail when the loop file
     loads (#1692). A numeric string (``"40"``, what the settings form pushes) reads as its number,
-    as every other integer setting does (``config._as_int``)."""
+    as every other integer setting does (``config._as_int``). The ceiling,
+    ``config.TIMER_MINUTES_MAX``, keeps the sweep's float arithmetic and the seat ledger's
+    ``LoopState.minutes`` reading the same number as ``config.seat_died_after_s``."""
     if value is None or (isinstance(value, str) and not value.strip()):
         return config.DEFAULTS[key]
     minutes = config._as_int(value, key, where)
-    if minutes < 1:
-        raise config.ConfigError(f"{where}: {key!r} must be a whole number of minutes >= 1")
+    if not 1 <= minutes <= config.TIMER_MINUTES_MAX:
+        raise config.ConfigError(f"{where}: {key!r} must be a whole number of minutes, "
+                                 f"1-{config.TIMER_MINUTES_MAX}")
     return minutes
 
 
