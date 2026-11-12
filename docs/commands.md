@@ -268,6 +268,9 @@ out) and outcome:
 - **unsent**: no credential, so nothing left the host;
 - **error**: no HTTP answer, so it may or may not have counted.
 
+The trusted export a review turn stages (the compare, commit, tree and tarball reads, made with
+the read token outside `gh`) is counted the same way (#1787).
+
 Beside each login it shows the newest rate-limit figure GitHub sent it (used, limit, reset). A
 GitHub figure well past the host's **spent** count means the same credential is spending
 somewhere else.

@@ -146,6 +146,27 @@ class Counted(unittest.TestCase):
         self.assertEqual((reader["spent"], reader["error"]), (1, 0))
         self.assertEqual(reader["limit"]["used"], "123")
 
+    def test_the_trusted_exports_own_reads_are_counted_too(self):
+        # #1787: trusted_fetch sends the read token through its own urllib, not gh._request.
+        from diaktoros import trusted_fetch
+        accept, sha = "application/vnd.github+json", "a" * 40
+        trusted_fetch._request(LOOP, f"/repos/owner/one/git/commits/{sha}", "reader", 1000, accept)
+        trusted_fetch._fetch_tarball(LOOP, "owner/one", "reader", sha, 1000)
+        with self.assertRaises(trusted_fetch.FetchDenied):
+            trusted_fetch._request(LOOP, "/repos/owner/one/limited", "reader", 1000, accept)
+        with mock.patch.object(gh, "API", "http://127.0.0.1:1"), \
+                self.assertRaises(trusted_fetch.FetchDenied):          # nothing listens there
+            trusted_fetch._request(LOOP, "/repos/owner/one/git/trees/x", "reader", 1000, accept)
+        with mock.patch.object(gh, "token", side_effect=gh.GitHubError("no token file")), \
+                self.assertRaises(trusted_fetch.FetchDenied):
+            trusted_fetch._fetch_tarball(LOOP, "owner/one", "reader", sha, 1000)
+        reader = self.counted()["reader"]
+        self.assertEqual((reader["spent"], reader["limited"], reader["error"], reader["unsent"]),
+                         (2, 1, 1, 1))
+        self.assertIn(["GET", "/repos/R/git/commits/SHA", "spent", 1], reader["paths"])
+        self.assertIn(["GET", "/repos/R/tarball/SHA", "spent", 1], reader["paths"])
+        self.assertEqual(reader["limit"]["used"], "102")      # GitHub's figure, from its answer
+
     def test_logins_are_kept_apart_and_a_missing_credential_is_unsent(self):
         self.get("/repos/owner/one/pulls/7", login="reviewer")
         with mock.patch.object(gh, "token", side_effect=gh.GitHubError("no token file")):
