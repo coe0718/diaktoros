@@ -255,12 +255,35 @@ class Live(AppLoop):
     def test_a_malformed_answer_is_not_reported_as_a_network_outage(self):
         # Review F1 (#1913): a 200 whose body is not JSON fails in _as_app's except-Exception
         # branch AFTER GitHub answered. The check must not say "no HTTP answer" and send the
-        # operator to the network: GitHub did answer, so it stays a failed read of the key.
+        # operator to the network: GitHub did answer.
         got = self.live_real(return_value=_Answer(200, b"<html>not json</html>"))
-        self.assertEqual(got.status, doctor.MISMATCH, got.detail)
         self.assertNotIn("no HTTP answer", got.detail)
-        self.assertNotIn("api.github.com", got.fix)
+        self.assertNotIn("api.github.com (network, DNS", got.fix)
         self.assertIn("JSONDecodeError", got.detail)
+
+    def test_a_200_with_an_unreadable_body_blames_neither_the_key_nor_the_install(self):
+        # #1923: a captive portal or proxy answering 200 with HTML. A 200 means the JWT was
+        # accepted (on /app) or the App is installed (on /installation): neither is blamed.
+        portal = b"<html>captive portal</html>"
+        app = b'{"id": 2, "slug": "acme-reviewer"}'
+        for which, answers in (("app", [_Answer(200, portal), _Answer(200, portal)]),
+                               ("installation", [_Answer(200, app), _Answer(200, portal)])):
+            with self.subTest(which):
+                got = self.live_real(side_effect=answers)
+                self.assertEqual(got.status, doctor.UNKNOWN, got.detail)
+                self.assertIn("GitHub answered 200 but the body could not be read", got.detail)
+                self.assertIn("JSONDecodeError", got.detail)
+                self.assertIn("captive portal", got.fix)
+                self.assertNotIn("private key", got.fix)
+                self.assertNotIn("is not installed", got.detail)
+                self.assertNotIn("Install App", got.fix)
+
+    def test_a_200_that_is_not_the_expected_object_is_unknown(self):
+        # #1923: JSON that parses but is not GitHub's object (a proxy's own JSON) is the same case.
+        got = self.live({"id": 2, "slug": "acme-reviewer"}, ["not", "an", "installation"])
+        self.assertEqual(got.status, doctor.UNKNOWN, got.detail)
+        self.assertIn("not the expected JSON", got.detail)
+        self.assertNotIn("is not installed", got.detail)
 
     def test_as_app_keeps_the_status_of_an_answer_whose_body_cannot_be_read(self):
         # The layer under the check: a missing status means no HTTP answer, never "answered,

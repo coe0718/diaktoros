@@ -3,7 +3,8 @@
 Two PRs can each be green and approved, yet main is red once both are merged. The watchdog reads
 main's checks at its current head (no model, no GitHub write). A required check red there is one
 ``main_red`` observer notice per head, naming the check and the PRs merged since main's last
-green head. A green main sends nothing and becomes the new last green head.
+green head (read from commit subjects, which the notice says: ``pr_refs``, #1699). A green main
+sends nothing and becomes the new last green head.
 
 With ``main_flake_rerun`` on, a red that looks like a flake has its failed jobs rerun once first,
 as a maintainer, and the notice waits for that rerun (``main_flake``, #1784): the one write here.
@@ -13,15 +14,15 @@ of breakage; the notice says so.
 """
 from __future__ import annotations
 
-import re
-
-from . import ci, config, gh
+from . import ci, config, gh, pr_refs
 
 FILE = "main-ci.json"
 PRS_MAX = 10
 ADVICE = ("GitHub's \"Require branches to be up to date before merging\" protection prevents "
           "this class of breakage")
-_PR_REF = re.compile(r"\(#(\d+)\)\s*$|^Merge pull request #(\d+)")
+OUTCOME_MAX = 600       # the main_red notice's outcome is at most this long
+NAMES_MIN = 40          # what the failed check names keep at least, when they are clipped
+LEAD = "main: required check(s) failed: "
 
 
 class Merges(list):
@@ -61,8 +62,7 @@ def merged_since(loop: dict, green: str, head: str) -> Merges | None:
         message = ((commit.get("commit") or {}).get("message") if isinstance(commit, dict) else None)
         if not isinstance(message, str) or not message:
             continue
-        match = _PR_REF.search(message.splitlines()[0])
-        number = int(match.group(1) or match.group(2)) if match else 0
+        number = pr_refs.pr_number(message.splitlines()[0])
         if number and number not in out:
             out.append(number)
     return Merges(out, len(commits), data.get("total_commits"))
@@ -81,6 +81,7 @@ def _outcome(failed: list[str], merges: list[int] | None, url: str, note: str = 
             more = f" (+{len(merges) - PRS_MAX} earlier)" if len(merges) > PRS_MAX else ""
             since = ("merged PRs seen so far (partial list): " if partial
                      else "merged since main's last green head: ") + f"{shown}{more}"
+            since += f" ({pr_refs.CAVEAT})"
         if partial:
             seen = merges.seen
             if getattr(merges, "reported", False):
@@ -89,8 +90,22 @@ def _outcome(failed: list[str], merges: list[int] | None, url: str, note: str = 
                 said = (f"could not confirm GitHub's compare was complete "
                         f"({seen} commit{'' if seen == 1 else 's'} read, total unreported)")
             since += f" — {said}, so other merged PRs may be missing; this is not the full list"
-    text = f"main: required check(s) failed: {ci._names(failed)} — {since}. {ADVICE}{note}"
-    return f"{text} — {url}" if url else text
+    return _bounded(ci._names(failed), f" — {since}",
+                    f". {ADVICE}{note}" + (f" — {url}" if url else ""))
+
+
+def _bounded(names: str, since: str, rest: str) -> str:
+    """``main: required check(s) failed: <names><since><rest>`` in at most ``OUTCOME_MAX``
+    characters, with ``since`` (the merged-PR list and its subject-only caveat, #1699) kept whole.
+
+    The failed check names are clipped first (to no less than ``NAMES_MIN``), then ``rest`` (the
+    advice, the flake note, the link) is cut at the end: the list is never cut off mid-caveat.
+    ``since`` fits: at most ``PRS_MAX`` numbers of at most ``pr_refs.DIGITS_MAX`` digits each.
+    The whole is still cut at ``OUTCOME_MAX`` as a hard bound (review of #2419)."""
+    room = max(OUTCOME_MAX - len(LEAD) - len(since) - len(rest), NAMES_MIN)
+    if len(names) > room:
+        names = names[:room - 1] + "…"
+    return f"{LEAD}{names}{since}{rest}"[:OUTCOME_MAX]
 
 
 def _remember(st, path, key: str, head) -> None:
@@ -151,6 +166,6 @@ def sweep(loop: dict, st, log=lambda _msg: None) -> bool:
     outcome = _outcome(view.failed, merges, view.urls.get(view.failed[0], ""), decided.note)
     _remember(st, path, "notified", head)             # remember first: one notice per head
     observer.notify(loop, st, "main_red", merges[-1] if merges else 0, head,
-                    identity="main_red", outcome=outcome[:600], next_turn="you")
+                    identity="main_red", outcome=outcome, next_turn="you")
     log(f"main @ {head[:7]} is red: {ci._names(view.failed)}")
     return True

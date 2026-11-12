@@ -126,7 +126,7 @@ The lines that matter in App mode:
 | `gateway-script:dk-app-…` | The gateway can run the route's script | `hermes dk apply --loop ID` writes it |
 | `merge-check` | The base requires `diaktoros/review`, pinned to the reviewer App | `hermes dk protect --loop ID` |
 | `credential:<seat>`, `app:<login>` | Each App's key is private and its installation can reach the repository | Install the App on the repository, or accept a new permission on its installation |
-| `app-live:<login>` | The key signs as that App and the App is installed on the repository (read with the App's own JWT) | A wrong key or App id, or an App not installed here, is red. ⚠️ "no HTTP answer" means the network, DNS or a proxy stopped the read, so the key and the installation were not checked: fix the connection and run `doctor` again (`doctor --offline` also shows ⚠️, "not probed") |
+| `app-live:<login>` | The key signs as that App and the App is installed on the repository (read with the App's own JWT) | A wrong key or App id, or an App not installed here, is red. ⚠️ "no HTTP answer" means the network, DNS or a proxy stopped the read, so the key and the installation were not checked: fix the connection and run `doctor` again; ⚠️ "GitHub answered 200 but the body could not be read" means something answered for api.github.com with a body that is not GitHub's (a proxy or a captive portal answering with HTML), so the key and the installation were not judged either (`doctor --offline` also shows ⚠️, "not probed") |
 
 `arm` won't say "armed" until the App's route is installed, the gateway can run its script, and
 the App's webhook would deliver.

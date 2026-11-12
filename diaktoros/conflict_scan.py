@@ -59,9 +59,15 @@ def request(st, now: float | None = None) -> float:
     return at
 
 
-def run(st, scan, *, clock=time.time, sleep=time.sleep, lifetime: float = MAX_LIFETIME_S) -> int:
+def run(st, scan, *, clock=None, sleep=None, lifetime: float = MAX_LIFETIME_S) -> int:
     """Wait for the requested scan and run ``scan()``, again while new requests arrive. Returns
-    how many scans completed; 0 when another scanner holds the lock (it will see the request)."""
+    how many scans completed; 0 when another scanner holds the lock (it will see the request).
+
+    ``clock``/``sleep`` default to ``time.time``/``time.sleep`` looked up at call time, not
+    bound at import, so a caller that passes neither (the watchdog's ``--conflicts`` mode)
+    runs on a patched clock in tests (#1720)."""
+    clock = time.time if clock is None else clock
+    sleep = time.sleep if sleep is None else sleep
     lock_path = pathlib.Path(st.dir) / LOCK
     lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     started, handled, ran = clock(), 0.0, 0

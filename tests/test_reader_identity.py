@@ -512,7 +512,10 @@ class ReaderIdentityTests(_Loop):
         fix = [line for line in out.splitlines() if line.startswith("fix:")]
         self.assertEqual(len(fix), 1, out)
         self.assertIn("--token ghost-account=/path/to/pat", fix[0])
-        self.assertIn(app.format("ghost-account"), fix[0])
+        # #1912: 'ghost-account' is not an App's bot login, so the App alternative renames the
+        # reader to the App's bot login rather than mapping an App onto a person's login.
+        self.assertNotIn(app.format("ghost-account"), fix[0])
+        self.assertIn("--read-token <app-slug>[bot] " + app.format("<app-slug>[bot]"), fix[0])
         # apply's four-identity refusal, `status`, and doctor all print credentials.reader_fix
         data["read_token"] = REV
         self.loop_file().write_text(json.dumps(data))
@@ -529,6 +532,23 @@ class ReaderIdentityTests(_Loop):
         absent = identity_checks.check_read_token(loop)
         self.assertEqual(absent.status, doctor.ABSENT)
         self.assertIn(app.format("<that login>"), absent.fix)
+
+    def test_reader_fix_offers_the_same_login_app_only_for_a_bot_login(self):
+        """#1912: `--app` takes only `<slug>[bot]`; a person's login gets the rename instead."""
+        loop = {"id": "widgets"}
+        bot = credentials.reader_fix(loop, "reader-app[bot]")
+        self.assertIn("--app reader-app[bot]=APP_ID:/abs/key.pem for a GitHub App reader", bot)
+        human = credentials.reader_fix(loop, "ghost-account")
+        self.assertNotIn("--app ghost-account=", human)
+        self.assertIn("--read-token <app-slug>[bot] --app <app-slug>[bot]=APP_ID:/abs/key.pem",
+                      human)
+        # `set --read-token` naming an unmapped person's login: the same advice
+        rc, out = self.run_cli(self.init_argv())
+        self.assertEqual(rc, 0, out)
+        out = self.refused(["set", "--loop", "widgets", "--read-token", "ghost-account"],
+                           r"no token file mapped for the reader 'ghost-account'")
+        self.assertNotIn("--app ghost-account=", out)
+        self.assertIn("--read-token <app-slug>[bot] --app <app-slug>[bot]=", out)
 
     def test_an_unmapped_reader_is_told_a_set_that_runs(self):
         # #2265: doctor's fix for a named reader with no credential named `set --token READER=…`,
