@@ -118,7 +118,7 @@ The narrow #1159/#1161/#1166 fixes require missing-versus-empty production-route
 proof, rejection of null explanation heads against valid parent identities, visible unavailable
 explanations for unknown heads, and consistent real-ledger waiting/failed/cancelled/uncertain
 advice in CLI and Desktop. Acceptance must run at the frozen source commit, including the locked
-JavaScript runner's 240 tests (13 of them named real-TanStack cases) with no skips,
+JavaScript runner's 241 tests (13 of them named real-TanStack cases) with no skips,
 the strict dependency-equipped DesktopPython lane, full harness and leakguard sweep, plus
 source-hash-bound actual React browser renders. Browser SDK fixtures are not live Electron
 acceptance. These fixes do not close #674, implement #1301, or change execution policy.
