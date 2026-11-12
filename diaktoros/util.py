@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import fcntl
+import math
 import os
 import re
 from pathlib import Path
@@ -311,6 +312,22 @@ def login_entry(table, login: str | None):
         return table[login]
     folded = login_key(login)
     return next((v for k, v in table.items() if login_key(k) == folded), None)
+
+
+def finite_time(value) -> float | None:
+    """A JSON-read epoch as a finite float, or None when it is not a time.
+
+    The one numeric reading of a stored time: only a plain ``int`` or ``float`` (never a bool)
+    that is finite. ``json.loads`` keeps an integer literal as an ``int``, and ``math.isfinite``
+    converts it to a float first, raising ``OverflowError`` for one past the float range
+    (#1828, #1839): that is an unreadable time, not an error out of the reader.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return float(value) if math.isfinite(value) else None
+    except OverflowError:
+        return None
 
 
 def iso_at(when: float) -> str:

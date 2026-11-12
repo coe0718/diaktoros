@@ -34,7 +34,7 @@ from collections.abc import Callable
 
 from . import config, hostdirs
 from .config import settings_form
-from .util import atomic_write, log, now_iso, register_lock
+from .util import atomic_write, finite_time, log, now_iso, register_lock
 
 # The flock files this module keeps in a loop's state directory, each registered by its writer
 # (``util.register_lock``): ``backup`` leaves out what was registered, from no list of its own.
@@ -125,22 +125,18 @@ def mark_at(entry) -> float | None:
     The one reading rule for ``at`` (#80), shared by ``_mark_live`` and every reader that ages,
     sorts or prints a mark itself — the watchdog's drain and stuck report, ``died_locks``,
     ``status`` and ``explain``: only a finite plain number is a time. A non-dict entry, a string
-    (ISO or numeric), ``null``, a bool, a list or an infinity is junk, which those readers skip
+    (ISO or numeric), ``null``, a bool, a list, an infinity or an integer past the float range
+    (#1839) is junk, which those readers skip
     and the ledger's own prune drops, rather than a ``TypeError`` out of the whole sweep.
     """
     if not isinstance(entry, dict):
         return None
-    at = entry.get("at")
-    if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at):
-        return None
-    return float(at)
+    return finite_time(entry.get("at"))
 
 
 def _clock(value) -> float | None:
     """A bare epoch (an in-flight mark's value), or None when it is not a finite plain number."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        return None
-    return float(value)
+    return finite_time(value)
 
 
 def _inflight_live(value, now: float, ttl_s: float) -> bool:
@@ -1196,19 +1192,49 @@ class LoopState:
             ask.pop("pending", None)
         self._fix_ask_edit(change)
 
-    def fix_ask_resolve(self, number: int, reply: str, by: str, approve: bool) -> None:
+    def fix_ask_resolve(self, number: int, reply: str, by: str, approve: bool,
+                        expect: dict | None = None) -> bool:
         """Save the handoff (the ask and its reply) for the resumed turn; the ask stays open until
-        ``fix_ask_drop`` (a resume that could not be queued is retried)."""
+        ``fix_ask_drop`` (a resume that could not be queued is retried). ``expect``: the ask the
+        reply was read for (the sweep's snapshot); when the open ask is no longer exactly it (it
+        was closed, or another one opened meanwhile, #2382 review F1), nothing is recorded, so an
+        old reply never answers a new ask. Whether it was recorded."""
+        done: list[bool] = []
+
         def change(data):
             ask = data["open"].get(str(number)) or {}
+            if expect is not None and ask != expect:
+                return
             data["handoff"][str(number)] = {"kind": ask.get("kind", ""), "text": ask.get("text", ""),
                                             "reply": reply, "by": by}
             if approve and number not in data["approved"]:
                 data["approved"].append(number)
+            done.append(True)
         self._fix_ask_edit(change)
+        return bool(done)
 
-    def fix_ask_drop(self, number: int) -> None:
-        self._fix_ask_edit(lambda data: data["open"].pop(str(number), None))
+    def fix_ask_drop(self, number: int, run: str = "", uncount: bool = False,
+                     expect: dict | None = None) -> bool:
+        """Close the issue's open ask; whether one was closed. ``run``: only when the open ask
+        is that run's (#2381: ``continue`` releasing its own plan ask, never another one).
+        ``uncount``: also give back the count a ``pending`` reservation took, for a claim whose
+        comment is known not to be on the issue, so it never spends one of the issue's asks.
+        ``expect``: only when the open ask is exactly that one (the sweep's snapshot, #2382
+        review F1), so a sweep never closes an ask that opened after it read the old one."""
+        dropped: list[bool] = []
+
+        def change(data):
+            ask = data["open"].get(str(number))
+            if ask is None or (run and (not isinstance(ask, dict) or ask.get("run") != run)):
+                return
+            if expect is not None and ask != expect:
+                return
+            data["open"].pop(str(number))
+            if uncount and isinstance(ask, dict) and ask.get("pending"):
+                data["count"][str(number)] = max(0, data["count"].get(str(number), 0) - 1)
+            dropped.append(True)
+        self._fix_ask_edit(change)
+        return bool(dropped)
 
     # -- issue dependencies (#671): {issue: {prerequisite issue: {"by", "at"}}} ----------
 

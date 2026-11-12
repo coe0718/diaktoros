@@ -446,6 +446,33 @@ class ParkedReviewOnly(Base):
         self.assertIn("the adjudicator rules at head", report["next"]["action"])
         self.assertNotIn("pushes a fix", report["next"]["action"])
 
+    def test_a_below_cap_escalation_is_not_attributed_to_the_cap(self):
+        """#1887: parked below the cap, the gates stop for the escalation, not the cap."""
+        report = self.explain()
+        self.assertLess(report["spent"], report["cap"])
+        action = report["next"]["action"]
+        self.assertNotIn("stop at the cap", action)
+        self.assertIn("the operator's escalation stops both gates below the cap", action)
+
+    def test_at_the_cap_the_action_still_names_the_cap(self):
+        self.assertIn("both gates stop at the cap", explain._adjudication_next(
+            {"adjudicator": {"route": "x"}}, HEAD))
+
+    def test_a_shadow_escalation_below_the_cap_names_the_shadow_review(self):
+        # #2443 review F1: a shadow review's escalation is not the operator's.
+        marker = self.st.breach_get(7)
+        marker["escalated"]["by"] = gate.SHADOW_ESCALATION
+        state_mod._atomic_write(self.st.breach, {f"{fg.REPO}#7": marker})
+        action = self.explain()["next"]["action"]
+        self.assertNotIn("operator's escalation", action)
+        self.assertIn("the shadow review's escalation stops both gates below the cap", action)
+
+    def test_an_unknown_escalation_source_is_named_neutrally(self):
+        action = explain._adjudication_next({"adjudicator": {"route": "x"}}, HEAD,
+                                            escalated_by="something-new")
+        self.assertIn("an escalation (something-new) holds this head below the cap", action)
+        self.assertNotIn("operator", action)
+
     def test_once_ruled_the_decision_is_the_operators(self):
         report = self.explain(ruled="REJECT")
         self.assertEqual(report["next"]["kind"], "operator", report["next"])

@@ -205,22 +205,34 @@ class Gate(Base):
         self.assertEqual(len(self.enqueued), 1)
         self.assertEqual([x for x in fix_hold.status_lines(self.loop, st) if "#12" in x], [])
 
+    def assert_declined_for(self, cause, line):
+        """#1840: the recorded decline names this subtest's own cause and no other. A case that
+        inherited an earlier case's ``unattended_fixer_push: False`` declines at the pushes check
+        instead, so it would never reach the cause it is meant to exercise."""
+        self.assertIn(cause, line)
+        for other in ("triage.authors", "unattended fixer pushes"):
+            if other != cause:
+                self.assertNotIn(other, line)
+
     def test_a_declined_next_step_says_to_remove_the_label_before_applying_it(self):
         # #1833: the label is still on the issue when the decline is recorded, and GitHub sends a
         # `labeled` event only when one is added: "apply it again" produced no event.
         from diaktoros import observer
         said = []
         st = state_mod.state_for(self.loop)
-        cases = [("author", {}), ("pushes off", {"unattended_fixer_push": False})]
-        for name, change in cases:
+        cases = [("author", {}, "triage.authors"),
+                 ("pushes off", {"unattended_fixer_push": False}, "unattended fixer pushes")]
+        base = self.loop                        # #1840: each case changes only its own key
+        for name, change, cause in cases:
             with self.subTest(name):
-                self.loop = {**self.loop, **change}
+                self.loop = {**base, **change}
                 self.live = issue(author="stranger")
                 said.clear()
                 with mock.patch.object(observer, "notify",
                                        side_effect=lambda *a, **kw: said.append(kw["outcome"])):
                     self.run_gate(self.labeled())
                 (line,) = [x for x in fix_hold.status_lines(self.loop, st) if "#12" in x]
+                self.assert_declined_for(cause, line)
                 for text in (said[0], line):
                     self.assertIn("remove the fix label and apply it again", text)
                     self.assertNotIn("apply the label again", text)
@@ -252,11 +264,12 @@ class Gate(Base):
         # issue decides the step.
         from diaktoros import observer
         st = state_mod.state_for(self.loop)
-        cases = [("pushes off", {"unattended_fixer_push": False}, "owner"),
-                 ("author", {}, "stranger")]
-        for name, change, author in cases:
+        cases = [("pushes off", {"unattended_fixer_push": False}, "owner", "unattended fixer pushes"),
+                 ("author", {}, "stranger", "triage.authors")]
+        base = self.loop                        # #1840: "author" runs with pushes on
+        for name, change, author, cause in cases:
             with self.subTest(name):
-                self.loop = {**self.loop, **change}
+                self.loop = {**base, **change}
                 self.live = issue(author=author, labels=())
                 said = []
                 with mock.patch.object(observer, "notify",
@@ -264,6 +277,7 @@ class Gate(Base):
                     self.run_gate(self.labeled())
                 self.assertEqual(self.enqueued, [])
                 (line,) = [x for x in fix_hold.status_lines(self.loop, st) if "#12" in x]
+                self.assert_declined_for(cause, line)
                 for text in (said[0], line):
                     self.assertTrue(text.endswith("apply the fix label to the issue"), text)
                     self.assertNotIn("remove the fix label", text)
@@ -288,6 +302,71 @@ class Gate(Base):
         reason = "no longer eligible: neither the fix label ('agent-fix') nor an auto-offer label"
         self.assertEqual(fix_declined.next_step(self.loop, reason),
                          "once that is fixed, apply the fix label to the issue")
+
+    def test_a_label_re_added_between_the_two_reads_says_to_remove_and_reapply(self):
+        # #1841: the gate's eligibility read finds the label gone ("no longer on the issue"), it
+        # is re-added before `declined` reads the issue again and finds it present. That newer
+        # read decides: "apply the fix label" would send no event to a label already there.
+        from diaktoros import observer
+        reads = [issue(labels=()), issue()]                 # first read absent, then present
+        api = gh.api
+
+        def reordered(loop, path, method="GET", body=None, login=None):
+            if path.endswith("/issues/12") and method == "GET" and reads:
+                return reads.pop(0)
+            return api(loop, path, method, body, login)
+        said = []
+        with mock.patch.object(gh, "api", reordered), \
+                mock.patch.object(observer, "notify",
+                                  side_effect=lambda *a, **kw: said.append(kw["outcome"])):
+            self.run_gate(self.labeled())
+        self.assertEqual((reads, self.enqueued), ([], []))
+        st = state_mod.state_for(self.loop)
+        (line,) = [x for x in fix_hold.status_lines(self.loop, st) if "#12" in x]
+        self.assertIn("is no longer on the issue", line)
+        for text in (said[0], line):
+            self.assertTrue(text.endswith("remove the fix label and apply it again"), text)
+            self.assertNotIn("apply the fix label to the issue", text)
+
+    def test_a_decline_recorded_before_the_label_reading_existed_still_reads(self):
+        # #1841: an entry from before the three-state `label` field falls back to its old
+        # `label_gone` flag, then to the reason text; an unreadable issue is `unknown`.
+        from diaktoros import fix_declined
+        st = state_mod.state_for(self.loop)
+        gone = "no longer eligible: the 'agent-fix' label is no longer on the issue"
+        st.kv_set(st.dir / fix_declined.FILE, {
+            "1": {"reason": "the author is not in triage.authors", "at": 1, "label_gone": True},
+            "2": {"reason": gone, "at": 1},
+            "3": {"reason": "the author is not in triage.authors", "at": 1, "label_gone": False}})
+        found = fix_declined.entries(st)
+        self.assertEqual([found[n]["label"] for n in (1, 2, 3)], ["gone", "unknown", "unknown"])
+        self.assertTrue(fix_declined.line(self.loop, 1, found[1]).endswith(fix_declined.APPLY))
+        self.assertTrue(fix_declined.line(self.loop, 2, found[2]).endswith(fix_declined.APPLY))
+        self.assertTrue(fix_declined.line(self.loop, 3, found[3]).endswith(fix_declined.REAPPLY))
+        with mock.patch.object(gh, "api", side_effect=OSError("down")):
+            self.assertEqual(fix_declined.label_state(self.loop, 12), "unknown")
+
+    def test_a_read_that_cannot_say_is_unknown_and_the_reason_decides(self):
+        # Review of #2435, F1: a response for another issue, one that is not an issue at all, or
+        # no fix label configured reads `unknown` (not "present"), so `declined` stores that and
+        # the reason text decides: "no longer on the issue" ends with applying the label.
+        from diaktoros import fix_declined, observer
+        reason = "no longer eligible: the 'agent-fix' label is no longer on the issue"
+        no_label = {**self.loop, "triage": {**self.loop["triage"], "fix_label": ""}}
+        for name, live, loop in (("wrong issue", issue(number=13, labels=()), self.loop),
+                                 ("not a dict", ["not", "an", "issue"], self.loop),
+                                 ("no fix label", issue(labels=()), no_label)):
+            with self.subTest(name):
+                self.live = live
+                said = []
+                with mock.patch.object(observer, "notify",
+                                       side_effect=lambda *a, **kw: said.append(kw["outcome"])):
+                    fix_declined.declined(loop, 12, reason)
+                st = state_mod.state_for(loop)
+                entry = fix_declined.entries(st)[12]
+                self.assertEqual(entry["label"], "unknown")
+                for text in (said[0], fix_declined.line(loop, 12, entry)):
+                    self.assertTrue(text.endswith(fix_declined.APPLY), text)
 
     def test_an_issue_filed_by_an_app_reader_is_handed_to_the_fixer(self):
         # #1794 (review of #1804, F4): the reader as a GitHub App, filing as its bot.

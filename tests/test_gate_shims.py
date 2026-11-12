@@ -676,6 +676,17 @@ class DoctorApplyUninstall(Base):
         check = self.gateway_checks()["gateway-script:widgets-review"]
         self.assertEqual(check.status, doctor.VERIFIED, check.detail)
 
+    def test_doctor_repair_alerts_on_a_non_utf8_intent_record(self):
+        """#1701: `doctor --repair` reports a record that is not UTF-8; no traceback."""
+        from diaktoros import route_intent
+        self.install()
+        target = route_intent.path(config.load_id("widgets"))
+        target.write_bytes(b'{"routes": {"\xff": {"secret": "s"}}}')
+        rc, out = self.run_cli(["doctor", "--loop", "widgets", "--repair", "--offline"])
+        self.assertIn("route intent record unreadable, routes NOT self-healed", out)
+        self.assertIn("is unreadable", out)
+        self.assertEqual(target.read_bytes(), b'{"routes": {"\xff": {"secret": "s"}}}')
+
     def test_hand_edited_config_profile_is_a_mismatch_and_apply_fixes_it(self):
         self.install()
         self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="arbiter"))

@@ -2402,6 +2402,24 @@ test('cancel: a stale confirmation says nothing was cancelled; any other failure
   }
 })
 
+// #2149: the same catch names the escalate action. Only the host's exact stale detail proves no
+// write; an interrupted perform's 409 and a transport failure may have escalated.
+test('escalate: a stale confirmation says nothing was escalated; any other failure may have written', async () => {
+  for (const [rejection, expect, refuse] of [
+    [STALE, /HTTP 409 · Confirmation refused: the target changed since the preview, so nothing was escalated\. Read a fresh preview\./, /may have written|stale or unavailable; preview again/],
+    ['409: {"detail":"Action outcome unavailable; inspect state before retrying."}', /could not be verified\. It may have written/, /nothing was escalated|Confirmation refused/],
+    ['network down /private/token ghp_secret', /could not be verified\. It may have written/, /nothing was escalated|Confirmation refused|ghp_secret|\/private\/token/]]) {
+    const h = await harness(); selectAction(h); await previewAction(h)
+    actionButton(h, 'Confirm escalation').props.onClick()
+    h.actionResult(() => Promise.reject(new Error(rejection)))
+    await actionDialog(h).props.onConfirm()
+    assert.equal(h.actionCalls.length, 1)
+    assert.match(h.text(h.tree()), expect); assert.doesNotMatch(h.text(h.tree()), refuse)
+    assert.doesNotMatch(h.text(h.tree()), /Backend verified/)
+    assert.equal(actionButton(h, 'Confirm escalation'), undefined); assert.equal(actionDialog(h), undefined)
+  }
+})
+
 test('cancel: a malformed preview is rejected before any confirmation is offered', async () => {
   for (const bad of [cancelPlan({ head: 'nothex' }), cancelPlan({ seat: 'reviewer' }), cancelPlan({ action: 'escalate' }),
     cancelPlan({ confirmation: '' }), cancelPlan({ pr: 938 }), cancelPlan({ loop: 'other-loop' }), cancelPlan({ eligible: 'yes' })]) {
@@ -2607,6 +2625,28 @@ test('actions: stale dependency confirmation (409) is not success and needs a fr
   actionButton(h, 'Confirm dependency').props.onClick(); const d = depsDialog(h)
   actionInput(h, 'Waits on issue').props.onChange({ target: { value: '6' } })
   await d.props.onConfirm(); assert.equal(h.actionCalls.length, 1)
+})
+
+// #2149: both dependency actions share the catch. Only the exact stale detail says nothing was
+// recorded; an interrupted perform's 409 and a transport failure may have written.
+test('actions: depends and waive say nothing was recorded only for the stale detail; any other failure may have written', async () => {
+  for (const action of ['depends', 'waive']) {
+    const confirmLabel = action === 'depends' ? 'Confirm dependency' : 'Confirm waiver'
+    for (const [rejection, expect, refuse] of [
+      [STALE, /HTTP 409 · Confirmation refused: the target changed since the preview, so nothing was recorded\. Read a fresh preview\./, /may have written|stale or unavailable; preview again/],
+      ['409: {"detail":"Action outcome unavailable; inspect state before retrying."}', /could not be verified\. It may have written/, /nothing was recorded|Confirmation refused/],
+      ['network down /private/token ghp_secret', /could not be verified\. It may have written/, /nothing was recorded|Confirmation refused|ghp_secret|\/private\/token/]]) {
+      const h = await harness(); selectDeps(h, action); await previewDeps(h, depsPlan({ action }))
+      actionButton(h, confirmLabel).props.onClick()
+      h.actionResult(() => Promise.reject(new Error(rejection)))
+      await depsDialog(h).props.onConfirm()
+      assert.equal(h.actionCalls.length, 1, action)
+      assert.match(h.text(h.tree()), expect, action); assert.doesNotMatch(h.text(h.tree()), refuse, action)
+      assert.doesNotMatch(h.text(h.tree()), /Backend verified/, action)
+      assert.equal(actionButton(h, confirmLabel), undefined, action); assert.equal(depsDialog(h), undefined, action)
+      assert.ok(depsInvalidated(h), action)
+    }
+  }
 })
 
 test('actions: malformed dependency previews are rejected before confirmation', async () => {

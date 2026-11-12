@@ -364,7 +364,7 @@ class MarkerGraceFollowsTheRuling(unittest.TestCase):
 
     def _sweep(self, home, budget, status, age_s, run_state, ruled=None, dismissed=0):
         wd, now = self.watchdog, time.time()
-        raw = _loop(state_dir=str(home / "loop-state"),
+        raw = _loop(state_dir=str(home / "loop-state"), **getattr(self, "loop_extra", {}),
                     read_token="reviewer", cap=3,
                     adjudicator={"route": "widgets-breach", "profile": "default"})
         loop = config.normalize(raw)
@@ -462,6 +462,23 @@ class MarkerGraceFollowsTheRuling(unittest.TestCase):
                 [line] = self.sweep(budget, "awaiting-adjudication", 61 * 60)
                 self.assertIn("parked awaiting adjudication", line)
                 self.assertEqual(self.sweep(budget, "awaiting-adjudication", 59 * 60), [])
+
+    def test_a_fractional_marker_grace_is_the_same_on_both_marker_clocks(self):
+        # Review of #2411 (F3): marker_grace_min "60.9" kept 60.9 on the awaiting clock but was
+        # truncated to 60 for an adjudicating marker with no live run, so at 60.5 minutes one
+        # state was a stall and the other was not. Both wait the configured 60.9 minutes.
+        self.loop_extra = {"marker_grace_min": "60.9"}
+        for status in ("awaiting-adjudication", "adjudicating"):
+            with self.subTest(status=status):
+                self.assertEqual(self.sweep(900, status, int(60.5 * 60)), [])
+                self.assertEqual(len(self.sweep(900, status, int(61.5 * 60))), 1)
+
+    def test_doctor_shows_a_fractional_marker_grace_as_the_sweep_reads_it(self):
+        loop = config.normalize(_loop(marker_grace_min="60.9",
+                                      adjudicator={"route": "widgets-breach", "profile": "default"}))
+        self.assertEqual(config.adjudicating_stall_s(loop), 60.9 * 60)
+        self.assertIn("breach marker: awaiting-adjudication stalls after 60.9m; adjudicating only "
+                      "with no live ruling run, after 60.9m", doctor.check_turn_budget(loop).detail)
 
     def test_doctor_names_the_marker_clocks(self):
         loop = config.normalize(_loop(adjudicator={"route": "widgets-breach", "profile": "default"}))

@@ -1076,6 +1076,12 @@ class Surface(unittest.TestCase):
             "actions: a dependency preview needs both issue numbers and invalid input never reads",
         ):
             self.assertRegex(done.stdout, rf"(?m)^ok \d+ - {re.escape(name)}$")
+        # #2149: the stale-409 wording for escalate and both dependency actions, by name.
+        for name in (
+            "escalate: a stale confirmation says nothing was escalated; any other failure may have written",
+            "actions: depends and waive say nothing was recorded only for the stale detail; any other failure may have written",
+        ):
+            self.assertRegex(done.stdout, rf"(?m)^ok \d+ - {re.escape(name)}$")
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed here")
     def test_it_parses_as_an_es_module(self):

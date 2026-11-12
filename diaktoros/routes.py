@@ -27,7 +27,7 @@ from contextlib import contextmanager
 
 from . import config, hostdirs
 from .config import host_guards
-from .util import TEMP_SUFFIX, hold_temp as util_hold_temp, log
+from .util import TEMP_SUFFIX, hold_temp as util_hold_temp, log, write_all
 from . import envnames
 
 
@@ -178,12 +178,7 @@ def _write_registry(path: pathlib.Path, data: dict, expected=_UNCHECKED) -> None
         try:
             util_hold_temp(fd)
             os.fchmod(fd, 0o600)
-            view = memoryview(body)
-            while view:
-                written = os.write(fd, view)
-                if written <= 0:
-                    raise OSError("short write to route registry")
-                view = view[written:]
+            write_all(fd, body, "short write to route registry")
             os.fsync(fd)
             if expected is not _UNCHECKED and _identity(path) != expected:
                 raise _RegistryChanged()

@@ -610,7 +610,8 @@ def nudge_body(body: bytes, contract: Contract) -> bytes | None:
 
 def thinking_level(body: bytes, contract: Contract) -> str | None:
     """The thinking level a (clamped) request runs at (#513): ``budget:<tokens>``,
-    ``effort:<level>``, or ``off`` when it asks for none. None when it cannot be told."""
+    ``effort:<level>``, ``adaptive`` (Messages adaptive thinking at the API's default effort),
+    or ``off`` when it asks for none. None when it cannot be told."""
     try:
         payload = json.loads(body)
     except (ValueError, UnicodeDecodeError):
@@ -619,14 +620,33 @@ def thinking_level(body: bytes, contract: Contract) -> str | None:
         return None
     if contract.mode == 'anthropic_messages':
         thinking = payload.get('thinking')
-        if thinking is None or (isinstance(thinking, dict) and thinking.get('type') == 'disabled'):
+        if isinstance(thinking, dict) and thinking.get('type') == 'disabled':
             return 'off'
         if isinstance(thinking, dict) and thinking.get('type') == 'enabled':
             budget = thinking.get('budget_tokens')
             if type(budget) is int and budget > 0:
                 return f'budget:{budget}'
-        return None    # e.g. adaptive: a level the request does not state
-    if contract.mode == 'codex_responses':
+            return None
+        # Adaptive thinking, or a request stating only an effort, carries its level in
+        # output_config.effort (#1929).
+        # A key that is present but null is not an absent key: an explicit null output_config
+        # or effort is unreadable, so unknown, never off or adaptive (review of #2456, F1).
+        output_config = payload.get('output_config', {})
+        if not isinstance(output_config, dict):
+            return None    # an output_config we cannot read: unknown, never off
+        if 'effort' in output_config and output_config['effort'] is None:
+            return None
+        effort = output_config.get('effort')
+        if effort is None:
+            if thinking is None:
+                return 'off'
+            if isinstance(thinking, dict) and thinking.get('type') == 'adaptive':
+                return 'adaptive'
+            return None    # a thinking object we cannot read
+        if thinking is not None and not (isinstance(thinking, dict)
+                                         and thinking.get('type') == 'adaptive'):
+            return None
+    elif contract.mode == 'codex_responses':
         reasoning = payload.get('reasoning')
         effort = reasoning.get('effort') if isinstance(reasoning, dict) else None
         if reasoning is None or (isinstance(reasoning, dict) and effort is None):

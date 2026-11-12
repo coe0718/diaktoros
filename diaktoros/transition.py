@@ -17,6 +17,7 @@ import math
 import time
 
 from . import gh, review_receipt
+from .util import finite_time
 
 # Why a hold without a baseline can never be released at its head. Shared by every
 # surface that reports it, so the operator reads one reason, not four paraphrases.
@@ -83,10 +84,17 @@ def turn_key(entry):
     redelivered webhook names the same turn and dedups on the ledger's unique
     repo/PR/head/seat/turn index. A later transition at a new head gets a new key.
     """
-    at = entry.get("at") if isinstance(entry, dict) else None
-    if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at) or at <= 0:
+    raw = entry.get("at") if isinstance(entry, dict) else None
+    at = finite_time(raw)
+    if at is None or at <= 0:
         return None
-    return f"retarget:{str(entry.get('from_base') or '?')[:64]}:{int(at * 1000)}"
+    # ``finite_time`` only decides whether ``at`` is a time (#1839). The key keeps the stored
+    # value's own arithmetic: an ``int`` stays exact (a float would round past 2**53 and rename
+    # a persisted turn), and a float whose milliseconds overflow is unnamable, not a raise.
+    millis = raw * 1000
+    if isinstance(millis, float) and not math.isfinite(millis):
+        return None
+    return f"retarget:{str(entry.get('from_base') or '?')[:64]}:{int(millis)}"
 
 
 def ledger_path():
