@@ -51,6 +51,14 @@ class Select(unittest.TestCase):
         self.assertNotIn("test_stats", helper)
         self.assertEqual(affected.select(["LICENSE"]), ["test_home_guard"])
 
+    def test_a_tools_module_runs_the_tests_that_import_it_1973(self):
+        # The JS comment stripper moved out of tests/ (#1973): a change to it alone still runs
+        # the guards and regression tests in test_desktop, which import it by name.
+        selected = affected.select(["tools/js_strip.py"])
+        self.assertIn("test_desktop", selected)
+        self.assertNotIn("test_stats", selected)
+        self.assertEqual(selected[-1], "run_tests")
+
     def test_a_package_is_one_module(self):
         # #676: config is a package. A file in it maps to the package, its files' `from ..`
         # imports are its own, and a test that imports it (or a submodule) depends on it.

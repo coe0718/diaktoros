@@ -8,7 +8,8 @@ tests it touched, and CI went red on tests elsewhere that depended on what it ch
 * the changed test files themselves;
 * every ``tests/test_*.py`` that imports a changed ``diaktoros`` module, directly or through
   another ``diaktoros`` module that imports it (direct importers first);
-* the tests that load a changed gate script, or a changed test helper;
+* the tests that load a changed gate script or ``tools/`` module (#1973), or a changed test
+  helper;
 * always ``test_home_guard``, and the harness (``run_tests.py``) for any code, script or docs
   change: both are suite-wide. The harness runs right after the direct dependents.
 
@@ -82,12 +83,14 @@ def _test_mentions_text(text: str) -> set[str]:
 
 
 def _loads_script(text: str, script: str) -> bool:
-    """Whether a test runs or imports a gate script: by file name (``"watchdog.py"``) or as a
-    module (``from scripts import watchdog``, ``scripts.watchdog``) — #378's lock broke tests that
-    import it the second way."""
+    """Whether a test runs or imports a gate script or ``tools/`` module: by file name
+    (``"watchdog.py"``) or as a module (``from scripts import watchdog``, ``scripts.watchdog``) —
+    #378's lock broke tests that import it the second way — or from its own directory on the path
+    (``from js_strip import ...``, #1973)."""
     stem = re.escape(script[:-3] if script.endswith(".py") else script)
     return bool(re.search(rf"\b{stem}\.py\b|\bscripts\.{stem}\b"
-                          rf"|^\s*from scripts import [^\n]*\b{stem}\b", text, re.M))
+                          rf"|^\s*from scripts import [^\n]*\b{stem}\b"
+                          rf"|^\s*(?:from|import) {stem}\b", text, re.M))
 
 
 def dependents(changed_modules: set[str]) -> list[set[str]]:
@@ -127,7 +130,7 @@ def select(changed: list[str]) -> list[str]:
         parts = path.parts
         if parts[:1] == ("diaktoros",) and path.suffix == ".py":
             modules.add(parts[1] if len(parts) > 2 else path.stem)    # a package file: the package
-        elif parts[:1] == ("scripts",) and path.suffix == ".py":
+        elif parts[:1] in (("scripts",), ("tools",)) and path.suffix == ".py":
             scripts.add(path.name)
         elif parts[:1] == ("tests",) and path.name.startswith("test_") and path.suffix == ".py":
             if path.stem in mentions:
