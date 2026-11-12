@@ -627,7 +627,7 @@ def _restore(args, manifest: dict, archive: pathlib.Path, left: dict | None = No
     from .. import backup, migrate, restore_checks
     lines = [f"restore: {len(manifest['files'])} file(s), {len(manifest.get('routes') or {})} "
              f"route(s), loops: {', '.join(manifest.get('loops') or []) or 'none'}"]
-    lines += [f"restore: NOT FINISHED — credential file missing: {line}"
+    lines += [f"restore: NOT FINISHED — credential file problem: {line}"
               for line in backup.missing_tokens(manifest)]
     lines += [f"restore: will overwrite {name}" for name in backup.existing(manifest)]
     if manifest.get("migrating"):
