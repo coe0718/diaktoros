@@ -136,7 +136,8 @@ Receipts live in `<state_dir>/observations.json`. Logical keys include loop, PR,
 event and event identity (review/round where applicable); repeated gates/deliveries do
 not create another notice for the same transition. A `fixing` notice's key also carries its
 outcome kind (`queued` or `held`), so a hand-off held at a base and later queued at the same
-base sends two notices; the kind is checked in `observer.key_for`, and an event needs one only if
+base sends two notices (in a digest, two words on the issue's line: `fix held → handed to fixer`,
+#1879); the kind is checked in `observer.key_for`, and an event needs one only if
 it is listed in `observer.OUTCOME_KINDS`. Delivery IDs are retained for safe
 retry so the gateway can also deduplicate a logical send.
 
@@ -201,7 +202,8 @@ no regular digest flush. Known-paused loop hooks skip the loop sweep, so queued 
 can remain owed until normal sweeps resume. That pause also skips route/shim self-heal,
 observer retries and pre-write worker retries, not just digest flush/PR scanning.
 The digest groups by PR or issue, in event order, one line each, keeping outcomes only where
-they matter (changes vs approve), at most 25 lines and then "…and N more":
+they matter (changes vs approve; a `fixing` notice that was held reads `fix held`, not
+`handed to fixer`), at most 25 lines and then "…and N more":
 
 ```
 🗂 [<loop-id>] last 30m — 2 PRs, 1 issue

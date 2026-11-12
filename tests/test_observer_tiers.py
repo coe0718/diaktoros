@@ -115,6 +115,25 @@ class ObserverTierTests(unittest.TestCase):
         self.assertTrue(lines[3].startswith("#318 (issue) handed to fixer · "), lines[3])
         self.assertIn("/issues/318", lines[3])
 
+    def test_digest_keeps_a_held_and_a_queued_fixing_notice_apart(self):
+        # #1879: both notices at one base are recorded (#1873), but the digest read each by its
+        # bare event and folded them into one "handed to fixer": the hold was invisible.
+        self.loop["observer"]["digest_min"] = 30
+        self.register()
+        n = observer.notify
+        n(self.loop, self.state, "fixing", 12, HEAD, identity=HEAD, issue=True,
+          outcome="held — isolated worker unavailable: OSError: boom", outcome_kind="held")
+        n(self.loop, self.state, "fixing", 12, HEAD, identity=HEAD, issue=True,
+          outcome="fix turn queued from main at aaaaaaa", outcome_kind="queued")
+        with patch.object(routes, "fire", return_value=True) as fire:
+            self.assertTrue(observer.flush(self.loop, self.state))
+        lines = fire.call_args.args[2]["_observer"]["message"].splitlines()
+        self.assertTrue(lines[1].startswith("#12 (issue) fix held → handed to fixer · "), lines[1])
+        # An entry queued before the kind was recorded still reads by its outcome text.
+        legacy = observer.render_digest(self.loop, [{"event": "fixing", "number": 12, "issue": True,
+                                                     "outcome": "held — x", "url": "u"}])
+        self.assertIn("#12 (issue) fix held · u", legacy)
+
     def test_digest_labels_number_less_entry_by_event_and_does_not_count_it_as_pr(self):
         self.loop["observer"]["digest_min"] = 30
         self.register()
