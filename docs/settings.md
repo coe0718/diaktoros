@@ -224,7 +224,9 @@ between App and PAT deliberately, use `hermes dk identity --loop ID --seat SEAT 
 (or `--app`). `apply` refuses a form login that would move an App seat back to a PAT unless you pass
 `--identity-from-form`.
 
-The reader has no App form fields: use `set --read-token LOGIN --app LOGIN=APP_ID:/abs/key.pem`.
+The reader has no App form fields: use `set --read-token LOGIN --app LOGIN=APP_ID:/abs/key.pem`,
+where `LOGIN` is the App's bot login (`<app-slug>[bot]`). `--app` refuses any other login, so
+moving a person's reader account to an App changes `--read-token` to the bot login as well.
 An App can also be the hook admin (`--admin-token`, with Webhooks and Administration: Read
 and write; #1196). These fields don't make Apps, install them or set their webhooks: see
 [Getting started with GitHub Apps](github-apps.md) (`create-apps`, `app-webhook`). Nor do they
