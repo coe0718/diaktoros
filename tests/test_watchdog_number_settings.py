@@ -144,6 +144,35 @@ class NumberSettingsTest(unittest.TestCase):
                     self.assertEqual(value, kept)
                     self.assertIs(type(value), type(kept))
 
+    def test_a_timer_past_one_year_is_a_config_error(self):
+        # Review of #2411 (F4): "1e308" hours is finite, but the sweep's * 3600 made the
+        # cooldown infinite, so a persisting alert never repeated.
+        for key, top in (("cooldown_h", 8_760), ("marker_grace_min", 525_600)):
+            for bad in ("1e308", 1e308, 10 ** 300, top + 1, top + 0.5):
+                with self.subTest(key=key, value=bad if isinstance(bad, str) else repr(bad)[:12]):
+                    with self.assertRaisesRegex(config.ConfigError, f"{key!r}.*up to {top}"):
+                        config.normalize(raw_loop(**{key: bad}))
+            self.assertEqual(config.normalize(raw_loop(**{key: top}))[key], top)
+            self.assertEqual(config.normalize(raw_loop(**{key: str(top)}))[key], top)
+            self.assertEqual(config.POSITIVE_NUMBER_MAX[key], top)
+
+    def test_the_longest_cooldown_that_loads_still_repeats_in_the_sweep(self):
+        # Through the watchdog sweep's own cooldown map (_Sweep.due), at the ceiling.
+        from unittest import mock
+        from diaktoros import state as state_mod, watch_mode
+        from scripts import watchdog
+        with tempfile.TemporaryDirectory() as tmp:
+            loop = config.normalize(raw_loop(cooldown_h="8760",
+                                             state_dir=str(pathlib.Path(tmp) / "st")))
+            with mock.patch.object(watch_mode, "TEST", False):
+                sweep = watchdog._Sweep(loop, state_mod.LoopState(loop), [])
+            self.assertEqual(sweep.cooldown, 8760 * 3600.0)
+            sweep.present, sweep.raised = set(), {}
+            sweep.marks = {"k": sweep.now - sweep.cooldown + 60}
+            self.assertFalse(sweep.due("k"))                 # inside the year: quiet
+            sweep.marks = {"k": sweep.now - sweep.cooldown - 1}
+            self.assertTrue(sweep.due("k"))                  # past it: said again
+
     def test_positive_numbers_are_kept(self):
         loop = config.normalize(raw_loop(cooldown_h=0.5, marker_grace_min=90))
         self.assertEqual(loop["cooldown_h"], 0.5)
