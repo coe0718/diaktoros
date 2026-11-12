@@ -15,7 +15,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import broker, broker_ipc, config, gh, ledger, safe_push
+from diaktoros import broker, config, gh, ledger, safe_push
+from diaktoros.broker import ipc as broker_ipc
 from diaktoros.run_supervisor import Supervisor
 
 HEAD = "a" * 40

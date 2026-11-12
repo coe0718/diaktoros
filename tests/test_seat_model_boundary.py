@@ -23,7 +23,8 @@ from unittest import mock
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
-from diaktoros import broker_ipc, contained, seat_model, trusted_turn  # noqa: E402
+from diaktoros import contained, seat_model, trusted_turn  # noqa: E402
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros.seat_model import SeatInference  # noqa: E402
 from test_selftest import SelftestBase  # noqa: E402
 

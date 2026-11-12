@@ -25,7 +25,8 @@ from unittest import mock
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
-from diaktoros import broker_ipc, contained, doctor, inference_proxy, seat_model, trusted_turn  # noqa: E402
+from diaktoros import contained, doctor, inference_proxy, seat_model, trusted_turn  # noqa: E402
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros.doctor import seat_checks  # noqa: E402
 from diaktoros.inference_proxy import (CONTRACTS, Credential, InferenceCapability,  # noqa: E402
                                          RefreshingCredential, StaticCredential, _UnixHTTP)

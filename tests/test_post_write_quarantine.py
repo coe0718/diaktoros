@@ -10,7 +10,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from diaktoros import broker, broker_ipc, ledger, safe_push
+from diaktoros import broker, ledger, safe_push
+from diaktoros.broker import ipc as broker_ipc
 from diaktoros.run_supervisor import Supervisor
 from scripts import gate_fixer
 
