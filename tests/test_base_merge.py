@@ -430,6 +430,36 @@ class Ruled(Base):
         self.assertNotEqual(new, self.head)
         self.assertEqual(self.rows[0]["dismiss"], "pending")         # superseded: never acted on
 
+    def test_a_denied_approval_leaves_nothing_to_wait_for(self):
+        # F10: _act never takes the dismissal once the approval was denied (left for a person),
+        # so a wait on it could not end; the reviewer's own approval since lets the merge go.
+        # A dismissal _act still takes waits, after a posted approval or one given by hand.
+        for approve in ("posted", "none"):
+            self.rows = [{"ruling": "r1", "approve": approve, "dismiss": "pending"}]
+            self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews),
+                             "the adjudicator's ACCEPT is still being acted on (dismiss: pending)")
+        self.rows = [{"ruling": "r1", "head": self.head, "approve": "denied", "dismiss": "pending"}]
+        self.reviews = [self.overruled, approval(self.head, review_id=31, at="2026-11-10T03:00:00Z")]
+        writes = []
+
+        class Ledger:                                    # the sweep's view of the same records
+            def ruled_approvals(_, repo, number, head):
+                return [dict(row) for row in self.rows] if head == self.ruled_head else []
+
+            def ruled_approval_step(_, *args, **kw):
+                writes.append(args)
+                return True
+
+        with mock.patch.object(ruled_approval, "Supervisor", return_value=Ledger()), \
+                mock.patch.object(gh, "reviews", return_value=list(self.reviews)), \
+                mock.patch.object(config, "loop_pr", return_value=(7, self.head, "fix")), \
+                mock.patch("diaktoros.merge_check.refresh_quietly"), \
+                mock.patch.object(ruled_approval, "_wait_or_deny", return_value=("", "")):
+            for _ in range(2):
+                self.assertEqual(ruled_approval.sweep(self.loop, self.st, [self.live]), [])
+        self.assertEqual(writes, [])                                   # the dismissal: never taken
+        self.assertEqual(self.update(), self.remote_head())
+
     def test_with_adjudicator_approves_off_nothing_waits(self):
         # Nothing acts on the record or reads it back then (the sweep returns at once), so a wait
         # on a pending, uncertain or missing record could never end.
