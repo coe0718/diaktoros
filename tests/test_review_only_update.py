@@ -16,7 +16,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from diaktoros import broker, config, pr_refs, review_only_conflict, safe_push  # noqa: E402
+from diaktoros import broker, config, review_only_conflict, safe_push  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 
 REPO = "acme/widgets"
@@ -115,10 +115,12 @@ class Notice(Base):
         """#1699: the numbers come from commit subjects, so a direct push ending in ``(#N)``
         would be named too; the notice must say so rather than call them merged PRs outright."""
         text = review_only_conflict.message(self.loop, "owner", self.facts())
-        self.assertIn(f"#428, #430 ({pr_refs.CAVEAT})", text)
+        self.assertIn("#428, #430 (read from commit subjects, so a direct push ending in (#N) "
+                      "is counted as a PR too)", text)
 
     def test_one_reader_for_every_subject(self):
         """The notice and ``update`` read a subject the same way (``pr_refs.pr_number``)."""
+        from diaktoros import pr_refs
         from diaktoros.cli import update as cli_update
         for subject, want in (("update docs (#123)", [123]), ("Merge pull request #5 from a/b", [5]),
                               ("Merge pull request #57x", []), ("no ref", [])):

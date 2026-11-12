@@ -20,6 +20,8 @@ FILE = "main-ci.json"
 PRS_MAX = 10
 ADVICE = ("GitHub's \"Require branches to be up to date before merging\" protection prevents "
           "this class of breakage")
+OUTCOME_MAX = 600       # the main_red notice's outcome is at most this long
+NAMES_MIN = 40          # what the failed check names keep at least, when they are clipped
 
 
 class Merges(list):
@@ -87,8 +89,22 @@ def _outcome(failed: list[str], merges: list[int] | None, url: str, note: str = 
                 said = (f"could not confirm GitHub's compare was complete "
                         f"({seen} commit{'' if seen == 1 else 's'} read, total unreported)")
             since += f" — {said}, so other merged PRs may be missing; this is not the full list"
-    text = f"main: required check(s) failed: {ci._names(failed)} — {since}. {ADVICE}{note}"
-    return f"{text} — {url}" if url else text
+    return _bounded(ci._names(failed), f" — {since}",
+                    f". {ADVICE}{note}" + (f" — {url}" if url else ""))
+
+
+def _bounded(names: str, since: str, rest: str) -> str:
+    """``main: required check(s) failed: <names><since><rest>`` in at most ``OUTCOME_MAX``
+    characters, with ``since`` (the merged-PR list and its subject-only caveat, #1699) kept whole.
+
+    The failed check names are clipped first (to no less than ``NAMES_MIN``), then ``rest`` (the
+    advice, the flake note, the link) is cut at the end: the list is never cut off mid-caveat."""
+    lead = "main: required check(s) failed: "
+    room = max(OUTCOME_MAX - len(lead) - len(since) - len(rest), NAMES_MIN)
+    if len(names) > room:
+        names = names[:room - 1] + "…"
+    head = f"{lead}{names}{since}"
+    return head + rest[:max(OUTCOME_MAX - len(head), 0)]
 
 
 def _remember(st, path, key: str, head) -> None:
@@ -149,6 +165,6 @@ def sweep(loop: dict, st, log=lambda _msg: None) -> bool:
     outcome = _outcome(view.failed, merges, view.urls.get(view.failed[0], ""), decided.note)
     _remember(st, path, "notified", head)             # remember first: one notice per head
     observer.notify(loop, st, "main_red", merges[-1] if merges else 0, head,
-                    identity="main_red", outcome=outcome[:600], next_turn="you")
+                    identity="main_red", outcome=outcome, next_turn="you")
     log(f"main @ {head[:7]} is red: {ci._names(view.failed)}")
     return True
