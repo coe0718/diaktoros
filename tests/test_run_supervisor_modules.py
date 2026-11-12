@@ -38,6 +38,10 @@ ALL_SUBMODULES = tuple(sorted(
 # ``turns`` included (#1332).
 RE_EXPORTS = {"turns": frozenset({"_ClaimRead", "_Turn", "_Launch"})}
 ONE_HOME_SUBMODULES = SUBMODULES + ("turns",)
+# Distinct getattr defaults for the RE_EXPORTS check: an unbound name on either side must never
+# be "the same object" as an unbound (or None) name on the other.
+_MISSING_ON_PACKAGE = object()
+_MISSING_ON_SUBMODULE = object()
 
 
 def _one_home_names() -> set[tuple[str, str]]:
@@ -83,8 +87,11 @@ def _one_home_violations() -> list[str]:
     for sub, exempt in sorted(RE_EXPORTS.items()):
         module = importlib.import_module(f"diaktoros.run_supervisor.{sub}")
         for name in sorted(exempt):
+            # A unique default on each side, so a name missing from both, or missing from the
+            # package while the submodule binds it to None, never compares identical (#2457).
             if (name not in _top_level_names(PACKAGE / f"{sub}.py")
-                    or getattr(run_supervisor, name, None) is not getattr(module, name, None)):
+                    or getattr(run_supervisor, name, _MISSING_ON_PACKAGE)
+                    is not getattr(module, name, _MISSING_ON_SUBMODULE)):
                 problems.append(f"RE_EXPORTS exempts {sub}.{name}, but run_supervisor.{name} "
                                 f"does not resolve to it")
     for sub, moved in sorted(_one_home_names()):
@@ -197,6 +204,33 @@ class Split(unittest.TestCase):
                               "not resolve to it", _one_home_violations())
             with mock.patch.object(run_supervisor, "_nudged", turns._nudged, create=True):
                 self.assertEqual(_one_home_violations(), [])
+        self.assertEqual(_one_home_violations(), [])
+
+    def test_the_one_home_guard_refuses_an_exemption_bound_on_neither_side_or_to_none(self):
+        # #2457 review F1: an exempt name the package does not bind must be refused even when
+        # the submodule's value is None, or when neither side binds it.
+        from diaktoros.run_supervisor import turns
+        refused = ("RE_EXPORTS exempts turns._ClaimRead, but run_supervisor._ClaimRead does not "
+                   "resolve to it")
+        with mock.patch.object(run_supervisor, "_ClaimRead"):
+            delattr(run_supervisor, "_ClaimRead")
+            with mock.patch.object(turns, "_ClaimRead", None):
+                self.assertIn(refused, _one_home_violations())
+            with mock.patch.object(turns, "_ClaimRead"):
+                delattr(turns, "_ClaimRead")
+                self.assertIn(refused, _one_home_violations())
+        self.assertEqual(_one_home_violations(), [])
+
+    def test_the_one_home_guard_refuses_an_exemption_that_is_not_a_submodule_definition(self):
+        # #2457 review F2: an exempt name bound to the same object on both sides is still
+        # refused when the submodule's source does not define it at top level.
+        from diaktoros.run_supervisor import turns
+        shared = object()
+        with mock.patch.dict(RE_EXPORTS, {"turns": RE_EXPORTS["turns"] | {"_not_defined"}}), \
+                mock.patch.object(turns, "_not_defined", shared, create=True), \
+                mock.patch.object(run_supervisor, "_not_defined", shared, create=True):
+            self.assertIn("RE_EXPORTS exempts turns._not_defined, but run_supervisor._not_defined "
+                          "does not resolve to it", _one_home_violations())
         self.assertEqual(_one_home_violations(), [])
 
     def test_the_one_home_guard_refuses_a_second_binding_of_a_turns_name(self):
