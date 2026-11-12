@@ -54,19 +54,30 @@ def check_app_identity(loop: dict, login: str, name: str) -> doctor.Check:
 
 def _app_unreachable(name: str, login: str, read: str, response: gh.Response,
                      unread: str) -> doctor.Check | None:
-    """UNKNOWN when ``read`` (the App read just made) got no HTTP answer at all (a network
-    outage, DNS, a timeout), else ``None``. Without a status GitHub said nothing about what the
-    read was for, so it is not blamed: the PAT checks read the same state as UNKNOWN
-    (``gh.failure_hint``), not as a credential to regenerate. ``unread`` is the clause that says
-    what was left unread (#1922): after ``GET /app`` failed both the key and the installation,
-    after the installation read only the installation (``/app`` already verified the key)."""
-    if response.status is not None or response.data is not None or not response.error:
-        return None
-    return doctor.Check(name, doctor.UNKNOWN,
-                        f"{login}: {read} as the App got no HTTP answer ({gh.one_line(response.error)}) — "
-                        f"{unread}",
-                        "check the host reaches api.github.com (network, DNS, proxy) and run doctor again; "
-                        "the key file is not implicated")
+    """UNKNOWN when ``read`` (the App read just made, which yielded nothing usable) got no HTTP
+    answer at all (a network outage, DNS, a timeout), or a 2xx answer whose body could not be
+    read or did not hold what GitHub sends (a proxy or captive portal answering 200 with HTML,
+    #1923), else ``None``. Neither says anything against the key or the installation, so neither
+    is blamed: the PAT checks read a silent call the same way (``gh.failure_hint``), not as a
+    credential to regenerate. Any other status is GitHub's answer and stays the caller's.
+    ``unread`` is the clause that says what a read with no HTTP answer left unread (#1922):
+    after ``GET /app`` failed both the key and the installation, after the installation read
+    only the installation (``/app`` already verified the key)."""
+    if response.status is None and response.data is None and response.error:
+        return doctor.Check(name, doctor.UNKNOWN,
+                            f"{login}: {read} as the App got no HTTP answer ({gh.one_line(response.error)}) — "
+                            f"{unread}",
+                            "check the host reaches api.github.com (network, DNS, proxy) and run doctor again; "
+                            "the key file is not implicated")
+    if response.status is not None and 200 <= response.status < 300:
+        why = gh.one_line(response.error) if response.error else "not the expected JSON"
+        return doctor.Check(name, doctor.UNKNOWN,
+                            f"{login}: {read} as the App: GitHub answered {response.status} but the body "
+                            f"could not be read ({why}) — a proxy, a captive portal, or GitHub returning "
+                            "something unexpected; the key and the installation were not judged",
+                            "check what answers for api.github.com from this host (proxy, captive portal) "
+                            "and run doctor again; the key file is not implicated")
+    return None
 
 
 def check_app_live(loop: dict, login: str, offline: bool) -> doctor.Check:
@@ -74,7 +85,8 @@ def check_app_live(loop: dict, login: str, offline: bool) -> doctor.Check:
     (``GET /app``: the id and the bot login match) and the App is installed on this repository
     (``GET /repos/<repo>/installation``). Both are reads made with the App's own JWT; no token is
     minted and nothing is written. A read with no HTTP answer (the network, not the key) is
-    UNKNOWN, as for a PAT; only an answer from GitHub, or a key that cannot sign, is a MISMATCH."""
+    UNKNOWN, as for a PAT, and so is a 2xx whose body could not be read (a proxy or a captive
+    portal, #1923); only an error answer from GitHub, or a key that cannot sign, is a MISMATCH."""
     from .. import github_app
     name = f"app-live:{login}"
     if offline:

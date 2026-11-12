@@ -1151,6 +1151,36 @@ class GateFailureTest(unittest.TestCase):
         fallback.record(key, {**fallback.entries()[key], "run_started_at": time.time() - 3600}, "")
         self.assertEqual([e["id"] for e in gate_failures.open_for(loop, 7)], [key])
 
+    def test_a_loop_whose_ledger_is_the_fallback_shows_each_failure_once(self):
+        # #1691: open_for has the sweep's guard (``home.path != ledger.path``). A loop whose
+        # state_dir is the no-loop ledger's directory has one ledger. An entry whose run began
+        # after its last write (a backwards wall-clock step) is not "the same episode" as
+        # itself, so reading that one file twice showed it twice, the copy with a held_in.
+        spare = gate_failures.fallback_ledger()
+        key = "0123456789abcdef"
+        spare.record(key, {"gate": "gate_reviewer", "kind": "crash", "pr": 7, "repo": t.REPO,
+                           "via": gate_failures.IN_PROCESS, "redrivable": False,
+                           "error_type": "X", "error": "y",
+                           "run_started_at": time.time() + 3600}, "")
+        loop = {**config.load_id("widgets"), "state_dir": str(spare.dir)}
+        shown = gate_failures.open_for(loop, 7)
+        self.assertEqual([e["id"] for e in shown], [key], shown)
+        self.assertNotIn("held_in", shown[0])
+
+    def test_an_in_process_entry_names_only_the_wired_review(self):
+        # #1691: the Desktop's review control is refused ("not wired yet"), so only
+        # ``hermes dk review`` writes an in-process entry; the line must not name a Desktop
+        # review. When that control is wired, this pin and the sentence change together.
+        import inspect
+        from diaktoros import one_shot_action
+        self.assertIn("the Desktop review control is not wired yet",
+                      inspect.getsource(one_shot_action))
+        line = gate_failures.not_driven({"via": gate_failures.IN_PROCESS, "pr": 7})
+        self.assertEqual(line, "not re-driven (an operator's `hermes dk review`, not a webhook "
+                               "delivery) — ask again with `hermes dk review --loop <loop> --pr 7`")
+        self.assertNotIn("Desktop's review)", gate_failures.record_in_process.__doc__)
+        self.assertIn("review control is not wired yet", gate_failures.record_in_process.__doc__)
+
     def test_a_claim_cut_off_by_the_record_alarm_is_made_again(self):
         # The claim is the last step of the record phase; on a slow disk the one-shot record
         # alarm fires inside its write, which swallows it. The read must still end up owned.
