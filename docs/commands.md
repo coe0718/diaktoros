@@ -1464,7 +1464,8 @@ is caught only when the review the turn would submit is REQUEST_CHANGES **and** 
 (case-insensitive) matches inside a numbered finding line (`F1: ...`, #475); a mention in an
 APPROVE, or outside a finding line, is a miss. Seed cases (PRs #460, #497, #503, #506; their
 patterns are starting points to tune) are in `docs/corpus/`. Each run is
-appended to `<state dir>/corpus_scores.jsonl` with the prompt revision and model. Exit 1 when
+appended to `<state dir>/corpus_scores.jsonl` with the prompt revision and model; the file keeps
+the last 500 runs (`corpus.SCORES_KEEP`, #2302), older ones are pruned. Exit 1 when
 anything was missed; a malformed case file stops the run (exit 2).
 
 <!-- flags:corpus -->

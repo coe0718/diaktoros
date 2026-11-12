@@ -53,13 +53,16 @@ DIFFERENT = {
 CALLERS = {
     "diaktoros/app_manifest.py::save_session", "diaktoros/app_tokens.py::save",
     "diaktoros/ci_cache.py::save", "diaktoros/cli/common.py::_write_config_locked",
-    "diaktoros/cli/common.py::_restore_config_locked", "diaktoros/gate_decisions.py::record",
+    "diaktoros/cli/common.py::_restore_config_locked",
     "diaktoros/gate_shims.py::_write", "diaktoros/gate_shims.py::heal_watchdog_shim",
     "diaktoros/gh_cache.py::store", "diaktoros/gh_calls.py::flush",
     "diaktoros/observer.py::_save", "diaktoros/onboarding.py::record", "diaktoros/pacing.py::_save",
     "diaktoros/route_intent.py::_write", "diaktoros/run_supervisor/__init__.py::Supervisor.__init__",
     "diaktoros/runtime_detect.py::write", "diaktoros/state.py::_atomic_publish",
     "diaktoros/state.py::LoopState._transition_write",
+    # The shared append-then-prune (#2302): gate_decisions.record and corpus.record publish
+    # their pruned files through it.
+    "diaktoros/util.py::append_keeping",
     "docs/site/publish-history.py::_write", "docs/site/publish-stats.py::publish",
 }
 BY_HAND = {"os.replace", "os.rename", "tempfile.mkstemp", "tempfile.NamedTemporaryFile",

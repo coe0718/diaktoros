@@ -84,6 +84,21 @@ class ClaimWaits(sm.Base):
         self.claim()
         self.assertEqual((len(waits_in(rotated)), len(waits_in(self.log))), (1, 0))
 
+    def test_a_wait_is_not_appended_past_the_log_cap(self):
+        """#2302: a worker's wait line never grows the log past WORKER_LOG_MAX, the cap a worker's
+        stderr keeps too (``waits.within_cap``); the host's next spawn rotates it."""
+        from diaktoros import run_supervisor
+        self.log.write_text("x" * (run_supervisor.WORKER_LOG_MAX + 1))
+        self.hold()
+        self.claim()
+        self.assertEqual(self.row()[0], "waiting")
+        self.assertEqual(self.log.stat().st_size, run_supervisor.WORKER_LOG_MAX + 1)
+        self.log.write_text("worker stderr\n")             # rotated by the host: room again
+        self.pr = None                                     # a new reason, so a new line is due
+        self.hold()
+        self.claim()
+        self.assertEqual(len(waits_in(self.log)), 1)
+
 
 class TurnWaits(tp.ProductionBase):
     def log(self) -> Path:

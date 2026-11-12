@@ -127,6 +127,26 @@ def atomic_write(path, data: str | bytes, *, mode: int = 0o600, before_replace=N
                 os.unlink(temp)
 
 
+def append_keeping(path, line: str, keep: int, lock) -> None:
+    """Append ``line`` to ``path``, then cut the file back to its last ``keep`` lines (#2302).
+
+    Both steps run under an exclusive ``flock`` on ``lock`` (a registered lock file beside it),
+    so a line another writer appends cannot fall between the prune's read and its replace. The
+    prune is an ``atomic_write``: a crash leaves the old file or the pruned one, never half.
+    Shared by the append-only records pruned by line count (``gate_decisions``, ``corpus``)."""
+    path = Path(path)
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        with open(path, "a", encoding="utf-8") as out:
+            out.write(line)
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        if len(lines) > keep:
+            atomic_write(path, "".join(lines[-keep:]))
+    finally:
+        os.close(fd)
+
+
 def logged(lines) -> list[str]:
     """What each of ``lines`` the plugin logged says, without its prefix (either spelling)."""
     return [line.split("] ", 1)[1] for line in lines
