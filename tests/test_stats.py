@@ -586,6 +586,40 @@ class Finished(sm.Worker):
                     got = con.execute("SELECT thinking FROM runs ORDER BY rowid DESC").fetchone()[0]
                 self.assertEqual(got, level)
 
+    def test_an_adaptive_request_through_the_proxy_reaches_the_ledger(self):
+        """#1929 (review of #2456, F2): a Claude adaptive-thinking request goes through a real
+        proxy (``InferenceCapability``, ``anthropic_messages``, a stub upstream); the turn's
+        own exit step (``trusted_turn._observe_exit``) copies what the proxy saw into
+        ``observed``, and the supervisor writes it to the run's ledger row."""
+        import types
+        import test_oauth_seats as oauth
+        from diaktoros import trusted_turn
+        from diaktoros.inference_proxy import InferenceCapability
+
+        def through_proxy(request):
+            def turn(kw):
+                with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as sockets, \
+                        oauth.Upstream(lambda h, r: oauth.send_json(h)) as up, \
+                        InferenceCapability(pathlib.Path(sockets) / "cap",
+                                            up.url("/v1/messages"), "KEY",
+                                            model="m", quota=3,
+                                            api_mode="anthropic_messages") as cap:
+                    self.assertEqual(oauth.post(cap, request)[0], 200)
+                    trusted_turn._observe_exit(
+                        kw["observed"], cap,
+                        types.SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
+                        types.SimpleNamespace(recorded=[]))
+                return 0
+            return turn
+        for request, want in (({"max_tokens": 8000, "thinking": {"type": "adaptive"},
+                                "output_config": {"effort": "low"}}, "effort:low"),
+                              ({"max_tokens": 8000, "thinking": {"type": "adaptive"}}, "adaptive")):
+            with self.subTest(want=want):
+                self.run_seat("reviewer", turn=through_proxy(request))
+                with ledger.connect(self.root / "ledger.sqlite") as con:
+                    got = con.execute("SELECT thinking FROM runs ORDER BY rowid DESC").fetchone()[0]
+                self.assertEqual(got, want)
+
 
 for _name in [n for n in dir(sm.Worker) if n.startswith("test_")]:
     setattr(Finished, _name, None)   # its own tests run in test_seat_models

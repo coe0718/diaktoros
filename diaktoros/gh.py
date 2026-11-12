@@ -656,7 +656,9 @@ def _read_pages(loop: dict, path: str, what: str, max_pages: int,
 
     A listing of exactly ``max_pages`` full pages is told from a longer one by reading one page
     past the bound (#1146): empty means whole, any item means past the bound. That probe is one
-    extra request, made only when every page up to the bound was full.
+    extra request, made only when every page up to the bound was full. A failed or malformed
+    probe proves neither: the listing is not proven whole, and its reason says that page could
+    not be read, not that the listing exceeds the bound (#1727).
 
     ``created_floor`` is for a listing sorted by ``created`` descending (#1147): the caller needs
     nothing created before that epoch, so a page whose last item is older than it ends the
@@ -669,20 +671,22 @@ def _read_pages(loop: dict, path: str, what: str, max_pages: int,
     for page in range(1, max_pages + 2):
         page_path = path if page == 1 else f"{path}&page={page}"
         items, error = fetch(loop, page_path, login=login) if login else fetch(loop, page_path)
+        if not error and (not isinstance(items, list) or len(items) > REVIEW_PAGE_SIZE
+                          or not all(isinstance(item, dict) for item in items)):
+            error = f"invalid {what} list"
         if page > max_pages:              # the probe: only an empty page proves the listing whole
-            if not error and isinstance(items, list) and not items:
+            if not error and not items:
                 return result, ""
-            break                         # items, or an unreadable probe: not proven whole
+            # An unreadable probe proves neither whole nor longer: say so, not "exceeds" (#1727).
+            reason = (f"{what} page {page}, past the {max_pages}-page bound, could not be read: "
+                      f"{error}" if error else f"{what} listing exceeds {max_pages} full pages")
+            return (result, reason) if keep_partial else (None, reason)
         if error:
             return None, f"{what} page {page}: {error}"
-        if not isinstance(items, list) or len(items) > REVIEW_PAGE_SIZE or not all(
-                isinstance(item, dict) for item in items):
-            return None, f"{what} page {page}: invalid {what} list"
         result.extend(items)
         if len(items) < REVIEW_PAGE_SIZE or _older_than(items[-1], created_floor):
             return result, ""
-    reason = f"{what} listing exceeds {max_pages} full pages"
-    return (result, reason) if keep_partial else (None, reason)
+    raise AssertionError("unreachable: the probe page always returns")
 
 
 def _older_than(item: dict, floor: float) -> bool:

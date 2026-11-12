@@ -434,6 +434,15 @@ class Prompt(unittest.TestCase):
         self.assertNotIn("otherwise one type label and one priority label", tools)
         self.assertIn("what the list line in your instructions says to send", tools)
 
+    def test_the_tool_text_asks_for_a_priority_from_a_priorities_only_list(self):
+        """#1768: for a list with no type label the tool text must not read as "send no
+        priority": it agrees with the list line, which says to send one."""
+        from diaktoros import issue_labels, trusted_turn
+        tools = " ".join(trusted_turn.tool_instructions("reviewer").split())
+        self.assertEqual(issue_labels.label_rule(["P2", "P3"], 1), "send a priority label")
+        self.assertIn("one priority label when the list has no type label at all", tools)
+        self.assertNotIn("a priority label only if the cap leaves room beside the type", tools)
+
     def test_the_prompt_the_reviewer_receives_states_the_cap_and_does_not_demand_two(self):
         """The reviewer's real prompt (``isolated_prompt``) names the loop's label cap, and no
         longer says "exactly one priority label", which a cap of 1 can never satisfy."""
@@ -448,6 +457,22 @@ class Prompt(unittest.TestCase):
                 self.assertIn(f"`bug`, `P3` (at most {most} per issue; ", text)
                 self.assertIn("send the type label alone" if most == 1 else "send a type label and a priority label", text)
                 self.assertNotIn("exactly one priority label", text)
+
+    def test_a_type_only_list_is_not_asked_for_a_priority_label(self):
+        """#1697: a list with no priority label (["bug"]) cannot carry one, so neither the
+        reviewer's prompt nor its tool text may ask for a priority label unconditionally."""
+        import test_ci_coverage as tcc
+        import test_required_checks as trc
+        from diaktoros import trusted_turn
+        loop = config.normalize({**trc.raw(), "id": "w"})
+        loop["triage"] = {"labels": ["bug"], "max_labels": 3}
+        with mock.patch.object(gh, "api", return_value=None):
+            text = " ".join(tcc.reviewer_prompt(loop, None).split())
+        self.assertIn("`bug` (at most 3 per issue; send a type label)", text)
+        self.assertNotIn("priorities are `P0`–`P3`", text)
+        self.assertIn("a priority label, `P0`–`P3`, only when the list has one", text)
+        tools = " ".join(trusted_turn.tool_instructions("reviewer").split())
+        self.assertIn("a priority label only when the list has one and the cap leaves room", tools)
 
 
 class ClientBounds(unittest.TestCase):

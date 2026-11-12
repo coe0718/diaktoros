@@ -152,7 +152,7 @@ class RefusalsNameAppKeys(unittest.TestCase):
         self.assertNotIn("token files", config.FOUR_IDENTITY_RULE)
 
     def test_no_broker_denial_says_token_files_or_token_mappings(self):
-        for name in ("broker.py", "safe_push.py"):
+        for name in ("broker/__init__.py", "safe_push.py"):
             text = (ROOT / "diaktoros" / name).read_text()
             for old in ("distinct token files", "token mappings required",
                         "token mapping required"):
