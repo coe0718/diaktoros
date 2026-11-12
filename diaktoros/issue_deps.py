@@ -166,15 +166,49 @@ def row(loop: dict, issue: int, prerequisite: int, record: dict, *, guarded: boo
             "by": record.get("by"), "at": record.get("at")}
 
 
-def listing(loop: dict, st, issue: int | None = None) -> list[dict]:
+def listing(loop: dict, st, issue: int | None = None, *, guarded: bool = False) -> list[dict]:
     """Every declared dependency (or ``issue``'s) with whether it is met — what ``hermes dk
     depends`` with neither ``--on`` nor ``--waive`` prints. An unreadable record raises
-    ``RecordUnreadable``: never listed as none declared (#2150)."""
+    ``RecordUnreadable``: never listed as none declared (#2150). ``guarded`` as ``row``'s."""
     try:
         pairs = declared(st, issue, strict=True)
     except Exception:
         raise RecordUnreadable() from None
-    return [row(loop, b, a, record) for b, a, record in pairs]
+    cache: dict = {}
+    return [row(loop, b, a, record, guarded=guarded, cache=cache) for b, a, record in pairs]
+
+
+# The sentences ``hermes dk depends`` prints (after its ``[loop]`` prefix) and ``explain`` shows.
+NOT_LISTED = ("the issue dependency record could not be read — nothing listed; this is not a "
+              "claim that none are declared")
+WAIVERS_UNREADABLE = "waiver history could not be read"
+
+
+def sentences(loop: dict, st, issue: int | None = None, *, guarded: bool = False
+              ) -> tuple[list[str], list[str]]:
+    """``(dependencies, waivers)`` as sentences: each declared dependency (or ``issue``'s) with
+    whether it is met, then each waiver; a waiver history that cannot be read is the one line
+    ``WAIVERS_UNREADABLE``. The one source of both ``hermes dk depends``'s list and ``explain``'s
+    lines (#1301). An unreadable record raises ``RecordUnreadable``."""
+    deps = [f"#{e['issue']} depends on #{e['on']}: {e['state']} — {e['why']}"
+            for e in listing(loop, st, issue, guarded=guarded)]
+    try:
+        waivers = [f"#{w['issue']} no longer waits on #{w['on']} — waived by "
+                   f"{w['by'] or 'unknown'} at {w['at'] or 'unknown'}" for w in waived(st, issue, strict=True)]
+    except Exception:
+        waivers = [WAIVERS_UNREADABLE]
+    return deps, waivers
+
+
+def explain_lines(loop: dict, st, issue: int) -> list[str]:
+    """``explain``'s lines for ``issue`` (#1301): exactly what ``hermes dk depends --issue N``
+    lists for it, without the "none declared" line; a read GitHub could not answer is
+    ``unknown`` (never its error text), an unreadable record ``NOT_LISTED``."""
+    try:
+        deps, waivers = sentences(loop, st, issue, guarded=True)
+    except RecordUnreadable:
+        return [NOT_LISTED]
+    return deps + waivers
 
 
 def waived(st, issue: int | None = None, *, strict: bool = False) -> list[dict]:

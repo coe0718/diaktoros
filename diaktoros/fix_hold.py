@@ -147,6 +147,15 @@ def explain_lines(st, number: int) -> list[str]:
         [fix_reply.line(number)] if isinstance(waiting, dict) and str(number) in waiting else [])
 
 
+def explain_rows(loop: dict, st, number: int) -> list[tuple[str, str]]:
+    """``explain``'s ``(label, line)`` rows when ``number`` may be an issue: ``held:`` for an ask
+    or reply it waits on (``explain_lines``), then ``depends:`` for its declared dependencies and
+    waivers, the same sentences ``hermes dk depends --issue N`` prints (#1301)."""
+    from . import issue_deps
+    return ([("held:", line) for line in explain_lines(st, number)]
+            + [("depends:", line) for line in issue_deps.explain_lines(loop, st, number)])
+
+
 def check_ask(st, number: int) -> None:
     """Raise ``ValueError`` when the issue already has an open ask or its asks are spent."""
     if number in st.fix_ask_open():

@@ -7,7 +7,10 @@ the sweep are real. Nothing here reaches the network.
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import pathlib
 import sys
@@ -19,8 +22,9 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import test_issue_deps as tid  # noqa: E402
 import test_issue_fix as tif  # noqa: E402
-from diaktoros import (config, desktop_api, fix_hold, issue_deps, ledger,  # noqa: E402
-                       one_shot_action as actions, run_supervisor, state as state_mod)
+from diaktoros import (cli, config, desktop_api, explain as explain_mod, fix_hold,  # noqa: E402
+                       issue_deps, ledger, one_shot_action as actions, run_supervisor,
+                       state as state_mod)
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 DepsFixture = type("DepsFixture", (tid.Deps,),
@@ -543,6 +547,68 @@ class WaiverView(DepsFixture):
         corrupt(self.st, "{not json")
         view = desktop_api.deps_view("widgets")
         self.assertEqual((view["available"], view["deps"], view["total"]), (False, [], 0))
+
+
+class Explain(DepsFixture):
+    """#1301: ``hermes dk explain`` reports an issue's dependencies and waivers exactly as
+    ``hermes dk depends --issue N`` lists them (and the page reads them)."""
+
+    REPORT = {"url": "u", "read_at": "t", "state_line": "s", "chain": {"status": "direct"},
+              "budget": "b", "seat": "x", "queue": "q", "inflight": "i", "escalation": "e",
+              "hooks": "h", "sweep": "w", "github": "g", "blockers": [], "next": {"action": "n"},
+              "head": "a" * 40}
+
+    def explain(self, number):
+        """The ``depends:`` lines ``explain`` prints for ``number``."""
+        out = io.StringIO()
+        with mock.patch.object(config, "load_id", return_value=self.loop), \
+                mock.patch.object(explain_mod, "explain_facts", return_value={}), \
+                mock.patch.object(explain_mod, "explain", return_value=self.REPORT), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(cli.cmd_explain(argparse.Namespace(loop="widgets", pr=number)), 0)
+        return [line.strip()[len("depends:"):].strip() for line in out.getvalue().splitlines()
+                if line.strip().startswith("depends:")]
+
+    def listed(self, issue):
+        """What ``hermes dk depends --issue N`` lists, without its prefix or "none declared"."""
+        return [line.removeprefix("[widgets] ") for line in self.depends(issue)[1].splitlines()
+                if not line.endswith("no issue dependencies declared")]
+
+    def test_explain_reports_the_dependencies_and_waivers_the_cli_and_page_do(self):
+        self.depends(12, on=5)
+        self.depends(12, on=6)
+        self.depends(12, waive=6)
+        self.depends(13, on=5)
+        lines = self.explain(12)
+        self.assertEqual(lines, self.listed(12))
+        self.assertEqual(lines[0], "#12 depends on #5: waiting — #5 is still open")
+        self.assertRegex(lines[1], r"^#12 no longer waits on #6 — waived by operator at \d{4}-")
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(self.explain(13), self.listed(13))
+        self.assertEqual(self.explain(40), [])                    # none declared: nothing said
+        with mock.patch.object(desktop_api, "_loop", return_value=self.loop):
+            view = desktop_api.deps_view("widgets")
+        page = [f"#{r['issue']} depends on #{r['on']}: {r['state']} — {r['why']}"
+                for r in view["deps"] if r["issue"] == 12]
+        page += [f"#{w['issue']} no longer waits on #{w['on']} — waived by {w['by']} at {w['at']}"
+                 for w in view["waivers"] if w["issue"] == 12]
+        self.assertEqual(page, lines)
+
+    def test_explain_never_reads_an_unreadable_record_as_none(self):
+        self.depends(12, on=5)
+        corrupt(self.st, "{not json", "issue-deps-waivers.json")
+        self.assertEqual(self.explain(12), ["#12 depends on #5: waiting — #5 is still open",
+                                            issue_deps.WAIVERS_UNREADABLE])
+        self.assertEqual(self.explain(12), self.listed(12))
+        corrupt(self.st, '{"12": {"5": null}}')
+        self.assertEqual(self.explain(12), [issue_deps.NOT_LISTED])
+        self.assertEqual(self.depends(12), (2, f"[widgets] {issue_deps.NOT_LISTED}\n"))
+
+    def test_explain_never_echoes_what_github_said_when_it_failed(self):
+        self.depends(12, on=5)
+        with mock.patch.object(issue_deps, "met", side_effect=RuntimeError("/private/PAT ghp_x")):
+            lines = self.explain(12)
+        self.assertEqual(lines, ["#12 depends on #5: unknown — #5 could not be read"])
 
 
 class DrawerIssue(unittest.TestCase):

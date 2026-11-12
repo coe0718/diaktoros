@@ -1645,7 +1645,10 @@ GitHub and the loop's state and shows:
   a turn the PR waits for, so a queued or failed one is not listed among the PR's turns. Another
   `shadow:` line says whether the current head gets a shadow review and why: sampled by
   `shadow.every`, or chosen by the paths it changes (`shadow.always_paths`, `shadow.never_paths`,
-  #1788).
+  #1788);
+- when the number is an issue, a `depends:` line for each dependency it declares and each waiver,
+  the same sentences [`depends --issue N`](#depends) lists (#1301), and the line `the issue
+  dependency record could not be read ...` when it cannot be read, never "none".
 
 Read-only.
 
@@ -1912,6 +1915,7 @@ removes the dependency and is listed below the dependencies with who waived it a
 this command lists it. The PR drawer shows the same rows for its issue: the number itself when the
 issue fixer worked it, or the issue the ledger recorded a fix PR for. It shows them from the page's
 read and never starts another one; when the ledger names no issue, it says so and shows none.
+`hermes dk explain --pr N` prints the same sentences for issue N on its `depends:` lines.
 
 <!-- flags:depends -->
 | flag | value | default | what it does |

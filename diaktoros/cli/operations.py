@@ -632,23 +632,12 @@ def cmd_depends(args) -> int:
     unreadable = f"[{loop['id']}] the issue dependency record could not be read"
     if args.on is None and args.waive is None:
         try:
-            rows = issue_deps.listing(loop, st, args.issue)
+            deps, waivers = issue_deps.sentences(loop, st, args.issue)
         except issue_deps.RecordUnreadable:
-            print(f"{unreadable} — nothing listed; this is not a claim that none are declared")
+            print(f"[{loop['id']}] {issue_deps.NOT_LISTED}")
             return 2
-        if not rows:
-            print(f"[{loop['id']}] no issue dependencies declared")
-        for entry in rows:
-            print(f"[{loop['id']}] #{entry['issue']} depends on #{entry['on']}: "
-                  f"{entry['state']} — {entry['why']}")
-        try:
-            waivers = issue_deps.waived(st, args.issue, strict=True)
-        except Exception:
-            print(f"[{loop['id']}] waiver history could not be read")
-            return 0
-        for entry in waivers:
-            print(f"[{loop['id']}] #{entry['issue']} no longer waits on #{entry['on']} — waived "
-                  f"by {entry['by'] or 'unknown'} at {entry['at'] or 'unknown'}")
+        for text in (deps or ["no issue dependencies declared"]) + waivers:
+            print(f"[{loop['id']}] {text}")
         return 0
     if args.issue is None:
         print("--on and --waive need --issue N (the issue that waits)")
@@ -839,8 +828,8 @@ def cmd_explain(args) -> int:
             if origin == args.pr:
                 print(f"  {'held:':<12}issue #{issue_no} fix waits for this PR to merge")
         from .. import fix_hold
-        for line in fix_hold.explain_lines(st, args.pr):   # the number may be an issue
-            print(f"  {'held:':<12}{line}")
+        for label, line in fix_hold.explain_rows(loop, st, args.pr):
+            print(f"  {label:<12}{line}")
         if report['chain']['status'] != 'direct':
             print(f"  {'chain:':<12}{report['chain']['status']} · "
                   f"parents {report['chain']['parents']} · {report['chain']['reason']}")
