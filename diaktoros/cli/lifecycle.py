@@ -571,9 +571,10 @@ def _record_future_dated(backup) -> None:
     """Record and name every archive in the backups directory dated past the clock-skew allowance
     (#1905), so ``doctor``'s ``backup:fresh`` never counts it as recent once the clock reaches its
     date. A record that cannot be written is said, never a failed backup: the archive is whole."""
+    from .. import backup_fresh
     try:
-        found = backup.record_future_dated()
-    except backup.FutureRecordError as exc:     # left as it is: rewriting it forgets what it named
+        found = backup_fresh.record_future_dated()
+    except backup_fresh.FutureRecordError as exc:   # left as it is: rewriting it forgets what it named
         print(f"warning: {exc}; it was left unchanged and archives were not checked for a future "
               f"date. doctor's backup:fresh reads unknown until it is repaired or removed")
         return
@@ -583,7 +584,7 @@ def _record_future_dated(backup) -> None:
         return
     if found:
         print(f"warning: {len(found)} archive(s) in {backup.backups_dir()} dated more than "
-              f"{backup.CLOCK_SKEW_S // 3600} hours in the future (a wrong clock when written?): "
+              f"{backup_fresh.CLOCK_SKEW_S // 3600} hours in the future (a wrong clock when written?): "
               + ", ".join(p.name for p in found)
               + "; recorded, so doctor's backup:fresh will never count them as a recent backup")
 
