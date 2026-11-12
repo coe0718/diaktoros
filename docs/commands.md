@@ -1320,7 +1320,10 @@ Before it overwrites anything, `restore` backs up the live install to
 restore that archive to undo the restore. It is written like a `backup --out` archive: retention
 (`--keep`) never counts or deletes it, so delete it by hand once it is no longer needed. If that
 backup cannot be taken (for example a live loop file that does not load), the restore is
-refused and nothing is written. A restore onto an install with nothing to overwrite takes no such
+refused and nothing is written. Unlike a plain `backup`, that backup does not skip a file the
+restore is about to overwrite that is removed while it is read: it fails, and the restore is
+refused, so a file recreated in that window is never overwritten without a copy (#2413). A
+restore onto an install with nothing to overwrite takes no such
 backup. The files are then put back all or none: every member is first written to a temp file
 beside its target, and only when all of them are written are they swapped in; if a swap fails,
 the files already swapped are put back as they were. Route entries and the watchdog job are

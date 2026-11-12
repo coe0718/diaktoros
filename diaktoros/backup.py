@@ -387,10 +387,34 @@ def _manifest(loops: list[dict], skipped: list[str], half_moved: dict | None) ->
             "tokens": {l["id"]: token_paths(l) for l in loops}, "migrating": half_moved}
 
 
+def _add_files(tar: tarfile.TarFile, files: list[tuple[pathlib.Path, pathlib.Path | None, str]],
+               manifest: dict, must_read: frozenset[str]) -> None:
+    """Add each listed ``(target, source, kind)`` to ``tar`` as ``files/<index>`` and record it
+    in ``manifest["files"]``. A listed regular file gone by the read is named in ``skipped``
+    instead (#1694), unless its path is in ``must_read`` (#2413); any other read error, and a
+    vanished ledger snapshot, raises ``BackupError``."""
+    for index, (target, source, kind) in enumerate(files):
+        member = f"files/{index}"
+        try:
+            tar.add(source, arcname=member, recursive=False)
+        except FileNotFoundError as exc:
+            if kind == "file" and str(target) not in must_read:
+                # Removed or renamed away since the listing (a temp renamed into place,
+                # an ``artifacts/<n>/`` file cleaned up): there is nothing left to archive,
+                # so it is left out and named, not a failed backup (#1694).
+                manifest["skipped"].append(str(target))
+                continue
+            raise BackupError(f"cannot read {source}: {exc}") from exc
+        except OSError as exc:
+            raise BackupError(f"cannot read {source}: {exc}") from exc
+        manifest["files"].append({"member": member, "path": str(target), "kind": kind})
+
+
 def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
            pruned: list[pathlib.Path] | None = None,
            using: contextlib.ExitStack | None = None, *, held: bool = False,
-           half_moved: dict | None = None) -> pathlib.Path:
+           half_moved: dict | None = None,
+           must_read: frozenset[str] = frozenset()) -> pathlib.Path:
     """Write the archive and return its path. Refuses to overwrite a file.
 
     A default-named archive (no ``out``) is followed by ``prune(keep)``; what it deleted is
@@ -404,7 +428,12 @@ def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
 
     Refused while ``migrate``'s marker exists (#1054, ``migrate.snapshot_refusal``), unless the
     caller holds it (``held``: ``migrate``'s own backup), which passes an interrupted run's
-    marker as ``half_moved``: ``restore`` puts it back."""
+    marker as ``half_moved``: ``restore`` puts it back.
+
+    A listed file that is gone by the time it is read is left out and named in ``skipped``
+    (#1694), unless its path is in ``must_read``: then the backup fails with ``BackupError``.
+    ``restore``'s undo snapshot passes every path it is about to write, so a file removed (and
+    perhaps recreated) while the snapshot reads it is never overwritten without being in it."""
     check_keep(keep)
     from . import migrate  # noqa: PLC0415 - the pause marker's owner
     if not held and migrate.snapshot_refusal():
@@ -428,21 +457,7 @@ def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
                 snap = pathlib.Path(scratch) / "ledger"
                 _snapshot_ledger(ledger, snap)
                 files.append((ledger, snap, "ledger"))
-            for index, (target, source, kind) in enumerate(files):
-                member = f"files/{index}"
-                try:
-                    tar.add(source, arcname=member, recursive=False)
-                except FileNotFoundError as exc:
-                    if kind == "file":
-                        # Removed or renamed away since the listing (a temp renamed into place,
-                        # an ``artifacts/<n>/`` file cleaned up): there is nothing left to archive,
-                        # so it is left out and named, not a failed backup (#1694).
-                        manifest["skipped"].append(str(target))
-                        continue
-                    raise BackupError(f"cannot read {source}: {exc}") from exc
-                except OSError as exc:
-                    raise BackupError(f"cannot read {source}: {exc}") from exc
-                manifest["files"].append({"member": member, "path": str(target), "kind": kind})
+            _add_files(tar, files, manifest, must_read)
             raw = json.dumps(manifest, indent=1).encode()
             info = tarfile.TarInfo(MANIFEST)
             info.size, info.mtime, info.mode = len(raw), int(time.time()), 0o600

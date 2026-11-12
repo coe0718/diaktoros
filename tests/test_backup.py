@@ -1419,6 +1419,51 @@ class AllOrNothing(Base):
         self.assertIn("the backup of the live install before it failed (disk full)", text)
         self.assertEqual((self.state / "queue.json").read_text(), '{"newer": true}')
 
+    def test_a_file_restore_overwrites_that_vanishes_under_the_snapshot_refuses_the_restore(self):
+        """#2413: a file the restore would overwrite that is removed while the undo snapshot reads
+        it (and recreated after) is not skipped like in a plain ``backup`` (#1694): the snapshot
+        fails, so restore writes nothing and the recreated file survives."""
+        out = self.changed_live_install()
+        queue = self.state / "queue.json"
+        real, raced = backup.tarfile.TarFile.add, []
+
+        def vanish(tar, name, *args, **kw):
+            if str(name) == str(queue) and not raced:
+                raced.append(name)
+                queue.unlink()
+                try:
+                    return real(tar, name, *args, **kw)
+                finally:
+                    queue.write_text("live-replacement")
+            return real(tar, name, *args, **kw)
+        with mock.patch.object(backup.tarfile.TarFile, "add", vanish):
+            code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        self.assertTrue(raced)
+        self.assertEqual(code, 2, text)
+        self.assertIn("the backup of the live install before it failed", text)
+        self.assertNotIn("the install as it was is in", text)
+        self.assertEqual(queue.read_text(), "live-replacement")
+        self.assertEqual(list(backup.backups_dir().glob("diaktoros-pre-restore-*")), [])
+
+    def test_a_file_restore_does_not_write_that_vanishes_under_the_snapshot_is_skipped(self):
+        """#2413: the undo snapshot keeps #1694's skip for a file the restore does not write."""
+        out = self.changed_live_install()
+        gone = self.state / "artifacts" / "7" / "report.txt"
+        gone.parent.mkdir(parents=True)
+        gone.write_text("work product")
+        real = backup.tarfile.TarFile.add
+
+        def vanish(tar, name, *args, **kw):
+            if str(name) == str(gone):
+                gone.unlink(missing_ok=True)
+            return real(tar, name, *args, **kw)
+        with mock.patch.object(backup.tarfile.TarFile, "add", vanish):
+            code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        self.assertEqual(code, 0, text)
+        snaps = list(backup.backups_dir().glob("diaktoros-pre-restore-*.tar.gz"))
+        self.assertEqual(len(snaps), 1, text)
+        self.assertEqual(backup.read_manifest(snaps[0])["skipped"], [str(gone)])
+
     def test_a_restore_onto_an_empty_install_takes_no_pre_restore_backup(self):
         out = self.root / "b.tar.gz"
         backup.create(out)

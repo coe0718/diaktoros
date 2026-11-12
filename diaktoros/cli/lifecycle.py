@@ -602,15 +602,20 @@ def _restore_cron(job: dict | None) -> list[str]:
     return [f"cron: job {job['name']!r} created ({job['schedule']}, deliver {job['deliver']})"]
 
 
-def _pre_restore_snapshot(left: dict | None = None) -> pathlib.Path | None:
+def _pre_restore_snapshot(left: dict | None = None,
+                          writes: frozenset[str] = frozenset()) -> pathlib.Path | None:
     """Back up the live install before a restore overwrites it (#1049), through ``backup.create``
     as an ``--out`` archive (so it prunes nothing and is never pruned), and return its path. On
     failure print why and return None: the restore then writes nothing, since without the
     snapshot a mistaken or failed restore would leave no way back. It is taken under restore's
-    own marker (``held``), recording what an interrupted run left (``left``, #1054)."""
+    own marker (``held``), recording what an interrupted run left (``left``, #1054). A path the
+    restore is about to write (``writes``) that vanishes while the snapshot reads it fails the
+    snapshot, so the restore writes nothing: unlike a plain ``backup`` (#1694), the undo archive
+    must hold every listed file the restore can overwrite (#2413)."""
     from .. import backup
     try:
-        return backup.create(backup.pre_restore_out(), held=True, half_moved=left)
+        return backup.create(backup.pre_restore_out(), held=True, half_moved=left,
+                             must_read=writes)
     except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
         print(f"cannot restore: the backup of the live install before it failed ({exc}); "
               "nothing was written — fix what it names (a loop file that does not load can be "
@@ -648,7 +653,7 @@ def _restore(args, manifest: dict, archive: pathlib.Path, left: dict | None = No
                                  "dry run: nothing was written"]))
         return 0
     if backup.existing(manifest):
-        snapshot = _pre_restore_snapshot(left)
+        snapshot = _pre_restore_snapshot(left, frozenset(f["path"] for f in manifest["files"]))
         if snapshot is None:
             return 2
         lines.append(f"restore: the install as it was is in {snapshot}")
