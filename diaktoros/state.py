@@ -215,6 +215,36 @@ def read_record(st, name: str, unreadable: Callable[[str], None] | None = None) 
     return data
 
 
+def _deps_number(key) -> int:
+    """A dependency record's key: a positive issue number written plainly, else ``ValueError``."""
+    if not isinstance(key, str) or not (key.isascii() and key.isdigit()) or key[0] == "0":
+        raise ValueError("issue dependency record has a malformed issue number")
+    return int(key)
+
+
+def _deps_checked(raw) -> dict:
+    """``{int: {int: dict}}`` from a dependency (or waiver) record read strictly (#2399 review
+    F1): every key a positive issue number, every entry a mapping whose ``by``/``at`` (when
+    present) are strings. Anything else raises: a malformed part is never dropped, so a held
+    dependency can neither vanish from a hold decision nor be overwritten by the next write."""
+    if not isinstance(raw, dict):
+        raise ValueError("issue dependency record is not a mapping")
+    out: dict = {}
+    for key, deps in raw.items():
+        issue = _deps_number(key)
+        if not isinstance(deps, dict):
+            raise ValueError("issue dependency record has a malformed entry")
+        kept = {}
+        for prerequisite, record in deps.items():
+            if not isinstance(record, dict) or any(
+                    field in record and not isinstance(record[field], str) for field in ("by", "at")):
+                raise ValueError("issue dependency record has a malformed entry")
+            kept[_deps_number(prerequisite)] = record
+        if kept:
+            out[issue] = kept
+    return out
+
+
 class LoopState:
     def __init__(self, loop: dict):
         self.loop = loop
@@ -1244,14 +1274,12 @@ class LoopState:
 
     def _deps_map(self, name: str, strict: bool) -> dict:
         """``{int: {int: dict}}`` from ``name``. ``strict`` raises when the file exists but cannot
-        be read or is not a mapping; otherwise such a file reads as empty."""
+        be read or any part of it is malformed (``_deps_checked``); otherwise such a file, or such
+        an entry, reads as empty."""
         path = self.dir / name
         if strict:
-            raw = json.loads(path.read_text()) if path.exists() else {}
-            if not isinstance(raw, dict):
-                raise ValueError("issue dependency record is not a mapping")
-        else:
-            raw = self._load(path, {})
+            return _deps_checked(json.loads(path.read_text()) if path.exists() else {})
+        raw = self._load(path, {})
         out: dict = {}
         for key, deps in (raw.items() if isinstance(raw, dict) else ()):
             if str(key).isdigit() and isinstance(deps, dict):

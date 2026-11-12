@@ -306,6 +306,48 @@ class FailClosed(DepsFixture):
         # Nothing was written over the record it could not read.
         self.assertEqual((self.st.dir / "issue-deps.json").read_text(), "{not json")
 
+    # Valid JSON, malformed inside (#2399 review F1): each must read as unreadable, never as a
+    # record with that part left out.
+    MALFORMED = ('{"12": {"5": null}}', '{"12": null}', '{"12": [5]}', '{"x": {"5": {}}}',
+                 '{"12": {"0": {}}}', '{"012": {"5": {}}}', '{"12": {"5": {"by": 3, "at": "x"}}}')
+
+    def test_a_malformed_nested_record_keeps_a_held_issue_held(self):
+        self.depends(12, on=5)
+        self.run_gate(self.labeled())
+        self.assertEqual((self.enqueued, self.st.dep_waits()), ([], [12]))
+        self.close_a(tid.MERGE)                                  # met: would release if read
+        for text in self.MALFORMED:
+            with self.subTest(record=text):
+                corrupt(self.st, text)
+                with self.assertRaises(ValueError):
+                    self.st.issue_deps(strict=True)
+                fix_hold.sweep(self.loop, self.st)
+                self.assertEqual((self.enqueued, self.st.dep_waits()), ([], [12]))
+                self.assertEqual(issue_deps.blocking(self.loop, self.st, 12),
+                                 [(None, issue_deps.UNREADABLE)])
+
+    def test_add_and_drop_on_a_malformed_nested_record_raise_and_write_nothing(self):
+        for text in self.MALFORMED:
+            with self.subTest(record=text):
+                corrupt(self.st, text)
+                with self.assertRaises(ValueError):
+                    self.st.issue_dep_add(13, 6, {"by": "operator", "at": "x"})
+                with self.assertRaises(ValueError):
+                    self.st.issue_dep_drop(12, 5)
+                for kwargs in ({}, {"issue": 12, "on": 6}, {"issue": 12, "waive": 5}):
+                    rc, out = self.depends(**kwargs)
+                    self.assertEqual(rc, 2, out)
+                    self.assertIn("the issue dependency record could not be read", out)
+                self.assertEqual((self.st.dir / "issue-deps.json").read_text(), text)
+                self.assertFalse((self.st.dir / "issue-deps-waivers.json").exists())
+
+    def test_a_malformed_waiver_history_is_unreadable_not_none(self):
+        self.depends(12, on=5)
+        corrupt(self.st, '{"12": {"6": null}}', "issue-deps-waivers.json")
+        rc, out = self.depends()
+        self.assertEqual(rc, 0)
+        self.assertIn("waiver history could not be read", out)
+
 
 class Waivers(DepsFixture):
     """#1301: a waiver removes the dependency and keeps who waived it and when; it never blocks."""
