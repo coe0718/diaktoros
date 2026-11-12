@@ -28,7 +28,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from diaktoros import broker_ipc, config, contained, trusted_turn  # noqa: E402
+from diaktoros import config, contained, trusted_turn  # noqa: E402
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 
 REPO = "acme/widgets"
 HEAD = "a" * 40

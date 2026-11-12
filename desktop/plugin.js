@@ -1234,7 +1234,7 @@ function validateRecords(data, loop) {
         category(row.kind, ['crash', 'timeout', 'stopped', 'incomplete', 'deferred', 'ledger', 'unknown']) &&
         (row.pr === null || count(row.pr)) && sha(row.head) && number(row.first_at) && number(row.last_at) && count(row.attempts) && count(row.redrives) :
         kind === 'broker' ? number(row.at) && count(row.pr) && sha(row.head) &&
-          category(row.role, ['reviewer', 'fixer', 'triage', 'adjudicator', 'issue_fixer', 'review_only_update', 'unknown']) &&
+          category(row.role, ['reviewer', 'fixer', 'triage', 'adjudicator', 'issue_fixer', 'reader', 'review_only_update', 'update_behind', 'unknown']) &&
           category(row.operation, ['review', 'push', 'answers', 'labels', 'comment', 'open_pr', 'request_review', 'issue_comment', 'file_issue', 'ruling_comment', 'issue_branch', 'update_branch', 'unknown']) &&
           category(row.phase, ['recorded', 'attempt', 'reconciled', 'unknown']) &&
           category(row.outcome, ['recorded', 'published', 'not_published', 'unchanged', 'unknown', 'published_pr_unverified']) :

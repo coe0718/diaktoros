@@ -530,6 +530,18 @@ test('records: reconciled unchanged is retained as a known audit outcome', async
   h.dispose()
 })
 
+test('records: a host base merge into a behind PR and a reader filing name their audit roles', async () => {
+  const h = await harness(); h.render('page')
+  const d = recordsFixture(); const row = d.broker.items[0]
+  d.broker.items = [{ ...row, role: 'update_behind', operation: 'update_branch', phase: 'reconciled', outcome: 'published' },
+    { ...row, role: 'reader', operation: 'unknown', phase: 'recorded', outcome: 'recorded' }]
+  h.respond(d); h.queries.records = h.good(await h.options.records.queryFn()); h.render('page')
+  const text = h.text(recordsRegion(h))
+  assert.match(text, /update_behind · update_branch · #651 · reconciled · published/)
+  assert.match(text, /reader · unknown · #651 · recorded · recorded/)
+  h.dispose()
+})
+
 test('records: loop switching binds queries and removal never substitutes history', async () => {
   const h = await harness(); h.queries.records = h.good(recordsFixture())
   h.queries.loops = h.good({ loops: [{ id: 'fixture-loop' }, { id: 'other-loop' }] })

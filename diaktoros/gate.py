@@ -772,7 +772,7 @@ def fixer_push_denial(loop: dict, context: str = "") -> str:
     unreadable policy read returns ``""`` — it must never drop the enable command or the hold
     itself — and ``context`` prefixes the diagnostic.
     """
-    from . import broker_ipc
+    from .broker import ipc as broker_ipc
     from .run_supervisor import FIXER_PUSH_OFF
     try:
         denial = broker_ipc.policy_hold_reason(loop)

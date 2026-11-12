@@ -434,6 +434,7 @@ def _record_failures(loop):
 
 
 def _record_broker(loop):
+    from .broker import AUDIT_ROLES
     raw = _record_bytes(config.state_dir(loop) / 'broker-audit.jsonl', tail=True)
     if raw and not raw.endswith(b'\n'):
         raise ValueError('incomplete append')
@@ -449,9 +450,7 @@ def _record_broker(loop):
         rows.append({'at': _record_number(entry.get('at')),
                      'pr': _record_number(entry.get('pr'), integer=True),
                      'head': _record_sha(entry.get('head', entry.get('old_head', ''))),
-                     'role': _record_enum(entry.get('role'),
-                                          ('reviewer', 'fixer', 'triage', 'adjudicator', 'issue_fixer',
-                                           'review_only_update')),
+                     'role': _record_enum(entry.get('role'), AUDIT_ROLES),
                      'operation': _record_enum(entry.get('operation'),
                                                ('review', 'push', 'answers', 'labels', 'comment',
                                                 'open_pr', 'request_review', 'issue_comment',

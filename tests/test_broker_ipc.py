@@ -14,7 +14,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import broker_ipc, gh
+from diaktoros import gh
+from diaktoros.broker import ipc as broker_ipc
 from scripts import broker_client
 
 HEAD = "a" * 40
