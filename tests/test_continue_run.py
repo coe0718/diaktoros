@@ -588,6 +588,116 @@ class Continue(Base):
         self.assertEqual(st.fix_ask_open(), {})
         fix_hold.check_ask(st, 12)
 
+    def post_plan_unreadable(self, live):
+        """``--post-plan`` with the issue read as ``live`` and its comments unreadable."""
+        with mock.patch.object(gh, "issue_comments_read", lambda loop, n: (None, "HTTP 502")):
+            return self.approve_after_plan(live, None)
+
+    def test_a_plan_rule_gone_with_another_conflict_still_settles_the_ask(self):
+        """#2382 review F2: the label is removed AND the branch moves. The branch conflict does
+        not hide that no plan is needed any more: the run's ask is closed, pending (comment
+        landed or not) or confirmed, and the seat may ask again."""
+        from diaktoros import fix_hold
+        labelled = issue(labels=("agent-fix", fix_hold.PLAN_LABEL))
+        for case in ("pending-landed", "pending-not-landed", "confirmed"):
+            with self.subTest(case=case):
+                self.branch_sha = NEW
+                if case == "confirmed":
+                    st = self.lost_plan(labelled)
+                    self.assertEqual(self.post_plan_with(labelled, [], post=Continue.plan_comment), 0)
+                    self.assertNotIn("pending", st.fix_ask_open()[12])
+                    self.writes = ["plan_comment"]
+                else:
+                    st = self.lost_plan(labelled)
+                landed = case != "pending-not-landed"
+                on_issue = [{"id": 500, "user": {"login": "fix"}, "body": self.posted}] \
+                    if landed else []
+                self.branch_sha = "e" * 40
+                self.assertEqual(self.post_plan_with(issue(), on_issue), 2)
+                self.assertEqual(st.fix_ask_open(), {})
+                self.assertEqual(st.fix_ask_count(12), 1 if landed else 0)
+                fix_hold.check_ask(st, 12)
+
+    def test_unreadable_comments_and_confirmed_asks_are_settled_as_documented(self):
+        """#2382 review F4: (a) no conflict, plan no longer needed, comments unreadable: the
+        pending ask is closed but stays counted (its comment may be on the issue); (b) the same
+        with a branch conflict while the issue still needs a plan: it stays pending for a retry;
+        (c) a confirmed ask of the run, plan no longer needed: closed, still counted."""
+        from diaktoros import fix_hold
+        labelled = issue(labels=("agent-fix", fix_hold.PLAN_LABEL))
+        st = self.lost_plan(labelled)
+        self.assertEqual(self.post_plan_unreadable(issue()), 2)                     # (a)
+        self.assertEqual((st.fix_ask_open(), st.fix_ask_count(12)), ({}, 1))
+        st = self.lost_plan(labelled)
+        self.branch_sha = "e" * 40
+        self.assertEqual(self.post_plan_unreadable(labelled), 2)                    # (b)
+        self.assertTrue(st.fix_ask_open()[12]["pending"])
+        self.assertEqual(st.fix_ask_count(12), 1)
+        self.branch_sha = NEW
+        self.assertEqual(self.post_plan_with(labelled, [], post=Continue.plan_comment), 0)
+        self.assertEqual(st.fix_ask_open()[12]["comment_id"], 500)
+        self.assertEqual(self.post_plan_unreadable(issue()), 2)                     # (c)
+        self.assertEqual((st.fix_ask_open(), st.fix_ask_count(12)), ({}, 1))
+        self.assertEqual(self.writes, ["plan_comment", "plan_comment"])
+
+    def test_release_never_touches_another_runs_ask(self):
+        """#2382 review F4: a pending or confirmed plan ask of another run, and the seat's own
+        question, are left as they are by this run's release, count included."""
+        from diaktoros import state as state_mod
+        st = state_mod.state_for(self.loop)
+        for ask in ({"kind": "plan", "comment_id": None, "text": "t", "run": "other", "pending": True},
+                    {"kind": "plan", "comment_id": 9, "text": "t", "run": "other"},
+                    {"kind": "question", "comment_id": 9, "text": "t"}):
+            with self.subTest(ask=ask):
+                st.kv_set_strict(st.dir / "fix-asks.json", {"open": {"12": ask}, "count": {"12": 1}})
+                for keep in (True, False):
+                    self.assertEqual(continue_run._release_plan_ask(
+                        self.loop, st, 12, self.run_id, keep_adopted=keep), "")
+                self.assertEqual((st.fix_ask_open()[12], st.fix_ask_count(12)), (ask, 1))
+
+    def test_continue_closes_the_plan_ask_even_when_the_review_request_fails(self):
+        """#2382 review F3: the PR is created, then the review request fails. The PR is open, so
+        the run's plan ask is closed then, not only after the review handoff."""
+        from diaktoros import fix_hold
+        st = self.lost_plan(issue(labels=("agent-fix", fix_hold.PLAN_LABEL)))
+
+        def refused(loop, **kw):
+            self.writes.append("request_review")
+            raise broker.BrokerDenied("review request failed")
+        args = argparse.Namespace(loop="widgets", run=self.run_id, dry_run=False, post_plan=False)
+        with mock.patch.object(gh, "fetch", self.fetch_with(issue())), self.real_policy(issue()), \
+                mock.patch.object(broker, "request_issue_pr_review", refused), \
+                mock.patch.object(gh, "issue_comments_read", lambda loop, n: ([], "")), \
+                mock.patch.object(config, "load_id", return_value=self.loop), \
+                mock.patch.object(operations, "_ledger_path", return_value=self.db), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(operations.cmd_continue(args), 2)
+        self.assertEqual(self.writes, ["plan_comment", "open_pr", "request_review"])
+        self.assertEqual((st.fix_ask_open(), st.fix_ask_count(12)), ({}, 0))
+
+    def test_the_sweep_never_resolves_an_ask_that_opened_while_it_read_replies(self):
+        """#2382 review F1: the sweep snapshots the run's confirmed plan ask and reads its
+        replies; meanwhile `continue` closes that ask and the seat opens a new question. The
+        old plan's `/loop approve` must not approve or close the new question."""
+        from diaktoros import fix_hold, gate
+        labelled = issue(labels=("agent-fix", fix_hold.PLAN_LABEL))
+        st = self.lost_plan(labelled)
+        self.assertEqual(self.post_plan_with(labelled, [], post=Continue.plan_comment), 0)
+        self.assertEqual(st.fix_ask_open()[12]["comment_id"], 500)
+
+        def interleaved(loop, n):
+            continue_run._release_plan_ask(self.loop, st, 12, self.run_id, keep_adopted=False)
+            st.fix_ask_set(12, "question", 600, "new question")
+            return [{"id": 601, "user": {"login": "jeremy"}, "body": "/loop approve"}], ""
+        queued = []
+        with mock.patch.object(gh, "issue_comments_read", interleaved), \
+                mock.patch.object(gate, "enqueue_isolated", lambda *a, **k: queued.append(a)):
+            fix_hold.sweep_asks(self.loop, st, [])
+        self.assertEqual(st.fix_ask_open()[12]["comment_id"], 600)
+        self.assertFalse(st.fix_plan_approved(12))
+        self.assertIsNone(st.fix_handoff(12))
+        self.assertEqual(queued, [])
+
     def test_continue_leaves_another_runs_ask_alone(self):
         """#2381: only the run's own ask is released; a seat's open question stays."""
         from diaktoros import state as state_mod

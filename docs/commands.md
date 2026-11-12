@@ -2132,10 +2132,16 @@ stops being refused only for want of a plan (#2381): when the label is removed, 
 shortened, the branch moved or any other conflict appears, `--post-plan` refuses to post but
 still settles the run's own reservation first. With no comment of the run on the issue, the
 reservation is dropped and does not count toward the three asks. With one, and the plan no
-longer required, the ask is closed (still counted). If another conflict means a plan may still be
-needed, the comment is adopted so `/loop approve` resolves it. If the comments cannot be read
-it stays pending, so run `--post-plan` again. When `continue` opens the run's PR, it closes
-the run's own plan ask the same way. Another run's ask, or the fixer seat's, is never touched.
+longer required (the issue, as read now, has no `plan-first` label and no large body, or is
+closed), the ask is closed (still counted), even if another conflict such as a moved branch
+also stands. If the issue still asks for a plan (or cannot be read) and another conflict stands,
+the comment is adopted so `/loop approve` resolves it. If the comments cannot be read it stays
+pending in that case, so run `--post-plan` again; when no plan is needed any more it is closed
+and stays counted, since its comment may be on the issue. When `continue` opens the run's PR, or
+finds it already open, it closes the run's own plan ask the same way, before the review
+request, so a failed review request does not leave it open. Another run's ask, or the fixer
+seat's, is never touched. The sweep resolves or closes only the exact ask whose replies it read:
+if that ask was closed and another opened meanwhile, the old reply is ignored.
 The watchdog sweep or the comment
 webhook reads a maintainer's `/loop approve` after it, records the approval and, since the
 branch is already pushed, queues no new fix turn; run `continue` again to open the PR.

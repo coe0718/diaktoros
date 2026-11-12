@@ -40,7 +40,8 @@ def inspect(loop: dict, sup, run_id: str) -> dict:
     ``conflicts`` mean it does nothing."""
     facts: list[str] = []
     conflicts: list[str] = []
-    plan = {"stages": [], "conflicts": conflicts, "facts": facts, "fix": None, "run": None}
+    plan = {"stages": [], "conflicts": conflicts, "facts": facts, "fix": None, "run": None,
+            "plan_needed": None}
     with sup._connect() as con:
         row = con.execute("SELECT id,repo,pr,head,seat,state FROM runs WHERE id=?",
                           (run_id,)).fetchone()
@@ -72,6 +73,7 @@ def inspect(loop: dict, sup, run_id: str) -> dict:
         conflicts.append(f"could not read issue #{number}: {err or 'unreadable'}")
     elif "pull_request" in issue or issue.get("state") != "open":
         conflicts.append(f"issue #{number} is no longer an open issue")
+    plan["plan_needed"] = _plan_needed(loop, number, issue, err)
     ref, err = gh.fetch(loop, f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}")
     sha = None
     if gh.status_of(err) == 404:
@@ -115,6 +117,20 @@ def inspect(loop: dict, sup, run_id: str) -> dict:
         _review_stage(loop, plan, pr)
     _authorize(loop, plan)
     return plan
+
+
+def _plan_needed(loop: dict, number: int, issue, err: str) -> bool | None:
+    """Whether the issue, as ``inspect`` just read it, still needs an approved plan before a PR
+    (``fix_hold.plan_required``, the rule the broker's ``open_pr`` applies); ``None`` when it
+    could not be read. A closed issue, or one that is now a PR, needs none: no plan is possible.
+    ``post_plan`` reads it to settle the run's plan ask even when another conflict stands
+    (#2382 review F2): a conflict alone does not mean a plan is still needed."""
+    from . import fix_hold, state as state_mod
+    if not isinstance(issue, dict) or err:
+        return None
+    if "pull_request" in issue or issue.get("state") != "open":
+        return False
+    return fix_hold.plan_required(state_mod.state_for(loop), number, issue)
 
 
 def _check_pr(loop: dict, plan: dict, pr: dict, sha: str | None) -> None:
@@ -193,10 +209,13 @@ def post_plan(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
         why = "; ".join(plan["conflicts"]) or "no plan is needed"
         settled = []
         if plan["fix"] is not None:
-            # No conflict and no plan-first refusal: the plan is no longer required, so the
-            # run's ask is closed outright; with a conflict, only an unconfirmed one is settled.
+            # The plan is no longer required (no plan-first refusal and no conflict, or the
+            # issue read now says no plan is needed or possible, #2382 review F2): the run's ask
+            # is closed outright. While a conflict hides whether one is still needed (the issue
+            # still asks for a plan, or could not be read), only an unconfirmed one is settled.
+            keep = bool(plan["conflicts"]) and plan.get("plan_needed") is not False
             settled = [_release_plan_ask(loop, state_mod.state_for(loop), plan["fix"]["number"],
-                                         run_id, keep_adopted=bool(plan["conflicts"]))]
+                                         run_id, keep_adopted=keep)]
         return False, lines + [f"no plan posted: only a run refused for want of a plan has one "
                                f"to post ({why})"] + [s for s in settled if s]
     fix, st = plan["fix"], state_mod.state_for(loop)
@@ -379,6 +398,16 @@ def _deliver_review(loop: dict, pr: int, sender: str) -> str:
             "watchdog sweep will")
 
 
+def _release_after_pr(loop: dict, number: int, run_id: str, lines: list[str]) -> None:
+    """The run's PR is open (``continue`` just created it, or found it open): a plan ask
+    ``--post-plan`` opened for this run asks for nothing any more, so close it (#2381) before
+    any later stage, so a failed review request cannot leave it stranded (#2382 review F3)."""
+    from . import state as state_mod
+    released = _release_plan_ask(loop, state_mod.state_for(loop), number, run_id, keep_adopted=False)
+    if released:
+        lines.append(released)
+
+
 def run(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
     """Inspect, then complete only the missing stages. ``(ok, lines)``; ok is False when the
     run stays quarantined or a write failed."""
@@ -395,6 +424,8 @@ def run(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
     login = config.seat_login(loop, "fixer")
     pr = plan.get("pr")
     new_head = fix["new_head"]
+    if pr is not None:
+        _release_after_pr(loop, number, run_id, lines)
     for stage in plan["stages"]:
         if stage == "open_pr":
             issue = gh.fetch(loop, f"/repos/{repo}/issues/{number}")[0] or {}
@@ -409,6 +440,7 @@ def run(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
                 return False, lines + [f"PR create failed or unconfirmed ({exc}); quarantined again"]
             sup.issue_fix_status(run_id, "opened", pr_number=pr)
             lines.append(f"opened PR #{pr}")
+            _release_after_pr(loop, number, run_id, lines)
         else:
             try:
                 broker.request_issue_pr_review(loop, repo=repo, pr=pr, login=login)
@@ -424,11 +456,6 @@ def run(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
             else:
                 lines.append(f"requested review of PR #{pr}")
     sup.issue_fix_status(run_id, "requested", pr_number=pr, new_head=new_head)
-    # #2381: the PR is open, so a plan ask `--post-plan` opened for this run asks for nothing.
-    from . import state as state_mod
-    released = _release_plan_ask(loop, state_mod.state_for(loop), number, run_id, keep_adopted=False)
-    if released:
-        lines.append(released)
     if plan["run"]["state"] == "uncertain":
         try:
             sup.reconcile_uncertain(run_id, reason=f"continue: issue fix finished (PR #{pr})",
