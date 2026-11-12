@@ -1153,11 +1153,47 @@ class LoopState:
             change(data)
             self._save_strict(self.dir / "fix-asks.json", data)
 
-    def fix_ask_set(self, number: int, kind: str, comment_id: int, text: str) -> None:
+    def fix_ask_set(self, number: int, kind: str, comment_id: int, text: str,
+                    run: str = "") -> None:
+        """Open an ask. ``run``: the issue-fix run whose pushed branch ``continue`` posted as
+        the plan (#2334); its approval is recorded, and no new fix turn is queued for it."""
         def change(data):
-            data["open"][str(number)] = {"kind": kind, "comment_id": comment_id, "text": text}
+            data["open"][str(number)] = {"kind": kind, "comment_id": comment_id, "text": text,
+                                         **({"run": run} if run else {})}
             data["count"][str(number)] = data["count"].get(str(number), 0) + 1
             data["handoff"].pop(str(number), None)
+        self._fix_ask_edit(change)
+
+    def fix_ask_claim(self, number: int, kind: str, text: str, run: str, check) -> dict:
+        """Reserve the issue's one ask for ``run`` before its comment is posted (#2334 review
+        F3/F4): under the state lock, ``check(self, number)`` (``fix_hold.check_ask``) raises
+        when another ask is open or the asks are spent, else a ``pending`` ask with no comment
+        yet is saved and counted. When ``run``'s own pending claim is already open (an earlier
+        call never confirmed its comment), it is returned with ``reconcile`` set instead, and
+        nothing else is counted. The caller confirms with ``fix_ask_confirm``."""
+        with self.locked():
+            ask = self.fix_ask_open().get(number)
+            if isinstance(ask, dict) and ask.get("pending") and ask.get("run") == run:
+                return {**ask, "reconcile": True}
+            check(self, number)
+            claim = {"kind": kind, "comment_id": None, "text": text, "run": run, "pending": True}
+
+            def change(data):
+                data["open"][str(number)] = claim
+                data["count"][str(number)] = data["count"].get(str(number), 0) + 1
+                data["handoff"].pop(str(number), None)
+            self._fix_ask_edit(change)
+            return dict(claim)
+
+    def fix_ask_confirm(self, number: int, run: str, comment_id: int) -> None:
+        """Record the posted comment of ``run``'s pending ask; from it on, a maintainer's reply
+        after that comment resolves the ask. Raises when the claim is not this run's any more."""
+        def change(data):
+            ask = data["open"].get(str(number))
+            if not isinstance(ask, dict) or ask.get("run") != run:
+                raise ValueError(f"issue #{number}'s open ask is not run {run}'s")
+            ask["comment_id"] = comment_id
+            ask.pop("pending", None)
         self._fix_ask_edit(change)
 
     def fix_ask_resolve(self, number: int, reply: str, by: str, approve: bool) -> None:

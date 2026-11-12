@@ -263,6 +263,17 @@ class Delivery(Replies):
         self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix:ask1")])
         self.assertEqual(list(self.st.fix_ask_open()), [13])
 
+    def test_an_approve_of_a_plan_continue_posted_records_it_and_queues_nothing(self):
+        """#2334: the webhook reads `/loop approve` on a plan `continue --post-plan` opened; the
+        branch is pushed, so the approval is recorded and `continue` (named) opens the PR."""
+        self.st.fix_ask_set(12, "plan", 100, "the pushed branch", run="run-7")
+        self.comments.append({"id": 201, "user": {"login": "Jeremy"}, "body": "/loop approve"})
+        decision, reason = self.deliver(self.comment())
+        self.assertEqual(decision, "accepted", reason)
+        self.assertIn("continue --loop widgets --run run-7", reason)
+        self.assertTrue(self.st.fix_plan_approved(12))
+        self.assertEqual((self.enqueued, self.st.fix_ask_open()), ([], {}))
+
     def test_a_reply_while_a_turn_runs_waits_for_it_to_end(self):
         self.comment_turn(at=TURN + 900, state="running", key="issue-fix:again")
         self.reply(201, "jeremy", at=TURN + 1200)

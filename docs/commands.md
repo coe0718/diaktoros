@@ -1159,7 +1159,7 @@ a real isolated seat turn. To prove the isolated path end to end, use [`selftest
 
 ### update
 
-Shows what updating the installed plugin would pick up, and with `--apply` does it. Hermes's own
+Shows what updating the installed plugin would pick up. It only reads. Hermes's own
 `plugins check-updates` reports a pinned install as up to date; this compares the installed commit
 with `main`'s head (or `--ref`) on GitHub, through the same comparison doctor's `plugin-version`
 check reads.
@@ -1167,7 +1167,6 @@ check reads.
 ```bash
 hermes dk update --loop "<loop-id>"
 hermes dk update --loop "<loop-id>" --ref v0.3.0
-hermes dk update --loop "<loop-id>" --apply
 ```
 
 By default it only reads. It prints the installed commit, the target commit, how many commits the
@@ -1180,15 +1179,13 @@ is dropped, so `Revert "Fix a thing (#876)" (#900)` shows `Revert "Fix a thing"`
 install line. GitHub's compare lists at most 250 commits, so past that the PR list says it is
 partial.
 
-- `--apply` runs that install line with `--ref` set to the target's commit, then
-  `hermes dk doctor --loop <id>`, and reports the new commit. It refuses while any run is in
-  flight or uncertain in the host ledger (or the ledger cannot be read), because a reinstall
-  mid-turn would swap code under a live worker. It holds migrate's lock while it installs, so a
-  second `update --apply` or `migrate` is refused. Exit `1` if the install failed, the commit is
-  not the expected one, or doctor reports a failure.
+- **It installs nothing.** The install line is `hermes plugins update diaktoros`: Hermes moves a
+  catalog install only to the commit the catalog has reviewed (its pinned `sha`), which may be
+  older than the target shown. The catalog doesn't accept a plugin that updates itself, so
+  `update` doesn't install (its installer was removed in v0.6.1). Run the update between turns, then
+  `hermes dk doctor`.
 - Offline or unreadable (no network, no read token, GitHub error, an install that is not a git
-  checkout): it says the count is unknown, guesses none, and still prints the install line. With
-  `--apply` and no resolvable commit it installs nothing.
+  checkout): it says the count is unknown, guesses none, and still prints the install line.
 - It needs a configured loop only for its read token; it does not change the loop.
 - The running process keeps the old code until Hermes restarts: restart the gateway after an
   update.
@@ -1198,7 +1195,6 @@ partial.
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` |  | loop id whose read token queries GitHub (default: the only configured loop) |
 | `--ref` | `SHA|TAG` |  | the commit or tag to update to (default: main's head) |
-| `--apply` |  |  | run the install line, then doctor, and report the new commit; refused while a loop turn is running |
 <!-- /flags -->
 
 ### migrate
@@ -1249,8 +1245,8 @@ The archive holds the routes' HMAC secrets, so restored hooks keep working. It i
 `0600`, the command warns about it, and the secrets are never printed. It leaves out GitHub
 tokens (PATs), Hermes profiles and model logins. It never overwrites a file.
 
-It refuses (exit `2`, nothing written) while `migrate`'s pause marker exists: a `migrate`,
-`restore` or `update --apply` is running, or a `migrate` died before it finished (#1054). The
+It refuses (exit `2`, nothing written) while `migrate`'s pause marker exists: a `migrate` or
+`restore` is running, or a `migrate` died before it finished (#1054). The
 records may then be half moved, and they are only safe under the pause, which an archive would
 not carry. Back up once the migration has finished. `migrate`'s own backup is the exception: it
 is taken under its own marker, and when it picks up an interrupted run it records that run's
@@ -1468,7 +1464,8 @@ is caught only when the review the turn would submit is REQUEST_CHANGES **and** 
 (case-insensitive) matches inside a numbered finding line (`F1: ...`, #475); a mention in an
 APPROVE, or outside a finding line, is a miss. Seed cases (PRs #460, #497, #503, #506; their
 patterns are starting points to tune) are in `docs/corpus/`. Each run is
-appended to `<state dir>/corpus_scores.jsonl` with the prompt revision and model. Exit 1 when
+appended to `<state dir>/corpus_scores.jsonl` with the prompt revision and model; the file keeps
+the last 500 runs (`corpus.SCORES_KEEP`, #2302), older ones are pruned. Exit 1 when
 anything was missed; a malformed case file stops the run (exit 2).
 
 <!-- flags:corpus -->
@@ -2121,6 +2118,21 @@ printed (also by `--dry-run`): "not authorized now" when policy refuses, "could 
 now" when GitHub could not be read for the issue (an outage, #2335); with no stage left to
 write, nothing is checked and the run is only recorded and released.
 
+A PR stage also needs the plan-first rule the broker's `open_pr` applies (#2334): an issue with
+the `plan-first` label or a body over 4,000 characters needs a maintainer's approved plan. It is
+checked on the same issue read that authorizes the fix, so a label added in between cannot slip
+through, and a missing local approval record refuses too. To recover, `--post-plan` posts one
+fixer comment on the issue presenting the pushed branch (a compare link) as the plan, ending
+with the `/loop approve` line, and opens a plan ask tied to the run (it counts toward the
+issue's three asks and is refused while another ask is open). The ask is reserved before the
+comment is posted, under the lock the seat's own `--ask` uses, so two `--post-plan` calls, or one
+and a fixer turn, never both post. If the comment's outcome is unknown or its ask could not be
+recorded, the reservation stays open as pending (`status` says so; no reply resolves it, and no
+other ask can start): run `--post-plan` again, which adopts the run's comment if GitHub has it
+(found by a hidden marker naming the run) and posts only if not. The watchdog sweep or the comment
+webhook reads a maintainer's `/loop approve` after it, records the approval and, since the
+branch is already pushed, queues no new fix turn; run `continue` again to open the PR.
+
 A review counts as given only when the reviewer has a verdict (approval or change request) at the
 PR's **current head**, the gate's own rule: a verdict at an older head does not hide a head nobody
 has reviewed. With a **GitHub App reviewer** GitHub cannot be asked for a review (it answers 201
@@ -2145,6 +2157,7 @@ this repository ships no such gateway hook, so only the CLI fires today.
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
 | `--run` | `RUN` | **required** | the issue-fix run id (`status` lists it) |
 | `--dry-run` |  |  | only inspect and say what the next step would be |
+| `--post-plan` |  |  | for a run refused only for want of an approved plan (plan-first): post its pushed branch on the issue as the plan to approve |
 <!-- /flags -->
 
 ### drain

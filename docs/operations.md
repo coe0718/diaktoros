@@ -537,7 +537,9 @@ in `waiting`, the worker adds one line there saying when, which run (repo, PR, s
 id), its retry count, until when (`retry_at`) and why, for example
 `2026-11-09T17:40:00Z wait repo=o/r pr=12 head=abc1234 seat=reviewer run=55 retries=0
 retry_at=2026-11-09T17:41:30Z reason=ci: …`. A CI hold re-polled with the same reason adds no
-line, so the log keeps why a run waited after its row has moved on.
+line, so the log keeps why a run waited after its row has moved on. Like a worker's stderr, which
+is cut at the same size, a wait line is not written once the log is past 256 KiB (#2302); the
+host's next spawn rotates it.
 [`history --pr N`](commands.md#history) shows these lines as the PR's waits.
 
 | State | Meaning | Action |

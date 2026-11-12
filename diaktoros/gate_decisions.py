@@ -9,9 +9,7 @@ ever stored, only gate, event, action, PR/issue number, head (7), sender, decisi
 
 from __future__ import annotations
 
-import fcntl
 import json
-import os
 import sys
 
 from . import config, util
@@ -55,17 +53,7 @@ def record(loop: dict, gate: str, payload: dict, decision: str, reason: str) -> 
         directory = config.state_dir(loop)
         directory.mkdir(parents=True, exist_ok=True)
         line = json.dumps(_entry(gate, payload, decision, reason), sort_keys=True) + "\n"
-        fd = os.open(directory / LOCK, os.O_CREAT | os.O_RDWR, 0o600)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            path = directory / FILE
-            with open(path, "a", encoding="utf-8") as out:
-                out.write(line)
-            lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-            if len(lines) > KEEP:
-                util.atomic_write(path, "".join(lines[-KEEP:]))
-        finally:
-            os.close(fd)
+        util.append_keeping(directory / FILE, line, KEEP, directory / LOCK)
     except Exception as exc:  # noqa: BLE001 - best effort by design
         try:
             print(f"{LOG_PREFIX} gate decision not recorded: {type(exc).__name__}", file=sys.stderr)

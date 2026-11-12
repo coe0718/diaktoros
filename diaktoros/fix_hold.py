@@ -82,7 +82,11 @@ def plan_required(st, number: int, issue: dict | None) -> bool:
 
 def _ask_wants(ask: dict) -> str:
     """What an open ask waits for from a maintainer: the one wording ``ask_line`` (``status``,
-    ``explain``) and ``ask_outcome`` (the ``fixed`` notice) share."""
+    ``explain``) and ``ask_outcome`` (the ``fixed`` notice) share. A plan ``continue --post-plan``
+    reserved but whose comment is unconfirmed (``pending``, #2334) waits on that command first."""
+    if ask.get("pending"):
+        return (f"its plan comment to be confirmed (`hermes dk continue --run {ask.get('run')} "
+                "--post-plan` again)")
     return ("approval of its plan (`/loop approve`)" if ask.get("kind") == "plan"
             else "an answer to its question")
 
@@ -173,6 +177,10 @@ def sweep_asks(loop: dict, st, lines: list[str], only: int | None = None) -> Non
     for number, ask in sorted(st.fix_ask_open().items()):
         if only is not None and number != only:
             continue
+        if ask.get("pending"):
+            # #2334 review F4: `continue --post-plan` reserved this ask but its comment is not
+            # confirmed; no reply is "after" a comment we do not know, so none resolves it yet.
+            continue
         comments, error = gh.issue_comments_read(loop, number)
         if comments is None:
             log(f"issue #{number}: replies unreadable, ask stays open: {error}")
@@ -182,6 +190,13 @@ def sweep_asks(loop: dict, st, lines: list[str], only: int | None = None) -> Non
             continue
         login, body = found
         st.fix_ask_resolve(number, body[:ASK_REPLY_MAX], login, ask.get("kind") == "plan")
+        if ask.get("run"):
+            # #2334: `continue` posted a pushed fix as the plan. The approval is recorded above;
+            # the branch is already pushed, so no fresh turn: `continue` opens its PR.
+            st.fix_ask_drop(number)
+            log(f"issue #{number}: {login} approved the plan of run {ask['run']}; finish it with "
+                f"`hermes dk continue --loop {loop['id']} --run {ask['run']}`")
+            continue
         try:
             issue_inputs.issue_fix_issue(loop, number)
             base, outcome = queue_fix(loop, number, f"issue-fix:ask{st.fix_ask_count(number)}")

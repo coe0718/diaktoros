@@ -115,9 +115,13 @@ def on_comment(loop: dict, payload: dict) -> None:
     st = state_mod.state_for(loop)
     if number in st.fix_ask_open():                 # an ask (#483) resumes by its own rules
         lines: list[str] = []
+        run = st.fix_ask_open()[number].get("run")
         fix_hold.sweep_asks(loop, st, lines, only=number)
         if number in st.fix_ask_open():
             silence(f"issue #{number}: the ask is still open " + " ".join(lines))
+        if run:                                     # #2334: the plan `continue` posted
+            silence(f"issue #{number}: {login} approved the plan of run {run}; `hermes dk "
+                    f"continue --loop {loop['id']} --run {run}` opens its PR", "accepted")
         silence(f"issue #{number}: {login} answered the fixer's ask; fix turn resumed", "accepted")
     rows = [row for row in gate.isolated_supervisor(loop).issue_fix_comment_waits(
         loop["repo"], time.time() - WAIT_DAYS * 86400) if row["number"] == number]

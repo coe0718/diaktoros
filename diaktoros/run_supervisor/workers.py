@@ -25,7 +25,7 @@ import time
 
 from .. import envnames, run_supervisor, util
 from ..hostdirs import WORKER_ENV, in_worker
-from . import claims
+from . import claims, waits
 
 
 def process_state(pid: int | None, launched: float | None) -> str:
@@ -282,6 +282,10 @@ class WorkerLifecycle:
         app_tokens.prepare(host_home)     # and share the host's App tokens (#1780)
         run_supervisor._WORKERS[:] = [worker for worker in run_supervisor._WORKERS if worker.poll() is None]
         log = self._worker_log()
+        if log is not None:
+            # Which file the worker's stderr is, as opened here: it caps that one even if
+            # another spawn rotates the path first (waits.cap_stderr, #2302).
+            env[waits.LOG_ENV] = waits.identity(log.fileno())
         try:
             # ``python -m`` puts the current directory first on sys.path, ahead of PYTHONPATH:
             # started from a checkout of another revision, the worker would run that code
@@ -302,14 +306,14 @@ class WorkerLifecycle:
         (whose recover() also spawns) only appends to an existing, unrotated log and never
         creates one; failing that its worker's stderr is discarded, as before.
         """
-        path = self.db.with_name(self.db.name + ".workers.log")
+        path = waits.log_path(self.db)
         flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
         try:
             if in_worker():
-                if not path.is_file() or path.stat().st_size > run_supervisor.WORKER_LOG_MAX:
+                if not waits.within_cap(path):
                     return None
             else:
-                if path.is_file() and path.stat().st_size > run_supervisor.WORKER_LOG_MAX:
+                if path.is_file() and not waits.within_cap(path):
                     os.replace(path, path.with_name(path.name + ".1"))
                 flags |= os.O_CREAT
             return os.fdopen(os.open(path, flags, 0o600), "ab")

@@ -9,8 +9,9 @@ stage ``continue`` can do, so no push can happen twice. Anything the records and
 disagree on stays quarantined, with the facts listed. Before any stage writes, the fix is
 re-authorized against live policy (``broker.authorize_issue_fix``, #1051): the operator's
 switch, the identity checks, the issue's author and fix label and its dependency holds bind
-``continue`` as they bind the seat's own ``open_pr``, and so does its plan-first rule
-(``fix_hold.plan_required``, #2336) before the PR is opened.
+``continue`` as they bind the seat's own ``open_pr``, and so does the plan-first rule
+(``fix_hold.plan_required``, checked on that same authorizing read, #2334, #2336): a PR stage
+waits for a maintainer-approved plan, which ``post_plan`` asks for.
 
 ``from_chat`` is the reply path (``continue N``): a sender who is not one of the loop's
 maintainers is ignored without a trace.
@@ -140,18 +141,24 @@ def _authorize(loop: dict, plan: dict) -> None:
     """Re-authorize the planned writes against live policy (#1051), as the seat's own
     ``open_pr`` is: ``broker.authorize_issue_fix`` (issue fixes on, distinct verified
     identities, the issue still open by an allowlisted author with the fix label, no
-    dependency hold). Opening the PR also needs what the seat's ``open_pr`` needs beyond that
-    (#2336): no plan owed on a plan-first issue (``fix_hold.plan_required``). A denial is a
-    conflict, so the dry run says it and ``run`` writes nothing; an issue GitHub could not be
-    read for is worded as not checked, not as refused (#2335). With no stage planned nothing
-    is written, so recording a finished fix needs no check."""
+    dependency hold), and for a PR stage the plan-first rule the broker's ``open_pr`` applies
+    (``plan_first=True``: ``fix_hold.plan_required`` on the very issue read that authorized it,
+    #2334, #2336). A denial is a conflict, so the dry run says it and ``run`` writes nothing;
+    an issue GitHub could not be read for is worded as not checked, not as refused (#2335); a
+    plan-first denial also marks ``plan["plan_first"]``, which ``post_plan`` recovers from.
+    With no stage planned nothing is written, so recording a finished fix needs no check."""
     if not plan["stages"]:
         return
     fix = plan["fix"]
     try:
-        broker.authorize_issue_fix(loop, repo=fix["repo"], number=fix["number"])
-        if "open_pr" in plan["stages"]:
-            _check_plan(loop, fix["number"])
+        broker.authorize_issue_fix(loop, repo=fix["repo"], number=fix["number"],
+                                   plan_first="open_pr" in plan["stages"])
+    except broker.PlanRequired as exc:
+        plan["conflicts"].append(f"{exc}; post the pushed fix as its plan with `hermes dk "
+                                 f"continue --loop {loop['id']} --run {plan['run']['id']} "
+                                 "--post-plan`, then a maintainer replies `/loop approve`")
+        plan["plan_first"] = True
+        plan["stages"] = []
     except broker.BrokerUnchecked as exc:
         plan["conflicts"].append(f"the issue fix could not be checked now: {exc}")
         plan["stages"] = []
@@ -160,21 +167,93 @@ def _authorize(loop: dict, plan: dict) -> None:
         plan["stages"] = []
 
 
-def _check_plan(loop: dict, number: int) -> None:
-    """Deny opening the PR while the live issue needs an approved plan first: the one rule
-    (``fix_hold.plan_required``) the seat's ``open_pr`` checks before its branch and PR
-    writes (``broker_issues``), read the same way (the live issue, the loop's state)."""
-    from . import fix_hold, run_supervisor, state as state_mod
-    from .run_supervisor import issue_inputs
+def post_plan(loop: dict, sup, run_id: str) -> tuple[bool, list[str]]:
+    """Post a pushed plan-first fix as its plan (#2334): the recovery for a run ``continue``
+    refuses only because no maintainer approved a plan. One fixer comment on the issue, worded
+    like the seat's ``--ask plan`` (``fix_hold.posted_ask``), opens a plan ask tied to this run;
+    a maintainer's ``/loop approve`` after it is read by the usual sweep or webhook
+    (``fix_hold.sweep_asks``), which records the approval, and ``continue`` then opens the PR.
+    Refused when anything else stands in the way, another ask is open, or the asks are spent.
+
+    The ask is reserved (``State.fix_ask_claim``) before the comment is posted, and the reserve,
+    the post and the record all run under ``config.push_policy_lock``, the lock the seat's own
+    ``issue_comment --ask`` checks, posts and records under: two ``--post-plan`` calls, or one
+    and a seat, never both post (review F3). A reservation whose comment was not confirmed (a
+    lost response, a failed state write, a crash) stays open as ``pending``, which no reply
+    resolves; calling this again for the same run reconciles it: it adopts the fixer's comment
+    carrying this run's ``plan_marker`` if GitHub has one, and posts only if not (review F4)."""
+    from . import fix_hold, state as state_mod
+    plan = inspect(loop, sup, run_id)
+    lines = list(plan["facts"])
+    if not plan.get("plan_first") or len(plan["conflicts"]) != 1:
+        why = "; ".join(plan["conflicts"]) or "no plan is needed"
+        return False, lines + [f"no plan posted: only a run refused for want of a plan has one "
+                               f"to post ({why})"]
+    fix, st = plan["fix"], state_mod.state_for(loop)
+    number = fix["number"]
+    text = (f"Run `{run_id}` pushed a fix for this issue to `{fix['branch']}` at "
+            f"`{str(fix['new_head'])[:12]}`, but the issue needs an approved plan before a PR. "
+            f"The plan is that branch as it stands: https://github.com/{fix['repo']}/compare/"
+            f"{loop['base']}...{quote(fix['branch'], safe='/')}")
+    with config.push_policy_lock():
+        try:
+            login = broker.authorize_issue_fix(loop, repo=fix["repo"], number=number)
+            ask = st.fix_ask_claim(number, "plan", text, run_id, fix_hold.check_ask)
+        except (ValueError, broker.BrokerDenied) as exc:
+            return False, lines + [f"no plan posted: {exc}"]
+        failed = _post_claimed_plan(loop, st, fix, login, run_id, ask)
+    if failed:
+        return False, lines + [failed]
+    return True, lines + [f"posted the plan on issue #{number}; once a maintainer replies "
+                          f"`{fix_hold.APPROVE}`, `hermes dk continue --loop {loop['id']} --run "
+                          f"{run_id}` opens the PR"]
+
+
+def plan_marker(run_id: str) -> str:
+    """The hidden first line that ties a posted plan comment to its run, so a retry finds it."""
+    return f"<!-- diaktoros plan of run {run_id} -->"
+
+
+def _adopt_plan_comment(loop: dict, number: int, login: str, run_id: str) -> tuple[int | None, str]:
+    """``(id, "")`` of the oldest comment by ``login`` carrying ``run_id``'s ``plan_marker``,
+    ``(None, "")`` when there is none, ``(None, why)`` when the comments are unreadable."""
+    comments, error = gh.issue_comments_read(loop, number)
+    if comments is None:
+        return None, error or "unreadable"
+    for comment in sorted((c for c in comments if isinstance(c, dict) and type(c.get("id")) is int),
+                          key=lambda c: c["id"]):
+        user = comment.get("user")
+        author = str(user.get("login") or "") if isinstance(user, dict) else ""
+        if author.casefold() == login.casefold() and plan_marker(run_id) in str(comment.get("body") or ""):
+            return comment["id"], ""
+    return None, ""
+
+
+def _post_claimed_plan(loop: dict, st, fix: dict, login: str, run_id: str, ask: dict) -> str:
+    """Post (or adopt) the comment of the plan ask ``post_plan`` reserved and record its id;
+    the refusal line, or ``""``. A reservation left ``pending`` by an earlier call is first
+    matched against the issue's comments (``_adopt_plan_comment``), so a comment that was posted
+    but never recorded is adopted, not posted twice. Any failure leaves it ``pending``."""
+    from . import fix_hold
+    number, again = fix["number"], "; the plan ask stays reserved: run `--post-plan` again"
+    comment = None
+    if ask.get("reconcile"):
+        comment, error = _adopt_plan_comment(loop, number, login, run_id)
+        if error:
+            return f"no plan posted: the issue's comments are unreadable ({error}){again}"
+    if comment is None:
+        body = f"{plan_marker(run_id)}\n{fix_hold.posted_ask('plan', ask['text'])}"
+        try:
+            comment = broker.post_issue_comment(loop, repo=fix["repo"], number=number,
+                                                login=login, body=body)
+        except Exception as exc:
+            return (f"plan comment failed or unconfirmed ({exc}){again}, which adopts the "
+                    "comment if GitHub has it")
     try:
-        live = issue_inputs.issue_fix_issue(loop, number)
-    except run_supervisor.RetryableError as exc:      # the issue read failed, not the policy
-        raise broker.BrokerUnchecked(str(exc)) from None
-    except ValueError as exc:
-        raise broker.BrokerDenied(str(exc)) from None
-    if fix_hold.plan_required(state_mod.state_for(loop), number, live):
-        raise broker.BrokerDenied("this issue needs a plan first (plan-first label or a large "
-                                  "body) and no maintainer has approved one with /loop approve")
+        st.fix_ask_confirm(number, run_id, comment)
+    except Exception as exc:
+        return f"plan comment {comment} posted but not recorded ({exc}){again}, which adopts it"
+    return ""
 
 
 def review_stage(loop: dict) -> str:
