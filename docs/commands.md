@@ -1503,7 +1503,7 @@ not supply models. The Hermes example's `-p` selects which profile's model to ch
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--profile-name` | `PROFILE` |  | Hermes profile name |
-| `--seat` | `reviewer` \| `fixer` \| `adjudicator` \| `shadow` |  | use this seat's profile from the loop config |
+| `--seat` | `reviewer` \| `fixer` \| `adjudicator` \| `triage` \| `shadow` |  | use this seat's profile from the loop config |
 | `--loop` | `LOOP` |  | loop id for --seat (default: the only loop) |
 <!-- /flags -->
 
@@ -2115,8 +2115,9 @@ seat's own `open_pr` is (`broker.authorize_issue_fix`, #1051): issue fixes must 
 operator's switch, which needs `unattended_fixer_push`), the reader, reviewer and fixer must be
 distinct verified accounts, and the issue must still be an open issue by an allowlisted author with
 the maintainer's fix label and no unmet prerequisite. A refusal keeps the run quarantined and is
-printed (also by `--dry-run`); with no stage left to write, nothing is checked and the run is
-only recorded and released.
+printed (also by `--dry-run`): "not authorized now" when policy refuses, "could not be checked
+now" when GitHub could not be read for the issue (an outage, #2335); with no stage left to
+write, nothing is checked and the run is only recorded and released.
 
 A PR stage also needs the plan-first rule the broker's `open_pr` applies (#2334): an issue with
 the `plan-first` label or a body over 4,000 characters needs a maintainer's approved plan. It is

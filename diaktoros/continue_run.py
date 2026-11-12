@@ -143,7 +143,8 @@ def _authorize(loop: dict, plan: dict) -> None:
     identities, the issue still open by an allowlisted author with the fix label, no
     dependency hold), and for a PR stage the plan-first rule the broker's ``open_pr`` applies
     (``plan_first=True``: ``fix_hold.plan_required`` on the very issue read that authorized it,
-    #2334). A denial is a conflict, so the dry run says it and ``run`` writes nothing; a
+    #2334). A denial is a conflict, so the dry run says it and ``run`` writes nothing; an issue
+    GitHub could not be read for is worded as not checked, not as refused (#2335); a
     plan-first denial also marks ``plan["plan_first"]``, which ``post_plan`` recovers from.
     With no stage planned nothing is written, so recording a finished fix needs no check."""
     if not plan["stages"]:
@@ -157,6 +158,9 @@ def _authorize(loop: dict, plan: dict) -> None:
                                  f"continue --loop {loop['id']} --run {plan['run']['id']} "
                                  "--post-plan`, then a maintainer replies `/loop approve`")
         plan["plan_first"] = True
+        plan["stages"] = []
+    except broker.BrokerUnchecked as exc:
+        plan["conflicts"].append(f"the issue fix could not be checked now: {exc}")
         plan["stages"] = []
     except broker.BrokerDenied as exc:
         plan["conflicts"].append(f"the issue fix is not authorized now: {exc}")

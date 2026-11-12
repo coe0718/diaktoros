@@ -37,6 +37,12 @@ class BrokerNotSent(BrokerDenied):
     unknown (a timeout, a 5xx, an answer that is not an issue)."""
 
 
+class BrokerUnchecked(BrokerDenied):
+    """Fail closed because live policy could not be checked now (a GitHub read failed), not
+    because it refused: still a denial to every caller, but one a caller may word as "could not
+    be checked now" rather than "not authorized now" (#2335)."""
+
+
 class BrokerConflict(BrokerDenied):
     """An APPROVE refused because the live PR conflicts with its base (#1243): no review body can
     cure it, so the caller ends the reviewer's turn rather than asking for a resubmission."""
@@ -444,10 +450,11 @@ def authorize_issue_fix(loop: dict, *, repo: str, number: int, plan_first: bool 
     The repository must have issue fixes on (which includes its unattended fixer pushes); the
     fixer, reviewer and reader must be distinct accounts whose tokens resolve to themselves; and
     the issue, re-read as the reader, must still be an open issue by an allowlisted author with
-    the fix label a maintainer applied. With ``plan_first`` (a PR is about to be opened), that
-    same read must also pass the plan-first rule (``fix_hold.plan_required``), else
-    ``PlanRequired``: one read decides both, so a label added between two reads cannot slip
-    through (#2334).
+    the fix label a maintainer applied. An issue GitHub could not be read for raises
+    ``BrokerUnchecked`` (a ``BrokerDenied``): the check failed, not the policy (#2335). With
+    ``plan_first`` (a PR is about to be opened), that same read must also pass the plan-first
+    rule (``fix_hold.plan_required``), else ``PlanRequired``: one read decides both, so a label
+    added between two reads cannot slip through (#2334).
     """
     from . import config, run_supervisor
     from .run_supervisor import issue_inputs
@@ -462,8 +469,13 @@ def authorize_issue_fix(loop: dict, *, repo: str, number: int, plan_first: bool 
                               fixer), "read, reviewer and fixer")
     try:
         live = issue_inputs.issue_fix_issue(loop, number)
+    except run_supervisor.RetryableError as exc:      # the issue read failed, not the policy
+        raise BrokerUnchecked(str(exc)) from None
+    except ValueError as exc:
+        raise BrokerDenied(str(exc)) from None
+    try:
         issue_inputs.issue_fix_dependencies(loop, number)
-    except (run_supervisor.RetryableError, ValueError) as exc:
+    except run_supervisor.RetryableError as exc:
         raise BrokerDenied(str(exc)) from None
     if plan_first:
         from . import fix_hold, state as state_mod

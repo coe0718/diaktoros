@@ -523,6 +523,13 @@ class Continue(Base):
             return live, ""
         return fetch
 
+    def test_an_unreadable_issue_is_not_checked_rather_than_refused(self):
+        """#2335: GitHub unreachable during the live check keeps the run quarantined, but says
+        the fix could not be checked now, not that policy refused it."""
+        ok, lines = self.live_policy(self.loop, None)
+        self.assert_refused(ok, lines, "could not be checked now: issue unreadable")
+        self.assertNotIn("not authorized now", lines[-1])
+
     def test_dry_run_names_the_policy_refusal(self):
         args = argparse.Namespace(loop="widgets", run=self.run_id, dry_run=True)
         off = config.normalize({**self.raw, "unattended_fixer_push": False})
