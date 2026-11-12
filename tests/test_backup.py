@@ -1281,6 +1281,34 @@ class AllOrNothing(Base):
                   if ".restore-" in p.name or ".pre-restore-" in p.name]
         self.assertEqual(litter, [])
 
+    def test_a_rollback_that_fails_names_each_path_and_where_its_original_was_left(self):
+        out = self.changed_live_install()
+        runtime = self.root / "home" / "diaktoros-runtime.json"
+        queue = self.state / "queue.json"
+        real, failed, stuck = os.replace, [], []
+
+        def flaky(src, dst, *a, **k):
+            if Path(dst) == queue and not failed:      # the swap fails on the state file
+                failed.append(dst)
+                raise OSError(28, "No space left on device")
+            if Path(dst) == runtime and ".pre-restore-" in Path(src).name:
+                stuck.append(src)                      # and the rollback cannot put this back
+                raise OSError(5, "Input/output error")
+            return real(src, dst, *a, **k)
+        with mock.patch.object(os, "replace", flaky):
+            code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        self.assertEqual(code, 2, text)
+        self.assertTrue(failed)
+        self.assertEqual(len(stuck), 1)
+        self.assertIn("could not be undone for", text)
+        self.assertIn("No space left on device", text)
+        self.assertIn(f"{runtime} ([Errno 5] Input/output error; the original is at {stuck[0]})",
+                      text)
+        # The original was left aside, intact, where the error says.
+        self.assertEqual(Path(stuck[0]).read_text(), '{"runtime": 2}')
+        # Everything the rollback could put back is the live file again.
+        self.assertEqual(queue.read_text(), '{"newer": true}')
+
     def test_an_unreadable_member_fails_before_any_live_file_is_replaced(self):
         out = self.changed_live_install()
         manifest = backup.read_manifest(out)
