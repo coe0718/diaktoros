@@ -304,6 +304,7 @@ class Debounce(unittest.TestCase):
     def test_a_scan_that_raises_does_not_kill_the_watchdog_conflicts_mode(self):
         import argparse
         from scripts import watchdog
+        self.during_sleep = []
         conflict_scan.request(self.st, now=self.now)
         args = argparse.Namespace(loop="x", drain=False, seat="reviewer", conflicts=True)
         loop = {"id": "x"}
@@ -317,6 +318,9 @@ class Debounce(unittest.TestCase):
             watchdog.run(args, 600.0)                            # must not raise
         scanned.assert_called_once()
         self.assertIn("conflict scan failed: RuntimeError: boom", self.st.log.read_text())
+        # The patched clock reaches run (#1720): the scan waited on the fake clock for the
+        # request's due time instead of firing at once on the real wall clock.
+        self.assertGreaterEqual(self.now, 1000.0 + conflict_scan.DELAY_S)
 
     def test_a_scanner_stops_at_its_lifetime(self):
         self.during_sleep = []
