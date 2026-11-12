@@ -650,13 +650,25 @@ class DrawerIssue(unittest.TestCase):
         self.assertIsNone(self.view(41)["issue"])
 
     def test_no_ledger_or_an_older_one_leaves_the_issue_unknown(self):
-        self.db, real = self.db.with_name("none.sqlite"), self.db
-        self.assertNotIn("issue", self.view(12))                    # no ledger at all
-        self.db = real
-        self.run_row(12, "reviewer")
+        # A positive context first (#2399 review F4): PR #40 is the recorded fix of issue #12,
+        # so the drawer names #12 while the ledger can say so, and nothing once it cannot.
+        run_id = self.run_row(12, "issue_fixer")
+        self.run_row(40, "reviewer")
+        now = time.time()
         with ledger.connect(self.db) as con:
+            con.execute("INSERT INTO issue_fixes(run_id,repo,number,base,kind,branch,state,"
+                        "pr_number,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (run_id, tid.REPO, 12, "main", "pr", "fix/12", "pushed", 40, now, now))
+        self.assertEqual((self.view(12)["issue"], self.view(40)["issue"]), (12, 12))
+        self.db, real = self.db.with_name("none.sqlite"), self.db
+        for pr in (12, 40):                                         # no ledger at all
+            self.assertNotIn("issue", self.view(pr))
+        self.db = real
+        with ledger.connect(self.db) as con:                        # an older ledger: no table
             con.execute("DROP TABLE issue_fixes")
-        self.assertNotIn("issue", self.view(12))
+        view = self.view(40)
+        self.assertNotIn("issue", view)                             # unknown, not "none"
+        self.assertEqual(view["turns"][-1]["seat"], "reviewer")     # the rest still reads
 
 
 LOOP = {"id": "one", "repo": "acme/widgets"}
