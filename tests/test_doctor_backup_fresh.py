@@ -20,7 +20,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import backup, config, doctor  # noqa: E402
+from diaktoros import backup, backup_fresh, config, doctor  # noqa: E402
 from diaktoros.doctor import backup_checks  # noqa: E402
 
 DAY = 86400
@@ -59,18 +59,18 @@ class Base(unittest.TestCase):
 
 
 class LatestArchive(Base):
-    """``backup.latest_archive``: what counts as an archive, and which is newest."""
+    """``backup_fresh.latest_archive``: what counts as an archive, and which is newest."""
 
     def test_no_directory_and_an_empty_one_are_none(self):
-        self.assertEqual(backup.latest_archive(), (None, None))
+        self.assertEqual(backup_fresh.latest_archive(), (None, None))
         self.dir.mkdir()
-        self.assertEqual(backup.latest_archive(), (None, None))
+        self.assertEqual(backup_fresh.latest_archive(), (None, None))
 
     def test_the_newest_archive_wins_whatever_its_name(self):
         self.archive("diaktoros-backup-20250101-000000.tar.gz", age_days=40)
         newer = self.archive("by-hand.tar.gz", age_days=2)
         self.archive("diaktoros-backup-20250201-000000.tar.gz", age_days=9)
-        (path, written), ahead = backup.latest_archive()
+        (path, written), ahead = backup_fresh.latest_archive()
         self.assertIsNone(ahead)
         self.assertEqual(path, newer)
         self.assertAlmostEqual(time.time() - written, 2 * DAY, delta=60)
@@ -84,31 +84,31 @@ class LatestArchive(Base):
         outside = self.root / "elsewhere.tar.gz"
         outside.write_bytes(b"x" * 10)
         (self.dir / "link.tar.gz").symlink_to(outside)
-        self.assertEqual(backup.latest_archive()[0][0], real)
-        self.assertIsNone(backup.latest_archive()[1])
+        self.assertEqual(backup_fresh.latest_archive()[0][0], real)
+        self.assertIsNone(backup_fresh.latest_archive()[1])
 
     def test_an_archive_dated_past_the_skew_allowance_is_set_apart_not_newest(self):
         """A future mtime must not win as "newest": it is returned as ``ahead`` instead (#1875)."""
         real = self.archive("real.tar.gz", age_days=20)
         future = self.archive("future.tar.gz", age_days=-3650)
-        newest, ahead = backup.latest_archive()
+        newest, ahead = backup_fresh.latest_archive()
         self.assertEqual(newest[0], real)
         self.assertEqual(ahead[0], future)
         # Within the allowance (an hour of drift between hosts) it is an ordinary newest archive.
         near = self.archive("near.tar.gz", age_days=-1 / 24)
-        newest, ahead = backup.latest_archive()
+        newest, ahead = backup_fresh.latest_archive()
         self.assertEqual(newest[0], near)
         self.assertEqual(ahead[0], future)
         # The caller's clock is the one given, not the module's.
-        newest, ahead = backup.latest_archive(now=future.stat().st_mtime)
+        newest, ahead = backup_fresh.latest_archive(now=future.stat().st_mtime)
         self.assertEqual(newest[0], future)
         self.assertIsNone(ahead)
 
     def test_an_unreadable_directory_raises_rather_than_reading_as_none(self):
         self.dir.mkdir()
-        with mock.patch.object(backup.os, "scandir", side_effect=PermissionError("denied")):
+        with mock.patch.object(backup_fresh.os, "scandir", side_effect=PermissionError("denied")):
             with self.assertRaises(OSError):
-                backup.latest_archive()
+                backup_fresh.latest_archive()
 
     def test_default_out_and_the_check_use_one_directory(self):
         self.assertEqual(backup.default_out().parent, backup.backups_dir())
@@ -133,16 +133,16 @@ class BackupFresh(Base):
         self.assertIn("diaktoros-backup-recent.tar.gz", check.detail)
 
     def test_a_stale_archive_warns_with_its_age(self):
-        self.archive("diaktoros-backup-old.tar.gz", age_days=backup.FRESH_DAYS + 5)
+        self.archive("diaktoros-backup-old.tar.gz", age_days=backup_fresh.FRESH_DAYS + 5)
         check = backup_checks.check_backup_fresh()
         self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
-        self.assertIn(f"{backup.FRESH_DAYS + 5} days old", check.detail)
+        self.assertIn(f"{backup_fresh.FRESH_DAYS + 5} days old", check.detail)
         self.assertIn("hermes dk backup", check.detail)
 
     def test_the_boundary_is_inclusive_of_the_limit(self):
-        self.archive("a.tar.gz", age_days=backup.FRESH_DAYS - 0.01)
+        self.archive("a.tar.gz", age_days=backup_fresh.FRESH_DAYS - 0.01)
         self.assertEqual(backup_checks.check_backup_fresh().status, doctor.VERIFIED)
-        self.archive("a.tar.gz", age_days=backup.FRESH_DAYS + 0.01)
+        self.archive("a.tar.gz", age_days=backup_fresh.FRESH_DAYS + 0.01)
         self.assertEqual(backup_checks.check_backup_fresh().status, doctor.UNKNOWN)
 
     def test_a_small_clock_drift_is_still_a_fresh_archive(self):
@@ -164,7 +164,7 @@ class BackupFresh(Base):
         # The reviewer's probe: the clock is corrected to 31 days before the file's mtime, i.e. more
         # than FRESH_DAYS after the real backup, and the file must not read as a fresh one.
         with mock.patch.object(backup_checks.time, "time",
-                               return_value=mtime - (backup.FRESH_DAYS + 1) * DAY):
+                               return_value=mtime - (backup_fresh.FRESH_DAYS + 1) * DAY):
             late = backup_checks.check_backup_fresh()
         self.assertEqual(late.status, doctor.UNKNOWN, late.detail)
         self.assertNotIn("day(s) old (within", late.detail)
@@ -173,13 +173,13 @@ class BackupFresh(Base):
         self.archive("future.tar.gz", age_days=-3650)
         self.archive("real.tar.gz", age_days=2)
         self.assertEqual(backup_checks.check_backup_fresh().status, doctor.VERIFIED)
-        self.archive("real.tar.gz", age_days=backup.FRESH_DAYS + 5)
+        self.archive("real.tar.gz", age_days=backup_fresh.FRESH_DAYS + 5)
         stale = backup_checks.check_backup_fresh()
         self.assertEqual(stale.status, doctor.UNKNOWN, stale.detail)
         self.assertIn("real.tar.gz", stale.detail)
 
     def test_an_unreadable_directory_is_unknown_not_missing(self):
-        with mock.patch.object(backup.os, "scandir", side_effect=PermissionError("denied")):
+        with mock.patch.object(backup_fresh.os, "scandir", side_effect=PermissionError("denied")):
             check = backup_checks.check_backup_fresh()
         self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
         self.assertIn("cannot read", check.detail)
@@ -283,7 +283,7 @@ class FutureDatedRecorded(Base):
         self.assertIn("in the future", text)
         # The clock walks from "ahead" into the allowance and past the file's date: the backup
         # just written is then years old, and the future-dated file must never read as fresh.
-        for days_before in (backup.FRESH_DAYS + 1, 2, 0.5, 0, -1, -backup.FRESH_DAYS + 1):
+        for days_before in (backup_fresh.FRESH_DAYS + 1, 2, 0.5, 0, -1, -backup_fresh.FRESH_DAYS + 1):
             check = self.at(mtime - days_before * DAY)
             self.assertEqual(check.status, doctor.UNKNOWN, (days_before, check.detail))
             self.assertNotIn("(within", check.detail)
@@ -304,26 +304,26 @@ class FutureDatedRecorded(Base):
         self.archive("near.tar.gz", age_days=-1 / 24)
         text = self.run_backup()
         self.assertNotIn("near.tar.gz", text)
-        self.assertEqual(backup.record_future_dated(), [])
-        self.assertFalse((self.dir / backup.FUTURE_RECORD).exists())
+        self.assertEqual(backup_fresh.record_future_dated(), [])
+        self.assertFalse((self.dir / backup_fresh.FUTURE_RECORD).exists())
 
     def test_a_rewritten_or_removed_archive_leaves_the_record(self):
         future = self.archive("future.tar.gz", age_days=-3650)
-        self.assertEqual(backup.record_future_dated(), [future])
-        self.assertEqual(backup.record_future_dated(), [])          # already recorded
+        self.assertEqual(backup_fresh.record_future_dated(), [future])
+        self.assertEqual(backup_fresh.record_future_dated(), [])          # already recorded
         # Rewritten under a correct clock (another mtime): an ordinary archive again.
         self.archive("future.tar.gz", age_days=1)
-        self.assertEqual(backup.latest_archive()[0][0], future)
-        backup.record_future_dated()
-        self.assertEqual(json.loads((self.dir / backup.FUTURE_RECORD).read_text()), {})
+        self.assertEqual(backup_fresh.latest_archive()[0][0], future)
+        backup_fresh.record_future_dated()
+        self.assertEqual(json.loads((self.dir / backup_fresh.FUTURE_RECORD).read_text()), {})
 
     def test_the_record_is_not_an_archive_and_is_never_pruned(self):
         self.archive("future.tar.gz", age_days=-3650)
         self.run_backup(keep=1)
         self.run_backup(keep=1)
-        self.assertTrue((self.dir / backup.FUTURE_RECORD).is_file())
-        newest, ahead = backup.latest_archive()
-        self.assertNotEqual(newest[0].name, backup.FUTURE_RECORD)
+        self.assertTrue((self.dir / backup_fresh.FUTURE_RECORD).is_file())
+        newest, ahead = backup_fresh.latest_archive()
+        self.assertNotEqual(newest[0].name, backup_fresh.FUTURE_RECORD)
         self.assertEqual(ahead[0].name, "future.tar.gz")
 
     # -- #2446 review: overlapping backups (F1), a damaged record (F2), a failed write (F3) --
@@ -334,7 +334,7 @@ class FutureDatedRecorded(Base):
         import threading
         a = self.archive("a.tar.gz", age_days=-3650)
         scanned, go = threading.Event(), threading.Event()
-        real = backup._archives
+        real = backup_fresh._archives
         first = threading.Lock()
 
         def archives():
@@ -345,20 +345,20 @@ class FutureDatedRecorded(Base):
             return found
 
         results = {}
-        with mock.patch.object(backup, "_archives", archives):
+        with mock.patch.object(backup_fresh, "_archives", archives):
             run_a = threading.Thread(target=lambda: results.setdefault(
-                "a", backup.record_future_dated()))
+                "a", backup_fresh.record_future_dated()))
             run_a.start()
             self.assertTrue(scanned.wait(5))
             b = self.archive("b.tar.gz", age_days=-3649)      # arrives after A's scan
             run_b = threading.Thread(target=lambda: results.setdefault(
-                "b", backup.record_future_dated()))
+                "b", backup_fresh.record_future_dated()))
             run_b.start()
             run_b.join(0.5)          # without the lock B finishes here, before A writes
             go.set()
             run_a.join(5)
             run_b.join(5)
-        recorded = json.loads((self.dir / backup.FUTURE_RECORD).read_text())
+        recorded = json.loads((self.dir / backup_fresh.FUTURE_RECORD).read_text())
         self.assertEqual(sorted(recorded), ["a.tar.gz", "b.tar.gz"], results)
         self.assertEqual(recorded["b.tar.gz"], b.stat().st_mtime)
         check = self.at(b.stat().st_mtime)       # the clock reaches b: still not a recent backup
@@ -370,7 +370,7 @@ class FutureDatedRecorded(Base):
         self.run_backup()
         for path in self.dir.glob("diaktoros-backup-*.tar.gz"):
             path.unlink()               # only the future-dated file is left
-        (self.dir / backup.FUTURE_RECORD).write_bytes(content)
+        (self.dir / backup_fresh.FUTURE_RECORD).write_bytes(content)
         return future
 
     def test_a_damaged_record_is_never_read_as_empty(self):
@@ -396,7 +396,7 @@ class FutureDatedRecorded(Base):
                 text = self.run_backup()             # asserts exit 0
                 self.assertIn("is damaged", text)
                 self.assertIn("left unchanged", text)
-                self.assertEqual((self.dir / backup.FUTURE_RECORD).read_bytes(), content)
+                self.assertEqual((self.dir / backup_fresh.FUTURE_RECORD).read_bytes(), content)
 
     def test_a_record_that_cannot_be_written_warns_and_the_backup_succeeds(self):
         """F3: the record's write fails; ``cmd_backup`` exits 0, says so, and the archive is whole."""
@@ -404,15 +404,15 @@ class FutureDatedRecorded(Base):
         real = backup.util.atomic_write
 
         def refuse(path, *a, **kw):
-            if pathlib.Path(path).name == backup.FUTURE_RECORD:
+            if pathlib.Path(path).name == backup_fresh.FUTURE_RECORD:
                 raise OSError(28, "No space left on device")
             return real(path, *a, **kw)
 
-        with mock.patch.object(backup.util, "atomic_write", refuse):
+        with mock.patch.object(backup_fresh.util, "atomic_write", refuse):
             text = self.run_backup()                 # asserts exit 0
         self.assertIn("warning: could not record future-dated archives", text)
         self.assertIn("No space left on device", text)
-        self.assertFalse((self.dir / backup.FUTURE_RECORD).exists())
+        self.assertFalse((self.dir / backup_fresh.FUTURE_RECORD).exists())
         written = [p for p in self.dir.glob("diaktoros-backup-*.tar.gz")]
         self.assertEqual(len(written), 1)
         read, problems = backup.verify(written[0])
