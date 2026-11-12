@@ -10,8 +10,8 @@ disagree on stays quarantined, with the facts listed. Before any stage writes, t
 re-authorized against live policy (``broker.authorize_issue_fix``, #1051): the operator's
 switch, the identity checks, the issue's author and fix label and its dependency holds bind
 ``continue`` as they bind the seat's own ``open_pr``, and so does the plan-first rule
-(``fix_hold.plan_required``, checked on that same authorizing read, #2334): a PR stage waits
-for a maintainer-approved plan, which ``post_plan`` asks for.
+(``fix_hold.plan_required``, checked on that same authorizing read, #2334, #2336): a PR stage
+waits for a maintainer-approved plan, which ``post_plan`` asks for.
 
 ``from_chat`` is the reply path (``continue N``): a sender who is not one of the loop's
 maintainers is ignored without a trace.
@@ -143,8 +143,8 @@ def _authorize(loop: dict, plan: dict) -> None:
     identities, the issue still open by an allowlisted author with the fix label, no
     dependency hold), and for a PR stage the plan-first rule the broker's ``open_pr`` applies
     (``plan_first=True``: ``fix_hold.plan_required`` on the very issue read that authorized it,
-    #2334). A denial is a conflict, so the dry run says it and ``run`` writes nothing; an issue
-    GitHub could not be read for is worded as not checked, not as refused (#2335); a
+    #2334, #2336). A denial is a conflict, so the dry run says it and ``run`` writes nothing;
+    an issue GitHub could not be read for is worded as not checked, not as refused (#2335); a
     plan-first denial also marks ``plan["plan_first"]``, which ``post_plan`` recovers from.
     With no stage planned nothing is written, so recording a finished fix needs no check."""
     if not plan["stages"]:

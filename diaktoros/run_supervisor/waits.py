@@ -116,7 +116,7 @@ def identity(fd: int) -> str:
 def _is_the_log(held: os.stat_result, db: Path) -> bool:
     """Is ``held`` (a stderr's stat) the worker log ``_spawn`` handed over, as ``LOG_ENV`` names
     it, or failing that the log at its path now?"""
-    marked = os.environ.get(LOG_ENV)
+    marked = envnames.get("WORKER_LOG")
     if marked:
         return marked == f"{held.st_dev}:{held.st_ino}"
     log = os.stat(log_path(Path(db)))
