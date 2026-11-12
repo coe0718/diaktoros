@@ -864,20 +864,9 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
             view["turns"].append({"seat": row["seat"], "head": stats.recorded_head(row["head"]),
                                   "state": row["state"], "created": row["created"],
                                   "updated": row["updated"]})
-        # Every stored receipt's verdict counts: review_receipt.submit refuses a COMMENT before
-        # its durable point, so nothing that spent the reviewer's write without moving the loop
-        # can be in here. Stored as GitHub's own state (APPROVED / CHANGES_REQUESTED).
-        for row in con.execute(
-                "SELECT rr.verdict AS verdict FROM review_receipts rr "
-                "JOIN runs r ON r.id=rr.run_id WHERE r.repo=? AND r.pr=? ORDER BY rr.created",
-                (repo, pr)):
-            verdict = str(row["verdict"] or "")
-            if verdict:
-                view["verdicts"][verdict] = view["verdicts"].get(verdict, 0) + 1
+        view["verdicts"] = _verdicts(con, repo, pr)
         view["rulings_total"] = _count(con, "rulings", repo, pr)
-        issue = _issue_context(con, repo, pr)
-        if issue is not False:
-            view["issue"] = issue
+        view.update(_issue_context(con, repo, pr))
         for row in reversed(con.execute(
                 "SELECT verdict, head, created FROM rulings WHERE repo=? AND pr=? "
                 "ORDER BY created DESC, rowid DESC LIMIT ?", (repo, pr, TURNS_MAX)).fetchall()):
@@ -893,20 +882,37 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
     return view
 
 
-def _issue_context(con, repo: str, pr: int):
-    """The issue the drawer's number speaks for (#1301), from the ledger only: the number itself
-    when issue-fix turns ran for it (an issue), else the issue whose fix run recorded this PR,
-    else None. ``False`` when the ledger cannot say (an older ledger): unknown, never guessed."""
+def _verdicts(con, repo: str, pr: int) -> dict:
+    """How many of each verdict the ledger's review receipts record for this PR. Every stored
+    receipt's verdict counts: review_receipt.submit refuses a COMMENT before its durable point,
+    so nothing that spent the reviewer's write without moving the loop can be in here. Stored as
+    GitHub's own state (APPROVED / CHANGES_REQUESTED)."""
+    counts: dict = {}
+    for row in con.execute(
+            "SELECT rr.verdict AS verdict FROM review_receipts rr "
+            "JOIN runs r ON r.id=rr.run_id WHERE r.repo=? AND r.pr=? ORDER BY rr.created",
+            (repo, pr)):
+        verdict = str(row["verdict"] or "")
+        if verdict:
+            counts[verdict] = counts.get(verdict, 0) + 1
+    return counts
+
+
+def _issue_context(con, repo: str, pr: int) -> dict:
+    """``{"issue": N}`` for the issue the drawer's number speaks for (#1301), from the ledger only:
+    the number itself when issue-fix turns ran for it (an issue), else the issue whose fix run
+    recorded this PR, else None. ``{}`` (the key left out) when the ledger cannot say (an older
+    ledger): unknown, never guessed."""
     try:
         if con.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? AND seat='issue_fixer' LIMIT 1",
                        (repo, pr)).fetchone():
-            return pr
+            return {"issue": pr}
         row = con.execute("SELECT number FROM issue_fixes WHERE repo=? AND kind='pr' AND "
                           "pr_number=? ORDER BY created DESC LIMIT 1", (repo, pr)).fetchone()
     except Exception:
-        return False
+        return {}
     number = row[0] if row else None
-    return number if type(number) is int and number > 0 and number != pr else None
+    return {"issue": number if type(number) is int and number > 0 and number != pr else None}
 
 
 def _count(con, table: str, repo: str, pr: int) -> int:
