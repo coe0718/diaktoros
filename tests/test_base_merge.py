@@ -278,6 +278,7 @@ class Ruled(Base):
     def setUp(self):
         super().setUp()
         self.loop["seats"]["adjudicator"] = {"login": "adj"}
+        self.loop["adjudicator_approves"] = True
         self.overruled = approval(self.head, review_id=11, state="CHANGES_REQUESTED")
         self.ruled = approval(self.head, review_id=21, login="adj", at="2026-11-10T02:00:00Z")
         self.reviews = [self.overruled, self.ruled]
@@ -396,6 +397,47 @@ class Ruled(Base):
         self.rows[0]["dismiss"] = "pending"
         self.ruling = {"head": self.head, "verdict": "REJECT", "run_id": "r2", "created": self.ruled_at}
         self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews, ruled=False), "")
+        self.assertEqual(self.update(), self.remote_head())
+
+    def test_a_superseded_rulings_uncertain_write_is_read_back_and_the_merge_proceeds(self):
+        # F9: the newest ruling is a REJECT, so the sweep acts on no ACCEPT here; it must still
+        # read r1's uncertain approval back, or the merge's wait on it would never end. r1's
+        # pending dismissal is never acted on.
+        self.ruling = {"head": self.head, "verdict": "REJECT", "run_id": "r2", "created": self.ruled_at}
+        self.rows = [{"ruling": "r1", "head": self.head, "approve": "uncertain", "dismiss": "pending",
+                      "overruled": 11, "updated": 0}]
+        self.reviews.append(approval(self.head, review_id=31, at="2026-11-10T03:00:00Z"))
+
+        class Ledger:
+            def ruled_approval_step(_, repo, number, head, run, step, state, **kw):
+                row = next(r for r in self.rows if r["ruling"] == run)
+                row[step] = state
+                return True
+
+        def sweep():
+            with mock.patch.object(ruled_approval, "Supervisor", return_value=Ledger()), \
+                    mock.patch.object(gh, "reviews", return_value=list(self.reviews)), \
+                    mock.patch.object(config, "loop_pr", return_value=(7, self.head, "fix")), \
+                    mock.patch("diaktoros.merge_check.refresh_quietly"):
+                return ruled_approval.sweep(self.loop, self.st, [self.live])
+
+        self.assertEqual(self.update(), "")                          # waits on the uncertain write
+        self.assertEqual(sweep(), [7])                                # read back: nothing landed
+        self.assertEqual((self.rows[0]["approve"], self.rows[0]["dismiss"]), ("denied", "pending"))
+        self.assertEqual(sweep(), [])                                 # settled: nothing more
+        new = self.update()
+        self.assertEqual(new, self.remote_head())
+        self.assertNotEqual(new, self.head)
+        self.assertEqual(self.rows[0]["dismiss"], "pending")         # superseded: never acted on
+
+    def test_with_adjudicator_approves_off_nothing_waits(self):
+        # Nothing acts on the record or reads it back then (the sweep returns at once), so a wait
+        # on a pending, uncertain or missing record could never end.
+        self.loop["adjudicator_approves"] = False
+        for rows in ([], [{"ruling": "r1", "approve": "uncertain", "dismiss": "pending"}]):
+            self.rows = rows
+            self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews), "")
+        self.assertEqual(ruled_approval.sweep(self.loop, self.st, [self.live]), [])
         self.assertEqual(self.update(), self.remote_head())
 
     def latest_id(self, head):
