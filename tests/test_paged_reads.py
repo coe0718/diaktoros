@@ -174,8 +174,35 @@ def _binds(scope: ast.AST, name: str) -> bool:
     if args is not None and name in {a.arg for a in [
             *args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg] if a}:
         return True
-    return any((isinstance(n, ast.Name) and n.id == name and not isinstance(n.ctx, ast.Load))
-               or (isinstance(n, DEFS) and n.name == name) for n in nodes)
+    return (any(n.id == name for n in _stores(scope))
+            or any(isinstance(n, DEFS) and n.name == name for n in nodes))
+
+
+COMPS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+
+def _stores(scope: ast.AST) -> list[ast.Name]:
+    """The names ``scope``'s body binds by a store or ``del``. A comprehension's ``for`` target
+    is the comprehension's own (#2387 review F3: ``[path for path in xs]`` does not rebind
+    ``path``), but a ``:=`` in it binds in ``scope``. A nested ``def``, ``lambda`` or ``class``
+    binds in its own scope, apart from the parts ``scope`` evaluates when defining it."""
+    found: list[ast.Name] = []
+    body = [scope.body] if isinstance(scope, ast.Lambda) else scope.body
+    stack = [(child, False) for child in body]
+    while stack:
+        node, in_comp = stack.pop()
+        if isinstance(node, ast.NamedExpr):
+            found.append(node.target)
+            stack.append((node.value, in_comp))
+            continue
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load) and not in_comp:
+            found.append(node)
+        if isinstance(node, (*DEFS, ast.Lambda)):
+            children = _evaluated_outside(node)
+        else:
+            children = ast.iter_child_nodes(node)
+        stack += [(child, in_comp or isinstance(node, COMPS)) for child in children]
+    return found
 
 
 def _evaluated_outside(node: ast.AST) -> list[ast.AST]:
@@ -387,6 +414,23 @@ class Scan(unittest.TestCase):
                    '    def g(path):\n        return gh.fetch(loop, path)\n'
                    '    return gh._read_pages(loop, path, "x", 3), g\n')
         self.assertEqual(_one(rebound), [])
+
+    def test_a_comprehension_target_does_not_rebind_a_captured_name(self):
+        # #2387 review F3: a comprehension's ``for`` target is its own scope, so ``g`` still
+        # reads the outer ``path`` with fetch; a real assignment or ``:=`` in g does rebind.
+        head = 'def f(loop):\n    path = "/bad?per_page=100"\n    def g():\n'
+        tail = ('        return gh.fetch(loop, path)\n'
+                '    return gh._read_pages(loop, path, "x", 3), g()\n')
+        for comp in ('[path for path in ["other"]]', '{path for path in ["other"]}',
+                     '{path: 1 for path in ["other"]}', 'list(path for path in ["other"])',
+                     '[x for x in [[path for path in ["o"]]]]'):
+            with self.subTest(comp=comp):
+                self.assertEqual(_one(f'{head}        unrelated = {comp}\n{tail}'),
+                                 ["diaktoros/new.py::f::/bad?per_page=100"])
+        for own in ('        path = "/own"\n', '        [(path := "/own") for _ in "x"]\n',
+                    '        for path in ["/own"]:\n            pass\n'):
+            with self.subTest(own=own):
+                self.assertEqual(_one(head + own + tail), [])
 
     def test_a_rebinding_scope_still_reads_the_outer_name_where_it_is_defined(self):
         # #2387 review F1: defaults, decorators, annotations and a class body run in the
