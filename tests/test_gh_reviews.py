@@ -76,14 +76,19 @@ class ReviewPaginationTest(unittest.TestCase):
         self.assertEqual((result, reason), (page + page, ""))
         self.assertEqual(fetch.call_count, 3)
 
-    def test_unreadable_probe_keeps_the_exceeds_reason_in_both_keep_partial_modes(self):
-        # The probe past the bound errors or is malformed: the listing is not proven whole, so
-        # it is "exceeds" (pages kept with keep_partial, None without), never the probe's error.
+    def test_unreadable_probe_says_the_page_past_the_bound_could_not_be_read(self):
+        # #1727: the probe past the bound errors or is malformed: the listing is not proven
+        # whole (pages kept with keep_partial, None without), but it is not proven longer either,
+        # so the reason names the unread page and the probe's error, never "exceeds".
         page = [verdict(i, "COMMENTED") for i in range(100)]
-        reason = "review listing exceeds 1 full pages"
-        for payload, error in (([], "HTTP 500"), (None, "HTTP 500"), (None, ""),
-                               ({"message": "rate limited"}, ""), ([None], ""),
-                               (page, "")):
+        unread = "review page 2, past the 1-page bound, could not be read"
+        for payload, error, reason in (
+                ([], "HTTP 500", f"{unread}: HTTP 500"),
+                (None, "HTTP 500", f"{unread}: HTTP 500"),
+                (None, "", f"{unread}: invalid review list"),
+                ({"message": "rate limited"}, "", f"{unread}: invalid review list"),
+                ([None], "", f"{unread}: invalid review list"),
+                (page, "", "review listing exceeds 1 full pages")):
             for keep, expected in ((True, page), (False, None)):
                 with self.subTest(payload=payload, error=error, keep_partial=keep):
                     with mock.patch.object(gh, "fetch",
@@ -97,7 +102,18 @@ class ReviewPaginationTest(unittest.TestCase):
         with (mock.patch.object(gh, "MAX_ISSUE_PAGES", 1),
               mock.patch.object(gh, "fetch", side_effect=[(page, ""), (None, "HTTP 500")])):
             got = gh.open_issues_read(LOOP, "2026-01-01T00:00:00Z")
+        self.assertEqual(got, (page, "open issue page 2, past the 1-page bound, could not be "
+                                     "read: HTTP 500"))
+        # A transient probe failure reads as transient, like any other failed page (#1727).
+        self.assertFalse(gh.persistent_failure(got[1]))
+
+    def test_a_probe_page_with_items_still_exceeds_and_is_persistent(self):
+        page = [verdict(i, "COMMENTED") for i in range(100)]
+        with (mock.patch.object(gh, "MAX_ISSUE_PAGES", 1),
+              mock.patch.object(gh, "fetch", side_effect=[(page, ""), (page[:1], "")])):
+            got = gh.open_issues_read(LOOP, "2026-01-01T00:00:00Z")
         self.assertEqual(got, (page, "open issue listing exceeds 1 full pages"))
+        self.assertTrue(gh.persistent_failure(got[1]))
 
 
 class NoLooseApprovalPredicateTest(unittest.TestCase):

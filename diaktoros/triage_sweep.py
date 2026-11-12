@@ -18,8 +18,9 @@ issue a maintainer already sent to the fixer (``triage.fix_label``) is left alon
 ``PER_SWEEP`` are queued per sweep, oldest first; the rest wait for the next one. The listing is
 newest first and bounded (``gh.MAX_ISSUE_PAGES`` pages of 100, pull requests included). It is read
 until a page reaches issues older than ``HORIZON_S``, so a window of more than 500 items is still
-read whole (#1147); only past the page bound does the sweep work on the newest issues it read and
-return an alert line saying the older ones were not checked (#1037).
+read whole (#1147); only past the page bound (or when the page past it cannot be read, #1727) does
+the sweep work on the newest issues it read and return an alert line saying the older ones were not
+checked, with the listing's reason (#1037).
 """
 from __future__ import annotations
 
@@ -91,7 +92,7 @@ def sweep(loop: dict, st, now: float | None = None) -> list[str]:
         log(f"triage sweep: open issues unreadable: {gh.one_line(error)}")
         return []
     lines: list[str] = []
-    if error:                             # past the page bound: the newest were read, older not
+    if error:                             # not proven whole: the newest were read, older not
         log(f"triage sweep: open issues incomplete: {gh.one_line(error)}")
         lines.append(f"⚠️ Diaktoros [{loop['id']}] triage recovery sweep read only the newest "
                      f"{len(issues)} open issues/PRs ({gh.one_line(error)}); older issues "

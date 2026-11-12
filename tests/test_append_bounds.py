@@ -80,7 +80,7 @@ _AUDIT = ("broker-audit.jsonl, kept whole on purpose (#2302): an audit record th
           "misattributed). About 200 bytes per broker write (~14 MB a year on the busiest loop); "
           "rotation, if it is ever needed, is its own change")
 UNBOUNDED = {
-    "diaktoros/broker.py::_audit": _AUDIT,
+    "diaktoros/broker/__init__.py::_audit": _AUDIT,
     "diaktoros/safe_push.py::_audit": _AUDIT,
 }
 

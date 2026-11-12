@@ -24,6 +24,16 @@ SEATS = ("shadow", "triage")
 
 
 class ShadowTriageConcurrency(Base):
+    def setUp(self):
+        super().setUp()
+        # Shadow/triage above 1 needs isolation like any seat (#1693): these tests drive the flag
+        # plumbing, so give them the isolated worker's runtime file, as `setup` would.
+        runtime = config.host_path("runtime")
+        if not runtime.exists():
+            runtime.write_text("{}")
+            runtime.chmod(0o600)
+            self.addCleanup(runtime.unlink, missing_ok=True)
+
     def seat_value(self, seat):
         return self.written().get("seats", {}).get(seat, {}).get("concurrency")
 
