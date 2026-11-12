@@ -332,6 +332,28 @@ class Gate(Base):
         with mock.patch.object(gh, "api", side_effect=OSError("down")):
             self.assertEqual(fix_declined.label_state(self.loop, 12), "unknown")
 
+    def test_a_read_that_cannot_say_is_unknown_and_the_reason_decides(self):
+        # Review of #2435, F1: a response for another issue, one that is not an issue at all, or
+        # no fix label configured reads `unknown` (not "present"), so `declined` stores that and
+        # the reason text decides: "no longer on the issue" ends with applying the label.
+        from diaktoros import fix_declined, observer
+        reason = "no longer eligible: the 'agent-fix' label is no longer on the issue"
+        no_label = {**self.loop, "triage": {**self.loop["triage"], "fix_label": ""}}
+        for name, live, loop in (("wrong issue", issue(number=13, labels=()), self.loop),
+                                 ("not a dict", ["not", "an", "issue"], self.loop),
+                                 ("no fix label", issue(labels=()), no_label)):
+            with self.subTest(name):
+                self.live = live
+                said = []
+                with mock.patch.object(observer, "notify",
+                                       side_effect=lambda *a, **kw: said.append(kw["outcome"])):
+                    fix_declined.declined(loop, 12, reason)
+                st = state_mod.state_for(loop)
+                entry = fix_declined.entries(st)[12]
+                self.assertEqual(entry["label"], "unknown")
+                for text in (said[0], fix_declined.line(loop, 12, entry)):
+                    self.assertTrue(text.endswith(fix_declined.APPLY), text)
+
     def test_an_issue_filed_by_an_app_reader_is_handed_to_the_fixer(self):
         # #1794 (review of #1804, F4): the reader as a GitHub App, filing as its bot.
         bot = "widgets-reader[bot]"
