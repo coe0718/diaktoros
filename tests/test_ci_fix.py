@@ -18,8 +18,9 @@ import test_conflict_turn as tc  # noqa: E402
 import test_fixer_gating as fg  # noqa: E402
 import test_review_after_ci as rac  # noqa: E402
 import test_seat_models as sm  # noqa: E402
-from diaktoros import (broker_ipc, ci, ci_fix, config, gh, ledger, observer,  # noqa: E402
+from diaktoros import (ci, ci_fix, config, gh, ledger, observer,  # noqa: E402
                          prompts, safe_push, trusted_turn)
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 RED = ci.CIState(failed=["tests (3.11)"], passed=["lint"], ids={"tests (3.11)": 55},

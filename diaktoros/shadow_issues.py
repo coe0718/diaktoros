@@ -22,7 +22,8 @@ import json
 import re
 import time
 
-from . import broker, broker_filing, config, gate, gh
+from . import broker, config, gate, gh
+from .broker import filing as broker_filing
 
 WAIT_S = 7 * 86400        # a head the real reviewer never reached is not waited on for ever
 MAX_ATTEMPTS = 12         # refused POSTs (nothing written) before the issue is dropped (#1732)

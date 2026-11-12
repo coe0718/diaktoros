@@ -30,7 +30,8 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import broker_ipc, contained, run_supervisor
+from diaktoros import contained, run_supervisor
+from diaktoros.broker import ipc as broker_ipc
 
 MiB = 1024 * 1024
 # Small enough to prove enforcement inside a test, larger than anything the probe stages.
@@ -102,7 +103,7 @@ print(json.dumps({
 # capability socket by enumeration, exactly as the audit did.
 SEAT_CLIENT = r'''
 import glob, json, sys
-from diaktoros import broker_ipc
+from diaktoros.broker import ipc as broker_ipc
 
 found = sorted(glob.glob(sys.argv[1] + "/**/broker.sock", recursive=True))
 assert found, "no broker socket reachable by enumeration"

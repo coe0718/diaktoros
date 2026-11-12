@@ -19,7 +19,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_selftest as ts  # noqa: E402
-from diaktoros import broker, broker_ipc, gate, review_receipt, state as state_mod  # noqa: E402
+from diaktoros import broker, gate, review_receipt, state as state_mod  # noqa: E402
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 
 VEX_SAME_ROUND = {"findings": {"F1": {"state": "open", "text": "a.py:1: x", "at": time.time()}},
                   "last_head": ts.HEAD}

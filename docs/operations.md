@@ -962,7 +962,9 @@ as without applying anything; a token field is a path and the file is never open
 Its ledger write is `POST /retry` with `{loop, pr, seat, head}`, the Retry button's confirmation:
 it re-reads the ledger, runs the same `retry_action` / `Supervisor.retry` path `hermes dk retry`
 runs, answers 409 with the host's own reason for anything that retry refuses (including a head
-that moved since the operator confirmed), and never calls GitHub or reads a token.
+that moved since the operator confirmed), and never calls GitHub or reads a token. `head` is a
+7–40 hex SHA; a triage run, which the ledger records at the word `issue` rather than a commit,
+is confirmed with exactly `issue` — accepted on an issue seat only, matched exactly (#1696).
 For a loop whose events arrive through the GitHub App's webhook (`ingress: app-webhook`),
 `GET /hooks` reads the host's pause flag instead, calls no GitHub API and offers no control:
 pause or resume it on the host with `hermes dk arm`. Otherwise `GET /hooks?loop=<id>` reads GitHub using `arm`'s default token resolution (the loop's

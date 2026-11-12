@@ -21,7 +21,8 @@ from __future__ import annotations
 import json
 import time
 
-from . import broker_filing, config, shadow_issues
+from . import config, shadow_issues
+from .broker import filing as broker_filing
 
 def _send(loop: dict, sup, row, depth: int) -> tuple[int, str]:
     return broker_filing.file_ruling_issue(

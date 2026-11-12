@@ -24,8 +24,9 @@ sys.path.insert(0, str(ROOT))
 
 from diaktoros import ledger  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
-from diaktoros import (broker, broker_ipc, config, contained, gate, gh, prompts,  # noqa: E402
+from diaktoros import (broker, config, contained, gate, gh, prompts,  # noqa: E402
                          run_supervisor, trusted_turn)
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros.run_supervisor import issue_inputs  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 

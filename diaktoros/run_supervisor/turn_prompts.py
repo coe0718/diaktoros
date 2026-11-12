@@ -66,7 +66,8 @@ def ruling_issues_section(loop: dict) -> str:
     """The adjudicator's follow-ups (#1864), only where the loop files them: how to ask for one
     issue per finding it rules valid but not blocking. The same for every ruling of the loop, so
     it sits with the prompt's cached part (#1649)."""
-    from .. import broker_filing, config
+    from .. import config
+    from ..broker import filing as broker_filing
     if not config.adjudicator_file_issues(loop):
         return ''
     return (

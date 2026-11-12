@@ -153,6 +153,44 @@ class Records(unittest.TestCase):
                     row = self.view()['broker']['items'][0]
                     self.assertEqual((row['operation'], row['outcome']), (operation, outcome))
 
+    def test_every_written_audit_role_is_named_not_unknown(self):
+        # #2293: a role a writer records reads back as itself; only a foreign one is unknown.
+        for role in broker.AUDIT_ROLES:
+            with self.subTest(role=role):
+                broker._audit(self.loop, self.loop['repo'], 12, 'a' * 40, '', role, 'push', 'x')
+                self.assertEqual(self.view()['broker']['items'][0]['role'], role)
+        broker._audit(self.loop, self.loop['repo'], 12, 'a' * 40, '', '/home/private', 'push', 'x')
+        self.assertEqual(self.view()['broker']['items'][0]['role'], 'unknown')
+
+    def test_audit_roles_cover_every_writer_and_the_page_validator(self):
+        # #2293: the writers' literal roles and the page's accepted list are this one constant,
+        # so a new role cannot read as unknown here or fail the page's records validation.
+        import ast
+        import re
+        root = Path(__file__).resolve().parents[1]
+        written = set()
+
+        def literal(node):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                return {node.value}
+            if isinstance(node, ast.IfExp):
+                return literal(node.body) | literal(node.orelse)
+            return set()
+        for path in sorted((root / 'diaktoros').rglob('*.py')):
+            for node in ast.walk(ast.parse(path.read_text(), str(path))):
+                if isinstance(node, ast.Call) and len(node.args) >= 6 and (    # _audit(..., role, op, login)
+                        getattr(node.func, 'attr', getattr(node.func, 'id', '')) == '_audit'):
+                    written |= literal(node.args[5])
+                if path.name == 'safe_push.py' and isinstance(node, ast.Dict):   # safe_push receipts
+                    for key, value in zip(node.keys, node.values):
+                        if isinstance(key, ast.Constant) and key.value == 'role':
+                            written |= literal(value)
+        self.assertEqual(written, set(broker.AUDIT_ROLES))
+        page = (root / 'desktop/plugin.js').read_text()
+        found = re.search(r"category\(row\.role, \[([^\]]*)\]\)", page)
+        assert found is not None
+        self.assertEqual(re.findall(r"'([a-z_]+)'", found.group(1)), [*broker.AUDIT_ROLES, 'unknown'])
+
     def test_jsonl_tail_discards_only_incomplete_prefix_and_bounds_io(self):
         self.audit()
         path = self.directory / 'broker-audit.jsonl'
