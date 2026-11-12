@@ -181,27 +181,71 @@ def _next_ruling(c) -> tuple[str, str] | None:
     return kind, action
 
 
-def redelivery_rearms(c) -> bool:
-    """Whether a redelivered verdict re-arms this head's ended fixer turn once pushes are on: the
-    rule ``submit`` itself applies (``intake.redelivery_refusal``), not retry's, which offers
-    different rows (#1514 review). An unreadable ledger answers no; the gate's verdict turn
-    carries no turn key."""
+def redelivery_outcome(c) -> tuple[str, str | None, str]:
+    """What a redelivered verdict does at this head once pushes are on, by the rule ``submit``
+    itself applies (``intake.redelivery_refusal``), not retry's, which offers different rows (#1514
+    review): ``(outcome, gate_state, shown_key)``.
+
+    The verdict turn the gate submits carries no turn key, so the outcome is decided on that row
+    alone: ``rearmed`` when it is re-armed, ``enqueued`` when there is none (a fresh verdict turn
+    starts, #1659), ``""`` when it is refused. ``gate_state`` is that row's state (None without
+    one); ``shown_key`` is the turn key of the newest fixer row at the head — the one ``explain``
+    shows (``views.turn_state``), which may be a shadow-fix, CI-fix or conflict turn (#1615).
+    An unreadable ledger, or one with no fixer row at this head, answers ``("", None, "")``."""
     import sqlite3
     from .run_supervisor import REARMABLE, intake, views
     try:
         con = views.read_only_connect(config.host_path("ledger"))
         if con is None:
-            return False
+            return "", None, ""
         con.row_factory = sqlite3.Row
         try:
+            shown = views.newest_turn(con, c.repo, c.number, c.head, "fixer")
+            if shown is None:
+                return "", None, ""
             prior = con.execute("SELECT * FROM runs WHERE repo=? AND pr=? AND head=? AND seat='fixer' "
                                 "AND turn_key=''", (c.repo, c.number, c.head)).fetchone()
-            return (prior is not None and prior["state"] in REARMABLE and intake.redelivery_refusal(
-                con, prior, admitted=True, production=True, seat="fixer") is None)
+            if prior is None:
+                return "enqueued", None, shown["turn_key"]
+            rearms = prior["state"] in REARMABLE and intake.redelivery_refusal(
+                con, prior, admitted=True, production=True, seat="fixer") is None
+            return ("rearmed" if rearms else ""), prior["state"], shown["turn_key"]
         finally:
             con.close()
     except (sqlite3.Error, OSError):
-        return False
+        return "", None, ""
+
+
+def shown_turn(c) -> str:
+    """The fixer turn ``explain`` reports at this head, named by its kind when it is not the
+    gate's verdict turn (#1615): a shadow-fix, CI-fix or conflict turn shares the seat and head."""
+    from . import ci_fix
+    from .run_supervisor import CONFLICT_KEY, SHADOW_FIX_KEY
+    key = str(c.fixer_key or "")
+    if not key:
+        return "the fixer turn"
+    kind = ("shadow-fix" if key.startswith(SHADOW_FIX_KEY) else "CI-fix" if ci_fix.is_ci_fix(key)
+            else "conflict" if key.startswith(CONFLICT_KEY) else f"`{key}`")
+    return f"the {kind} fixer turn"
+
+
+def redelivery_effect(c, when: str = "") -> str:
+    """What a redelivered verdict does, as the clause after "a redelivered verdict" (#1615), with
+    ``when`` (e.g. " once the loop opts in") after its verb. The redelivery is decided on the
+    gate's verdict turn (``c.redeliver``, ``c.redelivery``), so when ``explain`` shows another
+    turn at the head, the clause names both: which turn it re-arms (or that it starts a fresh one,
+    with none at the head, #1659) and that the turn shown is not it. One wording for the blocker
+    and the step."""
+    if c.redeliver and c.redelivery == "enqueued":
+        return (f"starts a fresh verdict turn{when} (none is at this head yet); "
+                f"{shown_turn(c)} is not re-armed")
+    if c.redeliver and c.fixer_key:
+        return f"re-arms the verdict turn ({c.gate_turn}){when}, not {shown_turn(c)}"
+    if c.redeliver:
+        return f"re-arms it{when}"
+    return ("is a duplicate the ledger refuses"
+            + (f" (the verdict turn at this head is {c.gate_turn}, not {shown_turn(c)})"
+               if c.fixer_key and c.gate_turn else ""))
 
 
 def fixer_retry(c, seat: str = "fixer") -> tuple[str, str, bool]:
@@ -274,10 +318,20 @@ def _ended_turn_step(c, enable: str) -> str:
     named only when intake would re-arm the turn, retry only when its plan offers it (#1514
     review: the two rules differ), and a redelivery waits out a live in-flight mark, which the
     gate drops it under, while a retry does not; a run that may have written is reconciled first."""
-    return (f"operator decision: unattended fixer pushes are off for this loop, and the fixer "
-            f"turn at head {c.short} is {c.fixer_turn} with no fix pushed"
-            + ("" if c.redeliver else " — a redelivered verdict is a duplicate the ledger refuses")
+    return (f"operator decision: unattended fixer pushes are off for this loop, and {shown_turn(c)} "
+            f"at head {c.short} is {c.fixer_turn} with no fix pushed"
+            + ("" if c.redeliver else " — a redelivered verdict " + redelivery_effect(c))
+            + _other_turn_caution(c)
             + f". Run `{enable}`, then {_ended_turn_recovery(c)}, push, and re-request review")
+
+
+def _other_turn_caution(c) -> str:
+    """The reconcile caution for an uncertain turn shown beside the gate's verdict turn (#1615): a
+    redelivery or retry that re-arms the verdict turn leaves it as it is, and it may have written,
+    so it is reconciled first, as a single uncertain turn is."""
+    if not (c.fixer_key and c.fixer_turn == "uncertain"):
+        return ""
+    return f". For {shown_turn(c)}: " + _reconcile_first(c, "a worker may have written")
 
 
 def _ended_turn_recovery(c) -> str:
@@ -287,7 +341,9 @@ def _ended_turn_recovery(c) -> str:
     a declined fixer queue entry with pushes on (#1613), so both name the same recovery."""
     rearm, why, reconcile = c.fixer_rearm
     wait = _mark_wait(c) if c.redeliver else ""   # the gate drops it under a live mark (#1514 F3)
-    redeliver = wait + c.to_fixer + "— the ledger re-arms the turn for it" if c.redeliver else ""
+    tail = ("— the ledger re-arms the turn for it" if not c.fixer_key
+            else "— it " + redelivery_effect(c))           # names the turn it is decided on (#1615)
+    redeliver = wait + c.to_fixer + tail if c.redeliver else ""
     if redeliver and rearm:
         return (f"{rearm} re-arms it now — or {redeliver}" if wait
                 else f"{redeliver} (or {rearm} re-arms it)") + "; or fix it by hand"

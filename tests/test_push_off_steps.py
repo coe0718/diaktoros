@@ -228,6 +228,66 @@ class AfterEnabling(Steps):
                 with sup._connect() as con:
                     con.execute("DELETE FROM runs")
 
+    def two_rows(self, gate_state, other_key, other_state):
+        """A fixer row of another turn at this head (``other_key``), newer than the gate's verdict
+        turn (``gate_state``; None for no verdict turn at all) — the shape of #1615 and #1659."""
+        sup = self.production()
+        with mock.patch.object(sup, "_spawn"):
+            if gate_state:
+                sup.enqueue("run", fg.REPO, 7, fg.HEAD, "fixer")
+            sup.enqueue("other", fg.REPO, 7, fg.HEAD, "fixer", turn_key=other_key)
+        with sup._connect() as con:
+            con.execute("UPDATE runs SET state=?, error='', push_admitted=1, updated=1 "
+                        "WHERE turn_key=''", (gate_state or "",))
+            con.execute("UPDATE runs SET state=?, error='', push_admitted=1, updated=2 "
+                        "WHERE turn_key=?", (other_state, other_key))
+        return sup
+
+    def test_a_redelivery_is_named_by_the_verdict_turn_it_is_decided_on(self):
+        # #1615: a failed verdict turn and a newer uncertain shadow-fix turn at one head. The step
+        # showed the shadow turn's state and promised a redelivery re-arms "the turn", dropping
+        # the reconcile caution; the real ``submit`` re-arms the verdict turn, not that one.
+        sup = self.two_rows("failed", f"{run_supervisor.SHADOW_FIX_KEY}1", "uncertain")
+        self.set_push(False)
+        report = self.report()
+        action = report["next"]["action"]
+        self.assertIn("the shadow-fix fixer turn at head aaaaaaa is uncertain", action)
+        self.assertIn("re-arms the verdict turn (failed), not the shadow-fix fixer turn", action)
+        self.assertNotIn("the ledger re-arms the turn for it", action)
+        self.assertIn("For the shadow-fix fixer turn: reconcile it first", action)
+        ended = [b for b in report["blockers"] if "is uncertain with no fix pushed" in b]
+        self.assertEqual(len(ended), 1, report["blockers"])
+        self.assertIn("the shadow-fix fixer turn at head aaaaaaa", ended[0])
+        self.assertIn("re-arms the verdict turn (failed) once the loop opts in, not the "
+                      "shadow-fix fixer turn", ended[0])
+        self.set_push(True)
+        with mock.patch.object(sup, "_spawn"):
+            self.assertEqual(sup.submit("again", fg.REPO, 7, fg.HEAD, "fixer"), "rearmed")
+        with sup._connect() as con:                 # the shadow-fix turn is left as it was
+            self.assertEqual(con.execute("SELECT state FROM runs WHERE turn_key=?", (
+                f"{run_supervisor.SHADOW_FIX_KEY}1",)).fetchone()[0], "uncertain")
+
+    def test_a_redelivery_with_no_verdict_turn_starts_a_fresh_one(self):
+        # #1659 (folded into #1615): only a CI-fix row at the head. explain said a redelivered
+        # verdict "is a duplicate the ledger refuses"; the real ``submit`` enqueues a fresh turn.
+        sup = self.two_rows(None, "cifix:1", "uncertain")
+        self.set_push(False)
+        report = self.report()
+        action = report["next"]["action"]
+        self.assertNotIn("duplicate the ledger refuses", action)
+        self.assertIn("the CI-fix fixer turn at head aaaaaaa is uncertain", action)
+        self.assertIn("re-deliver the changes-requested review event for head aaaaaaa", action)
+        self.assertIn("starts a fresh verdict turn (none is at this head yet); the CI-fix fixer "
+                      "turn is not re-armed", action)
+        self.assertIn("For the CI-fix fixer turn: reconcile it first", action)
+        ended = [b for b in report["blockers"] if "is uncertain with no fix pushed" in b]
+        self.assertEqual(len(ended), 1, report["blockers"])
+        self.assertNotIn("duplicate the ledger refuses", ended[0])
+        self.assertIn("starts a fresh verdict turn once the loop opts in", ended[0])
+        self.set_push(True)
+        with mock.patch.object(sup, "_spawn"):
+            self.assertEqual(sup.submit("again", fg.REPO, 7, fg.HEAD, "fixer"), "enqueued")
+
     def test_a_lock_or_mark_over_an_ended_run_follows_the_ledger_not_the_mark(self):
         # #1510 review F5: a mark or lock can outlive its run (state.py keeps them until cleared
         # or expired); the started-turn step promised retry for a row retry has nothing for.
