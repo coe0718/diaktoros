@@ -418,6 +418,17 @@ def hold_line(seat: str, provider: str, until: float, reason: str = "") -> str:
     return f"held: {seat} {what} — resumes {when(until)}"
 
 
+# ``hold_line``'s exact structure (#674): the seat, the closed account's own words right after
+# it, then the reset. Unlike ``closed_account``'s marks, a line that merely mentions them is not it.
+_HOLD_LINE = re.compile(rf"held: [a-z_-]+ (?:{re.escape(UNAVAILABLE)}(?: \(.*)?|"
+                        rf"{re.escape(USAGE_WINDOW)} \([^()]+\)) — resumes \S.*", re.S)
+
+
+def is_hold_line(error: object) -> bool:
+    """Whether ``error`` is exactly a ``hold_line`` line, the structured provider-window hold."""
+    return isinstance(error, str) and _HOLD_LINE.fullmatch(error) is not None
+
+
 def closed_account(error: str) -> bool:
     """Whether a run's ``held:`` line is ``hold_line``'s for a closed account (a usage window or
     an unavailable provider), which ``retry --clear-hold`` reopens; a daily cap's is not."""

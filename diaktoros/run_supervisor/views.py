@@ -379,11 +379,14 @@ def describe_run(row: dict, loop_id: str = 'LOOP') -> str:
 # The structured hold reasons a waiting ledger row can carry (#674), keyed by
 # ``run_supervisor.waiting_hold``: what it waits for and how it resumes. A time-based hold
 # (provider window, daily cap) resumes at its recorded time, which ``next_eligible_start``
-# names; an event-based one (CI) names the event in ``waiting_for``. Either way the host only
-# rechecks it then: a start still depends on host eligibility, and ``next_step`` stays the one
-# piece of advice.
+# names; an event-based one (CI) names the event in ``waiting_for``. Most CI waits are also
+# time-bound: past ``run_supervisor.CI_WAIT_MAX_S`` the host stops holding for CI whether or not
+# the event came (``after_event_or_timeout``); only a red head's hold has no limit. Either way
+# the host only rechecks it then: a start still depends on host eligibility, and ``next_step``
+# stays the one piece of advice.
 HOLD_REASONS = {
-    'ci': ('ci_wait', 'ci_checks_or_new_head', 'after_event'),
+    'ci': ('ci_wait', 'ci_checks_or_new_head', 'after_event_or_timeout'),
+    'ci_failed': ('ci_failed_wait', 'failed_checks_pass_or_new_head', 'after_event'),
     'provider_window': ('provider_window', 'provider_window_reset', 'after_recorded_time'),
     'daily_cap': ('daily_cap', 'daily_cap_reset', 'after_recorded_time'),
 }
@@ -393,8 +396,10 @@ HOLD_REASONS = {
 HOLD_COPY = {
     'external_write_guard': 'Recorded run has external write evidence or an uncertain outcome.',
     'run_waiting': 'Recorded run is waiting; the policy-specific reason is not structured yet.',
-    'ci_wait': ('Recorded run is held for CI at its recorded head; a new head queues a fresh run '
-                'instead.'),
+    'ci_wait': ('Recorded run is held for CI at its recorded head, for at most the CI wait limit; '
+                'a new head queues a fresh run instead.'),
+    'ci_failed_wait': ('Recorded run is held for failed required checks at its recorded head, '
+                       'with no time limit; a new head queues a fresh run instead.'),
     'provider_window': ('Recorded run is held: its provider account is closed (a usage window or '
                         'an unavailable provider).'),
     'daily_cap': "Recorded run is held: its seat's daily turn cap or token budget is reached.",
@@ -405,6 +410,7 @@ HOLD_COPY = {
 WAITING_FOR_COPY = {
     'host_recheck': 'host recheck', 'operator_inspection': 'operator inspection',
     'unknown': 'unknown', 'ci_checks_or_new_head': 'CI checks to settle or a new head',
+    'failed_checks_pass_or_new_head': 'the failed checks to pass or a new head',
     'provider_window_reset': 'the provider account to reopen',
     'daily_cap_reset': 'the daily cap to reset',
 }

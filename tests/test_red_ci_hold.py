@@ -88,6 +88,23 @@ class Hold(sm.Base):
             seen, row = self.review(RED)
         self.assertEqual((seen, row[0]), ({}, "waiting"))
 
+    def test_it_explains_as_a_wait_with_no_time_limit(self):
+        # #674, review of #2398 F3: unlike the other CI waits this one never times out, so its
+        # explanation promises only the event, before the CI wait and past it alike.
+        from diaktoros.run_supervisor import views
+        for wait in (3600, 0):
+            with self.subTest(wait=wait), mock.patch.object(run_supervisor, "CI_WAIT_MAX_S", wait):
+                seen, _ = self.review(RED)
+                self.assertEqual(seen, {})
+                rows = views.read_only_view(self.root / "ledger.sqlite", "acme/widgets", 7)
+                self.assertEqual(len(rows), 1)
+                result = views.hold_explanation(rows[0])
+                self.assertEqual(
+                    (result["reason_code"], result["waiting_for"], result["automatic_resume"]),
+                    ("ci_failed_wait", "failed_checks_pass_or_new_head", "after_event"))
+                self.assertIn("with no time limit", result["text"])
+                self.assertEqual(result["next_eligible_start"], rows[0]["retry_at"])
+
     def test_a_rerun_that_passes_is_reviewed(self):
         for wait in (3600, 0):
             with self.subTest(wait=wait), mock.patch.object(run_supervisor, "CI_WAIT_MAX_S", wait):
