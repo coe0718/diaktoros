@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import sys
 import subprocess
 import tempfile
@@ -53,7 +54,7 @@ class ReadRoutes(unittest.TestCase):
         assert spec is not None and spec.loader is not None
         self.api = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.api)
-        app = FastAPI()
+        self.app = app = FastAPI()
         app.include_router(self.api.router, prefix='/api/plugins/diaktoros')
         self.client = self.enterContext(TestClient(app, raise_server_exceptions=False))
 
@@ -207,6 +208,38 @@ print('HOST_READS=' + json.dumps(results))
             with self.subTest(path=path):
                 self.assertEqual(status, 200)
                 self.assertIn('application/json', content_type)
+
+    def test_a_probe_side_network_error_is_a_503_that_names_no_origin(self):
+        # #2393 F1: the online doctor pass raises a network error while the offline local read
+        # succeeds. The host still answers the probe with the same bounded 503 it gives a failed
+        # local read, so that status cannot tell the two apart and the page must not guess.
+        from fastapi.testclient import TestClient
+        from diaktoros import doctor
+        real = doctor.check_loop
+
+        def check_loop(loop, offline):
+            if not offline:
+                raise ConnectionError('unexpected network failure /private/secret.pat')
+            return real(loop, offline=offline)
+
+        local = self.enterContext(TestClient(self.app, client=('127.0.0.1', 50000),
+                                             raise_server_exceptions=False))
+        with mock.patch.object(desktop_api.doctor, 'check_loop', side_effect=check_loop) as called:
+            probed = local.get('/api/plugins/diaktoros/health?loop=widgets&probe=1')
+            offline = local.get('/api/plugins/diaktoros/health?loop=widgets')
+        self.assertEqual([c.kwargs['offline'] for c in called.call_args_list], [False, True])
+        self.assertEqual(probed.status_code, 503, probed.text[:200])
+        self.assertEqual(probed.json(), {'detail': 'Desktop read unavailable; retry the read.'})
+        self.assertNotRegex(probed.text, r'(?i)local|state|github|network|private|secret')
+        self.assertEqual(offline.status_code, 200, offline.text[:200])
+        self.assertIs(offline.json()['offline'], True)
+        self.assertTrue(offline.json()['checks'])           # the local read did succeed
+        # The page's disclosure for that 503 claims only what the status proves: no origin.
+        source = (ROOT / 'desktop/plugin.js').read_text(encoding='utf-8')
+        shown = re.search(r"probeFailure === 'http503'\s*\?\s*'([^']*)'", source)
+        self.assertIsNotNone(shown, 'the page names no 503 fallback disclosure')
+        self.assertRegex(shown.group(1), r'HTTP 503.*does not say where or why')
+        self.assertNotRegex(shown.group(1), r'(?i)local state|github|host read')
 
     def test_expected_selection_and_probe_refusals_keep_their_status(self):
         self.assertEqual(self.get('/stats?loop=absent').status_code, 404)
