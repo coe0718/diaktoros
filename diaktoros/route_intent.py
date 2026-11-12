@@ -178,7 +178,7 @@ def load(loop: dict) -> dict | None:
         raw = target.read_text()
     except (FileNotFoundError, NotADirectoryError):
         return None                     # no record (a state_dir that is a file is doctor's to flag)
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:   # bytes that are not UTF-8 too (#1701)
         raise IntentError(f"{target} is unreadable ({exc})") from exc
     try:
         data = json.loads(raw)

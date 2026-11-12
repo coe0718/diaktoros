@@ -135,7 +135,9 @@ def _shadow_labels(loop: dict, repo: str, number: int, head: str, issue: dict,
         added, why = broker._write(loop, f"/repos/{repo}/issues/{issue['number']}/labels",
                             method="POST", body={"labels": missing}, login=login)
         status, unsent = gh.last_status(), gh.last_unsent()
-    except Exception as exc:  # noqa: BLE001 - the issue is filed: report, never raise
+    except (Exception, gh.GateBudgetExceeded) as exc:  # noqa: BLE001 - filed: report, never raise
+        # The sweep's budget running out here (#1705) is a gap too: raised past this point it
+        # would leave the filed issue's ledger rows `posting`/`recorded`, its number lost.
         added, why, status, unsent = None, f"{type(exc).__name__}: {exc}", None, False
     if isinstance(added, list):
         _audit_confirmed(loop, repo, number, head, f"{kind}_labels", login)
