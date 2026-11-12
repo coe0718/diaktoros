@@ -175,7 +175,13 @@ class _FallbackParser(HTMLParser):
                 "nav", "ol", "p", "pre", "search", "section", "summary",
                 "table", "ul", "xmp", "plaintext"} | HEADINGS
     # Table start tags: the open elements each one closes, and the
-    # elements at which the search for one stops.
+    # elements at which the search for one stops. The outermost match
+    # before the stop is closed, which closes everything inside it too:
+    # a new row closes the open row (and its open cell), and a new
+    # section closes the open section, or the open row if there is none.
+    # Cells stay in the row and section sets for a cell with no open row
+    # around it (`<table><td>1<tr>`): a browser inserts the missing row,
+    # and the new row or section closes that row together with the cell.
     TABLE_CLOSES = {
         "td": ({"td", "th"}, {"tr", "table", "template", "html"}),
         "th": ({"td", "th"}, {"tr", "table", "template", "html"}),
@@ -205,20 +211,26 @@ class _FallbackParser(HTMLParser):
             if key is not None:
                 self.pairs.append((key, "".join(parts)))
 
-    def _find(self, wanted, stop):
+    def _find(self, wanted, stop, outermost=False):
         """Index of the innermost open element in `wanted`, searching
-        outwards and giving up at an element in `stop`; None if absent."""
+        outwards and giving up at an element in `stop`; None if absent.
+        With `outermost`, the search runs on to the stop (or the bottom of
+        the stack) and returns the outermost match it passed instead."""
+        found = None
         for index in range(len(self._stack) - 1, -1, -1):
             tag = self._stack[index][0]
             if tag in wanted:
-                return index
-            if tag in stop:
-                return None
-        return None
+                found = index
+                if not outermost:
+                    return found
+            elif tag in stop:
+                return found
+        return found
 
-    def _close_found(self, wanted, stop):
-        """Close the innermost open element in `wanted` (see `_find`)."""
-        index = self._find(wanted, stop)
+    def _close_found(self, wanted, stop, outermost=False):
+        """Close the innermost (or, with `outermost`, the outermost) open
+        element in `wanted` (see `_find`), and everything inside it."""
+        index = self._find(wanted, stop, outermost)
         if index is not None:
             self._pop_to(index)
 
@@ -237,7 +249,7 @@ class _FallbackParser(HTMLParser):
             while self._stack and self._stack[-1][0] in closes:
                 self._pop_to(len(self._stack) - 1)
         elif tag in self.TABLE_CLOSES:
-            self._close_found(*self.TABLE_CLOSES[tag])
+            self._close_found(*self.TABLE_CLOSES[tag], outermost=True)
 
     def handle_starttag(self, tag, attrs):
         key = dict(attrs).get("data-site")
@@ -471,6 +483,60 @@ class SiteRefreshTests(unittest.TestCase):
         ]:
             with self.subTest(snippet=snippet):
                 self.assertEqual(hardcoded_fallbacks(snippet), [want])
+
+    def test_fallback_check_closes_row_and_section_with_implied_end_tags(self):
+        """A `<tr>` or `<tbody>` start tag that arrives while a cell is open
+        closes the open row (or section), not only the cell, as a browser
+        does, so a data-site row or section holds only its own text (#2378)."""
+        for snippet, want in [
+            ('<table><tr data-site="k"><td>1<tr><td>2</table>', ("k", "1")),
+            ('<table><tr data-site="k"><th>1<tr><td>2</table>', ("k", "1")),
+            ('<table><tr data-site="k"><td>1<tbody><tr><td>2</table>', ("k", "1")),
+            ('<table><tbody data-site="k"><tr><td>1<tbody><tr><td>2</table>', ("k", "1")),
+            ('<table><thead data-site="k"><tr><td>1<tfoot><tr><td>2</table>', ("k", "1")),
+            ('<table><tr data-site="k"><td>1</td><tr><td>2</table>', ("k", "1")),
+            # A row inside a nested table closes only the nested row.
+            ('<table><tr data-site="k"><td>1<table><tr><td>2<tr><td>3</table>4</table>',
+             ("k", "1234")),
+        ]:
+            with self.subTest(snippet=snippet):
+                self.assertEqual(hardcoded_fallbacks(snippet), [want])
+        html = (SITE / "index.html").read_text()
+        data = json.loads((SITE / "data.json").read_text())
+        stars = f'{data["stars"]:,}'
+        self.assertIn("</body>", html)
+        # The row's own text is 999; the next row's text would make it
+        # 999<stars>, and the section's would read as the snapshot value.
+        for table in (f'<table><tr data-site="stars"><td>999<tr><td>{stars}</table>',
+                      f'<table><tbody data-site="stars"><tr><td>999<tbody><tr><td>{stars}</table>'):
+            with self.subTest(table=table):
+                mutated = html.replace("</body>", table + "</body>", 1)
+                stale = stale_fallbacks(mutated, data)
+                self.assertIn(f"stars: html '999' != data.json {stars!r}", stale)
+
+    def test_fallback_check_closes_cell_of_implied_row(self):
+        """A cell with no open row around it sits in a row the browser
+        inserts; a later `<tr>` or section start tag closes that row and
+        the cell with it, so the cell holds only its own text."""
+        for snippet in ('<table><td data-site="k">1<tr><td>2</table>',
+                        '<table><th data-site="k">1<tr><td>2</table>',
+                        '<table><td data-site="k">1<tbody><tr><td>2</table>',
+                        '<table><td data-site="k">1<thead><tr><td>2</table>',
+                        '<table><td data-site="k">1<tfoot><tr><td>2</table>'):
+            with self.subTest(snippet=snippet):
+                self.assertEqual(hardcoded_fallbacks(snippet), [("k", "1")])
+        html = (SITE / "index.html").read_text()
+        data = json.loads((SITE / "data.json").read_text())
+        stars = f'{data["stars"]:,}'
+        self.assertIn("</body>", html)
+        # The cell's own text is 999; a cell that kept collecting would
+        # read 999 plus the next row's snapshot value instead.
+        for after in ("<tr>", "<tbody><tr>"):
+            table = f'<table><td data-site="stars">999{after}<td>{stars}</table>'
+            with self.subTest(table=table):
+                mutated = html.replace("</body>", table + "</body>", 1)
+                self.assertIn(f"stars: html '999' != data.json {stars!r}",
+                              stale_fallbacks(mutated, data))
 
     def test_fallback_check_keeps_self_closed_non_void_open(self):
         """HTML ignores the slash on a non-void `<span/>`: the span stays
