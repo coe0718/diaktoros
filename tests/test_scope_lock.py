@@ -11,7 +11,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from diaktoros import broker_ipc, config, findings, gh, observer, safe_push, scope_lock  # noqa: E402
+from diaktoros import config, findings, gh, observer, safe_push, scope_lock  # noqa: E402
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros import state as state_mod  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from test_safe_push import HEAD, NEW_HEAD, REPO, FakeGitHub, manifest  # noqa: E402

@@ -30,8 +30,10 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import (broker, broker_filing, broker_client, broker_ipc, config, gh, ledger, prompts,  # noqa: E402
+from diaktoros import (broker, broker_client, config, gh, ledger, prompts,  # noqa: E402
                        run_supervisor)
+from diaktoros.broker import filing as broker_filing  # noqa: E402
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros.config import blocks  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 

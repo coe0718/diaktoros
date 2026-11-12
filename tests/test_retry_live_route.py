@@ -94,7 +94,7 @@ if _home and os.path.exists(os.path.join(_home, 'offline-port')):
 # The "agent": talks only to the two capabilities a sandboxed turn is given.
 FAKE_AGENT = r'''
 import json, sys
-from diaktoros import broker_ipc
+from diaktoros.broker import ipc as broker_ipc
 from diaktoros.inference_proxy import PATH, _UnixHTTP
 mode, model_sock, broker_sock = sys.argv[1:4]
 print('hermes: review turn started', flush=True)

@@ -564,7 +564,8 @@ class TurnPrefetchTests(unittest.TestCase):
                      "seats": {"reviewer": {"login": "review"}, "fixer": {"login": "fix"}}}
 
     def test_prefetch_is_recorded_before_and_after_and_the_sandbox_gets_its_whole_budget(self):
-        from diaktoros import broker_ipc, trusted_turn
+        from diaktoros import trusted_turn
+        from diaktoros.broker import ipc as broker_ipc
         events = []
 
         def stage(_loop, **kw):
@@ -623,7 +624,8 @@ class TurnPrefetchTests(unittest.TestCase):
 
     def test_a_repo_with_nothing_to_prefetch_records_that_not_fetching_forever(self):
         """#361: with no manifest, the ledger kept "fetching — started …" after the turn ended."""
-        from diaktoros import broker_ipc, trusted_turn
+        from diaktoros import trusted_turn
+        from diaktoros.broker import ipc as broker_ipc
 
         def stage(_loop, **kw):
             kw["sandbox_root"].mkdir()

@@ -19,7 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from diaktoros import broker_ipc, repro_proof  # noqa: E402
+from diaktoros import repro_proof  # noqa: E402
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 import test_issue_fix as tif  # noqa: E402
 

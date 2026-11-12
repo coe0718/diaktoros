@@ -16,9 +16,10 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import broker_ipc, broker_issues  # noqa: E402
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
+from diaktoros.broker import issues as broker_issues  # noqa: E402
 
-CORE, MIXIN = ROOT / "diaktoros" / "broker_ipc.py", ROOT / "diaktoros" / "broker_issues.py"
+CORE, MIXIN = ROOT / "diaktoros" / "broker" / "ipc.py", ROOT / "diaktoros" / "broker" / "issues.py"
 
 
 def _defined(tree: ast.Module) -> set[str]:
@@ -51,14 +52,14 @@ class Split(unittest.TestCase):
 
     def test_the_mixin_imports_no_broker_ipc_name_by_itself(self):
         for node in ast.walk(ast.parse(MIXIN.read_text())):
-            if isinstance(node, ast.ImportFrom) and (node.module or "").endswith("broker_ipc"):
-                self.fail(f"broker_issues.py:{node.lineno} imports "
-                          f"{[a.name for a in node.names]} from broker_ipc by name")
+            if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[-1] == "ipc":
+                self.fail(f"broker/issues.py:{node.lineno} imports "
+                          f"{[a.name for a in node.names]} from broker/ipc by name")
 
     def test_either_module_may_be_imported_first(self):
-        for first in ("broker_issues", "broker_ipc"):
+        for first in ("issues", "ipc"):
             with self.subTest(first=first):
-                probe = (f"import diaktoros.{first}\nfrom diaktoros import broker_ipc\n"
+                probe = (f"import diaktoros.broker.{first}\nfrom diaktoros.broker import ipc as broker_ipc\n"
                          "print(broker_ipc.RunBroker.__mro__[1].__name__)")
                 out = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, text=True,
                                      capture_output=True, timeout=60)
