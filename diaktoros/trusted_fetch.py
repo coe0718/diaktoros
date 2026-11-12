@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import broker, gh
+from . import broker, gh, gh_calls
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
@@ -49,19 +49,39 @@ def _publish_exclusive(private: pathlib.Path, root: pathlib.Path) -> None:
         raise FetchDenied(f"sandbox publish failed (errno={ctypes.get_errno()})")
 
 
+def _count(login: str, path: str, status: int | None, headers=None) -> None:
+    """Count one of this module's GitHub calls in ``gh_calls``, as ``gh._request`` counts its own
+    (#1787): ``status`` is GitHub's answer, None when there was none (``error``)."""
+    headers = {k.lower(): v for k, v in (headers or {}).items()}
+    gh_calls.record(login, "GET", path,
+                    gh_calls.outcome(path, status, status == 304, headers), headers)
+
+
+def _token(loop: dict, login: str, path: str) -> str:
+    """The credential for ``login``; a call with none is counted ``unsent``, as in ``gh``."""
+    try:
+        return gh.token(loop, login)
+    except gh.GitHubError:
+        gh_calls.record(login, "GET", path, "unsent")
+        raise
+
+
 def _request(loop: dict, path: str, login: str, limit: int, accept: str) -> bytes:
     """Read at most limit+1 bytes, including for chunked and dishonest responses."""
     from .config.host_guards import guard_network
     guard_network(f"{gh.API}{path}")    # under the test guard: loopback fakes only
-    credential = ""
+    credential, sent, answered = "", False, False
     try:
-        credential = gh.token(loop, login)
+        credential = _token(loop, login, path)
+        sent = True
         req = urllib.request.Request(
             f"{gh.API}{path}", headers={"Accept": accept,
                 "Authorization": f"Bearer {credential}",
                 "X-GitHub-Api-Version": "2022-11-28",
                 "User-Agent": "diaktoros"})
         with urllib.request.urlopen(req, timeout=30) as response:
+            answered = True     # counted on the answer: a body that fails to read was spent
+            _count(login, path, response.status, response.headers)
             if response.status != 200:
                 raise FetchDenied("GitHub response unavailable")
             if int(response.headers.get("Content-Length", "0")) > limit:
@@ -79,7 +99,10 @@ def _request(loop: dict, path: str, login: str, limit: int, accept: str) -> byte
     except (OSError, ValueError, urllib.error.URLError, gh.GitHubError) as exc:
         if isinstance(exc, urllib.error.HTTPError):
             exc.close()   # it holds the response open, and __cause__ would keep it alive
+            _count(login, path, exc.code, exc.headers)    # safe after close(): over .hdrs
             gh.refusal(loop, login, credential, exc.code)      # a dead App token (#1780)
+        elif sent and not answered:                     # sent, but no HTTP answer
+            _count(login, path, None)
         raise FetchDenied("GitHub response unavailable") from exc
 
 
@@ -197,9 +220,11 @@ def _fetch_tarball(loop: dict, repo: str, reader: str, head: str, limit: int) ->
             return None
 
     opener = urllib.request.build_opener(_NoRedirectHandler)
-    credential = ""
+    path = f"/repos/{repo}/tarball/{head}"
+    credential, sent, answered = "", False, False
     try:
-        credential = gh.token(loop, reader)
+        credential = _token(loop, reader, path)
+        sent = True
         req = urllib.request.Request(
             f"{gh.API}/repos/{repo}/tarball/{head}",
             headers={"Accept": "application/vnd.github+json",
@@ -207,11 +232,15 @@ def _fetch_tarball(loop: dict, repo: str, reader: str, head: str, limit: int) ->
                      "X-GitHub-Api-Version": "2022-11-28",
                      "User-Agent": "diaktoros"})
         with opener.open(req, timeout=30) as response:
+            answered = True
+            _count(reader, path, response.status, response.headers)
             if response.status != 200:
                 raise FetchDenied("GitHub response unavailable")
             return _read_bounded(response, limit)
     except urllib.error.HTTPError as exc:
         # urllib raises here for a declined redirect; the error IS the open response.
+        # GitHub answered (its redirect too): the API call counts whatever codeload does next.
+        _count(reader, path, exc.code, exc.headers)
         if exc.code not in (301, 302, 303, 307, 308):
             exc.close()
             gh.refusal(loop, reader, credential, exc.code)     # a dead App token (#1780)
@@ -224,6 +253,8 @@ def _fetch_tarball(loop: dict, repo: str, reader: str, head: str, limit: int) ->
     except (OSError, ValueError, urllib.error.URLError, gh.GitHubError) as exc:
         if isinstance(exc, urllib.error.HTTPError):
             exc.close()
+        if sent and not answered:                       # sent, but no HTTP answer
+            _count(reader, path, None)
         raise FetchDenied("GitHub response unavailable") from exc
 
 
