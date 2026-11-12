@@ -9,6 +9,7 @@ reaches the network.
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import sqlite3
@@ -280,10 +281,16 @@ class Ruled(Base):
         self.overruled = approval(self.head, review_id=11, state="CHANGES_REQUESTED")
         self.ruled = approval(self.head, review_id=21, login="adj", at="2026-11-10T02:00:00Z")
         self.reviews = [self.overruled, self.ruled]
-        self.ruling = {"head": self.head, "verdict": "ACCEPT", "run_id": "r1"}
+        # The ruling came after the change request it overruled (01:00) and before the approval.
+        self.ruled_at = datetime(2026, 11, 10, 1, 30, tzinfo=timezone.utc).timestamp()
+        self.ruling = {"head": self.head, "verdict": "ACCEPT", "run_id": "r1",
+                       "created": self.ruled_at}
+        self.ruled_head = self.head
         self.rows, self.error = [{"ruling": "r1", "approve": "posted", "dismiss": "pending"}], ""
+        # The record belongs to the head it was written at (#2375 review, F5): any other is blank.
         for name, read in (("ruling_row", lambda *a: self.ruling),
-                           ("ruled_approvals", lambda *a: (self.rows, self.error))):
+                           ("ruled_approvals", lambda db, repo, pr, head: (
+                               self.rows if head == self.ruled_head else [], self.error))):
             patch = mock.patch.object(views, name, side_effect=read)
             patch.start()
             self.addCleanup(patch.stop)
@@ -293,7 +300,7 @@ class Ruled(Base):
         self.reviews = [{**self.overruled, "state": "DISMISSED"}, self.ruled]
 
     def test_the_merge_waits_until_the_approval_and_dismissal_are_settled(self):
-        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head),
+        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews),
                          "the adjudicator's ACCEPT is still being acted on (dismiss: pending)")
         self.assertEqual(self.update(), "")
         self.assertEqual(self.remote_head(), self.head)
@@ -301,7 +308,7 @@ class Ruled(Base):
             self.rows[0]["dismiss"] = state
             self.assertEqual(self.update(), "")
         self.rows, self.error = [], "OperationalError: disk I/O error"   # unreadable is not settled
-        self.assertIn("can't be read", ruled_approval.unsettled(self.loop, 7, self.head))
+        self.assertIn("can't be read", ruled_approval.unsettled(self.loop, 7, self.head, self.reviews))
         self.assertEqual(self.update(), "")
         self.assertEqual(self.remote_head(), self.head)
 
@@ -321,7 +328,7 @@ class Ruled(Base):
         # Review of #2375, F1: an approval posted by hand, before the sweep has recorded anything,
         # still has its dismissal to come.
         self.rows = []
-        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head),
+        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews),
                          "the adjudicator's ACCEPT has not been acted on yet")
         self.assertEqual(self.update(), "")
         self.assertEqual(self.remote_head(), self.head)
@@ -329,13 +336,40 @@ class Ruled(Base):
     def test_an_older_rulings_pending_step_waits_on_nothing(self):
         # F2: a superseded ruling's pending step is never acted on again; only its write on the
         # wire holds the head.
-        self.ruling = {"head": self.head, "verdict": "ACCEPT", "run_id": "r2"}
+        self.ruling = {"head": self.head, "verdict": "ACCEPT", "run_id": "r2", "created": self.ruled_at}
         self.rows = [{"ruling": "r1", "approve": "posted", "dismiss": "pending"},
                      {"ruling": "r2", "approve": "none", "dismiss": "posted"}]
-        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head), "")
+        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews), "")
         self.rows[0]["dismiss"] = "posting"
-        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head),
+        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews),
                          "the adjudicator's ACCEPT is still being acted on (dismiss: posting)")
+
+    def test_no_record_and_nothing_to_dismiss_waits_on_nothing(self):
+        # F6: an approval posted by hand after the reviewer's request was already dismissed: the
+        # sweep finds nothing it overruled and writes no record, so no wait could ever end.
+        self.rows = []
+        self.reviews = [{**self.overruled, "state": "DISMISSED"}, self.ruled]
+        self.assertEqual(ruled_approval.unsettled(self.loop, 7, self.head, self.reviews), "")
+        new = self.update()
+        self.assertEqual(new, self.remote_head())
+
+    def test_a_second_behind_update_follows_the_carried_approval(self):
+        # F5: the carried approval was settled at the ruling's head; the merged head has no
+        # record of its own, and the next merge must not wait for one.
+        self.settle()
+        first = self.update()
+        (self.src / "d.py").write_text("d\n")
+        git("-C", str(self.src), "add", "-A")
+        git("-C", str(self.src), "commit", "-qm", "Yet another (#431)")
+        git("-C", str(self.src), "push", "-q", self.remote, "main")
+        self.tip = git("-C", str(self.src), "rev-parse", "HEAD")
+        self.head = first
+        self.live["head"]["sha"] = first
+        second = self.update()
+        self.assertEqual(second, self.remote_head())
+        self.assertNotEqual(second, first)
+        self.assertEqual(self.latest_id(second), 21)                 # carried along the chain
+        self.assertEqual(self.carried(second)["from"], first)
 
     def latest_id(self, head):
         latest = gate.latest_effective_review_at_head(self.reviews, self.loop, head)

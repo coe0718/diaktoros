@@ -122,23 +122,27 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
 SETTLED = ("posted", "none", "denied")
 
 
-def unsettled(loop: dict, number: int, head: str) -> str:
+def unsettled(loop: dict, number: int, head: str, reviews: list) -> str:
     """Why acting on the ACCEPT at ``head`` is not finished, or '' (#2364). ``base_merge`` waits on
     it: a merge moves the head, and the sweep acts only on a ruling at the current head.
 
-    The newest ruling's record decides, as ``_act`` does: no record yet is not settled (the sweep
-    has not acted; an approval posted by hand still waits for its dismissal), and neither is a step
-    not yet posted, none or denied. An older ruling's record holds only while one of its writes may
+    The newest ruling's record decides, as ``_act`` does: no record yet is not settled while a
+    change request is still there to dismiss (``overruled``: the sweep has not acted; an approval
+    posted by hand still waits for its dismissal), and with none the sweep writes no record, so
+    nothing is owed. A step not yet posted, none or denied is not settled. An older ruling's record holds only while one of its writes may
     be on the wire (``posting``, ``uncertain``): its pending steps are never acted on again, so
     they wait on nothing. A record or ruling that can't be read is not settled either."""
     db = production_ledger()
     rows, error = views.ruled_approvals(db, loop["repo"], number, head)
     if error:
         return f"the record of acting on the adjudicator's ACCEPT can't be read ({error[:120]})"
-    newest = (views.ruling_row(db, loop["repo"], number) or {}).get("run_id")
+    ruling = views.ruling_row(db, loop["repo"], number) or {}
+    newest = ruling.get("run_id")
     if not newest:
         return "the adjudicator's ruling can't be read"
     if not any(row.get("ruling") == newest for row in rows):
+        if overruled(reviews, loop, head, ruling.get("created") or 0) is None:
+            return ""                          # no change request to dismiss: nothing to act on
         return "the adjudicator's ACCEPT has not been acted on yet"
     for row in rows:
         for step in ("approve", "dismiss"):
