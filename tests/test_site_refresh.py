@@ -179,16 +179,19 @@ class _FallbackParser(HTMLParser):
     # before the stop is closed, which closes everything inside it too:
     # a new row closes the open row (and its open cell), and a new
     # section closes the open section, or the open row if there is none.
+    # Cells stay in the row and section sets for a cell with no open row
+    # around it (`<table><td>1<tr>`): a browser inserts the missing row,
+    # and the new row or section closes that row together with the cell.
     TABLE_CLOSES = {
         "td": ({"td", "th"}, {"tr", "table", "template", "html"}),
         "th": ({"td", "th"}, {"tr", "table", "template", "html"}),
-        "tr": ({"tr"}, {"tbody", "thead", "tfoot", "table", "template",
-                        "html"}),
-        "tbody": ({"tbody", "thead", "tfoot", "tr"},
+        "tr": ({"tr", "td", "th"}, {"tbody", "thead", "tfoot", "table",
+                                    "template", "html"}),
+        "tbody": ({"tbody", "thead", "tfoot", "tr", "td", "th"},
                   {"table", "template", "html"}),
-        "thead": ({"tbody", "thead", "tfoot", "tr"},
+        "thead": ({"tbody", "thead", "tfoot", "tr", "td", "th"},
                   {"table", "template", "html"}),
-        "tfoot": ({"tbody", "thead", "tfoot", "tr"},
+        "tfoot": ({"tbody", "thead", "tfoot", "tr", "td", "th"},
                   {"table", "template", "html"}),
     }
     # End tags that close nothing here: content can follow them, and the
@@ -510,6 +513,30 @@ class SiteRefreshTests(unittest.TestCase):
                 mutated = html.replace("</body>", table + "</body>", 1)
                 stale = stale_fallbacks(mutated, data)
                 self.assertIn(f"stars: html '999' != data.json {stars!r}", stale)
+
+    def test_fallback_check_closes_cell_of_implied_row(self):
+        """A cell with no open row around it sits in a row the browser
+        inserts; a later `<tr>` or section start tag closes that row and
+        the cell with it, so the cell holds only its own text."""
+        for snippet in ('<table><td data-site="k">1<tr><td>2</table>',
+                        '<table><th data-site="k">1<tr><td>2</table>',
+                        '<table><td data-site="k">1<tbody><tr><td>2</table>',
+                        '<table><td data-site="k">1<thead><tr><td>2</table>',
+                        '<table><td data-site="k">1<tfoot><tr><td>2</table>'):
+            with self.subTest(snippet=snippet):
+                self.assertEqual(hardcoded_fallbacks(snippet), [("k", "1")])
+        html = (SITE / "index.html").read_text()
+        data = json.loads((SITE / "data.json").read_text())
+        stars = f'{data["stars"]:,}'
+        self.assertIn("</body>", html)
+        # The cell's own text is 999; a cell that kept collecting would
+        # read 999 plus the next row's snapshot value instead.
+        for after in ("<tr>", "<tbody><tr>"):
+            table = f'<table><td data-site="stars">999{after}<td>{stars}</table>'
+            with self.subTest(table=table):
+                mutated = html.replace("</body>", table + "</body>", 1)
+                self.assertIn(f"stars: html '999' != data.json {stars!r}",
+                              stale_fallbacks(mutated, data))
 
     def test_fallback_check_keeps_self_closed_non_void_open(self):
         """HTML ignores the slash on a non-void `<span/>`: the span stays
