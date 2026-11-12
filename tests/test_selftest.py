@@ -17,8 +17,9 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import (broker, broker_ipc, cli, contained, doctor, gh,  # noqa: E402
+from diaktoros import (broker, cli, contained, doctor, gh,  # noqa: E402
                          inference_proxy, review_receipt, selftest, trusted_fetch, trusted_turn)
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros.doctor import cron_checks, hook_checks  # noqa: E402
 
 HEAD = "c" * 40

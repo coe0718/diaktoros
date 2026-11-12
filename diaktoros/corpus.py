@@ -146,7 +146,8 @@ def history(path: Path, skipped: list | None = None) -> list[dict]:
 
 def live_review(loop: dict, settings: dict, reviewer, timeout: int):
     """A ``review(case)`` that runs one isolated no-write reviewer turn on the case's PR."""
-    from . import broker_ipc, gh as gh_mod, selftest, trusted_turn
+    from . import gh as gh_mod, selftest, trusted_turn
+    from .broker import ipc as broker_ipc
     from .run_supervisor.turn_prompts import isolated_prompt
     from .run_supervisor.pr_facts import pr_change
 

@@ -1,6 +1,6 @@
 """The broker's issue writes (#1349): the issue fixer's one write and the reviewer's filing.
 
-Methods of :class:`~diaktoros.broker_ipc.RunBroker`, moved unchanged: the issue fixer's branch,
+Methods of :class:`~diaktoros.broker.ipc.RunBroker`, moved unchanged: the issue fixer's branch,
 PR and review request (or its one comment on the issue), the reproduction proof it carries, and
 the reviewer's and shadow's ``file_issue`` / ``comment_issue`` requests. Shared names are read
 from ``broker_ipc`` at call time, so a patch there reaches them.
@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import re
 
-from . import broker, broker_filing, config, fixer_answers, issue_labels, repro_proof, safe_push
+from .. import broker, config, fixer_answers, issue_labels, repro_proof, safe_push
+from . import filing as broker_filing
 
 
 class IssueWrites:
-    """The issue-side methods of :class:`~diaktoros.broker_ipc.RunBroker`."""
+    """The issue-side methods of :class:`~diaktoros.broker.ipc.RunBroker`."""
 
     def _issue_fix(self, raw: bytes, request: object) -> object:
         """The issue fixer's one write, then the observer's notice of how it ended (#231).
@@ -43,8 +44,8 @@ class IssueWrites:
         branch to be absent. A write whose outcome is unknown is recorded as uncertain and never
         replayed.
         """
-        from . import fix_hold, run_supervisor, state as state_mod
-        from .run_supervisor import Supervisor, issue_inputs
+        from .. import fix_hold, run_supervisor, state as state_mod
+        from ..run_supervisor import Supervisor, issue_inputs
         if self.scope.role != "issue_fixer" or not isinstance(request, dict):
             raise broker_ipc.ProtocolError("operation out of scope")
         operation = request.get("operation")
@@ -113,7 +114,7 @@ class IssueWrites:
                     supervisor.record_repro_proof(run_id, repo, number, self.scope.head,
                                                   repro_proof.dumps(proof))
                 except Exception as exc:    # the proof informs; it never blocks the write
-                    from .util import log
+                    from ..util import log
                     log(f"repro proof for run {run_id} not recorded: {exc}")
             self.completed = True
             if operation == "issue_comment":
@@ -188,7 +189,7 @@ class IssueWrites:
         """Record one issue a shadow review asks to file (#914), checked as the reviewer's would
         be. The seat gets the same "accepted" a filing gets; the host files it after the real
         review (``shadow_issues.file_pending``), or never, if the reviewer filed the same."""
-        from .run_supervisor import Supervisor
+        from ..run_supervisor import Supervisor
         title, body, labels, _current = self._issue_request(raw, request)
         if not self.scope.run_id or not self.scope.ledger_db:
             raise broker_ipc.ProtocolError("host run ledger unavailable")
@@ -204,7 +205,7 @@ class IssueWrites:
         """Record one follow-up an adjudicator asks to file (#1864), checked as the reviewer's
         would be. The host files it after the run's ruling (``ruling_issues.file_pending``), as
         the reader; a run that never rules files nothing. Only where the loop opts in."""
-        from .run_supervisor import Supervisor
+        from ..run_supervisor import Supervisor
         title, body, labels, current = self._issue_request(raw, request)
         if not config.adjudicator_file_issues(current):
             raise broker_ipc.ProtocolError("this loop does not file the adjudicator's follow-ups "
@@ -282,7 +283,7 @@ class IssueWrites:
         and never replayed. The issue carries its lineage (the PR, and how deep a chain of
         automatic fixes it came from) so a later automatic hand-off can be bounded.
         """
-        from .run_supervisor import Supervisor
+        from ..run_supervisor import Supervisor
         if self.scope.role != "reviewer":          # an adjudicator's is only ever recorded
             raise broker_ipc.ProtocolError("operation out of scope")
         title, body, labels, current = self._issue_request(raw, request)
@@ -320,7 +321,7 @@ class IssueWrites:
         return {"accepted": True, "issue": issue}
 
     def _issue_comment(self, loop: dict, supervisor, body: str, kind: str | None = None) -> object:
-        from . import fix_hold, state as state_mod
+        from .. import fix_hold, state as state_mod
         run_id = self.scope.run_id
         try:
             login = broker.authorize_issue_fix(loop, repo=self.scope.repo, number=self.scope.number)
@@ -346,7 +347,7 @@ def _issue_fix_row(scope: broker_ipc.RunScope):
     ledger cannot be read."""
     if not scope.run_id or not scope.ledger_db:
         return None
-    from .run_supervisor import Supervisor
+    from ..run_supervisor import Supervisor
     with Supervisor(scope.ledger_db, create=False)._connect() as con:
         return con.execute("SELECT kind,state,pr_number,comment_id,error FROM issue_fixes "
                            "WHERE run_id=?", (scope.run_id,)).fetchone()
@@ -358,7 +359,7 @@ def _posted_ask(scope: broker_ipc.RunScope, loop: dict | None, row=None) -> dict
     recorded, so an older ask on the same issue is never credited to this run."""
     if loop is None:
         return None
-    from . import state as state_mod
+    from .. import state as state_mod
     try:
         row = row if row is not None else _issue_fix_row(scope)
         if row is None or row["kind"] != "comment" or row["state"] != "posted":
@@ -389,7 +390,7 @@ def _issue_fix_outcome(scope: broker_ipc.RunScope, loop: dict | None = None) -> 
             return f"{pr}, review requested"
         return pr + (f" ({error})" if error else "")
     if row["kind"] == "comment" and state == "posted":
-        from . import fix_hold
+        from .. import fix_hold
         ask = _posted_ask(scope, loop, row)
         if ask:
             return fix_hold.ask_outcome(ask)
@@ -400,4 +401,4 @@ def _issue_fix_outcome(scope: broker_ipc.RunScope, loop: dict | None = None) -> 
 
 # Last, so either module may be imported first: broker_ipc's class statement needs IssueWrites
 # defined, and these methods read broker_ipc only when they run.
-from . import broker_ipc  # noqa: E402
+from . import ipc as broker_ipc  # noqa: E402

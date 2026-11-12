@@ -19,7 +19,8 @@ from contextlib import closing
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from diaktoros import broker_ipc, change_proof, config, repro_proof, trusted_fetch  # noqa: E402
+from diaktoros import change_proof, config, repro_proof, trusted_fetch  # noqa: E402
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 REPO, HEAD = "acme/widgets", "a" * 40

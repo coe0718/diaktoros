@@ -25,9 +25,11 @@ import sys
 import tempfile
 import time
 
-from . import (broker, broker_client, broker_filing, broker_ipc, config, contained, deps, gh,
+from . import (broker, broker_client, config, contained, deps, gh,
                hostdirs, inference_proxy, prompts, repro_proof, runtime_detect, safe_push,
                trusted_fetch, util)
+from .broker import filing as broker_filing
+from .broker import ipc as broker_ipc
 
 
 def dependency_cache(loop: dict) -> Path | None:

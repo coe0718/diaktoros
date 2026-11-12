@@ -34,8 +34,8 @@ import stat
 import threading
 from dataclasses import dataclass
 
-from . import broker, ci_decline, config, contained, fixer_answers, safe_push
-from . import broker_issues   # RunBroker's issue writes: broker_issues.IssueWrites, inherited
+from .. import broker, ci_decline, config, contained, fixer_answers, safe_push
+from . import issues as broker_issues   # RunBroker's issue writes: broker_issues.IssueWrites, inherited
 
 MAX_REQUEST = 16 * 1024
 MAX_BODY = 12 * 1024
@@ -136,7 +136,7 @@ def policy_hold_reason(loop: dict, *, run_id: str | None = None, repo: str = "",
     with no readable admission snapshot is named ``FIXER_NOT_ADMITTED`` (#81): a redelivered
     verdict never upgrades an unadmitted one.
     """
-    from . import run_supervisor
+    from .. import run_supervisor
     if not config.unattended_fixer_push_enabled(loop):
         # With no run yet (the gate's hold) the policy alone is the denial; a run that was
         # admitted under an earlier policy is named as such (#81): same facts, one wording.
@@ -154,7 +154,7 @@ def policy_hold_reason(loop: dict, *, run_id: str | None = None, repo: str = "",
         # unadmitted one. ``FIXER_NOT_ADMITTED`` is named whenever there is a run to read
         # and its snapshot cannot be verified.
         return run_supervisor.FIXER_NOT_ADMITTED if ledger_db else ""
-    from .run_supervisor import Supervisor
+    from ..run_supervisor import Supervisor
     try:
         if Supervisor(ledger_db, create=False).push_admitted(run_id, repo, number, head):
             return ""
@@ -238,7 +238,7 @@ REVIEW_POSTED_UNRECORDED = (
 def _denial_message(exc: Exception) -> str:
     if isinstance(exc, ProtocolError):
         return str(exc)
-    from . import review_receipt, safe_push
+    from .. import review_receipt, safe_push
     if isinstance(exc, review_receipt.ReviewedPrIneligible):
         return REVIEW_POSTED_INELIGIBLE.format(reason=exc.reason)
     if isinstance(exc, review_receipt.ReviewPostUnconfirmed):
@@ -406,7 +406,7 @@ class RunBroker(broker_issues.IssueWrites):
     def _push_under_intent(self, supervisor, current_loop: dict, request: dict) -> dict:
         """The fixer's push between its write-ahead intent and its outcome: confirmed, withdrawn
         (nothing written) or held (it may have written). Moved out of ``_dispatch`` (#1763)."""
-        from . import safe_push
+        from .. import safe_push
         # Durable write-ahead intent precedes the external Git operation.
         # If this commit fails, safe_push (and Git) are never called.
         supervisor.begin_push(self.scope.run_id, self.scope.repo,
@@ -439,7 +439,7 @@ class RunBroker(broker_issues.IssueWrites):
                     exc, (broker.BrokerDenied, ProtocolError)):
                 if not self.scope.run_id or not self.scope.ledger_db:
                     raise ProtocolError('post-write hold has no host ledger') from exc
-                from .run_supervisor import Supervisor
+                from ..run_supervisor import Supervisor
                 outcome = safe_push.held_outcome(exc)
                 try:
                     Supervisor(self.scope.ledger_db, create=False).quarantine_push(
@@ -536,7 +536,7 @@ class RunBroker(broker_issues.IssueWrites):
                     # was admitted while the policy was off (or a legacy row).
                     if not self.scope.run_id or not self.scope.ledger_db:
                         raise ProtocolError('host run admission unavailable')
-                    from .run_supervisor import Supervisor
+                    from ..run_supervisor import Supervisor
                     supervisor = Supervisor(self.scope.ledger_db, create=False)
                     if not supervisor.push_admitted(
                             self.scope.run_id, self.scope.repo, self.scope.number,
@@ -613,7 +613,7 @@ class RunBroker(broker_issues.IssueWrites):
                 raise ProtocolError(PARTIAL_VIEW_REFUSAL.format(reason=reason[:300]))
             # A live read of the head's CI: an approval of a head whose checks failed is a false
             # green, so the seat must request changes.
-            from . import ci
+            from .. import ci
             # Only the operator's required checks gate it, when the loop names them (#368).
             refusal = ci.approval_refusal(ci.gating(ci.read(self._loop, self.scope.head),
                                                     config.required_checks(self._loop)))
@@ -624,7 +624,7 @@ class RunBroker(broker_issues.IssueWrites):
         if operation == "review":
             # Numbered findings (#475): every open one accounted for, new ones on changed code.
             # Before the capability is consumed, so the reviewer can resubmit in the same turn.
-            from . import findings, state as state_mod
+            from .. import findings, state as state_mod
             entry = self._findings_entry(state_mod.state_for(self._loop))
             reason = findings.check(self._loop, entry, self.scope.number, self.scope.head, body,
                                     verdict)
@@ -636,7 +636,7 @@ class RunBroker(broker_issues.IssueWrites):
             # citable by the check's name; unreadable CI, like a partial view, is not held to it.
             reason = ""
             if verdict == "REQUEST_CHANGES" and not self._partial_view():
-                from . import ci
+                from .. import ci
                 gating = ci.gating(ci.read(self._loop, self.scope.head),
                                    config.required_checks(self._loop))
                 if gating is not None:
@@ -648,7 +648,7 @@ class RunBroker(broker_issues.IssueWrites):
             # #687: a block whose only ground is a test this sandbox could not run, when a
             # required check ran it at this head (or skipped it too).
             if verdict == "REQUEST_CHANGES":
-                from . import ci, ci_tests
+                from .. import ci, ci_tests
                 head_ci = ci.read(self._loop, self.scope.head)
                 reason = ci_tests.refusal(
                     ci_tests.read(self._loop, head_ci, config.required_checks(self._loop),
@@ -656,7 +656,7 @@ class RunBroker(broker_issues.IssueWrites):
                 if reason:
                     raise ProtocolError(reason)
             # Requirements of the issue(s) the PR closes (#511); a PR closing none is unaffected.
-            from . import issue_facts
+            from .. import issue_facts
             reason = issue_facts.check(self._loop, self.scope.number, verdict, body)
             if reason:
                 raise ProtocolError(reason)
@@ -679,10 +679,10 @@ class RunBroker(broker_issues.IssueWrites):
         if self._no_write:
             return self._record_only(verdict, body)
         if operation == 'review' and self.scope.run_id is not None:
-            from .review_receipt import ReceiptLedger, submit
+            from ..review_receipt import ReceiptLedger, submit
             ledger = ReceiptLedger(self.scope.ledger_db, self.scope.run_id,
                                    self.scope.generation)
-            from .review_receipt import ReviewedPrIneligible
+            from ..review_receipt import ReviewedPrIneligible
             try:
                 result = submit(self._loop, self.scope, ledger, verdict, body)
             except broker.BrokerConflict as exc:
@@ -690,7 +690,7 @@ class RunBroker(broker_issues.IssueWrites):
             except ReviewedPrIneligible as exc:
                 # The review exists on GitHub: name it on the run before answering the sandbox.
                 try:
-                    from .run_supervisor import Supervisor
+                    from ..run_supervisor import Supervisor
                     Supervisor(self.scope.ledger_db, create=False).record_review_ineligible(
                         self.scope.run_id, exc.reason)
                 except Exception as persistence_error:
@@ -716,7 +716,7 @@ class RunBroker(broker_issues.IssueWrites):
             app_reviewer = operation == "request_review" and config.reviewer_is_app(self._loop)
             if after_push or app_reviewer:
                 try:
-                    from . import gh, review_kick
+                    from .. import gh, review_kick
                     live = gh.api(self._loop, gh.pr_path(self._loop, self.scope.number),
                                   login=self._loop["read_token"])
                     pending = (live if isinstance(live, dict) and (
@@ -735,11 +735,11 @@ class RunBroker(broker_issues.IssueWrites):
                 self._kick_review(pending, head)
         if operation == 'review':
             try:
-                from . import findings
+                from .. import findings
                 findings.record(self._loop, self.scope.number, self.scope.head, body)
             except Exception:
                 pass  # the review is already written; state is best effort
-            from . import merge_check
+            from .. import merge_check
             merge_check.refresh_quietly(self._loop, self.scope.number)   # #1163: a new verdict
         self.completed = True
         return result
@@ -779,7 +779,7 @@ class RunBroker(broker_issues.IssueWrites):
             return {"accepted": False, "held": "human_paths",
                     "reason": f"approval left to a person: {why}. Your turn is done; do not "
                               "retry."}
-        from . import observer, state as state_mod
+        from .. import observer, state as state_mod
         st = state_mod.state_for(self._loop)
         st.human_hold_set(self.scope.number, self.scope.head, why)
         try:
@@ -804,7 +804,7 @@ class RunBroker(broker_issues.IssueWrites):
             return self.scope.partial_view
         if not self.scope.run_id or not self.scope.ledger_db:
             return ""
-        from .review_receipt import partial_view
+        from ..review_receipt import partial_view
         try:
             return partial_view(self.scope.ledger_db, self.scope.run_id)
         except Exception as exc:
@@ -845,7 +845,7 @@ class RunBroker(broker_issues.IssueWrites):
         """The fixer's one write when nothing was pushed, so nothing new to review: its answers
         comment at the head it was given. It must actually land. A dispute (#401) and a CI fix's
         decline (#1526) are recorded first, so a crash after the POST cannot lose them."""
-        from .run_supervisor import Supervisor
+        from ..run_supervisor import Supervisor
         try:
             if dispute:
                 Supervisor(self.scope.ledger_db, create=False).record_dispute(
@@ -881,7 +881,7 @@ class RunBroker(broker_issues.IssueWrites):
         author, distinct identities), recorded in the run ledger before the POST, and never
         retried: a POST whose outcome is unknown stays 'uncertain'.
         """
-        from .run_supervisor import Supervisor
+        from ..run_supervisor import Supervisor
         supervisor = Supervisor(self.scope.ledger_db, create=False)
         record = dict(run_id=self.scope.run_id, repo=self.scope.repo, pr=self.scope.number,
                       base=self.scope.head, head=head, body=text)
@@ -971,7 +971,7 @@ class RunBroker(broker_issues.IssueWrites):
         if len(raw) > MAX_REQUEST:
             raise ProtocolError("request too large")
         verdict, body = request["verdict"], request["body"]
-        from .run_supervisor import RULINGS, Supervisor
+        from ..run_supervisor import RULINGS, Supervisor
         if (verdict not in RULINGS or not isinstance(body, str) or not body.strip()
                 or len(body.encode()) > MAX_BODY):
             raise ProtocolError("invalid ruling fields")
@@ -991,13 +991,13 @@ class RunBroker(broker_issues.IssueWrites):
         except Exception:
             # Already durable, and the operator outbox reports it regardless.
             pass
-        from . import merge_check
+        from .. import merge_check
         merge_check.refresh_quietly(self._loop, self.scope.number)       # #1163: a ruling
         if verdict == "REJECT" and self.scope.shadow_run:
             # #1004 part 3: an upheld shadow review's findings go to the fixer now; the watchdog
             # sweep queues the same turn (same key) if this does not.
             try:
-                from . import gate
+                from .. import gate
                 gate.queue_shadow_fix(self._loop, self.scope.number, self.scope.head,
                                       db=self.scope.ledger_db)
             except Exception:
@@ -1013,7 +1013,7 @@ class RunBroker(broker_issues.IssueWrites):
         The response is ok once the triage is durable; the GitHub writes follow from the host's
         current configuration and live issue, and their outcome is recorded, never retried.
         """
-        from .run_supervisor import Supervisor, issue_inputs
+        from ..run_supervisor import Supervisor, issue_inputs
         if (self.scope.role != "triage" or not isinstance(request, dict)
                 or set(request) != {"operation", "labels", "body"}
                 or request["operation"] != "triage"):
@@ -1056,8 +1056,8 @@ class RunBroker(broker_issues.IssueWrites):
     def _kick_review(self, pr: dict, head: str) -> None:
         """Start the review GitHub will not announce (#532). Best effort: the request itself
         succeeded, and the watchdog's sweep is the backstop if this delivery does not land."""
-        from . import review_kick
-        from .util import log
+        from .. import review_kick
+        from ..util import log
         sender = str((self._loop.get("seats") or {}).get("fixer", {}).get("login")
                      or (self._loop.get("fixers") or [""])[0])
         try:
@@ -1079,7 +1079,7 @@ def _issue_notice(loop: dict | None, scope: RunScope, event: str, outcome: str,
     """The observer's issue-side notice (#231): best effort, once per run (keyed by its id)."""
     if loop is None:
         return
-    from . import observer, state as state_mod
+    from .. import observer, state as state_mod
     try:
         observer.notify(loop, state_mod.state_for(loop), event, scope.number, scope.head,
                         identity=scope.run_id, outcome=outcome, next_turn=next_turn, issue=True)
@@ -1164,7 +1164,7 @@ def _write_triage(launch_loop: dict, scope: RunScope, supervisor, labels: list[s
     # #232: the hand-off is the host's, after the triage write is recorded; the seat never
     # applies fix_label. The live issue is re-read there, so only labels that really landed count.
     if labels and config.auto_fix_labels(loop):
-        from . import fix_hold, util
+        from .. import fix_hold, util
         outcome = fix_hold.auto_offer(loop, scope.number)
         if outcome:
             util.log(f"issue #{scope.number}: {outcome}")
@@ -1173,7 +1173,7 @@ def _write_triage(launch_loop: dict, scope: RunScope, supervisor, labels: list[s
 def _deliver_ruling(launch_loop: dict, scope: RunScope, supervisor, turn_key: str,
                     verdict: str, body: str) -> None:
     """Observer notice (best effort), then the PR comment only for a configured identity."""
-    from . import observer, state as state_mod
+    from .. import observer, state as state_mod
     # Delivery follows the host's current configuration, not the launch snapshot: an identity
     # the operator removed since launch must not comment. A vanished or re-pointed loop gets
     # neither delivery; the outbox (run ledger) still carries the ruling.
