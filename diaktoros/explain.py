@@ -565,7 +565,8 @@ def _seat_needs(c) -> None:
     c.fixer_turn = turns.get("fixer")     # any ledger state: a lock or mark with no run has none
     # Uncertain or ended with no push: not live, whatever lock or mark still stands over it.
     c.fixer_ended = bool(c.fixer_turn) and c.fixer_turn not in run_supervisor.NOT_ENDED
-    c.fixer_rearm = explain_next.fixer_retry(c) if c.fixer_ended else ("", "", False)   # the retry plan (#1514)
+    # The retry plan (#1514), with the rows it re-arms (#2410 review F2).
+    c.fixer_rearm = explain_next.fixer_retry(c) if c.fixer_ended else ("", "", False, ())
     # A redelivery is decided on the gate's verdict turn (turn key ''), which need not be the
     # newest row shown above: a shadow-fix, CI-fix or conflict turn shares the head (#1615).
     c.redelivery, c.gate_turn, c.fixer_key = (explain_next.redelivery_outcome(c) if c.fixer_ended
@@ -700,7 +701,7 @@ def _ended_rearm(c) -> str:
     if c.redeliver and not marked:
         return "a redelivered verdict " + explain_next.redelivery_effect(c, opts)
     if c.fixer_rearm[0]:
-        return ("retry re-arms it once the loop opts in"
+        return ("retry " + explain_next.retry_effect(c, opts)
                 + (f" (a redelivered verdict waits until{marked})" if c.redeliver else ""))
     if c.redeliver:
         return "a redelivered verdict " + explain_next.redelivery_effect(c, f"{opts} and{marked}")
