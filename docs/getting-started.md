@@ -50,7 +50,7 @@ hermes plugins install diaktoros
 
 This installs the plugin from the Hermes plugin catalog, at the commit the catalog reviewed and pinned; Desktop can install it from the catalog as well. It is the plugin, **not** the repository to review; reviewed-repository examples remain placeholders.
 
-The install scanner rates the plugin **caution**, which a catalog install accepts without a prompt. To run the current `main` instead, install from the repository: `hermes plugins install coe0718/diaktoros`. That install prints the findings and asks `Install anyway? Only continue if you trust the source. [y/N]`. Typical findings concern subprocesses (`bwrap`, Git, workers and fixtures), security probes, and setup advice mentioning privileged commands; review the actual report rather than assuming a fixed finding count. Plugins execute trusted host code, so a scanner pass is not proof of safety.
+The install scanner rates the plugin **caution**, which a catalog install accepts without a prompt. To update later, run `hermes plugins update diaktoros`: it moves to the commit the catalog has reviewed. Typical findings concern subprocesses (`bwrap`, Git, workers and fixtures), security probes, and setup advice mentioning privileged commands; review the actual report rather than assuming a fixed finding count. Plugins execute trusted host code, so a scanner pass is not proof of safety.
 
 ## Choose one setup path
 
