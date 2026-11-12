@@ -392,6 +392,86 @@ class LingerMark(unittest.TestCase):
             with self.assertRaises(OSError):            # EBADF: the descriptor was closed
                 os.fstat(opened[0])
 
+    def test_a_failed_gate_leaves_the_worker_unmarked_and_a_leftover_gate_authorises_nothing(self):
+        # #1842 (1): a gate is left at this PID's path and _open_gate fails. The worker must not
+        # take its mark, so signal_lingerer, which can still open the leftover gate, sends nothing.
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "runs.sqlite"
+            mark = workers.linger_mark(db, os.getpid())
+            Path(str(mark) + ".end").write_text("")
+            sent = []
+            with patch.object(workers, "_open_gate", return_value=None), \
+                    patch.object(workers.os, "kill", lambda pid, sig: sent.append(sig)):
+                with workers.lingering(db):
+                    self.assertEqual(workers.lingering_pids(db), set())
+                    self.assertFalse(mark.exists())
+                    self.assertFalse(workers.signal_lingerer(db, os.getpid(), signal.SIGTERM))
+            self.assertEqual(sent, [])
+
+    def test_a_gate_held_past_the_deadline_lets_the_worker_linger_unmarked(self):
+        # #1842 (2): someone holds this worker's gate (a stopped prober). The worker must not
+        # block on it: past GATE_WAIT it goes on, unmarked.
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "runs.sqlite"
+            gate = os.open(str(workers.linger_mark(db, os.getpid())) + ".end",
+                           os.O_WRONLY | os.O_CREAT, 0o600)
+            self.addCleanup(os.close, gate)
+            fcntl.flock(gate, fcntl.LOCK_EX)
+            seen = []
+
+            def linger():
+                with workers.lingering(db):
+                    seen.append(workers.lingering_pids(db))
+
+            with patch.object(workers, "GATE_WAIT", 0.2, create=True):
+                thread = threading.Thread(target=linger, daemon=True)
+                thread.start()
+                thread.join(5)
+            self.assertFalse(thread.is_alive(), "the worker blocked on a held gate")
+            self.assertEqual(seen, [set()])
+            self.assertFalse(workers.linger_mark(db, os.getpid()).exists())
+
+    def test_a_mark_held_past_the_deadline_lets_the_worker_linger_unmarked(self):
+        # #1842 (2): a prober stopped inside _held keeps a shared lock on the mark's path.
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "runs.sqlite"
+            probe = os.open(workers.linger_mark(db, os.getpid()), os.O_WRONLY | os.O_CREAT, 0o600)
+            self.addCleanup(os.close, probe)
+            fcntl.flock(probe, fcntl.LOCK_SH)
+            seen = []
+
+            def linger():
+                with workers.lingering(db):
+                    seen.append(workers.lingering_pids(db))
+
+            with patch.object(workers, "GATE_WAIT", 0.2, create=True):
+                thread = threading.Thread(target=linger, daemon=True)
+                thread.start()
+                thread.join(5)
+            self.assertFalse(thread.is_alive(), "the worker blocked on a held mark")
+            self.assertEqual(seen, [set()])                 # it lingered, unmarked
+
+    def test_an_orphan_gate_is_swept_by_the_next_lingerer(self):
+        # #1842 (3): a worker killed between its gate and its mark leaves a gate with no mark.
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "runs.sqlite"
+            orphan = Path(str(workers.linger_mark(db, 2 ** 22 + 1)) + ".end")
+            orphan.write_text("")
+            with workers.lingering(db):
+                self.assertFalse(orphan.exists())
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_an_orphan_gate_locked_by_someone_else_is_left(self):
+        # #1842 (3): the sweep of an orphan gate is made under its lock, without waiting for it.
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "runs.sqlite"
+            orphan = Path(str(workers.linger_mark(db, 2 ** 22 + 1)) + ".end")
+            held = os.open(orphan, os.O_WRONLY | os.O_CREAT, 0o600)
+            self.addCleanup(os.close, held)
+            fcntl.flock(held, fcntl.LOCK_EX)
+            with workers.lingering(db):
+                self.assertTrue(orphan.exists())
+
     def test_a_mark_that_cannot_be_removed_does_not_stop_the_worker(self):
         # F3 of #1823: unlink denied at the sweep on entry and at the removal on exit.
         with tempfile.TemporaryDirectory() as tmp:

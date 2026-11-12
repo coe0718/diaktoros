@@ -55,16 +55,32 @@ def linger_mark(db: Path, pid: int) -> Path:
     return db.with_name(f'{db.name}{LINGER_MARK}{pid}')
 
 
-def _marks(db: Path) -> dict[int, Path]:
-    """Every mark file beside the ledger ``db``, live process or not, by the PID in its name."""
+def _named(db: Path, suffix: str = '') -> dict[int, Path]:
+    """Every file ``<ledger>.linger.<pid><suffix>`` beside the ledger ``db``, live process or
+    not, by the PID in its name."""
     db = Path(db)
     prefix = db.name + LINGER_MARK
     try:
         paths = list(db.parent.iterdir())
     except OSError:
         return {}
-    return {int(path.name[len(prefix):]): path for path in paths
-            if path.name.startswith(prefix) and path.name[len(prefix):].isdigit()}
+    pids = {path: path.name[len(prefix):len(path.name) - len(suffix)] for path in paths
+            if path.name.startswith(prefix) and path.name.endswith(suffix)}
+    return {int(pid): path for path, pid in pids.items() if pid.isdigit()}
+
+
+def _marks(db: Path) -> dict[int, Path]:
+    """Every mark file beside the ledger ``db``, live process or not, by the PID in its name."""
+    return _named(db)
+
+
+def _sweepable(db: Path) -> dict[int, Path]:
+    """The marks a lingerer may sweep, by PID: every mark beside the ledger ``db``, and the mark
+    path of every gate, so that a gate whose mark is gone (its worker was killed between taking
+    the two, or between removing them) is swept too (#1842)."""
+    gates = {pid: path.with_name(path.name[:-len(_GATE)])
+             for pid, path in _named(db, _GATE).items()}
+    return {**gates, **_marks(db)}
 
 
 def _held(path: Path) -> bool:
@@ -98,17 +114,40 @@ def _unlink(path: Path) -> None:
         pass
 
 
+GATE_WAIT = 1.0
+"""Seconds a worker waits for the lock on its mark or its gate before it goes on without it
+(#1842): a holder stopped mid-probe (a sibling's sweep, a test's ``signal_lingerer``) must not
+stall the worker without bound."""
+
+
+def _flock_within(fd: int, seconds: float) -> bool:
+    """Take an exclusive lock on ``fd``, trying until ``seconds`` have passed (once, for 0);
+    whether it was taken. Any error but contention raises ``OSError``."""
+    until = time.monotonic() + seconds
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() >= until:
+                return False
+            time.sleep(0.005)
+
+
 def _take_mark(mark: Path) -> int | None:
     """Create ``mark`` and lock it; the open descriptor, whose lock is the mark, or None when
-    that cannot be done. A sweeper may unlink the file between creating and locking it, so the
-    lock only counts if the path still names the file locked."""
+    that cannot be done, or not within ``GATE_WAIT`` (#1842). A sweeper may unlink the file
+    between creating and locking it, so the lock only counts if the path still names the file
+    locked."""
     for _ in range(3):
         try:
             fd = os.open(mark, os.O_WRONLY | os.O_CREAT, 0o600)
         except OSError:
             return None
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            if not _flock_within(fd, GATE_WAIT):
+                os.close(fd)
+                return None
             if os.path.samestat(os.fstat(fd), os.stat(mark)):
                 return fd
         except OSError:
@@ -117,29 +156,32 @@ def _take_mark(mark: Path) -> int | None:
     return None
 
 
+_GATE = '.end'
+
+
 def _gate(mark: Path) -> Path:
     """The file ``<mark>.end`` through which a signal to the lingerer is authorised (#1830). Its
     name is not all digits after the mark prefix, so ``_marks`` does not take it for a mark."""
-    return mark.with_name(mark.name + '.end')
+    return mark.with_name(mark.name + _GATE)
 
 
-def _lock_gate(mark: Path, wait: bool) -> int | None:
-    """Create the gate of ``mark`` and lock it; its descriptor, or None when that cannot be
-    done (or, without ``wait``, when someone else holds the lock). As for the mark itself, the
-    lock only counts if the path still names the file locked: a holder that removes the gate
-    does so under the lock, and whoever was waiting on the removed file tries again."""
+def _lock_gate(mark: Path, wait: float) -> int | None:
+    """Create the gate of ``mark`` and lock it, trying for ``wait`` seconds (once, for 0); its
+    descriptor, or None when that cannot be done or someone else holds the lock past ``wait``.
+    As for the mark itself, the lock only counts if the path still names the file locked: a
+    holder that removes the gate does so under the lock, and whoever was waiting on the
+    removed file tries again."""
     for _ in range(3):
         try:
             gate = os.open(_gate(mark), os.O_WRONLY | os.O_CREAT, 0o600)
         except OSError:
             return None
         try:
-            fcntl.flock(gate, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+            if not _flock_within(gate, wait):
+                os.close(gate)
+                return None
             if os.path.samestat(os.fstat(gate), os.stat(_gate(mark))):
                 return gate
-        except BlockingIOError:
-            os.close(gate)
-            return None
         except OSError:
             pass
         os.close(gate)
@@ -147,17 +189,19 @@ def _lock_gate(mark: Path, wait: bool) -> int | None:
 
 
 def _open_gate(mark: Path) -> int | None:
-    """Create the gate of ``mark`` and take its lock; the descriptor, or None. The lock is kept
-    while the mark is taken, so that ``_sweep`` cannot remove the gate between the two (#1830)."""
-    return _lock_gate(mark, wait=True)
+    """Create the gate of ``mark`` and take its lock; the descriptor, or None, also when the
+    lock is not free within ``GATE_WAIT`` (#1842). The lock is kept while the mark is taken, so
+    that ``_sweep`` cannot remove the gate between the two (#1830)."""
+    return _lock_gate(mark, GATE_WAIT)
 
 
 def _sweep(mark: Path) -> None:
-    """Remove ``mark`` and its gate unless some process holds the mark (#1830). The check and
-    both removals are made under the gate's lock, which a worker taking the same mark holds
-    until it has it: the sweeper never removes the gate of a worker that is marking itself.
-    A gate that is locked by someone else is in use, and is left."""
-    gate = _lock_gate(mark, wait=False)
+    """Remove ``mark`` and its gate unless some process holds the mark (#1830); ``mark`` may be
+    gone already, leaving its gate an orphan (#1842). The check and both removals are made
+    under the gate's lock, which a worker taking the same mark holds until it has it: the
+    sweeper never removes the gate of a worker that is marking itself. A gate that is locked
+    by someone else is in use, and is left."""
+    gate = _lock_gate(mark, 0)
     if gate is None:
         return
     try:
@@ -172,14 +216,18 @@ def _leave(mark: Path, fd: int, gate: int | None) -> None:
     """Leave the lingering state: take the gate's lock, which waits out a signal being sent under
     it (#1830), then release the mark and remove both files. A signal sent under the gate has
     been delivered by the time this gets the lock, so a worker selected while asleep dies on
-    the way out of its sleep rather than going on to work."""
+    the way out of its sleep rather than going on to work. A gate still held after
+    ``GATE_WAIT`` is a holder that has stopped (#1842): the worker leaves anyway, and its gate,
+    which it may not remove without the lock, is left for the next lingerer's sweep."""
+    locked = False
     if gate is not None:
         with contextlib.suppress(OSError):
-            fcntl.flock(gate, fcntl.LOCK_EX)
+            locked = _flock_within(gate, GATE_WAIT)
     os.close(fd)                            # releases the lock: the mark stops counting here
     _unlink(mark)
     if gate is not None:
-        _unlink(_gate(mark))
+        if locked:
+            _unlink(_gate(mark))
         os.close(gate)
 
 
@@ -194,15 +242,8 @@ def signal_lingerer(db: Path, pid: int, sig: int, wait: float = 5) -> bool:
     except OSError:
         return False
     try:
-        until = time.monotonic() + wait
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:                # the lingerer is leaving; it frees this soon
-                if time.monotonic() >= until:
-                    return False
-                time.sleep(0.005)
+        if not _flock_within(fd, wait):            # the lingerer is leaving; it frees this soon
+            return False
         if not os.path.samestat(os.fstat(fd), os.stat(_gate(mark))) or not _held(mark):
             return False                           # it left (and removed the gate) meanwhile
         os.kill(pid, sig)
@@ -223,13 +264,15 @@ def lingering(db: Path):
     under the gate ``<mark>.end`` that leaving the block takes first (#1830). Best effort
     throughout: a worker never creates host state, so a ledger directory that is gone or
     unwritable leaves it unmarked, and a mark that cannot be removed is left, unlocked. The
-    next worker to linger sweeps those."""
-    for pid, path in _marks(db).items():
+    next worker to linger sweeps those, and gates whose mark is gone (#1842). A worker whose
+    gate cannot be opened, or whose gate or mark is locked past ``GATE_WAIT``, runs unmarked:
+    no lock vouches for it, and a test's exit check catches it (#1842)."""
+    for pid, path in _sweepable(db).items():
         if pid != os.getpid() and not _held(path):
             _sweep(path)
     mark = linger_mark(db, os.getpid())
     gate = _open_gate(mark)                 # before the mark: a marked worker has its gate
-    fd = _take_mark(mark)
+    fd = None if gate is None else _take_mark(mark)    # no gate, no mark (#1842)
     if gate is not None:
         if fd is None:
             _unlink(_gate(mark))
