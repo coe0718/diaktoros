@@ -506,9 +506,17 @@ _DIGEST_WORD = {"opened": "opened", "handoff": "fixed", "verdict": "reviewed",
                 "fixing": "handed to fixer", "fixed": "fix posted"}
 
 
+# An event in ``OUTCOME_KINDS`` reads by its kind where the kind changes the fact (#1879): a
+# ``fixing`` notice that was held is not a hand-off, and a digest must not say it was.
+_DIGEST_KIND_WORD = {("fixing", "held"): "fix held"}
+
+
 def _digest_word(entry: dict) -> str:
     event = str(entry.get("event") or "")
-    word = _DIGEST_WORD.get(event, event)
+    kind = str(entry.get("outcome_kind") or "")
+    if not kind and event in OUTCOME_KINDS and str(entry.get("outcome") or "").startswith("held"):
+        kind = "held"   # queued before the kind was recorded: its text is all that says so
+    word = _DIGEST_KIND_WORD.get((event, kind)) or _DIGEST_WORD.get(event, event)
     if event == "verdict":
         outcome = str(entry.get("outcome") or "").lower()
         if "change" in outcome:
@@ -762,6 +770,7 @@ def notify(loop: dict, st, event: str, number, head: str = "", *, identity: obje
                                     "identity": str(identity or ""), "summary": summary,
                                     "base_sha": base_sha, "issue": bool(issue),
                                     "outcome": str(outcome or "")[:200], "urgent": urgent,
+                                    "outcome_kind": str(outcome_kind or ""),
                                     "message": text, "url": url,
                                     "attempts": 0, "error": "", "at": now}
             if queued:
