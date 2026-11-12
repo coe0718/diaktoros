@@ -246,6 +246,42 @@ class ModeContracts(Tmp):
             self.assertEqual(post(cap, {"messages": [], "reasoning": {"effort": "high"}})[0], 200)
             self.assertEqual(cap.thinking, "effort:high")
 
+    def test_anthropic_adaptive_thinking_reads_output_config_effort(self):
+        """#1929: adaptive thinking states its level in output_config.effort."""
+        contract = CONTRACTS["anthropic_messages"]
+        cases = (({"thinking": {"type": "adaptive"}, "output_config": {"effort": "low"}},
+                  "effort:low"),
+                 ({"thinking": {"type": "adaptive"}, "output_config": {"effort": "max"}},
+                  "effort:max"),
+                 ({"output_config": {"effort": "high"}}, "effort:high"),
+                 ({"thinking": {"type": "adaptive"}}, "adaptive"),
+                 ({"thinking": {"type": "adaptive"}, "output_config": {}}, "adaptive"),
+                 ({}, "off"),
+                 ({"thinking": {"type": "disabled"}}, "off"),
+                 ({"thinking": {"type": "enabled", "budget_tokens": 4000},
+                   "output_config": {"effort": "low"}}, "budget:4000"),
+                 ({"thinking": {"type": "adaptive"}, "output_config": "low"}, None),
+                 ({"thinking": {"type": "adaptive"}, "output_config": {"effort": {"x": 1}}},
+                  None),
+                 ({"thinking": {"type": "adaptive"}, "output_config": {"effort": "a b"}}, None),
+                 ({"thinking": {"type": "mystery"}}, None),
+                 ({"thinking": "adaptive", "output_config": {"effort": "low"}}, None))
+        for extra, want in cases:
+            with self.subTest(extra=extra):
+                body = json.dumps({"model": "x", "max_tokens": 8000, "messages": [],
+                                   **extra}).encode()
+                self.assertEqual(inference_proxy.thinking_level(body, contract), want)
+        for body, want in (({"max_tokens": 8000, "thinking": {"type": "adaptive"},
+                             "output_config": {"effort": "low"}}, "effort:low"),
+                           ({"max_tokens": 8000, "thinking": {"type": "adaptive"}}, "adaptive")):
+            with self.subTest(proxy=want):
+                with Upstream(lambda h, r: send_json(h)) as up, \
+                        InferenceCapability(self.socket_dir(), up.url("/v1/messages"), "KEY",
+                                            model="m", quota=3,
+                                            api_mode="anthropic_messages") as cap:
+                    self.assertEqual(post(cap, body)[0], 200)
+                    self.assertEqual(cap.thinking, want)
+
     def test_anthropic_messages_contract_api_key_and_oauth(self):
         cap_limit = CONTRACTS["anthropic_messages"].cap
         for scheme, token in (("x-api-key", "sk-ant-api-HOST-KEY"), ("bearer", "sk-ant-oat-HOST-TOKEN")):
