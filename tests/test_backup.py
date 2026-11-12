@@ -536,6 +536,42 @@ class Create(Base):
         self.assertNotIn(str(temp), {f["path"] for f in manifest["files"]})
         self.assertEqual(manifest["skipped"], [str(temp)])
 
+    def test_a_listed_file_removed_before_the_read_is_skipped_not_fatal(self):
+        """#1694: any listed regular file gone by ``tar.add``, not only a temp-shaped one (here a
+        loop's ``artifacts/<n>/`` file removed by cleanup), is left out and named in the manifest
+        and in the command's ``left out`` line; the backup still succeeds."""
+        gone = self.state / "artifacts" / "7" / "report.txt"
+        gone.parent.mkdir(parents=True)
+        gone.write_text("work product")
+        real = backup.tarfile.TarFile.add
+
+        def vanish(tar, name, *args, **kw):
+            if str(name) == str(gone):
+                gone.unlink()
+            return real(tar, name, *args, **kw)
+        out = self.root / "b.tar.gz"
+        with mock.patch.object(backup.tarfile.TarFile, "add", vanish):
+            code, text = self.run_cmd(cli.cmd_backup, out=str(out))
+        self.assertEqual(code, 0, text)
+        manifest = backup.read_manifest(out)
+        self.assertNotIn(str(gone), {f["path"] for f in manifest["files"]})
+        self.assertIn(str(self.state / "queue.json"), {f["path"] for f in manifest["files"]})
+        self.assertEqual(manifest["skipped"], [str(gone)])
+        self.assertIn(str(gone), text)
+
+    def test_a_non_empty_state_lock_is_state_archived_and_restored(self):
+        """#1694: only an *empty* lock-named file is scaffolding; one holding data at the
+        state-dir root is archived and restore writes it back."""
+        lock = self.state / "state.lock"
+        self.assertIn("state.lock", backup._LOCK_NAMES)
+        lock.write_text("not empty")
+        out = self.root / "b.tar.gz"
+        backup.create(out)
+        self.assertIn(str(lock), {f["path"] for f in backup.read_manifest(out)["files"]})
+        lock.unlink()
+        self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        self.assertEqual(lock.read_text(), "not empty")
+
     def test_refuses_to_overwrite(self):
         out = self.root / "b.tar.gz"
         out.write_text("keep")
@@ -573,6 +609,20 @@ class Create(Base):
         self.assertNotIn("pick another --out", str(caught.exception))
         self.assertEqual(taken.read_text(), "other run")
         self.assertEqual(sorted(p.name for p in self.root.glob("*.tar.gz")), ["taken.tar.gz"])
+
+    def test_the_give_up_is_the_loops_own_bound_not_a_separate_check(self):
+        """#1694: the retry loop gives up through its own bound (``for``/``else``), so a loop
+        bound edited apart from any in-loop check still ends in ``BackupError``, never in an
+        unbound ``fd``. Simulated by shortening the bound the loop iterates over."""
+        taken = self.root / "taken.tar.gz"
+        taken.write_text("other run")
+        import builtins
+        with mock.patch.object(backup, "default_out", return_value=taken), \
+                mock.patch.object(backup, "range", create=True,
+                                  new=lambda n: builtins.range(n - 1)):
+            with self.assertRaisesRegex(backup.BackupError, "no free default name"):
+                backup.create()
+        self.assertEqual(taken.read_text(), "other run")
 
     def test_explicit_out_that_exists_still_names_out(self):
         taken = self.root / "taken.tar.gz"
@@ -1244,6 +1294,21 @@ class MigrateBacksUpFirst(Base):
             code, text = self.run_cmd(cli.cmd_migrate, dry_run=False)
         self.assertEqual(code, 2)
         moved.assert_not_called()
+
+    def test_migrates_backup_reports_what_it_left_out_like_backup_does(self):
+        """#1694: migrate's automatic backup prints the same ``left out`` line as ``backup``."""
+        temp = self.live_temp(self.state / ".queue.json.a1b2c3d4.dktmp")
+        with mock.patch.object(migrate, "settings_step", return_value=[]), \
+                mock.patch.object(migrate, "shim_step", return_value=[]), \
+                mock.patch.object(migrate, "files_step", return_value=[]), \
+                mock.patch.object(migrate, "repo_step", return_value=[]), \
+                mock.patch.object(cli_lifecycle, "_move_watchdog_job", return_value=[]):
+            code, text = self.run_cmd(cli.cmd_migrate, dry_run=False)
+        line = next((l for l in text.splitlines() if "left out" in l), "")
+        self.assertTrue(line.startswith("backup: left out (1 file(s)"), text)
+        self.assertIn(str(temp), line)
+        _, direct = self.run_cmd(cli.cmd_backup, out=str(self.root / "b.tar.gz"))
+        self.assertIn(line.removeprefix("backup: "), direct.splitlines())
 
 
 class AllOrNothing(Base):

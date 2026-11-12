@@ -13,6 +13,15 @@ loop names; ``restore`` checks each before it writes and lists any that are miss
 private as ``NOT FINISHED``, but it does not refuse on them: the write goes ahead and the notice
 is printed with the final report.
 
+Writer scaffolding is deliberately left out too (#1060, #1694): the plugin's own lock files
+(an *empty* file directly in a state directory with a name a writer registered, ``_LOCK_NAMES``;
+a lock-named file holding data is archived) and in-progress temp files (``util.atomic_write``'s
+name shape *and* held open by their writer), so ``restore`` never writes them back. A listed file
+that is gone by the time it is read (a temp renamed into place, an ``artifacts/<n>/`` file
+cleaned up) is left out as well, not a failed backup. The manifest's ``skipped`` names every temp
+and vanished file left out (not the empty locks), and ``backup`` and ``migrate`` print them
+(``cli.lifecycle._report_left_out``).
+
 Retention (#1079): after a successful write to the default place, ``create`` deletes the oldest
 archives it wrote there (``$HERMES_HOME/backups``) beyond the newest ``keep`` (``DEFAULT_KEEP``;
 ``hermes dk backup --keep N``; 0 keeps every archive). A candidate is a regular, non-symlink file
@@ -332,10 +341,12 @@ def _open_new(out: pathlib.Path, chosen: bool) -> tuple[int, pathlib.Path]:
             if chosen:
                 raise BackupError(f"{out} already exists — pick another --out") from None
             # A default name another run took after default_out() looked: pick the next free one.
-            if attempt == _DEFAULT_TRIES - 1:
-                raise BackupError(f"{out} already exists and no free default name was found; "
-                                  "retry, or pass --out") from None
-            out = default_out().absolute()
+            if attempt < _DEFAULT_TRIES - 1:
+                out = default_out().absolute()
+    else:
+        # Every try was taken: the loop's own bound gives up, so ``fd`` is bound past here (#1694).
+        raise BackupError(f"{out} already exists and no free default name was found; "
+                          "retry, or pass --out")
     util.hold_temp(fd)
     return fd, out
 
@@ -343,7 +354,8 @@ def _open_new(out: pathlib.Path, chosen: bool) -> tuple[int, pathlib.Path]:
 def _listed_files(loops: list[dict]) -> tuple[list[tuple[pathlib.Path, pathlib.Path | None, str]],
                                               list[str]]:
     """The files ``create`` archives, as ``(target, source, kind)``, and the temp-shaped names it
-    leaves out (``skipped``; the manifest lists them): the loop files, the runtime and pacing
+    leaves out (``skipped``; the manifest lists them, with any listed file that is gone by the
+    time ``create`` reads it): the loop files, the runtime and pacing
     files, the gate-failure ledger and each loop's state directory. The ledger is added later."""
     files: list[tuple[pathlib.Path, pathlib.Path | None, str]] = []
     cfg = config.config_dir()
@@ -421,8 +433,11 @@ def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
                 try:
                     tar.add(source, arcname=member, recursive=False)
                 except FileNotFoundError as exc:
-                    if kind == "file" and util.is_temp_name(target.name):
-                        manifest["skipped"].append(str(target))   # renamed away since the listing
+                    if kind == "file":
+                        # Removed or renamed away since the listing (a temp renamed into place,
+                        # an ``artifacts/<n>/`` file cleaned up): there is nothing left to archive,
+                        # so it is left out and named, not a failed backup (#1694).
+                        manifest["skipped"].append(str(target))
                         continue
                     raise BackupError(f"cannot read {source}: {exc}") from exc
                 except OSError as exc:

@@ -1245,6 +1245,14 @@ The archive holds the routes' HMAC secrets, so restored hooks keep working. It i
 `0600`, the command warns about it, and the secrets are never printed. It leaves out GitHub
 tokens (PATs), Hermes profiles and model logins. It never overwrites a file.
 
+Writer scaffolding is deliberately left out as well: the plugin's lock files (an empty file with
+the name of one of its own locks directly in a state directory; a lock-named file that holds data
+is archived) and in-progress temp files (a writer's temp name that the writer holds open). A file
+that is listed but removed before it is read (for example under a loop's `artifacts/<n>/` by
+cleanup) is left out too instead of failing the backup. The manifest lists each temp and vanished
+file it skipped, and both `backup` and `migrate`'s automatic backup print them as a `left out`
+line; the empty lock files are not listed. None of these are restored.
+
 It refuses (exit `2`, nothing written) while `migrate`'s pause marker exists: a `migrate` or
 `restore` is running, or a `migrate` died before it finished (#1054). The
 records may then be half moved, and they are only safe under the pause, which an archive would
@@ -1302,6 +1310,10 @@ are missing; the tokens themselves are not in the archive. `--dry-run` lists wha
 restore and overwrite, reads the archive back like `backup --verify` (exit `2`, `NOT RESTORABLE`,
 if it cannot) and writes nothing. Exit `1` means a step is not finished or `doctor`
 listed a check that is not verified.
+
+Not restored, because the archive does not hold them: GitHub tokens (PATs) and App private keys,
+Hermes profiles, model logins, and the plugin's lock files and in-progress temp files (see
+`backup`; the manifest lists the skipped temp names).
 
 Before it overwrites anything, `restore` backs up the live install to
 `$HERMES_HOME/backups/diaktoros-pre-restore-<stamp>.tar.gz` (#1049) and prints its path;

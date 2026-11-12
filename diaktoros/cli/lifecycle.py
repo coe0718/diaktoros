@@ -477,6 +477,9 @@ def _migrate_steps(args, using: contextlib.ExitStack, left: dict | None = None) 
             print(f"cannot migrate: the backup before it failed ({exc}); nothing was moved")
             return 2
         print(f"backup: {archive} (restore with `hermes dk restore {shlex.quote(str(archive))}`)")
+        left_out = _left_out(archive)
+        if left_out:
+            print(f"backup: {left_out}")
         print(f"backup: {backup.WARNING}")
         if pruned:
             print(f"backup: removed {len(pruned)} older default-named archive(s) beyond the "
@@ -556,12 +559,24 @@ def cmd_backup(args) -> int:
         if pruned:
             print(f"removed {len(pruned)} older default-named archive(s) beyond the newest "
                   f"{keep}: " + ", ".join(p.name for p in pruned))
-        left_out = backup.read_manifest(archive).get("skipped") or []
+        left_out = _left_out(archive)
         if left_out:
-            print(f"left out ({len(left_out)} temp-named file(s), assumed a writer's scratch): "
-                  + ", ".join(left_out[:5]) + (" ..." if len(left_out) > 5 else ""))
+            print(left_out)
         print(f"warning: {backup.WARNING}")
         return 0
+
+
+def _left_out(archive: pathlib.Path) -> str | None:
+    """The line ``backup`` and ``migrate``'s automatic backup both print for the files the archive
+    left out (its manifest's ``skipped``: a writer's in-progress temp files, and listed files that
+    were gone by the time they were read), or None when it left none out (#1694)."""
+    from .. import backup
+    left_out = backup.read_manifest(archive).get("skipped") or []
+    if not left_out:
+        return None
+    return (f"left out ({len(left_out)} file(s): a writer's in-progress temp files, or files "
+            "removed while the backup ran): "
+            + ", ".join(left_out[:5]) + (" ..." if len(left_out) > 5 else ""))
 
 
 def _restore_cron(job: dict | None) -> list[str]:
