@@ -432,12 +432,18 @@ def stall_grace_s(loop: dict, seat: str) -> int:
     return max(grace, worst_turn_s(loop, seat))
 
 
-def adjudicating_stall_s(loop: dict) -> int:
+def marker_grace_s(loop: dict) -> float:
+    """``marker_grace_min`` in seconds, fractions kept (#2411): the one reading of it that the
+    sweep's ``awaiting-adjudication`` clock, :func:`adjudicating_stall_s` and doctor share, so a
+    loaded ``60.9`` is 60.9 minutes on every clock and in every display, never 60 on one."""
+    return float(loop.get("marker_grace_min") or DEFAULTS["marker_grace_min"]) * 60
+
+
+def adjudicating_stall_s(loop: dict) -> float:
     """How long a breach marker may sit ``adjudicating`` — a ruling claimed — with no live
     adjudicator run before the watchdog calls the PR stalled: ``marker_grace_min``, or the
     adjudicator's whole worst-case turn if that is longer (#98). While the run is live, never."""
-    grace = int(loop.get("marker_grace_min") or DEFAULTS["marker_grace_min"]) * 60
-    return max(grace, worst_turn_s(loop, "adjudicator"))
+    return max(marker_grace_s(loop), worst_turn_s(loop, "adjudicator"))
 
 
 def validate_budget(value, what: str, where: str) -> int:
@@ -453,6 +459,16 @@ def validate_budget(value, what: str, where: str) -> int:
 
 
 DAILY_TURNS_MAX = 1000
+# ``grace_min``/``ttl_min`` ceiling (#1692): one year of minutes. Their readers mix int and float
+# arithmetic (``stall_grace_s(...) / 60`` in the watchdog sweep, ``LoopState.minutes``' float() in
+# the seat ledger), so an integer past float's range crashed the sweep, or the ledger fell back to
+# the default while the watchdog's dead-claim threshold used the huge value. Every whole number up
+# to this bound is exact as a float, so all readers agree on it.
+TIMER_MINUTES_MAX = 525_600
+# The positive-number timers' ceilings (#2411): one year, like ``TIMER_MINUTES_MAX``. The sweep
+# and the health checks multiply ``cooldown_h`` by 3600 and ``marker_grace_min`` by 60, so a
+# finite value near float's top (``1e308``) became an infinite cooldown that never repeated.
+POSITIVE_NUMBER_MAX = {"cooldown_h": 8_760, "marker_grace_min": TIMER_MINUTES_MAX}
 DAILY_TOKENS_MAX = 10_000_000_000
 
 # Agent steps one isolated turn may take (#271), per role when the seat sets none. A seat that
@@ -1177,12 +1193,31 @@ def _as_int(value, key: str, where: str) -> int:
         raise ConfigError(f"{where}: {key!r} must be a whole number, got {value!r}") from None
 
 
+def _numeric_text(value):
+    """``value`` itself, or a string that spells a number (``"6"``, ``" 0.5 "``) as that number
+    (#1692): an int when it is one, else a float. Text that is not a number comes back unchanged
+    for the caller to refuse."""
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    for read in (int, float):
+        try:
+            return read(text)
+        except (ValueError, OverflowError):   # also an int string past the 4300-digit limit
+            continue
+    return value
+
+
 def _positive_number(value, key: str, where: str):
     """A positive, finite number setting (``null`` or ``""`` = the default), or a ConfigError
-    naming it. The watchdog does ``float(...)``/``int(...)`` on these mid-sweep, so a string,
-    a bool, zero, a negative or ``Infinity``/``NaN`` must fail when the loop file loads."""
+    naming it. The watchdog does ``float(...)``/``int(...)`` on these mid-sweep, so other text,
+    a bool, zero, a negative or ``Infinity``/``NaN`` must fail when the loop file loads, and so
+    must a value past ``POSITIVE_NUMBER_MAX`` (one year), which the readers' unit conversion
+    would turn into an infinite clock (#2411). A string that spells a number (``"6"``) is stored
+    as that number, the way ``_as_int`` reads one for the integer settings (#1692)."""
     if value is None or value == "":
         return DEFAULTS[key]
+    value = _numeric_text(value)
     ok = isinstance(value, (int, float)) and not isinstance(value, bool)
     if ok:
         try:
@@ -1191,6 +1226,10 @@ def _positive_number(value, key: str, where: str):
             ok = math.isfinite(float(value)) and value > 0
         except OverflowError:
             ok = False
+    top = POSITIVE_NUMBER_MAX[key]
+    if ok and value > top:
+        raise ConfigError(f"{where}: {key!r} must be a positive number up to {top}, got "
+                          f"{value!r}")
     if not ok:
         try:
             text = repr(value)
