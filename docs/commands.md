@@ -1901,10 +1901,13 @@ held (no comment is posted for it; `status` names the unreadable record) until t
 read again, and this command says `the issue dependency record could not be read` and exits `2`
 without listing or writing anything. An unreadable waiver history only adds the line `waiver
 history could not be read` to the list, and refuses a `--waive` (exit `2`) without removing the
-dependency. A waive removes the dependency first and records the waiver after it: if the removal
-cannot be written nothing is waived (exit `2`); if only the history write fails, the waive is done
-and its line ends `the waiver could not be recorded in its history`. A waiver is never listed while
-the same dependency is declared.
+dependency. A waive records the waiver first and removes the dependency after it, and a waiver is
+never listed while the same dependency is declared, so an interrupted waive lists either nothing
+or that waiver. If the removal cannot be written nothing is waived (exit `2`); if only the history
+write fails, the waive is done and its line ends `the waiver could not be recorded in its
+history` — unless the history still holds an older waiver of the same dependency (one a
+redeclaration could not clear), when nothing is waived (exit `2`), so that older waiver is never
+listed as this one.
 
 The Desktop page shows the same list under **Issue dependencies** (`GET /deps`, #1301): each
 row is met, waiting or unknown, with why. It reads GitHub for each prerequisite, so the page reads

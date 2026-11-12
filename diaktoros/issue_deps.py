@@ -279,11 +279,12 @@ def declare(loop: dict, st, issue: int, prerequisite: int, by: str = BY_CLI
 
 
 def waive(st, issue: int, prerequisite: int, by: str = BY_CLI) -> str:
-    """Remove (waive) the dependency, then record who waived it and when: ``""`` when there was
-    none, ``"waived"``, or ``"unrecorded"`` when it was removed but the history write failed
-    (said so, never reported as recorded). The next sweep releases ``issue`` if nothing else
-    holds it. An unreadable record, or a removal that did not land, raises ``RecordUnreadable``
-    and nothing is removed: the dependency still holds and no waiver is shown (#2399 review F2).
+    """Record who waived the dependency and when, then remove it: ``""`` when there was none,
+    ``"waived"``, or ``"unrecorded"`` when it was removed but the history write failed (said so,
+    never reported as recorded). The next sweep releases ``issue`` if nothing else holds it. An
+    unreadable record, a removal that did not land, or a failed history write over an older
+    waiver of the pair raises ``RecordUnreadable`` and nothing is removed: the dependency still
+    holds, no waiver is shown, and an older one is never shown as this one (#2399 F2, F6).
     """
     from .util import now_iso
     try:

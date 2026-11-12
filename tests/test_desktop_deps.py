@@ -542,7 +542,9 @@ class WaiverWrites(DepsFixture):
         self.assertNotIn("/private", out)
         rc, out = self.depends()
         self.assertEqual(out, "[widgets] #12 depends on #5: waiting — #5 is still open\n")
-        self.assertEqual((self.st.issue_dep_waivers(), self.waivers_on_page()), ({}, []))
+        # The history is written before the removal (#2399 review F6), so it may hold this
+        # attempt; a waiver of a declared dependency is never shown, by any reader.
+        self.assertEqual((issue_deps.waived(self.st, strict=True), self.waivers_on_page()), ([], []))
         fix_hold.sweep(self.loop, self.st)
         self.assertEqual((self.enqueued, self.st.dep_waits()), ([], [12]))
 
@@ -672,6 +674,97 @@ class Explain(DepsFixture):
             lines = self.explain(12)
         self.assertEqual(lines, ["#12 depends on #5: unknown — #5 could not be read"])
 
+
+
+class Crash(BaseException):
+    """A process dying mid-call: no ``except Exception`` handler sees it."""
+
+
+def crash_after(*names):
+    """The process dies right after the first strict save of any of the state files ``names``
+    lands: that write is durable, nothing after it in the call runs."""
+    real = state_mod.LoopState._save_strict
+
+    def save(self, path, data):
+        real(self, path, data)
+        if path.name in names:
+            raise Crash(path.name)
+    return mock.patch.object(state_mod.LoopState, "_save_strict", save)
+
+
+class StaleWaiver(DepsFixture):
+    """#2399 review F6: a waiver a redeclaration could not clear is never shown as a later
+    waive's, whether that waive's history write fails or the process dies between its writes."""
+
+    OLD = "2026-01-01T00:00:00Z"
+    REPORT = Explain.REPORT
+    WAITING = ["#12 depends on #5: waiting — #5 is still open"]
+
+    def setUp(self):
+        super().setUp()
+        self.depends(12, on=5)
+        with mock.patch("diaktoros.util.now_iso", return_value=self.OLD):
+            self.depends(12, waive=5)                                 # waived by operator
+        with failing("issue-deps-waivers.json"):                      # the cleanup fails
+            self.assertEqual(self.depends(12, on=5)[0], 0)
+        self.assertEqual(self.st.issue_dep_waivers()[12][5], {"by": "operator", "at": self.OLD})
+        self.run_gate(self.labeled())
+        self.offer = actions.plan(self.loop, "waive", pr=12, on=5)
+
+    def page_waive(self):
+        return actions.confirmed_perform(self.loop, "waive", self.offer["confirmation"],
+                                         pr=12, on=5)
+
+    def shown(self):
+        """``(depends, explain, page)`` for #12, each as the sentences ``depends`` prints."""
+        with mock.patch.object(desktop_api, "_loop", return_value=self.loop):
+            view = desktop_api.deps_view("widgets")
+        page = [f"#{r['issue']} depends on #{r['on']}: {r['state']} — {r['why']}"
+                for r in view["deps"]]
+        page += [f"#{w['issue']} no longer waits on #{w['on']} — waived by {w['by']} at {w['at']}"
+                 for w in view["waivers"]]
+        return Explain.listed(self, 12), Explain.explain(self, 12), page
+
+    def assert_waits_and_shows_no_waiver(self):
+        self.assertEqual(self.shown(), (self.WAITING,) * 3)
+        fix_hold.sweep(self.loop, self.st)
+        self.assertEqual((self.enqueued, self.st.dep_waits()), ([], [12]))
+
+    def assert_waived_by(self, by):
+        lines = self.shown()
+        self.assertEqual(lines[0], lines[1])
+        self.assertEqual(lines[0], lines[2])
+        self.assertEqual(len(lines[0]), 1, lines)
+        self.assertRegex(lines[0][0], rf"^#12 no longer waits on #5 — waived by {by} at \d{{4}}-")
+        self.assertNotIn(self.OLD, lines[0][0])
+        fix_hold.sweep(self.loop, self.st)
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, tid.BASE, "issue-fix")])
+
+    def test_a_history_write_that_fails_over_the_old_waiver_removes_nothing(self):
+        with failing("issue-deps-waivers.json"):
+            result = self.page_waive()
+            rc, out = self.depends(12, waive=5)
+        self.assertEqual((result["ok"], result["status"]), (False, "unknown"), result)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("the dependency was not changed", out)
+        self.assertNotIn("/private", out + json.dumps(result))
+        self.assert_waits_and_shows_no_waiver()
+        self.assertEqual(self.depends(12, waive=5)[0], 0)              # writable again: done
+        self.assert_waived_by("operator")
+
+    def test_a_crash_after_the_removal_lands_never_shows_the_old_waiver(self):
+        with crash_after("issue-deps.json"), self.assertRaises(Crash):
+            self.page_waive()
+        self.assert_waived_by("desktop")
+
+    def test_a_crash_between_the_two_writes_never_shows_the_old_waiver(self):
+        with crash_after("issue-deps.json", "issue-deps-waivers.json"), self.assertRaises(Crash):
+            self.page_waive()
+        self.assert_waits_and_shows_no_waiver()
+        offer = actions.plan(self.loop, "waive", pr=12, on=5)            # the waive again: done
+        result = actions.confirmed_perform(self.loop, "waive", offer["confirmation"], pr=12, on=5)
+        self.assertEqual((result["ok"], result["status"]), (True, "verified"), result)
+        self.assert_waived_by("desktop")
 
 class DrawerIssue(unittest.TestCase):
     """``pr_view``'s ``issue`` (#1301): the issue whose dependencies the drawer shows, from the

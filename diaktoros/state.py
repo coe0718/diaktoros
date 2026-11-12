@@ -1312,8 +1312,8 @@ class LoopState:
 
     def issue_dep_add(self, issue: int, prerequisite: int, record: dict) -> bool:
         """Declare the dependency; False when it was already declared. An unreadable record
-        raises (it is never overwritten). Declaring again after a waiver clears that waiver:
-        the dependency holds again."""
+        raises (it is never overwritten). Declaring again after a waiver clears that waiver
+        when it can (the dependency holds again either way; see ``issue_dep_drop``)."""
         with self.locked():
             data = self.issue_deps(strict=True)
             deps = data.setdefault(issue, {})
@@ -1331,25 +1331,32 @@ class LoopState:
 
     def issue_dep_drop(self, issue: int, prerequisite: int, waiver: dict | None = None) -> str:
         """Remove (waive) the dependency: ``""`` when there was none, else ``"dropped"``. Both
-        records are read first (either unreadable raises; nothing is removed). The removal is
-        published first and ``waiver`` (``{"by", "at"}``) recorded after it, so history never
-        shows a waiver whose dependency still holds (#2399 review F2); when that second write
-        fails the answer is ``"unrecorded"``: removed, its history not kept."""
+        records are read first (either unreadable raises; nothing is removed). ``waiver``
+        (``{"by", "at"}``) is recorded first and the removal published after it: a waiver whose
+        dependency is declared is never shown (#2399 review F2), so a crash between the two
+        writes shows either no waiver or this one. When the history write fails the answer is
+        ``"unrecorded"`` (removed, its history not kept), unless the history still holds an
+        older waiver of the pair (one a redeclaration could not clear): that raises and removes
+        nothing, so the older waiver is never shown as this one (#2399 review F6)."""
         with self.locked():
             data = self.issue_deps(strict=True)
             if prerequisite not in (data.get(issue) or {}):
                 return ""
-            waivers = None if waiver is None else self.issue_dep_waivers(strict=True)
+            waivers = self.issue_dep_waivers(strict=True)
+            old = waivers.setdefault(issue, {}).pop(prerequisite, None) is not None
+            if waiver is not None:
+                waivers[issue][prerequisite] = dict(waiver)
+            done = "dropped"
+            try:
+                if old or waiver is not None:
+                    self._save_strict(self.dir / self.WAIVERS_FILE, self._deps_json(waivers))
+            except Exception:
+                if old:
+                    raise
+                done = "unrecorded"
             del data[issue][prerequisite]
             self._save_strict(self.dir / self.DEPS_FILE, self._deps_json(data))
-            if waivers is None:
-                return "dropped"
-            waivers.setdefault(issue, {})[prerequisite] = dict(waiver)
-            try:
-                self._save_strict(self.dir / self.WAIVERS_FILE, self._deps_json(waivers))
-            except Exception:
-                return "unrecorded"
-            return "dropped"
+            return done
 
     def dep_waits(self) -> list[int]:
         """Issues whose hand-off waits for a prerequisite (#671), re-checked by the sweep."""
