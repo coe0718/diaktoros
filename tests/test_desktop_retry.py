@@ -644,6 +644,35 @@ class IssueSeatRetry(Fixture):
             with self.subTest(head=head), self.assertRaises(desktop_api.BadRequest):
                 self.retry(pr=12, seat="triage", head=head)
 
+    def test_the_target_names_the_retried_head_when_an_issue_fixer_mixes_identities(self):
+        # #2397 review F1: an issue fixer's rows can be recorded at the word and at a commit. The
+        # older row's verdict names the newer head, so its target must describe THAT head; a
+        # word target with a SHA head (or the reverse) is a shape the page rejects, /now and all.
+        for pr, (older, newer) in ((30, (config.TRIAGE_HEAD, HEAD)),
+                                   (31, (HEAD, config.TRIAGE_HEAD))):
+            self.row("failed", seat="issue_fixer", pr=pr, head=older)
+            self.row("failed", seat="issue_fixer", pr=pr, head=newer)
+        runs = [run for run in self.now()["runs"] if run["seat"] == "issue_fixer"]
+        self.assertEqual(len(runs), 4)
+        for run in runs:
+            with self.subTest(pr=run["pr"], head=run["head"]):
+                retry = run["retry"]
+                self.assertEqual(retry["target"],
+                                 "issue" if retry["head"] == config.TRIAGE_HEAD else "head")
+                self.assertRegex(retry["head"],
+                                 r"^[a-z]{1,16}$" if retry["target"] == "issue" else r"^[0-9a-f]{7,40}$")
+        verdicts = {(run["pr"], run["head"]): run["retry"] for run in runs}
+        self.assertEqual(verdicts[(30, "issue")]["target"], "head")
+        self.assertEqual(verdicts[(30, "issue")]["head"], HEAD)
+        self.assertFalse(verdicts[(30, "issue")]["eligible"])
+        self.assertEqual(verdicts[(31, HEAD[:7])]["target"], "issue")
+        self.assertEqual(verdicts[(31, HEAD[:7])]["head"], config.TRIAGE_HEAD)
+        self.assertFalse(verdicts[(31, HEAD[:7])]["eligible"])
+        self.assertEqual(verdicts[(30, HEAD[:7])], {"eligible": True, "head": HEAD, "reason": "",
+                                                    "target": "head"})
+        self.assertEqual(verdicts[(31, "issue")], {"eligible": True, "head": config.TRIAGE_HEAD,
+                                                   "reason": "", "target": "issue"})
+
     def test_the_word_never_confirms_a_pr_seat_and_a_malformed_head_is_still_refused(self):
         self.row("failed")                                   # a reviewer run at a real head
         with self.assertRaises(desktop_api.BadRequest):

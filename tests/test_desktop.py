@@ -1054,6 +1054,7 @@ class Surface(unittest.TestCase):
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: a withheld ruling head reads unknown, never blank$")
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: a failed triage run offers Retry, names its issue and posts the bound target$")
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: a withheld recorded head is admitted and reads unknown in the list and the drawer$")
+        self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: an issue fixer whose rows mix the word and a commit keeps /now and every run$")
         # The confirmed cancel control (#1372): preview/confirm, partial, stale and malformed.
         for name in ("cancel: every seat by default; preview lists the runs; confirm posts the exact target once",
                      "cancel: partial says the stop was requested, not finished, and offers no follow-up",

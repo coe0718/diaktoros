@@ -2276,6 +2276,38 @@ test('page: a withheld recorded head is admitted and reads unknown in the list a
   assert.match(drawer, /unknown grok-4\.7 would have approved/)
 })
 
+test('page: an issue fixer whose rows mix the word and a commit keeps /now and every run', async () => {
+  // #2397 review F1: an older row's verdict names the head a retry would re-arm, and its target
+  // describes THAT head, not the row shown. Both orderings, exactly as the backend emits them.
+  const h = await harness()
+  const fix = (pr, head, retry) => ({ pr, seat: 'issue_fixer', head, state: 'failed', why: 'failed: see explain', retry })
+  const older = 'not the newest run for this PR: retry targets '
+  const runs = [
+    fix(30, 'issue', { eligible: false, head: HEX, reason: older + HEX.slice(0, 7), target: 'head' }),
+    fix(30, HEX.slice(0, 7), { eligible: true, head: HEX, reason: '', target: 'head' }),
+    fix(31, HEX.slice(0, 7), { eligible: false, head: 'issue', reason: older + 'issue', target: 'issue' }),
+    fix(31, 'issue', { eligible: true, head: 'issue', reason: '', target: 'issue' })
+  ]
+  h.render('page')
+  h.respond(stalled(runs))
+  const validated = await h.options.now.queryFn()
+  assert.deepEqual(validated.runs.map(run => run.retry.target), ['head', 'head', 'issue', 'issue'])
+  // The shapes the pre-fix backend emitted: a word target on a SHA head and the reverse. The
+  // validator still refuses them, which is why the backend must never send them.
+  for (const [at, retry] of [[0, { eligible: false, head: HEX, reason: older, target: 'issue' }],
+    [2, { eligible: false, head: 'issue', reason: older, target: 'head' }]]) {
+    h.respond(stalled(runs.map((run, n) => n === at ? { ...run, retry } : run)))
+    await assert.rejects(h.options.now.queryFn(), /Invalid now response/)
+  }
+  h.queries.now = h.good(stalled(runs))
+  const text = h.text(h.render('page'))
+  for (const line of [/#30 issue_fixer issue failed/, /#30 issue_fixer aaaaaaa failed/,
+    /#31 issue_fixer aaaaaaa failed/, /#31 issue_fixer issue failed/]) assert.match(text, line)
+  assert.equal(retryButtons(h).length, 2, 'only the newest row of each PR carries the control')
+  retryButtons(h)[1].props.onClick()
+  assert.match(dialogOf(h).props.description, /Retry the issue_fixer on issue #31 in loop/)
+})
+
 
 
 test('actions: backend refusal accepts empty opaque identity and invalid PR input never reads', async () => {

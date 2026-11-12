@@ -200,15 +200,16 @@ def page_targets(con, repo: str, loop: dict | None = None) -> dict:
         # head, or an issue seat's ``config.TRIAGE_HEAD``): a malformed ledger value never
         # reaches the page as ``head`` or in a reason.
         shown = identity(seat, head)
+        # ``target`` names what ``shown`` is, so the page labels an issue seat's run "issue #N"
+        # instead of a head it does not have (#1696). It describes the head a retry re-arms, never
+        # the displayed row: an issue fixer's rows can mix the word and a commit (#2397 review F1).
+        target = "issue" if shown == config.TRIAGE_HEAD else "head"
         for row in group:
             if not identity(seat, row["head"]):
                 # No entry: a withheld head is not an identity, so it must never be a join key
                 # (every malformed row would collide on ''); ``desktop_api._with_retry`` words it.
                 continue
-            # ``target`` says what the identity names, so the page labels an issue seat's run
-            # "issue #N" instead of showing a head it does not have (#1696).
-            entry = {"eligible": False, "head": shown, "reason": "",
-                     "target": "issue" if row["head"] == config.TRIAGE_HEAD else "head"}
+            entry = {"eligible": False, "head": shown, "reason": "", "target": target}
             if row["head"] != head:
                 entry["reason"] = ("not the newest run for this PR: retry targets "
                                    + (shown[:7] if shown else "a run whose recorded head is withheld"))
