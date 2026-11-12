@@ -1207,8 +1207,23 @@ class LoopState:
                 data["approved"].append(number)
         self._fix_ask_edit(change)
 
-    def fix_ask_drop(self, number: int) -> None:
-        self._fix_ask_edit(lambda data: data["open"].pop(str(number), None))
+    def fix_ask_drop(self, number: int, run: str = "", uncount: bool = False) -> bool:
+        """Close the issue's open ask; whether one was closed. ``run``: only when the open ask
+        is that run's (#2381: ``continue`` releasing its own plan ask, never another one).
+        ``uncount``: also give back the count a ``pending`` reservation took, for a claim whose
+        comment is known not to be on the issue, so it never spends one of the issue's asks."""
+        dropped: list[bool] = []
+
+        def change(data):
+            ask = data["open"].get(str(number))
+            if ask is None or (run and (not isinstance(ask, dict) or ask.get("run") != run)):
+                return
+            data["open"].pop(str(number))
+            if uncount and isinstance(ask, dict) and ask.get("pending"):
+                data["count"][str(number)] = max(0, data["count"].get(str(number), 0) - 1)
+            dropped.append(True)
+        self._fix_ask_edit(change)
+        return bool(dropped)
 
     # -- issue dependencies (#671): {issue: {prerequisite issue: {"by", "at"}}} ----------
 

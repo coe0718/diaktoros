@@ -2127,7 +2127,16 @@ comment is posted, under the lock the seat's own `--ask` uses, so two `--post-pl
 and a fixer turn, never both post. If the comment's outcome is unknown or its ask could not be
 recorded, the reservation stays open as pending (`status` says so; no reply resolves it, and no
 other ask can start): run `--post-plan` again, which adopts the run's comment if GitHub has it
-(found by a hidden marker naming the run) and posts only if not. The watchdog sweep or the comment
+(found by a hidden marker naming the run) and posts only if not. That holds even after the run
+stops being refused only for want of a plan (#2381): when the label is removed, the body
+shortened, the branch moved or any other conflict appears, `--post-plan` refuses to post but
+still settles the run's own reservation first. With no comment of the run on the issue, the
+reservation is dropped and does not count toward the three asks. With one, and the plan no
+longer required, the ask is closed (still counted). If another conflict means a plan may still be
+needed, the comment is adopted so `/loop approve` resolves it. If the comments cannot be read
+it stays pending, so run `--post-plan` again. When `continue` opens the run's PR, it closes
+the run's own plan ask the same way. Another run's ask, or the fixer seat's, is never touched.
+The watchdog sweep or the comment
 webhook reads a maintainer's `/loop approve` after it, records the approval and, since the
 branch is already pushed, queues no new fix turn; run `continue` again to open the PR.
 

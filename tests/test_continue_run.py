@@ -515,6 +515,89 @@ class Continue(Base):
                 self.assertEqual(st.fix_ask_open()[12]["comment_id"], 500)
                 self.assertEqual(st.fix_ask_count(12), 1)
 
+    def lost_plan(self, live):
+        """``--post-plan`` on the plan-first issue ``live`` whose POST response is lost: the
+        run's reservation is left ``pending``, the comment body in ``self.posted``."""
+        from diaktoros import state as state_mod
+
+        def lost(s, loop, **kw):
+            s.writes.append("plan_comment")
+            s.posted = kw["body"]
+            raise broker.BrokerDenied("GitHub comment write did not return a successful response")
+        st = state_mod.state_for(self.loop)
+        st.kv_set_strict(st.dir / "fix-asks.json", {})
+        self.writes = []
+        self.assertEqual(self.post_plan_with(live, [], post=lost), 2)
+        self.assertTrue(st.fix_ask_open()[12]["pending"])
+        return st
+
+    def test_a_pending_plan_is_settled_after_the_plan_rule_goes_away(self):
+        """#2381: the POST's response is lost, then the plan-first label is removed or the body
+        shortened. `--post-plan` refuses (no plan is needed) but no longer strands the run's
+        reservation: with no comment of the run on the issue it is dropped and uncounted, with
+        one it is closed; either way the seat may ask again and fix turns are not held."""
+        from diaktoros import fix_hold
+        for live in (issue(labels=("agent-fix", fix_hold.PLAN_LABEL)),
+                     issue(body="x" * (fix_hold.PLAN_BODY_MAX + 1))):
+            for landed in (False, True):
+                with self.subTest(labels=live["labels"], landed=landed):
+                    st = self.lost_plan(live)
+                    on_issue = [{"id": 500, "user": {"login": "fix"}, "body": self.posted}] \
+                        if landed else []
+                    self.assertEqual(self.post_plan_with(issue(), on_issue), 2)
+                    self.assertEqual(st.fix_ask_open(), {})
+                    self.assertEqual(st.fix_ask_count(12), 1 if landed else 0)
+                    fix_hold.check_ask(st, 12)                 # the seat may ask again
+                    self.assertEqual(self.writes, ["plan_comment"])   # nothing posted again
+
+    def test_a_pending_plan_is_adopted_after_the_branch_moves(self):
+        """#2381: the POST's response is lost, then the branch moves (a conflict). `--post-plan`
+        refuses, but adopts the run's comment if GitHub has it, so a maintainer's approve
+        resolves it, and drops the reservation (uncounted) if it does not."""
+        from diaktoros import fix_hold
+        labelled = issue(labels=("agent-fix", fix_hold.PLAN_LABEL))
+        for landed in (True, False):
+            with self.subTest(landed=landed):
+                self.branch_sha = NEW
+                st = self.lost_plan(labelled)
+                self.branch_sha = "e" * 40
+                on_issue = [{"id": 500, "user": {"login": "fix"}, "body": self.posted}] \
+                    if landed else []
+                self.assertEqual(self.post_plan_with(labelled, on_issue), 2)
+                if landed:
+                    self.assertEqual(st.fix_ask_open()[12]["comment_id"], 500)
+                    self.assertNotIn("pending", st.fix_ask_open()[12])
+                    self.assertEqual(st.fix_ask_count(12), 1)
+                else:
+                    self.assertEqual((st.fix_ask_open(), st.fix_ask_count(12)), ({}, 0))
+                self.assertEqual(self.writes, ["plan_comment"])
+
+    def test_continue_closes_the_runs_plan_ask_when_it_opens_the_pr(self):
+        """#2381: a pending plan ask of the run, then the label is removed: `continue` opens the
+        PR and closes the run's ask, so the issue is not left waiting for a maintainer."""
+        from diaktoros import fix_hold
+        st = self.lost_plan(issue(labels=("agent-fix", fix_hold.PLAN_LABEL)))
+        args = argparse.Namespace(loop="widgets", run=self.run_id, dry_run=False, post_plan=False)
+        with mock.patch.object(gh, "fetch", self.fetch_with(issue())), self.real_policy(issue()), \
+                mock.patch.object(gh, "issue_comments_read", lambda loop, n: ([], "")), \
+                mock.patch.object(config, "load_id", return_value=self.loop), \
+                mock.patch.object(operations, "_ledger_path", return_value=self.db), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(operations.cmd_continue(args), 0)
+        self.assertEqual(self.writes, ["plan_comment", "open_pr", "request_review"])
+        self.assertEqual(st.fix_ask_open(), {})
+        fix_hold.check_ask(st, 12)
+
+    def test_continue_leaves_another_runs_ask_alone(self):
+        """#2381: only the run's own ask is released; a seat's open question stays."""
+        from diaktoros import state as state_mod
+        st = state_mod.state_for(self.loop)
+        st.fix_ask_set(12, "question", 400, "which way?")
+        with mock.patch.object(gh, "fetch", self.fetch_with(issue())), self.real_policy(issue()):
+            continue_run.run(self.loop, self.sup, self.run_id)
+            continue_run.post_plan(self.loop, self.sup, self.run_id)
+        self.assertEqual(st.fix_ask_open()[12]["comment_id"], 400)
+
     def fetch_with(self, live):
         """``fetch`` with the issue read as ``live``; the branch and PRs as in ``fetch``."""
         def fetch(loop, path, method="GET", body=None, login=None):
