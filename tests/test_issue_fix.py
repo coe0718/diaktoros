@@ -212,9 +212,10 @@ class Gate(Base):
         said = []
         st = state_mod.state_for(self.loop)
         cases = [("author", {}), ("pushes off", {"unattended_fixer_push": False})]
+        base = self.loop                        # #1840: each case changes only its own key
         for name, change in cases:
             with self.subTest(name):
-                self.loop = {**self.loop, **change}
+                self.loop = {**base, **change}
                 self.live = issue(author="stranger")
                 said.clear()
                 with mock.patch.object(observer, "notify",
@@ -254,9 +255,10 @@ class Gate(Base):
         st = state_mod.state_for(self.loop)
         cases = [("pushes off", {"unattended_fixer_push": False}, "owner"),
                  ("author", {}, "stranger")]
+        base = self.loop                        # #1840: "author" runs with pushes on
         for name, change, author in cases:
             with self.subTest(name):
-                self.loop = {**self.loop, **change}
+                self.loop = {**base, **change}
                 self.live = issue(author=author, labels=())
                 said = []
                 with mock.patch.object(observer, "notify",
