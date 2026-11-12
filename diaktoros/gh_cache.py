@@ -82,7 +82,7 @@ def lookup(login: str, path: str) -> dict | None:
     if not cacheable(path):
         return None
     try:
-        entry = json.loads(_file(login, path).read_text())
+        entry = json.loads(_file(login, path).read_text(encoding="utf-8"))   # as store wrote it
     except (OSError, ValueError):
         return None
     if (not isinstance(entry, dict) or not isinstance(entry.get("etag"), str)

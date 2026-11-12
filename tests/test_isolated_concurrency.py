@@ -63,6 +63,43 @@ class IsolatedConcurrency(unittest.TestCase):
         with self.assertRaisesRegex(config.ConfigError, "runtime file"):
             config.normalize({**LOOP, "concurrency": 2})
 
+    def test_shadow_and_triage_above_one_are_refused_without_isolation(self):
+        """#1693: the guard covers every capacity seat, not only reviewer/fixer, and names it."""
+        for seat in ("shadow", "triage"):
+            with self.subTest(seat=seat):
+                raw = loop_with(1)
+                raw["seats"][seat] = {"concurrency": 2}
+                with self.assertRaisesRegex(config.ConfigError,
+                                            rf"seats\.{seat}\.concurrency > 1 requires 'clone'"):
+                    config.normalize(raw)
+
+    def test_shadow_and_triage_above_one_load_with_a_clone_or_the_runtime_file(self):
+        for seat in ("shadow", "triage"):
+            with self.subTest(seat=seat):
+                raw = loop_with(1, clone=str(self.home / "clone"))
+                raw["seats"][seat] = {"concurrency": 2}
+                self.assertEqual(config.seat_concurrency(config.normalize(raw), seat), 2)
+        self.write_runtime()
+        for seat in ("shadow", "triage"):
+            with self.subTest(seat=seat, runtime=True):
+                raw = loop_with(1)
+                raw["seats"][seat] = {"concurrency": 2}
+                self.assertEqual(config.seat_concurrency(config.normalize(raw), seat), 2)
+
+    def test_doctor_clone_note_names_a_shadow_only_parallel_seat(self):
+        """#1693: check_clone's isolation note lists shadow/triage above 1, not just reviewer/fixer."""
+        from diaktoros import doctor
+        clone = self.home / "clone"
+        (clone / ".git").mkdir(parents=True)
+        raw = {**loop_with(1, clone=str(clone)), "state_dir": str(self.home / "state")}
+        raw["seats"]["shadow"] = {"concurrency": 2}
+        check = doctor.check_clone(config.normalize(raw))
+        self.assertEqual(check.status, doctor.VERIFIED)
+        self.assertIn("isolation source for shadow", check.detail)
+        self.assertNotIn("reviewer", check.detail)
+        serial = {**loop_with(1, clone=str(clone)), "state_dir": str(self.home / "state")}
+        self.assertNotIn("isolation source", doctor.check_clone(config.normalize(serial)).detail)
+
     def test_clone_alone_still_suffices(self):
         loop = config.normalize(loop_with(2, clone=str(self.home / "clone")))
         self.assertEqual(config.seat_concurrency(loop, "reviewer"), 2)

@@ -493,8 +493,8 @@ def _validated(loop: dict, changes: dict, seats: dict, observer_cfg: dict, token
             if not cli_common._credential_file(updated, read_after):
                 raise config.ConfigError(
                     f"no token file mapped for the reader {read_after!r} — add "
-                    f"--token {read_after}=/path/to/pat, or --app {read_after}=APP_ID:/path/to/key.pem "
-                    "for a GitHub App reader")
+                    f"--token {read_after}=/path/to/pat, or "
+                    f"{credentials.reader_app_alternative(read_after)}")
             credentials.check_token_file(cli_common._credential_file(updated, read_after),
                                     f"credential file for the reader {read_after!r}")
             credentials.verify_credentials(updated, {"read"})
