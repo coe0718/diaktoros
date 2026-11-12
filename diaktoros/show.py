@@ -18,6 +18,7 @@ Token values are never read: ``tokens`` rows show the file paths from the loop f
 from __future__ import annotations
 
 import json
+import os
 
 from . import config, observer, util
 from .config import settings_form
@@ -381,15 +382,27 @@ def _rows_observer(obs, schema, rows, loop) -> None:  # noqa: ANN001
 
 
 def _key_spelling(value: str) -> str:
-    """``value`` as ``config.expand_path`` spells it, whitespace kept (a trailing space names another file).
+    """``value`` as ``config.expand_path`` spells it, whitespace kept (a trailing space names another file),
+    with ``..`` segments folded by ``os.path.normpath`` (#1695): a hand-written ``/k/x/../a.pem`` is
+    compared as ``/k/a.pem``, on both sides. (Lexical: a symlinked ``x`` is not followed.)
 
     An unresolvable ``~user`` makes ``Path.expanduser`` raise; ``show`` must still report, so that
     value stays as written (``os.path.expanduser`` left it alone too).
     """
     try:
-        return str(config.expand_path(value))
+        return os.path.normpath(config.expand_path(value))
     except RuntimeError:
         return value
+
+
+def _seat_form_keys() -> frozenset:
+    """The settings-form keys apply reads through ``config.seat_mapping``, which strips them (#1695):
+    each seat's profile, login, token file, App id and App key file."""
+    keys = {*config.PROFILE_SETTINGS.values(), *config.LOGIN_SETTINGS.values(),
+            *config.TOKEN_FILE_SETTINGS.values(), "adjudicator_login"}
+    for seat in config.TOKEN_FILE_SETTINGS:
+        keys |= {f"{seat}_app_id", f"{seat}_app_key_file"}
+    return frozenset(keys)
 
 
 def collect(loop: dict, raw: dict, form: dict | None = None) -> list[dict]:
@@ -409,6 +422,8 @@ def collect(loop: dict, raw: dict, form: dict | None = None) -> list[dict]:
         if row.schema and form and settings_form._form_value(form, row.name) is not None:
             held = settings_form.settings_defaults(form)[row.name]
             shown = row.value
+            if row.name in _seat_form_keys() and isinstance(held, str):
+                held = held.strip()          # apply reads these through seat_mapping, stripped (#1695)
             if row.name.endswith("_app_key_file") and isinstance(held, str) and held.strip():
                 # apply stores the key path as ``config.expand_path`` spells it (#1212, #1279): expanded
                 # and normalized, so `~/keys/x.pem/` is the same file. A loop file written by hand
