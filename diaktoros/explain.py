@@ -59,14 +59,39 @@ def _minutes_since(when: float, now: float) -> int:
     return max(0, int((now - when) / 60)) if when else 0
 
 
-def _adjudication_next(loop: dict, head: str) -> str:
-    """The one thing left when the budget is spent: a ruling, or a human if nobody can rule."""
+# What still fires while an escalation holds a head below its verdict cap, by the marker's
+# ``escalated.by`` (#1887). An operator's or a shadow review's escalation stops both gates
+# (scripts/gate_reviewer.py and scripts/gate_fixer.py silence on ``gate.escalated``); a fixer's
+# dispute stops the fixer gate, but the reviewer gate still takes a maintainer's re-request of
+# the disputed review (scripts/gate_reviewer.py, the ``dispute_key`` exception).
+_BELOW_CAP_HOLD = {
+    gate.OPERATOR_ESCALATION: ("nothing else fires for this PR (the operator's escalation stops "
+                               "both gates below the cap)"),
+    gate.SHADOW_ESCALATION: ("nothing else fires for this PR (the shadow review's escalation "
+                             "stops both gates below the cap)"),
+    "dispute": ("the fixer's dispute holds this head below the cap: the fixer gate starts no fix "
+                "turn, and the reviewer gate reviews it again only if a maintainer re-requests "
+                "the disputed review"),
+}
+
+
+def _adjudication_next(loop: dict, head: str, escalated_by: str = "") -> str:
+    """The one thing left when the budget is spent: a ruling, or a human if nobody can rule.
+
+    ``escalated_by``: who escalated this head below the verdict cap (the breach marker's
+    ``escalated.by``; #1887), so the action names that escalation rather than the cap. Empty
+    means the cap is spent. A source not listed in ``_BELOW_CAP_HOLD`` gets a neutral wording.
+    """
     short = head[:7] if head else "?"
     if not (loop.get("adjudicator") or {}).get("route"):
         return ("human adjudication: this loop has no adjudicator route, so the breach marker is "
                 "the only record — rule by hand, then merge or close")
-    return (f"human adjudication: the adjudicator rules at head {short} and reports; nothing else "
-            f"fires for this PR (both gates stop at the cap)")
+    if not escalated_by:
+        held = "nothing else fires for this PR (both gates stop at the cap)"
+    else:
+        held = _BELOW_CAP_HOLD.get(
+            escalated_by, f"an escalation ({escalated_by}) holds this head below the cap")
+    return f"human adjudication: the adjudicator rules at head {short} and reports; {held}"
 
 def _ruled(loop: dict, number: int, head: str) -> str | None:
     """The adjudicator's verdict at this head, if it has ruled (the watchdog reads the same)."""
