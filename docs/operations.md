@@ -164,8 +164,7 @@ Between turns:
 
 1. `hermes plugins disable hermes-review-loop`. Its gates keep running by path until step 4
    repoints them.
-2. Install Diaktoros: `hermes plugins install diaktoros` from the catalog, or a pinned commit with
-   `hermes plugins install coe0718/diaktoros --force --ref <full sha>`.
+2. Install Diaktoros from the catalog: `hermes plugins install diaktoros`.
 3. `hermes plugins enable diaktoros`.
 4. `hermes dk migrate --dry-run`, then `hermes dk migrate`. Before anything moves, it points every
    route's gate shim and the watchdog at the new plugin, so nothing runs the old code mid-move. It

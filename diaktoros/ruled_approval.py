@@ -48,8 +48,19 @@ def sweep(loop: dict, st, prs: list, log=lambda _msg: None) -> list[int]:
             continue
         number, head, _author = listed
         ruling = views.ruling_row(db, loop["repo"], number)
-        if not ruling or (ruling["head"], ruling["verdict"]) != (head, "ACCEPT"):
-            continue                           # the PR's newest ruling: an ACCEPT at this head
+        if not ruling:
+            continue
+        if (ruling["head"], ruling["verdict"]) != (head, "ACCEPT"):
+            # Not acted on: the newest ruling is not an ACCEPT at this head. An earlier one's
+            # write still on the wire here is read back all the same, since ``base_merge`` waits
+            # on it (#2375 review, F9).
+            try:
+                if _settle_in_flight(loop, db, number, head, log):
+                    moved.append(number)
+            except Exception as exc:  # noqa: BLE001 - one PR's failure never stops the sweep
+                log(f"#{number}: reading back a write on an earlier ACCEPT failed: "
+                    f"{type(exc).__name__}: {exc}")
+            continue
         try:
             if _act(loop, st, Supervisor(db, create=False), pr, ruling, log):
                 moved.append(number)
@@ -118,7 +129,72 @@ def _act(loop: dict, st, sup, pr: dict, ruling: dict, log) -> bool:
     return _dismiss(loop, sup, ruling, reviews, number, branch, row.get("overruled"), log)
 
 
+def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool = True) -> str:
+    """Why acting on an ACCEPT at ``head`` is not finished, or '' (#2364). ``base_merge`` waits on
+    it: a merge moves the head, and the sweep acts only on a ruling at the current head.
+
+    * Any ruling's write that may be on the wire at this head (``posting``, ``uncertain``) holds
+      it, whichever verdict is now the head's latest: once the head moves, nothing reconciles it.
+    * Then the newest ruling decides, as ``_act`` does, when it is an ACCEPT at this head: a step
+      ``_act`` will still take waits (the approval while pending, then the dismissal while
+      pending, unless the approval was denied); no record yet is not settled while a change
+      request is still there to dismiss (``overruled``: the sweep has not acted, or an approval
+      was posted by hand), and is nothing owed when there is none. An older ruling's pending step
+      is never acted on again, so it waits on nothing.
+    * No record here and no adjudicator's approval as the head's verdict (``ruled`` false):
+      nothing to act on. A record or ruling that can't be read is not settled.
+    * With ``adjudicator_approves`` off, the sweep acts on nothing and reads nothing back, so no
+      wait could end: ''."""
+    if not config.adjudicator_approves(loop):
+        return ""
+    db = production_ledger()
+    rows, error = views.ruled_approvals(db, loop["repo"], number, head)
+    if error:
+        return f"the record of acting on the adjudicator's ACCEPT can't be read ({error[:120]})"
+    for row in rows:
+        for step in ("approve", "dismiss"):
+            if (state := row.get(step) or "pending") in ("posting", "uncertain"):
+                return f"the adjudicator's ACCEPT is still being acted on ({step}: {state})"
+    if not rows and not ruled:
+        return ""
+    ruling = views.ruling_row(db, loop["repo"], number) or {}
+    newest = ruling.get("run_id")
+    if not newest:
+        return "the adjudicator's ruling can't be read"
+    if (ruling.get("head"), ruling.get("verdict")) != (head, "ACCEPT"):
+        return ""                              # superseded: its pending steps are never acted on
+    mine = next((row for row in rows if row.get("ruling") == newest), None)
+    if mine is None:
+        if overruled(reviews, loop, head, ruling.get("created") or 0) is None:
+            return ""                          # no change request to dismiss: nothing to act on
+        return "the adjudicator's ACCEPT has not been acted on yet"
+    # Only what ``_act`` still takes: the approval, then the dismissal, while the dismissal is
+    # pending and the approval was not denied (a denied approval leaves its dismissal pending for
+    # good: left for a person, #2375 review F10). Posting/uncertain steps are the scan above.
+    approve, dismiss = mine.get("approve") or "pending", mine.get("dismiss") or "pending"
+    if dismiss == "pending" and approve != "denied":
+        step, state = ("approve", approve) if approve == "pending" else ("dismiss", dismiss)
+        return f"the adjudicator's ACCEPT is still being acted on ({step}: {state})"
+    return ""
+
+
 POSTING_STALE_S = 300   # a write is answered in well under this: a posting step older is cut off
+
+
+def _settle_in_flight(loop: dict, db, number: int, head: str, log) -> bool:
+    """Read back the writes at ``head`` that may still be on the wire (``posting``, ``uncertain``)
+    when no ACCEPT there is acted on: whether any moved. Only ``_reconcile``, never a new write: a
+    superseded ruling's pending steps are left as they are, since nothing acts on them again."""
+    rows, error = views.ruled_approvals(db, loop["repo"], number, head)
+    rows = [row for row in rows if any(row.get(step) in ("posting", "uncertain")
+                                       for step in ("approve", "dismiss"))]
+    if error or not rows:
+        return False
+    reviews = gh.reviews(loop, number)
+    if not isinstance(reviews, list):
+        return False
+    sup = Supervisor(db, create=False)
+    return any([_reconcile(loop, sup, row, reviews, number, log) for row in rows])
 
 
 def _reconcile(loop: dict, sup, row: dict, reviews: list, number: int, log) -> bool:
