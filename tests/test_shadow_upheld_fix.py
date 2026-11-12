@@ -340,7 +340,7 @@ class Push(ruling.Base):
     def test_the_broker_push_reads_the_ruling_from_the_runs_ledger(self):
         # #1354: the broker's push checks the ruling in RunScope.ledger_db, as the claim and the
         # launch do, not in the production ledger (which here holds no ruling at all).
-        from diaktoros import broker_ipc
+        from diaktoros.broker import ipc as broker_ipc
         self.set_push(True)
         self.db = str(self.root / "run-ledger.sqlite")
         run_supervisor.Supervisor(self.db)

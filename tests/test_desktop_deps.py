@@ -407,6 +407,35 @@ class FailClosed(DepsFixture):
                 self.assertEqual((self.st.dir / "issue-deps.json").read_text(), text)
                 self.assertFalse((self.st.dir / "issue-deps-waivers.json").exists())
 
+    def test_a_dangling_symlink_record_holds_and_is_never_overwritten(self):
+        # #2399 review F7: a dangling issue-deps.json (or waiver history) exists but cannot be
+        # read; Path.exists() follows the link and says False, which read it as no record.
+        self.depends(12, on=5)
+        self.run_gate(self.labeled())
+        self.close_a(tid.MERGE)                                  # met: would release if read
+        for name in ("issue-deps.json", "issue-deps-waivers.json"):
+            with self.subTest(record=name):
+                path = self.st.dir / name
+                kept = path.read_text() if path.exists() else None
+                path.unlink(missing_ok=True)
+                path.symlink_to(self.st.dir / "gone" / name)
+                with self.assertRaises(OSError):
+                    (self.st.issue_deps if name == "issue-deps.json"
+                     else self.st.issue_dep_waivers)(strict=True)
+                with self.assertRaises(OSError):
+                    self.st.issue_dep_drop(12, 5, {"by": "operator", "at": "x"})
+                if name == "issue-deps.json":
+                    with self.assertRaises(OSError):
+                        self.st.issue_dep_add(13, 6, {"by": "operator", "at": "x"})
+                    fix_hold.sweep(self.loop, self.st)
+                    self.assertEqual((self.enqueued, self.st.dep_waits()), ([], [12]))
+                    rc, out = self.depends(issue=12, on=6)
+                    self.assertEqual(rc, 2, out)
+                self.assertTrue(path.is_symlink())                  # never replaced
+                path.unlink()
+                if kept is not None:
+                    path.write_text(kept)
+
     def test_a_malformed_waiver_history_is_unreadable_not_none(self):
         self.depends(12, on=5)
         corrupt(self.st, '{"12": {"6": null}}', "issue-deps-waivers.json")

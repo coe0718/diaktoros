@@ -38,7 +38,7 @@ ALLOWED = {
         ("the event (failed or held) depends on the run's state", ("assigned", None)),
     ("diaktoros/fix_hold.py", "_notice"):
         ("a wrapper for the issue hand-off's held and fixing notices", ("param", 2)),
-    ("diaktoros/broker_ipc.py", "_issue_notice"):
+    ("diaktoros/broker/ipc.py", "_issue_notice"):
         ("a wrapper for the issue-side triaged and fixed notices", ("param", 2)),
 }
 
@@ -427,28 +427,28 @@ class ScanBypasses(unittest.TestCase):
     def test_wrapper_forwarding_an_expression_fails(self):
         # F1: the wrapper sends ``event + "-typo"``, not the parameter its callers are checked on.
         old = "observer.notify(loop, state_mod.state_for(loop), event, scope.number"
-        self.assertFlags(edited("diaktoros/broker_ipc.py", old, old.replace(
+        self.assertFlags(edited("diaktoros/broker/ipc.py", old, old.replace(
             ", event,", ', event + "-typo",')), "not its `event` variable unchanged")
 
     def test_wrapper_rebinding_its_parameter_fails(self):
-        old = "    from . import observer, state as state_mod\n    try:\n        observer.notify("
-        self.assertFlags(edited("diaktoros/broker_ipc.py", old, old.replace(
+        old = "    from .. import observer, state as state_mod\n    try:\n        observer.notify("
+        self.assertFlags(edited("diaktoros/broker/ipc.py", old, old.replace(
             "    try:\n", '    event = "no-such-event"\n    try:\n')), "rebinds its `event`")
 
     def test_wrapper_imported_by_name_fails(self):
-        # F2: ``from .broker_ipc import _issue_notice`` (and an alias) in another module.
+        # F2: ``from .broker.ipc import _issue_notice`` (and an alias) in another module.
         for imported, called in (("_issue_notice", "_issue_notice"),
                                  ("_issue_notice as note", "note")):
             sources = repo_sources()
             sources["diaktoros/planted.py"] = (
-                f"from .broker_ipc import {imported}\n\n\ndef h(loop, scope):\n"
+                f"from .broker.ipc import {imported}\n\n\ndef h(loop, scope):\n"
                 f"    {called}(loop, scope, 'no-such-event', 'outcome')\n")
             self.assertFlags(sources, "diaktoros/planted.py:5: unknown observer event")
 
     def test_wrapper_referenced_without_a_call_fails(self):
         sources = repo_sources()
         sources["diaktoros/planted.py"] = (
-            "from . import broker_ipc\nsend = broker_ipc._issue_notice\n")
+            "from .broker import ipc as broker_ipc\nsend = broker_ipc._issue_notice\n")
         self.assertFlags(sources, "wrapper referenced, not called")
 
     def test_starred_arguments_fail(self):

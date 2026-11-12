@@ -2,7 +2,8 @@
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import unittest
 
-from diaktoros import broker, broker_ipc
+from diaktoros import broker
+from diaktoros.broker import ipc as broker_ipc
 
 
 class DenialMessageTests(unittest.TestCase):

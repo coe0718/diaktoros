@@ -14,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_issue_fix as base  # noqa: E402
 BASE, REPO, issue = base.BASE, base.REPO, base.issue
 
-from diaktoros import attribution, broker_ipc, explain, fix_hold, gh  # noqa: E402
+from diaktoros import attribution, explain, fix_hold, gh  # noqa: E402
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros import state as state_mod  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 

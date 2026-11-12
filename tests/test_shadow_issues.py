@@ -19,7 +19,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_partial_view_no_approve as fixture  # noqa: E402
-from diaktoros import broker, broker_filing, config, gh, ledger, shadow_issues  # noqa: E402
+from diaktoros import broker, config, gh, ledger, shadow_issues  # noqa: E402
+from diaktoros.broker import filing as broker_filing  # noqa: E402
 from diaktoros.config import blocks  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
@@ -92,7 +93,7 @@ class Record(unittest.TestCase):
 
     def shadow_run(self):
         """A live shadow run at the head, and its broker scope."""
-        from diaktoros import broker_ipc
+        from diaktoros.broker import ipc as broker_ipc
         sup = Supervisor(self.root / "runs.sqlite")
         sup.enqueue("s", REPO, 7, HEAD, "shadow")
         with ledger.connect(sup.db) as con:

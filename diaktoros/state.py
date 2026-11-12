@@ -1278,7 +1278,7 @@ class LoopState:
         an entry, reads as empty."""
         path = self.dir / name
         if strict:
-            return _deps_checked(json.loads(path.read_text()) if path.exists() else {})
+            return _deps_checked(json.loads(path.read_text()) if os.path.lexists(path) else {})
         raw = self._load(path, {})
         out: dict = {}
         for key, deps in (raw.items() if isinstance(raw, dict) else ()):
