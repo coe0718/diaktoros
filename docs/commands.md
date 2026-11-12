@@ -1503,7 +1503,7 @@ not supply models. The Hermes example's `-p` selects which profile's model to ch
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--profile-name` | `PROFILE` |  | Hermes profile name |
-| `--seat` | `reviewer` \| `fixer` \| `adjudicator` \| `shadow` |  | use this seat's profile from the loop config |
+| `--seat` | `reviewer` \| `fixer` \| `adjudicator` \| `triage` \| `shadow` |  | use this seat's profile from the loop config |
 | `--loop` | `LOOP` |  | loop id for --seat (default: the only loop) |
 <!-- /flags -->
 
@@ -2117,8 +2117,9 @@ distinct verified accounts, and the issue must still be an open issue by an allo
 the maintainer's fix label and no unmet prerequisite. Opening the PR also obeys the seat's
 plan-first rule (#2336): a `plan-first` issue, or one whose body is past 4,000 characters, with no
 plan a maintainer approved with `/loop approve`, is refused. A refusal keeps the run quarantined and is
-printed (also by `--dry-run`); with no stage left to write, nothing is checked and the run is
-only recorded and released.
+printed (also by `--dry-run`): "not authorized now" when policy refuses, "could not be checked
+now" when GitHub could not be read for the issue (an outage, #2335); with no stage left to
+write, nothing is checked and the run is only recorded and released.
 
 A review counts as given only when the reviewer has a verdict (approval or change request) at the
 PR's **current head**, the gate's own rule: a verdict at an older head does not hide a head nobody

@@ -142,7 +142,8 @@ def _authorize(loop: dict, plan: dict) -> None:
     identities, the issue still open by an allowlisted author with the fix label, no
     dependency hold). Opening the PR also needs what the seat's ``open_pr`` needs beyond that
     (#2336): no plan owed on a plan-first issue (``fix_hold.plan_required``). A denial is a
-    conflict, so the dry run says it and ``run`` writes nothing. With no stage planned nothing
+    conflict, so the dry run says it and ``run`` writes nothing; an issue GitHub could not be
+    read for is worded as not checked, not as refused (#2335). With no stage planned nothing
     is written, so recording a finished fix needs no check."""
     if not plan["stages"]:
         return
@@ -151,6 +152,9 @@ def _authorize(loop: dict, plan: dict) -> None:
         broker.authorize_issue_fix(loop, repo=fix["repo"], number=fix["number"])
         if "open_pr" in plan["stages"]:
             _check_plan(loop, fix["number"])
+    except broker.BrokerUnchecked as exc:
+        plan["conflicts"].append(f"the issue fix could not be checked now: {exc}")
+        plan["stages"] = []
     except broker.BrokerDenied as exc:
         plan["conflicts"].append(f"the issue fix is not authorized now: {exc}")
         plan["stages"] = []
@@ -164,7 +168,9 @@ def _check_plan(loop: dict, number: int) -> None:
     from .run_supervisor import issue_inputs
     try:
         live = issue_inputs.issue_fix_issue(loop, number)
-    except (run_supervisor.RetryableError, ValueError) as exc:
+    except run_supervisor.RetryableError as exc:      # the issue read failed, not the policy
+        raise broker.BrokerUnchecked(str(exc)) from None
+    except ValueError as exc:
         raise broker.BrokerDenied(str(exc)) from None
     if fix_hold.plan_required(state_mod.state_for(loop), number, live):
         raise broker.BrokerDenied("this issue needs a plan first (plan-first label or a large "

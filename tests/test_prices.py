@@ -335,6 +335,17 @@ class SubscriptionSetting(unittest.TestCase):
             with self.subTest(bad), self.assertRaises(config.ConfigError):
                 prices.parse_prices([bad], "t")
 
+    def test_the_form_label_names_every_accepted_spelling(self):
+        """#2341: the label beside the input names all three forms, in the form and plugin.yaml."""
+        spec = settings_form.SETTINGS_SCHEMA["prices"]
+        for form in ("MODEL=INPUT/CACHED/OUTPUT", "MODEL=subscription ",
+                     "MODEL=subscription:INPUT/CACHED/OUTPUT"):
+            self.assertIn(form, spec["label"])
+        text = (Path(__file__).resolve().parents[1] / "plugin.yaml").read_text()
+        block = text.split("  prices:\n", 1)[1].split("\n  ", 4)
+        self.assertIn(f'label: "{spec["label"]}"', block[0])
+        self.assertIn(f'description: "{spec["description"]}"', "\n  ".join(block[:4]))
+
 
 class SubscriptionCli(unittest.TestCase):
     setUpClass = classmethod(thp.Cli.setUpClass.__func__)
