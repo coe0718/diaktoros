@@ -8,7 +8,7 @@ the host first tries a clean merge of the base into the head and pushes it with 
 """
 from __future__ import annotations
 
-from . import broker, config, pr_refs, safe_push
+from . import base_merge, broker, config, pr_refs, safe_push
 
 SHOWN = 5
 
@@ -111,7 +111,8 @@ def update(loop: dict, number: int, head: str, facts: dict, remote: str | None =
         return "", "a real conflict: a person resolves it"
     try:
         done = safe_push.update_branch(loop, repo=loop["repo"], number=number, head=head,
-                                       branch=facts["branch"], remote=remote)
+                                       branch=facts["branch"], remote=remote,
+                                       before_push=lambda *_: base_merge.hold_for_turns(loop, number))
     except safe_push.NotClean as exc:
         return "", str(exc)
     except broker.BrokerDenied as exc:          # a PushFailure too

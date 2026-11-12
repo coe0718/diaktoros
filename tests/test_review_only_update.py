@@ -207,6 +207,30 @@ class UpdateClean(Base):
         self.assertEqual(git("--git-dir", self.remote, "rev-parse", "feat"), self.head)
 
 
+class UpdateWaitsForTurns(Base):
+    """#2468 review: the push takes one last look at the ledger. A turn of the PR queued or
+    started while the merge was built stops it, so the merge never cancels that review."""
+    CONFLICT = False
+
+    def update_with(self, busy):
+        from diaktoros import base_merge
+        facts = review_only_conflict.assess(self.loop, 7, self.head, self.live, remote=self.remote)
+        with mock.patch.object(safe_push.gh, "api", side_effect=self.api), \
+                mock.patch.object(base_merge, "in_flight", return_value=busy):
+            return review_only_conflict.update(self.loop, 7, self.head, facts, remote=self.remote)
+
+    def test_a_turn_in_flight_at_the_push_stops_it_and_is_tried_again(self):
+        pushed, why = self.update_with("a reviewer turn is waiting")
+        self.assertEqual(pushed, "")
+        self.assertIsInstance(why, review_only_conflict.Retry)
+        self.assertIn("a reviewer turn is waiting", why)
+        self.assertEqual(git("--git-dir", self.remote, "rev-parse", "feat"), self.head)
+
+    def test_with_nothing_in_flight_it_pushes(self):
+        pushed, why = self.update_with("")
+        self.assertEqual((pushed, why), (git("--git-dir", self.remote, "rev-parse", "feat"), ""))
+
+
 class UpdateWorkflow(Base):
     CONFLICT = False
     WORKFLOW = True

@@ -212,14 +212,15 @@ def moved_review(db: str | Path, repo: str, pr: int, head: str) -> str | None:
     """The head of this PR's newest reviewer turn when that turn was cancelled because the PR's
     head moved before it started (``run_supervisor.REVIEW_HEAD_MOVED``), and it is not ``head``:
     a review was asked for and never ran. None otherwise, or when the ledger cannot be read. A
-    turn at ``head`` itself is newer and answers instead (#2468)."""
+    turn at ``head`` itself is newer and answers instead (#2468). Newest by creation: a waiting
+    turn is retired after a newer one was queued or ran, so its update time can be the latest."""
     try:
         con = read_only_connect(db)
         if con is None:
             return None
         try:
             row = con.execute("SELECT head, state, error FROM runs WHERE repo=? AND pr=? AND "
-                              "seat='reviewer' ORDER BY updated DESC, created DESC LIMIT 1",
+                              "seat='reviewer' ORDER BY created DESC, updated DESC LIMIT 1",
                               (repo, pr)).fetchone()
         finally:
             con.close()

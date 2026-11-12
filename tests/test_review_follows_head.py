@@ -64,6 +64,24 @@ class MovedReview(unittest.TestCase):
         self.row("d" * 40, "succeeded")                # a later review that ran
         self.assertIsNone(self.moved())
 
+    def retire(self, n):
+        # The worker's sweep of waiting rows cancels an old turn late: its update time is now.
+        with contextlib.closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("UPDATE runs SET state='cancelled', error=?, updated=? WHERE id=?",
+                        (run_supervisor.REVIEW_HEAD_MOVED, time.time(), f"r{n}"))
+
+    def test_a_turn_retired_late_is_not_the_newest(self):
+        self.row(OLD, "waiting")
+        self.row("d" * 40, "succeeded")                # a newer review ran meanwhile
+        self.retire(1)
+        self.assertIsNone(self.moved())
+
+    def test_a_live_turn_at_the_head_still_answers_after_a_late_retirement(self):
+        self.row(OLD, "waiting")
+        self.row(fg.HEAD, "waiting")
+        self.retire(1)
+        self.assertIsNone(self.moved())
+
     def test_other_cancellations_and_other_seats_do_not_count(self):
         self.row(OLD, "cancelled", "PR closed before the review started")
         self.assertIsNone(self.moved())
@@ -124,8 +142,9 @@ class SweepDeliversIt(fg.Base):
         self.assertEqual(self.kicks, [])
 
     def observed_long_ago(self):
+        # A head seen after the loop armed: both clocks start when it was seen.
         watch = self.st.watch()
-        watch["heads"]["7"]["observed_at"] = time.time() - 36000
+        watch["heads"]["7"]["observed_at"] = watch["heads"]["7"]["first_seen_at"] = time.time() - 36000
         self.st.watch_save(watch)
 
     def test_a_review_the_head_move_cancelled_is_delivered_for_the_new_head_once(self):
@@ -157,6 +176,31 @@ class SweepDeliversIt(fg.Base):
         self.observed_long_ago()
         self.sweep([], grace_s=3600)
         self.assertEqual(self.kicks, [(7, fg.HEAD, "sweep-review-7")])
+
+    def first_seen_long_ago(self):
+        watch = self.st.watch()
+        watch["heads"]["7"]["first_seen_at"] = time.time() - 36000
+        self.st.watch_save(watch)
+
+    def test_a_head_already_there_when_the_loop_armed_is_delivered_too(self):
+        # The head the first sweep found has no observed_at: the #532 path passes it over. The
+        # ledger's cancellation is the proof a review was asked for; one interval after the loop
+        # first saw the head, it is delivered, once.
+        self.arm(grace_s=3600)
+        self.assertIsNone(self.st.watch()["heads"]["7"]["observed_at"])
+        self.moved = OLD
+        self.sweep([], grace_s=3600)
+        self.assertEqual(self.kicks, [])
+        self.first_seen_long_ago()
+        self.sweep([], grace_s=3600)
+        self.sweep([], grace_s=3600)
+        self.assertEqual(self.kicks, [(7, fg.HEAD, "sweep-review-7")])
+
+    def test_a_head_already_there_without_a_cancelled_review_stays_untouched(self):
+        self.arm(grace_s=3600)
+        self.first_seen_long_ago()
+        self.sweep([], grace_s=3600)
+        self.assertEqual(self.kicks, [])
 
 
 class ReviewOnlyUpdateWaits(fg.Base):
@@ -190,6 +234,31 @@ class ReviewOnlyUpdateWaits(fg.Base):
     def test_the_merge_is_pushed_once_nothing_is_in_flight(self):
         self.assertIsNone(self.next_step(""))
         self.assertEqual(self.pushed, [(7, fg.HEAD)])
+
+    def test_a_turn_queued_during_the_dry_merge_stops_the_push(self):
+        # Idle at the first look; a reviewer turn is queued while ``assess`` runs. The push's
+        # own last look (``base_merge.hold_for_turns``) sees it, and nothing is pushed.
+        facts = {"number": 7, "head": fg.HEAD, "branch": "fix-7", "fork": False, "merged": [],
+                 "conflicted": [], "workflows": False, "error": "", "clean": True}
+        ledger = [""]
+
+        def assess(*_a, **_kw):
+            ledger[0] = "a reviewer turn is waiting"
+            return facts
+
+        def update_branch(_loop, *, number, head, before_push=None, **_kw):
+            if before_push is not None:
+                before_push("e" * 40, "b" * 40, "")
+            self.pushed.append((number, head))
+            return {"new_head": "e" * 40}
+        with mock.patch.object(base_merge, "in_flight", side_effect=lambda *_: ledger[0]), \
+                mock.patch.object(review_only_conflict, "assess", side_effect=assess), \
+                mock.patch.object(review_only_conflict.safe_push, "update_branch",
+                                  side_effect=update_branch), \
+                mock.patch.object(watch_conflicts.observer, "notify"):
+            watch_conflicts._review_only_next(self.loop, self.st, 7, fg.HEAD, "tuck", "b" * 40,
+                                              {7: {**fg.LIVE, "mergeable_state": "behind"}})
+        self.assertEqual(self.pushed, [])
 
     def test_a_real_conflict_still_gets_its_notice_but_no_push_while_busy(self):
         message = self.next_step("a reviewer turn is running", state="dirty")

@@ -254,6 +254,15 @@ class Waits(Base):
             self.assertEqual(base_merge.in_flight(self.loop, 8), "")
             self.assert_waits()
 
+    def test_a_turn_queued_while_the_merge_is_built_stops_the_push(self):
+        # #2468 review: idle at the sweep's look, a reviewer queued before the push. The last
+        # look (``hold_for_turns``, the push's ``before_push``) sees it; the next sweep tries again.
+        with mock.patch.object(base_merge, "in_flight",
+                               side_effect=["", "a reviewer turn is waiting"]) as busy:
+            self.assert_waits()
+        self.assertEqual(busy.call_count, 2)
+        self.assertIsNone(self.carried(self.remote_head()))
+
     def test_a_change_request_at_the_head_or_unread_reviews_wait(self):
         # Whether the fixer owes it or a ruling does at the cap: the head must not move under it.
         self.reviews = [approval(self.head, state="CHANGES_REQUESTED")]

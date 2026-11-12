@@ -749,17 +749,22 @@ def _reviewer_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, bou
     # turn key; a pending request is not delivered across it.
     # An App reviewer (#1163) never shows as requested: its handoff is always the
     # host's, so a head with no verdict and no run is delivered the same way.
-    due = (c.kicks.get(str(number)) != head and not boundary
-           and head_postdates_arming and (watch_mode.TEST or mins >= KICK_AFTER_MIN))
+    fresh = c.kicks.get(str(number)) != head and not boundary
+    due = fresh and head_postdates_arming and (watch_mode.TEST or mins >= KICK_AFTER_MIN)
     requested = review_kick.already_requested(loop, pr) or config.reviewer_is_app(loop)
     # #2468: a review queued at an earlier head and cancelled because the head moved before it
     # started (a review-only author's push, a base merge by the host or by "Update branch") is
     # asked for again by nobody: the gate ignores pushes, and only a fixer's push requests the
-    # next review. It follows the head, delivered the same way.
+    # next review. It follows the head, delivered the same way. The ledger row is the proof a
+    # review was asked for, so a head already there when the loop armed (no ``observed_at``) is
+    # not passed over: its interval runs from when the loop first saw it.
+    seen = c.current_heads[str(number)].get("first_seen_at")
     moved = (run_supervisor.views.moved_review(config.host_path("ledger"), loop["repo"],
                                                number, head)
-             if due and not requested else None)
-    if due and (requested or moved):
+             if fresh and not (due and requested) and (
+                 watch_mode.TEST or (seen is not None and (c.now - seen) / 60 >= KICK_AFTER_MIN))
+             else None)
+    if (due and requested) or moved:
         try:
             sent = review_kick.kick(loop, pr, head, author, f"sweep-review-{number}")
         except Exception as exc:

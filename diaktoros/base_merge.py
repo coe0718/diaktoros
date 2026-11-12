@@ -154,6 +154,15 @@ def in_flight(loop: dict, number: int) -> str:
     return f"a {row[0]} turn is {row[1]}" if row else ""
 
 
+def hold_for_turns(loop: dict, number: int) -> None:
+    """A merge push's last look before it goes (``update_branch``'s ``before_push``): a turn of
+    the PR queued or started while the merge was built stops it (``BrokerDenied``, so the next
+    sweep tries again). The wait then holds past the sweep's first look (#2468)."""
+    busy = in_flight(loop, number)
+    if busy:
+        raise broker.BrokerDenied(f"{busy}: the merge waits for it")
+
+
 def source(loop: dict, st, head: str, live: dict, raw, reviews):
     """``(review, '')``: the approval at ``head`` that may carry over (the reviewer's, or the
     adjudicator's on its ACCEPT), the head being ready to merge but for being behind; else
@@ -189,6 +198,7 @@ def update(loop: dict, st, number: int, head: str, live: dict) -> str:
     carry: dict = {}
 
     def record(new_head: str, base: str, identity: str) -> None:
+        hold_for_turns(loop, number)
         if approval is not None and not identity:
             _record(st, new_head, {"number": number, "from": head, "review": approval.get("id"),
                                    "base": base, "at": time.time()})
