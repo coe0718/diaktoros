@@ -122,6 +122,30 @@ class TraceIsTheLiveGate(Base):
         out = self.trace(payload("review_requested", "stranger", requested=t.SEAT))
         self.assertIn("outcome:   declined — sender stranger is not a fixer", out)
 
+    def test_an_entry_that_cannot_be_stat_ed_fails_the_trace_instead_of_being_left_out(self):
+        # #2338: a stat failure other than a vanished entry (here EACCES: a directory that can
+        # be listed but not searched) must fail the trace, not silently drop the entry.
+        locked = t.HOME / "state" / "locked"
+        locked.mkdir(parents=True, exist_ok=True)
+        (locked / "claim.json").write_text("{}")
+        locked.chmod(0o600)
+        self.addCleanup(lambda: (locked.chmod(0o700), (locked / "claim.json").unlink(),
+                                 locked.rmdir()))
+        try:
+            os.lstat(locked / "claim.json")
+        except PermissionError:
+            pass
+        else:
+            self.skipTest("running with privileges that bypass directory permissions")
+        # copytree gathers the nested failure into a shutil.Error (an OSError) naming the file.
+        with self.assertRaisesRegex(OSError, "Permission denied.*claim.json"):
+            self.trace(payload("review_requested", "stranger", requested=t.SEAT))
+
+    def test_an_entry_gone_before_it_is_looked_at_is_still_left_out(self):
+        src = t.HOME / "state"
+        src.mkdir(parents=True, exist_ok=True)
+        self.assertEqual(trace._skip(str(src), ["vanished.sock"]), {"vanished.sock"})
+
     def test_an_eligible_event_with_a_runtime_file_would_start_a_run(self):
         runtime = t.HOME / "diaktoros-runtime.json"
         runtime.parent.mkdir(parents=True, exist_ok=True)

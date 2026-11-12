@@ -11,7 +11,9 @@ from __future__ import annotations
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import calendar
 import json
+import os
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -84,6 +86,21 @@ class ClaimWaits(sm.Base):
         self.claim()
         self.assertEqual((len(waits_in(rotated)), len(waits_in(self.log))), (1, 0))
 
+    def test_a_wait_is_not_appended_past_the_log_cap(self):
+        """#2302: a worker's wait line never grows the log past WORKER_LOG_MAX, the cap a worker's
+        stderr keeps too (``waits.within_cap``); the host's next spawn rotates it."""
+        from diaktoros import run_supervisor
+        self.log.write_text("x" * (run_supervisor.WORKER_LOG_MAX + 1))
+        self.hold()
+        self.claim()
+        self.assertEqual(self.row()[0], "waiting")
+        self.assertEqual(self.log.stat().st_size, run_supervisor.WORKER_LOG_MAX + 1)
+        self.log.write_text("worker stderr\n")             # rotated by the host: room again
+        self.pr = None                                     # a new reason, so a new line is due
+        self.hold()
+        self.claim()
+        self.assertEqual(len(waits_in(self.log)), 1)
+
 
 class TurnWaits(tp.ProductionBase):
     def log(self) -> Path:
@@ -130,6 +147,40 @@ class TurnWaits(tp.ProductionBase):
         self.assertIn(f"fixer waiting (retry 1) until {until}", history_render.text(data))
         self.assertNotIn("another PR", history_render.text(data))
         self.assertEqual(waits.read(self.home / "absent.sqlite", "acme/widgets", 8), [])
+
+
+class LogMark(unittest.TestCase):
+    """#2388 review: ``_spawn``'s mark names the worker log a stderr holds, under either spelling
+    (``envnames.get``), so a log rotated since the spawn is still known by its mark rather than by
+    the file now at its path."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        self.db = root / "runs.sqlite"
+        held = root / "held.log"                       # what the worker's stderr still holds
+        held.write_text("")
+        waits.log_path(self.db).write_text("")         # the log at its path now, after rotation
+        self.held = os.stat(held)
+        self.mark = f"{self.held.st_dev}:{self.held.st_ino}"
+        clear = mock.patch.dict(os.environ)
+        clear.start()
+        self.addCleanup(clear.stop)
+        for name in ("DIAKTOROS_WORKER_LOG", "REVIEW_LOOP_WORKER_LOG"):
+            os.environ.pop(name, None)
+
+    def known(self, **env):
+        with mock.patch.dict(os.environ, env):
+            return waits._is_the_log(self.held, self.db)
+
+    def test_either_spelling_of_the_mark_names_the_held_log_and_the_new_one_wins(self):
+        self.assertFalse(self.known())                 # no mark: the file at the path decides
+        self.assertTrue(self.known(DIAKTOROS_WORKER_LOG=self.mark))
+        self.assertTrue(self.known(REVIEW_LOOP_WORKER_LOG=self.mark))
+        self.assertFalse(self.known(REVIEW_LOOP_WORKER_LOG="1:2"))
+        self.assertFalse(self.known(DIAKTOROS_WORKER_LOG="1:2", REVIEW_LOOP_WORKER_LOG=self.mark))
+
 
 
 if __name__ == "__main__":

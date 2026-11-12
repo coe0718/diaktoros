@@ -219,8 +219,9 @@ def cmd_history(args) -> int:
 
 
 # The seats ``models --seat`` resolves through ``config.seat_profile``; the parser's choices and
-# the usage error both read this one list (#1071).
-MODELS_SEATS = ("reviewer", "fixer", "adjudicator", "shadow")
+# the usage error both read this one list (#1071). It names every seat ``seat_model.SEATS`` does
+# (#2333: triage resolves through ``seat_profile`` too); a test keeps the two in step.
+MODELS_SEATS = ("reviewer", "fixer", "adjudicator", "triage", "shadow")
 
 
 def cmd_models(args) -> int:

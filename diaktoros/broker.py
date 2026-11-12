@@ -25,11 +25,22 @@ class BrokerDenied(Exception):
     """Fail closed: the requested operation is not authorized at this PR head."""
 
 
+class PlanRequired(BrokerDenied):
+    """``authorize_issue_fix(..., plan_first=True)`` refused: the issue it just read is plan-first
+    and no maintainer has approved a plan (``fix_hold.plan_required``, #2334)."""
+
+
 class BrokerNotSent(BrokerDenied):
     """Refused with nothing written: locally before any request (a missing credential too), or by
     GitHub with a definite 4xx rejection other than 408 (a request timeout, whose outcome is
     unknown). The caller may try again once the cause is fixed, unlike a write whose outcome is
     unknown (a timeout, a 5xx, an answer that is not an issue)."""
+
+
+class BrokerUnchecked(BrokerDenied):
+    """Fail closed because live policy could not be checked now (a GitHub read failed), not
+    because it refused: still a denial to every caller, but one a caller may word as "could not
+    be checked now" rather than "not authorized now" (#2335)."""
 
 
 class BrokerConflict(BrokerDenied):
@@ -433,13 +444,17 @@ def post_triage(loop: dict, *, repo: str, number: int, login: str, labels: list[
     return result["id"]
 
 
-def authorize_issue_fix(loop: dict, *, repo: str, number: int) -> str:
+def authorize_issue_fix(loop: dict, *, repo: str, number: int, plan_first: bool = False) -> str:
     """Return the fixer login an issue fix (#214) writes as, or deny.
 
     The repository must have issue fixes on (which includes its unattended fixer pushes); the
     fixer, reviewer and reader must be distinct accounts whose tokens resolve to themselves; and
     the issue, re-read as the reader, must still be an open issue by an allowlisted author with
-    the fix label a maintainer applied.
+    the fix label a maintainer applied. An issue GitHub could not be read for raises
+    ``BrokerUnchecked`` (a ``BrokerDenied``): the check failed, not the policy (#2335). With
+    ``plan_first`` (a PR is about to be opened), that same read must also pass the plan-first
+    rule (``fix_hold.plan_required``), else ``PlanRequired``: one read decides both, so a label
+    added between two reads cannot slip through (#2334).
     """
     from . import config, run_supervisor
     from .run_supervisor import issue_inputs
@@ -453,10 +468,22 @@ def authorize_issue_fix(loop: dict, *, repo: str, number: int) -> str:
     _verify_identities(loop, (str(loop.get("read_token") or ""), config.seat_login(loop, "reviewer"),
                               fixer), "read, reviewer and fixer")
     try:
-        issue_inputs.issue_fix_issue(loop, number)
-        issue_inputs.issue_fix_dependencies(loop, number)
-    except (run_supervisor.RetryableError, ValueError) as exc:
+        live = issue_inputs.issue_fix_issue(loop, number)
+    except run_supervisor.RetryableError as exc:      # the issue read failed, not the policy
+        raise BrokerUnchecked(str(exc)) from None
+    except ValueError as exc:
         raise BrokerDenied(str(exc)) from None
+    try:
+        issue_inputs.issue_fix_dependencies(loop, number)
+    except run_supervisor.RetryableError as exc:
+        raise BrokerDenied(str(exc)) from None
+    if plan_first:
+        from . import fix_hold, state as state_mod
+        if fix_hold.plan_required(state_mod.state_for(loop), number, live):
+            raise PlanRequired(
+                f"issue #{number} needs a plan first: it is plan-first (the "
+                f"`{fix_hold.PLAN_LABEL}` label or a body over {fix_hold.PLAN_BODY_MAX} "
+                f"characters) and no maintainer has approved a plan (`{fix_hold.APPROVE}`)")
     return fixer
 
 
