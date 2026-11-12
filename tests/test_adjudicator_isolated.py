@@ -522,6 +522,10 @@ class Prompts(Base):
         prompts = {}
         for name, marker in (("no-by", {"rounds": 1, "escalated": {"reason": "no by"}}),
                              ("bare", {"rounds": 1, "escalated": {"at": "x"}}),
+                             # #2444 F2: an escalation at the cap must not be said to predate it.
+                             ("bare-at-cap", {"rounds": 3, "cap": 3, "escalated": {"at": "x"}}),
+                             ("shadow-at-cap", {"rounds": 3, "cap": 3,
+                                                "escalated": {"by": "shadow", "at": "x"}}),
                              ("cap", {"rounds": 3, "reason": "3/3 verdicts, no approval"}),
                              ("cap-no-reason", {"rounds": 3})):
             with mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
@@ -529,7 +533,15 @@ class Prompts(Base):
                     mock.patch.object(issue_facts, "section", return_value=""):
                 prompts[name] = " ".join(
                     turn_prompts.isolated_prompt(self.loop, row, [], marker).split())
-        for name in ("no-by", "bare"):
+        for name in ("no-by", "bare", "bare-at-cap", "shadow-at-cap"):
+            with self.subTest(name):
+                self.assertNotIn("the budget is spent", prompts[name])
+                self.assertNotIn("review cap reached without an approval", prompts[name])
+                # Neither the reason nor the situation may claim the cap was not yet reached.
+                self.assertNotIn("before the budget was spent", prompts[name])
+                self.assertNotIn("before the review cap", prompts[name])
+        self.assertIn("Why it stopped: escalated for a ruling", prompts["bare-at-cap"])
+        for name in ("no-by", "bare", "bare-at-cap"):
             with self.subTest(name):
                 self.assertIn("the operator asked for a ruling", prompts[name])
                 self.assertNotIn("the budget is spent", prompts[name])
