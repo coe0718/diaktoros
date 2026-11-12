@@ -320,6 +320,42 @@ class Files(unittest.IsolatedAsyncioTestCase):
         (self.state / "watchdog.json").write_text("{}")
         self.assertNotEqual(before, self.snapshot())
 
+    async def test_default_state_dir_worker_trees_are_pruned(self):
+        # The default state dir is <state_root>/<loop>: its worker trees are pruned like a
+        # custom state_dir's (#2146).
+        loop = self.home / "state" / "diaktoros" / "demo"
+        for name in events.PRUNED_DIRS:
+            (loop / name / "nested").mkdir(parents=True)
+            (loop / name / "nested" / "file").write_text("x")
+        paths = [path for path, _ in self.snapshot()[0]]
+        for name in events.PRUNED_DIRS:
+            self.assertIn(str(loop / name), paths)
+            self.assertFalse([p for p in paths if p.startswith(str(loop / name) + os.sep)], name)
+        before = self.snapshot()
+        for name in events.PRUNED_DIRS:
+            (loop / name / "nested" / "file").write_text("rewritten by a worker")
+        self.assertEqual(before, self.snapshot())
+
+    async def test_pruned_names_outside_a_loop_state_dir_are_descended(self):
+        # The prune is where a loop creates those trees (directly in its state dir), not by
+        # name under every scanned root: the same name elsewhere is watched (#2146).
+        elsewhere = [self.directory / "deps",                                  # config dir
+                     self.home / "state" / "diaktoros-gate-failures" / "isolated-runs",
+                     self.home / "state" / "diaktoros-seat-locks" / "ci-cache",
+                     self.home / "state" / "diaktoros" / "deps",               # the state root itself
+                     self.state / "artifacts" / "ci-cache",                    # deeper in a state dir
+                     self.home / "state" / "diaktoros" / "demo" / "x" / "isolated-runs"]
+        for directory in elsewhere:
+            (directory / "nested").mkdir(parents=True)
+            (directory / "nested" / "file").write_text("x")
+        paths = [path for path, _ in self.snapshot()[0]]
+        for directory in elsewhere:
+            with self.subTest(directory=directory.relative_to(self.home)):
+                self.assertIn(str(directory / "nested" / "file"), paths)
+                before = self.snapshot()
+                (directory / "nested" / "file").write_text("changed")
+                self.assertNotEqual(before, self.snapshot())
+
     async def test_burst_is_rate_limited_and_the_trailing_change_is_never_dropped(self):
         manager = events.DesktopEvents(self.snapshot, interval=.01, min_gap=.3)
         async with manager.subscribe() as queue:

@@ -19,13 +19,14 @@ from . import config
 MAX_ENTRIES = 4096
 MAX_CONFIG_BYTES = 1024 * 1024
 # Worker-private subtrees that no Desktop view reads: isolated seat homes (tens of thousands
-# of files while a turn runs), dependency checkouts and the CI cache, which a loop keeps in
-# its state dir. The names are matched by basename wherever they appear below any scanned
-# root (the config dir, the gate_failures and seat_locks roots, every state root), not only
-# in a loop's state dir; such a directory is stamped but not descended, and a root is always
-# descended whatever its name. Watching them only made every scan overflow, and an
-# overflowing scan used to invalidate every second. The page's own polling still covers
-# anything left unwatched.
+# of files while a turn runs), dependency checkouts and the CI cache. A loop keeps them
+# directly in its state dir (gate.py, deps.py, ci_cache.py), so only there are they pruned:
+# a child of a custom state_dir from config, or of a loop dir under the state root
+# (<state_root>/<loop>/deps). Such a directory is stamped but not descended. The same name
+# anywhere else (the config dir, the gate_failures and seat_locks roots, deeper in a state
+# dir) is descended like any other, and a scanned root is always descended whatever its
+# name. Watching them only made every scan overflow, and an overflowing scan used to
+# invalidate every second. The page's own polling still covers anything left unwatched.
 PRUNED_DIRS = frozenset({"isolated-runs", "deps", "ci-cache"})
 # At most one invalidation per MIN_GAP seconds: a burst of ledger writes during a turn is
 # delivered once, on the leading edge, and anything after it on the trailing edge.
@@ -49,9 +50,10 @@ class FileSnapshot:
     """Capture fixed host files and configured state roots; never follow state symlinks.
 
     Config JSON is read only to discover custom state_dir roots. Credential paths
-    mentioned there are never opened. Worker-private subtrees (PRUNED_DIRS) are stamped
-    but not descended. Work is capped; overflow is reported so the watcher can still
-    invalidate at OVERFLOW_GAP rather than claim an incomplete scan is unchanged.
+    mentioned there are never opened. Worker-private subtrees (PRUNED_DIRS) directly in a
+    loop's state dir are stamped but not descended. Work is capped; overflow is reported so
+    the watcher can still invalidate at OVERFLOW_GAP rather than claim an incomplete scan is
+    unchanged.
     """
 
     def __init__(self, home: Path, config_dir: Path):
@@ -61,6 +63,14 @@ class FileSnapshot:
         result = []
         remaining = MAX_ENTRIES
         overflow = False
+        state_root = config.host_path("state_root", self.home)
+        loop_dirs = set()   # custom state_dir roots from config; filled before any visit
+
+        def pruned(path, root):
+            # Only where a loop creates them: <state_dir>/<name>, the default state dir being
+            # <state_root>/<loop>. A root itself is always descended.
+            return (path != root and path.name in PRUNED_DIRS
+                    and (path.parent in loop_dirs or path.parent.parent == state_root))
 
         def visit(root, recursive=True):
             nonlocal remaining, overflow
@@ -74,7 +84,7 @@ class FileSnapshot:
                 stamp = _stamp(path)
                 result.append((str(path), stamp))
                 if (recursive and isinstance(stamp[0], int) and stat.S_ISDIR(stamp[0])
-                        and (path == root or path.name not in PRUNED_DIRS)):
+                        and not pruned(path, root)):
                     try:
                         # scandir avoids materializing an unbounded directory listing.
                         import os
@@ -89,15 +99,6 @@ class FileSnapshot:
 
         roots = {config.host_path(key, self.home) for key in
                  ("state_root", "gate_failures", "seat_locks")}
-        for key in ("ledger", "pacing", "runtime"):
-            path = config.host_path(key, self.home)
-            visit(path, False)
-            if key == "ledger":
-                visit(path.with_name(path.name + "-wal"), False)
-                # -shm is intentionally excluded: readers can alter it without a commit.
-        for name in ("config.yaml", "hooks.json"):
-            visit(self.home / name, False)
-        visit(self.config_dir)
         config_bytes = MAX_CONFIG_BYTES
         try:
             import os
@@ -124,11 +125,21 @@ class FileSnapshot:
                         loop = json.loads(data)
                         raw = loop.get("state_dir") if isinstance(loop, dict) else None
                         if isinstance(raw, str) and raw:
-                            roots.add(Path(raw).expanduser())
+                            loop_dirs.add(Path(raw).expanduser())
                     except (OSError, ValueError):
                         continue
         except OSError:
             pass
+        roots |= loop_dirs
+        for key in ("ledger", "pacing", "runtime"):
+            path = config.host_path(key, self.home)
+            visit(path, False)
+            if key == "ledger":
+                visit(path.with_name(path.name + "-wal"), False)
+                # -shm is intentionally excluded: readers can alter it without a commit.
+        for name in ("config.yaml", "hooks.json"):
+            visit(self.home / name, False)
+        visit(self.config_dir)
         for root in sorted(roots):
             visit(root)
         return tuple(sorted(result, key=lambda item: item[0])), overflow
