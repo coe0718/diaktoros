@@ -183,15 +183,29 @@ def _deps_why(state: str, why) -> str:
     return text
 
 
+def _deps_by(by):
+    """Who declared or waived, when it is a short plain name; else withheld."""
+    return by if isinstance(by, str) and _DEPS_BY.match(by) else None
+
+
+def _deps_at(at):
+    """When, as a UTC timestamp; anything else withheld."""
+    return at if isinstance(at, str) and _DEPS_AT.match(at) else None
+
+
 def deps_view(loop_id: str | None) -> dict:
     """The loop's declared issue dependencies (#1301), as ``hermes dk depends`` lists them.
 
     Each row is ``issue_deps.row``: ``issue`` waits on ``on``; ``state`` is ``met``, ``waiting``
     or ``unknown`` (a fact GitHub could not answer, never a guess), with a bounded ``why``.
-    ``by``/``at`` are who declared it and when; a waiver deletes the record, so waived
-    dependencies are not listed and who waived one is not recorded. An unreadable record is
-    ``available`` false with no rows — never "none declared". At most ``DEPS_MAX`` rows are
-    read; ``total`` says how many are declared.
+    ``by``/``at`` are who declared it and when. An unreadable record is ``available`` false with
+    no rows — never "none declared". At most ``DEPS_MAX`` rows are read; ``total`` says how many
+    are declared.
+
+    ``waivers`` (``{issue, on, by, at}``, at most ``DEPS_MAX``; ``waivers_total`` says how many)
+    are the dependencies a waiver removed, with who waived each and when, under the same
+    withholding as ``by``/``at``. ``waivers_available`` false (no rows) means that history could
+    not be read — never "none waived" — and says nothing about the dependencies themselves.
     """
     from . import issue_deps, state as state_mod
     if loop_id is not None and (not isinstance(loop_id, str) or not loop_id or len(loop_id) > 200):
@@ -201,9 +215,22 @@ def deps_view(loop_id: str | None) -> dict:
     except Exception:
         raise NotFound('Loop configuration unavailable.') from None
     out = {'loop': loop['id'], 'repo': loop['repo'], 'available': False, 'total': 0,
-           'deps': [], 'read_at': time.time()}
+           'deps': [], 'waivers_available': False, 'waivers_total': 0, 'waivers': [],
+           'read_at': time.time()}
     try:
-        pairs = issue_deps.declared(state_mod.state_for(loop), strict=True)
+        st = state_mod.state_for(loop)
+    except Exception:
+        return out
+    try:
+        waivers = issue_deps.waived(st, strict=True)
+    except Exception:
+        waivers = None
+    if waivers is not None:
+        out.update(waivers_available=True, waivers_total=len(waivers), waivers=[
+            {'issue': w['issue'], 'on': w['on'], 'by': _deps_by(w['by']), 'at': _deps_at(w['at'])}
+            for w in waivers[:DEPS_MAX]])
+    try:
+        pairs = issue_deps.declared(st, strict=True)
     except Exception:
         return out
     cache: dict = {}
@@ -213,8 +240,7 @@ def deps_view(loop_id: str | None) -> dict:
         by, at = entry['by'], entry['at']
         rows.append({'issue': issue, 'on': on, 'state': entry['state'],
                      'why': _deps_why(entry['state'], entry['why']),
-                     'by': by if isinstance(by, str) and _DEPS_BY.match(by) else None,
-                     'at': at if isinstance(at, str) and _DEPS_AT.match(at) else None})
+                     'by': _deps_by(by), 'at': _deps_at(at)})
     out.update(available=True, total=len(pairs), deps=rows, read_at=time.time())
     return out
 
@@ -849,6 +875,9 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
             if verdict:
                 view["verdicts"][verdict] = view["verdicts"].get(verdict, 0) + 1
         view["rulings_total"] = _count(con, "rulings", repo, pr)
+        issue = _issue_context(con, repo, pr)
+        if issue is not False:
+            view["issue"] = issue
         for row in reversed(con.execute(
                 "SELECT verdict, head, created FROM rulings WHERE repo=? AND pr=? "
                 "ORDER BY created DESC, rowid DESC LIMIT ?", (repo, pr, TURNS_MAX)).fetchall()):
@@ -862,6 +891,22 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
     view["shadows"], view["shadows_older"] = stats.shadow_reviews_for(db, repo, pr)
     view["ledger_available"] = True
     return view
+
+
+def _issue_context(con, repo: str, pr: int):
+    """The issue the drawer's number speaks for (#1301), from the ledger only: the number itself
+    when issue-fix turns ran for it (an issue), else the issue whose fix run recorded this PR,
+    else None. ``False`` when the ledger cannot say (an older ledger): unknown, never guessed."""
+    try:
+        if con.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? AND seat='issue_fixer' LIMIT 1",
+                       (repo, pr)).fetchone():
+            return pr
+        row = con.execute("SELECT number FROM issue_fixes WHERE repo=? AND kind='pr' AND "
+                          "pr_number=? ORDER BY created DESC LIMIT 1", (repo, pr)).fetchone()
+    except Exception:
+        return False
+    number = row[0] if row else None
+    return number if type(number) is int and number > 0 and number != pr else None
 
 
 def _count(con, table: str, repo: str, pr: int) -> int:

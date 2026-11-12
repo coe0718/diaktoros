@@ -1855,11 +1855,21 @@ hermes dk depends --loop "<loop-id>" --issue 42 --waive 41
   `status` shows the wait. The watchdog sweep queues 42's fix from the base's current commit
   once every prerequisite is done, after re-checking that 42 is still eligible, and only once.
 - **With no `--on` or `--waive`** it lists every dependency (or one issue's, with `--issue`) and
-  whether it's met, and why.
-- **`--waive`** removes a dependency; the next sweep releases 42 if nothing else holds it.
+  whether it's met, and why, then every waiver as `#42 no longer waits on #41 — waived by
+  operator at <time>` (`desktop` when it was waived from the Desktop page).
+- **`--waive`** removes a dependency and records who waived it and when; the next sweep releases
+  42 if nothing else holds it. A waiver never holds anything. Declaring the same dependency again
+  holds 42 again and clears that waiver.
 
-Dependencies and waits are kept in the loop's state directory and survive a restart. Exit `1`
-means it was refused, and the line says why; `2` that it couldn't be answered.
+Dependencies, waivers and waits are kept in the loop's state directory and survive a restart. Exit
+`1` means it was refused, and the line says why; `2` that it couldn't be answered.
+
+An unreadable dependency record (#2150) is never read as "none declared": every issue's fix is
+held (no comment is posted for it; `status` names the unreadable record) until the record can be
+read again, and this command says `the issue dependency record could not be read` and exits `2`
+without listing or writing anything. An unreadable waiver history only adds the line `waiver
+history could not be read` to the list, and refuses a `--waive` (exit `2`) without removing the
+dependency.
 
 The Desktop page shows the same list under **Issue dependencies** (`GET /deps`, #1301): each
 row is met, waiting or unknown, with why. It reads GitHub for each prerequisite, so the page reads
@@ -1868,7 +1878,10 @@ one there is the confirmed `depends` / `waive` action (`GET`/`POST /actions` wit
 runs the same checks as this command. A refusal (itself, a cycle, a pull request, an issue it
 can't read) is shown in the preview and writes nothing. The confirmation is bound to the issue's
 dependency record, so if that record changes before you confirm, nothing is written. A waiver
-deletes the record, so who waived a dependency isn't kept.
+removes the dependency and is listed below the dependencies with who waived it and when, exactly as
+this command lists it. The PR drawer shows the same rows for its issue: the number itself when the
+issue fixer worked it, or the issue the ledger recorded a fix PR for. It shows them from the page's
+read and never starts another one; when the ledger names no issue, it says so and shows none.
 
 <!-- flags:depends -->
 | flag | value | default | what it does |

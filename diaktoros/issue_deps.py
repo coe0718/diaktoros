@@ -10,7 +10,12 @@ rules for both: ``declare_problem``/``declare``, ``waive`` and ``listing`` (``ro
 - the issue closed by a commit GitHub says the base contains (a ``Fixes #A`` merge).
 
 Closing A any other way is not done: B keeps waiting until a maintainer waives the dependency.
-An unreadable fact is never guessed: B waits, and the reason says GitHub could not be read.
+An unreadable fact is never guessed: B waits, and the reason says GitHub could not be read. An
+unreadable dependency record is never "none declared" either (#2150): the hold path reads it
+strictly and holds every issue until it can be read again.
+
+A waiver removes the dependency and records who waived it and when beside the record
+(``issue-deps-waivers.json``, #1301); nothing that decides a hold reads the waivers.
 """
 from __future__ import annotations
 
@@ -105,8 +110,28 @@ def met(loop: dict, prerequisite: int) -> tuple[bool | None, str]:
 # -- the one owner of declare, waive and list (#1301): the CLI and the Desktop both call these ----
 
 STATES = {True: "met", False: "waiting", None: "unknown"}
-# Who declared a dependency: the CLI writes "operator", the Desktop's confirmed action "desktop".
+# Who declared (or waived) a dependency: the CLI writes "operator", the Desktop's confirmed
+# action "desktop".
 BY_CLI, BY_DESKTOP = "operator", "desktop"
+# The one sentence for a dependency record that cannot be read (#2150): bounded, no path and no
+# exception text. ``blocking`` answers it in place of a prerequisite number (``None``).
+UNREADABLE = "the issue dependency record could not be read; held until it can be read"
+
+
+class RecordUnreadable(Exception):
+    """The dependency record (or its waiver history) could not be read or written: the question
+    cannot be answered, and nothing is guessed (``hermes dk depends`` exits 2)."""
+
+    def __init__(self):
+        super().__init__("the issue dependency record could not be read or written")
+
+
+def _strict(read):
+    """``read(strict=True)``, any failure as ``RecordUnreadable``."""
+    try:
+        return read(strict=True)
+    except Exception:
+        raise RecordUnreadable() from None
 
 
 def declared(st, issue: int | None = None, *, strict: bool = False) -> list[tuple[int, int, dict]]:
@@ -143,16 +168,32 @@ def row(loop: dict, issue: int, prerequisite: int, record: dict, *, guarded: boo
 
 def listing(loop: dict, st, issue: int | None = None) -> list[dict]:
     """Every declared dependency (or ``issue``'s) with whether it is met — what ``hermes dk
-    depends`` with neither ``--on`` nor ``--waive`` prints."""
-    return [row(loop, b, a, record) for b, a, record in declared(st, issue)]
+    depends`` with neither ``--on`` nor ``--waive`` prints. An unreadable record raises
+    ``RecordUnreadable``: never listed as none declared (#2150)."""
+    try:
+        pairs = declared(st, issue, strict=True)
+    except Exception:
+        raise RecordUnreadable() from None
+    return [row(loop, b, a, record) for b, a, record in pairs]
+
+
+def waived(st, issue: int | None = None, *, strict: bool = False) -> list[dict]:
+    """``{issue, on, by, at}`` for every recorded waiver (or those of ``issue``), sorted. A state
+    written before waivers were kept has none. ``strict`` raises on an unreadable history."""
+    waivers = st.issue_dep_waivers(strict=True) if strict else st.issue_dep_waivers()
+    if issue is not None:
+        waivers = {issue: waivers.get(issue) or {}}
+    return [{"issue": b, "on": a, "by": record.get("by"), "at": record.get("at")}
+            for b, prerequisites in sorted(waivers.items()) for a, record in sorted(prerequisites.items())]
 
 
 def declare_problem(loop: dict, st, issue: int, prerequisite: int) -> tuple[int, str]:
     """Why ``issue`` may not depend on ``prerequisite`` now: ``(0, "")`` when it may, ``(1, why)``
     when refused (itself, a cycle, a pull request), ``(2, why)`` when it cannot be answered (an
     issue GitHub would not read). Both numbers are read in this loop's repository, so a number
-    of another repository is never joined: it is unreadable here, or a different issue."""
-    reason = problem(st.issue_deps(), issue, prerequisite)
+    of another repository is never joined: it is unreadable here, or a different issue. An
+    unreadable record raises ``RecordUnreadable``: no cycle is checked against a guess."""
+    reason = problem(_strict(st.issue_deps), issue, prerequisite)
     if reason:
         return 1, reason
     for number in (issue, prerequisite):
@@ -173,19 +214,36 @@ def declare(loop: dict, st, issue: int, prerequisite: int, by: str = BY_CLI
     code, reason = declare_problem(loop, st, issue, prerequisite)
     if code:
         return code, reason, False
-    return 0, "", st.issue_dep_add(issue, prerequisite, {"by": by, "at": now_iso()})
+    try:
+        added = st.issue_dep_add(issue, prerequisite, {"by": by, "at": now_iso()})
+    except Exception:
+        raise RecordUnreadable() from None
+    return 0, "", added
 
 
-def waive(st, issue: int, prerequisite: int) -> bool:
-    """Remove (waive) the dependency; False when there was none. The next sweep releases
-    ``issue`` if nothing else holds it. The record is deleted, so who waived it is not kept."""
-    return st.issue_dep_drop(issue, prerequisite)
+def waive(st, issue: int, prerequisite: int, by: str = BY_CLI) -> bool:
+    """Remove (waive) the dependency, recording who waived it and when; False when there was
+    none. The next sweep releases ``issue`` if nothing else holds it. An unreadable record or
+    waiver history raises ``RecordUnreadable`` and nothing is removed."""
+    from .util import now_iso
+    try:
+        return st.issue_dep_drop(issue, prerequisite, {"by": by, "at": now_iso()})
+    except Exception:
+        raise RecordUnreadable() from None
 
 
-def blocking(loop: dict, st, issue: int) -> list[tuple[int, str]]:
-    """The prerequisites of ``issue`` not yet done (or unreadable), with why: ``[]`` lets it go."""
+def blocking(loop: dict, st, issue: int) -> list[tuple[int | None, str]]:
+    """The prerequisites of ``issue`` not yet done (or unreadable), with why: ``[]`` lets it go.
+
+    The record is read strictly (#2150): when it cannot be read the answer is one blocker,
+    ``(None, UNREADABLE)``, so every issue is held, never released, until it can. Waivers are
+    not read here: a waived dependency is no longer in the record and never blocks."""
+    try:
+        deps = st.issue_deps(strict=True)
+    except Exception:
+        return [(None, UNREADABLE)]
     out = []
-    for prerequisite in sorted((st.issue_deps().get(issue) or {})):
+    for prerequisite in sorted((deps.get(issue) or {})):
         try:
             done, why = met(loop, prerequisite)
         except Exception as exc:                      # never guessed: an error blocks
@@ -206,16 +264,29 @@ def hold_reason(loop: dict, issue: int) -> str:
     try:
         blockers = blocking(loop, state_mod.state_for(loop), issue)
     except Exception as exc:
-        return f"issue dependencies unreadable: {type(exc).__name__}: {exc}"[:200]
+        return f"issue dependencies unreadable ({type(exc).__name__}); held"
     if not blockers:
         return ""
-    return "waiting for " + "; ".join(f"#{a} ({why})" for a, why in blockers)
+    return "waiting for " + "; ".join(why if a is None else f"#{a} ({why})" for a, why in blockers)
+
+
+def names(blockers: list[tuple[int | None, str]]) -> str:
+    """``#5, #6`` for ``blocking``'s answer, or that the record is unreadable."""
+    if any(a is None for a, _ in blockers):
+        return "its dependency record (unreadable)"
+    return ", ".join(f"#{a}" for a, _ in blockers)
 
 
 def wait(loop: dict, st, issue: int, blockers: list[tuple[int, str]]) -> None:
-    """Record that ``issue``'s hand-off waits, and say so once on the issue."""
+    """Record that ``issue``'s hand-off waits, and say so once on the issue. A wait on an
+    unreadable record (#2150) is a local fault, not a maintainer's dependency: it is recorded
+    (the sweep re-checks it) and logged, and nothing is posted."""
     from . import config
     st.dep_wait_set(issue)
+    if any(a is None for a, _ in blockers):
+        from .util import log
+        log(f"issue #{issue}: {UNREADABLE}")
+        return
     if not st.dep_wait_say(issue):                    # claimed under the lock: only one process posts
         return
     login = config.triage_login(loop)

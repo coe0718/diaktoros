@@ -996,10 +996,17 @@ runs the checks `hermes dk depends` runs (itself, a cycle, a pull request, an is
 can't read) and refuses in the preview without writing anything. Its confirmation is bound to the
 issue's current dependency record. For these two actions only, `POST /actions` takes exactly
 `{loop, action, pr, seat, on, confirmation}` (`seat` null). The host reads the record back, and
-verified means the dependency is now present (declare) or absent (waive). The **Issue
-dependencies** section lists declared dependencies from `GET /deps?loop=<id>`. That read checks
-GitHub for each prerequisite (at most 50 rows, with the total), so the page reads it on selection
-and on Refresh and never polls it or refreshes it from socket hints.
+verified means the dependency is now present (declare) or absent (waive). A waiver is recorded
+with who waived it (`desktop` from the page, `operator` from the CLI) and when. The **Issue
+dependencies** section lists declared dependencies from `GET /deps?loop=<id>`, then the waivers
+(`waivers`, `waivers_total`, `waivers_available`: at most 50, with who and when withheld unless
+they are a short plain name and a UTC timestamp; an unreadable waiver history is unavailable,
+never "none waived"). That read checks GitHub for each prerequisite (at most 50 rows, with the
+total), so the page reads it on selection and on Refresh and never polls it or refreshes it from
+socket hints. The PR drawer shows the rows for its issue from that same cached read and never
+starts one; `GET /pr` names the issue in `issue` (the number itself when issue-fix turns ran for
+it, the issue whose fix run recorded this PR, or null), and leaves it out when the ledger cannot
+say.
 
 **Escalate** parks this head against further review/fix and requests an adjudicator ruling,
 spending its configured turn budget. A queued review/fix is retired when the ruling worker

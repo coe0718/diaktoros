@@ -1211,16 +1211,15 @@ class LoopState:
         self._fix_ask_edit(lambda data: data["open"].pop(str(number), None))
 
     # -- issue dependencies (#671): {issue: {prerequisite issue: {"by", "at"}}} ----------
+    # Waivers (#1301) are kept beside them in their own file, same shape: who waived each one and
+    # when. Only ``issue-deps.json`` holds anything; a waiver is history and never blocks.
 
-    def issue_deps(self, strict: bool = False) -> dict:
-        """Declared dependencies: issue B waits for issue A's implementation to merge. No lock
-        on read, like ``fix_holds``: writes are atomic replaces.
+    DEPS_FILE, WAIVERS_FILE = "issue-deps.json", "issue-deps-waivers.json"
 
-        ``strict`` raises when the file exists but cannot be read or is not a mapping, instead
-        of reading it as no dependencies: a confirmed Desktop write binds the record it shows,
-        and a page must say "unavailable", never "none declared", for a store it could not read
-        (#1301)."""
-        path = self.dir / "issue-deps.json"
+    def _deps_map(self, name: str, strict: bool) -> dict:
+        """``{int: {int: dict}}`` from ``name``. ``strict`` raises when the file exists but cannot
+        be read or is not a mapping; otherwise such a file reads as empty."""
+        path = self.dir / name
         if strict:
             raw = json.loads(path.read_text()) if path.exists() else {}
             if not isinstance(raw, dict):
@@ -1235,29 +1234,61 @@ class LoopState:
                     out[int(key)] = kept
         return out
 
+    @staticmethod
+    def _deps_json(deps: dict) -> dict:
+        return {str(b): {str(a): v for a, v in prerequisites.items()}
+                for b, prerequisites in deps.items() if prerequisites}
+
+    def issue_deps(self, strict: bool = False) -> dict:
+        """Declared dependencies: issue B waits for issue A's implementation to merge. No lock
+        on read, like ``fix_holds``: writes are atomic replaces.
+
+        ``strict`` raises when the file exists but cannot be read or is not a mapping, instead
+        of reading it as no dependencies: a confirmed Desktop write binds the record it shows,
+        a page must say "unavailable", never "none declared", for a store it could not read
+        (#1301), and the hold path must hold, never release, on a record it could not read
+        (#2150)."""
+        return self._deps_map(self.DEPS_FILE, strict)
+
+    def issue_dep_waivers(self, strict: bool = False) -> dict:
+        """Waived dependencies (#1301): ``{issue: {prerequisite: {"by", "at"}}}``, the latest
+        waiver of each pair. History only: no hold reads it. A state with no waiver file reads
+        as none waived."""
+        return self._deps_map(self.WAIVERS_FILE, strict)
+
     def issue_dep_add(self, issue: int, prerequisite: int, record: dict) -> bool:
-        """Declare the dependency; False when it was already declared."""
+        """Declare the dependency; False when it was already declared. An unreadable record
+        raises (it is never overwritten). Declaring again after a waiver clears that waiver:
+        the dependency holds again."""
         with self.locked():
-            data = {str(b): {str(a): v for a, v in deps.items()}
-                    for b, deps in self.issue_deps().items()}
-            deps = data.setdefault(str(issue), {})
-            if str(prerequisite) in deps:
+            data = self.issue_deps(strict=True)
+            deps = data.setdefault(issue, {})
+            if prerequisite in deps:
                 return False
-            deps[str(prerequisite)] = dict(record)
-            self._save_strict(self.dir / "issue-deps.json", data)
+            deps[prerequisite] = dict(record)
+            self._save_strict(self.dir / self.DEPS_FILE, self._deps_json(data))
+            try:
+                waivers = self.issue_dep_waivers(strict=True)
+            except Exception:
+                return True                         # unreadable history: left as it is
+            if (waivers.get(issue) or {}).pop(prerequisite, None) is not None:
+                self._save(self.dir / self.WAIVERS_FILE, self._deps_json(waivers))
             return True
 
-    def issue_dep_drop(self, issue: int, prerequisite: int) -> bool:
-        """Remove (waive) the dependency; False when there was none."""
+    def issue_dep_drop(self, issue: int, prerequisite: int, waiver: dict | None = None) -> bool:
+        """Remove (waive) the dependency; False when there was none. ``waiver`` (``{"by",
+        "at"}``) is recorded first, so a write that stops half way leaves the dependency
+        declared (still holding), never a silent release. An unreadable record raises."""
         with self.locked():
-            data = {str(b): {str(a): v for a, v in deps.items()}
-                    for b, deps in self.issue_deps().items()}
-            deps = data.get(str(issue)) or {}
-            if deps.pop(str(prerequisite), None) is None:
+            data = self.issue_deps(strict=True)
+            if prerequisite not in (data.get(issue) or {}):
                 return False
-            if not deps:
-                data.pop(str(issue), None)
-            self._save_strict(self.dir / "issue-deps.json", data)
+            if waiver is not None:
+                waivers = self.issue_dep_waivers(strict=True)
+                waivers.setdefault(issue, {})[prerequisite] = dict(waiver)
+                self._save_strict(self.dir / self.WAIVERS_FILE, self._deps_json(waivers))
+            del data[issue][prerequisite]
+            self._save_strict(self.dir / self.DEPS_FILE, self._deps_json(data))
             return True
 
     def dep_waits(self) -> list[int]:

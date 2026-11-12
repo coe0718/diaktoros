@@ -11,23 +11,28 @@ import importlib.util
 import json
 import pathlib
 import sys
+import tempfile
+import time
 import unittest
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import test_issue_deps as tid  # noqa: E402
 import test_issue_fix as tif  # noqa: E402
-from diaktoros import desktop_api, fix_hold, issue_deps, one_shot_action as actions  # noqa: E402
+from diaktoros import (config, desktop_api, fix_hold, issue_deps, ledger,  # noqa: E402
+                       one_shot_action as actions, run_supervisor, state as state_mod)
+from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 DepsFixture = type("DepsFixture", (tid.Deps,),
                    {name: None for name in dir(tid.Deps) if name.startswith("test_")})
 TOKEN = "b" * 64
 
 
-def corrupt(st, text):
-    """Replace the dependency record with ``text`` (the state directory may not exist yet)."""
+def corrupt(st, text, name="issue-deps.json"):
+    """Replace the dependency record (or ``name``) with ``text`` (the state directory may not
+    exist yet)."""
     st.dir.mkdir(parents=True, exist_ok=True)
-    (st.dir / "issue-deps.json").write_text(text)
+    (st.dir / name).write_text(text)
 
 
 class Owner(DepsFixture):
@@ -250,6 +255,232 @@ class View(DepsFixture):
         self.assertNotIn("/private", str(caught.exception))
         with self.assertRaises(desktop_api.BadRequest):
             desktop_api.deps_view("x" * 201)
+
+
+class FailClosed(DepsFixture):
+    """#2150: an unreadable dependency record holds every issue; it is never "none declared"."""
+
+    def test_a_corrupt_record_keeps_a_held_issue_held_until_it_can_be_read(self):
+        self.depends(12, on=5)
+        self.run_gate(self.labeled())
+        self.assertEqual((self.enqueued, self.st.dep_waits()), ([], [12]))
+        said = len(self.posted)
+        good = (self.st.dir / "issue-deps.json").read_text()
+        self.close_a(tid.MERGE)                                  # met: would release if read
+        corrupt(self.st, "{not json")
+        for _ in range(2):
+            fix_hold.sweep(self.loop, self.st)
+        self.assertEqual((self.enqueued, self.st.dep_waits()), ([], [12]))
+        self.assertEqual(len(self.posted), said)                  # a local fault: nothing posted
+        self.assertEqual(issue_deps.blocking(self.loop, self.st, 12),
+                         [(None, issue_deps.UNREADABLE)])
+        why = issue_deps.hold_reason(self.loop, 12)
+        self.assertEqual(why, "waiting for " + issue_deps.UNREADABLE)
+        self.assertNotIn(str(self.st.dir), why)
+        self.assertIn("issue #12 fix waits for prerequisite its unreadable dependency record",
+                      "\n".join(fix_hold.status_lines(self.loop, self.st)))
+        (self.st.dir / "issue-deps.json").write_text(good)       # readable again: released
+        fix_hold.sweep(self.loop, self.st)
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, tid.BASE, "issue-fix")])
+
+    def test_a_corrupt_record_holds_a_fresh_hand_off_and_a_merged_pr_wait(self):
+        corrupt(self.st, "[1, 2")
+        self.run_gate(self.labeled())
+        self.assertEqual((self.enqueued, self.st.dep_waits(), self.posted), ([], [12], []))
+        self.st.dep_wait_drop(12)
+        self.st.fix_hold_set(12, 30)                              # waits on a PR that merged
+        with mock.patch.object(fix_hold, "pr_state", return_value="merged"):
+            fix_hold.sweep(self.loop, self.st)
+        self.assertEqual((self.enqueued, self.st.fix_holds(), self.st.dep_waits()), ([], {}, [12]))
+
+    def test_cli_on_a_corrupt_record_says_so_and_exits_2_without_a_traceback(self):
+        corrupt(self.st, "{not json")
+        for kwargs in ({}, {"issue": 12}, {"issue": 12, "on": 5}, {"issue": 12, "waive": 5}):
+            with self.subTest(**kwargs):
+                rc, out = self.depends(**kwargs)
+                self.assertEqual(rc, 2, out)
+                self.assertIn("the issue dependency record could not be read", out)
+                self.assertNotIn("no issue dependencies declared", out)
+                self.assertNotIn("Traceback", out)
+                self.assertNotIn(str(self.st.dir), out)
+        # Nothing was written over the record it could not read.
+        self.assertEqual((self.st.dir / "issue-deps.json").read_text(), "{not json")
+
+
+class Waivers(DepsFixture):
+    """#1301: a waiver removes the dependency and keeps who waived it and when; it never blocks."""
+
+    def test_a_cli_waiver_is_recorded_listed_and_releases_the_hold(self):
+        self.depends(12, on=5)
+        self.run_gate(self.labeled())
+        self.assertEqual(self.st.dep_waits(), [12])
+        self.assertEqual(self.depends(12, waive=5)[0], 0)
+        self.assertEqual(self.st.issue_deps(), {})
+        record = self.st.issue_dep_waivers()[12][5]
+        self.assertEqual(record["by"], issue_deps.BY_CLI)
+        self.assertRegex(record["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        rc, out = self.depends()
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "[widgets] no issue dependencies declared\n"
+                              f"[widgets] #12 no longer waits on #5 — waived by operator at "
+                              f"{record['at']}\n")
+        self.assertEqual(self.depends(13)[1], "[widgets] no issue dependencies declared\n")
+        fix_hold.sweep(self.loop, self.st)
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, tid.BASE, "issue-fix")])
+
+    def test_no_reader_that_decides_a_hold_reads_the_waivers(self):
+        self.depends(12, on=5)
+        self.depends(12, on=6)
+        self.depends(12, waive=6)
+        corrupt(self.st, "{not json", "issue-deps-waivers.json")    # unreadable history
+        with mock.patch.object(state_mod.LoopState, "issue_dep_waivers",
+                               side_effect=AssertionError("a hold read the waivers")):
+            self.run_gate(self.labeled())
+            fix_hold.sweep(self.loop, self.st)
+            self.assertEqual([a for a, _ in issue_deps.blocking(self.loop, self.st, 12)], [5])
+            self.assertIn("#5", issue_deps.hold_reason(self.loop, 12))
+            self.depends(12, waive=5)
+        self.assertEqual((self.enqueued, self.st.dep_waits()), ([], [12]))
+        # The waive above was refused (its history is unreadable): #5 still holds #12.
+        self.assertIn(5, self.st.issue_deps()[12])
+        rc, out = self.depends()
+        self.assertEqual(rc, 0)
+        self.assertIn("#12 depends on #5: waiting", out)
+        self.assertIn("waiver history could not be read", out)
+        corrupt(self.st, "{}", "issue-deps-waivers.json")
+        self.assertEqual(self.depends(12, waive=5)[0], 0)
+        self.assertEqual(issue_deps.blocking(self.loop, self.st, 12), [])
+        self.assertEqual(issue_deps.hold_reason(self.loop, 12), "")
+        fix_hold.sweep(self.loop, self.st)
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, tid.BASE, "issue-fix")])
+
+    def test_declaring_again_after_a_waiver_holds_again_and_clears_it(self):
+        self.depends(12, on=5)
+        self.depends(12, waive=5)
+        self.assertIn(12, self.st.issue_dep_waivers())
+        rc, out = self.depends(12, on=5)
+        self.assertEqual(rc, 0)
+        self.assertIn("now depends on #5", out)
+        self.assertEqual(self.st.issue_dep_waivers(), {})
+        self.assertEqual([a for a, _ in issue_deps.blocking(self.loop, self.st, 12)], [5])
+        self.run_gate(self.labeled())
+        self.assertEqual((self.enqueued, self.st.dep_waits()), ([], [12]))
+
+    def test_a_state_written_before_waivers_were_kept_reads_fine(self):
+        self.st.dir.mkdir(parents=True, exist_ok=True)
+        (self.st.dir / "issue-deps.json").write_text(
+            json.dumps({"12": {"5": {"by": "operator", "at": "2026-01-01T00:00:00Z"}}}))
+        self.assertFalse((self.st.dir / "issue-deps-waivers.json").exists())
+        self.assertEqual((self.st.issue_dep_waivers(strict=True), issue_deps.waived(self.st)),
+                         ({}, []))
+        rc, out = self.depends()
+        self.assertEqual(out, "[widgets] #12 depends on #5: waiting — #5 is still open\n")
+        with mock.patch.object(desktop_api, "_loop", return_value=self.loop):
+            view = desktop_api.deps_view("widgets")
+        self.assertEqual((view["available"], view["total"], view["waivers_available"],
+                          view["waivers_total"], view["waivers"]), (True, 1, True, 0, []))
+        self.assertTrue(issue_deps.waive(self.st, 12, 5))
+        self.assertEqual(list(self.st.issue_dep_waivers()), [12])
+
+    def test_a_page_waiver_is_recorded_as_desktop_and_read_back(self):
+        self.depends(12, on=5)
+        offer = actions.plan(self.loop, "waive", pr=12, on=5)
+        self.assertIn("records the waiver as desktop", offer["reason"])
+        result = actions.confirmed_perform(self.loop, "waive", offer["confirmation"], pr=12, on=5)
+        self.assertEqual((result["ok"], result["status"]), (True, "verified"), result)
+        self.assertEqual(self.st.issue_dep_waivers()[12][5]["by"], issue_deps.BY_DESKTOP)
+        with mock.patch.object(desktop_api, "_loop", return_value=self.loop):
+            view = desktop_api.deps_view("widgets")
+        self.assertEqual([(w["issue"], w["on"], w["by"]) for w in view["waivers"]],
+                         [(12, 5, "desktop")])
+        self.assertIn("waived by desktop at " + view["waivers"][0]["at"], self.depends()[1])
+
+    def test_an_unreadable_waiver_history_offers_no_waiver(self):
+        self.depends(12, on=5)
+        corrupt(self.st, "{not json", "issue-deps-waivers.json")
+        offer = actions.plan(self.loop, "waive", pr=12, on=5)
+        self.assertEqual((offer["eligible"], offer["confirmation"]), (False, ""))
+        self.assertIn("unavailable", offer["reason"])
+        self.assertTrue(actions.plan(self.loop, "depends", pr=12, on=6)["eligible"])
+
+
+class WaiverView(DepsFixture):
+    """``deps_view``'s waivers: bounded, withheld like ``by``/``at``, and never "none" unread."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(desktop_api, "_loop", return_value=self.loop)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_waivers_are_bounded_and_unsafe_who_and_when_withheld(self):
+        corrupt(self.st, json.dumps({str(b): {"5": {"by": "/home/x/.hermes token", "at": "\n"}}
+                                     for b in range(100, 160)}), "issue-deps-waivers.json")
+        view = desktop_api.deps_view("widgets")
+        self.assertEqual((view["waivers_available"], view["waivers_total"], len(view["waivers"])),
+                         (True, 60, desktop_api.DEPS_MAX))
+        self.assertEqual(view["waivers"][0], {"issue": 100, "on": 5, "by": None, "at": None})
+        self.assertNotIn("/home", json.dumps(view))
+
+    def test_unreadable_waivers_are_unavailable_and_leave_the_dependencies_readable(self):
+        self.st.issue_dep_add(12, 5, {"by": "operator", "at": "2026-01-01T00:00:00Z"})
+        corrupt(self.st, "[]", "issue-deps-waivers.json")
+        with mock.patch.object(issue_deps, "met", return_value=(False, "#5 is still open")):
+            view = desktop_api.deps_view("widgets")
+        self.assertEqual((view["available"], view["total"]), (True, 1))
+        self.assertEqual((view["waivers_available"], view["waivers_total"], view["waivers"]),
+                         (False, 0, []))
+        corrupt(self.st, "{not json")
+        view = desktop_api.deps_view("widgets")
+        self.assertEqual((view["available"], view["deps"], view["total"]), (False, [], 0))
+
+
+class DrawerIssue(unittest.TestCase):
+    """``pr_view``'s ``issue`` (#1301): the issue whose dependencies the drawer shows, from the
+    ledger only, and absent (unknown) when the ledger cannot say."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(dir=__import__("os").environ.get("TMPDIR"))
+        self.addCleanup(temp.cleanup)
+        self.db = pathlib.Path(temp.name) / "runs.sqlite"
+        self.sup = Supervisor(self.db)
+        self.loops = [{"id": "widgets", "repo": tid.REPO, "cap": 3,
+                       "state_dir": str(pathlib.Path(temp.name) / "state")}]
+        self.n = 0
+
+    def view(self, pr):
+        with mock.patch.object(config, "readable_loops", return_value=(self.loops, [])), \
+                mock.patch.object(run_supervisor, "production_ledger", return_value=self.db):
+            return desktop_api.pr_view("widgets", pr)
+
+    def run_row(self, pr, seat):
+        self.n += 1
+        with mock.patch.object(self.sup, "_spawn"):
+            self.sup.enqueue(f"d{self.n}", tid.REPO, pr, chr(ord("a") + self.n) * 40, seat)
+        with ledger.connect(self.db) as con:
+            return con.execute("SELECT id FROM runs WHERE delivery=?", (f"d{self.n}",)).fetchone()[0]
+
+    def test_an_issue_and_its_fix_pr_name_the_issue_and_a_plain_pr_names_none(self):
+        run_id = self.run_row(12, "issue_fixer")
+        self.run_row(40, "reviewer")
+        self.run_row(41, "reviewer")
+        now = time.time()
+        with ledger.connect(self.db) as con:
+            con.execute("INSERT INTO issue_fixes(run_id,repo,number,base,kind,branch,state,"
+                        "pr_number,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (run_id, tid.REPO, 12, "main", "pr", "fix/12", "pushed", 40, now, now))
+        self.assertEqual(self.view(12)["issue"], 12)
+        self.assertEqual(self.view(40)["issue"], 12)
+        self.assertIsNone(self.view(41)["issue"])
+
+    def test_no_ledger_or_an_older_one_leaves_the_issue_unknown(self):
+        self.db, real = self.db.with_name("none.sqlite"), self.db
+        self.assertNotIn("issue", self.view(12))                    # no ledger at all
+        self.db = real
+        self.run_row(12, "reviewer")
+        with ledger.connect(self.db) as con:
+            con.execute("DROP TABLE issue_fixes")
+        self.assertNotIn("issue", self.view(12))
 
 
 LOOP = {"id": "one", "repo": "acme/widgets"}
