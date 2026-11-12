@@ -178,21 +178,44 @@ def _binds(scope: ast.AST, name: str) -> bool:
                or (isinstance(n, DEFS) and n.name == name) for n in nodes)
 
 
+def _evaluated_outside(node: ast.AST) -> list[ast.AST]:
+    """The parts of a ``def``, ``lambda`` or ``class`` that run in the enclosing scope when it
+    is defined: decorators, parameter defaults and annotations, a class's bases and keywords
+    (#2387 review F1: ``def g(path=gh.fetch(loop, path))`` reads the outer ``path``)."""
+    if isinstance(node, ast.ClassDef):
+        return [*node.decorator_list, *node.bases, *node.keywords]
+    args = node.args
+    parts = [*args.defaults, *(d for d in args.kw_defaults if d is not None)]
+    if isinstance(node, ast.Lambda):
+        return parts
+    params = [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]
+    return [*node.decorator_list, *parts, *(p.annotation for p in params if p and p.annotation),
+            *([node.returns] if node.returns else [])]
+
+
 def _name_loads(scope: ast.AST, name: str) -> list[ast.Name]:
-    """Every load of ``name`` that reads ``scope``'s binding: in ``scope`` itself and in the
-    nested functions and classes that capture it (#2363: a closure's ``fetch(loop, path)``
-    reads ``path`` too). A nested function that rebinds ``name`` reads its own, and so do
-    the functions inside it; a class body's binding does not reach its methods."""
-    loads = []
-    for node in _own(scope):
+    """Every load of ``name`` that reads ``scope``'s binding: in ``scope``'s body and in the
+    nested functions and lambdas that capture it (#2363: a closure's ``fetch(loop, path)``
+    reads ``path`` too). A nested function or lambda that rebinds ``name`` reads its own in
+    its body, but its decorators and defaults still read ``scope``'s (#2387 F1). A nested
+    class body is walked as part of ``scope`` even when it assigns ``name``: at module level
+    a load before that assignment reads the module's name, and in a function it is a
+    ``NameError``, so counting it only ever reports a site, never clears one. The functions
+    in a class are nested scopes; a class's own binding does not reach its methods."""
+    loads: list[ast.Name] = []
+    stack = [scope.body] if isinstance(scope, ast.Lambda) else list(scope.body)
+    while stack:
+        node = stack.pop()
         if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load):
             loads.append(node)
-        elif isinstance(node, DEFS):
-            if not _binds(node, name):
+        elif isinstance(node, (*DEFS, ast.Lambda)):
+            stack += _evaluated_outside(node)
+            if isinstance(node, ast.ClassDef):
+                stack += node.body
+            elif not isinstance(scope, ast.ClassDef) and not _binds(node, name):
                 loads += _name_loads(node, name)
-            elif isinstance(node, ast.ClassDef):
-                loads += [n for inner in _own(node) if isinstance(inner, DEFS)
-                          and not _binds(inner, name) for n in _name_loads(inner, name)]
+        else:
+            stack += ast.iter_child_nodes(node)
     return loads
 
 
@@ -364,6 +387,33 @@ class Scan(unittest.TestCase):
                    '    def g(path):\n        return gh.fetch(loop, path)\n'
                    '    return gh._read_pages(loop, path, "x", 3), g\n')
         self.assertEqual(_one(rebound), [])
+
+    def test_a_rebinding_scope_still_reads_the_outer_name_where_it_is_defined(self):
+        # #2387 review F1: defaults, decorators, annotations and a class body run in the
+        # enclosing scope, so a rebinding def or class there still reads the outer name.
+        head = 'def f(loop):\n    path = "/bad?per_page=100"\n'
+        tail = '    return gh._read_pages(loop, path, "x", 3), g\n'
+        bad = ["diaktoros/new.py::f::/bad?per_page=100"]
+        for nested in (
+                '    def g(path=gh.fetch(loop, path)):\n        return path\n',
+                '    def g(*, path=gh.fetch(loop, path)):\n        return path\n',
+                '    g = lambda path=gh.fetch(loop, path): path\n',
+                '    @gh.fetch(loop, path)\n    def g(path):\n        return path\n',
+                '    def g(path: gh.fetch(loop, path)):\n        return path\n',
+                '    class g(gh.fetch(loop, path)):\n        path = "/own"\n',
+                '    class g:\n        path = "/own"\n'
+                '        def m(self):\n            return gh.fetch(loop, path)\n'):
+            with self.subTest(nested=nested):
+                self.assertEqual(_one(head + nested + tail), bad)
+        # A module-level class body reads the module's name until it assigns its own.
+        module = ('path = "/mod?per_page=100"\nclass C:\n    first = gh.fetch(None, path)\n'
+                  '    path = "/own"\ngh._read_pages(None, path, "x", 3)\n')
+        self.assertEqual(_one(module), ["diaktoros/new.py::<module>::/mod?per_page=100"])
+        for nested in (
+                '    def g(path=None):\n        return gh.fetch(loop, path)\n',
+                '    class g:\n        def m(self, path):\n            return gh.fetch(loop, path)\n'):
+            with self.subTest(nested=nested):
+                self.assertEqual(_one(head + nested + tail), [])
 
     def test_a_path_builder_also_read_unpaged_is_unpaged(self):
         builder = 'def hp(loop):\n    return "/hooks?per_page=100"\n'
