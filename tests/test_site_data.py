@@ -11,8 +11,8 @@ import importlib.util
 import json
 import pathlib
 import tempfile
-import types
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SITE = ROOT / "docs" / "site"
@@ -41,7 +41,10 @@ class BuildDataTests(unittest.TestCase):
         mod.OUT = str(out_path)
         self.sleeps = []
         self.activity_calls = 0
-        mod.time = types.SimpleNamespace(sleep=self.sleeps.append)
+        # Patch sleep on the real time module, never the script's own
+        # ``time`` binding: a retry then goes through the script's
+        # ``import time``, so dropping that import turns these tests red
+        # (Vex, PR #2431 round 1).
 
         def fake_api(path):
             if "commit_activity" in path:
@@ -59,7 +62,8 @@ class BuildDataTests(unittest.TestCase):
                     "open_issues_count": 50, "pushed_at": "2026-02-01T00:00:00Z"}
 
         mod.api = fake_api
-        mod.main()
+        with mock.patch("time.sleep", side_effect=self.sleeps.append):
+            mod.main()
         return json.loads(out_path.read_text())
 
     def test_empty_activity_keeps_previous(self):
@@ -106,6 +110,17 @@ class BuildDataTests(unittest.TestCase):
                              None, activity)
         self.assertEqual(data["commits_year"], 1)
         self.assertNotEqual(data["generated"], "2020-01-01")
+
+    def test_retry_waits_through_module_time_binding(self):
+        # Vex, PR #2431 round 1: called directly (main() would swallow a
+        # NameError), a retry must reach time.sleep through the script's
+        # own import, not a binding the test created.
+        mod = load_module()
+        answers = iter([[], [{"total": 2}]])
+        mod.api = lambda path: next(answers)
+        with mock.patch("time.sleep") as sleep:
+            self.assertEqual(mod.commit_activity(), [{"total": 2}])
+        sleep.assert_called_once_with(mod.ACTIVITY_WAIT)
 
     def test_retries_are_bounded(self):
         # Empty on every attempt: the count and its date are retained
