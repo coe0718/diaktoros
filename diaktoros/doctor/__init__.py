@@ -597,7 +597,9 @@ def check_clone(loop: dict) -> Check:
         return Check("clone", MISMATCH, f"{path} lives inside the loop's artifacts root {root}",
                      "move the clone out of the state directory: the cleanup deletes everything "
                      "under artifacts/, which would be your working copy")
-    parallel = [seat for seat in ("reviewer", "fixer") if config.seat_concurrency(loop, seat) > 1]
+    # The same seats the loader's isolation guard checks (#1693): shadow and triage count too.
+    parallel = [seat for seat in config.capacity_seats(loop)
+                if config.seat_concurrency(loop, seat) > 1]
     note = f" — isolation source for {', '.join(parallel)}" if parallel else ""
     return Check("clone", VERIFIED, f"{path} (git checkout){note}")
 

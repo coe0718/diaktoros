@@ -215,8 +215,10 @@ def _check_isolation(loop: dict, where: str) -> None:
         # Above one run at once, isolation is not a preference: with no clone to isolate from and
         # no isolated worker to launch the turns, two runs would share whatever checkout they
         # find, which is the wrong-verdict bug. Check the effective value per seat, so a
-        # seat-level 2 is caught even when the loop default is 1.
-        for seat in config.SEAT_KEYS:
+        # seat-level 2 is caught even when the loop default is 1. Every seat with its own capacity
+        # counts (``capacity_seats``: reviewer, fixer, and shadow / triage when run or pinned), so
+        # two shadow turns are refused exactly like two reviews (#1693).
+        for seat in config.capacity_seats(loop):
             if config.seat_concurrency(loop, seat) > 1:
                 raise config.ConfigError(
                     f"{where}: seats.{seat}.concurrency > 1 requires 'clone' "
