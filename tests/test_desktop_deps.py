@@ -191,6 +191,68 @@ class Confirmed(DepsFixture):
         self.assertEqual(offer["reason"], "invalid action target")
 
 
+class CrossRepository(DepsFixture):
+    """#1301: a dependency joins two issues of this repository. A number GitHub answers with
+    another repository's issue (a transferred issue) is refused in the preview and by the CLI,
+    with nothing written; a repository-qualified target never reaches the owner at all."""
+
+    OTHER = "https://api.github.com/repos/acme/other"
+
+    def setUp(self):
+        super().setUp()
+        self.issues[8] = {**tif.issue(number=8), "repository_url": self.OTHER}
+        self.issues[9] = {**tif.issue(number=31), "repository_url": self.OTHER + "/"}
+
+    def assert_nothing_written(self):
+        self.assertEqual(self.st.issue_deps(), {})
+        self.assertFalse((self.st.dir / "issue-deps.json").exists())
+        self.assertEqual(self.posted, [])
+
+    def test_an_issue_of_another_repository_is_refused_in_the_preview(self):
+        for issue, on, named in ((12, 8, 8), (12, 9, 9), (8, 5, 8)):
+            with self.subTest(issue=issue, on=on):
+                offer = actions.plan(self.loop, "depends", pr=issue, on=on)
+                self.assertEqual((offer["eligible"], offer["confirmation"]), (False, ""))
+                self.assertEqual(offer["reason"], f"#{named} is an issue of another repository; "
+                                                  "a dependency joins two issues of this repository")
+                result = actions.confirmed_perform(self.loop, "depends", TOKEN, pr=issue, on=on)
+                self.assertEqual((result["ok"], result["status"]), (False, "stale"))
+                self.assertEqual(self.depends(issue, on=on),
+                                 (1, f"[widgets] refused: #{named} is an issue of another "
+                                     "repository; a dependency joins two issues of this repository\n"))
+                self.assert_nothing_written()
+
+    def test_this_repository_named_in_any_case_is_accepted(self):
+        self.issues[10] = {**tif.issue(number=10),
+                           "repository_url": "https://api.github.com/repos/" + tid.REPO.upper()}
+        self.assertTrue(actions.plan(self.loop, "depends", pr=12, on=10)["eligible"])
+        self.assertEqual(issue_deps.declare(self.loop, self.st, 12, 10), (0, "", True))
+
+    def test_a_transferred_prerequisite_is_never_read_as_met(self):
+        self.st.issue_dep_add(12, 8, {"by": "operator", "at": "x"})
+        self.issues[8] = {**self.issues[8], "state": "closed"}
+        self.assertEqual(issue_deps.blocking(self.loop, self.st, 12), [(8, "#8 could not be read")])
+
+    def test_a_repository_qualified_target_never_reaches_the_owner(self):
+        from diaktoros.cli import operations
+        parser = argparse.ArgumentParser()
+        operations.add_depends(parser.add_subparsers())
+        with mock.patch.object(issue_deps, "declare") as declare, \
+                mock.patch.object(actions, "plan") as plan, \
+                mock.patch.object(desktop_api, "_loop", return_value=self.loop):
+            for target in ("acme/other#5", "other#5", "#5"):
+                with self.subTest(target=target):
+                    with contextlib.redirect_stderr(io.StringIO()), \
+                            self.assertRaises(SystemExit) as caught:
+                        parser.parse_args(["depends", "--issue", "12", "--on", target])
+                    self.assertEqual(caught.exception.code, 2)
+                    with self.assertRaises(desktop_api.BadRequest):
+                        desktop_api.action_view("widgets", "depends", 12, None, target)
+        declare.assert_not_called()
+        plan.assert_not_called()
+        self.assert_nothing_written()
+
+
 class View(DepsFixture):
     """``deps_view``: the list, bounded and never a raw error."""
 
@@ -748,7 +810,7 @@ class Routes(unittest.TestCase):
             view.reset_mock()
             self.api.actions(loop="one", action="escalate", pr="7", seat=None, on=None)
             view.assert_called_once_with("one", "escalate", 7, None)
-        for on in ("x", "-1", "5" * 13):
+        for on in ("x", "-1", "5" * 13, "acme/other#5"):
             with self.subTest(on=on), self.assertRaises(self.api.HTTPException) as caught:
                 self.api.actions(loop="one", action="depends", pr="12", seat=None, on=on)
             self.assertEqual(caught.exception.status_code, 422)

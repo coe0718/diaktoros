@@ -1872,7 +1872,9 @@ hermes dk depends --loop "<loop-id>" --issue 42 --waive 41
 ```
 
 - **Declaring** checks that both numbers are issues of this repository, that 42 isn't 41, and
-  that it closes no cycle (`a cycle: #42 → #41 → #40 → #42`). It holds 42's next hand-off; a fix
+  that it closes no cycle (`a cycle: #42 → #41 → #40 → #42`). A number GitHub answers with another
+  repository's issue (a transferred one) is refused (`is an issue of another repository`, exit
+  `1`), and a prerequisite that now lives elsewhere is never read as met. It holds 42's next hand-off; a fix
   turn already queued is held at claim, launch and the broker's publish check until 41 is merged
   or waived (an unreadable dependency holds too, and `--waive` releases it); one already running
   isn't recalled.
@@ -1908,8 +1910,8 @@ The Desktop page shows the same list under **Issue dependencies** (`GET /deps`, 
 row is met, waiting or unknown, with why. It reads GitHub for each prerequisite, so the page reads
 it when you select the loop and when you press Refresh, and never polls it. Declaring or waiving
 one there is the confirmed `depends` / `waive` action (`GET`/`POST /actions` with `on`), which
-runs the same checks as this command. A refusal (itself, a cycle, a pull request, an issue it
-can't read) is shown in the preview and writes nothing. The confirmation is bound to the issue's
+runs the same checks as this command. A refusal (itself, a cycle, a pull request, an issue of
+another repository, an issue it can't read) is shown in the preview and writes nothing. The confirmation is bound to the issue's
 dependency record, so if that record changes before you confirm, nothing is written. A waiver
 removes the dependency and is listed below the dependencies with who waived it and when, exactly as
 this command lists it. The PR drawer shows the same rows for its issue: the number itself when the

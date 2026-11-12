@@ -48,10 +48,25 @@ def problem(deps: dict, issue: int, prerequisite: int) -> str:
     return ""
 
 
-def read_issue(loop: dict, number: int) -> dict | None:
-    """The issue as the reader sees it; None when unreadable."""
+def _answer(loop: dict, number: int) -> dict | None:
+    """What GitHub answers for this repository's issue ``number``, unchecked; None unreadable."""
     data = gh.api(loop, f"/repos/{loop['repo']}/issues/{number}", login=loop["read_token"])
-    return data if isinstance(data, dict) and data.get("number") == number else None
+    return data if isinstance(data, dict) else None
+
+
+def elsewhere(loop: dict, found: dict) -> bool:
+    """Is ``found`` an issue of another repository? GitHub answers a transferred issue's old
+    number with the issue where it now lives; one that does not name its repository is not."""
+    url = found.get("repository_url")
+    return (url is not None and not (isinstance(url, str) and url.rstrip("/").lower().endswith(
+        "/repos/" + loop["repo"].lower())))
+
+
+def read_issue(loop: dict, number: int) -> dict | None:
+    """The issue as the reader sees it; None when unreadable, or when the answer is another
+    number or another repository's issue (never joined, never read as this one's state)."""
+    data = _answer(loop, number)
+    return data if data and data.get("number") == number and not elsewhere(loop, data) else None
 
 
 def _in_base(loop: dict, sha: str) -> bool | None:
@@ -227,16 +242,20 @@ def waived(st, issue: int | None = None, *, strict: bool = False) -> list[dict]:
 
 def declare_problem(loop: dict, st, issue: int, prerequisite: int) -> tuple[int, str]:
     """Why ``issue`` may not depend on ``prerequisite`` now: ``(0, "")`` when it may, ``(1, why)``
-    when refused (itself, a cycle, a pull request), ``(2, why)`` when it cannot be answered (an
-    issue GitHub would not read). Both numbers are read in this loop's repository, so a number
-    of another repository is never joined: it is unreadable here, or a different issue. An
+    when refused (itself, a cycle, a pull request, an issue GitHub answers from another
+    repository), ``(2, why)`` when it cannot be answered (an issue GitHub would not read). Both
+    numbers are read in this loop's repository, and an answer naming another repository (a
+    transferred issue) is refused, so a number of another repository is never joined. An
     unreadable record raises ``RecordUnreadable``: no cycle is checked against a guess."""
     reason = problem(_strict(st.issue_deps), issue, prerequisite)
     if reason:
         return 1, reason
     for number in (issue, prerequisite):
-        found = read_issue(loop, number)
-        if found is None:
+        found = _answer(loop, number)
+        if found is not None and elsewhere(loop, found):        # transferred away (#1301)
+            return 1, (f"#{number} is an issue of another repository; a dependency joins two "
+                       "issues of this repository")
+        if found is None or found.get("number") != number:
             return 2, f"#{number} could not be read from GitHub — nothing declared"
         if "pull_request" in found:
             return 1, (f"#{number} is a pull request; a dependency joins two issues of this "
