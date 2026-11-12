@@ -251,6 +251,49 @@ class Records(unittest.TestCase):
         self.assertEqual([row['id'] for row in self.view()['failures']['items']], [key])
         self.assertEqual([entry['id'] for entry in gate_failures.open_for(self.loop, 12)], [key])
 
+    def assert_failures_match_open_for(self, expected):
+        # One rule (gate_failures.fallback_shown): the record shows what open_for (so explain and
+        # ready) shows for the same ledgers, and both show exactly ``expected`` (id, last_at).
+        view = self.view()['failures']
+        self.assertEqual((view['status'], view['reason']), ('available', 'recorded'))
+        rows = [(row['id'], row['last_at']) for row in view['items']]
+        self.assertEqual(rows, expected)
+        self.assertEqual(sorted(rows), sorted((entry['id'], entry['last_at'])
+                                              for entry in gate_failures.open_for(self.loop, 12)))
+
+    def test_a_mixed_case_loop_repository_reads_its_fallback_failures(self):
+        # #1691: writers keep the repository lowercased, so a loop configured as 'Acme/Widgets'
+        # still owns its fallback failures (as open_for says); another repository's never shows.
+        self.loop['repo'] = 'Acme/Widgets'
+        spare = gate_failures.fallback_ledger()
+        rows = {}
+        for repo, raw in (('acme/widgets', '{}'), ('other/widgets', '{"x":1}')):
+            key = gate_failures.fingerprint('gate_reviewer', raw)
+            rows[repo] = spare.record(key, {'repo': repo, 'pr': 12, 'head': 'a' * 40,
+                                            'gate': 'gate_reviewer', 'kind': 'timeout'}, raw)
+        mine = rows['acme/widgets']
+        self.assertEqual(mine['repo'], 'acme/widgets')
+        self.assert_failures_match_open_for([(mine['id'], mine['last_at'])])
+
+    def test_a_resolved_home_entry_settles_its_fallback_copy_but_not_a_newer_failure(self):
+        # #1691, the sweep's rule (_same_episode): a fallback copy last written before the home
+        # entry was resolved is that same failure, now settled (the sweep resolves it as a
+        # duplicate), so the record is verified empty, as open_for is. A failure the fallback took
+        # after that resolution is a new one, so it is shown.
+        key = self.failure()
+        before = dict(self.ledger.entries()[key])
+        spare = gate_failures.fallback_ledger()
+        copy = spare.record(key, before, '{}')
+        time.sleep(0.01)
+        self.ledger.resolve(key, 'completed', settle=False)
+        self.assertLessEqual(copy['last_at'], self.ledger.entries()[key]['resolved_at'])
+        self.assertFalse(spare.entries()[key]['resolved'])
+        self.assert_failures_match_open_for([])
+        time.sleep(0.01)
+        newer = spare.record(key, before, '{}')
+        self.assertGreater(newer['last_at'], self.ledger.entries()[key]['resolved_at'])
+        self.assert_failures_match_open_for([(key, newer['last_at'])])
+
     def test_read_preserves_artifacts_and_reads_no_payloads(self):
         self.failure()
         self.audit()
