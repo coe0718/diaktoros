@@ -48,8 +48,19 @@ def sweep(loop: dict, st, prs: list, log=lambda _msg: None) -> list[int]:
             continue
         number, head, _author = listed
         ruling = views.ruling_row(db, loop["repo"], number)
-        if not ruling or (ruling["head"], ruling["verdict"]) != (head, "ACCEPT"):
-            continue                           # the PR's newest ruling: an ACCEPT at this head
+        if not ruling:
+            continue
+        if (ruling["head"], ruling["verdict"]) != (head, "ACCEPT"):
+            # Not acted on: the newest ruling is not an ACCEPT at this head. An earlier one's
+            # write still on the wire here is read back all the same, since ``base_merge`` waits
+            # on it (#2375 review, F9).
+            try:
+                if _settle_in_flight(loop, db, number, head, log):
+                    moved.append(number)
+            except Exception as exc:  # noqa: BLE001 - one PR's failure never stops the sweep
+                log(f"#{number}: reading back a write on an earlier ACCEPT failed: "
+                    f"{type(exc).__name__}: {exc}")
+            continue
         try:
             if _act(loop, st, Supervisor(db, create=False), pr, ruling, log):
                 moved.append(number)
@@ -134,7 +145,11 @@ def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool 
       was posted by hand), and is nothing owed when there is none. An older ruling's pending step
       is never acted on again, so it waits on nothing.
     * No record here and no adjudicator's approval as the head's verdict (``ruled`` false):
-      nothing to act on. A record or ruling that can't be read is not settled."""
+      nothing to act on. A record or ruling that can't be read is not settled.
+    * With ``adjudicator_approves`` off, the sweep acts on nothing and reads nothing back, so no
+      wait could end: ''."""
+    if not config.adjudicator_approves(loop):
+        return ""
     db = production_ledger()
     rows, error = views.ruled_approvals(db, loop["repo"], number, head)
     if error:
@@ -163,6 +178,22 @@ def unsettled(loop: dict, number: int, head: str, reviews: list, *, ruled: bool 
 
 
 POSTING_STALE_S = 300   # a write is answered in well under this: a posting step older is cut off
+
+
+def _settle_in_flight(loop: dict, db, number: int, head: str, log) -> bool:
+    """Read back the writes at ``head`` that may still be on the wire (``posting``, ``uncertain``)
+    when no ACCEPT there is acted on: whether any moved. Only ``_reconcile``, never a new write: a
+    superseded ruling's pending steps are left as they are, since nothing acts on them again."""
+    rows, error = views.ruled_approvals(db, loop["repo"], number, head)
+    rows = [row for row in rows if any(row.get(step) in ("posting", "uncertain")
+                                       for step in ("approve", "dismiss"))]
+    if error or not rows:
+        return False
+    reviews = gh.reviews(loop, number)
+    if not isinstance(reviews, list):
+        return False
+    sup = Supervisor(db, create=False)
+    return any([_reconcile(loop, sup, row, reviews, number, log) for row in rows])
 
 
 def _reconcile(loop: dict, sup, row: dict, reviews: list, number: int, log) -> bool:
