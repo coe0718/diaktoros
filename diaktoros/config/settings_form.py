@@ -725,8 +725,8 @@ def _apply_triage_observer(overlaid, loop_raw, settings) -> None:  # noqa: ANN00
         # to live in, and a loop without one cannot be given a bare cap.
         if not triage.get("route"):
             raise config.ConfigError("settings: fix_daily_turns needs issue triage on for the loop "
-                              "(the triage block it lives in); turn it on with `hermes dk "
-                              "triage --enable` first")
+                              "(the triage block it lives in); turn it on with "
+                              f"`{config.triage_enable_command(loop_raw)}` first")
         triage["fix_daily_turns"] = config.validate_daily_turns(
             config.form_int(raw_cap), "triage.fix_daily_turns", "settings")
         overlaid["triage"] = triage

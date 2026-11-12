@@ -305,6 +305,18 @@ def fixer_push_enable_command(loop: dict | str) -> str:
     return f"hermes dk fixer-push --loop {loop_id} --enable --acknowledge-pr-race"
 
 
+# The flags a bare ``triage --enable`` is refused without (a profile, the authors, the labels).
+TRIAGE_ENABLE_FLAGS = ("--triage-profile", "--author", "--labels")
+
+
+def triage_enable_command(loop: dict | str = "LOOP", then: str = "") -> str:
+    """The command that turns issue triage on, for a loop or a loop id: the one spelling every
+    refusal names, so none of them sends the operator to a second refusal (#1728)."""
+    loop_id = loop if isinstance(loop, str) else loop.get("id") or "LOOP"
+    flags = " ".join(f"{flag} {ph}" for flag, ph in zip(TRIAGE_ENABLE_FLAGS, "PAL"))
+    return f"hermes dk triage --loop {loop_id} --enable {flags}" + (f" {then}" if then else "")
+
+
 def fixer_push_hold_reason(loop: dict) -> str:
     return (f"{FIXER_PUSH_HOLD} — the changes-requested verdict waits for you. To let the fixer "
             f"answer it, run `{fixer_push_enable_command(loop)}`; the next watchdog sweep (or "
