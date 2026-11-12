@@ -13,6 +13,15 @@ loop names; ``restore`` checks each before it writes and lists any that are miss
 private as ``NOT FINISHED``, but it does not refuse on them: the write goes ahead and the notice
 is printed with the final report.
 
+Writer scaffolding is deliberately left out too (#1060, #1694): the plugin's own lock files
+(an *empty* file directly in a state directory with a name a writer registered, ``_LOCK_NAMES``;
+a lock-named file holding data is archived) and in-progress temp files (``util.atomic_write``'s
+name shape *and* held open by their writer), so ``restore`` never writes them back. A listed file
+that is gone by the time it is read (a temp renamed into place, an ``artifacts/<n>/`` file
+cleaned up) is left out as well, not a failed backup. The manifest's ``skipped`` names every temp
+and vanished file left out (not the empty locks), and ``backup`` and ``migrate`` print them
+(``cli.lifecycle._report_left_out``).
+
 Retention (#1079): after a successful write to the default place, ``create`` deletes the oldest
 archives it wrote there (``$HERMES_HOME/backups``) beyond the newest ``keep`` (``DEFAULT_KEEP``;
 ``hermes dk backup --keep N``; 0 keeps every archive). A candidate is a regular, non-symlink file
@@ -453,10 +462,12 @@ def _open_new(out: pathlib.Path, chosen: bool) -> tuple[int, pathlib.Path]:
             if chosen:
                 raise BackupError(f"{out} already exists — pick another --out") from None
             # A default name another run took after default_out() looked: pick the next free one.
-            if attempt == _DEFAULT_TRIES - 1:
-                raise BackupError(f"{out} already exists and no free default name was found; "
-                                  "retry, or pass --out") from None
-            out = default_out().absolute()
+            if attempt < _DEFAULT_TRIES - 1:
+                out = default_out().absolute()
+    else:
+        # Every try was taken: the loop's own bound gives up, so ``fd`` is bound past here (#1694).
+        raise BackupError(f"{out} already exists and no free default name was found; "
+                          "retry, or pass --out")
     util.hold_temp(fd)
     return fd, out
 
@@ -464,7 +475,8 @@ def _open_new(out: pathlib.Path, chosen: bool) -> tuple[int, pathlib.Path]:
 def _listed_files(loops: list[dict]) -> tuple[list[tuple[pathlib.Path, pathlib.Path | None, str]],
                                               list[str]]:
     """The files ``create`` archives, as ``(target, source, kind)``, and the temp-shaped names it
-    leaves out (``skipped``; the manifest lists them): the loop files, the runtime and pacing
+    leaves out (``skipped``; the manifest lists them, with any listed file that is gone by the
+    time ``create`` reads it): the loop files, the runtime and pacing
     files, the gate-failure ledger and each loop's state directory. The ledger is added later."""
     files: list[tuple[pathlib.Path, pathlib.Path | None, str]] = []
     cfg = config.config_dir()
@@ -496,10 +508,46 @@ def _manifest(loops: list[dict], skipped: list[str], half_moved: dict | None) ->
             "tokens": {l["id"]: token_paths(l) for l in loops}, "migrating": half_moved}
 
 
+def _path_key(path: str | os.PathLike) -> str:
+    """The one spelling ``create`` compares a listed path and a ``must_read`` path by (#2413):
+    the real path of the parent directory plus the normalized last name, so ``/./``, repeated
+    slashes, a leading ``//`` and a symlinked directory on the way all name the same entry. The
+    last name itself is not followed: the entry may be gone, or a symlink, when this is asked.
+    A restore archive's manifest may spell a target any way ``read_manifest`` accepts; the
+    listing spells it as ``pathlib`` does."""
+    head, name = os.path.split(os.path.normpath(os.fspath(path)))
+    return os.path.join(os.path.realpath(head), name)
+
+
+def _add_files(tar: tarfile.TarFile, files: list[tuple[pathlib.Path, pathlib.Path | None, str]],
+               manifest: dict, must_read: frozenset[str]) -> None:
+    """Add each listed ``(target, source, kind)`` to ``tar`` as ``files/<index>`` and record it
+    in ``manifest["files"]``. A listed regular file gone by the read is named in ``skipped``
+    instead (#1694), unless it is a ``must_read`` path (#2413; both compared by ``_path_key``);
+    any other read error, and a vanished ledger snapshot, raises ``BackupError``."""
+    must_read = frozenset(_path_key(path) for path in must_read)
+    for index, (target, source, kind) in enumerate(files):
+        member = f"files/{index}"
+        try:
+            tar.add(source, arcname=member, recursive=False)
+        except FileNotFoundError as exc:
+            if kind == "file" and _path_key(target) not in must_read:
+                # Removed or renamed away since the listing (a temp renamed into place,
+                # an ``artifacts/<n>/`` file cleaned up): there is nothing left to archive,
+                # so it is left out and named, not a failed backup (#1694).
+                manifest["skipped"].append(str(target))
+                continue
+            raise BackupError(f"cannot read {source}: {exc}") from exc
+        except OSError as exc:
+            raise BackupError(f"cannot read {source}: {exc}") from exc
+        manifest["files"].append({"member": member, "path": str(target), "kind": kind})
+
+
 def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
            pruned: list[pathlib.Path] | None = None,
            using: contextlib.ExitStack | None = None, *, held: bool = False,
-           half_moved: dict | None = None) -> pathlib.Path:
+           half_moved: dict | None = None,
+           must_read: frozenset[str] = frozenset()) -> pathlib.Path:
     """Write the archive and return its path. Refuses to overwrite a file.
 
     A default-named archive (no ``out``) is followed by ``prune(keep)``; what it deleted is
@@ -513,7 +561,12 @@ def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
 
     Refused while ``migrate``'s marker exists (#1054, ``migrate.snapshot_refusal``), unless the
     caller holds it (``held``: ``migrate``'s own backup), which passes an interrupted run's
-    marker as ``half_moved``: ``restore`` puts it back."""
+    marker as ``half_moved``: ``restore`` puts it back.
+
+    A listed file that is gone by the time it is read is left out and named in ``skipped``
+    (#1694), unless its path is in ``must_read``: then the backup fails with ``BackupError``.
+    ``restore``'s undo snapshot passes every path it is about to write, so a file removed (and
+    perhaps recreated) while the snapshot reads it is never overwritten without being in it."""
     check_keep(keep)
     from . import migrate  # noqa: PLC0415 - the pause marker's owner
     if not held and migrate.snapshot_refusal():
@@ -537,18 +590,7 @@ def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
                 snap = pathlib.Path(scratch) / "ledger"
                 _snapshot_ledger(ledger, snap)
                 files.append((ledger, snap, "ledger"))
-            for index, (target, source, kind) in enumerate(files):
-                member = f"files/{index}"
-                try:
-                    tar.add(source, arcname=member, recursive=False)
-                except FileNotFoundError as exc:
-                    if kind == "file" and util.is_temp_name(target.name):
-                        manifest["skipped"].append(str(target))   # renamed away since the listing
-                        continue
-                    raise BackupError(f"cannot read {source}: {exc}") from exc
-                except OSError as exc:
-                    raise BackupError(f"cannot read {source}: {exc}") from exc
-                manifest["files"].append({"member": member, "path": str(target), "kind": kind})
+            _add_files(tar, files, manifest, must_read)
             raw = json.dumps(manifest, indent=1).encode()
             info = tarfile.TarInfo(MANIFEST)
             info.size, info.mtime, info.mode = len(raw), int(time.time()), 0o600

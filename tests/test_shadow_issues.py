@@ -419,6 +419,22 @@ class FilePending(unittest.TestCase):
         self.assertIn("unknown", self.error(run))
         self.assertNotIn("needs permission", self.error(run))
 
+    def test_a_budget_overrun_in_the_label_write_still_settles_both_rows(self):
+        # #1705: GateBudgetExceeded is a BaseException; escaping the label write it left the
+        # filed issue's rows `posting`/`recorded` though the issue exists on GitHub.
+        run = self.recorded("A finding")
+        def spent(_names):
+            raise gh.GateBudgetExceeded("time budget spent before POST labels")
+        self.assertEqual(self.file(labelled=spent)[0], [101])
+        self.assertEqual(self.state(run), "unlabelled")
+        self.assertIn("GateBudgetExceeded", self.error(run))
+        self.assertIn("unknown", self.error(run))
+        with ledger.connect(self.db) as con:
+            row = con.execute("SELECT state, issue_number FROM filed_issues WHERE run_id=?",
+                              (run,)).fetchone()
+        self.assertEqual(tuple(row), ("posted", 101))
+        self.assertEqual(self.file()[1], [])                   # never filed again
+
     def test_only_a_403_is_diagnosed_as_a_missing_label_permission(self):
         # #1641: no answer is an unknown outcome; another error, a rate-limit 403, or labels
         # left off a successful answer are reported as they are, never as a permission gap.

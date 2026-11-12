@@ -38,6 +38,25 @@ JOB = {"id": "j1", "name": "diaktoros watchdog", "schedule": {"kind": "interval"
        "deliver": "telegram", "script": "diaktoros-watchdog.py"}
 
 
+def rewrite_manifest(good, bad, change, extra=None):
+    """Copy archive ``good`` to ``bad`` with its manifest passed through ``change`` (in place)
+    and the members in ``extra`` (name to bytes) added: an archive as outside input."""
+    manifest = backup.read_manifest(good)
+    change(manifest)
+    with tarfile.open(good, "r:gz") as src, tarfile.open(bad, "w:gz") as dst:
+        for member in src.getmembers():
+            if member.name != backup.MANIFEST:
+                dst.addfile(member, src.extractfile(member))
+        for name, data in (extra or {}).items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            dst.addfile(info, io.BytesIO(data))
+        raw = json.dumps(manifest).encode()
+        info = tarfile.TarInfo(backup.MANIFEST)
+        info.size = len(raw)
+        dst.addfile(info, io.BytesIO(raw))
+
+
 class Base(fg.Base):
     cron_run = None
 
@@ -124,21 +143,8 @@ class Tampered(Base):
     def tamper(self, change, extra=None):
         good = self.root / "good.tar.gz"
         self.run_cmd(cli.cmd_backup, out=str(good))
-        manifest = backup.read_manifest(good)
-        change(manifest)
         bad = self.root / "bad.tar.gz"
-        with tarfile.open(good, "r:gz") as src, tarfile.open(bad, "w:gz") as dst:
-            for member in src.getmembers():
-                if member.name != backup.MANIFEST:
-                    dst.addfile(member, src.extractfile(member))
-            for name, data in (extra or {}).items():
-                info = tarfile.TarInfo(name)
-                info.size = len(data)
-                dst.addfile(info, io.BytesIO(data))
-            raw = json.dumps(manifest).encode()
-            info = tarfile.TarInfo(backup.MANIFEST)
-            info.size = len(raw)
-            dst.addfile(info, io.BytesIO(raw))
+        rewrite_manifest(good, bad, change, extra)
         return bad
 
     def refused(self, archive, force=True, want=""):
@@ -536,6 +542,42 @@ class Create(Base):
         self.assertNotIn(str(temp), {f["path"] for f in manifest["files"]})
         self.assertEqual(manifest["skipped"], [str(temp)])
 
+    def test_a_listed_file_removed_before_the_read_is_skipped_not_fatal(self):
+        """#1694: any listed regular file gone by ``tar.add``, not only a temp-shaped one (here a
+        loop's ``artifacts/<n>/`` file removed by cleanup), is left out and named in the manifest
+        and in the command's ``left out`` line; the backup still succeeds."""
+        gone = self.state / "artifacts" / "7" / "report.txt"
+        gone.parent.mkdir(parents=True)
+        gone.write_text("work product")
+        real = backup.tarfile.TarFile.add
+
+        def vanish(tar, name, *args, **kw):
+            if str(name) == str(gone):
+                gone.unlink()
+            return real(tar, name, *args, **kw)
+        out = self.root / "b.tar.gz"
+        with mock.patch.object(backup.tarfile.TarFile, "add", vanish):
+            code, text = self.run_cmd(cli.cmd_backup, out=str(out))
+        self.assertEqual(code, 0, text)
+        manifest = backup.read_manifest(out)
+        self.assertNotIn(str(gone), {f["path"] for f in manifest["files"]})
+        self.assertIn(str(self.state / "queue.json"), {f["path"] for f in manifest["files"]})
+        self.assertEqual(manifest["skipped"], [str(gone)])
+        self.assertIn(str(gone), text)
+
+    def test_a_non_empty_state_lock_is_state_archived_and_restored(self):
+        """#1694: only an *empty* lock-named file is scaffolding; one holding data at the
+        state-dir root is archived and restore writes it back."""
+        lock = self.state / "state.lock"
+        self.assertIn("state.lock", backup._LOCK_NAMES)
+        lock.write_text("not empty")
+        out = self.root / "b.tar.gz"
+        backup.create(out)
+        self.assertIn(str(lock), {f["path"] for f in backup.read_manifest(out)["files"]})
+        lock.unlink()
+        self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        self.assertEqual(lock.read_text(), "not empty")
+
     def test_refuses_to_overwrite(self):
         out = self.root / "b.tar.gz"
         out.write_text("keep")
@@ -573,6 +615,20 @@ class Create(Base):
         self.assertNotIn("pick another --out", str(caught.exception))
         self.assertEqual(taken.read_text(), "other run")
         self.assertEqual(sorted(p.name for p in self.root.glob("*.tar.gz")), ["taken.tar.gz"])
+
+    def test_the_give_up_is_the_loops_own_bound_not_a_separate_check(self):
+        """#1694: the retry loop gives up through its own bound (``for``/``else``), so a loop
+        bound edited apart from any in-loop check still ends in ``BackupError``, never in an
+        unbound ``fd``. Simulated by shortening the bound the loop iterates over."""
+        taken = self.root / "taken.tar.gz"
+        taken.write_text("other run")
+        import builtins
+        with mock.patch.object(backup, "default_out", return_value=taken), \
+                mock.patch.object(backup, "range", create=True,
+                                  new=lambda n: builtins.range(n - 1)):
+            with self.assertRaisesRegex(backup.BackupError, "no free default name"):
+                backup.create()
+        self.assertEqual(taken.read_text(), "other run")
 
     def test_explicit_out_that_exists_still_names_out(self):
         taken = self.root / "taken.tar.gz"
@@ -677,6 +733,27 @@ class Retention(Base):
                      "diaktoros-backup-20190101-000000.tar.gz",
                      "diaktoros-backup-20180101-000000.tar.gz"):
             self.assertIn(kept, left)
+        for gone in self.stamped(2):
+            self.assertNotIn(gone, left)
+
+    def test_a_default_named_file_that_is_not_a_tarball_is_neither_counted_nor_deleted(self):
+        """#1883: a junk file (and an empty one) with a default-shaped name passes the name and
+        regular-file checks, so only ``made_by_default``'s read guard keeps the backup from
+        failing after its archive is written, and the file from being counted or pruned."""
+        folder = self.old(*self.stamped(2))
+        junk = "diaktoros-backup-20190101-000000.tar.gz"
+        empty = "diaktoros-backup-20190102-000000.tar.gz"
+        self.plain(junk)
+        (folder / empty).write_bytes(b"")
+        code, text = self.run_cmd(cli.cmd_backup, out=None, keep=1)
+        self.assertEqual(code, 0, text)
+        left = self.names(folder)
+        self.assertEqual(len(left), 3, left)              # the new archive and the two junk files
+        for kept in (junk, empty):
+            self.assertIn(kept, left)
+            self.assertNotIn(kept, text)                  # not reported as removed
+        self.assertEqual((folder / junk).read_text(), "old")
+        self.assertIn("removed 2 older", text)            # the marked ones were pruned as before
         for gone in self.stamped(2):
             self.assertNotIn(gone, left)
 
@@ -1164,7 +1241,7 @@ class Restore(Base):
         self.wipe()
         key.unlink()
         code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=False)
-        notice = (f"restore: NOT FINISHED — credential file missing: one: credential file for "
+        notice = (f"restore: NOT FINISHED — credential file problem: one: credential file for "
                   f"acme-reader[bot] ({key}): ")
         self.assertIn(notice, text)
         self.assertNotIn("token file missing", text)
@@ -1175,6 +1252,20 @@ class Restore(Base):
         self.assertEqual(config.all_loops()[0]["apps"]["acme-reader[bot]"]["key_file"], str(key))
         code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=True, force=False)
         self.assertIn(notice, text)
+
+    def test_restore_does_not_call_an_existing_unsafe_key_missing(self):
+        """A key that exists but group/other can read is a problem, not a missing file (#1904)."""
+        key = self.app_loop()
+        out = self.take()
+        self.wipe()
+        key.chmod(0o644)
+        code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=False)
+        self.assertEqual(code, 1, text)
+        self.assertTrue(key.exists())
+        self.assertIn(f"restore: NOT FINISHED — credential file problem: one: credential file for "
+                      f"acme-reader[bot] ({key}): ", text)
+        self.assertIn("mode 644", text)
+        self.assertNotIn("missing", text)
 
     def test_restore_checks_credential_files_before_writing_but_never_refuses_on_them(self):
         """What ``backup.token_paths`` says: ``missing_tokens`` runs before ``put_files`` and finds
@@ -1244,6 +1335,21 @@ class MigrateBacksUpFirst(Base):
             code, text = self.run_cmd(cli.cmd_migrate, dry_run=False)
         self.assertEqual(code, 2)
         moved.assert_not_called()
+
+    def test_migrates_backup_reports_what_it_left_out_like_backup_does(self):
+        """#1694: migrate's automatic backup prints the same ``left out`` line as ``backup``."""
+        temp = self.live_temp(self.state / ".queue.json.a1b2c3d4.dktmp")
+        with mock.patch.object(migrate, "settings_step", return_value=[]), \
+                mock.patch.object(migrate, "shim_step", return_value=[]), \
+                mock.patch.object(migrate, "files_step", return_value=[]), \
+                mock.patch.object(migrate, "repo_step", return_value=[]), \
+                mock.patch.object(cli_lifecycle, "_move_watchdog_job", return_value=[]):
+            code, text = self.run_cmd(cli.cmd_migrate, dry_run=False)
+        line = next((l for l in text.splitlines() if "left out" in l), "")
+        self.assertTrue(line.startswith("backup: left out (1 file(s)"), text)
+        self.assertIn(str(temp), line)
+        _, direct = self.run_cmd(cli.cmd_backup, out=str(self.root / "b.tar.gz"))
+        self.assertIn(line.removeprefix("backup: "), direct.splitlines())
 
 
 class AllOrNothing(Base):
@@ -1353,6 +1459,90 @@ class AllOrNothing(Base):
         self.assertEqual(code, 2, text)
         self.assertIn("the backup of the live install before it failed (disk full)", text)
         self.assertEqual((self.state / "queue.json").read_text(), '{"newer": true}')
+
+    def test_a_file_restore_overwrites_that_vanishes_under_the_snapshot_refuses_the_restore(self):
+        """#2413: a file the restore would overwrite that is removed while the undo snapshot reads
+        it (and recreated after) is not skipped like in a plain ``backup`` (#1694): the snapshot
+        fails, so restore writes nothing and the recreated file survives."""
+        out = self.changed_live_install()
+        queue = self.state / "queue.json"
+        real, raced = backup.tarfile.TarFile.add, []
+
+        def vanish(tar, name, *args, **kw):
+            if str(name) == str(queue) and not raced:
+                raced.append(name)
+                queue.unlink()
+                try:
+                    return real(tar, name, *args, **kw)
+                finally:
+                    queue.write_text("live-replacement")
+            return real(tar, name, *args, **kw)
+        with mock.patch.object(backup.tarfile.TarFile, "add", vanish):
+            code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        self.assertTrue(raced)
+        self.assertEqual(code, 2, text)
+        self.assertIn("the backup of the live install before it failed", text)
+        self.assertNotIn("the install as it was is in", text)
+        self.assertEqual(queue.read_text(), "live-replacement")
+        self.assertEqual(list(backup.backups_dir().glob("diaktoros-pre-restore-*")), [])
+
+    def test_an_aliased_target_that_vanishes_under_the_snapshot_still_refuses_the_restore(self):
+        """#2413: the archive is outside input and ``read_manifest`` accepts a target spelled
+        with ``/./`` or repeated slashes; the snapshot must still recognise it as a file the
+        restore writes, so the race refuses the restore and the recreated file survives."""
+        good = self.changed_live_install()
+        queue = self.state / "queue.json"
+        aliases = (f"{self.state}/./queue.json", f"{self.state}//queue.json",
+                   f"{self.state}/.//./queue.json")
+        for index, alias in enumerate(aliases):
+            with self.subTest(alias=alias):
+                queue.write_text('{"newer": true}')
+                out = self.root / f"alias{index}.tar.gz"
+
+                def respell(manifest, alias=alias):
+                    for entry in manifest["files"]:
+                        if entry["path"] == str(queue):
+                            entry["path"] = alias
+                rewrite_manifest(good, out, respell)
+                self.assertIn(alias, {f["path"] for f in backup.read_manifest(out)["files"]})
+                real, raced = backup.tarfile.TarFile.add, []
+
+                def vanish(tar, name, *args, **kw):
+                    if str(name) == str(queue) and not raced:
+                        raced.append(name)
+                        queue.unlink()
+                        try:
+                            return real(tar, name, *args, **kw)
+                        finally:
+                            queue.write_text("live-replacement")
+                    return real(tar, name, *args, **kw)
+                with mock.patch.object(backup.tarfile.TarFile, "add", vanish):
+                    code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False,
+                                              force=True)
+                self.assertTrue(raced, text)
+                self.assertEqual(code, 2, text)
+                self.assertIn("the backup of the live install before it failed", text)
+                self.assertEqual(queue.read_text(), "live-replacement")
+                self.assertEqual(list(backup.backups_dir().glob("diaktoros-pre-restore-*")), [])
+
+    def test_a_file_restore_does_not_write_that_vanishes_under_the_snapshot_is_skipped(self):
+        """#2413: the undo snapshot keeps #1694's skip for a file the restore does not write."""
+        out = self.changed_live_install()
+        gone = self.state / "artifacts" / "7" / "report.txt"
+        gone.parent.mkdir(parents=True)
+        gone.write_text("work product")
+        real = backup.tarfile.TarFile.add
+
+        def vanish(tar, name, *args, **kw):
+            if str(name) == str(gone):
+                gone.unlink(missing_ok=True)
+            return real(tar, name, *args, **kw)
+        with mock.patch.object(backup.tarfile.TarFile, "add", vanish):
+            code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        self.assertEqual(code, 0, text)
+        snaps = list(backup.backups_dir().glob("diaktoros-pre-restore-*.tar.gz"))
+        self.assertEqual(len(snaps), 1, text)
+        self.assertEqual(backup.read_manifest(snaps[0])["skipped"], [str(gone)])
 
     def test_a_restore_onto_an_empty_install_takes_no_pre_restore_backup(self):
         out = self.root / "b.tar.gz"

@@ -106,6 +106,27 @@ class ReviewerRule(unittest.TestCase):
         self.assertIn("a PR past GitHub's 3,000-file listing limit", text)
         self.assertIn("a new finding on a file beyond them is refused unless it says `missed earlier`", text)
 
+    def test_listing_limit_exception_only_where_the_compare_reaches_the_cap(self):
+        # #1697: findings.changed_files uses the capped PR listing only when the round's compare
+        # reaches COMPARE_FILES_CAP; under it the compare's own list counts, past 3,000 or not.
+        # The prompt and docs/concepts.md must not ask for `missed earlier` in that case.
+        from pathlib import Path
+        from unittest import mock
+        from diaktoros import findings, gh
+        text = flat(prompts.ISOLATED_REVIEWER)
+        self.assertIn("The one exception is a round whose list reaches 300 in a PR past GitHub's "
+                      "3,000-file listing limit", text)
+        self.assertIn("A round whose list stays under 300 counts its own files, past 3,000 or not, "
+                      "so a finding on one of them needs no marker", text)
+        concepts = flat((Path(__file__).resolve().parents[1] / "docs" / "concepts.md").read_text())
+        self.assertIn("needs `missed earlier` only when that round's compare reached 300 files", concepts)
+        self.assertNotIn("still needs `missed earlier` (the host cannot tell", concepts)
+        # The behaviour the texts describe: a short compare is used as is, the listing unread.
+        loop = {"repo": "o/r"}
+        with mock.patch.object(gh, "api", return_value={"files": [{"filename": "far.py"}]}), \
+                mock.patch.object(gh, "pr_files_read", side_effect=AssertionError("read")):
+            self.assertEqual(findings.changed_files(loop, 1, "a" * 40, "b" * 40), {"far.py"})
+
     def test_reviewer_prompt_demands_the_line(self):
         text = flat(prompts.ISOLATED_REVIEWER)
         self.assertIn("`Not verified:` line", text)
