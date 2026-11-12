@@ -13,6 +13,15 @@ loop names; ``restore`` checks each before it writes and lists any that are miss
 private as ``NOT FINISHED``, but it does not refuse on them: the write goes ahead and the notice
 is printed with the final report.
 
+Writer scaffolding is deliberately left out too (#1060, #1694): the plugin's own lock files
+(an *empty* file directly in a state directory with a name a writer registered, ``_LOCK_NAMES``;
+a lock-named file holding data is archived) and in-progress temp files (``util.atomic_write``'s
+name shape *and* held open by their writer), so ``restore`` never writes them back. A listed file
+that is gone by the time it is read (a temp renamed into place, an ``artifacts/<n>/`` file
+cleaned up) is left out as well, not a failed backup. The manifest's ``skipped`` names every temp
+and vanished file left out (not the empty locks), and ``backup`` and ``migrate`` print them
+(``cli.lifecycle._report_left_out``).
+
 Retention (#1079): after a successful write to the default place, ``create`` deletes the oldest
 archives it wrote there (``$HERMES_HOME/backups``) beyond the newest ``keep`` (``DEFAULT_KEEP``;
 ``hermes dk backup --keep N``; 0 keeps every archive). A candidate is a regular, non-symlink file
@@ -34,15 +43,21 @@ has to pass it to get a count other than ``DEFAULT_KEEP``. An output directory s
 For the same reason ``doctor``'s ``backup:fresh`` check (#1081) warns on a fixed age,
 ``FRESH_DAYS``, and reads only ``backups_dir()``: it cannot see an archive written with ``--out``
 elsewhere, nor a backup taken some other way. It does not trust an archive dated more than
-``CLOCK_SKEW_S`` in the future, since that file would stay "fresh" long after the backup.
+``CLOCK_SKEW_S`` in the future, since that file would stay "fresh" long after the backup. Because
+that cutoff moves with the clock, ``hermes dk backup`` records each such archive it sees in
+``FUTURE_RECORD`` (``record_future_dated``, #1905) and ``doctor`` keeps a recorded one apart after
+the clock reaches its date; one that arrives and is caught up with between two backup runs is not
+recorded.
 """
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import gzip
 import io
 import importlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -61,6 +76,7 @@ VERSION = 1
 MANIFEST = "manifest.json"
 FRESH_DAYS = 30         # doctor's backup:fresh warns when the newest archive is older than this
 CLOCK_SKEW_S = 86400    # an archive dated further ahead than this is not trusted as recent (#1875)
+FUTURE_RECORD = ".future-dated.json"   # in backups_dir(): archives `backup` saw past it (#1905)
 WARNING = ("this archive holds route secrets (webhook HMAC keys): keep it private; "
            "it was written mode 0600 and its contents are never printed")
 
@@ -89,10 +105,12 @@ def latest_archive(now: float | None = None) -> tuple[tuple[pathlib.Path, float]
     """The archives in ``backups_dir()`` as ``(newest, ahead)``, each ``(path, mtime)`` or None.
 
     ``newest`` is the most recently written archive whose mtime is not past ``now`` plus
-    ``CLOCK_SKEW_S`` (``now`` defaults to the current time). ``ahead`` is the latest-dated archive
-    that is past that: written while the host clock was wrong, or copied in from a host whose
+    ``CLOCK_SKEW_S`` (``now`` defaults to the current time) and that ``hermes dk backup`` has not
+    recorded as future-dated (``record_future_dated``). ``ahead`` is the latest-dated archive
+    that is either: written while the host clock was wrong, or copied in from a host whose
     clock is. Its age cannot be told, and trusting it would keep ``doctor`` green for as long as
-    the clock was ahead plus ``FRESH_DAYS``, however long ago the backup really was (#1875), so the
+    the clock was ahead plus ``FRESH_DAYS``, however long ago the backup really was (#1875); a
+    recorded one stays apart after the clock reaches its date (#1905). So the
     caller must not count it as a recent backup. It is returned so that an install holding nothing
     else can be told why, rather than reported as having no archive.
 
@@ -100,30 +118,142 @@ def latest_archive(now: float | None = None) -> tuple[tuple[pathlib.Path, float]
     operator's ``--out`` into this directory counts as much as a default name. The file is not
     opened, so this says a recent archive *exists*, not that it would restore. A directory that
     does not exist is "none"; one that cannot be read raises ``OSError`` — the caller says so
-    rather than reporting a backup that may be there as missing.
+    rather than reporting a backup that may be there as missing. So does a damaged
+    ``FUTURE_RECORD`` (``FutureRecordError``, an ``OSError``): it is never read as empty.
     """
     limit = (time.time() if now is None else now) + CLOCK_SKEW_S
     try:
-        entries = list(os.scandir(backups_dir()))
+        entries = _archives()
     except FileNotFoundError:
         return None, None
+    recorded = _read_future_record()
     newest: tuple[pathlib.Path, float] | None = None
     ahead: tuple[pathlib.Path, float] | None = None
-    for entry in entries:
+    for path, mtime in entries:
+        found = (path, mtime)
+        # Past the allowance now, or seen past it by an earlier ``create`` (#1905): the clock
+        # catching up with the file's date does not make that date its age.
+        if mtime > limit or recorded.get(path.name) == mtime:
+            ahead = found if ahead is None or found[1] > ahead[1] else ahead
+        elif newest is None or mtime > newest[1]:
+            newest = found
+    return newest, ahead
+
+
+def _archives() -> list[tuple[pathlib.Path, float]]:
+    """Every archive in ``backups_dir()`` as ``(path, mtime)``: a regular, non-empty, non-symlink
+    ``*.tar.gz``. Raises ``FileNotFoundError`` when the directory does not exist and ``OSError``
+    when it cannot be read; a file gone between the listing and its ``stat`` is skipped."""
+    found = []
+    for entry in os.scandir(backups_dir()):
         if not entry.name.endswith(".tar.gz") or not entry.is_file(follow_symlinks=False):
             continue
         try:
             info = entry.stat(follow_symlinks=False)
         except OSError:
             continue        # gone between the listing and now
-        if not info.st_size:
-            continue
-        found = (pathlib.Path(entry.path), info.st_mtime)
-        if info.st_mtime > limit:
-            ahead = found if ahead is None or found[1] > ahead[1] else ahead
-        elif newest is None or info.st_mtime > newest[1]:
-            newest = found
-    return newest, ahead
+        if info.st_size:
+            found.append((pathlib.Path(entry.path), info.st_mtime))
+    return found
+
+
+def _future_record_path() -> pathlib.Path:
+    """The record of archives ``hermes dk backup`` saw dated past ``CLOCK_SKEW_S`` (#1905). Not a
+    ``*.tar.gz``, so it is never taken for an archive, and not default-named, so never pruned."""
+    return backups_dir() / FUTURE_RECORD
+
+
+class FutureRecordError(OSError):
+    """``FUTURE_RECORD`` exists but is not the record ``record_future_dated`` writes (not UTF-8,
+    not JSON, or not ``{name: mtime}``). An ``OSError``, so every caller that already stops on an
+    unreadable backups directory stops on it too. The archives it named can no longer be told
+    apart (#1905 review F2), so it is never read as "nothing recorded" and never overwritten."""
+
+
+def _read_future_record() -> dict[str, float]:
+    """``{archive name: mtime}`` from the record; empty only when there is no record. A record
+    that cannot be read raises ``OSError``, as an unreadable directory does, and one that does not
+    parse raises ``FutureRecordError``: reading it as empty would let every archive it named count
+    as recent once the clock reaches its date (#1905 review F2)."""
+    path = _future_record_path()
+    try:
+        data = json.loads(path.read_bytes().decode("utf-8"))
+    except FileNotFoundError:
+        return {}
+    except ValueError as exc:       # UnicodeDecodeError and JSONDecodeError are both ValueErrors
+        raise FutureRecordError(f"{path} is damaged ({exc})") from exc
+    if not isinstance(data, dict):
+        raise FutureRecordError(f"{path} is damaged (not an {{archive name: mtime}} object)")
+    return {str(name): _recorded_mtime(path, name, value) for name, value in data.items()}
+
+
+def _recorded_mtime(path: pathlib.Path, name: str, value: object) -> float:
+    """One entry of the record at ``path`` as a finite float mtime, or ``FutureRecordError``.
+
+    The JSON decoder accepts ``NaN`` and ``Infinity``, which never equal an archive's mtime (so the
+    archive would count as recent once the clock reaches it, and the next backup would drop the
+    entry), and integers too large for a float, whose conversion raises ``OverflowError``. Each is
+    a damaged record, never skipped and never a crash (#2446 review round 2, F2)."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise FutureRecordError(f"{path} is damaged (not an {{archive name: mtime}} object)")
+    try:
+        mtime = float(value)
+    except OverflowError:
+        mtime = math.inf
+    if not math.isfinite(mtime):
+        raise FutureRecordError(f"{path} is damaged (the mtime of {name!r} is not a finite "
+                                f"number)")
+    return mtime
+
+
+@contextlib.contextmanager
+def _future_record_locked():
+    """Hold an exclusive ``flock`` on ``backups_dir()`` itself while the caller scans, reads and
+    rewrites ``FUTURE_RECORD``, so two overlapping backups never both start from the old record
+    and the later writer drops the other's entries (#1905 review F1). The directory, not a lock
+    file beside the record: that would be one more file in the directory every listing sees.
+    Raises ``FileNotFoundError`` when the directory does not exist. On a filesystem without
+    ``flock`` the lock does not take (as with ``util.hold_temp``) and overlapping runs are not
+    serialized."""
+    fd = os.open(backups_dir(), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)        # closing the descriptor releases the flock
+
+
+def record_future_dated(now: float | None = None) -> list[pathlib.Path]:
+    """Record every archive in ``backups_dir()`` dated more than ``CLOCK_SKEW_S`` past ``now``
+    (#1905), and return the ones not recorded before.
+
+    ``latest_archive`` sets such a file apart only while its date is still ahead of the clock; once
+    the real clock comes within the allowance it would count as fresh for ``FRESH_DAYS`` more,
+    although no backup was made then. ``doctor`` is read-only and the archive cannot tell (its
+    manifest's ``created`` comes from the same wrong clock), so ``hermes dk backup``, which writes
+    anyway, records the file's name with its mtime, and ``latest_archive`` never counts a recorded
+    archive whose mtime is unchanged. Entries whose file is gone or was rewritten (another mtime)
+    are dropped. Only ``hermes dk backup`` calls this, so an archive that arrives and is caught up
+    with between two backups (or with no backup run in between) is never seen, and not recorded.
+
+    The scan, the read and the write happen under one lock (``_future_record_locked``), so a run
+    that overlaps another starts from the record as the other left it (review F1). A damaged
+    record raises ``FutureRecordError`` and is left as it is: rewriting it would forget what it
+    named (review F2)."""
+    limit = (time.time() if now is None else now) + CLOCK_SKEW_S
+    if not backups_dir().is_dir():
+        return []
+    with _future_record_locked():
+        current = dict((p.name, m) for p, m in _archives())
+        old = _read_future_record()
+        kept = {name: m for name, m in old.items() if current.get(name) == m}
+        added = [name for name, m in sorted(current.items())
+                 if m > limit and kept.get(name) != m]
+        kept.update({name: current[name] for name in added})
+        if kept != old:
+            util.atomic_write(_future_record_path(), json.dumps(kept, indent=1, sort_keys=True))
+    return [backups_dir() / name for name in added]
 
 
 def _free_name(prefix: str) -> pathlib.Path:
@@ -332,10 +462,12 @@ def _open_new(out: pathlib.Path, chosen: bool) -> tuple[int, pathlib.Path]:
             if chosen:
                 raise BackupError(f"{out} already exists — pick another --out") from None
             # A default name another run took after default_out() looked: pick the next free one.
-            if attempt == _DEFAULT_TRIES - 1:
-                raise BackupError(f"{out} already exists and no free default name was found; "
-                                  "retry, or pass --out") from None
-            out = default_out().absolute()
+            if attempt < _DEFAULT_TRIES - 1:
+                out = default_out().absolute()
+    else:
+        # Every try was taken: the loop's own bound gives up, so ``fd`` is bound past here (#1694).
+        raise BackupError(f"{out} already exists and no free default name was found; "
+                          "retry, or pass --out")
     util.hold_temp(fd)
     return fd, out
 
@@ -343,7 +475,8 @@ def _open_new(out: pathlib.Path, chosen: bool) -> tuple[int, pathlib.Path]:
 def _listed_files(loops: list[dict]) -> tuple[list[tuple[pathlib.Path, pathlib.Path | None, str]],
                                               list[str]]:
     """The files ``create`` archives, as ``(target, source, kind)``, and the temp-shaped names it
-    leaves out (``skipped``; the manifest lists them): the loop files, the runtime and pacing
+    leaves out (``skipped``; the manifest lists them, with any listed file that is gone by the
+    time ``create`` reads it): the loop files, the runtime and pacing
     files, the gate-failure ledger and each loop's state directory. The ledger is added later."""
     files: list[tuple[pathlib.Path, pathlib.Path | None, str]] = []
     cfg = config.config_dir()
@@ -375,10 +508,46 @@ def _manifest(loops: list[dict], skipped: list[str], half_moved: dict | None) ->
             "tokens": {l["id"]: token_paths(l) for l in loops}, "migrating": half_moved}
 
 
+def _path_key(path: str | os.PathLike) -> str:
+    """The one spelling ``create`` compares a listed path and a ``must_read`` path by (#2413):
+    the real path of the parent directory plus the normalized last name, so ``/./``, repeated
+    slashes, a leading ``//`` and a symlinked directory on the way all name the same entry. The
+    last name itself is not followed: the entry may be gone, or a symlink, when this is asked.
+    A restore archive's manifest may spell a target any way ``read_manifest`` accepts; the
+    listing spells it as ``pathlib`` does."""
+    head, name = os.path.split(os.path.normpath(os.fspath(path)))
+    return os.path.join(os.path.realpath(head), name)
+
+
+def _add_files(tar: tarfile.TarFile, files: list[tuple[pathlib.Path, pathlib.Path | None, str]],
+               manifest: dict, must_read: frozenset[str]) -> None:
+    """Add each listed ``(target, source, kind)`` to ``tar`` as ``files/<index>`` and record it
+    in ``manifest["files"]``. A listed regular file gone by the read is named in ``skipped``
+    instead (#1694), unless it is a ``must_read`` path (#2413; both compared by ``_path_key``);
+    any other read error, and a vanished ledger snapshot, raises ``BackupError``."""
+    must_read = frozenset(_path_key(path) for path in must_read)
+    for index, (target, source, kind) in enumerate(files):
+        member = f"files/{index}"
+        try:
+            tar.add(source, arcname=member, recursive=False)
+        except FileNotFoundError as exc:
+            if kind == "file" and _path_key(target) not in must_read:
+                # Removed or renamed away since the listing (a temp renamed into place,
+                # an ``artifacts/<n>/`` file cleaned up): there is nothing left to archive,
+                # so it is left out and named, not a failed backup (#1694).
+                manifest["skipped"].append(str(target))
+                continue
+            raise BackupError(f"cannot read {source}: {exc}") from exc
+        except OSError as exc:
+            raise BackupError(f"cannot read {source}: {exc}") from exc
+        manifest["files"].append({"member": member, "path": str(target), "kind": kind})
+
+
 def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
            pruned: list[pathlib.Path] | None = None,
            using: contextlib.ExitStack | None = None, *, held: bool = False,
-           half_moved: dict | None = None) -> pathlib.Path:
+           half_moved: dict | None = None,
+           must_read: frozenset[str] = frozenset()) -> pathlib.Path:
     """Write the archive and return its path. Refuses to overwrite a file.
 
     A default-named archive (no ``out``) is followed by ``prune(keep)``; what it deleted is
@@ -392,7 +561,12 @@ def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
 
     Refused while ``migrate``'s marker exists (#1054, ``migrate.snapshot_refusal``), unless the
     caller holds it (``held``: ``migrate``'s own backup), which passes an interrupted run's
-    marker as ``half_moved``: ``restore`` puts it back."""
+    marker as ``half_moved``: ``restore`` puts it back.
+
+    A listed file that is gone by the time it is read is left out and named in ``skipped``
+    (#1694), unless its path is in ``must_read``: then the backup fails with ``BackupError``.
+    ``restore``'s undo snapshot passes every path it is about to write, so a file removed (and
+    perhaps recreated) while the snapshot reads it is never overwritten without being in it."""
     check_keep(keep)
     from . import migrate  # noqa: PLC0415 - the pause marker's owner
     if not held and migrate.snapshot_refusal():
@@ -416,18 +590,7 @@ def create(out: pathlib.Path | None = None, keep: int = DEFAULT_KEEP,
                 snap = pathlib.Path(scratch) / "ledger"
                 _snapshot_ledger(ledger, snap)
                 files.append((ledger, snap, "ledger"))
-            for index, (target, source, kind) in enumerate(files):
-                member = f"files/{index}"
-                try:
-                    tar.add(source, arcname=member, recursive=False)
-                except FileNotFoundError as exc:
-                    if kind == "file" and util.is_temp_name(target.name):
-                        manifest["skipped"].append(str(target))   # renamed away since the listing
-                        continue
-                    raise BackupError(f"cannot read {source}: {exc}") from exc
-                except OSError as exc:
-                    raise BackupError(f"cannot read {source}: {exc}") from exc
-                manifest["files"].append({"member": member, "path": str(target), "kind": kind})
+            _add_files(tar, files, manifest, must_read)
             raw = json.dumps(manifest, indent=1).encode()
             info = tarfile.TarInfo(MANIFEST)
             info.size, info.mtime, info.mode = len(raw), int(time.time()), 0o600

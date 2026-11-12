@@ -411,13 +411,18 @@ def _record_enum(value, allowed):
 
 def _record_failures(loop):
     from . import gate_failures
-    owners = [gate_failures.loop_ledger(loop), gate_failures.fallback_ledger()]
-    found, present = {}, False
-    for index, owner in enumerate(owners):
+    home, spare = gate_failures.loop_ledger(loop), gate_failures.fallback_ledger()
+    # The same owner rules ``open_for`` (so ``explain`` and ``ready``) applies: the fallback is
+    # read only when it is another file, and a fallback entry is shown unless the home copy is
+    # the same failure (#1691), so a newer failure is never hidden behind an older home entry.
+    owners = [home] + ([spare] if gate_failures.reads_fallback(home, spare) else [])
+    tables, present = [], False
+    for owner in owners:
         try:
             data = _record_json(owner.path)
         except _RecordRead as exc:
             if exc.reason == 'not_recorded':
+                tables.append({})
                 continue
             raise
         present = True
@@ -427,28 +432,31 @@ def _record_failures(loop):
             if (not isinstance(entry, dict) or not key or key.startswith('_') or
                     type(entry.get('resolved')) is not bool):
                 raise ValueError('entry')
+        tables.append(data)
+    found = []
+    for index, data in enumerate(tables):
+        for key, entry in data.items():
             if entry['resolved']:
                 continue
             # Fallback belongs to many loops: never leak a different repository's failures.
-            if index and entry.get('repo') != loop['repo']:
+            if index and not gate_failures.fallback_shown(loop, tables[0], key, entry):
                 continue
             if not re.fullmatch(r'(?:[0-9a-f]{16}|ledger-[0-9a-f]{12})', key):
                 raise ValueError('identity')
-            item = {'id': key,
-                    'gate': _record_enum(entry.get('gate'),
-                                         ('gate_reviewer', 'gate_fixer', 'gate_adjudicator', 'ledger')),
-                    'kind': _record_enum(entry.get('kind'),
-                                         ('crash', 'timeout', 'stopped', 'incomplete', 'deferred', 'ledger')),
-                    'pr': _record_number(entry.get('pr'), integer=True, nullable=True),
-                    'head': _record_sha(entry.get('head', '')),
-                    'first_at': _record_number(entry.get('first_at')),
-                    'last_at': _record_number(entry.get('last_at')),
-                    'attempts': _record_number(entry.get('attempts'), integer=True),
-                    'redrives': _record_number(entry.get('redrives', 0), integer=True)}
-            found.setdefault(key, item)
+            found.append({'id': key,
+                          'gate': _record_enum(entry.get('gate'),
+                                               ('gate_reviewer', 'gate_fixer', 'gate_adjudicator', 'ledger')),
+                          'kind': _record_enum(entry.get('kind'),
+                                               ('crash', 'timeout', 'stopped', 'incomplete', 'deferred', 'ledger')),
+                          'pr': _record_number(entry.get('pr'), integer=True, nullable=True),
+                          'head': _record_sha(entry.get('head', '')),
+                          'first_at': _record_number(entry.get('first_at')),
+                          'last_at': _record_number(entry.get('last_at')),
+                          'attempts': _record_number(entry.get('attempts'), integer=True),
+                          'redrives': _record_number(entry.get('redrives', 0), integer=True)})
     if not present:
         raise _RecordRead('not_recorded')
-    return sorted(found.values(), key=lambda item: (item['last_at'], item['id']), reverse=True)[:RECORDS_MAX]
+    return sorted(found, key=lambda item: (item['last_at'], item['id']), reverse=True)[:RECORDS_MAX]
 
 
 def _record_broker(loop):

@@ -193,11 +193,17 @@ def sweep_asks(loop: dict, st, lines: list[str], only: int | None = None) -> Non
         if found is None:
             continue
         login, body = found
-        st.fix_ask_resolve(number, body[:ASK_REPLY_MAX], login, ask.get("kind") == "plan")
+        # #2382 review F1: the reply was read for the snapshot `ask`, outside any lock; while it
+        # was read, `continue` may have closed that ask and another may have opened. Resolve and
+        # drop only that exact ask, so an old reply never answers (or closes) a newer one.
+        if not st.fix_ask_resolve(number, body[:ASK_REPLY_MAX], login, ask.get("kind") == "plan",
+                                  expect=ask):
+            log(f"issue #{number}: the ask changed while its replies were read; not resolved")
+            continue
         if ask.get("run"):
             # #2334: `continue` posted a pushed fix as the plan. The approval is recorded above;
             # the branch is already pushed, so no fresh turn: `continue` opens its PR.
-            st.fix_ask_drop(number)
+            st.fix_ask_drop(number, expect=ask)
             log(f"issue #{number}: {login} approved the plan of run {ask['run']}; finish it with "
                 f"`hermes dk continue --loop {loop['id']} --run {ask['run']}`")
             continue
@@ -208,7 +214,7 @@ def sweep_asks(loop: dict, st, lines: list[str], only: int | None = None) -> Non
             lines.append(f"⚠️ issue #{number}: reply seen, fix not queued: "
                          f"{type(exc).__name__}: {exc}")
             continue                                # the ask stays open: retried next sweep
-        st.fix_ask_drop(number)
+        st.fix_ask_drop(number, expect=ask)
         log(f"issue #{number}: {login} replied; fix turn resumed at {base[:7]}: {outcome}")
 
 

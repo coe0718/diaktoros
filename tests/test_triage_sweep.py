@@ -198,6 +198,16 @@ class Sweep(fg.Base):
         self.assertTrue(any("older issues" in line and "not checked" in line
                             for line in lines), lines)
 
+    def test_an_unreadable_probe_alert_does_not_claim_the_listing_exceeds_the_bound(self):
+        # #1727: exactly five full pages and a failed sixth: the alert names the unread page and
+        # its error, not "exceeds 5 full pages" (which is not known).
+        lines, _ = self.saturated_sweep(probe=(None, "HTTP 500"))
+        alert = [line for line in lines if "not checked" in line]
+        self.assertEqual(len(alert), 1, lines)
+        self.assertNotIn("exceeds", alert[0])
+        self.assertIn(f"page {gh.MAX_ISSUE_PAGES + 1}, past the {gh.MAX_ISSUE_PAGES}-page bound, "
+                      "could not be read: HTTP 500", alert[0])
+
     def test_a_saturated_listing_alerts_even_when_the_run_ledger_is_unavailable(self):
         # The ledger-unavailable branch returns the incomplete-listing alert (not []).
         lines, seen = self.saturated_sweep(ledger_error=RuntimeError("no private runtime"))
@@ -214,6 +224,8 @@ class Sweep(fg.Base):
         self.assertEqual(len(seen), gh.MAX_ISSUE_PAGES + 1)     # the bound and one probe
         self.assertEqual([e[1] for e in self.enqueued], [7])
         self.assertTrue(any("older issues" in line and "not checked" in line
+                            for line in lines), lines)
+        self.assertTrue(any(f"exceeds {gh.MAX_ISSUE_PAGES} full pages" in line
                             for line in lines), lines)
 
     def test_a_whole_listing_raises_no_incomplete_alert(self):

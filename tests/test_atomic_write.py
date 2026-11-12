@@ -52,6 +52,8 @@ DIFFERENT = {
 # The writers that publish through the helper; a writer that stops calling it fails here.
 CALLERS = {
     "diaktoros/app_manifest.py::save_session", "diaktoros/app_tokens.py::save",
+    # The record of future-dated archives (#1905).
+    "diaktoros/backup.py::record_future_dated",
     "diaktoros/ci_cache.py::save", "diaktoros/cli/common.py::_write_config_locked",
     "diaktoros/cli/common.py::_restore_config_locked",
     "diaktoros/gate_shims.py::_write", "diaktoros/gate_shims.py::heal_watchdog_shim",

@@ -20,7 +20,7 @@ MOVED = ("LIVE_TURN", "EXPLAIN_KINDS", "_mark_time", "_minutes_since", "_adjudic
          "gate_failure_line", "explain", "authorship_lines")
 # The next-step half: its own home, reached as ``explain_next.<name>``, never through ``explain``.
 NEXT = ("next_step", "_next_unread", "_next_approval", "_next_person", "_next_review_only",
-        "_next_ruling", "redelivery_rearms", "fixer_retry", "_mark_wait", "_started_turn_step",
+        "_next_ruling", "redelivery_outcome", "fixer_retry", "_mark_wait", "_started_turn_step",
         "_reconcile_first", "_ended_turn_step", "_ended_turn_recovery", "_declined_step",
         "_next_push_off", "_next_escalation", "_next_lock", "_next_run")
 SHARED = ("seat_capacity", "STANDING", "escalated", "breach_holds", "breach_delivery_status")

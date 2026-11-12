@@ -47,6 +47,24 @@ class Counted(unittest.TestCase):
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
+                if self.path.endswith(("/tarball/" + "c" * 40, "/tarball/" + "d" * 40)):
+                    # GitHub's tarball answer: a 302 to codeload (c: codeload up, d: down)
+                    up = self.path.endswith("c" * 40)
+                    self.send_response(302)
+                    self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}"
+                                     "/codeload" if up else "http://127.0.0.1:1/archive")
+                    self.send_header("X-RateLimit-Used", str(test.used))
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                if self.path.endswith("/tarball/" + "e" * 40):    # a rate-limited tarball read
+                    self.path = "/limited"
+                if self.path.endswith("/tarball/" + "f" * 40):    # answered; body fails to read
+                    self.send_response(200)
+                    self.send_header("X-RateLimit-Used", str(test.used))
+                    self.send_header("Content-Length", "unreadable")   # ValueError in the read
+                    self.end_headers()
+                    return
                 if self.path.endswith("/garbled"):   # answered, but not with JSON
                     self.send_response(200)
                     self.send_header("X-RateLimit-Used", "123")
@@ -145,6 +163,70 @@ class Counted(unittest.TestCase):
         reader = self.counted()["reader"]
         self.assertEqual((reader["spent"], reader["error"]), (1, 0))
         self.assertEqual(reader["limit"]["used"], "123")
+
+    def test_the_trusted_exports_own_reads_are_counted_too(self):
+        # #1787: trusted_fetch sends the read token through its own urllib, not gh._request.
+        from diaktoros import trusted_fetch
+        accept, sha = "application/vnd.github+json", "a" * 40
+        trusted_fetch._request(LOOP, f"/repos/owner/one/git/commits/{sha}", "reader", 1000, accept)
+        trusted_fetch._fetch_tarball(LOOP, "owner/one", "reader", sha, 1000)
+        with self.assertRaises(trusted_fetch.FetchDenied):
+            trusted_fetch._request(LOOP, "/repos/owner/one/limited", "reader", 1000, accept)
+        with mock.patch.object(gh, "API", "http://127.0.0.1:1"), \
+                self.assertRaises(trusted_fetch.FetchDenied):          # nothing listens there
+            trusted_fetch._request(LOOP, "/repos/owner/one/git/trees/x", "reader", 1000, accept)
+        with mock.patch.object(gh, "token", side_effect=gh.GitHubError("no token file")), \
+                self.assertRaises(trusted_fetch.FetchDenied):
+            trusted_fetch._fetch_tarball(LOOP, "owner/one", "reader", sha, 1000)
+        reader = self.counted()["reader"]
+        self.assertEqual((reader["spent"], reader["limited"], reader["error"], reader["unsent"]),
+                         (2, 1, 1, 1))
+        self.assertIn(["GET", "/repos/R/git/commits/SHA", "spent", 1], reader["paths"])
+        self.assertIn(["GET", "/repos/R/tarball/SHA", "spent", 1], reader["paths"])
+        self.assertEqual(reader["limit"]["used"], "102")      # GitHub's figure, from its answer
+
+    def test_a_redirected_tarball_is_one_spent_api_call_whatever_codeload_does(self):
+        # Review of #2432, F1: GitHub's tarball answer is normally a 302 to codeload. It is one
+        # spent API call carrying GitHub's figure; the codeload hop, up or down, adds no count.
+        from diaktoros import trusted_fetch
+        up, down = "c" * 40, "d" * 40
+        with mock.patch.object(trusted_fetch, "_TARBALL_REDIRECT", ("http", "127.0.0.1")):
+            with self.assertRaises(trusted_fetch.FetchDenied):          # codeload is down
+                trusted_fetch._fetch_tarball(LOOP, "owner/one", "reader", down, 1000)
+            reader = self.counted()["reader"]
+            self.assertEqual((reader["spent"], reader["error"]), (1, 0))
+            self.assertEqual(reader["limit"]["used"], "101")            # from GitHub's 302
+            self.assertEqual(trusted_fetch._fetch_tarball(LOOP, "owner/one", "reader", up, 1000),
+                             b'[{"id": 1}]')
+        reader = self.counted()["reader"]
+        self.assertEqual((reader["spent"], reader["error"], reader["limited"]), (2, 0, 0))
+        self.assertEqual(reader["paths"], [["GET", "/repos/R/tarball/SHA", "spent", 2]])
+        self.assertEqual(reader["limit"]["used"], "102")    # the 302's figure, not codeload's 103
+
+    def test_a_tarball_http_error_is_counted_with_its_outcome(self):
+        # Review of #2432, F1: a rate-limited 403 on the tarball read is limited, not spent.
+        from diaktoros import trusted_fetch
+        with self.assertRaises(trusted_fetch.FetchDenied):
+            trusted_fetch._fetch_tarball(LOOP, "owner/one", "reader", "e" * 40, 1000)
+        reader = self.counted()["reader"]
+        self.assertEqual((reader["limited"], reader["spent"], reader["error"]), (1, 0, 0))
+        self.assertEqual(reader["paths"], [["GET", "/repos/R/tarball/SHA", "limited", 1]])
+
+    def test_an_unanswered_tarball_read_is_one_error_and_an_answered_one_is_not(self):
+        # Review of #2432, F2: no HTTP answer is error (not spent, not unsent); an answer whose
+        # body is refused or fails to read is spent once each, and not also counted as error.
+        from diaktoros import trusted_fetch
+        with mock.patch.object(gh, "API", "http://127.0.0.1:1"), \
+                self.assertRaises(trusted_fetch.FetchDenied):          # nothing listens there
+            trusted_fetch._fetch_tarball(LOOP, "owner/one", "reader", "a" * 40, 1000)
+        reader = self.counted()["reader"]
+        self.assertEqual((reader["error"], reader["spent"], reader["unsent"]), (1, 0, 0))
+        with self.assertRaises(trusted_fetch.FetchDenied):             # 11 bytes, bound of 2
+            trusted_fetch._fetch_tarball(LOOP, "owner/one", "reader", "b" * 40, 2)
+        with self.assertRaises(trusted_fetch.FetchDenied):             # its body fails to read
+            trusted_fetch._fetch_tarball(LOOP, "owner/one", "reader", "f" * 40, 1000)
+        reader = self.counted()["reader"]
+        self.assertEqual((reader["error"], reader["spent"], reader["unsent"]), (1, 2, 0))
 
     def test_logins_are_kept_apart_and_a_missing_credential_is_unsent(self):
         self.get("/repos/owner/one/pulls/7", login="reviewer")

@@ -163,7 +163,11 @@ Change proof sees only Python `unittest` test methods on classes. It does not se
 - pytest-style module-level test functions, or any non-Python test.
 
 A failure on the base counts as a failure whatever its cause. A test that fails there only because
-the PR adds a file outside its test paths reads as proven; the diff shows which. Each of the two
+the PR adds a file outside its test paths reads as proven; the diff shows which. The reverse holds
+too: code that lives on a test path (a guard implemented inside its own test module, such as
+`tests/test_env_reads_via_envnames.py`) is copied to the base along with the tests, so the base
+run already has the change, and its tests read as **WEAK** however much they depend on it. Prove
+such a change by hand: run the head's test classes against the base's implementation. Each of the two
 runs is bounded at 180 seconds. A run that overruns ends the proof as **NOT RUN** (unavailable,
 with the reason `TimeoutExpired`), nothing is kept, and the next reviewer turn at that head tries
 again.
