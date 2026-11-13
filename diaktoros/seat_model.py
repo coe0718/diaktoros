@@ -431,12 +431,12 @@ class SeatInference:
 def parse_runtime(settings: object) -> dict:
     """Validate the runtime file's shape; raise ``ValueError`` naming what is wrong.
 
-    Required: the four host paths. Optional: the legacy global trio (all three or none) and a
-    ``seats`` object of per-seat override trios.
+    Required: the four host paths. Optional: ``node``, a Node install root or ``""`` (#1149),
+    the legacy global trio (all three or none) and a ``seats`` object of per-seat override trios.
     """
     if not isinstance(settings, dict):
         raise ValueError("runtime file must be a JSON object")
-    allowed = set(HOST_KEYS) | set(OVERRIDE_KEYS) | {"seats"}
+    allowed = set(HOST_KEYS) | set(OVERRIDE_KEYS) | {"seats", "node"}
     extra = sorted(set(settings) - allowed)
     missing = [key for key in HOST_KEYS if key not in settings]
     if extra or missing:
@@ -446,6 +446,8 @@ def parse_runtime(settings: object) -> dict:
     bad = [key for key in HOST_KEYS if not isinstance(settings[key], str) or not settings[key]]
     if bad:
         raise ValueError(f"empty or non-string: {', '.join(bad)}")
+    if not isinstance(settings.get("node", ""), str):
+        raise ValueError('node must be a string: a Node install root, or "" for none')
     present = [key for key in OVERRIDE_KEYS if key in settings]
     if present and len(present) != len(OVERRIDE_KEYS):
         raise ValueError("the legacy model override needs all of model, upstream, key_file "

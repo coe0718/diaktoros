@@ -73,10 +73,51 @@ class NodeRuntime(unittest.TestCase):
 
     def test_doctor_reports_version_through_the_runtime_checks(self):
         root = self.install(self.home / ".hermes" / "node", "v20.1.0")
-        check = doctor.check_node()
+        check = doctor.check_node({"node": str(root)})
         self.assertEqual(check.status, doctor.VERIFIED)
         self.assertIn("v20.1.0", check.detail)
         self.assertIn(str(root), check.detail)
+        self.assertIn("mounted at /opt/node", check.detail)
+
+    def test_a_host_node_the_runtime_file_does_not_record_is_a_warning(self):
+        # #1149: doctor used to look in the operator's shell and say "mounted" while the worker,
+        # in its own clean environment, found nothing. Seats get only the recorded Node.
+        root = self.install(self.home / ".hermes" / "node")
+        for settings in ({}, {"source": "/s"}):
+            with self.subTest(settings=settings):
+                check = doctor.check_node(settings)
+                self.assertEqual(check.status, doctor.UNKNOWN)
+                self.assertFalse(check.failed)
+                self.assertIn(f"{root} is not in the runtime file", check.detail)
+                self.assertIn("hermes dk setup", check.fix)
+        check = doctor.check_node({"node": ""})               # the operator chose none
+        self.assertEqual(check.status, doctor.SKIPPED)
+        self.assertIn("records no Node", check.detail)
+
+    def test_a_recorded_node_that_is_gone_is_a_warning_and_mounts_nothing(self):
+        gone = str(self.home / "node-v20")
+        check = doctor.check_node({"node": gone})
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn("seats get no Node", check.detail)
+        with mock.patch.object(runtime_detect.util, "log") as log:
+            self.assertIsNone(runtime_detect.recorded_node({"node": gone}))
+        self.assertIn("re-run `hermes dk setup`", log.call_args[0][0])
+
+    def test_the_worker_mounts_only_the_recorded_node(self):
+        root = self.install(self.home / "opt" / "node")
+        self.assertEqual(runtime_detect.recorded_node({"node": str(root)}), root)
+        self.assertIsNone(runtime_detect.recorded_node({"node": ""}))
+        self.assertIsNone(runtime_detect.recorded_node({}))
+        self.install(self.home)                                # ~/bin/node: the home is no root
+        with mock.patch.object(runtime_detect.util, "log"):
+            self.assertIsNone(runtime_detect.recorded_node({"node": str(self.home)}))
+        with mock.patch.object(runtime_detect, "_NODE_VISIBLE", (root,)):
+            self.assertIsNone(runtime_detect.recorded_node({"node": str(root)}),
+                              "a /usr install is already visible: nothing to mount")
+
+    def test_setup_detects_only_a_node_to_mount(self):
+        root = self.install(self.home / ".hermes" / "node")
+        self.assertEqual(runtime_detect.detect().get("node"), str(root))
 
     def system_install(self):
         """A /usr-style install: found on PATH, but a root the sandbox already sees."""
@@ -103,30 +144,45 @@ class NodeRuntime(unittest.TestCase):
         self.assertIn("already visible", check.detail)
 
     def test_selftest_reports_system_node_as_pass(self):
+        self.system_install()
+        state, detail = self.selftest_node()
+        self.assertEqual(state, "pass")
+        self.assertIn("v18.19.0", detail)
+        self.assertIn("already visible", detail)
+
+    def test_selftest_checks_the_node_the_runtime_file_records(self):
+        # #1149: selftest, like doctor, reads Node the way the worker does.
+        root = self.install(self.home / ".hermes" / "node")
+        state, detail = self.selftest_node()
+        self.assertEqual(state, "warn")
+        self.assertIn("not in the runtime file", detail)
+        state, detail = self.selftest_node(node=str(root))
+        self.assertEqual(state, "pass")
+        self.assertIn("mounted at /opt/node", detail)
+
+    def selftest_node(self, **extra) -> tuple[str, str]:
+        """``selftest``'s ``runtime:node`` line, from a runtime file of usable paths and ``extra``."""
         import json
         from diaktoros import selftest
-        self.system_install()
         src = self.home / "src"
-        (src / ".git").mkdir(parents=True)
+        (src / ".git").mkdir(parents=True, exist_ok=True)
         (src / "run_agent.py").write_text("")
         venv = self.home / "venv"
-        (venv / "bin").mkdir(parents=True)
+        (venv / "bin").mkdir(parents=True, exist_ok=True)
         for name in ("python", "hermes"):
             (venv / "bin" / name).write_text("")
         rust = self.home / "rust"
-        (rust / "bin").mkdir(parents=True)
+        (rust / "bin").mkdir(parents=True, exist_ok=True)
         (rust / "bin" / "cargo").write_text("")
         path = self.home / "runtime.json"
         path.write_text(json.dumps({"source": str(src), "venv": str(venv),
-                                    "runtime": "/usr", "rust": str(rust)}))
+                                    "runtime": "/usr", "rust": str(rust), **extra}))
         path.chmod(0o600)
         report = selftest.Report(out=io.StringIO())
         selftest.check_runtime(report, path)
         node = [r for r in report.results if r[1] == "runtime:node"]
         self.assertEqual(len(node), 1, report.results)
-        self.assertEqual(node[0][2], selftest.PASS)
-        self.assertIn("v18.19.0", node[0][3])
-        self.assertIn("already visible", node[0][3])
+        return node[0][2], node[0][3]
 
     def test_a_broken_node_is_not_reported_as_available(self):
         root = self.install(self.home / ".hermes" / "node", "garbage")

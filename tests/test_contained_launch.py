@@ -146,7 +146,7 @@ class ProductionLaunch(Base):
         self.runtime.mkdir(parents=True, exist_ok=True)
         for name in ("venv", "rust"):
             (self.root / name).mkdir()
-        self.node = None   # the host Node root run_turn would detect (#685); none by default
+        self.node = None   # the runtime file's Node root the worker hands run_turn (#685, #1149)
 
     def launch(self, role: str, *, kill: subprocess.TimeoutExpired | None = None,
                activity: str = "", observed: dict | None = None, rc: int = 0,
@@ -207,8 +207,6 @@ class ProductionLaunch(Base):
              mock.patch.object(contained, "run", side_effect=run), \
              (mock.patch.object(trusted_turn.deps, "prepare", side_effect=prefetch_error)
               if prefetch_error is not None else contextlib.nullcontext()), \
-             mock.patch.object(trusted_turn.runtime_detect, "node_root",
-                               return_value=self.node), \
              (self.assertRaises(contained.Stopped) if stop is not None
               else self.assertRaises(trusted_turn.TurnBudgetExceeded if kill is not None
                                      else trusted_turn.TurnDenied) if kill is not None or rc == 0
@@ -217,7 +215,8 @@ class ProductionLaunch(Base):
                                   runtime=self.runtime, rust=self.root / "rust",
                                   upstream="https://model.invalid", key="k", model="m",
                                   prompt="PROMPT", timeout=5, work_root=self.root / "work",
-                                  observed=observed, on_launch=on_launch, stop=stop)
+                                  observed=observed, on_launch=on_launch, stop=stop,
+                                  node=self.node)
         if stage_error is None and prefetch_error is None and stop is None:
             # a failure before the sandbox starts never reaches the launcher
             self.assertIn("argv", seen, "run_turn never reached the launcher")

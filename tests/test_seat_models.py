@@ -459,9 +459,13 @@ class Precedence(Base):
                                                                  "key_file": "k"}}})
         for bad in ({**base, "model": "m"}, {k: "/x" for k in ("source", "venv", "runtime")},
                     {**base, "extra": 1}, {**base, "seats": {"observer": {}}},
-                    {**base, "seats": {"fixer": {"model": "m"}}}, [], {**base, "source": ""}):
+                    {**base, "seats": {"fixer": {"model": "m"}}}, [], {**base, "source": ""},
+                    {**base, "node": 22}, {**base, "node": None}):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 seat_model.parse_runtime(bad)
+        for node in ("/opt/node-v22", ""):        # optional (#1149): a root, or "" for none
+            with self.subTest(node=node):
+                seat_model.parse_runtime({**base, "node": node})
 
 
 class Worker(Base):
@@ -511,6 +515,21 @@ class Worker(Base):
         with ledger.connect(sup.db) as con:
             row = con.execute("SELECT state, error FROM runs WHERE id=?", (run_id,)).fetchone()
         return seen, row, called_github
+
+    def test_the_turn_gets_the_runtime_files_node_under_the_workers_own_environment(self):
+        """#1149: the worker is spawned with ``PATH=/usr/bin:/bin`` and ``HOME`` the Hermes home,
+        which hide the operator's Node from any lookup. The turn mounts the runtime file's."""
+        node = self.root / "operator" / ".hermes" / "node"
+        (node / "bin").mkdir(parents=True)
+        (node / "bin" / "node").write_text("#!/bin/sh\necho v22.0.0\n")
+        (node / "bin" / "node").chmod(0o755)
+        worker_env = {"PATH": "/usr/bin:/bin", "HOME": str(self.home), "HERMES_HOME": str(self.home)}
+        with mock.patch.dict(os.environ, worker_env, clear=True):
+            seen, _, _ = self.run_seat("reviewer", settings={**self.settings, "node": str(node)})
+            self.assertEqual(seen.get("node"), node)
+            seen, _, _ = self.run_seat("fixer", settings=self.settings)   # none recorded
+            self.assertIn("node", seen)
+            self.assertIsNone(seen["node"])
 
     def test_prewrite_turn_failures_keep_the_real_reason_and_retry(self):
         """#53: the exception's text and the sandbox output tail reach the ledger; a failure

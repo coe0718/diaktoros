@@ -13,7 +13,10 @@
   resolves (a uv ``cpython-3.11-…`` alias and the ``cpython-3.11.13-…`` directory it points at
   share one parent, which is the answer then);
 * ``rust``: a toolchain directory with ``bin/cargo`` — rustup's default toolchain, else a
-  ``stable-*`` one, else a system cargo's prefix (never the rustup proxy in ``~/.cargo/bin``).
+  ``stable-*`` one, else a system cargo's prefix (never the rustup proxy in ``~/.cargo/bin``);
+* ``node`` (optional, #1149): the Node install root a seat's sandbox mounts at ``/opt/node``
+  (``node_root``), found here in the operator's environment. The worker never looks it up: its
+  clean ``PATH`` and ``HOME`` hide it. Absent or ``""`` is none; a ``/usr`` Node needs no mount.
 
 Every candidate is checked the way ``selftest`` checks the file (``problems``), so a detected
 path that would fail there is reported, not written. Nothing here reads a credential.
@@ -28,10 +31,11 @@ import re
 import shutil
 import sys
 
-from . import config
+from . import config, util
 from .util import atomic_write
 
 HOST_KEYS = ("source", "venv", "runtime", "rust")
+NODE_KEY = "node"   # an optional host path: absent or "" is none (#1149)
 # Keys of the runtime file that are not host paths, kept as they are when setup rewrites it.
 _KEPT_KEYS = ("model", "upstream", "key_file", "seats")
 
@@ -182,6 +186,41 @@ def node_root() -> Path | None:
     return root if root is not None and node_mounted(root) else None
 
 
+def node_problem(value: object) -> str:
+    """Why a recorded ``node`` would not give seats Node; ``""`` when it would, or none is
+    recorded (absent or ``""``). The same rules as ``_node_install``'s candidates."""
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str):
+        return "not a string path"
+    root = Path(value)
+    binary = root / "bin" / "node"
+    if not (binary.is_file() and os.access(binary, os.X_OK)):
+        return f"{binary} is not an executable file"
+    if _node_root_is_unsafe(root):
+        return f"{root} is a home directory or credential store, never a Node root"
+    return ""
+
+
+def recorded_node(settings: dict) -> Path | None:
+    """The Node root a turn's sandbox mounts at ``/opt/node``: the runtime file's ``node``, as
+    ``setup`` found it on the host (#1149). ``None`` when none is recorded, when the sandbox
+    already sees it (``/usr``), or when it is no longer usable: Node is optional, so that is a
+    logged note and a turn without Node, never a failed turn."""
+    value = settings.get(NODE_KEY) or ""
+    why = node_problem(value)
+    if why:
+        util.log(f"the runtime file's node is not mounted: {why}; re-run `hermes dk setup`")
+        return None
+    return Path(value) if value and node_mounted(Path(value)) else None
+
+
+def turn_paths(settings: dict) -> dict:
+    """``trusted_turn.run_turn``'s host paths from the runtime file: the four ``HOST_KEYS`` and
+    the recorded Node (``recorded_node``), so every caller mounts what the worker does."""
+    return {**{key: Path(settings[key]) for key in HOST_KEYS}, NODE_KEY: recorded_node(settings)}
+
+
 def node_version(root: Path | None = None) -> tuple[Path | None, str]:
     """``(root, version)`` of the host Node, e.g. ``v22.1.0``; ``(None, why)`` when unusable.
 
@@ -203,6 +242,35 @@ def node_version(root: Path | None = None) -> tuple[Path | None, str]:
     return root, version
 
 
+_VISIBLE = "system install, already visible in the sandbox"
+SETUP_NODE = "re-run `hermes dk setup` (`--node PATH` to choose one, `--node \"\"` for none)"
+
+
+def node_report(settings: dict) -> tuple[str, str, str]:
+    """What seats get for Node, read the way the worker reads it (``recorded_node``), for
+    ``doctor`` and ``selftest`` (#1149): ``(state, detail, fix)``. ``state`` is ``"ok"`` (mounted,
+    or a ``/usr`` install the sandbox sees), ``"warn"`` (a recorded Node that is unusable, or a
+    host Node the runtime file does not record, so seats don't get it) or ``"none"``."""
+    value = settings.get(NODE_KEY) or ""
+    if value:
+        why = node_problem(value)
+        root, version = (None, why) if why else node_version(Path(value))
+        if root is None:
+            return "warn", f"the runtime file's node {value}: {version}; seats get no Node", SETUP_NODE
+        where = "mounted at /opt/node" if node_mounted(root) else _VISIBLE
+        return "ok", f"node {version} at {root}, {where}", ""
+    root, version = node_version()          # the operator's environment, not the worker's
+    if root is None:
+        return ("none", f"{version}; seats cannot run `node` and JavaScript test suites stay "
+                "unverified", "install Node under ~/.hermes/node or on PATH, then " + SETUP_NODE)
+    if not node_mounted(root):
+        return "ok", f"node {version} at {root}, {_VISIBLE}", ""
+    if NODE_KEY in settings:
+        return "none", f"the runtime file records no Node (node {version} is at {root})", SETUP_NODE
+    return ("warn", f"node {version} at {root} is not in the runtime file, so seats don't get it",
+            SETUP_NODE)
+
+
 def detect() -> dict[str, str]:
     """The host paths found on this machine; a key that could not be found is left out."""
     venv = _venv()
@@ -210,7 +278,8 @@ def detect() -> dict[str, str]:
     if venv is None:
         venv = _venv(source)
     found = {"source": source, "venv": venv,
-             "runtime": runtime_for(venv) if venv else None, "rust": _rust()}
+             "runtime": runtime_for(venv) if venv else None, "rust": _rust(),
+             NODE_KEY: node_root()}
     return {key: str(value) for key, value in found.items() if value is not None}
 
 

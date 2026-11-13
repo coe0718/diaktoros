@@ -393,6 +393,34 @@ class Setup(unittest.TestCase):
         self.assertFalse(self.runtime_file.exists(), "a partial runtime file is never written")
         self.assertNotIn("arm", self.ran)
 
+    def test_node_is_recorded_given_kept_or_detected(self):
+        """#1149: the runtime file records the Node seats get, found here in the operator's
+        environment; the worker never looks for it. ``--node ""`` is none, and is kept."""
+        node = self.root / "node-v22"
+        (node / "bin").mkdir(parents=True)
+        (node / "bin" / "node").write_text("#!/bin/sh\necho v22.0.0\n")
+        (node / "bin" / "node").chmod(0o755)
+
+        def setup(*extra, detected=None):
+            with patch.object(runtime_detect, "detect", return_value=detected or {}):
+                rc, out = self.setup_cli(*self.flags(*extra))
+            return rc, out, json.loads(self.runtime_file.read_text()) if self.runtime_file.exists() else None
+        rc, out, written = setup(detected={"node": str(node)})
+        self.assertEqual((rc, written["node"]), (0, str(node)), out)
+        self.assertIn(f"node     {node} (detected)", out)
+        rc, out, written = setup("--node=", detected={"node": str(node)})
+        self.assertEqual((rc, written["node"]), (0, ""), out)
+        rc, out, written = setup(detected={"node": str(node)})
+        self.assertEqual(written["node"], "", "the operator's none is kept over detection")
+        self.assertIn("node     none (kept)", out)
+        rc, out, written = setup(f"--node={node}")
+        self.assertEqual(written["node"], str(node))
+        before = self.runtime_file.read_bytes()
+        rc, out, _ = setup(f"--node={self.root / 'absent'}")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("pass --node PATH", out)
+        self.assertEqual(self.runtime_file.read_bytes(), before, "nothing written")
+
     def test_dry_run_writes_nothing(self):
         rc, out = self.setup_cli(*self.flags("--dry-run"))
         self.assertEqual(rc, 0, out)

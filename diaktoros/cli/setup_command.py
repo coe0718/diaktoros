@@ -52,6 +52,22 @@ def _agree(question: str, default: bool, interactive: bool, unattended: bool) ->
     return default if not answer else answer in ("y", "yes")
 
 
+def _chosen_node(args, current: dict | None, detected: dict) -> tuple[str | None, str]:
+    """The runtime file's optional ``node`` (#1149) and where it came from: ``--node`` (``""`` is
+    none), else the current file's while it is usable (a recorded ``""`` too), else the detected
+    one; ``(None, "")`` when there is none to record (or Node is a ``/usr`` install the sandbox
+    already sees)."""
+    from .. import runtime_detect
+    given = getattr(args, "node", None)
+    if given is not None:
+        return (str(pathlib.Path(given).expanduser()) if given else ""), "given"
+    kept = (current or {}).get(runtime_detect.NODE_KEY)
+    if isinstance(kept, str) and not runtime_detect.node_problem(kept):
+        return kept, "kept"
+    found = detected.get(runtime_detect.NODE_KEY)
+    return (found, "detected") if found else (None, "")
+
+
 def _setup_runtime(args, interactive: bool) -> bool:
     """Step 1: keep the runtime file's working paths, detect the rest, write it 0600."""
     from .. import runtime_detect, seat_model
@@ -80,12 +96,24 @@ def _setup_runtime(args, interactive: bool) -> bool:
             if value:
                 chosen[key], origin[key] = str(pathlib.Path(value).expanduser()), source
                 break
+    node, origin["node"] = _chosen_node(args, current, detected)
+    if node is not None:
+        chosen[runtime_detect.NODE_KEY] = node
     left = runtime_detect.problems(chosen)
+    if runtime_detect.node_problem(node):
+        left["node"] = runtime_detect.node_problem(node)
     for key in runtime_detect.HOST_KEYS:
         if key in left:
             print(f"   ❌ {key:<8} {left[key]} — pass --{key} PATH")
         else:
             print(f"   ✅ {key:<8} {chosen[key]} ({origin[key]})")
+    if "node" in left:
+        print(f"   ❌ node     {left['node']} — pass --node PATH, or --node \"\" for none")
+    elif node:
+        print(f"   ✅ node     {node} ({origin['node']})")
+    else:
+        how = f" ({origin['node']})" if origin["node"] else ""
+        print(f"   ➖ node     none{how}: seats get no Node beyond /usr")
     if left:
         print("   not written: every path must check out first (the file is all or nothing)")
         return False
@@ -661,3 +689,6 @@ def _setup_turn_flags(first) -> None:  # noqa: ANN001
     for key in ("source", "venv", "runtime", "rust"):
         first.add_argument(f"--{key}", default="",
                            help=f"runtime file's {key} path (default: detected)")
+    first.add_argument("--node", default=None,
+                       help="runtime file's node: the Node install root seats get at /opt/node, "
+                            "\"\" for none (default: kept, else detected)")
