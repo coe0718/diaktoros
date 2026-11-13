@@ -162,9 +162,11 @@ def _node_install() -> Path | None:
     """The host Node install root wherever it lives (``/usr`` included), or ``None``.
 
     Looked for without trusting the caller's PATH alone: Hermes's own ``~/.hermes/node`` (the
-    ``~/.local/bin/node`` link points into it), then ``node`` on PATH. A candidate counts only
-    when it resolves to ``<root>/bin/node`` that is an executable regular file whose root is a
-    Node prefix: never a home directory, ``~/.local``, ``~/.hermes`` or another credential store.
+    ``~/.local/bin/node`` link points into it), then ``node`` on PATH. A candidate's links are
+    followed one at a time (``_link_chain``), and the first ``<root>/bin/node`` on the way whose
+    root is a Node prefix counts (``_node_prefix``): never a home directory, ``~/.local``,
+    ``~/.hermes`` or another credential store. So a prefix whose ``bin/node`` is itself a link
+    (``../lib/node``) is found as that prefix, not lost to where the link ends (#2478 review 5).
     """
     candidates = [_real_home() / ".hermes" / "node" / "bin" / "node",
                   _real_home() / ".local" / "bin" / "node"]
@@ -174,14 +176,40 @@ def _node_install() -> Path | None:
         if found:
             candidates.append(Path(found))
     for candidate in candidates:
-        try:
-            binary = candidate.resolve(strict=True)
-        except (OSError, RuntimeError):     # RuntimeError: a link loop before Python 3.13
-            continue
-        if (binary.is_file() and os.access(binary, os.X_OK) and binary.parent.name == "bin"
-                and not _node_root_is_unsafe(binary.parent.parent)):
-            return binary.parent.parent
+        for step in _link_chain(candidate):
+            root = _node_prefix(step)
+            if root is not None:
+                return root
     return None
+
+
+def _link_chain(path: Path):
+    """``path``, then each path its links lead to, one link at a time (at most 40), each with its
+    directory resolved and its last part as the link names it."""
+    for _ in range(41):
+        path = Path(os.path.realpath(path.parent)) / path.name
+        yield path
+        try:
+            path = path.parent / os.readlink(path)
+        except OSError:                     # not a link (the end), or unreadable
+            return
+
+
+def _node_prefix(step: Path) -> Path | None:
+    """The root of ``step`` when it is ``<root>/bin/<name>`` and that root is one a recorded
+    ``node`` may name: ``node_problem``'s rules, so detection never offers a root the runtime
+    file would refuse. A root the sandbox already sees (``/usr``) is not mounted at /opt/node:
+    there an executable file at the end of the links is enough, and the seat run judges it."""
+    if step.parent.name != "bin":
+        return None
+    root = step.parent.parent
+    if root not in _NODE_VISIBLE:
+        return root if node_problem(str(root)) == "" else None
+    try:
+        binary = step.resolve(strict=True)
+    except (OSError, RuntimeError):         # RuntimeError: a link loop before Python 3.13
+        return None
+    return root if binary.is_file() and os.access(binary, os.X_OK) else None
 
 
 def node_mounted(root: Path) -> bool:

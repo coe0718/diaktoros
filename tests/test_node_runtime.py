@@ -192,6 +192,32 @@ class NodeRuntime(unittest.TestCase):
                 self.assertEqual(doctor.check_node({"node": root}).status, doctor.UNKNOWN)
                 self.assertEqual(self.selftest_node(node=root)[0], "warn")
 
+    def test_detection_finds_exactly_the_roots_a_recorded_node_may_name(self):
+        # #2478 review 5, F10: detection resolved bin/node to its end before asking for a bin
+        # parent, so a prefix whose bin/node is ../lib/node, which node_problem accepts, was lost:
+        # setup recorded no Node and doctor said the host had none.
+        for name, root in self.layouts().items():
+            with self.subTest(name), mock.patch.dict(os.environ, {"PATH": str(root / "bin")}):
+                accepted = runtime_detect.node_problem(str(root)) == ""
+                self.assertEqual(runtime_detect.node_root(), root if accepted else None)
+                self.assertEqual(runtime_detect.detect().get("node"),       # what setup records
+                                 str(root) if accepted else None)
+                state, detail, _ = runtime_detect.node_report({})
+                self.assertEqual(state, "warn" if accepted else "none", detail)
+                if accepted:
+                    self.assertIn("not in the runtime file", detail)
+                    self.assertEqual(doctor.check_node({}).status, doctor.UNKNOWN)
+        # Hermes's own layout: ~/.local/bin/node -> ~/.hermes/node/bin/node -> ../lib/node.
+        root = self.home / ".hermes" / "node"
+        (root / "lib").mkdir(parents=True)
+        shutil.copy2(self.home / "opt" / "relative" / "lib" / "node", root / "lib" / "node")
+        (root / "bin").mkdir()
+        (root / "bin" / "node").symlink_to("../lib/node")
+        (self.home / ".local" / "bin").mkdir(parents=True)
+        (self.home / ".local" / "bin" / "node").symlink_to(root / "bin" / "node")
+        with mock.patch.dict(os.environ, {"PATH": str(self.home / ".local" / "bin")}):
+            self.assertEqual(runtime_detect.node_root(), root)
+
     def test_a_link_loop_is_refused_not_raised_on_any_python(self):
         # #2478 review 2, F6: before Python 3.13, resolving a link loop raises RuntimeError, not
         # OSError; it escaped node_problem and failed the turn instead of mounting no Node.
