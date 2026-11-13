@@ -320,6 +320,167 @@ class Files(unittest.IsolatedAsyncioTestCase):
         (self.state / "watchdog.json").write_text("{}")
         self.assertNotEqual(before, self.snapshot())
 
+    async def test_default_state_dir_worker_trees_are_pruned(self):
+        # The default state dir is <state_root>/<loop>: its worker trees are pruned like a
+        # custom state_dir's (#2146).
+        (self.directory / "plain.json").write_text(json.dumps({"tokens": {}}))
+        loop = self.home / "state" / "diaktoros" / "plain"
+        for name in events.PRUNED_DIRS:
+            (loop / name / "nested").mkdir(parents=True)
+            (loop / name / "nested" / "file").write_text("x")
+        paths = [path for path, _ in self.snapshot()[0]]
+        for name in events.PRUNED_DIRS:
+            self.assertIn(str(loop / name), paths)
+            self.assertFalse([p for p in paths if p.startswith(str(loop / name) + os.sep)], name)
+        before = self.snapshot()
+        for name in events.PRUNED_DIRS:
+            (loop / name / "nested" / "file").write_text("rewritten by a worker")
+        self.assertEqual(before, self.snapshot())
+
+    async def test_pruned_names_outside_a_loop_state_dir_are_descended(self):
+        # The prune is where a loop creates those trees (directly in its state dir), not by
+        # name under every scanned root: the same name elsewhere is watched (#2146).
+        elsewhere = [self.directory / "deps",                                  # config dir
+                     self.home / "state" / "diaktoros-gate-failures" / "isolated-runs",
+                     self.home / "state" / "diaktoros-seat-locks" / "ci-cache",
+                     self.home / "state" / "diaktoros" / "deps",               # the state root itself
+                     self.state / "artifacts" / "ci-cache",                    # deeper in a state dir
+                     self.home / "state" / "diaktoros" / "demo" / "x" / "isolated-runs"]
+        for directory in elsewhere:
+            (directory / "nested").mkdir(parents=True)
+            (directory / "nested" / "file").write_text("x")
+        paths = [path for path, _ in self.snapshot()[0]]
+        for directory in elsewhere:
+            with self.subTest(directory=directory.relative_to(self.home)):
+                self.assertIn(str(directory / "nested" / "file"), paths)
+                before = self.snapshot()
+                (directory / "nested" / "file").write_text("changed")
+                self.assertNotEqual(before, self.snapshot())
+
+    def under(self, paths, directory):
+        return [p for p in paths if p.startswith(str(directory) + os.sep)]
+
+    def test_state_dir_spelled_with_dotdot_is_pruned_by_identity(self):
+        # A state_dir under the config dir, spelled through "..": the config-dir walk reaches
+        # the same directory under another spelling and must still prune its worker trees,
+        # or a large checkout spends the whole scan budget and every scan overflows.
+        custom, alias = self.directory / "custom", self.directory / "alias"
+        deps = custom / "deps"
+        deps.mkdir(parents=True)
+        alias.mkdir()
+        for n in range(events.MAX_ENTRIES + 100):
+            (deps / f"f{n}").touch()
+        for name, state_dir in (("other", alias / ".." / "custom"), ("gone", self.home / "missing")):
+            (self.directory / f"{name}.json").write_text(json.dumps({"state_dir": str(state_dir)}))
+        paths, overflow = self.snapshot()
+        paths = [path for path, _ in paths]
+        self.assertFalse(overflow)
+        self.assertIn(str(deps), paths)
+        self.assertFalse(self.under(paths, deps))
+        self.assertFalse(self.under(paths, alias / ".." / "custom" / "deps"))
+        self.assertIn(str(alias / ".." / "custom"), paths)   # the configured root is still scanned
+
+    async def test_symlinked_state_dir_is_pruned_by_identity_and_never_followed(self):
+        custom, link = self.directory / "custom", self.directory / "link"
+        (custom / "deps" / "nested").mkdir(parents=True)
+        (custom / "deps" / "nested" / "file").write_text("x")
+        (custom / "watchdog.json").write_text("{}")
+        link.symlink_to(custom, target_is_directory=True)
+        (self.directory / "other.json").write_text(json.dumps({"state_dir": str(link)}))
+        paths = [path for path, _ in self.snapshot()[0]]
+        self.assertIn(str(custom / "deps"), paths)
+        self.assertFalse(self.under(paths, custom / "deps"))
+        self.assertIn(str(custom / "watchdog.json"), paths)
+        self.assertIn(str(link), paths)
+        self.assertFalse(self.under(paths, link), "the walk never follows a symlink")
+
+    async def test_state_dir_equal_to_the_state_root_prunes_only_its_direct_children(self):
+        # #2403: a custom state_dir that is the state root itself is one loop's state dir;
+        # its subdirectories are not other loops' state dirs, so their deps are watched.
+        root = self.home / "state" / "diaktoros"
+        (self.directory / "demo.json").write_text(json.dumps({"state_dir": str(root)}))
+        (root / "deps" / "nested").mkdir(parents=True)
+        (root / "deps" / "nested" / "file").write_text("x")
+        target = root / "artifacts" / "deps" / "watchdog.json"
+        target.parent.mkdir(parents=True)
+        target.write_text("{}")
+        before = self.snapshot()
+        paths = [path for path, _ in before[0]]
+        self.assertFalse(self.under(paths, root / "deps"))
+        self.assertIn(str(target), paths)
+        target.write_text('{"changed": true}')
+        self.assertNotEqual(before, self.snapshot())
+
+    def valid_loop(self, loop_id, **extra):
+        seats = {seat: {"route": seat, "profile": "default"} for seat in ("reviewer", "fixer")}
+        (self.directory / f"{loop_id}.json").write_text(json.dumps({
+            "id": loop_id, "repo": "acme/widgets", "fixers": ["fixer"],
+            "reviewers": ["reviewer"], "read_token": "reader", "seats": seats, **extra}))
+
+    def test_hidden_loop_the_loader_accepts_has_its_state_dir_watched(self):
+        # #2389 review F2: the loader loads an existing .legacy.json (init only refuses new
+        # leading-dot IDs), so its custom state_dir, outside every scanned root, is watched.
+        legacy = self.home / "legacy-state"
+        legacy.mkdir()
+        target = legacy / "watchdog.json"
+        target.write_text("{}")
+        self.valid_loop(".legacy", state_dir=str(legacy))
+        with mock.patch.object(events.config, "config_dir", return_value=self.directory):
+            self.assertEqual(events.config.load_id(".legacy")["state_dir"], str(legacy))
+        before = self.snapshot()
+        self.assertFalse(before[1])
+        self.assertIn(str(target), [path for path, _ in before[0]])
+        target.write_text('{"changed": true}')
+        self.assertNotEqual(before, self.snapshot())
+
+    async def test_watcher_skips_a_config_the_loader_refuses_but_keeps_a_hidden_loop(self):
+        # #2389 review F3: the watcher picks config files by the loader's rule. "...json" and
+        # "..json" are no loop, so their state_dirs outside every scanned root are not watched,
+        # while the loadable hidden .legacy.json's is. Main read every *.json, and before 3.14
+        # pathlib gives both names the suffix .json (stems ".." and "."), so it watched them.
+        legacy = self.home / "legacy-state"
+        refused = [self.home / "refused-dots", self.home / "refused-dot"]
+        for name, root in zip(("...json", "..json"), refused):
+            self.assertIsNone(events.config.config_file_id(name))
+            (self.directory / name).write_text(json.dumps({"state_dir": str(root)}))
+        for root in (legacy, *refused):
+            root.mkdir()
+            (root / "watchdog.json").write_text("{}")
+        self.valid_loop(".legacy", state_dir=str(legacy))
+        before = self.snapshot()
+        self.assertFalse(before[1])
+        paths = [path for path, _ in before[0]]
+        for root in refused:
+            self.assertNotIn(str(root / "watchdog.json"), paths)
+        self.assertIn(str(legacy / "watchdog.json"), paths)
+        async with self.manager.subscribe() as queue:
+            await self.settled()
+            self.assertTrue(queue.empty())
+            for root in refused:
+                (root / "watchdog.json").write_text('{"changed": true}')
+            await asyncio.sleep(.3)
+            self.assertTrue(queue.empty(), "a refused config's state_dir is not watched")
+            self.assertEqual(before, self.snapshot())
+            (legacy / "watchdog.json").write_text('{"changed": true}')
+            message = await asyncio.wait_for(queue.get(), 1)
+            self.assertEqual(message, {"event": "invalidate", "version": 1})
+
+    def test_watched_loops_are_exactly_the_loops_the_loader_loads(self):
+        # One rule (config.config_file_id) for which config files are loops, not a parallel
+        # filter in the watcher that drifts from the loader's glob and load_id.
+        names = [".legacy", ".", "..", "", "a.b", "plain"]
+        for loop_id in names:
+            self.valid_loop(loop_id, state_dir=str(self.home / f"s{len(loop_id)}{loop_id}"))
+        (self.directory / "upper.JSON").write_text("{}")
+        (self.directory / "temp.json.tmp").write_text("{}")
+        with mock.patch.object(events.config, "config_dir", return_value=self.directory):
+            loaded = {loop["id"] for loop in events.config.readable_loops()[0]}
+        self.assertEqual({".legacy", "a.b", "plain"}, loaded)
+        # demo.json is named like a loop but its content is refused; its state_dir is still
+        # read, as before. The names the loader refuses outright are never read.
+        watched = {events.config.config_file_id(path.name) for path in self.directory.iterdir()}
+        self.assertEqual(loaded | {"demo", None}, watched)
+
     async def test_burst_is_rate_limited_and_the_trailing_change_is_never_dropped(self):
         manager = events.DesktopEvents(self.snapshot, interval=.01, min_gap=.3)
         async with manager.subscribe() as queue:
