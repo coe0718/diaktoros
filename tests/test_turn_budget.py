@@ -679,14 +679,15 @@ class LedgerAndWorkerTeardown(unittest.TestCase):
         case = LedgerAndWorker("test_the_rows_budget_reaches_the_child_not_the_worker_default")
         case.setUp()
         # A stand-in for the detached worker, still running when the test has its answer: like
-        # the worker, it names the test's root on its command line. It runs until its stdin
-        # closes (30 s at most), and that happens only once a look for processes naming the root
-        # has seen it, so no scheduling delay can end it before the cleanups look.
-        stand_in = subprocess.Popen([sys.executable, "-c",
-                                     "import select, sys; select.select([sys.stdin], [], [], 30)",
+        # the worker, it names the test's root on its command line. It has no deadline of its
+        # own: it runs until its stdin closes, which happens only once a look for processes
+        # naming the root has seen it, so no stall of this test can end it before the cleanups
+        # look. This test's own cleanups kill it if it is still running (and were this process
+        # to die, its end of the pipe would close).
+        stand_in = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()",
                                      str(case.root)], stdin=subprocess.PIPE, start_new_session=True)
         self.addCleanup(stand_in.stdin.close)
-        self.addCleanup(stand_in.wait)
+        self.addCleanup(stand_in.wait, 10)
         self.addCleanup(lambda: stand_in.poll() is None and stand_in.kill())
         naming = worker_wait.processes_naming
 
