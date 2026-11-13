@@ -150,7 +150,8 @@ def cache_by_turn(db: Path, repo: str, since: float, limit: int = 60) -> list[di
             (repo, since, limit)).fetchall()
     finally:
         con.close()
-    return [{"pr": pr, "seat": seat, "head": head[:7], "tokens_in": t_in, "cache_read": cached}
+    return [{"pr": pr, "seat": seat, "head": run_head(seat, head), "tokens_in": t_in,
+             "cache_read": cached}
             for pr, seat, head, t_in, cached in reversed(rows)]
 
 
@@ -340,8 +341,16 @@ def recorded_head(value) -> str:
     return value[:7] if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) else ""
 
 
+def run_head(seat, value) -> str:
+    """``recorded_head``, but an issue seat's exact ``config.TRIAGE_HEAD`` is kept (#1696)."""
+    from .run_supervisor import ISSUE_SEATS
+    if seat in ISSUE_SEATS and value == config.TRIAGE_HEAD:
+        return config.TRIAGE_HEAD
+    return recorded_head(value)
+
+
 def _now_run(row) -> dict:
-    return {"pr": row["pr"], "seat": row["seat"], "head": recorded_head(row["head"]),
+    return {"pr": row["pr"], "seat": row["seat"], "head": run_head(row["seat"], row["head"]),
             "state": row["state"], "why": _why(row["state"], row["error"]),
             "since": row["updated"]}
 
@@ -751,7 +760,7 @@ def regressions(db: Path, repo: str, since: float, until: float) -> dict | None:
     return {"prs": len({row["pr"] for row in live}), "issues": len(live),
             "retracted": len(rows) - len(live),
             "models": {name: len(prs) for name, prs in sorted(models.items())},
-            "links": [{"issue": row["issue"], "pr": row["pr"], "head": row["head"][:7],
+            "links": [{"issue": row["issue"], "pr": row["pr"], "head": recorded_head(row["head"]),
                        "model": row["model"] or "unknown"} for row in live],
             "from": first}
 
@@ -791,7 +800,7 @@ def overrides(db: Path, repo: str, since: float, until: float) -> dict | None:
         models[row["model"] or "unknown"] += 1
         categories.update(category for _, category in pairs)
         found += len(pairs)
-        cases.append({"pr": row["pr"], "head": row["head"][:7], "seat": row["seat"],
+        cases.append({"pr": row["pr"], "head": recorded_head(row["head"]), "seat": row["seat"],
                       "model": row["model"] or "unknown",
                       "findings": [f"{fid} ({category})" for fid, category in pairs]})
     return {"merged_over_changes": len(rows), "models": dict(sorted(models.items())),
@@ -1009,7 +1018,7 @@ def shadow_reviews_for(db: Path, repo: str, pr: int) -> tuple[list[dict], int]:
             real = _real_verdict(con, repo, pr, row["head"])
             own = [rest.lstrip(" :")[:200] for _, kind, rest
                    in findings_mod.parse(row["body"] or "") if kind == "new"]
-            out.append({"model": str(row["model"] or "unknown"), "head": str(row["head"])[:7],
+            out.append({"model": str(row["model"] or "unknown"), "head": recorded_head(row["head"]),
                         "verdict": mine, "real": real,
                         "agrees": None if real is None else real == mine,
                         "findings": own[:3], "more": max(0, len(own) - 3),
@@ -1280,7 +1289,7 @@ def report_text(data: dict) -> str:
                    + (f" · {broke['retracted']} retracted" if broke["retracted"] else "")
                    + (f" · linked from {_day(broke['from'])}" if broke["from"]
                       else " · none linked yet (`hermes dk regression`)"))
-        out += [f"  #{link['issue']} ← PR #{link['pr']} approved at {link['head']} "
+        out += [f"  #{link['issue']} ← PR #{link['pr']} approved at {link['head'] or '?'} "
                 f"({link['model']})" for link in broke["links"][:10]]
     over = data.get("overrides")
     if over is not None:
@@ -1291,7 +1300,7 @@ def report_text(data: dict) -> str:
                    + (f" · {over['findings']} open finding(s) overridden: "
                       + ", ".join(f"{name} {n}" for name, n in over["categories"].items())
                       if over["findings"] else ""))
-        out += [f"  #{case['pr']} merged at {case['head']} over {case['seat']} ({case['model']})"
+        out += [f"  #{case['pr']} merged at {case['head'] or '?'} over {case['seat']} ({case['model']})"
                 + (f": {', '.join(case['findings'])}" if case["findings"] else "")
                 for case in over["cases"][:10]]
     out += _shadow_lines(data)

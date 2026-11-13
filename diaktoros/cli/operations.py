@@ -400,7 +400,7 @@ def _print_shadows(loop: dict, pr: int, prefix: str) -> None:
         real = ("no real verdict yet" if item["real"] is None else
                 f"reviewer {item['real']} ({'agrees' if item['agrees'] else 'disagrees'})")
         held = f", left to a person: {item['held']}" if item["held"] else ""
-        print(f"{prefix}{item['model']} at {item['head']} would have {item['verdict']}{held}"
+        print(f"{prefix}{item['model']} at {item['head'] or '?'} would have {item['verdict']}{held}"
               f" · {real} · recorded, never posted")
         for finding in item["findings"]:
             print(f"{' ' * len(prefix)}| {finding}")

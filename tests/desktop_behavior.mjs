@@ -2226,6 +2226,101 @@ test('page: /now accepts a retry verdict and rejects a malformed one before cach
   }
 })
 
+test('page: a failed triage run offers Retry, names its issue and posts the bound target', async () => {
+  // #1696: an issue seat's run is recorded at the word issue, not at a commit. The backend binds
+  // the confirmation to that word for issue seats only; the page names the issue, not a head.
+  const h = await harness()
+  const triage = { pr: 12, seat: 'triage', head: 'issue', state: 'failed', why: 'failed: see explain',
+    retry: { eligible: true, head: 'issue', reason: '', target: 'issue' } }
+  h.render('page')
+  h.respond(stalled([triage]))
+  const validated = await h.options.now.queryFn()
+  assert.equal(validated.runs[0].retry.target, 'issue')
+  // A word is never admitted as a commit target, and an issue target is one plain word.
+  for (const retry of [{ eligible: true, head: 'issue', reason: '' },
+    { eligible: true, head: 'issue', reason: '', target: 'head' },
+    { eligible: true, head: 'ghp_SECRETxxxx', reason: '', target: 'issue' },
+    { eligible: true, head: '', reason: '', target: 'issue' },
+    { eligible: true, head: 'issue', reason: '', target: 'branch' }]) {
+    h.respond(stalled([{ ...triage, retry }]))
+    await assert.rejects(h.options.now.queryFn(), /Invalid now response/)
+  }
+  h.queries.now = h.good(stalled([triage]))
+  h.retryAnswer({ ok: true, loop: 'fixture-loop', pr: 12, seat: 'triage', head: 'issue', head7: 'issue',
+    answer: 'triage on issue #12 re-armed (was failed)', rearmed: [{ seat: 'triage', head7: 'issue', state: 'failed' }],
+    refused: [], worker: '', runs: [{ seat: 'triage', head7: 'issue', state: 'pending' }], read_at: 1800000000 })
+  h.render('page')
+  assert.equal(retryButtons(h).length, 1, 'the eligible triage row carries the control')
+  retryButtons(h)[0].props.onClick()
+  const dialog = dialogOf(h)
+  assert.match(dialog.props.description, /Retry the triage on issue #12 in loop fixture-loop\. It re-runs that seat for that issue/)
+  assert.doesNotMatch(dialog.props.description, /@ issue|head issue/)
+  assert.match(dialog.props.description, /hermes dk retry --loop fixture-loop --pr 12 --seat triage/)
+  await dialog.props.onConfirm()
+  assert.equal(h.retryCalls.length, 1)
+  assert.deepEqual(JSON.parse(JSON.stringify(h.retryCalls[0])), { method: 'POST',
+    body: { loop: 'fixture-loop', pr: 12, seat: 'triage', head: 'issue' } })
+  assert.match(h.text(h.tree()), /triage on issue #12 re-armed \(was failed\)/)
+})
+
+test('page: a withheld recorded head is admitted and reads unknown in the list and the drawer', async () => {
+  // #1696: the backend withholds a malformed recorded head as ''. One such row must not blank
+  // the whole /now read, and no list or drawer line may render it as an empty gap.
+  const h = await harness()
+  h.queries.loops = h.good(TWO_LOOPS)
+  const row = { pr: 42, seat: 'reviewer', head: '', state: 'failed', why: 'failed: see explain',
+    retry: { eligible: false, head: '', reason: 'the recorded head is not a valid commit id; no retry offered', target: 'head' } }
+  h.render('page')
+  h.respond(stalled([row]))
+  assert.equal((await h.options.now.queryFn()).runs[0].head, '')
+  h.queries.now = h.good(stalled([row]))
+  h.queries.pr = h.good({ repo: 'acme/widgets', loop: 'widgets', pr: 42, cap: 3, ledger_available: true,
+    stuck: [], turns: [], turns_total: 0, verdicts: {}, rulings: [], rulings_total: 0,
+    breach: { head: '', status: 'escalated', rounds: 3 }, findings: [], decisions: [],
+    shadows: [{ model: 'grok-4.7', head: '', verdict: 'approved', real: null, agrees: null,
+      findings: [], more: 0, held: '', created: 1 }], shadows_older: 0, read_at: 1800000000 })
+  let tree = h.render('page')
+  assert.equal(retryButtons(h).length, 0, 'a withheld head is never a retry target')
+  assert.match(h.text(tree), /#42 reviewer unknown failed/)
+  h.buttons(tree).find(n => h.text([n]).includes('#42')).props.onClick()
+  tree = h.render('page')
+  const drawer = h.text(h.flatten(tree).filter(node => node.type === 'Dialog'))
+  assert.match(drawer, /Cap spent on unknown \(escalated\) after 3 round\(s\)/)
+  assert.match(drawer, /unknown grok-4\.7 would have approved/)
+})
+
+test('page: an issue fixer whose rows mix the word and a commit keeps /now and every run', async () => {
+  // #2397 review F1: an older row's verdict names the head a retry would re-arm, and its target
+  // describes THAT head, not the row shown. Both orderings, exactly as the backend emits them.
+  const h = await harness()
+  const fix = (pr, head, retry) => ({ pr, seat: 'issue_fixer', head, state: 'failed', why: 'failed: see explain', retry })
+  const older = 'not the newest run for this PR: retry targets '
+  const runs = [
+    fix(30, 'issue', { eligible: false, head: HEX, reason: older + HEX.slice(0, 7), target: 'head' }),
+    fix(30, HEX.slice(0, 7), { eligible: true, head: HEX, reason: '', target: 'head' }),
+    fix(31, HEX.slice(0, 7), { eligible: false, head: 'issue', reason: older + 'issue', target: 'issue' }),
+    fix(31, 'issue', { eligible: true, head: 'issue', reason: '', target: 'issue' })
+  ]
+  h.render('page')
+  h.respond(stalled(runs))
+  const validated = await h.options.now.queryFn()
+  assert.deepEqual(validated.runs.map(run => run.retry.target), ['head', 'head', 'issue', 'issue'])
+  // The shapes the pre-fix backend emitted: a word target on a SHA head and the reverse. The
+  // validator still refuses them, which is why the backend must never send them.
+  for (const [at, retry] of [[0, { eligible: false, head: HEX, reason: older, target: 'issue' }],
+    [2, { eligible: false, head: 'issue', reason: older, target: 'head' }]]) {
+    h.respond(stalled(runs.map((run, n) => n === at ? { ...run, retry } : run)))
+    await assert.rejects(h.options.now.queryFn(), /Invalid now response/)
+  }
+  h.queries.now = h.good(stalled(runs))
+  const text = h.text(h.render('page'))
+  for (const line of [/#30 issue_fixer issue failed/, /#30 issue_fixer aaaaaaa failed/,
+    /#31 issue_fixer aaaaaaa failed/, /#31 issue_fixer issue failed/]) assert.match(text, line)
+  assert.equal(retryButtons(h).length, 2, 'only the newest row of each PR carries the control')
+  retryButtons(h)[1].props.onClick()
+  assert.match(dialogOf(h).props.description, /Retry the issue_fixer on issue #31 in loop/)
+})
+
 
 
 test('actions: backend refusal accepts empty opaque identity and invalid PR input never reads', async () => {
