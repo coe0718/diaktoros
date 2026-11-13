@@ -306,6 +306,33 @@ class NodeRuntime(unittest.TestCase):
         self.assertEqual(runtime_detect.node_version(), (root, "v18.19.0"))
         self.assertFalse(runtime_detect.node_mounted(root))
 
+    def test_a_detected_system_node_replaces_an_older_recorded_one(self):
+        # #2478 review 6, F11: detect() left a system Node out (node_root is None for it), so
+        # setup could not tell it from no detection and kept an older recorded root: seats went
+        # on running the old Node. It is detected and recorded now, and nothing is mounted for it.
+        from types import SimpleNamespace
+        from diaktoros.cli import setup_command
+        old = self.install(self.home / "old-node")
+        root = self.system_install()
+        detected = runtime_detect.detect()
+        self.assertEqual(detected.get("node"), str(root))
+        self.assertEqual(setup_command._chosen_node(SimpleNamespace(node=None), {"node": str(old)},
+                                                    detected), (str(root), "detected"))
+        # A system root's bin/node may be an absolute link: the sandbox sees it where the host
+        # does. Recorded, it mounts nothing and logs nothing, and doctor checks it in a seat.
+        (root / "lib").mkdir()
+        (root / "bin" / "node").rename(root / "lib" / "node")
+        (root / "bin" / "node").symlink_to(root / "lib" / "node")
+        self.assertEqual(runtime_detect.detect().get("node"), str(root))
+        self.assertEqual(runtime_detect.node_problem(str(root)), "")
+        with mock.patch.object(runtime_detect.util, "log") as log:
+            self.assertIsNone(runtime_detect.recorded_node({"node": str(root)}))
+        log.assert_not_called()
+        check = doctor.check_node({"node": str(root)})
+        self.assertEqual(check.status, doctor.VERIFIED, check.detail)
+        self.assertIn("already visible", check.detail)
+        self.assertEqual(len(self.seats), 1)
+
     def test_doctor_reports_system_node_as_verified(self):
         self.system_install()
         check = doctor.check_node()

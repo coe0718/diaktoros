@@ -198,18 +198,11 @@ def _link_chain(path: Path):
 def _node_prefix(step: Path) -> Path | None:
     """The root of ``step`` when it is ``<root>/bin/<name>`` and that root is one a recorded
     ``node`` may name: ``node_problem``'s rules, so detection never offers a root the runtime
-    file would refuse. A root the sandbox already sees (``/usr``) is not mounted at /opt/node:
-    there an executable file at the end of the links is enough, and the seat run judges it."""
+    file would refuse."""
     if step.parent.name != "bin":
         return None
     root = step.parent.parent
-    if root not in _NODE_VISIBLE:
-        return root if node_problem(str(root)) == "" else None
-    try:
-        binary = step.resolve(strict=True)
-    except (OSError, RuntimeError):         # RuntimeError: a link loop before Python 3.13
-        return None
-    return root if binary.is_file() and os.access(binary, os.X_OK) else None
+    return root if node_problem(str(root)) == "" else None
 
 
 def node_mounted(root: Path) -> bool:
@@ -241,6 +234,16 @@ def node_problem(value: object) -> str:
         return f"{value} does not exist"
     if _node_root_is_unsafe(root):
         return f"{root} is a home directory or credential store, never a Node root"
+    if not node_mounted(root):
+        # The sandbox sees this root where the host does, links and all: nothing is bound at
+        # /opt/node, so the host's file is the rule, and the seat run judges the rest (#2478 F11).
+        try:
+            target = (root / "bin" / "node").resolve(strict=True)
+        except (OSError, RuntimeError):     # RuntimeError: a link loop before Python 3.13
+            target = None
+        if target is None or not (target.is_file() and os.access(target, os.X_OK)):
+            return f"{root / 'bin' / 'node'} is not an executable file"
+        return ""
     target = _seat_binary(root)
     if target is None or not (target.is_file() and os.access(target, os.X_OK)):
         return (f"{root / 'bin' / 'node'} is not an executable file inside {root}, reached by "
@@ -412,7 +415,7 @@ def detect() -> dict[str, str]:
         venv = _venv(source)
     found = {"source": source, "venv": venv,
              "runtime": runtime_for(venv) if venv else None, "rust": _rust(),
-             NODE_KEY: node_root()}
+             NODE_KEY: _node_install()}     # a /usr install too: it is what seats get (#2478 F11)
     return {key: str(value) for key, value in found.items() if value is not None}
 
 

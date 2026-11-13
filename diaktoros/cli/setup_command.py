@@ -55,8 +55,10 @@ def _agree(question: str, default: bool, interactive: bool, unattended: bool) ->
 def _chosen_node(args, current: dict | None, detected: dict) -> tuple[str | None, str]:
     """The runtime file's optional ``node`` (#1149) and where it came from. A re-run refreshes it:
     ``--node`` (``""`` is none), else the Node detected now, else the current file's while it
-    still works (one detection can't find), else ``(None, "")``: none to record, or a ``/usr``
-    install the sandbox already sees. A given path is recorded as its real directory."""
+    still works (one detection can't find), else ``(None, "")``. A ``/usr`` install the sandbox
+    already sees is detected and recorded too, though nothing is mounted for it: it is the Node
+    seats get, so it replaces an older one (#2478 review 6, F11). A given path is recorded as its
+    real directory."""
     from .. import runtime_detect
     given = getattr(args, "node", None)
     if given is not None:
