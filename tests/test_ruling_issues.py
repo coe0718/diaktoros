@@ -20,7 +20,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_partial_view_no_approve as fixture  # noqa: E402
-from diaktoros import broker, broker_ipc, config, gh, ledger, ruling_issues  # noqa: E402
+from diaktoros import broker, config, gh, ledger, ruling_issues  # noqa: E402
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.run_supervisor import Supervisor, turn_prompts  # noqa: E402
 
@@ -126,7 +127,7 @@ class Record(unittest.TestCase):
         self.assertEqual(sup.shadow_issues_waiting(REPO, seat="adjudicator"), [])
 
     def test_an_adjudicator_never_reaches_the_reviewers_posting_path(self):
-        from diaktoros import broker_issues
+        from diaktoros.broker import issues as broker_issues
         self.loop = {**self.loop, "id": "one", "triage": TRIAGE, "adjudicator_file_issues": True}
         _sup, scope = self.adjudicator_run()
         server = broker_ipc.RunBroker(self.loop, scope, self.root)

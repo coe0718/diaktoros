@@ -907,7 +907,8 @@ class ClaimAndLaunch:
     def _prepare_launch(self, turn: _Turn) -> _Launch | None:
         """What the turn is given: its prompt, its broker scope, and the change it sees.
         None when a step held the turn (``turn.error`` says why)."""
-        from .. import broker_ipc, config
+        from .. import config
+        from ..broker import ipc as broker_ipc
         row, loop = turn.row, turn.loop
         if row['seat'] == 'triage':
             # An issue, not a PR (#213): no head, no checkout, no change record. The host
@@ -947,7 +948,8 @@ class ClaimAndLaunch:
         """#1004 part 3: the fixer answers a shadow review the adjudicator upheld. The ruling is
         re-read now (a moved head or a later ruling ends the run), and the push is allowed only
         while it still stands (``RunScope.shadow_fix``, checked by the broker)."""
-        from .. import broker_ipc, gate, gh, prompts
+        from .. import gate, gh, prompts
+        from ..broker import ipc as broker_ipc
         row, loop = turn.row, turn.loop
         ruled = gate.upheld_shadow_ruling(loop, row['pr'], row['head'], db=self.db)
         if ruled is None or row['turn_key'] != f"{run_supervisor.SHADOW_FIX_KEY}{int(ruled)}":
@@ -978,7 +980,7 @@ class ClaimAndLaunch:
         """Every write this fixer turn would make is refused (#81): hold it instead of
         launching one. Named with the same reason as the broker's denial and the gate's queue
         hold; pre-write, so `retry` re-admits under the policy in force. Sets ``turn.error``."""
-        from .. import broker_ipc
+        from ..broker import ipc as broker_ipc
         row = turn.row
         turn.error = broker_ipc.policy_hold_reason(
             turn.loop, run_id=turn.run_id, repo=row['repo'], number=row['pr'], head=row['head'],
@@ -988,7 +990,7 @@ class ClaimAndLaunch:
     def _prepare_conflict_launch(self, turn: _Turn, head: dict) -> _Launch | None:
         # #303 stage 3: a conflict-resolution turn. No verdict is answered: the host
         # merges the pinned base into the head and the seat resolves the conflicts.
-        from .. import broker_ipc
+        from ..broker import ipc as broker_ipc
         row, loop = turn.row, turn.loop
         if self._policy_hold(turn):
             return None
@@ -1067,7 +1069,8 @@ class ClaimAndLaunch:
     def _prepare_ci_fix_launch(self, turn: _Turn, head: dict) -> _Launch | None:
         # #306: a failed required check at this head, handed to the fixer. No verdict
         # is answered; CI is re-read now, and a green or moved head ends the run.
-        from .. import broker_ipc, ci, ci_fix, config, gh, prompts
+        from .. import ci, ci_fix, config, gh, prompts
+        from ..broker import ipc as broker_ipc
         row, loop = turn.row, turn.loop
         if self._policy_hold(turn):
             return None
@@ -1180,7 +1183,7 @@ class ClaimAndLaunch:
         its reviewer turn and never another's at the same PR and head, and refused with none
         (``shadow``, #1139). An adjudicator's
         also records the id of the shadow review its prompt showed (``shadow``, #1112)."""
-        from .. import broker_ipc
+        from ..broker import ipc as broker_ipc
         return broker_ipc.RunScope(row["repo"], row["pr"], row["head"],
                                    prompt_row["seat"], head["ref"], row['id'],
                                    str(self.db), row['generation'], partial_view=partial,

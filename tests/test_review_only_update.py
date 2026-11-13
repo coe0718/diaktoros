@@ -281,6 +281,24 @@ class UpdateWaitsForTurns(Base):
         self.assertEqual((pushed, why), (self.remote_head(), ""))
 
 
+class UpdateBehindRecord(Base):
+    """#2293: a base merge the host pushes into a loop PR that fell behind is audited as
+    ``update_behind``, and the Desktop's records page names it so, never ``unknown``."""
+    CONFLICT = False
+
+    def test_the_desktop_reads_the_real_update_behind_receipt_by_its_role(self):
+        from diaktoros import desktop_api
+        self.loop.update(update_behind=True, fixers=["author"])
+        self.live["user"] = {"login": "author"}
+        done = self.update(behind=True)
+        self.assertEqual((done["role"], done["outcome"]), ("update_behind", "published"))
+        with mock.patch.object(desktop_api, "_loop", return_value=self.loop):
+            rows = desktop_api.records_view("w")["broker"]["items"]
+        self.assertEqual([(row["role"], row["operation"], row["phase"], row["outcome"]) for row in rows],
+                         [("update_behind", "update_branch", "reconciled", "published"),
+                          ("update_behind", "update_branch", "attempt", "unknown")])
+
+
 class UpdateWorkflow(Base):
     CONFLICT = False
     WORKFLOW = True

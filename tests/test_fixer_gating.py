@@ -400,7 +400,7 @@ class PushHelper(unittest.TestCase):
 
     def test_limits_mirror_the_broker(self):
         from diaktoros import safe_push
-        from diaktoros import broker_ipc
+        from diaktoros.broker import ipc as broker_ipc
         self.assertEqual((self.client.MAX_FILES, self.client.MAX_FILE, self.client.MAX_CONTENT,
                           self.client.MAX_MESSAGE, self.client.MAX_PATCH,
                           self.client.MAX_PATCH_PATHS, self.client.MAX_FRAME),
@@ -503,7 +503,8 @@ class FixerInstructions(unittest.TestCase):
 
     def test_run_turn_writes_the_head_read_only_for_the_fixer_only(self):
         import subprocess
-        from diaktoros import broker_client, broker_ipc, contained, trusted_turn
+        from diaktoros import broker_client, contained, trusted_turn
+        from diaktoros.broker import ipc as broker_ipc
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
