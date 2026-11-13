@@ -815,6 +815,20 @@ class LedgerAndWorker(unittest.TestCase):
                 late.kill()
             late.wait()
 
+    def test_a_worker_gone_from_the_scan_but_not_yet_reaped_is_no_failure(self):
+        # #2480 review 4, F4 (#2483): hold open the window where the cleanup's scan no longer
+        # sees the exiting stand-in but ``poll()`` still says it runs. The test passes there, and
+        # still fails when the cleanups don't wait for it at all.
+        name = "test_cleanup_waits_for_a_worker_still_writing_in_the_temp_dir"
+        for patch, failed in ((mock.patch.object(subprocess.Popen, "poll", return_value=None), 0),
+                              (mock.patch.object(worker_wait, "wait_for_workers"), 1)):
+            with self.subTest(failed=failed):
+                result = unittest.TestResult()
+                with patch:
+                    type(self)(name).run(result)
+                self.assertEqual((result.testsRun, len(result.failures), result.errors),
+                                 (1, failed, []), result.failures)
+
     def test_bad_budgets_are_refused_at_enqueue(self):
         sup = self.sup(0)
         for bad in (0, -1, True, "900"):
