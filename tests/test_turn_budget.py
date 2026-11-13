@@ -798,22 +798,35 @@ class LedgerAndWorker(unittest.TestCase):
         # command line names the root, as every real worker's does) that writes there late.
         case = type(self)("test_bad_budgets_are_refused_at_enqueue")
         case.setUp()
+        self.addCleanup(case.doCleanups)        # a skip below still removes its dir
+        # It writes once its stdin closes, which happens only when a look for processes naming
+        # the root (the cleanups' wait) has seen it: no deadline of its own, so no stall of this
+        # test lets it write before the cleanups are reached, or after a removal that didn't wait
+        # (#2480 review 5, F5). Its stdin closes after the cleanups in any case.
         late = subprocess.Popen([sys.executable, "-c",
-                                 "import sys,time,pathlib; time.sleep(1.5); "
+                                 "import sys,pathlib; sys.stdin.read(); "
                                  "pathlib.Path(sys.argv[1], 'late.log').write_text('x')",
-                                 str(case.root)],
+                                 str(case.root)], stdin=subprocess.PIPE,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 start_new_session=True)
-        try:
+        self.addCleanup(late.wait, 10)
+        self.addCleanup(lambda: late.poll() is None and late.kill())
+        if late.pid not in worker_wait.processes_naming(str(case.root)):
+            self.skipTest("processes can't be listed here (no /proc): the wait can't be checked")
+        naming = worker_wait.processes_naming
+
+        def looked(marker):
+            live = naming(marker)
+            if late.pid in live:
+                late.stdin.close()
+            return live
+        with mock.patch.object(worker_wait, "processes_naming", looked):
             case.doCleanups()
-            # Its late write is the proof: it fails if the dir went first. Not ``poll()``: an
-            # exiting process's command line reads empty before it can be reaped (#2483).
-            self.assertEqual(late.wait(10), 0, "the temp dir was removed under a live worker")
-            self.assertFalse(case.root.exists())
-        finally:
-            if late.poll() is None:
-                late.kill()
-            late.wait()
+        late.stdin.close()
+        # Its late write is the proof: it fails if the dir went first. Not ``poll()``: an
+        # exiting process's command line reads empty before it can be reaped (#2483).
+        self.assertEqual(late.wait(10), 0, "the temp dir was removed under a live worker")
+        self.assertFalse(case.root.exists())
 
     def test_a_worker_gone_from_the_scan_but_not_yet_reaped_is_no_failure(self):
         # #2480 review 4, F4 (#2483): hold open the window where the cleanup's scan no longer
@@ -826,6 +839,8 @@ class LedgerAndWorker(unittest.TestCase):
                 result = unittest.TestResult()
                 with patch:
                     type(self)(name).run(result)
+                if result.skipped:              # processes can't be listed here
+                    self.skipTest(result.skipped[0][1])
                 self.assertEqual((result.testsRun, len(result.failures), result.errors),
                                  (1, failed, []), result.failures)
 
