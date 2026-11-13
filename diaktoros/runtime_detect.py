@@ -294,25 +294,30 @@ def node_version(root: Path | None = None) -> tuple[Path | None, str]:
                               text=True, timeout=15, env={"PATH": "/usr/bin:/bin"})
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"{root}/bin/node could not run ({type(exc).__name__})"
-    return _version_of(root, done, f"{root}/bin/node --version failed")
+    return _version_of(root, done.returncode, done.stdout, f"{root}/bin/node --version failed")
 
 
-def _version_of(root: Path, done, failed: str) -> tuple[Path | None, str]:
-    out = done.stdout.decode(errors="replace") if isinstance(done.stdout, bytes) else done.stdout
+def _version_of(root: Path, returncode: int, out: str, failed: str) -> tuple[Path | None, str]:
     version = (out or "").strip()
-    if done.returncode != 0 or not re.fullmatch(r"v\d+\.\d+\.\d+\S{0,40}", version):
+    if returncode != 0 or not re.fullmatch(r"v\d+\.\d+\.\d+\S{0,40}", version):
         return None, failed
     return root, version
 
 
 def seat_node_version(root: Path, settings: dict) -> tuple[Path | None, str]:
-    """``node_version`` as a seat gets it: ``/opt/node/bin/node --version`` run in the turn's
-    sandbox, ``root`` bound as the worker binds it (#2478 review 3, F8). A ``bin/node`` that runs
-    on the host but not there (a script whose interpreter, or a binary whose loader or libraries,
-    the sandbox lacks) is ``(None, why)``, never a green doctor line."""
+    """``node_version`` as a seat gets it: ``node --version`` run in the turn's sandbox, found on
+    the seat's PATH as a turn finds it, ``root`` bound as the worker binds it (mounted at
+    ``/opt/node``, or a system install the sandbox sees). A ``bin/node`` that runs on the host but
+    not there (a script whose interpreter, or a binary whose loader or libraries, the sandbox
+    lacks: #2478 review 3, F8), or a ``node`` ahead of it on that PATH (``/opt/venv/bin``,
+    ``/opt/rust/bin``: review 4, F9), is ``(None, why)``, never a green doctor line."""
     import tempfile
     from . import contained
     mounts = {key: Path(settings.get(key) or "/usr") for key in ("venv", "runtime", "rust")}
+    if node_mounted(root):
+        mounts["node"], expected = root, contained.NODE_MOUNT + "/bin/node"
+    else:
+        expected = str(root / "bin" / "node")
     with tempfile.TemporaryDirectory(prefix="dk-node-") as tmp:
         base = Path(tmp)
         for name in ("code", "home", "work"):
@@ -320,14 +325,19 @@ def seat_node_version(root: Path, settings: dict) -> tuple[Path | None, str]:
         (base / "query.txt").write_text("node --version\n")
         try:
             done = contained.run(code=base / "code", home=base / "home", checkout=base / "work",
-                                 query=base / "query.txt", entry=["/opt/node/bin/node", "--version"],
-                                 node=root, timeout=30, **mounts)
+                                 query=base / "query.txt", timeout=30, **mounts,
+                                 entry=["/bin/sh", "-c", "command -v node && exec node --version"])
         except Exception as exc:
             return None, f"a seat's sandbox could not be started to run it ({type(exc).__name__})"
+    out = done.stdout.decode(errors="replace") if isinstance(done.stdout, bytes) else done.stdout
+    found, _, version = (out or "").strip().partition("\n")
+    if found and found != expected:
+        return None, f"a seat's PATH finds {found} first, not this one ({expected})"
     err = done.stderr.decode(errors="replace") if isinstance(done.stderr, bytes) else done.stderr
     last = ((err or "").strip().splitlines() or [""])[-1][:160]
-    return _version_of(root, done, f"it runs on the host, but `node --version` failed in a seat's "
-                                   f"sandbox (rc {done.returncode}{': ' + last if last else ''})")
+    return _version_of(root, done.returncode, version,
+                       f"it runs on the host, but `node --version` failed in a seat's sandbox "
+                       f"(rc {done.returncode}{': ' + last if last else ''})")
 
 
 _VISIBLE = "system install, already visible in the sandbox"
@@ -337,17 +347,15 @@ SETUP_NODE = "re-run `hermes dk setup` (`--node PATH` to choose one, `--node \"\
 def node_report(settings: dict) -> tuple[str, str, str]:
     """What seats get for Node, read the way the worker reads it (``recorded_node``), for
     ``doctor`` and ``selftest`` (#1149): ``(state, detail, fix)``. ``state`` is ``"ok"`` (mounted,
-    or a ``/usr`` install the sandbox sees), ``"warn"`` (a recorded Node that is unusable, or a
-    host Node the runtime file does not record, so seats don't get it) or ``"none"``."""
+    or a ``/usr`` install the sandbox sees, either one run in a seat), ``"warn"`` (a Node a seat
+    cannot run, or a host Node the runtime file does not record, so seats don't get it) or
+    ``"none"``."""
     value = settings.get(NODE_KEY) or ""
     if value:
         why, real = node_problem(value), node_canonical(value)
-        if why:
-            root, version = None, why
-        elif node_mounted(real):
-            root, version = seat_node_version(real, settings)
-        else:
-            root, version = node_version(real)
+        root, version = (None, why) if why else node_version(real)
+        if root is not None:                # what counts is what a seat runs (#2478 F8, F9)
+            root, version = seat_node_version(root, settings)
         if root is None:
             return "warn", f"the runtime file's node {value}: {version}; seats get no Node", SETUP_NODE
         where = "mounted at /opt/node" if node_mounted(root) else _VISIBLE
@@ -357,6 +365,9 @@ def node_report(settings: dict) -> tuple[str, str, str]:
         return ("none", f"{version}; seats cannot run `node` and JavaScript test suites stay "
                 "unverified", "install Node under ~/.hermes/node or on PATH, then " + SETUP_NODE)
     if not node_mounted(root):
+        root, version = seat_node_version(root, settings)
+        if root is None:
+            return "warn", f"the host's system Node: {version}; seats get no Node", SETUP_NODE
         return "ok", f"node {version} at {root}, {_VISIBLE}", ""
     # Recorded as none (``""``) or not at all, a host Node seats don't get is a warning either
     # way: a plugin update leaves the file as it was (#1149, the maintainer's decision).

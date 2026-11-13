@@ -244,7 +244,8 @@ class NodeRuntime(unittest.TestCase):
         self.assertEqual(runtime_detect.detect().get("node"), str(root))
 
     def system_install(self):
-        """A /usr-style install: found on PATH, but a root the sandbox already sees."""
+        """A /usr-style install: found on PATH, but a root the sandbox already sees. A real seat
+        can't see a temp root, so ``seat`` stands in for one that does: see ``seat_runs``."""
         root = self.install(self.home / "sysroot", "v18.19.0")
         env = mock.patch.dict(os.environ, {"PATH": str(root / "bin")})
         env.start()
@@ -252,7 +253,26 @@ class NodeRuntime(unittest.TestCase):
         vis = mock.patch.object(runtime_detect, "_NODE_VISIBLE", (root,))
         vis.start()
         self.addCleanup(vis.stop)
+        self.seats = []
+        for patch in (mock.patch.object(contained, "unavailable", return_value=""),
+                      mock.patch.object(contained, "run", side_effect=self.seat_runs(root / "bin"))):
+            patch.start()
+            self.addCleanup(patch.stop)
         return root
+
+    def seat_runs(self, *path: Path):
+        """A ``contained.run`` that runs the seat's command on the host with ``path`` first on
+        PATH, as a seat whose PATH holds those directories would, recording each call's mounts.
+        Like the real one, it refuses when no sandbox can start (``contained.unavailable``)."""
+        import subprocess
+
+        def run(**kw):
+            if contained.unavailable():
+                raise contained.ContainmentUnavailable(contained.unavailable())
+            self.seats.append(kw)
+            return subprocess.run(kw["entry"], capture_output=True, timeout=30,
+                                  env={"PATH": ":".join(map(str, path)) + ":/nonexistent"})
+        return run
 
     def test_system_install_is_available_but_not_mounted(self):
         root = self.system_install()
@@ -266,6 +286,32 @@ class NodeRuntime(unittest.TestCase):
         self.assertEqual(check.status, doctor.VERIFIED)
         self.assertIn("v18.19.0", check.detail)
         self.assertIn("already visible", check.detail)
+        self.assertEqual(len(self.seats), 1)            # run in a seat, with nothing mounted
+        self.assertNotIn("node", self.seats[0])
+
+    def test_a_system_node_is_checked_in_a_seat_too(self):
+        # #2478 review 4, F8: a system Node ran only on the host, so one whose interpreter or
+        # libraries the sandbox lacks was verified. Absent, recorded as none or recorded: each
+        # is now what a seat runs, so a host that can't start one, or a seat it fails in, warns.
+        import subprocess
+        root = self.system_install()
+        failed = subprocess.CompletedProcess([], 126, f"{root}/bin/node\n".encode(),
+                                             b"sh: 1: /usr/bin/node: bad interpreter\n")
+        for settings in ({}, {"node": ""}, {"node": str(root)}):
+            with self.subTest(settings=settings):
+                with mock.patch.object(contained, "unavailable", return_value="no bwrap"):
+                    check = doctor.check_node(settings)
+                    self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
+                    self.assertIn("sandbox could not be started", check.detail)
+                    self.assertEqual(self.selftest_node(**settings)[0], "warn")
+                with mock.patch.object(contained, "run", return_value=failed):
+                    check = doctor.check_node(settings)
+                    self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
+                    self.assertIn("failed in a seat's sandbox (rc 126: sh: 1:", check.detail)
+                    self.assertIn("seats get no Node", check.detail)
+                    self.assertEqual(self.selftest_node(**settings)[0], "warn")
+                self.assertEqual(doctor.check_node(settings).status, doctor.VERIFIED)
+                self.assertEqual(self.selftest_node(**settings)[0], "pass")
 
     def test_selftest_reports_system_node_as_pass(self):
         self.system_install()
@@ -343,9 +389,9 @@ class NodeInRealSandbox(unittest.TestCase):
                           '--test) echo "ok $2"; echo "# pass 1";; esac\n')
         script.chmod(0o755)
 
-    def run_in_sandbox(self, shell: str, node):
+    def run_in_sandbox(self, shell: str, node, rust: Path = Path("/usr")):
         kw = dict(code=self.root / "code", venv=Path("/usr"), runtime=Path("/usr"),
-                  home=self.root / "home", checkout=self.root / "export", rust=Path("/usr"),
+                  home=self.root / "home", checkout=self.root / "export", rust=rust,
                   query=self.root / "q.txt", entry=["/bin/sh", "-c", shell])
         if node is not None:
             kw["node"] = node
@@ -401,6 +447,24 @@ class NodeInRealSandbox(unittest.TestCase):
                     self.assertRegex(check.detail, r"failed in a seat's sandbox \(rc 12[67]: ")
                     self.assertIn("seats get no Node", check.detail)
                     self.assertEqual(state, "warn", detail)
+
+    def test_the_check_runs_the_node_a_seats_path_finds(self):
+        # #2478 review 4, F9: a seat finds `node` on its PATH, where /opt/venv/bin and
+        # /opt/rust/bin come before /opt/node/bin. The check ran /opt/node/bin/node by its path,
+        # so a broken node in the rust prefix left doctor verified while the seat's `node` failed.
+        case = NodeRuntime()
+        case.home = self.root
+        rust = self.root / "rust"           # the one selftest_node's runtime file names
+        (rust / "bin").mkdir(parents=True)
+        (rust / "bin" / "node").write_text("#!/bin/sh\necho broken >&2; exit 42\n")
+        (rust / "bin" / "node").chmod(0o755)
+        self.assertEqual(self.run_in_sandbox("node --version", self.node, rust).returncode, 42)
+        check = doctor.check_node({"node": str(self.node), "rust": str(rust)})
+        self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
+        self.assertIn("a seat's PATH finds /opt/rust/bin/node first", check.detail)
+        state, detail = case.selftest_node(node=str(self.node))
+        self.assertEqual(state, "warn", detail)
+        self.assertIn("/opt/rust/bin/node", detail)
 
     def test_without_the_mount_the_seat_has_no_node(self):
         done = self.run_in_sandbox("node --version", None)
