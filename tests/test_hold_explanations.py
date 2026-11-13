@@ -56,10 +56,30 @@ class LedgerExplanations(unittest.TestCase):
         self.assertNotIn('PRIVATE', json.dumps(explanation).upper())
         self.assertNotIn('ghp_', json.dumps(explanation))
 
-    def test_pacing_ci_and_caps_remain_partial_without_structured_policy_reason(self):
-        for error in ('held: waiting for CI', 'held: reviewer usage window (provider)',
-                      'held: reviewer daily turn cap reached', 'held: human path',
-                      'held: isolated worker unavailable', 'held: conflict', 'held: escalation'):
+    # Lookalikes of the host writers' lines (#674, review of #2398 F2): each mentions a writer's
+    # words but is not its line, so none may be classified. Several are one edit from a real one.
+    LOOKALIKES = (
+        'held: human path mentions daily turn cap', 'held: waiting for CINDER',
+        'held: waiting for CI', 'held: waiting for ci', 'held: waiting for CI checks to finish',
+        'held: waiting for CINDER on aaaaaaa — 1 check(s) still running or not reported',
+        'held: waiting for CI on AAAAAAA — 1 check(s) still running or not reported',
+        'held: waiting for CI on aaaaaa — 1 check(s) still running or not reported',
+        'held: waiting for CI on aaaaaaa 1 check(s) still running or not reported',
+        'note held: waiting for CI on aaaaaaa — 1 check(s) still running or not reported',
+        'held: reviewer daily turn cap reached', 'held: reviewer daily turn cap (3) reached',
+        'held: nobody daily turn cap (3) reached — resumes 00:00',
+        'held: human path; reviewer daily turn cap (3) reached — resumes 00:00',
+        'held: reviewer daily turn cap (three) reached — resumes 00:00',
+        'held: reviewer usage window', 'held: human path mentions usage window (x) — resumes 00:00',
+        'held: reviewer usage window (openai) reached', 'held: reviewer provider unavailablex — resumes 00:00',
+        'held: human path', 'held: isolated worker unavailable', 'held: conflict', 'held: escalation',
+        'waiting for CI', 'reviewer daily turn cap reached', 'transient error',
+        'held: private /home/private ghp_SECRET')
+
+    def test_unstructured_hold_prose_stays_partial_without_a_policy_reason(self):
+        # Only the host writers' exact lines (run_supervisor.waiting_hold) are structured; a
+        # held: line no writer produces, or a lookalike, is never classified from its prose.
+        for error in self.LOOKALIKES:
             with self.subTest(error=error):
                 result = views.hold_explanation(self.row(error=error))
                 self.assertEqual(result['reason_code'], 'run_waiting')
@@ -67,6 +87,179 @@ class LedgerExplanations(unittest.TestCase):
                 self.assertEqual(result['automatic_resume'], 'unknown')
                 self.assertEqual(result['operator_action'], 'inspect')
                 self.assertNotIn(error, result['text'])
+        # The filter is the writers' structure, not their words: every real line passes it.
+        for name, error in self.writer_lines().items():
+            with self.subTest(writer=name):
+                self.assertEqual(views.hold_explanation(self.row(error=error))['reason_code'],
+                                 self.EXPECTED[name][0])
+        lines = self.ci_hold_lines()
+        for error in (*self.LOOKALIKES, lines.pop('shadow_draft')):
+            with self.subTest(error=error):
+                self.assertEqual(run_supervisor.waiting_hold(error), '')
+                self.assertEqual(views.hold_explanation(self.row(error=error))['reason_code'],
+                                 'run_waiting')
+        for name, error in lines.items():
+            with self.subTest(writer=name):
+                self.assertEqual(run_supervisor.waiting_hold(error), 'ci')
+
+    # One line per structured hold, each made by its real writer (#674).
+    def writer_lines(self):
+        from types import SimpleNamespace
+        from diaktoros import pacing
+        from diaktoros.run_supervisor import turns
+        cap = SimpleNamespace(paced_until=None, error=None)
+        turns._cap_held(cap, 'reviewer', 3)
+        review_only = SimpleNamespace(paced_until=None, error=None)
+        turns._cap_held(review_only, pacing.REVIEW_ONLY_SEAT, 2)
+
+        def ci(fixing=False, red=False, review_only=False, **checks):
+            state = SimpleNamespace(**{k: checks.get(k, []) for k in
+                                       ('cancelled', 'failed', 'missing', 'pending')})
+            return turns._ci_hold_text('a' * 40, state, fixing, red, review_only)
+        return {
+            'ci_wait': ci(pending=['tests']),
+            'ci_missing': ci(missing=['tests']),
+            'ci_cancelled': ci(cancelled=['tests']),
+            'ci_fixer_first': ci(failed=['tests'], fixing=True),
+            'ci_failed_wait': ci(failed=['tests'], red=True, review_only=True),
+            'ci_failed_fixer_done': ci(failed=['tests'], red=True),
+            'provider_window': pacing.hold_line('reviewer', 'openai-codex', 1234.0),
+            'provider_unavailable': pacing.hold_line('reviewer', 'openai-codex', 1234.0,
+                                                     pacing.UNAVAILABLE + ' (empty stream)'),
+            'daily_cap': cap.error,
+            'review_only_cap': review_only.error,
+        }
+
+    def ci_hold_lines(self):
+        """The CI lines written straight through ``run_supervisor.ci_hold_line``: the reviewer's
+        base-conflict hold and the shadow gate's waits (the draft wait is no CI wait)."""
+        return {
+            'ci_conflict': run_supervisor.ci_hold_line(
+                'a' * 40, 'conflicts with main — GitHub runs no CI on it'),
+            'shadow_ci_wait': run_supervisor.ci_hold_line('a' * 40, '1 check(s) still running'),
+            'shadow_draft': run_supervisor.ci_hold_line('a' * 40, run_supervisor.CI_DRAFT_WAIT),
+        }
+
+    # The (reason_code, waiting_for, automatic_resume) each writer's line must explain as. A CI
+    # wait ends at its event or CI_WAIT_MAX_S (turns._ci_hold_reason, the shadow gate); a red
+    # head's hold has no time limit (#1110), so it is 'after_event', and so is a fixer's red head,
+    # where only the fixer's turn order ends at the limit (review of #2398, F3).
+    CI_TIMED = ('ci_wait', 'ci_checks_or_new_head', 'after_event_or_timeout')
+    CI_FIXER = ('ci_fixer_first_wait', 'failed_checks_pass_or_new_head', 'after_event')
+    CI_RED = ('ci_failed_wait', 'failed_checks_pass_or_new_head', 'after_event')
+    WINDOW = ('provider_window', 'provider_window_reset', 'after_recorded_time')
+    CAP = ('daily_cap', 'daily_cap_reset', 'after_recorded_time')
+    EXPECTED = {'ci_wait': CI_TIMED, 'ci_missing': CI_TIMED, 'ci_cancelled': CI_TIMED,
+                'ci_fixer_first': CI_FIXER, 'ci_conflict': CI_TIMED, 'shadow_ci_wait': CI_TIMED,
+                'ci_failed_wait': CI_RED, 'ci_failed_fixer_done': CI_RED,
+                'provider_window': WINDOW, 'provider_unavailable': WINDOW,
+                'daily_cap': CAP, 'review_only_cap': CAP}
+
+    def structured(self, result) -> tuple:
+        return result['reason_code'], result['waiting_for'], result['automatic_resume']
+
+    def test_host_hold_lines_get_their_structured_reason(self):
+        lines = self.writer_lines()
+        for name, error in lines.items():
+            with self.subTest(name=name):
+                self.assertEqual(self.structured(views.hold_explanation(self.row(error=error))),
+                                 self.EXPECTED[name])
+        lines.update(self.ci_hold_lines())
+        del lines['shadow_draft']
+        self.assertEqual(set(lines), set(self.EXPECTED))
+        for name, error in lines.items():
+            with self.subTest(name=name):
+                result = views.hold_explanation(self.row(error=error, due=1234))
+                self.assertEqual(self.structured(result), self.EXPECTED[name])
+                self.assertEqual(result['text'], f"{views.HOLD_COPY[result['reason_code']]} "
+                                 'Ledger only (partial). Waiting for: '
+                                 f"{views.WAITING_FOR_COPY[result['waiting_for']]}. "
+                                 'Recorded earliest recheck: 1970-01-01T00:20:34Z.')
+                # The time-based holds name their next eligible time; the event-based ones name
+                # their event (and keep the recorded recheck, which is when CI is read again).
+                self.assertEqual(result['next_eligible_start'], 1234)
+                self.assertEqual(result['operator_action'], 'inspect')
+                self.assertNotIn(error, result['text'])
+        # Each bound is the current wait's, never the whole hold's (review of #2398, F3).
+        self.assertIn('this wait ends at the CI wait limit at the latest, but failed required '
+                      'checks can still hold it after that, with no time limit',
+                      views.HOLD_COPY['ci_wait'])
+        self.assertIn('the fixer goes first for at most the CI wait limit; the failed checks still '
+                      'hold it after that, with no time limit', views.HOLD_COPY['ci_fixer_first_wait'])
+        self.assertIn('with no time limit', views.HOLD_COPY['ci_failed_wait'])
+        token = 'held: fixer ' + run_supervisor.DAILY_TOKEN_BUDGET + ' (10) reached — resumes 00:00'
+        self.assertEqual(run_supervisor.waiting_hold(token), 'daily_cap')
+        self.assertIn('daily_tokens', run_supervisor.hold_remedy('fixer', token))
+
+    def test_a_structured_hold_with_write_evidence_is_never_resumed_or_replayed(self):
+        for name, error in self.writer_lines().items():
+            # The same line without write evidence is structured: the guard is what overrides it.
+            self.assertEqual(self.structured(views.hold_explanation(self.row(error=error))),
+                             self.EXPECTED[name], name)
+            for state, write in (('waiting', 'push intent'), ('uncertain', None),
+                                 ('uncertain', 'push intent')):
+                row = dict(self.row(error=error, due=1234), state=state, write=write)
+                with self.subTest(name=name, state=state, write=write):
+                    result = views.hold_explanation(row)
+                    self.assertEqual(self.structured(result),
+                                     ('external_write_guard', 'operator_inspection', 'never'))
+                    self.assertIsNone(result['next_eligible_start'])
+                    self.assertEqual(result['text'], views.hold_explanation(
+                        dict(row, error='held: human path'))['text'])
+                    advice = views.next_step(row, 'widgets')
+                    self.assertIn('inspect', advice)
+                    for replay in ('hermes dk retry', '--clear-hold', 'raise the cap', 'recheck'):
+                        self.assertNotIn(replay, advice)
+
+    def consumers(self) -> tuple[dict, str]:
+        """The Desktop's /pr view and the CLI's printed ledger runs, from the real ledger."""
+        with mock.patch.object(config, 'readable_loops', return_value=([self.loop], [])), \
+                mock.patch.object(run_supervisor, 'production_ledger', return_value=self.db), \
+                mock.patch.object(operations, '_ledger_path', return_value=self.db):
+            view = desktop_api.pr_view('widgets', 7)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                operations._print_ledger_runs(self.loop, 7, 'run: ', 10)
+        return view, out.getvalue()
+
+    def test_structured_holds_reach_cli_and_desktop_identically(self):
+        cases = [(error, self.EXPECTED[name]) for name, error in self.writer_lines().items()]
+        cases += [(error, ('run_waiting', 'host_recheck', 'unknown')) for error in self.LOOKALIKES[:2]]
+        for error, expected in cases:
+            with self.subTest(error=error):
+                row = self.row(error=error, due=1234)
+                view, out = self.consumers()
+                explanation = view['stuck'][0]['explanation']
+                # Both consumers carry the structured value itself, not merely the same value.
+                self.assertEqual(self.structured(explanation), expected)
+                self.assertEqual(explanation, views.hold_explanation(row))
+                self.assertTrue(explanation['text'].startswith(
+                    views.HOLD_COPY[expected[0]] + ' Ledger only (partial). Waiting for: '
+                    + views.WAITING_FOR_COPY[expected[1]] + '.'))
+                self.assertIn(explanation['text'], out)
+                self.assertEqual(view['stuck'][0]['next'], views.next_step(row, 'widgets'))
+                self.assertIn(views.next_step(row, 'widgets'), out)
+                # A write guard reaches both consumers the same way, whatever the hold line.
+                with ledger.connect(self.db) as con:
+                    con.execute('UPDATE runs SET state=?', ('uncertain',))
+                view, out = self.consumers()
+                guarded = view['stuck'][0]['explanation']
+                self.assertEqual(self.structured(guarded),
+                                 ('external_write_guard', 'operator_inspection', 'never'))
+                self.assertIn(guarded['text'], out)
+                self.assertNotIn(explanation['text'], out)
+
+    def test_desktop_validator_mirrors_the_host_tables(self):
+        # The Desktop rebuilds the text from the same copy and pairings: one host table, no
+        # second wording of a reason in the plugin.
+        plugin = (pathlib.Path(__file__).resolve().parents[1] / 'desktop/plugin.js').read_text()
+        body = plugin[plugin.index('function validHoldExplanation'):plugin.index('function usePr(')]
+        for code, copy in views.HOLD_COPY.items():
+            self.assertIn(f"{code}: {copy!r}", body)
+        for waiting, copy in views.WAITING_FOR_COPY.items():
+            self.assertIn(f"{waiting}: {copy!r}", body)
+        for code, waiting, resume in views.HOLD_REASONS.values():
+            self.assertIn(f"{code}: [{waiting!r}, {resume!r}, true]", body)
 
     def test_uncertain_or_write_evidence_never_offers_replay_or_a_start(self):
         for state in ('waiting', 'failed', 'uncertain', 'cancelled'):
@@ -148,6 +341,10 @@ class LedgerExplanations(unittest.TestCase):
                  'run_cancelled': self.row(state='cancelled', error=run_supervisor.POLICY_CANCELLATIONS[0]),
                  'external_write_guard': self.row(state='uncertain')}
         cases['unknown'] = dict(cases['run_waiting'], state='future_state')
+        lines = self.writer_lines()
+        for name in ('ci_wait', 'ci_failed_wait', 'provider_window', 'daily_cap'):
+            cases[name] = self.row(error=lines[name])
+        cases['ci_fixer_first_wait'] = self.row(error=lines['ci_fixer_first'])
         result = {name: views.hold_explanation(row) for name, row in cases.items()}
         fixture = pathlib.Path(__file__).parent / 'fixtures/desktop_hold_explanations.json'
         self.assertEqual(result, json.loads(fixture.read_text()))

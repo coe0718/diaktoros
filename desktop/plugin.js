@@ -321,14 +321,40 @@ function QueryStatus({ query, state, label, noLedger = false }) {
 
 // Validate the additive ledger contract before admitting it to the shared PR cache.
 // These are wire vocabulary/copy checks, not gate predicates or retry eligibility.
+// The copy and pairings mirror the host's HOLD_COPY, WAITING_FOR_COPY and HOLD_REASONS
+// (run_supervisor/views.py, #674): a structured reason and its words must agree.
 function validHoldExplanation(value, head7) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const copy = {
     external_write_guard: 'Recorded run has external write evidence or an uncertain outcome.',
     run_waiting: 'Recorded run is waiting; the policy-specific reason is not structured yet.',
+    ci_wait: 'Recorded run is held for CI at its recorded head; this wait ends at the CI wait limit at the latest, but failed required checks can still hold it after that, with no time limit; a new head queues a fresh run instead.',
+    ci_fixer_first_wait: 'Recorded run is held for failed required checks at its recorded head while the fixer takes them first; the fixer goes first for at most the CI wait limit; the failed checks still hold it after that, with no time limit; a new head queues a fresh run instead.',
+    ci_failed_wait: 'Recorded run is held for failed required checks at its recorded head, with no time limit; a new head queues a fresh run instead.',
+    provider_window: 'Recorded run is held: its provider account is closed (a usage window or an unavailable provider).',
+    daily_cap: "Recorded run is held: its seat's daily turn cap or token budget is reached.",
     run_failed: 'Recorded run failed.',
     run_cancelled: 'Recorded run was cancelled.',
     unknown: 'The ledger does not establish a supported hold explanation.'
+  }
+  const waitingCopy = {
+    host_recheck: 'host recheck', operator_inspection: 'operator inspection', unknown: 'unknown',
+    ci_checks_or_new_head: 'CI checks to settle or a new head',
+    failed_checks_pass_or_new_head: 'the failed checks to pass or a new head',
+    provider_window_reset: 'the provider account to reopen', daily_cap_reset: 'the daily cap to reset'
+  }
+  // reason_code: [waiting_for, automatic_resume, whether a recorded recheck time may be named]
+  const pairs = {
+    external_write_guard: ['operator_inspection', 'never', false],
+    run_waiting: ['host_recheck', 'unknown', true],
+    ci_wait: ['ci_checks_or_new_head', 'after_event_or_timeout', true],
+    ci_fixer_first_wait: ['failed_checks_pass_or_new_head', 'after_event', true],
+    ci_failed_wait: ['failed_checks_pass_or_new_head', 'after_event', true],
+    provider_window: ['provider_window_reset', 'after_recorded_time', true],
+    daily_cap: ['daily_cap_reset', 'after_recorded_time', true],
+    run_failed: ['unknown', 'unknown', false],
+    run_cancelled: ['unknown', 'unknown', false],
+    unknown: ['unknown', 'unknown', false]
   }
   const keys = ['schema', 'reason_code', 'run_id', 'head', 'evidence_source', 'completeness',
     'waiting_for', 'automatic_resume', 'next_eligible_start', 'operator_action', 'text']
@@ -340,20 +366,16 @@ function validHoldExplanation(value, head7) {
       !(value.head === null && !/^[0-9a-f]{7}$/.test(head7) ||
         typeof value.head === 'string' && /^[0-9a-f]{40}$/.test(value.head) &&
         /^[0-9a-f]{7}$/.test(head7) && value.head.slice(0, 7) === head7) ||
-      !['host_recheck', 'operator_inspection', 'unknown'].includes(value.waiting_for) ||
-      !['never', 'unknown'].includes(value.automatic_resume) ||
       !(value.next_eligible_start === null || (typeof value.next_eligible_start === 'number' &&
         Number.isFinite(value.next_eligible_start) && value.next_eligible_start >= 0 && value.next_eligible_start <= 253402300799)) ||
       typeof value.text !== 'string' || value.text.length > 600) return false
-  if (value.reason_code === 'external_write_guard' && (value.waiting_for !== 'operator_inspection' ||
-      value.automatic_resume !== 'never' || value.next_eligible_start !== null)) return false
-  if (value.reason_code !== 'external_write_guard' && value.automatic_resume !== 'unknown') return false
-  if (value.reason_code === 'run_waiting' ? value.waiting_for !== 'host_recheck' :
-      value.reason_code !== 'external_write_guard' && (value.waiting_for !== 'unknown' || value.next_eligible_start !== null)) return false
+  const [waiting, resume, timed] = pairs[value.reason_code]
+  if (value.waiting_for !== waiting || value.automatic_resume !== resume ||
+      (!timed && value.next_eligible_start !== null)) return false
   const stamp = value.next_eligible_start === null ? 'unknown' :
     new Date(value.next_eligible_start * 1000).toISOString().slice(0, 19) + 'Z'
   return value.text === copy[value.reason_code] + ' Ledger only (partial). Waiting for: ' +
-    value.waiting_for.replaceAll('_', ' ') + '. Recorded earliest recheck: ' + stamp + '.'
+    waitingCopy[value.waiting_for] + '. Recorded earliest recheck: ' + stamp + '.'
 }
 
 function usePr(loop, pr) {
