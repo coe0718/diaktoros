@@ -208,27 +208,77 @@ class UpdateClean(Base):
 
 
 class UpdateWaitsForTurns(Base):
-    """#2468 review: the push takes one last look at the ledger. A turn of the PR queued or
-    started while the merge was built stops it, so the merge never cancels that review."""
+    """#2468 review: the push holds the PR in the run ledger, in the one transaction that finds
+    no turn of it in flight, and the worker's claim does not claim a turn of a held PR. Real Git
+    with a local bare remote and a real ledger, so whichever of the two commits first wins."""
     CONFLICT = False
 
-    def update_with(self, busy):
-        from diaktoros import base_merge
+    def setUp(self):
+        super().setUp()
+        from diaktoros import run_supervisor
+        self.db = self.root / "runs.sqlite"
+        run_supervisor.Supervisor(self.db)
+
+    def queue(self, state):
+        import sqlite3
+        import time
+        from contextlib import closing
+        now = time.time()
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("INSERT INTO runs (id, delivery, repo, pr, head, seat, state, created, "
+                        "updated) VALUES (?, ?, ?, 7, ?, 'reviewer', ?, ?, ?)",
+                        (f"r-{state}", f"d-{state}", REPO, self.head, state, now, now))
+        with closing(sqlite3.connect(self.db)) as con:
+            con.row_factory = sqlite3.Row
+            return con.execute("SELECT * FROM runs WHERE id=?", (f"r-{state}",)).fetchone()
+
+    def update_with(self, api=None):
         facts = review_only_conflict.assess(self.loop, 7, self.head, self.live, remote=self.remote)
-        with mock.patch.object(safe_push.gh, "api", side_effect=self.api), \
-                mock.patch.object(base_merge, "in_flight", return_value=busy):
+        with mock.patch.object(safe_push.gh, "api", side_effect=api or self.api), \
+                mock.patch("diaktoros.run_supervisor.production_ledger", return_value=self.db):
             return review_only_conflict.update(self.loop, 7, self.head, facts, remote=self.remote)
 
-    def test_a_turn_in_flight_at_the_push_stops_it_and_is_tried_again(self):
-        pushed, why = self.update_with("a reviewer turn is waiting")
+    def remote_head(self):
+        return git("--git-dir", self.remote, "rev-parse", "feat")
+
+    def test_a_running_turn_stops_the_push_and_it_is_tried_again(self):
+        self.queue("running")
+        pushed, why = self.update_with()
         self.assertEqual(pushed, "")
         self.assertIsInstance(why, review_only_conflict.Retry)
-        self.assertIn("a reviewer turn is waiting", why)
-        self.assertEqual(git("--git-dir", self.remote, "rev-parse", "feat"), self.head)
+        self.assertIn("a reviewer turn is running", why)
+        self.assertEqual(self.remote_head(), self.head)
 
-    def test_with_nothing_in_flight_it_pushes(self):
-        pushed, why = self.update_with("")
-        self.assertEqual((pushed, why), (git("--git-dir", self.remote, "rev-parse", "feat"), ""))
+    def test_a_turn_admitted_after_the_last_look_is_not_claimed_under_the_push(self):
+        # The window the probe found: a turn queued and claimed during the push's second
+        # authorization, after its ledger look. The claim finds the hold and waits.
+        from diaktoros import run_supervisor
+        from diaktoros.run_supervisor import merge_hold, turns
+        calls, claimed = {"n": 0}, []
+
+        def api(loop, path, method="GET", body=None, login=None):
+            if path.endswith("/pulls/7"):
+                calls["n"] += 1
+                if calls["n"] == 2:           # after before_push: the hold is taken
+                    row = self.queue("pending")
+                    claimed.append(run_supervisor.Supervisor(self.db)._claim_commit(
+                        row, turns._ClaimRead()))
+            return self.api(loop, path, method, body, login)
+        pushed, why = self.update_with(api)
+        self.assertEqual(calls["n"], 2, "the turn was admitted after the last look")
+        self.assertEqual(claimed, [None], "not claimed while the push held the PR")
+        self.assertEqual((pushed, why), (self.remote_head(), ""))
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(self.db)) as con:
+            self.assertEqual(con.execute("SELECT state, error FROM runs").fetchall(),
+                             [("waiting", merge_hold.WAITING)])
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM merge_holds").fetchone()[0], 0,
+                             "released once the push landed")
+
+    def test_with_nothing_in_flight_it_pushes_and_holds_nothing_after(self):
+        pushed, why = self.update_with()
+        self.assertEqual((pushed, why), (self.remote_head(), ""))
 
 
 class UpdateWorkflow(Base):

@@ -154,13 +154,36 @@ def in_flight(loop: dict, number: int) -> str:
     return f"a {row[0]} turn is {row[1]}" if row else ""
 
 
-def hold_for_turns(loop: dict, number: int) -> None:
-    """A merge push's last look before it goes (``update_branch``'s ``before_push``): a turn of
-    the PR queued or started while the merge was built stops it (``BrokerDenied``, so the next
-    sweep tries again). The wait then holds past the sweep's first look (#2468)."""
-    busy = in_flight(loop, number)
-    if busy:
-        raise broker.BrokerDenied(f"{busy}: the merge waits for it")
+class TurnHold:
+    """A merge push's hold on its PR (``run_supervisor.merge_hold``, #2468). ``take`` is the
+    push's ``before_push``: it holds the PR in the one transaction that finds no turn of it
+    queued or in flight, so none is claimed until the push is done; or it stops the push
+    (``BrokerDenied``: the next sweep tries again). ``release`` after the push, whatever came
+    of it; a hold never released expires on its own."""
+
+    def __init__(self, loop: dict, number: int, head: str):
+        self.loop, self.number, self.head, self.token = loop, number, head, ""
+
+    def take(self, *_push) -> None:
+        from .run_supervisor import merge_hold, production_ledger
+        path = production_ledger()
+        if not path.exists():
+            return                  # no ledger yet: no turn of any PR to wait for (in_flight)
+        self.token, busy = merge_hold.take(path, self.loop["repo"], self.number, self.head,
+                                           IN_FLIGHT)
+        if busy:
+            raise broker.BrokerDenied(f"{busy}: the merge waits for it")
+
+    def release(self) -> None:
+        if not self.token:
+            return
+        from .run_supervisor import merge_hold, production_ledger
+        try:
+            merge_hold.release(production_ledger(), self.loop["repo"], self.number, self.token)
+        except Exception as exc:
+            log(f"#{self.number}: merge hold not released ({type(exc).__name__}); it expires "
+                f"in {merge_hold.HOLD_S // 60} minutes")
+        self.token = ""
 
 
 def source(loop: dict, st, head: str, live: dict, raw, reviews):
@@ -196,9 +219,10 @@ def update(loop: dict, st, number: int, head: str, live: dict) -> str:
         return ""
     approval, no_carry = source(loop, st, head, live, raw, reviews)
     carry: dict = {}
+    hold = TurnHold(loop, number, head)
 
     def record(new_head: str, base: str, identity: str) -> None:
-        hold_for_turns(loop, number)
+        hold.take()
         if approval is not None and not identity:
             _record(st, new_head, {"number": number, "from": head, "review": approval.get("id"),
                                    "base": base, "at": time.time()})
@@ -217,6 +241,8 @@ def update(loop: dict, st, number: int, head: str, live: dict) -> str:
     except broker.BrokerDenied as exc:       # a PushFailure too: the next sweep tries again
         log(f"#{number} @ {head[:7]} behind {loop['base']}, merge push stopped: {exc}")
         return ""
+    finally:
+        hold.release()
     new = done["new_head"]
     log(f"#{number} @ {head[:7]} merged {loop['base']} in: {new[:7]}"
         + (" (approval carried over)" if carry.get("done") else ""))

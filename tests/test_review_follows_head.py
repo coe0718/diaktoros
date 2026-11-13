@@ -24,11 +24,43 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import base_merge, gate, gh, review_only_conflict, run_supervisor  # noqa: E402
 from diaktoros import watch_conflicts, watch_mode  # noqa: E402
-from diaktoros.run_supervisor import views  # noqa: E402
+from diaktoros.run_supervisor import merge_hold, turns, views  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
 OLD = "c" * 40
 REPO = fg.REPO
+
+
+def new_ledger(case) -> Path:
+    """A real run ledger, as the host prepares it, in a temp dir the test removes."""
+    temp = tempfile.TemporaryDirectory()
+    case.addCleanup(temp.cleanup)
+    db = Path(temp.name) / "runs.sqlite"
+    run_supervisor.Supervisor(db)
+    return db
+
+
+def queue(db, state="pending", seat="reviewer", pr=7, head=None, n=[0]):
+    """A turn of the PR in ``state``; its row, as a claim reads it."""
+    n[0] += 1
+    now = time.time()
+    with contextlib.closing(sqlite3.connect(db)) as con, con:
+        con.execute("INSERT INTO runs (id, delivery, repo, pr, head, seat, state, attempts, error, "
+                    "created, updated, turn_key, push_admitted, retries) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', ?, ?, '', 0, 0)",
+                    (f"q{n[0]}", f"dq{n[0]}", REPO, pr, head or fg.HEAD, seat, state, now, now))
+    return read_row(db, f"q{n[0]}")
+
+
+def read_row(db, run_id):
+    with contextlib.closing(sqlite3.connect(db)) as con:
+        con.row_factory = sqlite3.Row
+        return con.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+
+
+def claim(db, row):
+    """The worker's claim transaction (``_claim_commit``) for ``row``, its reads all clear."""
+    return run_supervisor.Supervisor(db)._claim_commit(row, turns._ClaimRead())
 
 
 class MovedReview(unittest.TestCase):
@@ -196,6 +228,29 @@ class SweepDeliversIt(fg.Base):
         self.sweep([], grace_s=3600)
         self.assertEqual(self.kicks, [(7, fg.HEAD, "sweep-review-7")])
 
+    def test_a_head_record_from_before_first_seen_at_is_delivered_from_arming(self):
+        # Watchdog state written before first_seen_at existed, or with an unreadable clock: the
+        # interval runs from arming instead (as ``ready``'s grace does), so it still ends.
+        for legacy in (None, "not a clock"):
+            with self.subTest(first_seen_at=legacy):
+                self.setUp()
+                self.arm(grace_s=3600)
+                watch = self.st.watch()
+                if legacy is None:
+                    del watch["heads"]["7"]["first_seen_at"]
+                else:
+                    watch["heads"]["7"]["first_seen_at"] = legacy
+                self.st.watch_save(watch)
+                self.moved = OLD
+                self.sweep([], grace_s=3600)
+                self.assertEqual(self.kicks, [], "armed just now: the interval has not run")
+                watch = self.st.watch()
+                watch["armed_since"] = time.time() - 36000
+                self.st.watch_save(watch)
+                self.sweep([], grace_s=3600)
+                self.sweep([], grace_s=3600)
+                self.assertEqual(self.kicks, [(7, fg.HEAD, "sweep-review-7")])
+
     def test_a_head_already_there_without_a_cancelled_review_stays_untouched(self):
         self.arm(grace_s=3600)
         self.first_seen_long_ago()
@@ -236,14 +291,14 @@ class ReviewOnlyUpdateWaits(fg.Base):
         self.assertEqual(self.pushed, [(7, fg.HEAD)])
 
     def test_a_turn_queued_during_the_dry_merge_stops_the_push(self):
-        # Idle at the first look; a reviewer turn is queued while ``assess`` runs. The push's
-        # own last look (``base_merge.hold_for_turns``) sees it, and nothing is pushed.
+        # Idle at the first look; a reviewer turn is queued while ``assess`` runs. The push takes
+        # its hold only where no turn is in flight, so it sees the turn and pushes nothing.
+        db = new_ledger(self)
         facts = {"number": 7, "head": fg.HEAD, "branch": "fix-7", "fork": False, "merged": [],
                  "conflicted": [], "workflows": False, "error": "", "clean": True}
-        ledger = [""]
 
         def assess(*_a, **_kw):
-            ledger[0] = "a reviewer turn is waiting"
+            queue(db)
             return facts
 
         def update_branch(_loop, *, number, head, before_push=None, **_kw):
@@ -251,7 +306,7 @@ class ReviewOnlyUpdateWaits(fg.Base):
                 before_push("e" * 40, "b" * 40, "")
             self.pushed.append((number, head))
             return {"new_head": "e" * 40}
-        with mock.patch.object(base_merge, "in_flight", side_effect=lambda *_: ledger[0]), \
+        with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=db), \
                 mock.patch.object(review_only_conflict, "assess", side_effect=assess), \
                 mock.patch.object(review_only_conflict.safe_push, "update_branch",
                                   side_effect=update_branch), \
@@ -264,6 +319,62 @@ class ReviewOnlyUpdateWaits(fg.Base):
         message = self.next_step("a reviewer turn is running", state="dirty")
         self.assertEqual(self.pushed, [])
         self.assertTrue(message)
+
+
+class MergeHold(unittest.TestCase):
+    """``run_supervisor.merge_hold`` against the worker's own claim transaction, on a real ledger:
+    the push and a claim are serialized by the ledger's writer lock, whichever comes first."""
+
+    def setUp(self):
+        self.db = new_ledger(self)
+
+    def take(self):
+        return merge_hold.take(self.db, REPO, 7, fg.HEAD, base_merge.IN_FLIGHT)
+
+    def test_a_turn_admitted_after_the_hold_is_not_claimed_until_it_is_released(self):
+        token, busy = self.take()
+        self.assertTrue(token)
+        self.assertEqual(busy, "")
+        row = queue(self.db)                      # admitted after the push's last look
+        self.assertIsNone(claim(self.db, row))
+        waiting = read_row(self.db, row["id"])
+        self.assertEqual((waiting["state"], waiting["error"]), ("waiting", merge_hold.WAITING))
+        self.assertGreater(waiting["retry_at"], time.time())
+        merge_hold.release(self.db, REPO, 7, token)
+        with contextlib.closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("UPDATE runs SET state='pending' WHERE id=?", (row["id"],))
+        self.assertIsNotNone(claim(self.db, read_row(self.db, row["id"])))
+
+    def test_a_turn_claimed_or_running_first_stops_the_push(self):
+        for state in ("pending", "waiting", "claimed", "running"):
+            with self.subTest(state=state):
+                self.setUp()
+                queue(self.db, state=state)
+                self.assertEqual(self.take(), ("", f"a reviewer turn is {state}"))
+        self.setUp()
+        claimed = claim(self.db, queue(self.db))  # the claim wins the race
+        self.assertIsNotNone(claimed)
+        self.assertEqual(self.take(), ("", "a reviewer turn is claimed"))
+
+    def test_another_live_hold_stops_a_second_push(self):
+        self.assertTrue(self.take()[0])
+        self.assertEqual(self.take(), ("", "another merge of the base is being pushed"))
+
+    def test_a_stale_hold_holds_nothing_and_is_replaced(self):
+        token, _ = self.take()
+        with contextlib.closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("UPDATE merge_holds SET created=?", (time.time() - merge_hold.HOLD_S - 1,))
+        self.assertIsNotNone(claim(self.db, queue(self.db, pr=7)))
+        with contextlib.closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("DELETE FROM runs")
+        fresh, busy = self.take()
+        self.assertTrue(fresh)
+        merge_hold.release(self.db, REPO, 7, token)          # the stale push's token: not ours
+        self.assertEqual(self.take(), ("", "another merge of the base is being pushed"))
+
+    def test_another_pr_is_not_held(self):
+        self.take()
+        self.assertIsNotNone(claim(self.db, queue(self.db, pr=8)))
 
 
 if __name__ == "__main__":

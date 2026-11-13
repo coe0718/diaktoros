@@ -757,8 +757,10 @@ def _reviewer_kind(c: _Sweep, pr: dict, number: int, head: str, author: str, bou
     # asked for again by nobody: the gate ignores pushes, and only a fixer's push requests the
     # next review. It follows the head, delivered the same way. The ledger row is the proof a
     # review was asked for, so a head already there when the loop armed (no ``observed_at``) is
-    # not passed over: its interval runs from when the loop first saw it.
+    # not passed over: its interval runs from when the loop first saw it, or, for a record older
+    # than that field (or an unreadable clock), from arming, as ``ready``'s grace does (#1232).
     seen = c.current_heads[str(number)].get("first_seen_at")
+    seen = seen if seen is not None else watch_mode.valid_clock(c.watch.get("armed_since"), c.now)
     moved = (run_supervisor.views.moved_review(config.host_path("ledger"), loop["repo"],
                                                number, head)
              if fresh and not (due and requested) and (

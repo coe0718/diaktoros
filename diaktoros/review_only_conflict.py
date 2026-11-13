@@ -109,12 +109,15 @@ def update(loop: dict, number: int, head: str, facts: dict, remote: str | None =
         return "", "the base changed workflow files"
     if facts.get("conflicted"):
         return "", "a real conflict: a person resolves it"
+    hold = base_merge.TurnHold(loop, number, head)
     try:
         done = safe_push.update_branch(loop, repo=loop["repo"], number=number, head=head,
                                        branch=facts["branch"], remote=remote,
-                                       before_push=lambda *_: base_merge.hold_for_turns(loop, number))
+                                       before_push=hold.take)
     except safe_push.NotClean as exc:
         return "", str(exc)
     except broker.BrokerDenied as exc:          # a PushFailure too
         return "", Retry(str(exc))
+    finally:
+        hold.release()
     return done["new_head"], ""

@@ -459,7 +459,8 @@ moved before it started: a review-only author's push, or a base merge by the hos
 "Update branch". Only the fixer's own push asks for the next review, so without this the new head
 would wait with no verdict and nothing queued (#2468). Unlike a pending request, this covers a
 head that was already there when the loop was armed: the cancelled turn in the run ledger shows a
-review was asked for, and the 15 minutes count from when the loop first saw the head. Other
+review was asked for, and the 15 minutes count from when the loop first saw the head (from
+arming, for a watchdog record too old to say). Other
 dropped wakes show as stall alerts.
 
 ## Current limits

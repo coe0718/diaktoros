@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from .. import claimant, ledger, run_supervisor, util
-from . import claims, pr_facts, turn_prompts, waits
+from . import claims, merge_hold, pr_facts, turn_prompts, waits
 
 
 @dataclass
@@ -409,6 +409,27 @@ class ClaimAndLaunch:
         except Exception as exc:
             read.read_error = f'{type(exc).__name__}: {exc}'[:200]
 
+    def _claim_read_failed(self, con, row, current, error: str, now: float) -> None:
+        """Settle a row whose claim-time read failed, and commit. Bounded like a failed turn
+        (#53): back off, then fail with the reason and a notice. Pre-write, so `retry` (or a
+        new event) re-arms it."""
+        retries = (current['retries'] or 0) + 1
+        reason = _claim_read_reason(error)
+        if retries < run_supervisor.MAX_RETRIES:
+            self.held_for_ci = True     # this worker lingers to schedule the retry (#1302)
+            con.execute("UPDATE runs SET state='waiting', retries=?, retry_at=?, "
+                        "error=?, updated=? WHERE id=?",
+                        (retries, now + run_supervisor.backoff(retries), reason, now, row['id']))
+        else:
+            con.execute("UPDATE runs SET state='failed', retries=?, retry_at=NULL, "
+                        "error=?, updated=? WHERE id=?",
+                        (retries, f'retry limit ({retries} attempts): {reason}'[:600],
+                         now, row['id']))
+        con.execute('COMMIT')
+        # #1786: a read that failed for good ends the shadow; a backed-off one is still open.
+        self._refresh_check(None, row, 'waiting' if retries < run_supervisor.MAX_RETRIES
+                                   else 'failed')
+
     def _claim_commit(self, row, read: _ClaimRead):
         """Settle one candidate under the writer lock from what its read found: claim it
         (returning ``(id, owner)``), retire it, back it off, or leave it pending (None)."""
@@ -450,24 +471,7 @@ class ClaimAndLaunch:
                 self._refresh_check(None, row, 'cancelled')
                 return None
             if read.read_error:
-                # Bounded like a failed turn (#53): back off, then fail with the reason and
-                # a notice. Pre-write, so `retry` (or a new event) re-arms it.
-                retries = (current['retries'] or 0) + 1
-                reason = _claim_read_reason(read.read_error)
-                if retries < run_supervisor.MAX_RETRIES:
-                    self.held_for_ci = True     # this worker lingers to schedule the retry (#1302)
-                    con.execute("UPDATE runs SET state='waiting', retries=?, retry_at=?, "
-                                "error=?, updated=? WHERE id=?",
-                                (retries, now + run_supervisor.backoff(retries), reason, now, row['id']))
-                else:
-                    con.execute("UPDATE runs SET state='failed', retries=?, retry_at=NULL, "
-                                "error=?, updated=? WHERE id=?",
-                                (retries, f'retry limit ({retries} attempts): {reason}'[:600],
-                                 now, row['id']))
-                con.execute('COMMIT')
-                # #1786: a read that failed for good ends the shadow; a backed-off one is still open.
-                self._refresh_check(None, row, 'waiting' if retries < run_supervisor.MAX_RETRIES
-                                           else 'failed')
+                self._claim_read_failed(con, row, current, read.read_error, now)
                 return None
             if read.retry_read:
                 con.execute('COMMIT')
@@ -476,6 +480,14 @@ class ClaimAndLaunch:
                 con.execute("UPDATE runs SET state='failed', attempts=attempts+1, "
                             "error=?,updated=? WHERE id=?", (read.unavailable, now, row['id']))
                 con.execute("COMMIT")
+                return None
+            if merge_hold.held(con, row['repo'], row['pr'], now):
+                # #2468: a host merge push holds the PR. Claimed now, the turn would start at the
+                # head the push moves: it waits, and its next claim reads the moved head.
+                self.held_for_ci = True     # this worker lingers to schedule the retry (#1302)
+                con.execute("UPDATE runs SET state='waiting', retry_at=?, error=?, updated=? "
+                            "WHERE id=?", (now + merge_hold.WAIT_S, merge_hold.WAITING, now, row['id']))
+                con.execute('COMMIT')
                 return None
             owner = uuid.uuid4().hex
             con.execute("UPDATE runs SET state='claimed', attempts=attempts+1, "
