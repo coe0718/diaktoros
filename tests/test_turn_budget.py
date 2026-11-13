@@ -806,8 +806,9 @@ class LedgerAndWorker(unittest.TestCase):
                                 start_new_session=True)
         try:
             case.doCleanups()
-            self.assertIsNotNone(late.poll(), "the temp dir was removed under a live worker")
-            self.assertEqual(late.returncode, 0)
+            # Its late write is the proof: it fails if the dir went first. Not ``poll()``: an
+            # exiting process's command line reads empty before it can be reaped (#2483).
+            self.assertEqual(late.wait(10), 0, "the temp dir was removed under a live worker")
             self.assertFalse(case.root.exists())
         finally:
             if late.poll() is None:
