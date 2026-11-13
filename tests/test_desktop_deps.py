@@ -233,6 +233,17 @@ class CrossRepository(DepsFixture):
         self.issues[8] = {**self.issues[8], "state": "closed"}
         self.assertEqual(issue_deps.blocking(self.loop, self.st, 12), [(8, "#8 could not be read")])
 
+    def test_a_transferred_prerequisite_with_a_merged_ledger_fix_is_never_met(self):
+        # #2399 review F8: the ledger's merged fix PR used to count before the issue was read.
+        self.st.issue_dep_add(12, 8, {"by": "operator", "at": "x"})
+        self.fix_prs[8] = [40]
+        self.pulls[40] = {"number": 40, "merged_at": "2026-10-14T00:00:00Z", "base": {"ref": "main"}}
+        self.assertEqual(issue_deps.met(self.loop, 8), (None, "#8 could not be read"))
+        self.assertEqual(issue_deps.blocking(self.loop, self.st, 12), [(8, "#8 could not be read")])
+        self.issues[8] = {**tif.issue(number=8)}                  # control: this repository's
+        self.assertEqual(issue_deps.met(self.loop, 8), (True, "#8's fix PR #40 merged into main"))
+        self.assertEqual(issue_deps.blocking(self.loop, self.st, 12), [])
+
     def test_a_repository_qualified_target_never_reaches_the_owner(self):
         from diaktoros.cli import operations
         parser = argparse.ArgumentParser()

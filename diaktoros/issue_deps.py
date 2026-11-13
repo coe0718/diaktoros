@@ -89,17 +89,18 @@ def _fix_prs(loop: dict, number: int) -> list[int]:
 
 def met(loop: dict, prerequisite: int) -> tuple[bool | None, str]:
     """Is ``prerequisite``'s implementation merged into the base? ``(True, evidence)``,
-    ``(False, why not yet)`` or ``(None, what could not be read)``."""
+    ``(False, why not yet)`` or ``(None, what could not be read)``. The issue is read first, so
+    another repository's issue (a transferred one) is never met, by any evidence (#2399 F8)."""
     base = loop["base"]
+    issue = read_issue(loop, prerequisite)
+    if issue is None:
+        return None, f"#{prerequisite} could not be read"
     for pr in _fix_prs(loop, prerequisite):
         data = gh.api(loop, gh.pr_path(loop, pr), login=loop["read_token"])
         if not isinstance(data, dict) or data.get("number") != pr:
             return None, f"#{prerequisite}'s fix PR #{pr} could not be read"
         if data.get("merged_at") and (data.get("base") or {}).get("ref") == base:
             return True, f"#{prerequisite}'s fix PR #{pr} merged into {base}"
-    issue = read_issue(loop, prerequisite)
-    if issue is None:
-        return None, f"#{prerequisite} could not be read"
     if issue.get("state") == "open":
         return False, f"#{prerequisite} is still open"
     events, why = gh._read_pages(
