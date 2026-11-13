@@ -679,13 +679,24 @@ class LedgerAndWorkerTeardown(unittest.TestCase):
         case = LedgerAndWorker("test_the_rows_budget_reaches_the_child_not_the_worker_default")
         case.setUp()
         # A stand-in for the detached worker, still running when the test has its answer: like
-        # the worker, it names the test's root on its command line.
-        stand_in = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1)",
-                                     str(case.root)], start_new_session=True)
+        # the worker, it names the test's root on its command line. It runs until its stdin
+        # closes (30 s at most), and that happens only once a look for processes naming the root
+        # has seen it, so no scheduling delay can end it before the cleanups look.
+        stand_in = subprocess.Popen([sys.executable, "-c",
+                                     "import select, sys; select.select([sys.stdin], [], [], 30)",
+                                     str(case.root)], stdin=subprocess.PIPE, start_new_session=True)
+        self.addCleanup(stand_in.stdin.close)
         self.addCleanup(stand_in.wait)
         self.addCleanup(lambda: stand_in.poll() is None and stand_in.kill())
+        naming = worker_wait.processes_naming
+
+        def looked(marker):
+            live = naming(marker)
+            if stand_in.pid in live:
+                stand_in.stdin.close()
+            return live
         seen, watch = worker_wait.removal_watch(case.root)
-        with watch:
+        with watch, mock.patch.object(worker_wait, "processes_naming", looked):
             case.doCleanups()
         self.assertEqual(seen, [{}], "removed while a process naming it was running")
         self.assertFalse(case.root.exists())

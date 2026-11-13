@@ -25,7 +25,7 @@ from diaktoros import state as state_mod, trusted_turn  # noqa: E402
 from diaktoros.run_supervisor import claims  # noqa: E402
 from diaktoros.run_supervisor import views  # noqa: E402
 from diaktoros.run_supervisor import Supervisor, pr_facts, turn_prompts  # noqa: E402
-import worker_wait  # noqa: E402  the shared detached-worker check (#108, #2479)
+from diaktoros.run_supervisor import workers  # noqa: E402
 
 HEAD = "a" * 40
 GREEN = ci.CIState(passed=["tests"])
@@ -661,7 +661,13 @@ class ProductionTurn(unittest.TestCase):
                 with closing(sqlite3.connect(sup.db)) as con, con:
                     con.execute("UPDATE runs SET retry_at=? WHERE id=?",
                                 (time.time() - 1, row["id"]))
-                sup.recover()
+                # #2479: re-arming the row spawns. The real spawn (the one Supervisor inherits,
+                # under setUp's patch) would start a detached worker that outlives the temp dir.
+                self.spawn.reset_mock()
+                with mock.patch.object(workers.WorkerLifecycle, "_spawn", side_effect=AssertionError(
+                        "recover() started a real worker")):
+                    sup.recover()
+                self.spawn.assert_called_once_with()
                 key = f"acme/widgets:8:{HEAD}:shadow"
                 self.assertEqual(sup.get(key)["state"], "pending")
                 with mock.patch.object(config, "by_repo", return_value=self.loop), \
@@ -675,16 +681,6 @@ class ProductionTurn(unittest.TestCase):
                 self.assertEqual(row["error"], "shadow review superseded: PR closed or head moved")
                 # No longer open, so its findings snapshot is evictable again.
                 self.assertNotIn((8, HEAD), gate.shadow_open_heads("acme/widgets", sup.db))
-
-    def test_a_recover_that_re_arms_a_row_starts_no_real_worker(self):
-        # #2479: the held-shadow test's recover() spawned a detached worker that raced teardown.
-        sup = self.queue_shadow()
-        with closing(sqlite3.connect(sup.db)) as con, con:
-            con.execute("UPDATE runs SET state='waiting', retry_at=? WHERE seat='shadow'",
-                        (time.time() - 1,))
-        sup.recover()
-        self.spawn.assert_called_once_with()
-        self.assertEqual(worker_wait.processes_naming(str(self.home)), {})
 
     def kinds(self):
         pr = {"number": 8, "draft": False, "user": {"login": "fixer"}, "base": {"ref": "main"},
