@@ -119,8 +119,10 @@ def _rust() -> Path | None:
     return None
 
 
-# Install roots the sandbox already sees through its own /usr and /bin binds: nothing to mount.
-_NODE_VISIBLE = (Path("/"), Path("/usr"), Path("/usr/local"))
+# Install roots whose ``bin/node`` a seat already runs: the sandbox's PATH holds only /usr/bin and
+# /bin (``contained``), so nothing to mount. Any other root (``/usr/local``, a ``/usr/lib`` tree
+# included) is mounted at /opt/node, or the seat has no ``node`` command (#1149).
+_NODE_VISIBLE = (Path("/"), Path("/usr"))
 
 
 # Directories under the home that hold credentials or state, never a Node prefix. A Node tree
@@ -135,13 +137,25 @@ def _node_root_is_unsafe(root: Path) -> bool:
     ``<root>/bin/node`` placed at ``~/bin/node`` or ``~/.local/bin/node`` would otherwise stage
     the whole home or ``~/.local`` read-only into the seat.
     """
-    for raw in {_real_home(), Path.home()}:
+    for raw in _homes():
         for home in {raw, raw.resolve()}:
             if root == home or (root in home.parents and root not in _NODE_VISIBLE):
                 return True
             if any(root == home / sub for sub in _NODE_UNSAFE_UNDER_HOME):
                 return True
     return False
+
+
+def _homes() -> set[Path]:
+    """The operator's home however it is found: ``HERMES_REAL_HOME``, ``HOME``, and the account's
+    own entry, which the worker's ``HOME`` (the Hermes home) does not hide (#1149)."""
+    homes = {_real_home(), Path.home()}
+    try:
+        import pwd
+        homes.add(Path(pwd.getpwuid(os.getuid()).pw_dir))
+    except (ImportError, KeyError, OSError):
+        pass
+    return homes
 
 
 def _node_install() -> Path | None:
@@ -171,8 +185,8 @@ def _node_install() -> Path | None:
 
 
 def node_mounted(root: Path) -> bool:
-    """False when the sandbox already sees this install through its own /usr and /bin binds."""
-    return root not in _NODE_VISIBLE and not str(root / "bin" / "node").startswith("/usr/")
+    """False when a seat already runs this install's ``node`` from its own PATH (/usr/bin, /bin)."""
+    return root not in _NODE_VISIBLE
 
 
 def node_root() -> Path | None:
@@ -188,18 +202,34 @@ def node_root() -> Path | None:
 
 def node_problem(value: object) -> str:
     """Why a recorded ``node`` would not give seats Node; ``""`` when it would, or none is
-    recorded (absent or ``""``). The same rules as ``_node_install``'s candidates."""
+    recorded (absent or ``""``). The rules ``_node_install`` applies to its candidates, on the
+    canonical root (``node_canonical``): a link to a home or credential store is that directory."""
     if value is None or value == "":
         return ""
     if not isinstance(value, str):
         return "not a string path"
-    root = Path(value)
-    binary = root / "bin" / "node"
-    if not (binary.is_file() and os.access(binary, os.X_OK)):
-        return f"{binary} is not an executable file"
+    root = node_canonical(value)
+    if root is None:
+        return f"{value} does not exist"
     if _node_root_is_unsafe(root):
         return f"{root} is a home directory or credential store, never a Node root"
+    binary = root / "bin" / "node"
+    try:
+        target = binary.resolve(strict=True)
+    except OSError:
+        return f"{binary} does not exist"
+    if not (target.is_file() and os.access(target, os.X_OK)) or root not in target.parents:
+        return f"{binary} is not an executable file inside {root}"
     return ""
+
+
+def node_canonical(value: str) -> Path | None:
+    """The real directory a recorded ``node`` names (every link resolved), or ``None``. What is
+    checked and what is mounted are this one path, never the alias the file holds (#1149)."""
+    try:
+        return Path(value).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
 
 
 def recorded_node(settings: dict) -> Path | None:
@@ -212,7 +242,8 @@ def recorded_node(settings: dict) -> Path | None:
     if why:
         util.log(f"the runtime file's node is not mounted: {why}; re-run `hermes dk setup`")
         return None
-    return Path(value) if value and node_mounted(Path(value)) else None
+    root = node_canonical(value) if value else None
+    return root if root is not None and node_mounted(root) else None
 
 
 def turn_paths(settings: dict) -> dict:
@@ -254,7 +285,7 @@ def node_report(settings: dict) -> tuple[str, str, str]:
     value = settings.get(NODE_KEY) or ""
     if value:
         why = node_problem(value)
-        root, version = (None, why) if why else node_version(Path(value))
+        root, version = (None, why) if why else node_version(node_canonical(value))
         if root is None:
             return "warn", f"the runtime file's node {value}: {version}; seats get no Node", SETUP_NODE
         where = "mounted at /opt/node" if node_mounted(root) else _VISIBLE

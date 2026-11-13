@@ -53,19 +53,24 @@ def _agree(question: str, default: bool, interactive: bool, unattended: bool) ->
 
 
 def _chosen_node(args, current: dict | None, detected: dict) -> tuple[str | None, str]:
-    """The runtime file's optional ``node`` (#1149) and where it came from: ``--node`` (``""`` is
-    none), else the current file's while it is usable (a recorded ``""`` too), else the detected
-    one; ``(None, "")`` when there is none to record (or Node is a ``/usr`` install the sandbox
-    already sees)."""
+    """The runtime file's optional ``node`` (#1149) and where it came from. A re-run refreshes it:
+    ``--node`` (``""`` is none), else the Node detected now, else the current file's while it
+    still works (one detection can't find), else ``(None, "")``: none to record, or a ``/usr``
+    install the sandbox already sees. A given path is recorded as its real directory."""
     from .. import runtime_detect
     given = getattr(args, "node", None)
     if given is not None:
-        return (str(pathlib.Path(given).expanduser()) if given else ""), "given"
-    kept = (current or {}).get(runtime_detect.NODE_KEY)
-    if isinstance(kept, str) and not runtime_detect.node_problem(kept):
-        return kept, "kept"
+        if not given:
+            return "", "given"
+        real = runtime_detect.node_canonical(given)
+        return str(real or pathlib.Path(given).expanduser()), "given"
     found = detected.get(runtime_detect.NODE_KEY)
-    return (found, "detected") if found else (None, "")
+    if found:
+        return found, "detected"
+    kept = (current or {}).get(runtime_detect.NODE_KEY)
+    if isinstance(kept, str) and kept and not runtime_detect.node_problem(kept):
+        return kept, "kept"
+    return None, ""
 
 
 def _setup_runtime(args, interactive: bool) -> bool:

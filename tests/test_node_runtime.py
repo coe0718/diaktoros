@@ -115,6 +115,58 @@ class NodeRuntime(unittest.TestCase):
             self.assertIsNone(runtime_detect.recorded_node({"node": str(root)}),
                               "a /usr install is already visible: nothing to mount")
 
+    def test_a_link_is_checked_and_mounted_as_the_directory_it_names(self):
+        # #2478 review F1: a recorded alias of the home (or of a credential store) with a bin/node
+        # in it passed the literal-path check and was bound whole. The check and the mount are
+        # the canonical directory's.
+        self.install(self.home)                                  # ~/bin/node
+        self.install(self.home / ".ssh")                         # ~/.ssh/bin/node
+        links = self.home / "links"
+        links.mkdir()
+        for name, target in (("home", self.home), ("ssh", self.home / ".ssh")):
+            with self.subTest(name):
+                alias = links / name
+                alias.symlink_to(target)
+                self.assertIn("home directory or credential store", runtime_detect.node_problem(str(alias)))
+                with mock.patch.object(runtime_detect.util, "log"):
+                    self.assertIsNone(runtime_detect.recorded_node({"node": str(alias)}))
+                self.assertEqual(doctor.check_node({"node": str(alias)}).status, doctor.UNKNOWN)
+        real = self.install(self.home / "opt" / "node-v22")
+        (links / "node").symlink_to(real)
+        self.assertEqual(runtime_detect.recorded_node({"node": str(links / "node")}), real)
+
+    def test_a_bin_node_that_leaves_its_root_is_refused(self):
+        elsewhere = self.install(self.home / "elsewhere")
+        root = self.home / "opt" / "node"
+        (root / "bin").mkdir(parents=True)
+        (root / "bin" / "node").symlink_to(elsewhere / "bin" / "node")
+        self.assertIn("not an executable file inside", runtime_detect.node_problem(str(root)))
+
+    def test_the_worker_knows_the_accounts_home_whatever_its_home_says(self):
+        import pwd
+        account = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        with mock.patch.dict(os.environ, {"HOME": str(self.home / "hermes")}):
+            os.environ.pop("HERMES_REAL_HOME", None)
+            self.assertIn(account, runtime_detect._homes())
+
+    def test_only_a_root_whose_bin_is_on_the_sandbox_path_needs_no_mount(self):
+        # #2478 review F2: a seat's PATH holds only /usr/bin and /bin, so /usr/local's node (or a
+        # /usr/lib tree's) is no command there unless it is mounted at /opt/node.
+        for root, mounted in (("/", False), ("/usr", False), ("/usr/local", True),
+                              ("/usr/lib/node-v22", True), ("/opt/node-v22", True)):
+            with self.subTest(root=root):
+                self.assertIs(runtime_detect.node_mounted(Path(root)), mounted)
+        local = (Path("/usr/local"), "v22.0.0")
+        with mock.patch.object(runtime_detect, "node_version", return_value=local), \
+                mock.patch.object(runtime_detect, "_node_install", return_value=Path("/usr/local")):
+            self.assertEqual(runtime_detect.node_root(), Path("/usr/local"))
+            self.assertEqual(runtime_detect.detect().get("node"), "/usr/local")
+            state, detail, _ = runtime_detect.node_report({})
+            self.assertEqual(state, "warn", detail)
+            self.assertIn("not in the runtime file", detail)
+            check = doctor.check_node({})
+            self.assertEqual(check.status, doctor.UNKNOWN)
+
     def test_setup_detects_only_a_node_to_mount(self):
         root = self.install(self.home / ".hermes" / "node")
         self.assertEqual(runtime_detect.detect().get("node"), str(root))

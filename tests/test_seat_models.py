@@ -6,6 +6,7 @@ Hermes source tree) resolves them. The model upstream is never contacted.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import argparse
+import contextlib
 import importlib.util
 import io
 import json
@@ -468,11 +469,50 @@ class Precedence(Base):
                 seat_model.parse_runtime({**base, "node": node})
 
 
+@contextlib.contextmanager
+def real_launch(seen: dict):
+    """``trusted_turn.run_turn`` for real up to its sandbox: the code snapshot, the PR checkout's
+    staging, the inference proxy and the bubblewrap run itself are faked, as
+    ``test_contained_launch`` fakes them; ``seen['argv']`` is the command ``contained`` built."""
+    from diaktoros import contained
+
+    def stage(_loop, **kw):
+        kw["sandbox_root"].mkdir()
+        return kw["sandbox_root"]
+
+    def run(**kw):
+        seen["argv"] = contained.command(**{k: v for k, v in kw.items() if k not in ("timeout", "stop")})
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    class Inference:
+        def __init__(self, directory, *a, **k):
+            self.directory, self.last_activity, self.last_error = directory, "", ""
+
+        def __enter__(self):
+            self.directory.mkdir()
+            (self.directory / "model.sock").touch()     # is_socket is patched below
+            return self
+
+        def __exit__(self, *a):
+            return False
+    with mock.patch.object(trusted_turn, "_safe_code_snapshot",
+                           side_effect=lambda src, dst: dst.mkdir() or []), \
+            mock.patch.object(trusted_turn.trusted_fetch, "stage", side_effect=stage), \
+            mock.patch.object(trusted_turn.inference_proxy, "InferenceCapability", Inference), \
+            mock.patch.object(contained.Path, "is_socket", return_value=True), \
+            mock.patch.object(contained, "run", side_effect=run):
+        yield
+
+
 class Worker(Base):
     """The production worker hands run_turn the row's own seat resolution, or holds the run."""
 
     def run_seat(self, seat: str, settings: dict | None = None, loop: dict | None = None,
-                 turn=None, pr=None, calls: dict | None = None, prior_error=None):
+                 turn=None, pr=None, calls: dict | None = None, prior_error=None,
+                 launch: bool = False):
+        """The worker's production turn for a ``seat`` row. ``run_turn`` is faked, unless
+        ``launch``: then it runs for real up to its sandbox (``real_launch``), and ``seen['argv']``
+        is the bubblewrap command it built."""
         runtime = self.root / "runtime.json"
         runtime.write_text(json.dumps(settings or self.settings))
         runtime.chmod(0o600)
@@ -502,7 +542,8 @@ class Worker(Base):
              mock.patch.object(turn_prompts, "isolated_prompt", return_value="PROMPT"), \
              mock.patch.object(pr_facts, "pr_change",
                                return_value=pr_facts.PRChange("CHANGE", "DIFF")), \
-             mock.patch.object(trusted_turn, "run_turn", side_effect=run_turn), \
+             (real_launch(seen) if launch
+              else mock.patch.object(trusted_turn, "run_turn", side_effect=run_turn)), \
              mock.patch.object(sup, "recover"):
             state_for.return_value.breach_start.return_value = {"ok": True}
             sup._run_production(run_id, "w")
@@ -530,6 +571,28 @@ class Worker(Base):
             seen, _, _ = self.run_seat("fixer", settings=self.settings)   # none recorded
             self.assertIn("node", seen)
             self.assertIsNone(seen["node"])
+
+    def test_the_workers_sandbox_command_mounts_the_runtime_files_node(self):
+        """#1149, end to end: the worker, in its own environment, reads the runtime file, and the
+        command its real ``run_turn`` builds binds that Node at /opt/node, first on PATH. With no
+        ``node`` recorded there is neither, though the operator has a Node."""
+        node = self.root / "operator" / ".hermes" / "node"
+        (node / "bin").mkdir(parents=True)
+        (node / "bin" / "node").write_text("#!/bin/sh\necho v22.0.0\n")
+        (node / "bin" / "node").chmod(0o755)
+        worker_env = {"PATH": "/usr/bin:/bin", "HOME": str(self.home), "HERMES_HOME": str(self.home)}
+        for settings, mounted in (({**self.settings, "node": str(node)}, True), (self.settings, False)):
+            with self.subTest(mounted=mounted), mock.patch.dict(os.environ, worker_env, clear=True):
+                seen, _, _ = self.run_seat("reviewer", settings=settings, launch=True)
+                argv = seen["argv"]
+                at = next(i for i in range(len(argv) - 1) if argv[i:i + 2] == ["--setenv", "PATH"])
+                binds = [argv[i:i + 3] for i in range(len(argv) - 2) if argv[i + 2:i + 3] == ["/opt/node"]]
+                if mounted:
+                    self.assertEqual(binds, [["--ro-bind", str(node), "/opt/node"]])
+                    self.assertEqual(argv[at + 2], "/opt/venv/bin:/opt/rust/bin:/opt/node/bin:/usr/bin:/bin")
+                else:
+                    self.assertEqual(binds, [])
+                    self.assertNotIn("/opt/node", argv[at + 2])
 
     def test_prewrite_turn_failures_keep_the_real_reason_and_retry(self):
         """#53: the exception's text and the sandbox output tail reach the ledger; a failure

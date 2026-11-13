@@ -425,6 +425,14 @@ class ProductionLaunch(Base):
                 path = next(o[2] for o in options if o[:2] == ("--setenv", "PATH"))
                 self.assertEqual(path, "/opt/venv/bin:/opt/rust/bin:/usr/bin:/bin")
 
+    def test_a_usr_local_node_is_mounted_and_put_on_the_path(self):
+        # #2478 review F2: /usr/local/bin is not on a seat's PATH, so its Node is mounted too.
+        options = bwrap_options(contained.command(**self.staged(), entry=["/bin/true"],
+                                                  node=Path("/usr/local")))
+        self.assertIn(("--ro-bind", "/usr/local", "/opt/node"), options)
+        path = next(o[2] for o in options if o[:2] == ("--setenv", "PATH"))
+        self.assertEqual(path, "/opt/venv/bin:/opt/rust/bin:/opt/node/bin:/usr/bin:/bin")
+
     def test_a_missing_node_root_is_refused_not_skipped(self):
         paths = self.staged()
         with self.assertRaises(FileNotFoundError):
