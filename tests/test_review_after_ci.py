@@ -132,6 +132,31 @@ class Hold(sm.Worker):
         self.assertEqual((seen["role"], row[0]), ("reviewer", "succeeded"))
 
 
+    def explained(self) -> dict:
+        """The held row as status, explain and the Desktop read it (#674)."""
+        from diaktoros.run_supervisor import views
+        rows = views.read_only_view(self.root / "ledger.sqlite", "acme/widgets", 7)
+        self.assertEqual(len(rows), 1)
+        return views.hold_explanation(rows[0])
+
+    def test_a_ci_hold_explains_as_an_event_wait_bounded_by_the_ci_wait(self):
+        # #674: the hold names the event it needs and its time limit, not a promised start.
+        self.held()
+        result = self.explained()
+        self.assertEqual((result["reason_code"], result["waiting_for"], result["automatic_resume"]),
+                         ("ci_wait", "ci_checks_or_new_head", "after_event_or_timeout"))
+        self.assertIn("this wait ends at the CI wait limit at the latest", result["text"])
+        self.assertIn("Waiting for: CI checks to settle or a new head.", result["text"])
+        with ledger.connect(self.root / "ledger.sqlite") as con:
+            due = con.execute("SELECT retry_at FROM runs").fetchone()[0]
+        self.assertEqual(result["next_eligible_start"], due)
+        # Review of #2398 F3: the limit is real. Past CI_WAIT_MAX_S the same still-running
+        # checks no longer hold the turn, though neither event (CI settling, a new head) came.
+        with mock.patch.object(run_supervisor, "CI_WAIT_MAX_S", 0):
+            seen, row, reads, _ = self.held()
+        self.assertEqual((seen["role"], row[0], reads), ("reviewer", "succeeded", []))
+
+
 class ConflictHold(Hold):
     """A PR that conflicts with its base gets no CI from GitHub: hold, spend nothing."""
 
@@ -155,6 +180,18 @@ class ConflictHold(Hold):
                                           "— GitHub runs no CI on it"))
         with ledger.connect(self.root / "ledger.sqlite") as con:
             self.assertEqual(con.execute("SELECT retries FROM runs").fetchone()[0], 0)
+
+    def test_a_conflict_hold_explains_as_the_same_bounded_wait(self):
+        # #674: a conflict is a CI hold whose event is a new head (the merge push); like every
+        # CI wait but a red head's, it ends at CI_WAIT_MAX_S too (review of #2398 F3).
+        self.dirty()
+        result = self.explained()
+        self.assertEqual((result["reason_code"], result["waiting_for"], result["automatic_resume"]),
+                         ("ci_wait", "ci_checks_or_new_head", "after_event_or_timeout"))
+        self.assertIn("a new head queues a fresh run instead", result["text"])
+        with mock.patch.object(run_supervisor, "CI_WAIT_MAX_S", 0):
+            seen, row, _ = self.dirty()
+        self.assertEqual((seen["role"], row[0]), ("reviewer", "succeeded"))
 
     def test_a_dirty_hold_emits_one_person_needed_notice(self):
         pr = {"number": 7, "state": "open", "draft": False, "head": {"sha": sm.HEAD, "ref": "f"},

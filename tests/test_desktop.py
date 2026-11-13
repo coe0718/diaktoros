@@ -886,6 +886,7 @@ class Surface(unittest.TestCase):
         ):
             self.assertRegex(done.stdout, rf"(?m)^ok \d+ - {re.escape(name)}$")
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - hooks: old dialog cannot confirm or cancel a replacement confirmation$")
+        self.assertRegex(done.stdout, r"(?m)^ok \d+ - hold contract: structured policy holds render with their own wait, resume and recheck pairing$")
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - hooks: malformed POST identities, status and answer fields never produce verified success$")
         self.assertNotIn("not ok", done.stdout)
         reported_pass = re.search(r"^# pass (\d+)$", done.stdout, re.M)
