@@ -671,6 +671,26 @@ class SeatClockFollowsTheRecordedBudget(unittest.TestCase):
         self.assertEqual(config.seat_ttl_s(loop, recorded=60), config.seat_ttl_s(loop))  # never shorter
 
 
+class LedgerAndWorkerTeardown(unittest.TestCase):
+    """#1511: ``LedgerAndWorker``'s temp dir is removed only once no worker naming it is left
+    (#1432's wait), so a worker still writing after its row went terminal can't race it."""
+
+    def test_the_temp_dir_is_removed_only_after_its_workers_exit(self):
+        case = LedgerAndWorker("test_the_rows_budget_reaches_the_child_not_the_worker_default")
+        case.setUp()
+        # A stand-in for the detached worker, still running when the test has its answer: like
+        # the worker, it names the test's root on its command line.
+        stand_in = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1)",
+                                     str(case.root)], start_new_session=True)
+        self.addCleanup(stand_in.wait)
+        self.addCleanup(lambda: stand_in.poll() is None and stand_in.kill())
+        seen, watch = worker_wait.removal_watch(case.root)
+        with watch:
+            case.doCleanups()
+        self.assertEqual(seen, [{}], "removed while a process naming it was running")
+        self.assertFalse(case.root.exists())
+
+
 class LedgerAndWorker(unittest.TestCase):
     """A real Supervisor, its real detached worker process, and a fixture child."""
 

@@ -25,6 +25,7 @@ from diaktoros import state as state_mod, trusted_turn  # noqa: E402
 from diaktoros.run_supervisor import claims  # noqa: E402
 from diaktoros.run_supervisor import views  # noqa: E402
 from diaktoros.run_supervisor import Supervisor, pr_facts, turn_prompts  # noqa: E402
+import worker_wait  # noqa: E402  the shared detached-worker check (#108, #2479)
 
 HEAD = "a" * 40
 GREEN = ci.CIState(passed=["tests"])
@@ -368,6 +369,11 @@ class ProductionTurn(unittest.TestCase):
                                              "DIAKTOROS_CONFIG_DIR": str(self.home / "none")})
         patch.start()
         self.addCleanup(patch.stop)
+        # No test here runs a real worker (#2479): a recover() that re-arms a row would spawn one
+        # into this temp dir, still writing there when it is removed ("Directory not empty").
+        spawn = mock.patch.object(Supervisor, "_spawn")
+        self.spawn = spawn.start()
+        self.addCleanup(spawn.stop)
         self.loop = config.normalize({**RAW, "state_dir": str(self.home / "state"),
                                       "shadow": {"profile": "grok", "every": 1}})
         self.inference = mock.Mock(upstream="https://api.x.ai/v1", provider="xai", profile="grok",
@@ -669,6 +675,16 @@ class ProductionTurn(unittest.TestCase):
                 self.assertEqual(row["error"], "shadow review superseded: PR closed or head moved")
                 # No longer open, so its findings snapshot is evictable again.
                 self.assertNotIn((8, HEAD), gate.shadow_open_heads("acme/widgets", sup.db))
+
+    def test_a_recover_that_re_arms_a_row_starts_no_real_worker(self):
+        # #2479: the held-shadow test's recover() spawned a detached worker that raced teardown.
+        sup = self.queue_shadow()
+        with closing(sqlite3.connect(sup.db)) as con, con:
+            con.execute("UPDATE runs SET state='waiting', retry_at=? WHERE seat='shadow'",
+                        (time.time() - 1,))
+        sup.recover()
+        self.spawn.assert_called_once_with()
+        self.assertEqual(worker_wait.processes_naming(str(self.home)), {})
 
     def kinds(self):
         pr = {"number": 8, "draft": False, "user": {"login": "fixer"}, "base": {"ref": "main"},
