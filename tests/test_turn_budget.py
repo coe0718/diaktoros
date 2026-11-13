@@ -678,6 +678,7 @@ class LedgerAndWorkerTeardown(unittest.TestCase):
     def test_the_temp_dir_is_removed_only_after_its_workers_exit(self):
         case = LedgerAndWorker("test_the_rows_budget_reaches_the_child_not_the_worker_default")
         case.setUp()
+        self.addCleanup(case.doCleanups)        # a skip below still removes its dir and patches
         # A stand-in for the detached worker, still running when the test has its answer: like
         # the worker, it names the test's root on its command line. It has no deadline of its
         # own: it runs until its stdin closes, which happens only once a look for processes
@@ -689,6 +690,10 @@ class LedgerAndWorkerTeardown(unittest.TestCase):
         self.addCleanup(stand_in.stdin.close)
         self.addCleanup(stand_in.wait, 10)
         self.addCleanup(lambda: stand_in.poll() is None and stand_in.kill())
+        # The check rests on seeing the stand-in. Where processes can't be listed (no /proc),
+        # the wait and the removal both see none, and [{}] would be a false green (#2480 review 3).
+        if stand_in.pid not in worker_wait.processes_naming(str(case.root)):
+            self.skipTest("processes can't be listed here (no /proc): the removal can't be checked")
         naming = worker_wait.processes_naming
 
         def looked(marker):
@@ -701,6 +706,14 @@ class LedgerAndWorkerTeardown(unittest.TestCase):
             case.doCleanups()
         self.assertEqual(seen, [{}], "removed while a process naming it was running")
         self.assertFalse(case.root.exists())
+
+    def test_without_process_listing_the_check_is_skipped_never_passed(self):
+        # #2480 review 3, F3: off Linux, processes_naming returns {} for every root, as here.
+        result = unittest.TestResult()
+        with mock.patch.object(worker_wait, "processes_naming", return_value={}):
+            LedgerAndWorkerTeardown("test_the_temp_dir_is_removed_only_after_its_workers_exit").run(result)
+        self.assertEqual((result.testsRun, len(result.skipped), result.failures, result.errors),
+                         (1, 1, [], []))
 
 
 class LedgerAndWorker(unittest.TestCase):
