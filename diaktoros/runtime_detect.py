@@ -176,7 +176,7 @@ def _node_install() -> Path | None:
     for candidate in candidates:
         try:
             binary = candidate.resolve(strict=True)
-        except OSError:
+        except (OSError, RuntimeError):     # RuntimeError: a link loop before Python 3.13
             continue
         if (binary.is_file() and os.access(binary, os.X_OK) and binary.parent.name == "bin"
                 and not _node_root_is_unsafe(binary.parent.parent)):
@@ -213,14 +213,41 @@ def node_problem(value: object) -> str:
         return f"{value} does not exist"
     if _node_root_is_unsafe(root):
         return f"{root} is a home directory or credential store, never a Node root"
-    binary = root / "bin" / "node"
-    try:
-        target = binary.resolve(strict=True)
-    except OSError:
-        return f"{binary} does not exist"
-    if not (target.is_file() and os.access(target, os.X_OK)) or root not in target.parents:
-        return f"{binary} is not an executable file inside {root}"
+    target = _seat_binary(root)
+    if target is None or not (target.is_file() and os.access(target, os.X_OK)):
+        return (f"{root / 'bin' / 'node'} is not an executable file inside {root}, reached by "
+                "relative links only (a seat sees the root alone, at /opt/node)")
     return ""
+
+
+def _seat_binary(root: Path) -> Path | None:
+    """``root``'s ``bin/node`` as a seat resolves it with ``root`` bound at ``/opt/node``:
+    each link followed here, one step at a time, inside ``root``. ``None`` for a link that is
+    absolute (its host path is not in the sandbox), climbs out of ``root``, or loops (#2478
+    review 2, F5 and F6); a missing file is the path that is not there."""
+    here, parts, links = root, ["bin", "node"], 0
+    while parts:
+        part = parts.pop(0)
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if here == root:
+                return None
+            here = here.parent
+            continue
+        step = here / part
+        if not step.is_symlink():
+            here = step
+            continue
+        links += 1
+        try:
+            target = os.readlink(step)
+        except OSError:
+            return None
+        if links > 40 or os.path.isabs(target):
+            return None
+        parts[:0] = Path(target).parts
+    return here
 
 
 def node_canonical(value: str) -> Path | None:
@@ -296,10 +323,11 @@ def node_report(settings: dict) -> tuple[str, str, str]:
                 "unverified", "install Node under ~/.hermes/node or on PATH, then " + SETUP_NODE)
     if not node_mounted(root):
         return "ok", f"node {version} at {root}, {_VISIBLE}", ""
-    if NODE_KEY in settings:
-        return "none", f"the runtime file records no Node (node {version} is at {root})", SETUP_NODE
-    return ("warn", f"node {version} at {root} is not in the runtime file, so seats don't get it",
-            SETUP_NODE)
+    # Recorded as none (``""``) or not at all, a host Node seats don't get is a warning either
+    # way: a plugin update leaves the file as it was (#1149, the maintainer's decision).
+    recorded = "records no Node" if NODE_KEY in settings else "does not record it"
+    return ("warn", f"node {version} at {root} is not in the runtime file (it {recorded}), so "
+            "seats don't get it", SETUP_NODE)
 
 
 def detect() -> dict[str, str]:

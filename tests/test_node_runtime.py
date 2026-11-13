@@ -1,5 +1,6 @@
 """Host Node detection and its doctor line (#685)."""
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import errno
 import io
 import os
 from pathlib import Path
@@ -90,9 +91,13 @@ class NodeRuntime(unittest.TestCase):
                 self.assertFalse(check.failed)
                 self.assertIn(f"{root} is not in the runtime file", check.detail)
                 self.assertIn("hermes dk setup", check.fix)
-        check = doctor.check_node({"node": ""})               # the operator chose none
-        self.assertEqual(check.status, doctor.SKIPPED)
-        self.assertIn("records no Node", check.detail)
+        # #2478 review 2, F7: recorded as none, it is still a host Node seats don't get.
+        check = doctor.check_node({"node": ""})
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertFalse(check.failed)
+        self.assertIn(f"{root} is not in the runtime file (it records no Node)", check.detail)
+        self.assertIn("hermes dk setup", check.fix)
+        self.assertEqual(self.selftest_node(node="")[0], "warn")
 
     def test_a_recorded_node_that_is_gone_is_a_warning_and_mounts_nothing(self):
         gone = str(self.home / "node-v20")
@@ -141,6 +146,72 @@ class NodeRuntime(unittest.TestCase):
         (root / "bin").mkdir(parents=True)
         (root / "bin" / "node").symlink_to(elsewhere / "bin" / "node")
         self.assertIn("not an executable file inside", runtime_detect.node_problem(str(root)))
+
+    def layouts(self) -> dict[str, Path]:
+        """Node roots whose ``bin/node`` is reached each way: the file itself, a relative link
+        inside the root, an absolute link to that same file, and a link loop."""
+        roots = {}
+        for name in ("file", "relative", "absolute", "loop"):
+            root = self.home / "opt" / name
+            (root / "bin").mkdir(parents=True)
+            (root / "lib").mkdir()
+            real = root / ("bin" if name == "file" else "lib") / "node"
+            real.write_text('#!/bin/sh\ncase "$1" in --version) echo v22.9.9;; esac\n')
+            real.chmod(0o755)
+            link = root / "bin" / "node"
+            if name == "relative":
+                link.symlink_to("../lib/node")
+            elif name == "absolute":
+                link.symlink_to(real)
+            elif name == "loop":
+                (root / "bin" / "a").symlink_to("node")
+                link.symlink_to("a")
+            roots[name] = root
+        return roots
+
+    def test_a_bin_node_a_seat_cannot_follow_is_refused_everywhere(self):
+        # #2478 review 2, F5: an absolute link to a file inside the root passed and ran on the
+        # host, but not in the seat, where the root alone is bound at /opt/node: doctor and
+        # selftest said "mounted" and the seat had no node. A relative link inside it works.
+        roots = self.layouts()
+        for name in ("file", "relative"):
+            with self.subTest(name):
+                self.assertEqual(runtime_detect.node_problem(str(roots[name])), "")
+                self.assertEqual(runtime_detect.recorded_node({"node": str(roots[name])}), roots[name])
+                self.assertEqual(doctor.check_node({"node": str(roots[name])}).status, doctor.VERIFIED)
+        for name in ("absolute", "loop"):
+            with self.subTest(name):
+                root = str(roots[name])
+                self.assertIn("relative links only", runtime_detect.node_problem(root))
+                with mock.patch.object(runtime_detect.util, "log") as log:
+                    self.assertIsNone(runtime_detect.turn_paths(
+                        {"source": "/s", "venv": "/v", "runtime": "/r", "rust": "/x",
+                         "node": root})["node"])
+                self.assertIn("re-run `hermes dk setup`", log.call_args[0][0])
+                self.assertEqual(doctor.check_node({"node": root}).status, doctor.UNKNOWN)
+                self.assertEqual(self.selftest_node(node=root)[0], "warn")
+
+    def test_a_link_loop_is_refused_not_raised_on_any_python(self):
+        # #2478 review 2, F6: before Python 3.13, resolving a link loop raises RuntimeError, not
+        # OSError; it escaped node_problem and failed the turn instead of mounting no Node.
+        real = Path.resolve
+
+        def old_python(path, strict=False):
+            try:
+                return real(path, strict=strict)
+            except OSError as exc:
+                if exc.errno == errno.ELOOP:
+                    raise RuntimeError(f"Symlink loop from {str(path)!r}") from None
+                raise
+        root = str(self.layouts()["loop"])
+        with mock.patch.object(Path, "resolve", old_python), \
+                mock.patch.object(runtime_detect.util, "log"):
+            self.assertIn("relative links only", runtime_detect.node_problem(root))
+            self.assertIsNone(runtime_detect.recorded_node({"node": root}))
+            self.assertEqual(doctor.check_node({"node": root}).status, doctor.UNKNOWN)
+            (self.home / ".hermes").mkdir()
+            (self.home / ".hermes" / "node").symlink_to(root)       # detection's first candidate
+            self.assertIsNone(runtime_detect.node_root())
 
     def test_the_worker_knows_the_accounts_home_whatever_its_home_says(self):
         import pwd
@@ -276,6 +347,18 @@ class NodeInRealSandbox(unittest.TestCase):
         out = done.stdout.decode() if isinstance(done.stdout, bytes) else done.stdout
         self.assertIn("v22.9.9", out)
         self.assertIn("ok /work/x.test.js", out)
+
+    def test_the_seat_runs_exactly_the_bin_node_the_check_accepts(self):
+        # #2478 review 2, F5: node_problem's verdict is the seat's. Each layout's root is bound
+        # at /opt/node as the worker would bind it; the seat runs node only where it passed.
+        case = NodeRuntime()
+        case.home = self.root
+        for name, root in case.layouts().items():
+            with self.subTest(name):
+                accepted = runtime_detect.node_problem(str(root)) == ""
+                done = self.run_in_sandbox("node --version", root)
+                self.assertEqual(accepted, done.returncode == 0, (name, done.stderr[-500:]))
+                self.assertEqual(accepted, name in ("file", "relative"))
 
     def test_without_the_mount_the_seat_has_no_node(self):
         done = self.run_in_sandbox("node --version", None)
