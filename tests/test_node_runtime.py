@@ -397,7 +397,8 @@ class NodeInRealSandbox(unittest.TestCase):
                     self.assertEqual(state, "pass", detail)
                 else:
                     self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
-                    self.assertIn("failed in a seat's sandbox (rc 126", check.detail)
+                    # The rc is the seat shell's: bash says 126 (bad interpreter), dash 127.
+                    self.assertRegex(check.detail, r"failed in a seat's sandbox \(rc 12[67]: ")
                     self.assertIn("seats get no Node", check.detail)
                     self.assertEqual(state, "warn", detail)
 
