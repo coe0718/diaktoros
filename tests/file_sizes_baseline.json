@@ -52,7 +52,7 @@
     "diaktoros/gate_failures.py::gateway_webhook_setting": 117,
     "diaktoros/gate_failures.py::run": 136,
     "diaktoros/ready.py::assess_kinds": 94,
-    "diaktoros/retry_action.py::perform": 88,
+    "diaktoros/retry_action.py::perform": 87,
     "diaktoros/run_supervisor/__init__.py::Supervisor.__init__": 112,
     "diaktoros/run_supervisor/intake.py::RunIntake.retry": 112,
     "diaktoros/run_supervisor/intake.py::RunIntake.submit": 91,

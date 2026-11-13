@@ -95,7 +95,7 @@ Hermes frontend/Electron dependency tree. Run the same two commands above from
 the plugin root in a disposable development checkout. Installation needs registry
 access; execution uses local fixtures only. The runner sets the ESM entry itself,
 ignores ambient package/plugin overrides and Node injection options, and requires
-239 executed passes (13 of them named real-cache cases), zero skips/TODOs,
+242 executed passes (13 of them named real-cache cases), zero skips/TODOs,
 and matching TAP plan/summary counts. A mounted-page SDK adapter connects the
 production Health/useHealth call directly to QueryObserver subscriptions: concurrent
 pages, fresh remounts, loop selection, fallback and Retry run without injecting a

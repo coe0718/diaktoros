@@ -1268,8 +1268,18 @@ def load_id_for_reader_repair(loop_id: str, reader: str) -> dict | None:
     return loop
 
 
+def _names_one_file(loop_id: str) -> bool:
+    return bool(loop_id) and pathlib.Path(loop_id).name == loop_id and loop_id not in ('.', '..')
+
+
+def config_file_id(name: str) -> str | None:
+    """The ID ``readable_loops`` loads config file ``name`` as (a hidden one too), else None."""
+    path = pathlib.Path(name)
+    return path.stem if path.suffix == ".json" and _names_one_file(path.stem) else None
+
+
 def load_id(loop_id: str) -> dict:
-    if not loop_id or pathlib.Path(loop_id).name != loop_id or loop_id in ('.', '..'):
+    if not _names_one_file(loop_id):
         raise ConfigError('loop ID must name one config file')
     path = config_dir() / f"{loop_id}.json"
     if path.is_symlink():
