@@ -4,6 +4,7 @@ import errno
 import io
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
@@ -307,6 +308,15 @@ class NodeRuntime(unittest.TestCase):
         self.assertEqual(len(node), 1, report.results)
         return node[0][2], node[0][3]
 
+    def test_a_host_that_cannot_start_a_seat_cannot_verify_its_node(self):
+        # #2478 review 3, F8: the recorded Node is checked in a seat's sandbox; with no
+        # bubblewrap there is none, so it is a warning, never verified from the host.
+        root = self.install(self.home / ".hermes" / "node")
+        with mock.patch.object(contained, "unavailable", return_value="no bwrap"):
+            check = doctor.check_node({"node": str(root)})
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn("sandbox could not be started", check.detail)
+
     def test_a_broken_node_is_not_reported_as_available(self):
         root = self.install(self.home / ".hermes" / "node", "garbage")
         self.assertEqual(runtime_detect.node_version(root)[0], None)
@@ -359,6 +369,37 @@ class NodeInRealSandbox(unittest.TestCase):
                 done = self.run_in_sandbox("node --version", root)
                 self.assertEqual(accepted, done.returncode == 0, (name, done.stderr[-500:]))
                 self.assertEqual(accepted, name in ("file", "relative"))
+
+    def test_doctor_and_selftest_run_the_recorded_node_in_a_seat(self):
+        # #2478 review 3, F8: a bin/node inside the root that runs on the host can still fail in
+        # the seat: here a script whose interpreter is a host path the sandbox lacks (a native
+        # binary whose loader or libraries it lacks is the same). doctor and selftest ran it on
+        # the host and said "mounted"; they now run it where a turn does.
+        interpreter = self.root / "host-only" / "sh"
+        interpreter.parent.mkdir()
+        shutil.copy2("/bin/sh", interpreter)
+        wrapped = self.root / "wrapped-node"
+        (wrapped / "bin").mkdir(parents=True)
+        (wrapped / "bin" / "node").write_text(f"#!{interpreter}\necho v22.1.0\n")
+        (wrapped / "bin" / "node").chmod(0o755)
+        self.assertEqual(runtime_detect.node_problem(str(wrapped)), "")      # inside its root
+        self.assertEqual(runtime_detect.node_version(wrapped), (wrapped, "v22.1.0"))  # host: fine
+        self.assertNotEqual(self.run_in_sandbox("node --version", wrapped).returncode, 0)
+        case = NodeRuntime()
+        case.home = self.root
+        for root, works in ((self.node, True), (wrapped, False)):
+            with self.subTest(str(root.name)):
+                check = doctor.check_node({"node": str(root)})
+                state, detail = case.selftest_node(node=str(root))
+                if works:
+                    self.assertEqual(check.status, doctor.VERIFIED, check.detail)
+                    self.assertIn("v22.9.9", check.detail)
+                    self.assertEqual(state, "pass", detail)
+                else:
+                    self.assertEqual(check.status, doctor.UNKNOWN, check.detail)
+                    self.assertIn("failed in a seat's sandbox (rc 126", check.detail)
+                    self.assertIn("seats get no Node", check.detail)
+                    self.assertEqual(state, "warn", detail)
 
     def test_without_the_mount_the_seat_has_no_node(self):
         done = self.run_in_sandbox("node --version", None)

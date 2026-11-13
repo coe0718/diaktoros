@@ -294,10 +294,40 @@ def node_version(root: Path | None = None) -> tuple[Path | None, str]:
                               text=True, timeout=15, env={"PATH": "/usr/bin:/bin"})
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"{root}/bin/node could not run ({type(exc).__name__})"
-    version = done.stdout.strip()
+    return _version_of(root, done, f"{root}/bin/node --version failed")
+
+
+def _version_of(root: Path, done, failed: str) -> tuple[Path | None, str]:
+    out = done.stdout.decode(errors="replace") if isinstance(done.stdout, bytes) else done.stdout
+    version = (out or "").strip()
     if done.returncode != 0 or not re.fullmatch(r"v\d+\.\d+\.\d+\S{0,40}", version):
-        return None, f"{root}/bin/node --version failed"
+        return None, failed
     return root, version
+
+
+def seat_node_version(root: Path, settings: dict) -> tuple[Path | None, str]:
+    """``node_version`` as a seat gets it: ``/opt/node/bin/node --version`` run in the turn's
+    sandbox, ``root`` bound as the worker binds it (#2478 review 3, F8). A ``bin/node`` that runs
+    on the host but not there (a script whose interpreter, or a binary whose loader or libraries,
+    the sandbox lacks) is ``(None, why)``, never a green doctor line."""
+    import tempfile
+    from . import contained
+    mounts = {key: Path(settings.get(key) or "/usr") for key in ("venv", "runtime", "rust")}
+    with tempfile.TemporaryDirectory(prefix="dk-node-") as tmp:
+        base = Path(tmp)
+        for name in ("code", "home", "work"):
+            (base / name).mkdir(mode=0o700)
+        (base / "query.txt").write_text("node --version\n")
+        try:
+            done = contained.run(code=base / "code", home=base / "home", checkout=base / "work",
+                                 query=base / "query.txt", entry=["/opt/node/bin/node", "--version"],
+                                 node=root, timeout=30, **mounts)
+        except Exception as exc:
+            return None, f"a seat's sandbox could not be started to run it ({type(exc).__name__})"
+    err = done.stderr.decode(errors="replace") if isinstance(done.stderr, bytes) else done.stderr
+    last = ((err or "").strip().splitlines() or [""])[-1][:160]
+    return _version_of(root, done, f"it runs on the host, but `node --version` failed in a seat's "
+                                   f"sandbox (rc {done.returncode}{': ' + last if last else ''})")
 
 
 _VISIBLE = "system install, already visible in the sandbox"
@@ -311,8 +341,13 @@ def node_report(settings: dict) -> tuple[str, str, str]:
     host Node the runtime file does not record, so seats don't get it) or ``"none"``."""
     value = settings.get(NODE_KEY) or ""
     if value:
-        why = node_problem(value)
-        root, version = (None, why) if why else node_version(node_canonical(value))
+        why, real = node_problem(value), node_canonical(value)
+        if why:
+            root, version = None, why
+        elif node_mounted(real):
+            root, version = seat_node_version(real, settings)
+        else:
+            root, version = node_version(real)
         if root is None:
             return "warn", f"the runtime file's node {value}: {version}; seats get no Node", SETUP_NODE
         where = "mounted at /opt/node" if node_mounted(root) else _VISIBLE
