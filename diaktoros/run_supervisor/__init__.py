@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import sqlite3
 import subprocess
@@ -370,13 +371,44 @@ def account_hold(error: str) -> bool:
     return pacing.closed_account(error)
 
 
+# The words a daily-cap ``held:`` line carries (#219, #480): its writers in ``turns`` and the
+# readers below (``hold_remedy``, ``waiting_hold``) share them, so one wording decides all three.
+DAILY_TURN_CAP = "daily turn cap"
+DAILY_TOKEN_BUDGET = "daily token budget"
+REVIEW_ONLY_LABEL = "review-only"       # the review-only pool's name in its cap's line
+# The exact structure of ``daily_hold_line`` and ``ci_hold_line`` (#674): ``waiting_hold`` reads
+# back only what those writers produce, never a line that merely mentions the words.
+_DAILY_LINE = re.compile(r"held: (?:%s) (?:%s|%s) \(\d+\) reached — resumes \S" % (
+    "|".join((REVIEW_ONLY_LABEL, *SEATS)), re.escape(DAILY_TURN_CAP), re.escape(DAILY_TOKEN_BUDGET)))
+_CI_LINE = re.compile(re.escape(CI_HOLD) + r" on [0-9a-f]{7} — (.+)", re.S)
+# A red head's hold (#1110), after its failed count: unlike every other CI wait it outlasts
+# CI_WAIT_MAX_S. A shadow's draft wait waits for ready, not CI, and has no time limit.
+CI_FAILED_WAIT = ("required check(s) failed — the review starts when they pass (re-run them on "
+                  "GitHub) or a new head is pushed")
+CI_DRAFT_WAIT = "the PR is a draft, waiting for ready"
+# A fixer's red head while its CI-fix turn goes first (#539), after its failed count. Only that
+# turn order ends at CI_WAIT_MAX_S: the same failed checks then hold the review as a red head's.
+CI_FIXER_FIRST = "check(s) failed, the fixer is taking them first"
+
+
+def daily_hold_line(label: str, what: str, cap: int, resumes: str) -> str:
+    """A daily cap's ``held:`` line: ``what`` is ``DAILY_TURN_CAP`` or ``DAILY_TOKEN_BUDGET``."""
+    return f"held: {label} {what} ({cap}) reached — resumes {resumes}"
+
+
+def ci_hold_line(head: str, why: str) -> str:
+    """A CI hold's ``held:`` line: every writer (the reviewer's hold and poll, the shadow's
+    gate) words it here."""
+    return f"{CI_HOLD} on {head[:7]} — {why}"[:600]
+
+
 def hold_remedy(seat: str, error: str) -> str:
     """The setting that lifts a daily-cap hold, or '' for a hold no cap explains (a usage
     window). The review-only cap is its own setting: on the reviewer seat it used to be given the
     reviewer's general cap, which does not lift it (live on #605, 2026-10-10)."""
-    if "daily token budget" in error:
+    if DAILY_TOKEN_BUDGET in error:
         return "seats.<seat>.daily_tokens in the loop file or the settings form (blank = none)"
-    if "daily turn cap" not in error:
+    if DAILY_TURN_CAP not in error:
         return ""
     if "review-only daily turn cap" in error:
         return "set --review-only-daily N (0 = no cap)"
@@ -385,6 +417,34 @@ def hold_remedy(seat: str, error: str) -> str:
             "reviewer": "set --reviewer-daily-turns N",
             "fixer": "set --fixer-daily-turns N"}.get(
         seat, "seats.adjudicator.daily_turns in the loop file")
+
+
+def waiting_hold(error: object) -> str:
+    """Which host-written hold a waiting run's recorded ``error`` is (#674), or '' when it is
+    none of them: ``ci`` (``ci_hold_line``: checks running, missing or cancelled, or a base
+    conflict; this wait ends at a CI event, a new head, or CI_WAIT_MAX_S, whichever comes first,
+    though failed checks may still hold the review after it), ``ci_fixer_first``
+    (``CI_FIXER_FIRST``: the fixer goes first until CI_WAIT_MAX_S at the latest; the failed checks
+    then hold it with no time limit), ``ci_failed`` (``CI_FAILED_WAIT``: no time limit, only green
+    checks or a new head end it), ``provider_window`` (``pacing.hold_line``'s closed account) or
+    ``daily_cap`` (``daily_hold_line``, until local midnight). Only those writers' exact line
+    structure decides: any other ``held:`` line, a lookalike that merely mentions their words, the shadow's
+    draft wait, a retry backoff or a read failure is ''. The caller decides that the row is
+    waiting and that no write evidence overrides it; this never grants a retry."""
+    if not isinstance(error, str):
+        return ""
+    ci_line = _CI_LINE.fullmatch(error)
+    if ci_line is not None:
+        if ci_line[1] == CI_DRAFT_WAIT:
+            return ""
+        if re.fullmatch(r"\d+ " + re.escape(CI_FIXER_FIRST), ci_line[1]):
+            return "ci_fixer_first"
+        return ("ci_failed" if re.match(r"\d+ " + re.escape(CI_FAILED_WAIT) + r"(?: |\Z)",
+                                        ci_line[1]) else "ci")
+    from .. import pacing
+    if pacing.is_hold_line(error):
+        return "provider_window"
+    return "daily_cap" if _DAILY_LINE.match(error) else ""
 
 
 def retryable(exc: BaseException) -> bool:

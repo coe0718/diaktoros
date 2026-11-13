@@ -76,14 +76,13 @@ def ci_wait_expired(row) -> bool:
 def _ci_hold_text(head: str, checks, fixing: bool, red: bool, review_only: bool) -> str:
     """The hold's one line, from the gated ``checks`` that decided it."""
     from .. import ci
-    return (f"{run_supervisor.CI_HOLD} on {head[:7]} — "
-            + (f"{len(checks.cancelled)} check(s) cancelled, re-run them on "
+    return run_supervisor.ci_hold_line(head, (
+               f"{len(checks.cancelled)} check(s) cancelled, re-run them on "
                f"GitHub ({ci._names(checks.cancelled[:5])})"
                if checks.cancelled and not red else
-               f"{len(checks.failed)} check(s) failed, the fixer is taking them first"
+               f"{len(checks.failed)} {run_supervisor.CI_FIXER_FIRST}"
                if fixing else
-               f"{len(checks.failed)} required check(s) failed — the review starts "
-               "when they pass (re-run them on GitHub) or a new head is pushed "
+               f"{len(checks.failed)} {run_supervisor.CI_FAILED_WAIT} "
                f"({ci._names(checks.failed[:5])}); "
                + ("no fixer takes a review-only PR" if review_only else
                   "the fixer's CI fixes are done")
@@ -91,7 +90,7 @@ def _ci_hold_text(head: str, checks, fixing: bool, red: bool, review_only: bool)
                f"{len(checks.missing)} required check(s) never reported "
                f"({ci._names(checks.missing[:5])}); check the name"
                if checks.missing else
-               f"{len(checks.pending)} check(s) still running or not reported"))[:600]
+               f"{len(checks.pending)} check(s) still running or not reported"))
 
 
 def _nudged(row, prompt: str) -> str:
@@ -130,9 +129,9 @@ def _cap_held(turn: _Turn, seat: str, cap: int) -> None:
     admission check (``_pacing_hold``) and the count at launch (#1378) both end here."""
     from .. import pacing
     turn.paced_until = pacing.next_midnight()
-    label = 'review-only' if seat == pacing.REVIEW_ONLY_SEAT else seat
-    turn.error = (f"held: {label} daily turn cap ({cap}) reached — resumes "
-                  f"{pacing.when(turn.paced_until)}")
+    label = run_supervisor.REVIEW_ONLY_LABEL if seat == pacing.REVIEW_ONLY_SEAT else seat
+    turn.error = run_supervisor.daily_hold_line(label, run_supervisor.DAILY_TURN_CAP, cap,
+                                                pacing.when(turn.paced_until))
 
 
 def _provider_strike(turn: _Turn, account: str) -> float | None:
@@ -694,8 +693,9 @@ class ClaimAndLaunch:
         token_cap = config.seat_daily_tokens(loop, row['seat'])
         if token_cap is not None and pacing.tokens_today(loop['id'], budget_seat) >= token_cap:
             turn.paced_until = pacing.next_midnight()
-            turn.error = (f"held: {row['seat']} daily token budget ({token_cap}) reached — "
-                          f"resumes {pacing.when(turn.paced_until)}")
+            turn.error = run_supervisor.daily_hold_line(
+                row['seat'], run_supervisor.DAILY_TOKEN_BUDGET, token_cap,
+                pacing.when(turn.paced_until))
             return False
         return ro_turn
 
@@ -734,8 +734,8 @@ class ClaimAndLaunch:
         if not expired and run_supervisor._conflicts_at_head(queued, row["head"]):
             base = queued.get("base")
             base = str(base.get("ref") or "") if isinstance(base, dict) else ""
-            return (f"{run_supervisor.CI_HOLD} on {row['head'][:7]} — conflicts with "
-                    f"{base or 'its base'} — GitHub runs no CI on it")[:600]
+            return run_supervisor.ci_hold_line(
+                row['head'], f"conflicts with {base or 'its base'} — GitHub runs no CI on it")
         author = (str(((queued.get("user") or {}).get("login")) or "")
                   if isinstance(queued, dict) else "")
         review_only = author.lower() in config.review_only(loop)
@@ -857,7 +857,7 @@ class ClaimAndLaunch:
                               f"{run_supervisor.CI_WAIT_MAX_S // 60} min ({why})")[:600]
                 return
             turn.paced_until = time.time() + run_supervisor.CI_POLL_S
-            turn.error = f"{run_supervisor.CI_HOLD} on {head[:7]} — {why}"[:600]
+            turn.error = run_supervisor.ci_hold_line(head, why)
             self.held_for_ci = True
 
         queued = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}', login=loop["read_token"])
@@ -871,7 +871,7 @@ class ClaimAndLaunch:
                 return
             if queued.get("draft") is not False:
                 turn.paced_until = time.time() + run_supervisor.CI_POLL_S
-                turn.error = f"{run_supervisor.CI_HOLD} on {head[:7]} — the PR is a draft, waiting for ready"
+                turn.error = run_supervisor.ci_hold_line(head, run_supervisor.CI_DRAFT_WAIT)
                 self.held_for_ci = True
                 return
         if run_supervisor._conflicts_at_head(queued, head):

@@ -15,6 +15,19 @@ formatter share the explanation. Desktop's existing `/pr` read attaches the same
 `stuck[].explanation`; the registered drawer validates it before cache admission and displays its
 exact text. No query route, GitHub polling loop or write control is added.
 
+The structured hold reasons come from one owner, `run_supervisor.waiting_hold(error)`. It
+recognises only the exact line structure of the host's own writers, and shares that structure
+with them: `run_supervisor.ci_hold_line` (`held: waiting for CI on <7-hex head> — <why>`, written
+by the reviewer's hold, its poll and the shadow's gate), `run_supervisor.daily_hold_line`
+(`held: <seat or review-only> daily turn cap|daily token budget (<N>) reached — resumes <time>`)
+and `pacing.hold_line` (`held: <seat> usage window (<provider>)|provider unavailable… — resumes
+<time>`, matched by `pacing.is_hold_line`). A line that merely mentions their words (`held: human
+path mentions daily turn cap`, `held: waiting for CINDER`) is not one of them and stays
+`run_waiting`; so does the shadow's draft wait (`CI_DRAFT_WAIT`), which waits for ready rather
+than CI. `views.HOLD_REASONS`, `HOLD_COPY` and `WAITING_FOR_COPY` hold the pairing and copy, and
+the Desktop validator mirrors them (a test pins the mirror). Write evidence or an uncertain state
+always wins over any hold line.
+
 `next_step` remains the sole next-action advice. `hold_explanation.text` adds recorded facts,
 not a second instruction to inspect or a duplicated automatic-resume verdict. Its structured
 `automatic_resume` and `operator_action` fields remain compatibility metadata, not another
@@ -43,17 +56,18 @@ disclosure. Empty turn/verdict/waiting claims are shown only for a successfully 
 | `run_id` | The host's 32-lowercase-hex run identity, or null when unavailable/malformed. |
 | `head` | Full 40-lowercase-hex recorded head, or null; never a live-head claim. Desktop requires a nonnull full safe head whose prefix matches a valid parent row. A malformed parent with a null explanation head is unavailable for that row, not the entire PR response. |
 | `evidence_source` | `run_ledger`; not current GitHub, runtime health or a delivery receipt. |
-| `completeness` | `partial`; policy-specific reason and current admission facts are not established. |
-| `waiting_for` | `host_recheck`, `operator_inspection`, or `unknown`. |
-| `automatic_resume` | `never` for external-write replay guards; otherwise `unknown`. |
-| `next_eligible_start` | Compatibility field name for recorded earliest recheck (`retry_at`) epoch seconds for a waiting, non-write-guarded row, or null; not a start promise. Finite, nonnegative and bounded to the public datetime epoch range. |
+| `completeness` | `partial`: a ledger snapshot; current admission facts are not established. |
+| `waiting_for` | `host_recheck`, `operator_inspection`, `unknown`, or a structured hold's own condition: `ci_checks_or_new_head` or `failed_checks_pass_or_new_head` (event), `provider_window_reset` or `daily_cap_reset` (time). |
+| `automatic_resume` | `never` for external-write replay guards; `after_event` for an event-based hold with no time limit (a red head's CI hold, including a fixer's red head while the fixer goes first); `after_event_or_timeout` for an event-based wait that also ends at a time limit (every other CI wait, at `CI_WAIT_MAX_S`; the limit ends that wait, not necessarily the hold, see `ci_wait`); `after_recorded_time` for a time-based hold; otherwise `unknown`. Each reason code has exactly one pairing. |
+| `next_eligible_start` | Compatibility field name for recorded earliest recheck (`retry_at`) epoch seconds for a waiting, non-write-guarded row, or null; not a start promise. For a time-based hold it is the recorded reset (window end, local midnight); for the CI hold it is the next CI read. Finite, nonnegative and bounded to the public datetime epoch range. |
 | `operator_action` | `inspect` only. This is guidance, not an executable command or permission. |
 | `text` | Host-generated bounded rendering of recorded facts only; never next-action advice, error, path, account, credential or write-evidence prose. |
 
 A recorded eligibility time is **not a promised start**, a live provider reset, current CI result,
 or proof that the run remains eligible. Rechecking can discover another hold. A null time means
-unknown, not immediate eligibility. Automatic resume is deliberately unknown until the policy
-owner can supply a structured, current condition. Desktop retains and labels stale reads; an older
+unknown, not immediate eligibility. Automatic resume stays unknown unless the host's own hold
+writer supplied the condition (a structured hold above); even then it means the host rechecks
+the row after that event or time, not that a turn will start. Desktop retains and labels stale reads; an older
 backend without the additive explanation field explicitly shows that explanation as unavailable
 (provided its PR envelope includes the required ledger availability). Malformed recorded heads
 are withheld as an empty wire identifier and displayed as unknown — in stuck rows, turns and the
@@ -62,7 +76,30 @@ remain visible, but its explanation cannot claim head binding.
 
 ### Stable reason vocabulary
 
-- `run_waiting`: the ledger records waiting; the cause/event is not structured here.
+- `run_waiting`: the ledger records waiting; the cause/event is not structured here (a retry
+  backoff, a claim-read backoff, or any `held:` line no structured writer below produced).
+- `ci_wait`: a turn held by `ci_hold_line` for running, cancelled or missing checks, or a head
+  that conflicts with its base (the reviewer's hold and the shadow's gate). Waits for CI checks
+  to settle or a new head, **or** for `CI_WAIT_MAX_S` from the queueing (the shadow: from the
+  approval it waited for) to pass, whichever comes first (`after_event_or_timeout`). The limit
+  ends this wait, not necessarily the hold: a reviewer whose required checks have failed by then
+  is still held by them as `ci_failed_wait`, with no time limit (a cancelled check beside a
+  fixer's red head, a conflicting head whose checks failed earlier, or a running check that
+  fails). Otherwise a reviewer reviews anyway, and a shadow review is skipped. The copy says so.
+  A new head queues a fresh run rather than resuming this one.
+- `ci_fixer_first_wait`: a reviewer turn on a fixer's red head while the fixer's CI-fix turn
+  goes first (`run_supervisor.CI_FIXER_FIRST`, #539). Only that turn order is bounded: it ends
+  at `CI_WAIT_MAX_S` at the latest (or when the fixer's turn ends without a new head), and the
+  same failed checks then hold the review as `ci_failed_wait`. So the hold itself has no time
+  limit (`after_event`): it waits for the failed checks to pass or a new head (the fixer's push).
+  Review of #2398, F3.
+- `ci_failed_wait`: a reviewer turn held for failed required checks that no fixer takes (a
+  review-only PR, or the fixer's CI fixes are done, #1110). No time limit (`after_event`): it
+  waits for the failed checks to pass (a re-run) or a new head, past `CI_WAIT_MAX_S` as well.
+- `provider_window`: `pacing.hold_line`'s closed account (a usage window or an unavailable
+  provider). Time-based: `next_eligible_start` is the recorded window end.
+- `daily_cap`: a seat's daily turn cap, review-only cap or daily token budget. Time-based:
+  `next_eligible_start` is the recorded local midnight.
 - `run_failed`: the ledger records failure without write evidence in this artifact.
 - `run_cancelled`: the ledger records cancellation without write evidence in this artifact.
 - `external_write_guard`: the host's write-evidence helper found a write-ahead/recorded write, or
@@ -94,23 +131,21 @@ predicates. Retry buttons continue to depend only on the existing `retry_action`
 
 ## Residual work for #674
 
-1. Policy owners must emit structured CI/provider-window/daily-cap/human-path/runtime/conflict/
-   escalation conditions, evidence provenance and supported checked actions. In this slice those
-   cases are **not** reclassified from their recorded prose; a waiting row remains `run_waiting`
-   with partial/unknown policy facts. No missing field is treated as an off switch or permission.
+1. Structured ledger holds now cover CI (including base conflicts), provider windows/outages and
+   daily caps. Still unstructured (`run_waiting` or not ledger rows at all): retry and claim-read
+   backoffs, the shadow's draft wait and its wait for the reviewer's verdict, human-path holds,
+   runtime enqueue failures, escalation parks (a gate marker that cancels the queued turn, owned
+   by `explain`), maintainer `pr_hold`/scope-lock holds and issue
+   prerequisites. No missing field is treated as an off switch or permission.
 2. Integrate `explain.explain`'s structured answer without changing its guard order or its documented
    CLI semantics. Non-ledger holds and pre-admission runtime queue failures are not covered by this
    ledger projection.
 3. Integrate observer notices from those same policy-owned artifacts. Existing observer wording,
    delivery and reconciliation remain unchanged; **three-surface consistency is not yet met**.
 4. Supply source-specific currently eligible actions from existing checked operations. `inspect`
-   intentionally does not advertise retry, continue, pacing release, conflict writes or escalation.
-5. Prove all named issue scenarios using their actual policy writers across all three consumers.
-   The current prose-invariance tests prove non-inference, not complete scenario acceptance.
-
-This slice left the core files of #1151 and #1154 alone while that work was in flight; both have
-since landed. If a gate fact changes, change it in its owning module rather than adding another
-policy implementation.
+   intentionally does not advertise retry, continue, pacing release, conflict writes or escalation;
+   `next_step` still carries the `--clear-hold` / raise-the-cap advice for pacing holds.
+5. Desktop `/now` rows carry `why` (the host line) but not this structured explanation.
 
 ### Closure boundaries
 
@@ -118,7 +153,7 @@ The narrow #1159/#1161/#1166 fixes require missing-versus-empty production-route
 proof, rejection of null explanation heads against valid parent identities, visible unavailable
 explanations for unknown heads, and consistent real-ledger waiting/failed/cancelled/uncertain
 advice in CLI and Desktop. Acceptance must run at the frozen source commit, including the locked
-JavaScript runner's 241 tests (13 of them named real-TanStack cases) with no skips,
+JavaScript runner's 242 tests (13 of them named real-TanStack cases) with no skips,
 the strict dependency-equipped DesktopPython lane, full harness and leakguard sweep, plus
 source-hash-bound actual React browser renders. Browser SDK fixtures are not live Electron
 acceptance. These fixes do not close #674, implement #1301, or change execution policy.
@@ -131,8 +166,16 @@ exercises a durable review write-ahead receipt, and tests unknown/malformed fiel
 safety. Real-ledger waiting, failed, policy-cancelled and uncertain rows retain host advice
 without duplicated instructions in their explanation. Missing versus successfully read empty
 ledgers and the actual production PR route's missing/corrupt ledger responses are covered.
-The future-state fixture is an explicit compatibility unit case, not a writer-produced policy
-state. No test starts a real worker or contacts GitHub.
+The structured-hold cases are made by their real writers (`turns._cap_held`, `pacing.hold_line`,
+`turns._ci_hold_text`) and appear in the CLI and Desktop identically; `test_pacing` and
+`test_review_after_ci` also read the rows the production worker records for closed windows,
+outages, daily caps, token budgets, running CI and base conflicts. Unrecognised `held:` prose,
+including lookalikes one edit away from a writer's line, stays `run_waiting`; a CI wait's time
+limit and a red hold's lack of one are both exercised through the production worker
+(`test_review_after_ci`, `test_red_ci_hold`), as is each bounded wait's hand-over to the
+unbounded red hold at the limit (`test_red_ci_hold`: fixer first, a cancelled check, a conflict), and every hold line with write evidence or an
+uncertain state stays a write guard with no recheck or replay advice. The future-state fixture is an explicit
+compatibility unit case, not a writer-produced policy state. No test starts a real worker or contacts GitHub.
 
 `tests/desktop_behavior.mjs` consumes that backend-checked matrix through the production drawer's
 query callback and renderer. It rejects malformed nested identity/provenance/actions/text before

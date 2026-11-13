@@ -376,13 +376,65 @@ def describe_run(row: dict, loop_id: str = 'LOOP') -> str:
     return f"{text}; {next_step(row, loop_id)}; {hold_explanation(row)['text']}"
 
 
-def hold_explanation(row: dict) -> dict:
-    """Safe, partial explanation of a runs_view artifact (#674, ledger slice only).
+# The structured hold reasons a waiting ledger row can carry (#674), keyed by
+# ``run_supervisor.waiting_hold``: what it waits for and how it resumes. A time-based hold
+# (provider window, daily cap) resumes at its recorded time, which ``next_eligible_start``
+# names; an event-based one (CI) names the event in ``waiting_for``. Most CI waits are also
+# time-bound: past ``run_supervisor.CI_WAIT_MAX_S`` that wait ends whether or not the event came
+# (``after_event_or_timeout``). The bound is the current wait's, not the hold's: failed checks
+# can still hold the review then (a red head's hold has no limit), so the copy says so. A fixer's
+# red head is held by those failed checks from the start, so its hold is ``after_event`` and
+# only its turn order (the fixer first) is bounded (review of #2398, F3). Either way the host
+# only rechecks it then: a start still depends on host eligibility, and ``next_step`` stays the
+# one piece of advice.
+HOLD_REASONS = {
+    'ci': ('ci_wait', 'ci_checks_or_new_head', 'after_event_or_timeout'),
+    'ci_fixer_first': ('ci_fixer_first_wait', 'failed_checks_pass_or_new_head', 'after_event'),
+    'ci_failed': ('ci_failed_wait', 'failed_checks_pass_or_new_head', 'after_event'),
+    'provider_window': ('provider_window', 'provider_window_reset', 'after_recorded_time'),
+    'daily_cap': ('daily_cap', 'daily_cap_reset', 'after_recorded_time'),
+}
+# ``hold_explanation.text``'s fixed copy, per reason code and per ``waiting_for``. The Desktop
+# validator (``validHoldExplanation`` in desktop/plugin.js) rebuilds the text from the same
+# tables, so a structured field and its words cannot disagree.
+HOLD_COPY = {
+    'external_write_guard': 'Recorded run has external write evidence or an uncertain outcome.',
+    'run_waiting': 'Recorded run is waiting; the policy-specific reason is not structured yet.',
+    'ci_wait': ('Recorded run is held for CI at its recorded head; this wait ends at the CI wait '
+                'limit at the latest, but failed required checks can still hold it after that, '
+                'with no time limit; a new head queues a fresh run instead.'),
+    'ci_fixer_first_wait': ('Recorded run is held for failed required checks at its recorded head '
+                            'while the fixer takes them first; the fixer goes first for at most '
+                            'the CI wait limit; the failed checks still hold it after that, with '
+                            'no time limit; a new head queues a fresh run instead.'),
+    'ci_failed_wait': ('Recorded run is held for failed required checks at its recorded head, '
+                       'with no time limit; a new head queues a fresh run instead.'),
+    'provider_window': ('Recorded run is held: its provider account is closed (a usage window or '
+                        'an unavailable provider).'),
+    'daily_cap': "Recorded run is held: its seat's daily turn cap or token budget is reached.",
+    'run_failed': 'Recorded run failed.',
+    'run_cancelled': 'Recorded run was cancelled.',
+    'unknown': 'The ledger does not establish a supported hold explanation.',
+}
+WAITING_FOR_COPY = {
+    'host_recheck': 'host recheck', 'operator_inspection': 'operator inspection',
+    'unknown': 'unknown', 'ci_checks_or_new_head': 'CI checks to settle or a new head',
+    'failed_checks_pass_or_new_head': 'the failed checks to pass or a new head',
+    'provider_window_reset': 'the provider account to reopen',
+    'daily_cap_reset': 'the daily cap to reset',
+}
 
-    State and write evidence are host facts. Error prose is NOT a reason-code API:
-    CI, pacing, human and other policy reasons remain unknown here. A recorded
-    retry_at is an earliest recheck, never proof that the next turn will start.
-    This formatter neither grants retry eligibility nor reads or changes state.
+
+def hold_explanation(row: dict) -> dict:
+    """Safe explanation of a runs_view artifact (#674, ledger slice).
+
+    State and write evidence are host facts, and write evidence always wins: an uncertain or
+    possibly-written row is ``external_write_guard``, never resumed or replayed. A waiting row
+    whose recorded line is one of the host's own hold lines (``run_supervisor.waiting_hold``:
+    CI, a closed provider account, a daily cap) gets that structured reason; any other error
+    prose is NOT a reason-code API and stays ``run_waiting`` with the cause unknown. A recorded
+    retry_at is an earliest recheck, never proof that the next turn will start. This formatter
+    neither grants retry eligibility nor reads or changes state.
     """
     raw_state = row.get('state')
     state = raw_state if isinstance(raw_state, str) else ''
@@ -391,28 +443,26 @@ def hold_explanation(row: dict) -> dict:
             'cancelled': 'run_cancelled'}.get(state, 'unknown')
     if 'write' not in row:
         code = 'unknown'
+    waiting = 'host_recheck' if code == 'run_waiting' else 'unknown'
+    automatic = 'unknown'
+    if code == 'run_waiting' and not uncertain:
+        held = HOLD_REASONS.get(run_supervisor.waiting_hold(row.get('error')))
+        if held is not None:
+            code, waiting, automatic = held
     if uncertain:
-        code = 'external_write_guard'
-    text = {
-        'external_write_guard': 'Recorded run has external write evidence or an uncertain outcome.',
-        'run_waiting': 'Recorded run is waiting; the policy-specific reason is not structured yet.',
-        'run_failed': 'Recorded run failed.',
-        'run_cancelled': 'Recorded run was cancelled.',
-        'unknown': 'The ledger does not establish a supported hold explanation.',
-    }[code]
+        code, waiting, automatic = 'external_write_guard', 'operator_inspection', 'never'
+    text = HOLD_COPY[code]
     due = row.get('retry_at')
     # Bound to datetime's public epoch range as well as JSON's finite numeric domain.
-    due = (due if code == 'run_waiting' and type(due) in (int, float)
+    due = (due if waiting not in ('unknown', 'operator_inspection') and type(due) in (int, float)
            and 0 <= due <= 253402300799 else None)
     head = row.get('head')
     head = head if isinstance(head, str) and re.fullmatch(r'[0-9a-f]{40}', head) else None
     run_id = row.get('id')
     run_id = (run_id if isinstance(run_id, str)
               and re.fullmatch(r'[0-9a-f]{32}', run_id) else None)
-    waiting = 'operator_inspection' if uncertain else 'host_recheck' if code == 'run_waiting' else 'unknown'
-    automatic = 'never' if uncertain else 'unknown'
     due_text = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(due)) if due is not None else 'unknown'
-    text += (f" Ledger only (partial). Waiting for: {waiting.replace('_', ' ')}. "
+    text += (f" Ledger only (partial). Waiting for: {WAITING_FOR_COPY[waiting]}. "
              f"Recorded earliest recheck: {due_text}.")
     return {'schema': 1, 'reason_code': code, 'run_id': run_id, 'head': head,
             'evidence_source': 'run_ledger', 'completeness': 'partial',

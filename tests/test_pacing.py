@@ -497,6 +497,49 @@ class ProductionWorker(ProductionBase):
         self.assertIn("daily token budget (1000) reached", row["error"])
         self.assertIn("daily_tokens", run_supervisor.hold_remedy("fixer", row["error"]))
 
+    def explained(self) -> dict:
+        """The held row as status, explain and the Desktop read it: ``hold_explanation`` of the
+        read-only ledger view (#674)."""
+        rows = views.read_only_view(self.home / "state" / "diaktoros-runs.sqlite", "acme/widgets", 8)
+        self.assertEqual(len(rows), 1)
+        return views.hold_explanation(rows[0])
+
+    def test_production_closed_window_names_its_reset(self):
+        # #674: each pacing writer's real hold names its reason and its next eligible time.
+        pacing.hold(self.account, time.time() + 1800, "earlier 429")
+        row = self.run_production(lambda *a, **k: self.fail("launched into a closed window"))
+        result = self.explained()
+        self.assertEqual((result["reason_code"], result["waiting_for"], result["automatic_resume"]),
+                         ("provider_window", "provider_window_reset", "after_recorded_time"))
+        self.assertEqual(result["next_eligible_start"], row["retry_at"])
+
+    def test_production_daily_caps_name_midnight(self):
+        raw = {**self.raw, "seats": {**self.raw["seats"],
+                                     "fixer": {**self.raw["seats"]["fixer"], "daily_turns": 1}}}
+        pacing.count_turn("widgets", "fixer")
+        row = self.run_production(lambda *a, **k: self.fail("launched past the daily cap"),
+                                  config.normalize(raw))
+        result = self.explained()
+        self.assertEqual((result["reason_code"], result["waiting_for"], result["automatic_resume"]),
+                         ("daily_cap", "daily_cap_reset", "after_recorded_time"))
+        self.assertEqual(result["next_eligible_start"], row["retry_at"])
+        self.assertAlmostEqual(result["next_eligible_start"], pacing.next_midnight(), delta=2)
+
+    def test_production_token_budget_names_midnight(self):
+        pacing.count_tokens("widgets", "fixer", 1000)
+        row = self.run_production(lambda *a, **k: self.fail("launched past the token budget"),
+                                  self.token_loop(1000))
+        result = self.explained()
+        self.assertEqual(result["reason_code"], "daily_cap")
+        self.assertEqual(result["next_eligible_start"], row["retry_at"])
+
+    def test_production_provider_unavailable_names_the_window_end(self):
+        row = self.run_production(self.unavailable)
+        self.assertEqual((row["state"], row["retries"]), ("waiting", 0), row)
+        result = self.explained()
+        self.assertEqual(result["reason_code"], "provider_window")
+        self.assertEqual(result["next_eligible_start"], row["retry_at"])
+
     def test_a_renamed_loop_at_its_token_cap_stays_held(self):
         # #764: the spend made under the old id must follow the rename into the cap check.
         pacing.count_tokens("old-widgets", "fixer", 1000)
