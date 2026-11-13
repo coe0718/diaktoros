@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import closing, redirect_stdout
+from contextlib import ExitStack, closing, redirect_stdout
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -831,14 +831,25 @@ class LedgerAndWorker(unittest.TestCase):
     def test_a_worker_gone_from_the_scan_but_not_yet_reaped_is_no_failure(self):
         # #2480 review 4, F4 (#2483): hold open the window where the cleanup's scan no longer
         # sees the exiting stand-in but ``poll()`` still says it runs. The test passes there, and
-        # still fails when the cleanups don't wait for it at all.
+        # still fails when the cleanups don't wait for it at all. Review 5, F5: a parent stalled
+        # after starting the stand-in (2 s, past the 1.5 s it once slept) changes neither.
         name = "test_cleanup_waits_for_a_worker_still_writing_in_the_temp_dir"
-        for patch, failed in ((mock.patch.object(subprocess.Popen, "poll", return_value=None), 0),
-                              (mock.patch.object(worker_wait, "wait_for_workers"), 1)):
-            with self.subTest(failed=failed):
+        start = subprocess.Popen.__init__
+
+        def stalled(popen, *args, **kwargs):
+            start(popen, *args, **kwargs)
+            time.sleep(2)
+        poll = (subprocess.Popen, "poll", mock.Mock(return_value=None))
+        no_wait = (worker_wait, "wait_for_workers", mock.Mock())
+        stall = (subprocess.Popen, "__init__", stalled)
+        for label, patches, failed in (("poll window", [poll], 0), ("no wait", [no_wait], 1),
+                                       ("stalled", [stall], 0),
+                                       ("stalled, no wait", [stall, no_wait], 1)):
+            with self.subTest(label), ExitStack() as stack:
+                for target, attr, new in patches:
+                    stack.enter_context(mock.patch.object(target, attr, new))
                 result = unittest.TestResult()
-                with patch:
-                    type(self)(name).run(result)
+                type(self)(name).run(result)
                 if result.skipped:              # processes can't be listed here
                     self.skipTest(result.skipped[0][1])
                 self.assertEqual((result.testsRun, len(result.failures), result.errors),
