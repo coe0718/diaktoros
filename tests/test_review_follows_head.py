@@ -376,6 +376,39 @@ class MergeHold(unittest.TestCase):
         self.take()
         self.assertIsNotNone(claim(self.db, queue(self.db, pr=8)))
 
+    def claim_reads(self):
+        """The worker's real ``_claim`` up to its commit: the row and the read it would commit."""
+        sup, seen = run_supervisor.Supervisor(self.db), []
+        with mock.patch.object(sup, "_claim_commit", side_effect=lambda *got: seen.append(got)):
+            sup._claim()
+        return sup, seen[0]
+
+    def test_a_claim_whose_reads_the_push_held_waits_after_the_release(self):
+        # Round 3: the reads (the old head) are made while the push holds the PR, and the claim
+        # commits after the push landed and released it. The hold is gone; the read is stale.
+        token, _ = self.take()
+        queue(self.db)
+        sup, (row, read) = self.claim_reads()
+        self.assertEqual(read.fence, (1, True), "noted before the reads")
+        merge_hold.release(self.db, REPO, 7, token)
+        self.assertIsNone(sup._claim_commit(row, read))
+        self.assertEqual(read_row(self.db, row["id"])["state"], "waiting")
+        with contextlib.closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("UPDATE runs SET state='pending' WHERE id=?", (row["id"],))
+        sup, (row, read) = self.claim_reads()                 # reads after the release
+        self.assertIsNotNone(sup._claim_commit(row, read))
+
+    def test_a_hold_taken_and_released_during_the_reads_still_holds_them(self):
+        # The generation: a hold taken after the fence was noted (here by a take that looks only
+        # for claimed turns) and released before the commit is still one the reads spanned.
+        queue(self.db)
+        sup, (row, read) = self.claim_reads()
+        self.assertEqual(read.fence, (0, False))
+        token, _ = merge_hold.take(self.db, REPO, 7, fg.HEAD, ("claimed",))
+        merge_hold.release(self.db, REPO, 7, token)
+        self.assertIsNone(sup._claim_commit(row, read))
+        self.assertEqual(read_row(self.db, row["id"])["state"], "waiting")
+
 
 if __name__ == "__main__":
     unittest.main()

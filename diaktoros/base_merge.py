@@ -165,10 +165,12 @@ class TurnHold:
         self.loop, self.number, self.head, self.token = loop, number, head, ""
 
     def take(self, *_push) -> None:
-        from .run_supervisor import merge_hold, production_ledger
+        from .run_supervisor import Supervisor, merge_hold, production_ledger
         path = production_ledger()
         if not path.exists():
-            return                  # no ledger yet: no turn of any PR to wait for (in_flight)
+            # No ledger yet is no turn yet, but one may be created and claimed before the push:
+            # the host creates it, as a gate enqueue would, so the hold serializes with that claim.
+            Supervisor(path)
         self.token, busy = merge_hold.take(path, self.loop["repo"], self.number, self.head,
                                            IN_FLIGHT)
         if busy:

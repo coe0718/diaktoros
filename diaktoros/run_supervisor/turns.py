@@ -28,13 +28,16 @@ class _ClaimRead:
     ``retry_read`` is a legitimate wait (a draft), left pending. ``read_error`` is a read that
     failed: counted and backed off like a failed turn, then failed with its reason, so it can
     never sit pending and invisible (#53, review on #97). ``refused`` is a row that can never
-    publish; ``unavailable``, one whose review generation cannot be pinned."""
+    publish; ``unavailable``, one whose review generation cannot be pinned. ``fence`` is the PR's
+    merge hold as it stood before the reads (``merge_hold.fences``, #2468); None checks only a
+    hold live at the commit."""
     generation: str | None = None
     unavailable: str | None = None
     retry_read: bool = False
     read_error: str = ""
     superseded: str | None = None
     refused: str = ""
+    fence: tuple | None = None
 
 
 @dataclass
@@ -200,12 +203,13 @@ class ClaimAndLaunch:
         with self._connect() as con:
             candidates = con.execute("SELECT * FROM runs WHERE state='pending' "
                                      "ORDER BY created,id").fetchall()
+            fences = merge_hold.fences(con, time.time())    # before any read (#2468)
         for row in claims.claim_order(candidates):
             if (self.production_config and row['seat'] in self.capacity
                     and self._ci_poll(row)):
                 waits.note(self, row['id'])     # why it waits, once per reason (#2080)
                 continue        # still held for CI: the light poll re-timed it (#1648)
-            read = _ClaimRead()
+            read = _ClaimRead(fence=fences.get((row['repo'], row['pr']), (0, False)))
             if self.production_config and row['seat'] == 'reviewer':
                 self._claim_read_reviewer(row, read)
             if self.production_config and row['seat'] == run_supervisor.SHADOW:
@@ -481,9 +485,10 @@ class ClaimAndLaunch:
                             "error=?,updated=? WHERE id=?", (read.unavailable, now, row['id']))
                 con.execute("COMMIT")
                 return None
-            if merge_hold.held(con, row['repo'], row['pr'], now):
-                # #2468: a host merge push holds the PR. Claimed now, the turn would start at the
-                # head the push moves: it waits, and its next claim reads the moved head.
+            if merge_hold.spanned(con, row['repo'], row['pr'], now, read.fence):
+                # #2468: a host merge push holds the PR, or held it during the reads. Claimed
+                # now, the turn could start at the head the push moves: it waits, and its next
+                # claim reads the moved head.
                 self.held_for_ci = True     # this worker lingers to schedule the retry (#1302)
                 con.execute("UPDATE runs SET state='waiting', retry_at=?, error=?, updated=? "
                             "WHERE id=?", (now + merge_hold.WAIT_S, merge_hold.WAITING, now, row['id']))
@@ -512,8 +517,9 @@ class ClaimAndLaunch:
             # Another turn took the last slot while this one staged (#1378): nothing launched.
             _cap_held(turn, exc.seat, exc.cap)
             turn.retry = False
-        except run_supervisor.IssueIneligible as exc:
+        except (run_supervisor.IssueIneligible, run_supervisor.ReviewHeadMoved) as exc:
             # Before launch, no model ran (#723): a cancellation, not a failure; never re-armed.
+            # A review's moved head is delivered to the new head by the watchdog (#2468).
             turn.error, turn.cancel, turn.retry = str(exc)[:600], True, False
         except Exception as exc:
             # The real reason, not just its type (#53). Messages here are host-generated
@@ -932,8 +938,10 @@ class ClaimAndLaunch:
         if not isinstance(pr, dict):
             raise run_supervisor.RetryableError("PR unreadable before launch (GitHub read failed)")
         head = pr.get("head")
-        if not isinstance(head, dict) or head.get("sha") != row["head"]:
+        if not isinstance(head, dict):
             raise ValueError("PR head moved")
+        if head.get("sha") != row["head"]:
+            raise pr_facts.head_moved(row)
         if row['seat'] == 'reviewer' and not row['generation']:
             raise ValueError('review generation not durably pinned')
         if row['seat'] == 'fixer' and str(row['turn_key'] or '').startswith(run_supervisor.CONFLICT_KEY):

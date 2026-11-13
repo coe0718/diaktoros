@@ -273,8 +273,54 @@ class UpdateWaitsForTurns(Base):
         with closing(sqlite3.connect(self.db)) as con:
             self.assertEqual(con.execute("SELECT state, error FROM runs").fetchall(),
                              [("waiting", merge_hold.WAITING)])
-            self.assertEqual(con.execute("SELECT COUNT(*) FROM merge_holds").fetchone()[0], 0,
-                             "released once the push landed")
+            self.assertEqual(con.execute("SELECT released IS NOT NULL FROM merge_holds").fetchall(),
+                             [(1,)], "released once the push landed")
+
+    def test_a_claim_that_read_during_the_push_and_commits_after_it_waits(self):
+        # Round 3's window: the worker's real claim reads while the push holds the PR (the old
+        # head) and commits only after the push landed and released the hold.
+        from diaktoros import run_supervisor
+        sup, seen, calls = run_supervisor.Supervisor(self.db), [], {"n": 0}
+
+        def api(loop, path, method="GET", body=None, login=None):
+            if path.endswith("/pulls/7"):
+                calls["n"] += 1
+                if calls["n"] == 2:           # after before_push: the hold is taken
+                    self.queue("pending")
+                    with mock.patch.object(sup, "_claim_commit",
+                                           side_effect=lambda *got: seen.append(got)):
+                        sup._claim()
+            return self.api(loop, path, method, body, login)
+        pushed, why = self.update_with(api)
+        self.assertEqual((pushed, why), (self.remote_head(), ""))
+        self.assertNotEqual(self.remote_head(), self.head, "the push moved the head")
+        self.assertIsNone(sup._claim_commit(*seen[0]), "not claimed at the head it read")
+        self.assertEqual(self.states(), [("waiting",)])
+
+    def test_a_ledger_created_during_the_push_does_not_claim_under_it(self):
+        # Round 3: no ledger at the look. The take creates it and holds the PR, so a turn queued
+        # and claimed before the push lands waits.
+        from diaktoros import run_supervisor
+        from diaktoros.run_supervisor import turns
+        self.db, claimed, calls = self.root / "later" / "runs.sqlite", [], {"n": 0}
+
+        def api(loop, path, method="GET", body=None, login=None):
+            if path.endswith("/pulls/7"):
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    sup = run_supervisor.Supervisor(self.db)
+                    claimed.append(sup._claim_commit(self.queue("pending"), turns._ClaimRead()))
+            return self.api(loop, path, method, body, login)
+        pushed, why = self.update_with(api)
+        self.assertEqual((pushed, why), (self.remote_head(), ""))
+        self.assertEqual(claimed, [None])
+        self.assertEqual(self.states(), [("waiting",)])
+
+    def states(self):
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(self.db)) as con:
+            return con.execute("SELECT state FROM runs").fetchall()
 
     def test_with_nothing_in_flight_it_pushes_and_holds_nothing_after(self):
         pushed, why = self.update_with()

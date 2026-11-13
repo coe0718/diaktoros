@@ -326,6 +326,12 @@ class IssueIneligible(ValueError):
     ``failed`` (#723). A ``ValueError`` so the broker's publication check still denies on it."""
 
 
+class ReviewHeadMoved(ValueError):
+    """A review turn whose PR head moved after its claim, found before launch (#2468): no model
+    ran, so it ends ``cancelled`` with ``REVIEW_HEAD_MOVED``, as a move found at the claim does,
+    and the watchdog delivers the review to the new head."""
+
+
 class RetryableError(Exception):
     """A pre-write failure worth another attempt (an unreadable read, a transient outage)."""
 
