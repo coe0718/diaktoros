@@ -322,6 +322,52 @@ class UpdateWaitsForTurns(Base):
         with closing(sqlite3.connect(self.db)) as con:
             return con.execute("SELECT state FROM runs").fetchall()
 
+    def from_before_the_upgrade(self):
+        """The ledger as the previous release left it: the same, without ``merge_holds``."""
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("DROP TABLE IF EXISTS merge_holds")
+        self.assertFalse(self.has_merge_holds())
+
+    def has_merge_holds(self) -> bool:
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(self.db)) as con:
+            return bool(con.execute("SELECT 1 FROM sqlite_master WHERE name='merge_holds'").fetchall())
+
+    def test_an_idle_pr_on_a_ledger_from_before_the_upgrade_is_pushed(self):
+        # Round 4 F5: the push's own open brings the ledger up to date before it holds the PR,
+        # whatever else has opened it since the upgrade.
+        import sqlite3
+        from contextlib import closing
+        self.from_before_the_upgrade()
+        pushed, why = self.update_with()
+        self.assertEqual((pushed, why), (self.remote_head(), ""))
+        with closing(sqlite3.connect(self.db)) as con:
+            self.assertEqual(con.execute("SELECT released IS NOT NULL FROM merge_holds").fetchall(),
+                             [(1,)])
+
+    def test_a_run_queued_before_the_upgrade_waits_the_push_and_its_worker_claims_it(self):
+        # Round 4 F5: a run pending from before the upgrade still stops the push (the ledger is
+        # read, not refused as unreadable), and a worker, which never migrates a ledger, can
+        # claim it: it is spawned by a host whose own open has (recover(), as the sweep runs it).
+        from diaktoros import run_supervisor
+        from diaktoros.run_supervisor import turns
+        row = self.queue("pending")
+        self.from_before_the_upgrade()
+        pushed, why = self.update_with()
+        self.assertEqual(pushed, "")
+        self.assertIn("a reviewer turn is pending", why)
+        self.assertEqual(self.remote_head(), self.head)
+        self.assertTrue(self.has_merge_holds(), "the push's own open brought the ledger up to date")
+        self.from_before_the_upgrade()              # and, without it, the worker's route:
+        with self.assertRaises(run_supervisor.LedgerMissing):
+            run_supervisor.Supervisor(self.db, create=False)
+        run_supervisor.Supervisor(self.db).recover()     # the host's sweep: no runtime, no spawn
+        worker = run_supervisor.Supervisor(self.db, create=False)
+        self.assertIsNotNone(worker._claim_commit(row, turns._ClaimRead()))
+
     def test_with_nothing_in_flight_it_pushes_and_holds_nothing_after(self):
         pushed, why = self.update_with()
         self.assertEqual((pushed, why), (self.remote_head(), ""))

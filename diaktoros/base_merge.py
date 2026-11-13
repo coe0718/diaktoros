@@ -167,10 +167,15 @@ class TurnHold:
     def take(self, *_push) -> None:
         from .run_supervisor import Supervisor, merge_hold, production_ledger
         path = production_ledger()
-        if not path.exists():
-            # No ledger yet is no turn yet, but one may be created and claimed before the push:
-            # the host creates it, as a gate enqueue would, so the hold serializes with that claim.
+        # The host's own open, as a gate enqueue or the watchdog's sweep makes it: it creates a
+        # missing ledger (one may be created and claimed before the push) or brings one from
+        # before an upgrade up to date (``merge_holds``), so the hold serializes with any claim.
+        # A worker never does this; every worker is spawned by a host that already has.
+        try:
             Supervisor(path)
+        except Exception as exc:
+            raise broker.BrokerDenied(f"the run ledger could not be opened ({type(exc).__name__}): "
+                                      "the merge waits for it") from exc
         self.token, busy = merge_hold.take(path, self.loop["repo"], self.number, self.head,
                                            IN_FLIGHT)
         if busy:
