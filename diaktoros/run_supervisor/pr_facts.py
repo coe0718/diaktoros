@@ -6,6 +6,15 @@ from __future__ import annotations
 import re
 from typing import NamedTuple
 
+from .. import run_supervisor
+
+
+def head_moved(row) -> ValueError:
+    """What a launch that finds the PR's head moved raises: for a review, ``ReviewHeadMoved``."""
+    if row['seat'] == 'reviewer':
+        return run_supervisor.ReviewHeadMoved(run_supervisor.REVIEW_HEAD_MOVED)
+    return ValueError('PR head moved')
+
 
 def effective_reviews(loop: dict, row, reviews, ledger=None):
     """The PR's reviews as a seat may use them: after a same-head retarget, only
@@ -293,7 +302,7 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
             or not isinstance(pr.get('head'), dict) or not isinstance(pr.get('base'), dict)):
         raise ValueError('PR unreadable')
     if pr['head'].get('sha') != row['head']:
-        raise ValueError('PR head moved')
+        raise head_moved(row)
     files, error = gh.pr_files_read(loop, number)
     files_error = ''
     if files is None:

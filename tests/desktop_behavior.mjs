@@ -455,7 +455,8 @@ function depsFixture(extra = {}) {
   return { loop: 'fixture-loop', repo: 'fixture/repo', available: true, total: 3, read_at: 1800000000, deps: [
     { issue: 12, on: 5, state: 'waiting', why: '#5 is still open', by: 'operator', at: '2026-11-01T10:00:00Z' },
     { issue: 12, on: 6, state: 'met', why: "#6's fix PR #9 merged into main", by: 'desktop', at: '2026-11-02T10:00:00Z' },
-    { issue: 13, on: 5, state: 'unknown', why: '#5 could not be read', by: null, at: null }], ...extra }
+    { issue: 13, on: 5, state: 'unknown', why: '#5 could not be read', by: null, at: null }],
+    waivers_available: true, waivers_total: 1, waivers: [{ issue: 14, on: 5, by: 'desktop', at: '2026-11-03T10:00:00Z' }], ...extra }
 }
 
 const recordsRegion = h => [h.flatten(h.tree()).find(n => n.props?.['aria-label'] === 'Local loop records')].filter(Boolean)
@@ -2641,7 +2642,7 @@ test('deps: rows render met, waiting and unknown from their own non-polled, non-
   const h = await harness(); h.render('page')
   const text = depsText(h)
   for (const re of [/#12 waits on #5/, /#5 is still open/, /#6's fix PR #9 merged into main/, /#13 waits on #5/, /#5 could not be read/,
-    /Declared by operator · 2026-11-01T10:00:00Z/, /Declared by desktop/, /Declared by not recorded/, /who waived it is not recorded/]) assert.match(text, re)
+    /Declared by operator · 2026-11-01T10:00:00Z/, /Declared by desktop/, /Declared by not recorded/, /keeps who waived it and when/]) assert.match(text, re)
   const badges = h.flatten([depsRegion(h)]).filter(n => n.type === 'Badge').map(n => n.props.children)
   for (const state of ['met', 'waiting', 'unknown']) assert.ok(badges.includes(state), state)
   const o = h.options.deps
@@ -2690,6 +2691,107 @@ test('deps: malformed nested rows, unsafe why and wrong-loop responses are rejec
   h.respond(depsRow()); assert.deepEqual(await h.options.deps.queryFn(), depsRow())
 })
 
+test('deps: waivers list who waived and when; an unreadable or older-host history is never none waived', async () => {
+  const h = await harness(); h.render('page')
+  assert.match(depsText(h), /#14 no longer waits on #5 — waived by desktop at 2026-11-03T10:00:00Z/)
+  assert.match(depsText(h), /keeps who waived it and when/)
+  assert.doesNotMatch(depsText(h), /who waived it is not recorded|Waiver history unavailable/)
+  h.queries.deps = h.good(depsFixture({ waivers: [{ issue: 14, on: 5, by: null, at: null }] })); h.render('page')
+  assert.match(depsText(h), /#14 no longer waits on #5 — waived by not recorded at a time not recorded/)
+  h.queries.deps = h.good(depsFixture({ waivers_available: false, waivers_total: 0, waivers: [] })); h.render('page')
+  assert.match(depsText(h), /Waiver history unavailable · not read\. This is not a claim that none were waived\./)
+  assert.match(depsText(h), /#12 waits on #5/)
+  // The dependency record unavailable says nothing about the waivers, and the other way round.
+  h.queries.deps = h.good(depsFixture({ available: false, total: 0, deps: [] })); h.render('page')
+  assert.match(depsText(h), /Dependency record unavailable/); assert.match(depsText(h), /#14 no longer waits on #5/)
+  const older = depsFixture(); delete older.waivers; delete older.waivers_available; delete older.waivers_total
+  h.queries.deps = h.good(older); h.render('page')
+  assert.match(depsText(h), /Waivers are not reported by this host version\./)
+  h.queries.deps = h.good(depsFixture({ waivers_total: 60, waivers: Array.from({ length: 50 }, (_, i) => ({ issue: 100 + i, on: 5, by: 'operator', at: null })) }))
+  h.render('page'); assert.match(depsText(h), /Showing 50 of 60 waivers\./)
+})
+
+test('deps: a malformed or partial waiver group is rejected before cache', async () => {
+  const h = await harness(); h.render('page')
+  const w = patch => depsFixture({ waivers: [{ ...depsFixture().waivers[0], ...patch }] })
+  const bad = [depsFixture({ waivers_available: 'yes' }), depsFixture({ waivers_total: 2 }), depsFixture({ waivers: null }),
+    depsFixture({ waivers_available: false }), { ...depsFixture(), waivers_total: undefined }, { ...depsFixture(), waivers: undefined },
+    w({ issue: 0 }), w({ on: '5' }), w({ on: 14 }), w({ by: 'Some One' }), w({ by: '/home/x' }), w({ at: 'yesterday' }), w({ by: undefined }), depsFixture({ waivers: [null] })]
+  for (const payload of bad) {
+    h.respond(payload)
+    await assert.rejects(h.options.deps.queryFn(), /Invalid deps response/, JSON.stringify(payload).slice(0, 160))
+  }
+  const older = depsFixture(); delete older.waivers; delete older.waivers_available; delete older.waivers_total
+  h.respond(older); assert.deepEqual(await h.options.deps.queryFn(), older)
+})
+
+// The drawer opened on an issue-fix run: the page dependency read is cached, the /pr read names
+// the issue (#1301).
+async function depsDrawer(pr, issue, deps) {
+  const h = await harness()
+  h.queries.now = h.good({ runs: [{ pr, seat: 'issue_fixer', head: 'aaaaaaa', state: 'waiting', why: 'waiting' }],
+    counts: { waiting: 1 }, pacing: {}, available: true })
+  const data = { repo: 'fixture/repo', loop: 'fixture-loop', pr, cap: 3, ledger_available: true, stuck: [], turns: [],
+    verdicts: {}, rulings: [], breach: null, findings: [], decisions: [], turns_total: 0, rulings_total: 0, read_at: 1800000000 }
+  if (issue !== undefined) data.issue = issue
+  h.queries.pr = h.good(data)
+  h.queries.deps = deps || h.good(depsFixture())
+  h.render('page')
+  h.buttons(h.tree()).find(n => n.type === 'button' && h.text([n]).includes('#' + pr)).props.onClick()
+  h.render('page')
+  const text = () => h.text([h.flatten(h.tree()).find(n => n.props?.['aria-label'] === 'Drawer issue dependencies')])
+  return { h, data, text }
+}
+
+test('drawer: an issue or its fix PR lists that issue dependencies and waivers from the cached read, starting no read', async () => {
+  const waived = depsFixture({ waivers_total: 2, waivers: [{ issue: 12, on: 7, by: 'operator', at: '2026-11-04T10:00:00Z' }, depsFixture().waivers[0]] })
+  for (const [pr, context] of [[12, /Issue #12, worked by the issue fixer\./], [40, /This PR is the issue fix for #12, as the ledger recorded it\./]]) {
+    const { h, text } = await depsDrawer(pr, 12, (await harness()).good(waived))
+    assert.match(text(), context)
+    assert.match(text(), /#12 waits on #5/); assert.match(text(), /#12 waits on #6/)
+    assert.doesNotMatch(text(), /#13 waits on #5|#14 no longer waits/)
+    assert.match(text(), /#12 no longer waits on #7 — waived by operator at 2026-11-04T10:00:00Z/)
+    assert.match(text(), /From the page dependency read · read/)
+    // The drawer subscribes to the page read under the same key and never starts one.
+    assert.equal(h.options.deps.enabled, false)
+    assert.equal(JSON.stringify(h.options.deps.queryKey), '["diaktoros","deps","fixture-loop"]')
+    assert.equal(h.options.deps.refetchInterval, undefined)
+    assert.equal(h.calls.filter(c => typeof c === 'string' && c.startsWith('/deps')).length, 0)
+    assert.equal(h.buttons([h.flatten(h.tree()).find(n => n.props?.['aria-label'] === 'Drawer issue dependencies')]).length, 0)
+  }
+  const { h, text } = await depsDrawer(5, 5)
+  assert.match(text(), /#12 waits on #5/); assert.match(text(), /#13 waits on #5/); assert.match(text(), /#14 no longer waits on #5/)
+  h.advance(300000); h.render('page')
+  assert.match(text(), /From the last good dependency read; not current\./)
+  assert.match(text(), /#12 waits on #5/)
+})
+
+test('drawer: unknown or no issue context, an unread, unavailable or cut list are said, never guessed', async () => {
+  let d = await depsDrawer(41, null)
+  assert.match(d.text(), /No issue context: the ledger records no issue fix for #41/)
+  assert.doesNotMatch(d.text(), /waits on/)
+  d = await depsDrawer(41, undefined)
+  assert.match(d.text(), /Issue context unknown: the ledger did not say which issue #41 belongs to/)
+  d = await depsDrawer(12, 12, (await harness()).loading())
+  assert.match(d.text(), /Dependencies for #12: not read · the page section Issue dependencies reads them; the drawer does not start a read\./)
+  d = await depsDrawer(12, 12, (await harness()).good(depsFixture({ available: false, total: 0, deps: [], waivers_available: false, waivers_total: 0, waivers: [] })))
+  assert.match(d.text(), /Dependency record unavailable · not read\. This is not a claim that #12 has none\./)
+  assert.match(d.text(), /Waiver history unavailable · not read\./)
+  assert.doesNotMatch(d.text(), /No declared dependency involves/)
+  d = await depsDrawer(99, 99)
+  assert.match(d.text(), /No declared dependency involves #99\./)
+  const cut = depsFixture({ total: 60, deps: Array.from({ length: 50 }, (_, i) => ({ ...depsFixture().deps[0], issue: 100 + i })) })
+  d = await depsDrawer(99, 99, (await harness()).good(cut))
+  assert.match(d.text(), /None of the 50 dependencies read involve #99; 10 more were not read\./)
+  assert.doesNotMatch(d.text(), /No declared dependency involves/)
+  d = await depsDrawer(5, 5, (await harness()).good(cut))
+  assert.match(d.text(), /Only 50 of 60 dependencies were read; #5 may have more\./)
+  // A malformed issue context never reaches the cache.
+  d.h.respond({ ...d.data, issue: '12' }); await assert.rejects(d.h.options.pr.queryFn(), /Invalid pr response/)
+  d.h.respond({ ...d.data, issue: 0 }); await assert.rejects(d.h.options.pr.queryFn(), /Invalid pr response/)
+  d.h.respond({ ...d.data, ledger_available: false, issue: 12, stuck: [], turns: [] }); await assert.rejects(d.h.options.pr.queryFn(), /Invalid pr response/)
+})
+
 test('deps: Refresh and Retry re-read the selected loop own /deps endpoint', async () => {
   const h = await harness(); h.render('page')
   h.queries.deps = { ...h.good(depsFixture()), refetch: () => h.options.deps.queryFn() }
@@ -2727,7 +2829,7 @@ test('actions: waive dependency names the waiver and its CLI, and reads back', a
   assert.equal(h.calls.at(-1), '/actions?loop=fixture-loop&action=waive&pr=12&on=5')
   actionButton(h, 'Confirm waiver').props.onClick(); const d = depsDialog(h)
   assert.equal(d.props.title, 'Waive this dependency?')
-  for (const re of [/waive: #12 no longer waits on #5/, /next watchdog sweep releases issue 12/, /who waived it is not kept/,
+  for (const re of [/waive: #12 no longer waits on #5/, /next watchdog sweep releases issue 12/, /records the waiver as desktop, with when/,
     /Equivalent CLI: hermes dk depends --loop fixture-loop --issue 12 --waive 5\./]) assert.match(d.props.description, re)
   h.actionResult(() => Promise.resolve({ loop: 'fixture-loop', repo: 'fixture/repo', read_at: 1800000000, head: '', ok: true, status: 'verified', reason: '' }))
   await d.props.onConfirm()
