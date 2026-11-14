@@ -497,7 +497,8 @@ later with `set --adjudicator-profile P` / `set --adjudicator off`
 **Defaults and limits.** Seat/login/host defaults come from the form; missing answers are
 prompted interactively. Token paths default to the form or a suggested key-file path. Runtime
 `--source` (Hermes checkout), `--venv` (its Python environment), `--runtime` (Python base install)
-and `--rust` (toolchain root) override detection. `--admin-token` is a login; its separate file
+and `--rust` (toolchain root) override detection, and so does `--node` (the optional Node root
+seats get; `--node ""` for none). `--admin-token` is a login; its separate file
 flag maps it. `--observer-profile` names a destination profile, not a model seat. The setup
 example uses `--repo` to select a repository and `--dry-run` to preview every step. Re-running
 keeps an existing loop; it does not automatically repair every missing hook/route. Check output.
@@ -576,6 +577,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--venv` | `VENV` |  | runtime file's venv path (default: detected) |
 | `--runtime` | `RUNTIME` |  | runtime file's runtime path (default: detected) |
 | `--rust` | `RUST` |  | runtime file's rust path (default: detected) |
+| `--node` | `NODE` |  | runtime file's node: the Node install root seats get at /opt/node, "" for none (default: kept, else detected) |
 <!-- /flags -->
 
 ### init

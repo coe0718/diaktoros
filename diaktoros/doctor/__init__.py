@@ -375,26 +375,21 @@ def check_runtime_paths(loop: dict) -> list[Check]:
                                 f"point {key} at the Rust toolchain directory"))
         else:
             checks.append(Check(f"runtime:{key}", VERIFIED, f"{key} = {raw}"))
-    checks.append(check_node())
+    checks.append(check_node(settings))
     return checks
 
 
-def check_node() -> Check:
-    """#685: the host Node the sandbox mounts at /opt/node, with its version.
+def check_node(settings: dict | None = None) -> Check:
+    """#685, #1149: the Node seats get, from the runtime file ``settings`` as the worker reads it.
 
-    Optional, so an absent Node is a reported skip, never a failure: a seat then has no ``node``
-    and JavaScript suites stay unverified, as before.
+    Optional, so no Node is a reported skip, never a failure: a seat then has no ``node`` and
+    JavaScript suites stay unverified. A recorded Node that is gone, or a host Node the file does
+    not record, is a warning: seats get none while the host has one.
     """
     from .. import runtime_detect
-    root, version = runtime_detect.node_version()
-    if root is None:
-        return Check("runtime:node", SKIPPED,
-                     f"skipped: {version}; seats cannot run `node` and JavaScript test suites "
-                     "stay unverified",
-                     "install Node under the operator's home (e.g. ~/.hermes/node) or on PATH")
-    where = ("mounted at /opt/node" if runtime_detect.node_mounted(root)
-             else "system install, already visible in the sandbox")
-    return Check("runtime:node", VERIFIED, f"node {version} at {root}, {where}")
+    state, detail, fix = runtime_detect.node_report(settings or {})
+    status = {"ok": VERIFIED, "warn": UNKNOWN, "none": SKIPPED}[state]
+    return Check("runtime:node", status, detail if state != "none" else f"skipped: {detail}", fix)
 
 
 def check_scripts() -> Check:

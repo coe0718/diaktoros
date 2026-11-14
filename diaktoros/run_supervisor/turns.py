@@ -15,10 +15,9 @@ import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import NamedTuple
 
-from .. import claimant, ledger, run_supervisor, util
+from .. import claimant, ledger, run_supervisor, runtime_detect, util
 from . import claims, merge_hold, pr_facts, turn_prompts, waits
 
 
@@ -615,10 +614,8 @@ class ClaimAndLaunch:
         # turn that fails in staging or prefetch inside run_turn never spends one (#1378).
         counted_seat, cap = _turn_pool(loop, row, ro_turn)
         change, merged = launch.change, launch.merged
-        turn.rc = trusted_turn.run_turn(loop, launch.scope, source=Path(settings["source"]),
-              venv=Path(settings["venv"]), runtime=Path(settings["runtime"]),
-              rust=Path(settings["rust"]), upstream=inference.upstream,
-              key=inference.key, model=inference.model,
+        turn.rc = trusted_turn.run_turn(loop, launch.scope, **runtime_detect.turn_paths(settings),
+              upstream=inference.upstream, key=inference.key, model=inference.model,
               api_mode=inference.api_mode, credential=inference.credential_provider(),
               proxy_model=inference.proxy_model, client_identity=inference.client_identity,
               prompt=prompt, review_diff=change.diff if change else None,
