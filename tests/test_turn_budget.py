@@ -812,7 +812,14 @@ class LedgerAndWorker(unittest.TestCase):
         self.addCleanup(late.wait, 10)
         self.addCleanup(lambda: late.poll() is None and late.kill())
         if late.pid not in worker_wait.processes_naming(str(case.root)):
-            self.skipTest("processes can't be listed here (no /proc): the wait can't be checked")
+            # Unlisted: either processes can't be listed here (no /proc), or it has already
+            # ended, which proves nothing and is a failure, never a skip (#2480 review 7, F6).
+            # ``wait(0)``, not ``poll()``, which the meta-test below holds at None.
+            try:
+                late.wait(timeout=0)
+            except subprocess.TimeoutExpired:
+                self.skipTest("processes can't be listed here (no /proc): the wait can't be checked")
+            self.fail("the stand-in ended before the cleanups looked for it")
         naming = worker_wait.processes_naming
 
         def looked(marker):
