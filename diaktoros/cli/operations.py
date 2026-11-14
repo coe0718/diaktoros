@@ -604,9 +604,10 @@ def cmd_depends(args) -> int:
     are issues of this repository, that B is not A, and that it closes no cycle; it holds B's
     next hand-off; a turn already queued is held at claim, launch and the broker's publish check
     until the prerequisite is merged or waived (#775; an unreadable one holds too), but a turn
-    already running is not recalled. ``--waive`` removes one,
+    already running is not recalled. ``--waive`` removes one (recording who waived it and when),
     and the next watchdog sweep releases B if nothing else holds it. With neither, lists every
-    dependency and whether it is met. Exit 1 when refused, 2 when it cannot be answered.
+    dependency and whether it is met, then every recorded waiver. Exit 1 when refused, 2 when it
+    cannot be answered (an unreadable dependency record included, #2150).
     """
     from .. import issue_deps
     if args.loop:
@@ -628,22 +629,35 @@ def cmd_depends(args) -> int:
     st = state_mod.state_for(loop)
     # Every rule is ``issue_deps``'s (#1301): the Desktop's confirmed action calls the same
     # owner, so this command only prints what it answers.
+    unreadable = f"[{loop['id']}] the issue dependency record could not be read"
     if args.on is None and args.waive is None:
-        rows = issue_deps.listing(loop, st, args.issue)
-        if not rows:
-            print(f"[{loop['id']}] no issue dependencies declared")
-            return 0
-        for entry in rows:
-            print(f"[{loop['id']}] #{entry['issue']} depends on #{entry['on']}: "
-                  f"{entry['state']} — {entry['why']}")
+        try:
+            deps, waivers = issue_deps.sentences(loop, st, args.issue)
+        except issue_deps.RecordUnreadable:
+            print(f"[{loop['id']}] {issue_deps.NOT_LISTED}")
+            return 2
+        for text in (deps or ["no issue dependencies declared"]) + waivers:
+            print(f"[{loop['id']}] {text}")
         return 0
     if args.issue is None:
         print("--on and --waive need --issue N (the issue that waits)")
         return 2
+    try:
+        return _depends_write(args, loop, st)
+    except issue_deps.RecordUnreadable:
+        print(f"{unreadable} or written — the dependency was not changed")
+        return 2
+
+
+def _depends_write(args, loop: dict, st) -> int:
+    """``depends --on`` or ``--waive``: what ``issue_deps`` answers, printed."""
+    from .. import issue_deps
     if args.waive is not None:
-        if issue_deps.waive(st, args.issue, args.waive):
+        done = issue_deps.waive(st, args.issue, args.waive)
+        if done:
             print(f"[{loop['id']}] #{args.issue} no longer depends on #{args.waive}; the next "
-                  "watchdog sweep releases it if nothing else holds it")
+                  "watchdog sweep releases it if nothing else holds it"
+                  + ("" if done == "waived" else "; the waiver could not be recorded in its history"))
             return 0
         print(f"[{loop['id']}] refused: #{args.issue} does not depend on #{args.waive}")
         return 1
@@ -814,8 +828,8 @@ def cmd_explain(args) -> int:
             if origin == args.pr:
                 print(f"  {'held:':<12}issue #{issue_no} fix waits for this PR to merge")
         from .. import fix_hold
-        for line in fix_hold.explain_lines(st, args.pr):   # the number may be an issue
-            print(f"  {'held:':<12}{line}")
+        for label, line in fix_hold.explain_rows(loop, st, args.pr):
+            print(f"  {label:<12}{line}")
         if report['chain']['status'] != 'direct':
             print(f"  {'chain:':<12}{report['chain']['status']} · "
                   f"parents {report['chain']['parents']} · {report['chain']['reason']}")

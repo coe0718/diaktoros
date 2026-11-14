@@ -210,6 +210,8 @@ def _deps_plan(loop, action, issue, seat, on, out):
     out["pr"] = issue
     try:
         st, record = _deps_record(loop, issue)
+        if action == "waive":
+            st.issue_dep_waivers(strict=True)          # the waiver is recorded there too
     except Exception:
         out["reason"] = "dependency record unavailable; nothing authorized"
         return out
@@ -217,8 +219,8 @@ def _deps_plan(loop, action, issue, seat, on, out):
         if on not in record:
             out["reason"] = f"#{issue} does not depend on #{on}; nothing to waive"
             return out
-        reason = (f"removes #{issue}'s dependency on #{on}; the next watchdog sweep releases "
-                  f"#{issue} if nothing else holds it")
+        reason = (f"removes #{issue}'s dependency on #{on} and records the waiver as desktop; "
+                  f"the next watchdog sweep releases #{issue} if nothing else holds it")
     else:
         if on in record:
             out["reason"] = f"#{issue} already depends on #{on}; nothing to record"
@@ -251,7 +253,7 @@ def _deps_perform(loop, action, issue, on):
             if code:
                 return _result("refused", "the host refused the dependency; preview again")
         else:
-            changed = issue_deps.waive(st, issue, on)
+            changed = issue_deps.waive(st, issue, on, by=issue_deps.BY_DESKTOP)
     except Exception:
         return _result("unknown", "operation interrupted; inspect state before retrying")
     if not changed:
@@ -264,7 +266,8 @@ def _deps_perform(loop, action, issue, on):
     if action == "depends" and on in record:
         return _result("verified", f"#{issue} waits on #{on}", ok=True)
     if action == "waive" and on not in record:
-        return _result("verified", f"#{issue} no longer waits on #{on}", ok=True)
+        return _result("verified", f"#{issue} no longer waits on #{on}" + (
+            "" if changed == "waived" else "; the waiver could not be recorded in its history"), ok=True)
     return _result("unknown", "the dependency record could not be verified; inspect before retrying")
 
 
