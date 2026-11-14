@@ -26,7 +26,7 @@ import tempfile
 import time
 
 from . import (broker, broker_client, config, contained, deps, gh,
-               hostdirs, inference_proxy, prompts, repro_proof, runtime_detect, safe_push,
+               hostdirs, inference_proxy, prompts, repro_proof, safe_push,
                trusted_fetch, util)
 from .broker import filing as broker_filing
 from .broker import ipc as broker_ipc
@@ -728,7 +728,8 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
              client_identity: str = '', review_diff: str | None = None,
              prefetch_timeout: int = deps.FETCH_TIMEOUT, progress=None,
              merged: dict | None = None, steps: int | None = None,
-             reasoning_effort: str = '', stop=None, on_launch=None) -> int:
+             reasoning_effort: str = '', stop=None, on_launch=None,
+             node: Path | None = None) -> int:
     """Stage a live PR head, start host capabilities, execute Hermes within bwrap.
 
     ``api_mode`` picks the proxy contract and the sandbox's provider config; ``credential`` (a
@@ -890,7 +891,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                 try:
                     result = contained.run(code=code, venv=venv, runtime=runtime,
                         home=home, checkout=checkout, rust=rust, query=query, entry=command,
-                        node=runtime_detect.node_root(),
+                        node=node,
                         inference_socket_dir=inference.directory,
                         broker_socket_dir=broker.socket_path.parent,
                         client_code=client.parent, review_dir=review, timeout=timeout + grace,

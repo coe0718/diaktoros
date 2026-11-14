@@ -393,6 +393,46 @@ class Setup(unittest.TestCase):
         self.assertFalse(self.runtime_file.exists(), "a partial runtime file is never written")
         self.assertNotIn("arm", self.ran)
 
+    def test_node_is_recorded_given_detected_or_kept(self):
+        """#1149: the runtime file records the Node seats get, found here in the operator's
+        environment; the worker never looks for it. A re-run refreshes it: ``--node``, else what
+        is detected now, else the recorded one while it still works. ``--node ""`` is none."""
+        def install(name):
+            node = self.root / name
+            (node / "bin").mkdir(parents=True)
+            (node / "bin" / "node").write_text("#!/bin/sh\necho v22.0.0\n")
+            (node / "bin" / "node").chmod(0o755)
+            return node
+        old, new = install("node-v20"), install("node-v22")
+
+        def setup(*extra, detected=None):
+            with patch.object(runtime_detect, "detect", return_value=detected or {}):
+                rc, out = self.setup_cli(*self.flags(*extra))
+            written = json.loads(self.runtime_file.read_text()) if self.runtime_file.exists() else None
+            return rc, out, written
+        rc, out, written = setup(detected={"node": str(old)})
+        self.assertEqual((rc, written["node"]), (0, str(old)), out)
+        self.assertIn(f"node     {old} (detected)", out)
+        rc, out, written = setup(detected={"node": str(new)})
+        self.assertEqual(written["node"], str(new), "a re-run records the Node detected now")
+        rc, out, written = setup()
+        self.assertEqual(written["node"], str(new), "one detection can't find is kept while it works")
+        self.assertIn(f"node     {new} (kept)", out)
+        rc, out, written = setup("--node=", detected={"node": str(new)})
+        self.assertEqual((rc, written["node"]), (0, ""), out)
+        self.assertIn("node     none (given)", out)
+        rc, out, written = setup(detected={"node": str(new)})
+        self.assertEqual(written["node"], str(new), "none is given each run, not kept over detection")
+        link = self.root / "node-link"
+        link.symlink_to(old)
+        rc, out, written = setup(f"--node={link}")
+        self.assertEqual(written["node"], str(old.resolve()), "a given path is recorded as its real directory")
+        before = self.runtime_file.read_bytes()
+        rc, out, _ = setup(f"--node={self.root / 'absent'}")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("pass --node PATH", out)
+        self.assertEqual(self.runtime_file.read_bytes(), before, "nothing written")
+
     def test_dry_run_writes_nothing(self):
         rc, out = self.setup_cli(*self.flags("--dry-run"))
         self.assertEqual(rc, 0, out)

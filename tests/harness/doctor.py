@@ -437,14 +437,16 @@ def doctor_runtime_fixture() -> list[pathlib.Path]:
     # is a reported skip, pinned in tests/test_node_runtime.py). The host here is the fake operator
     # home ``fake_operator_home`` pins — the check resolves it through ``HERMES_REAL_HOME``, and the
     # stub goes under the temp root whatever that variable names (#690: writing at
-    # ``$HERMES_REAL_HOME/.hermes/node/bin/node`` put it over the operator's live Node).
+    # ``$HERMES_REAL_HOME/.hermes/node/bin/node`` put it over the operator's live Node). The
+    # runtime file records it, as ``setup`` does: seats get only a recorded Node (#1149).
     node = inside_tmp(OPERATOR_HOME / ".hermes" / "node" / "bin" / "node")
     node.parent.mkdir(parents=True, exist_ok=True)
     node.write_text("#!/bin/sh\necho v22.0.0\n")
     node.chmod(0o755)
     runtime = home / "diaktoros-runtime.json"
     runtime.write_text(json.dumps({"source": fake_hermes_source(), "venv": resolver_venv(venv),
-                                   "runtime": str(TMP), "rust": str(rust)}))
+                                   "runtime": str(TMP), "rust": str(rust),
+                                   "node": str(node.parent.parent)}))
     runtime.chmod(0o600)
     return [runtime, node] + write_seat_models()
 

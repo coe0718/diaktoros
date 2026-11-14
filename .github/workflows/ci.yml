@@ -41,6 +41,12 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
+      # doctor's runtime:node runs the recorded Node in a seat's sandbox (#1149), so the harness's
+      # complete installation needs bubblewrap, as any host that runs turns does.
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       # No dependencies to install: the plugin is stdlib-only on purpose, and so are its tests.
       - name: Compile every file
         run: python -m compileall -q diaktoros scripts __init__.py tests
@@ -195,6 +201,12 @@ jobs:
       # Fail here rather than quietly re-running the standalone mode under a different name.
       - name: Confirm the suite will run in the installed mode
         run: python -c "import hermes_cli; print('installed mode:', hermes_cli.__file__)"
+      # As in `tests`: the harness's doctor runs runtime:node in a seat's sandbox (#1149).
+      - name: Install bubblewrap
+        if: matrix.part == 'harness'
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - name: Loop tests (installed mode)
         if: matrix.part == 'harness'
         run: python tests/run_tests.py

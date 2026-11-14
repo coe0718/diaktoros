@@ -49,7 +49,7 @@ import sys
 import tempfile
 from urllib.parse import urlsplit
 
-from . import config, doctor, envnames, gh, onboarding_record, util
+from . import config, doctor, envnames, gh, onboarding_record, runtime_detect, util
 from .broker import ipc as broker_ipc
 from .config import credentials
 from .doctor import cron_checks, hook_checks, identity_checks
@@ -367,7 +367,6 @@ def check_runtime(report: Report, path: Path) -> dict | None:
                    "set runtime to the Python installation the venv was created from")
     elif outside:
         usable = False
-        from . import runtime_detect
         # The same root ``setup`` would write; None when the install is not under any directory
         # of its own (never advise "/").
         install = runtime_detect.runtime_for(venv)
@@ -390,15 +389,12 @@ def check_runtime(report: Report, path: Path) -> dict | None:
                    "~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu")
     else:
         report.add(step, "runtime:rust", PASS, f"{rust} (bin/cargo)")
-    from . import runtime_detect
-    root, version = runtime_detect.node_version()
-    if root is None:
-        report.add(step, "runtime:node", WARN, f"{version}; JavaScript test suites cannot run in "
-                   "the sandbox (optional)", "install Node under ~/.hermes/node or on PATH")
+    # The Node seats get, as the worker reads it from this file (#1149); optional, so a warning.
+    state, detail, fix = runtime_detect.node_report(settings)
+    if state == "ok":
+        report.add(step, "runtime:node", PASS, detail)
     else:
-        where = ("mounted at /opt/node" if runtime_detect.node_mounted(root)
-                 else "system install, already visible in the sandbox")
-        report.add(step, "runtime:node", PASS, f"node {version} at {root} ({where})")
+        report.add(step, "runtime:node", WARN, f"{detail} (optional)", fix)
     return settings if usable else None
 
 
@@ -1242,9 +1238,8 @@ def run_live_turn(report: Report, loop: dict, settings: dict | None, pr: dict | 
     report.text(f"  … running one isolated reviewer turn on #{number} as "
                 f"{reviewer.describe()} (up to {timeout}s; the broker is in no-write mode)")
     try:
-        rc = trusted_turn.run_turn(loop, scope, source=Path(settings["source"]),
-                                   venv=Path(settings["venv"]), runtime=Path(settings["runtime"]),
-                                   rust=Path(settings["rust"]), upstream=reviewer.upstream,
+        rc = trusted_turn.run_turn(loop, scope, **runtime_detect.turn_paths(settings),
+                                   upstream=reviewer.upstream,
                                    key=reviewer.key, model=reviewer.model, prompt=prompt,
                                    review_diff=change.diff,
                                    api_mode=reviewer.api_mode,
