@@ -809,6 +809,7 @@ class LedgerAndWorker(unittest.TestCase):
                                  str(case.root)], stdin=subprocess.PIPE,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 start_new_session=True)
+        self.addCleanup(late.stdin.close)
         self.addCleanup(late.wait, 10)
         self.addCleanup(lambda: late.poll() is None and late.kill())
         if late.pid not in worker_wait.processes_naming(str(case.root)):
@@ -861,6 +862,26 @@ class LedgerAndWorker(unittest.TestCase):
                     self.skipTest(result.skipped[0][1])
                 self.assertEqual((result.testsRun, len(result.failures), result.errors),
                                  (1, failed, []), result.failures)
+
+    def test_a_stand_in_unlisted_because_it_ended_fails_and_only_a_live_one_skips(self):
+        # #2480 review 8, F7: a stand-in the first scan can't list is a skip only while it still
+        # runs (processes can't be listed here). One that ended before that scan is a failure.
+        name = "test_cleanup_waits_for_a_worker_still_writing_in_the_temp_dir"
+        start = subprocess.Popen.__init__
+
+        def ended(popen, *args, **kwargs):
+            start(popen, *args, **kwargs)
+            popen.stdin.close()
+            popen.wait(10)
+        for label, target, attr, new, outcome in (
+                ("ended", subprocess.Popen, "__init__", ended, (1, 0)),
+                ("live, unlisted", worker_wait, "processes_naming", mock.Mock(return_value={}),
+                 (0, 1))):
+            with self.subTest(label), mock.patch.object(target, attr, new):
+                result = unittest.TestResult()
+                type(self)(name).run(result)
+                self.assertEqual((result.testsRun, len(result.failures), len(result.skipped),
+                                  result.errors), (1, *outcome, []), result.failures)
 
     def test_bad_budgets_are_refused_at_enqueue(self):
         sup = self.sup(0)
