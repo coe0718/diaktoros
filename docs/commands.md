@@ -577,7 +577,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--venv` | `VENV` |  | runtime file's venv path (default: detected) |
 | `--runtime` | `RUNTIME` |  | runtime file's runtime path (default: detected) |
 | `--rust` | `RUST` |  | runtime file's rust path (default: detected) |
-| `--node` | `NODE` |  | runtime file's node: the Node install root seats get at /opt/node, "" for none (default: kept, else detected) |
+| `--node` | `NODE` |  | runtime file's node: the Node install root seats get at /opt/node, "" for none (default: detected, else kept) |
 <!-- /flags -->
 
 ### init
