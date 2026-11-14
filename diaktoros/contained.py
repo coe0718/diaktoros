@@ -186,7 +186,7 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
     none of these directories may be the user's actual home or source checkout.
     There is deliberately no caller-selectable arbitrary host bind.
 
-    ``node`` is the trusted host's own detected Node install root (``runtime_detect.node_root``),
+    ``node`` is the Node root the runtime file records (``runtime_detect.recorded_node``, #1149),
     bound read-only at ``/opt/node`` with ``/opt/node/bin`` on PATH (#685), the shape of the Rust
     mount. ``None`` mounts nothing, and a seat then has no ``node``.
 

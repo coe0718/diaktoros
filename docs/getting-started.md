@@ -110,7 +110,7 @@ hermes dk setup \
 
 Remove **only `--dry-run`** to install the previewed configuration, still paused. A separate hook administrator uses `--admin-token "<admin-login>" --admin-token-file "<absolute-admin-token-path>"`; the file option supplies a mapping only when the admin is not already reader/reviewer/fixer. Omit `--arm` until checks pass.
 
-If detection fails, supply the relevant `--source`, `--venv`, `--runtime` or `--rust` path. Their meanings are in the runtime table below. Setup keeps valid existing paths and model overrides; it cannot fix malformed overrides silently. A failed runtime detection can leave later setup steps installed, but will not arm.
+If detection fails, supply the relevant `--source`, `--venv`, `--runtime` or `--rust` path, and `--node` for the optional Node. Their meanings are in the runtime table below. Setup keeps valid existing paths and model overrides; it cannot fix malformed overrides silently. A failed runtime detection can leave later setup steps installed, but will not arm.
 
 ### B. Explicit init (for controlled wiring)
 
@@ -173,6 +173,7 @@ For manual runtime configuration, create the following JSON at `$HERMES_HOME/dia
 | `venv` | Environment containing `bin/hermes` and `bin/python` |
 | `runtime` | Python installation root covering both literal and resolved interpreter link targets |
 | `rust` | Actual toolchain containing `bin/cargo`, not `~/.cargo/bin` rustup proxies |
+| `node` | Optional: the Node install seats get at `/opt/node` (`setup` records it; `--node ""` for none) |
 
 Create/edit this file with a private umask and enforce mode 600. Keep models in the profiles for the basic setup; do not paste secrets into runtime JSON. [Runtime and seat-model reference](configuration.md) covers overrides. Alternatively, run `setup` for the already-created loop: it keeps that loop and detects/writes missing runtime paths.
 

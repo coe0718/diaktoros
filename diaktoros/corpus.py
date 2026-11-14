@@ -17,7 +17,7 @@ import re
 import time
 from pathlib import Path
 
-from . import util
+from . import runtime_detect, util
 
 SCORES_FILE = "corpus_scores.jsonl"
 # The file holds one line per `hermes dk corpus` run; `--history` lists them. Older runs than
@@ -169,9 +169,8 @@ def live_review(loop: dict, settings: dict, reviewer, timeout: int):
         prompt = isolated_prompt(loop, row, [], change=change)
         scope = broker_ipc.RunScope(loop["repo"], number, head, "reviewer", pr["head"]["ref"])
         observed: dict = {}
-        trusted_turn.run_turn(loop, scope, source=Path(settings["source"]),
-                              venv=Path(settings["venv"]), runtime=Path(settings["runtime"]),
-                              rust=Path(settings["rust"]), upstream=reviewer.upstream,
+        trusted_turn.run_turn(loop, scope, **runtime_detect.turn_paths(settings),
+                              upstream=reviewer.upstream,
                               key=reviewer.key, model=reviewer.model, prompt=prompt,
                               review_diff=change.diff, api_mode=reviewer.api_mode,
                               credential=reviewer.credential_provider(),
