@@ -198,7 +198,9 @@ class Record(Base):
         world = World([changed(1)])
         world.pr["head"]["sha"] = "c" * 40
         with self.assertRaisesRegex(ValueError, "PR head moved"):
-            self.change(world)
+            self.change(world, {**self.row, "seat": "fixer"})
+        with self.assertRaises(run_supervisor.ReviewHeadMoved):   # a review's: cancelled (#2468)
+            self.change(world, {**self.row, "seat": "reviewer"})
         world = World([changed(1)])
         world.fail.add(f"/repos/{REPO}/pulls/7")
         with self.assertRaisesRegex(ValueError, "PR unreadable"):
@@ -400,9 +402,9 @@ class Worker(Base):
             with ledger.connect(sup.db) as con:
                 state = con.execute("SELECT state, error FROM runs").fetchone()
         run_turn.assert_not_called()
-        # A moved head is not transient: the new head gets its own turn, this one never retries.
-        self.assertEqual(state[0], "failed")
-        self.assertIn("PR head moved", state[1])
+        # A moved head is not transient: this one never retries. It is cancelled with the claim's
+        # reason, so the watchdog delivers the review to the new head (#2468).
+        self.assertEqual(state, ("cancelled", run_supervisor.REVIEW_HEAD_MOVED))
 
 
 class Sandbox(unittest.TestCase):
