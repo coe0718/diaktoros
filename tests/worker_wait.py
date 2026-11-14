@@ -15,7 +15,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import signal
+import tempfile
 import time
+from unittest import mock
 
 WORKER_EXIT_TIMEOUT = 30
 
@@ -102,3 +104,18 @@ def wait_for_workers(root: Path, timeout: float = WORKER_EXIT_TIMEOUT) -> None:
             raise AssertionError(f"detached workers still running {timeout}s after the test "
                                  f"under {marker} (killed): {live}")
         time.sleep(0.05)
+
+
+def removal_watch(root: Path) -> tuple[list, object]:
+    """``(seen, patch)``: while ``patch`` is active, each time a ``TemporaryDirectory`` removes
+    ``root``, the processes still naming it (``processes_naming``) are appended to ``seen``. A
+    test's cleanups that wait for its workers first leave ``[{}]`` (#1511, #2479); one that races
+    a live worker records it, every time, whether or not that ``rmtree`` happened to fail."""
+    seen: list = []
+    original = tempfile.TemporaryDirectory._rmtree
+
+    def rmtree(name, *args, **kwargs):
+        if Path(name) == Path(root):
+            seen.append(processes_naming(str(root)))
+        return original(name, *args, **kwargs)
+    return seen, mock.patch.object(tempfile.TemporaryDirectory, "_rmtree", staticmethod(rmtree))
