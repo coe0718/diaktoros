@@ -333,6 +333,19 @@ class NodeRuntime(unittest.TestCase):
         self.assertIn("already visible", check.detail)
         self.assertEqual(len(self.seats), 1)
 
+    def test_the_docs_give_setups_order_and_say_a_system_node_needs_no_record(self):
+        # #2484: setup records the Node detected now ahead of the kept one, as the help must say.
+        # #2486: a /usr Node is what seats get, recorded or not, so no warning says otherwise.
+        import commands_doc
+        setup = commands_doc.verbs(commands_doc.parser())["setup"]
+        node = next(a for a in setup._actions if "--node" in a.option_strings)
+        self.assertIn("(default: detected, else kept)", node.help)
+        docs = (Path(__file__).resolve().parents[1] / "docs" / "configuration.md").read_text()
+        docs = "\n".join(line for line in docs.splitlines() if "Node" in line)
+        self.assertIn("doesn't take it away", docs)
+        self.assertIn("A Node elsewhere on the host (not `/usr`) that the file does not record", docs)
+        self.assertNotIn("seats get only the Node this file records (", docs)
+
     def test_doctor_reports_system_node_as_verified(self):
         self.system_install()
         check = doctor.check_node()

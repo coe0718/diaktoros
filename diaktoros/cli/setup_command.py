@@ -698,4 +698,4 @@ def _setup_turn_flags(first) -> None:  # noqa: ANN001
                            help=f"runtime file's {key} path (default: detected)")
     first.add_argument("--node", default=None,
                        help="runtime file's node: the Node install root seats get at /opt/node, "
-                            "\"\" for none (default: kept, else detected)")
+                            "\"\" for none (default: detected, else kept)")
