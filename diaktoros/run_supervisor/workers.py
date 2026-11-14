@@ -666,7 +666,7 @@ class WorkerLifecycle:
                 if row['pr'] not in open_heads:
                     why = 'PR closed before the review started'
                 elif open_heads[row['pr']] != row['head']:
-                    why = 'PR head moved before the review started'
+                    why = run_supervisor.REVIEW_HEAD_MOVED
                 else:
                     continue
                 con.execute("UPDATE runs SET state='cancelled', error=?, retry_at=NULL, updated=? "

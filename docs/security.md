@@ -121,7 +121,10 @@ credential selection and returns only a per-target offer. `POST /actions` accept
 The issue-dependency actions (#1301) add one field, `on` (an issue number), to that body and
 nothing else. `GET /deps` reads GitHub with the loop's reader credential for each declared
 prerequisite and returns issue numbers, a fixed state (`met`/`waiting`/`unknown`) and a bounded
-reason; a reason that could carry a path, URL or token is replaced by a fixed sentence.
+reason; a reason that could carry a path, URL or token is replaced by a fixed sentence. Its
+waivers (#1301) carry only issue numbers, a plain who (`operator`/`desktop`) and a UTC timestamp;
+anything else in the waiver file is withheld as null. `GET /pr` adds `issue`, an issue number read
+from the local ledger only.
 Both use gateway auth, not the local-only probe restriction. `one_shot_action` owns selection
 and execution for CLI and Desktop (escalation's in `escalate_action`); CLI commands are I/O
 wrappers, not a second rulebook.

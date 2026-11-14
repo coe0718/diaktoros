@@ -74,7 +74,8 @@ def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]
     re-arms it (a push-policy-cancelled fixer run under the policy in force at that moment)."""
     # A fixer run the push policy held (cancelled at claim, or held before its turn) is dead
     # for its head until an operator acts, so it is listed too (review on #97); a superseded
-    # cancellation (head moved, PR closed) is not, since a new head gets its own turn.
+    # cancellation (head moved, PR closed) is not: a fixer's new head gets its own turn, and the
+    # watchdog delivers a review whose head moved under it to the new head (``moved_review``).
     marks = ','.join('?' * len(run_supervisor.POLICY_CANCELLATIONS))
     held = [run_supervisor.FIXER_NOT_ADMITTED.split(":")[0] + "%", run_supervisor.FIXER_PUSH_REVOKED.split(":")[0] + "%",
             run_supervisor.ISSUE_FIX_OFF + ":%"]
@@ -205,6 +206,29 @@ def newest_turn(con, repo: str, pr: int, head: str, seat: str):
     return con.execute("SELECT state, turn_key FROM runs WHERE repo=? AND pr=? AND head=? AND "
                        "seat=? ORDER BY updated DESC, created DESC LIMIT 1",
                        (repo, pr, head, seat)).fetchone()
+
+
+def moved_review(db: str | Path, repo: str, pr: int, head: str) -> str | None:
+    """The head of this PR's newest reviewer turn when that turn was cancelled because the PR's
+    head moved before it started (``run_supervisor.REVIEW_HEAD_MOVED``), and it is not ``head``:
+    a review was asked for and never ran. None otherwise, or when the ledger cannot be read. A
+    turn at ``head`` itself is newer and answers instead (#2468). Newest by creation: a waiting
+    turn is retired after a newer one was queued or ran, so its update time can be the latest."""
+    try:
+        con = read_only_connect(db)
+        if con is None:
+            return None
+        try:
+            row = con.execute("SELECT head, state, error FROM runs WHERE repo=? AND pr=? AND "
+                              "seat='reviewer' ORDER BY created DESC, updated DESC LIMIT 1",
+                              (repo, pr)).fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+    if row and row[0] != head and row[1] == "cancelled" and row[2] == run_supervisor.REVIEW_HEAD_MOVED:
+        return row[0]
+    return None
 
 
 # A turn's own words in the merge check (#753): one clause, bounded under GitHub's 140-character

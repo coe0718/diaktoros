@@ -166,6 +166,14 @@ CREATE TABLE IF NOT EXISTS shadow_reviews (
  head TEXT NOT NULL, model TEXT, verdict TEXT NOT NULL, body TEXT NOT NULL,
  authorized INTEGER NOT NULL, denial TEXT, held TEXT, created REAL NOT NULL
 );
+-- A host merge push of the base into a PR's branch (#2468): taken in the same transaction that
+-- finds no turn of the PR in flight, ``released`` once the push lands or fails. While it is
+-- unreleased and younger than ``merge_hold.HOLD_S``, no turn of the PR is claimed, so none starts
+-- at the head it moves. ``gen`` counts the takes: a claim whose reads a take came during waits too.
+CREATE TABLE IF NOT EXISTS merge_holds (
+ repo TEXT NOT NULL, pr INTEGER NOT NULL, head TEXT NOT NULL, token TEXT NOT NULL,
+ created REAL NOT NULL, released REAL, gen INTEGER NOT NULL, PRIMARY KEY (repo, pr)
+);
 -- The adjudicator acting on one ACCEPT ruling (its run ID) at a PR head (#905), a record per
 -- ruling, so a later ACCEPT at the same head acts afresh: overruled is the one review the ruling
 -- overruled, recorded with the approval; approve is the approval (its review_id),

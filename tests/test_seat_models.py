@@ -512,6 +512,16 @@ class Worker(Base):
             row = con.execute("SELECT state, error FROM runs WHERE id=?", (run_id,)).fetchone()
         return seen, row, called_github
 
+    def test_a_review_whose_head_moved_before_launch_is_cancelled_for_the_new_head(self):
+        """#2468: a head that moved between the claim and the launch cancels a review with the
+        claim's own reason, so the watchdog delivers it to the new head. A fix still fails."""
+        from diaktoros import run_supervisor
+        moved = {"number": 7, "head": {"sha": "f" * 40, "ref": "fix-7"}}
+        _, row, _ = self.run_seat("reviewer", pr=moved)
+        self.assertEqual(row, ("cancelled", run_supervisor.REVIEW_HEAD_MOVED))
+        _, row, _ = self.run_seat("fixer", pr=moved)
+        self.assertEqual(row, ("failed", "isolated turn failed: ValueError: PR head moved"))
+
     def test_prewrite_turn_failures_keep_the_real_reason_and_retry(self):
         """#53: the exception's text and the sandbox output tail reach the ledger; a failure
         with nothing on the write-ahead record waits for a retry unless it is terminal."""
