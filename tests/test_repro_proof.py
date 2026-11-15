@@ -291,16 +291,20 @@ class Proof(unittest.TestCase):
                                       {"t.A.test_a": "t.A.test_a", "t.B.test_b": None})
         self.assertIn("ran the tests the fixer named", repro_proof.section(mixed))
 
-    def changed_tests_only(self, test, code=NEW_CODE):
-        """A NONE NAMED proof, run for real: no id named, ``widget.py`` changed to ``code`` and
-        one changed test file, ``test``."""
+    def changed_tests_only(self, test, code=NEW_CODE, other=None):
+        """A NONE NAMED proof, run for real: no id named, ``widget.py`` changed to ``code``, one
+        changed test file, ``test``, and ``other`` ({path: (old, new)}) changed beside them."""
+        other = other or {}
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "base"
             (base / "tests").mkdir(parents=True)
             (base / "tests" / "__init__.py").write_text("")
             (base / "widget.py").write_text(OLD_CODE)
-            proof = repro_proof.prove(base, manifest({"widget.py": code, "tests/test_it.py": test}),
-                                      [], run_unittest)
+            for path, (old, _new) in other.items():
+                (base / path).write_text(old)
+            files = {"widget.py": code, "tests/test_it.py": test,
+                     **{path: new for path, (_old, new) in other.items()}}
+            proof = repro_proof.prove(base, manifest(files), [], run_unittest)
         self.assertEqual(proof["hunk_tests"], ["tests.test_it"])
         self.assertEqual(proof["hunks"], [])
         return proof, repro_proof.section(proof)
@@ -324,9 +328,20 @@ class Proof(unittest.TestCase):
         proof, text = self.changed_tests_only(TEST.replace("value(), 2", "value(), 1"),
                                               code=OLD_CODE)
         self.assertFalse(proof.get("hunk_why"))
-        self.assertIn("the fix changes no source line, so there was no hunk to check", text)
+        self.assertIn("no Python source line outside its tests and comments, so there was no "
+                      "hunk to check (only Python source is checked)", text)
         for claim in ("hunk check ran", "which source hunks they notice", "hunk check below"):
             self.assertNotIn(claim, text)
+
+    def test_a_non_python_source_change_is_not_called_no_source_change(self):
+        # #2490 review round 2 (F2): only Python source is split into hunks, so a fix that changes
+        # app.js beside a passing changed test has no hunk, but it does change a source line.
+        proof, text = self.changed_tests_only(
+            TEST.replace("value(), 2", "value(), 1"), code=OLD_CODE,
+            other={"app.js": ("export const value = 1;\n", "export const value = 2;\n")})
+        self.assertFalse(proof.get("hunk_why"))
+        self.assertNotIn("changes no source line", text)
+        self.assertIn("(only Python source is checked)", text)
 
     def test_with_no_test_every_source_hunk_is_listed_past_the_cap(self):
         # Review on #1092 (F2, P1): the no-test fallback cut the list at HUNKS_MAX, and the rest

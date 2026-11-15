@@ -433,7 +433,8 @@ def _introduction(proof: dict) -> str:
     """What the host actually ran (#1094): the named tests on both heads, or, with none named,
     nothing on the original head and at most the fix's changed test files on the fix alone.
     A proof the host could not run, or whose named ids matched no test file, ran nothing (#2270,
-    #2274); changed tests that failed on the fix leave no hunk check to describe (#2274)."""
+    #2274); changed tests that failed on the fix leave no hunk check to describe (#2274), and
+    no hunk means no *Python* source hunk: other languages are never checked (#2490 review)."""
     if proof.get("overall") == NONE_NAMED:
         if not proof.get("hunk_tests"):
             return ("The fixer named no reproduction test, so nothing ran against the original "
@@ -445,7 +446,8 @@ def _introduction(proof: dict) -> str:
         if not proof.get("hunks"):
             return ("The fixer named no reproduction test, so nothing ran against the original "
                     "head. The host ran the test files the fix changed against the fix only; the "
-                    "fix changes no source line, so there was no hunk to check.\n")
+                    "fix changes no Python source line outside its tests and comments, so there "
+                    "was no hunk to check (only Python source is checked).\n")
         return ("The fixer named no reproduction test, so nothing ran against the original head. "
                 "For the hunk check below, the host ran the test files the fix changed against the "
                 "fix only: that shows which source hunks they notice, not that any test fails "
