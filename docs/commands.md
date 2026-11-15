@@ -1713,8 +1713,8 @@ hermes dk history --loop "<loop-id>" --since 2026-11-01 --out cycles --format js
 `pr-N.txt`, each exactly what `--pr N` prints in that format, with the PR's whole cycle (turns
 before the date included). It lists what it wrote and which PRs it skipped as not merged. With
 `--offline` the merge is not read, so a PR with a turn in the window is written whether it merged or
-not. A file of the
-same name in `DIR` is replaced; nothing is written anywhere else. Use it to publish several cycles
+not, unless a write fails first (see below). A file of the same name in `DIR` is replaced; nothing
+is written anywhere else. Use it to publish several cycles
 to the site's run viewer at once.
 
 `--format markdown` gives the same timeline as a document, for a PR comment, a write-up or an

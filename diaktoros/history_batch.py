@@ -14,6 +14,7 @@ import errno
 import json
 import os
 import sqlite3
+import tempfile
 from pathlib import Path
 
 from . import history, history_render
@@ -59,9 +60,9 @@ def export(loop: dict, db: Path, since: float, out: Path, fmt: str, offline: boo
     numbers, gap = prs_since(db, loop["repo"], since)
     result: dict = {"written": [], "skipped": [], "failed": None, "gap": gap}
     if not numbers:
-        _writable(out)      # an unwritable DIR refuses even when there is nothing to write (#2204)
+        _probe(out)         # an unwritable DIR refuses even when there is nothing to write (#2204)
         return result
-    out.mkdir(parents=True, exist_ok=True)
+    _make(out)
     for number in numbers:
         data = history.collect(loop, db, number, offline, redact)
         if not offline and not data["merged"]:
@@ -78,16 +79,36 @@ def export(loop: dict, db: Path, since: float, out: Path, fmt: str, offline: boo
     return result
 
 
-def _writable(out: Path) -> None:
-    """Raise the OSError ``mkdir`` and a write would raise for ``out``, without creating it: its
-    nearest existing part must be a directory this process can write to."""
+def _make(out: Path) -> list[Path]:
+    """Make ``out`` (and its parents) the one way every export does, so a refusal reads the same
+    whether or not the window holds a PR (#2251). Returns the parts it made, deepest first. An
+    ``out`` that is a file is "Not a directory", as a parent that is a file is."""
+    made: list[Path] = []
     for part in (out, *out.parents):
         if part.exists():
-            if not part.is_dir():
-                raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(part))
-            if not os.access(part, os.W_OK):
-                raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(part))
-            return
+            break
+        made.append(part)
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(out)) from None
+    return made
+
+
+def _probe(out: Path) -> None:
+    """Raise the OSError an export would for ``out``, leaving nothing behind: the real ``mkdir``,
+    then a nameless file written in it, so a read-only filesystem refuses too, which the
+    permission bits alone don't show (#2252). The directories it made are removed again."""
+    made = _make(out)
+    try:
+        with tempfile.TemporaryFile(dir=out) as probe:
+            probe.write(b"\n")
+    finally:
+        for part in made:
+            try:
+                part.rmdir()
+            except OSError:
+                break       # something else wrote there meanwhile: leave it as it is
 
 
 def listing(result: dict, out: Path, offline: bool) -> str:
