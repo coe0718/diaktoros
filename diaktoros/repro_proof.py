@@ -401,7 +401,7 @@ def _unnamed_hunks(base_dir: Path, manifest: dict, run) -> dict:
         if runs:
             proof["hunk_tests"] = runs
             proof["hunks"] = hunk_guard(base_dir, tree, runs, path, out, run)
-            if not proof["hunks"] and source_hunks(base_dir, tree):
+            if not all(_passed(results, wanted) for wanted in runs):   # hunks or none (#2490)
                 proof["hunk_why"] = "the fix's changed tests do not all pass on the fix"
         else:
             proof["hunks"] = [{"path": h["path"], "lines": _where(h), "status": UNGUARDED,
@@ -434,7 +434,7 @@ def _introduction(proof: dict) -> str:
     nothing on the original head and at most the fix's changed test files on the fix alone.
     A proof the host could not run, or whose named ids matched no test file, ran nothing (#2270,
     #2274); changed tests that failed on the fix leave no hunk check to describe (#2274), and
-    no hunk means no *Python* source hunk: other languages are never checked (#2490 review)."""
+    no hunk means no hunk the check covers, not no source change (#2490 review)."""
     if proof.get("overall") == NONE_NAMED:
         if not proof.get("hunk_tests"):
             return ("The fixer named no reproduction test, so nothing ran against the original "
@@ -445,9 +445,9 @@ def _introduction(proof: dict) -> str:
                     "they did not all pass there, so no hunk was checked.\n")
         if not proof.get("hunks"):
             return ("The fixer named no reproduction test, so nothing ran against the original "
-                    "head. The host ran the test files the fix changed against the fix only; the "
-                    "fix changes no Python source line outside its tests and comments, so there "
-                    "was no hunk to check (only Python source is checked).\n")
+                    "head. The host ran the test files the fix changed against the fix only, and "
+                    "they passed there; the fix changes no source hunk the check covers (Python "
+                    "source outside tests, comments and dot-named paths), so none was checked.\n")
         return ("The fixer named no reproduction test, so nothing ran against the original head. "
                 "For the hunk check below, the host ran the test files the fix changed against the "
                 "fix only: that shows which source hunks they notice, not that any test fails "

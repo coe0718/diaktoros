@@ -328,8 +328,7 @@ class Proof(unittest.TestCase):
         proof, text = self.changed_tests_only(TEST.replace("value(), 2", "value(), 1"),
                                               code=OLD_CODE)
         self.assertFalse(proof.get("hunk_why"))
-        self.assertIn("no Python source line outside its tests and comments, so there was no "
-                      "hunk to check (only Python source is checked)", text)
+        self.assertIn("they passed there; the fix changes no source hunk the check covers", text)
         for claim in ("hunk check ran", "which source hunks they notice", "hunk check below"):
             self.assertNotIn(claim, text)
 
@@ -341,7 +340,24 @@ class Proof(unittest.TestCase):
             other={"app.js": ("export const value = 1;\n", "export const value = 2;\n")})
         self.assertFalse(proof.get("hunk_why"))
         self.assertNotIn("changes no source line", text)
-        self.assertIn("(only Python source is checked)", text)
+        self.assertIn("no source hunk the check covers (Python source outside tests, comments "
+                      "and dot-named paths)", text)
+        # Round 3 (F2): a dot-named Python file is left out too, and the same words cover it.
+        proof, text = self.changed_tests_only(
+            TEST.replace("value(), 2", "value(), 1"), code=OLD_CODE,
+            other={".hidden.py": ("x = 1\n", "x = 2\n")})
+        self.assertNotIn("no Python source line", text)
+        self.assertIn("dot-named paths", text)
+
+    def test_failing_changed_tests_are_reported_with_no_hunk_to_check(self):
+        # #2490 review round 3 (F3): changed tests that fail on the fix are said to fail even
+        # when the fix changes no source hunk, and nothing says they passed.
+        proof, text = self.changed_tests_only(TEST.replace("value(), 2", "value(), 3"),
+                                              code=OLD_CODE)
+        self.assertTrue(proof.get("hunk_why"))
+        self.assertIn("they did not all pass there, so no hunk was checked", text)
+        self.assertIn("- no hunk check: the fix's changed tests do not all pass on the fix", text)
+        self.assertNotIn("they passed there", text)
 
     def test_with_no_test_every_source_hunk_is_listed_past_the_cap(self):
         # Review on #1092 (F2, P1): the no-test fallback cut the list at HUNKS_MAX, and the rest
