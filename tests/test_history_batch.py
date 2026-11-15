@@ -142,9 +142,33 @@ class Batch(fg.Base):
             messages.append(out.split(f"cannot write to {self.out}: ")[1].splitlines()[0])
         self.assertEqual(messages, ["Not a directory"] * 2)
 
+    def test_a_link_to_nothing_reads_the_same_with_or_without_a_pr(self):
+        """#2493: an --out that is a link to nothing, or under one, refuses in both windows; the
+        empty window used to look past it to its parent and succeed."""
+        self.cycle()
+        self.out.mkdir()
+        link = self.out / "link"
+        link.symlink_to(self.out / "missing")
+        for target in (link, link / "child"):
+            messages = []
+            for since in ("1d", SINCE):
+                rc, out = self.run_cli("--since", since, "--out", str(target))
+                self.assertEqual(rc, 2, out)
+                messages.append(out.split(f"cannot write to {target}: ")[1].splitlines()[0])
+            self.assertEqual(messages, ["Not a directory"] * 2, target)
+            self.assertFalse((self.out / "missing").exists())
+
+    def test_a_pr_skipped_as_not_merged_still_makes_the_directory(self):
+        """#2494, as the docs now say: only a window with no PR turn leaves DIR uncreated."""
+        self.other_pr(8, th.T + 700)
+        rc, out = self.run_cli("--since", SINCE, "--out", str(self.out))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("skipped #8: not merged (open)", out)
+        self.assertEqual(list(self.out.iterdir()), [])
+
     def test_an_unwritable_filesystem_refuses_with_nothing_in_the_window(self):
         """#2252: the empty window writes for real, so a read-only mount (which permission bits
-        don't show) exits 2, and the directories made for the probe are gone again."""
+        don't show) exits 2, with no directory made."""
         refuse = OSError(errno.EROFS, os.strerror(errno.EROFS))
         target = self.out / "a" / "b"
         with mock.patch.object(history_batch.tempfile, "TemporaryFile", side_effect=refuse):
