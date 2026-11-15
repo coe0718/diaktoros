@@ -127,12 +127,15 @@ class Operator(ruling.Base):
                         (newest[0] if shown is None else shown, f"r{self.n}"))
             con.row_factory = sqlite3.Row
             row = con.execute("SELECT * FROM rulings WHERE run_id=?", (f"r{self.n}",)).fetchone()
-        sender = notices.OperatorNotices()
-        sender.db = self.db
+        sender = run_supervisor.Supervisor(self.db)
         pr = {**fg.LIVE, "user": {"login": author}, **live}
         with mock.patch.object(gh, "pr", return_value=pr), \
                 mock.patch("diaktoros.config.by_repo", return_value=self.loop):
-            return sender._ruling_message(row)
+            text, self.feed = sender._ruling_message(row), sender.ruling_next_turn(row["run_id"])
+        # #2495: the observer feed names the fixer exactly when the notice does.
+        self.assertEqual(self.feed, notices.FEED_FIXER if "so the fixer answers" in text
+                         else notices.FEED_YOU)
+        return text
 
     def test_the_ruling_notice_says_who_answers_an_upheld_review(self):
         self.shadow("REQUEST_CHANGES")
@@ -142,6 +145,7 @@ class Operator(ruling.Base):
         self.assertIn("so the fixer answers its findings", text)
         self.assertNotIn("the decision is yours", text)
         self.assertIn("never merges, pushes or reviews", text)
+        self.assertTrue(self.feed.startswith("fixer — "), self.feed)          # #2495
         for kwargs in ({"author": "someone"}, {"verdict": "ACCEPT"}, {"shown": ""}):
             self.assertIn("the decision is yours", self.ruling_notice(**kwargs), kwargs)
         on = self.loop
