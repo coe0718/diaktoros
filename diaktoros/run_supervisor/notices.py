@@ -66,14 +66,20 @@ class OperatorNotices:
         ``explain`` use (``gate.shadow_fix_owed``, #1353): shadow escalation on, this REJECT the
         ruling that upholds the head's newest shadow review (``gate.upheld_shadow_ruling``: a newer
         review landing during the turn supersedes it), and a PR the fixer answers
-        (``gate.fixer_answers_upheld``). False when any of that cannot be read: the operator is
-        then told the decision is theirs."""
+        (``gate.fixer_answers_upheld``), still open at the ruled head when the notice goes out (the
+        outbox may send late, and the fixer's claim supersedes a moved or closed PR: #2491 review
+        F3). False when any of that cannot be read: the operator is then told the decision is
+        theirs."""
         if row['verdict'] != 'REJECT' or 'shadow_run' not in row.keys() or not row['shadow_run']:
             return False
         try:
-            from .. import config, gate
+            from .. import config, gate, gh
             loop = config.by_repo(row['repo'])
             if not loop or not config.shadow_escalate(loop):
+                return False
+            live = gh.pr(loop, int(row['pr']))
+            if (not isinstance(live, dict) or live.get('state') != 'open'
+                    or (live.get('head') or {}).get('sha') != row['head']):
                 return False
             ruled = gate.upheld_shadow_ruling(loop, int(row['pr']), row['head'], db=self.db)
             return (ruled is not None and ruled == float(row['created'])

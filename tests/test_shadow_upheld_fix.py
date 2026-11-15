@@ -114,9 +114,9 @@ class Operator(ruling.Base):
         self.assertEqual(report["next"]["kind"], "fixer-push", report["next"])
         self.assertNotIn("your decision", report["next"]["action"])
 
-    def ruling_notice(self, author="fixer", verdict="REJECT", shown=None):
+    def ruling_notice(self, author="fixer", verdict="REJECT", shown=None, **live):
         """#2258: the operator's ruling notice for a new ruling that was shown shadow review
-        ``shown`` (default: the newest one recorded)."""
+        ``shown`` (default: the newest one recorded), with the live PR changed by ``live``."""
         from diaktoros.run_supervisor import notices
         with closing(sqlite3.connect(self.db)) as con:
             newest = con.execute("SELECT run_id FROM shadow_reviews ORDER BY created DESC "
@@ -129,7 +129,7 @@ class Operator(ruling.Base):
             row = con.execute("SELECT * FROM rulings WHERE run_id=?", (f"r{self.n}",)).fetchone()
         sender = notices.OperatorNotices()
         sender.db = self.db
-        pr = {**fg.LIVE, "user": {"login": author}}
+        pr = {**fg.LIVE, "user": {"login": author}, **live}
         with mock.patch.object(gh, "pr", return_value=pr), \
                 mock.patch("diaktoros.config.by_repo", return_value=self.loop):
             return sender._ruling_message(row)
@@ -156,6 +156,11 @@ class Operator(ruling.Base):
         self.shadow("REQUEST_CHANGES")
         self.assertIn("the decision is yours", self.ruling_notice(shown=first))
         self.assertIn("so the fixer answers its findings", self.ruling_notice())
+        # #2491 review F3: the notice went out after the PR moved on or closed; the fixer's claim
+        # supersedes that head, so no fixer is promised.
+        moved = {**fg.LIVE["head"], "sha": "b" * 40}
+        for live in ({"head": moved}, {"state": "closed"}):
+            self.assertIn("the decision is yours", self.ruling_notice(**live), live)
 
     def escalate_off(self):
         self.loop = {**self.loop, "unattended_fixer_push": True,
