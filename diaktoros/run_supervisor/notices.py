@@ -61,18 +61,23 @@ class OperatorNotices:
                 f"Reason as written by the adjudicator (model output, not verified by the loop):\n"
                 f"{body}")
 
-    @staticmethod
-    def _fixer_answers(row) -> bool:
-        """Whether this ruling hands its findings to the fixer (#2258): a REJECT of the shadow
-        review it was shown (the rule the broker queues the fix by), on a PR the fixer answers
-        (``gate.fixer_answers_upheld``, the rule ``ready`` and ``explain`` use, #1353). False
-        when that cannot be read: the operator is then told the decision is theirs."""
+    def _fixer_answers(self, row) -> bool:
+        """Whether this ruling hands its findings to the fixer (#2258), by the rules ``ready`` and
+        ``explain`` use (``gate.shadow_fix_owed``, #1353): shadow escalation on, this REJECT the
+        ruling that upholds the head's newest shadow review (``gate.upheld_shadow_ruling``: a newer
+        review landing during the turn supersedes it), and a PR the fixer answers
+        (``gate.fixer_answers_upheld``). False when any of that cannot be read: the operator is
+        then told the decision is theirs."""
         if row['verdict'] != 'REJECT' or 'shadow_run' not in row.keys() or not row['shadow_run']:
             return False
         try:
             from .. import config, gate
             loop = config.by_repo(row['repo'])
-            return bool(loop) and gate.fixer_answers_upheld(loop, int(row['pr']))
+            if not loop or not config.shadow_escalate(loop):
+                return False
+            ruled = gate.upheld_shadow_ruling(loop, int(row['pr']), row['head'], db=self.db)
+            return (ruled is not None and ruled == float(row['created'])
+                    and gate.fixer_answers_upheld(loop, int(row['pr'])))
         except Exception:
             return False
 
