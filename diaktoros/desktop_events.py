@@ -21,7 +21,7 @@ MAX_ENTRIES = 4096
 MAX_CONFIG_BYTES = 1024 * 1024
 # Worker-private subtrees that no Desktop view reads: isolated seat homes (tens of thousands
 # of files while a turn runs), dependency checkouts and the CI cache. A loop keeps them
-# directly in its state dir (gate.py, deps.py, ci_cache.py), so only there are they pruned:
+# directly in its state dir (gate, deps.py, ci_cache.py), so only there are they pruned:
 # a child of a configured loop's state dir, its custom state_dir or else <state_root>/<loop>.
 # The state dir is matched by identity (device and inode), not by spelling, so an alias with
 # ".." or a symlink names the same directory and an unrelated directory that merely sits one

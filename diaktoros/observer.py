@@ -124,7 +124,7 @@ DIGEST_LIMIT = 25
 # the queue entry a successful handoff pops. That entry is the loop's only durable record of the
 # hold (the operator sees it in ``pending.json``; the harness reads it as ``held()``), so the feed
 # repeats it rather than a claim about a run that is not there. The wording is the gate's, not
-# ours: keep it in step with ``diaktoros/gate.py``.
+# ours: keep it in step with ``diaktoros/gate/__init__.py``.
 HOLD_PREFIX = "isolated worker unavailable"
 
 # What a gate's claim about a turn looks like: "<seat> queued" — the seat it just tried to arm

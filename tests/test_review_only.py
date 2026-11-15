@@ -111,7 +111,7 @@ class DocsMatchTheCap(unittest.TestCase):
 
     def test_review_only_code_comments_name_the_cap(self):
         root = pathlib.Path(__file__).resolve().parent.parent
-        blocks = {"diaktoros/gate.py: review_cap_hit": gate.review_cap_hit.__doc__ or ""}
+        blocks = {"diaktoros/gate/__init__.py: review_cap_hit": gate.review_cap_hit.__doc__ or ""}
         for path, anchor in self.COMMENTS:
             lines = (root / path).read_text().splitlines()
             starts = [i for i, line in enumerate(lines) if anchor in line]

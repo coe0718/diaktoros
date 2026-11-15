@@ -109,7 +109,7 @@ Links point to implementation, not an assertion that a test ran on this machine.
 
 | Concern | Implementation | Regression evidence |
 |---|---|---|
-| Admission and event filtering | [`gate.py`](../diaktoros/gate.py), [`scripts/`](../scripts/) | [`test_fixer_gating.py`](../tests/test_fixer_gating.py), [`tests/harness/gates.py`](../tests/harness/gates.py) |
+| Admission and event filtering | [`gate/`](../diaktoros/gate/__init__.py), [`scripts/`](../scripts/) | [`test_fixer_gating.py`](../tests/test_fixer_gating.py), [`tests/harness/gates.py`](../tests/harness/gates.py) |
 | Worker lifecycle, capacity and recovery | [`run_supervisor/`](../diaktoros/run_supervisor/__init__.py), [`ledger.py`](../diaktoros/ledger.py) | [`test_run_supervisor.py`](../tests/test_run_supervisor.py), [`test_retryable_turns.py`](../tests/test_retryable_turns.py), [`test_ledger_close.py`](../tests/test_ledger_close.py) |
 | Launch, snapshots and mounts | [`trusted_turn.py`](../diaktoros/trusted_turn.py), [`contained.py`](../diaktoros/contained.py) | [`test_contained_agent.py`](../tests/test_contained_agent.py), [`test_snapshot_secrets.py`](../tests/test_snapshot_secrets.py), [`test_sandbox_limits.py`](../tests/test_sandbox_limits.py) |
 | Exact-head export and dependencies | [`trusted_fetch.py`](../diaktoros/trusted_fetch.py), [`deps.py`](../diaktoros/deps.py) | [`test_trusted_fetch.py`](../tests/test_trusted_fetch.py), [`test_deps.py`](../tests/test_deps.py) |
