@@ -16,6 +16,14 @@ sys.path.insert(0, str(ROOT))
 from diaktoros import conflict_scan, gate  # noqa: E402
 
 
+class Package(unittest.TestCase):
+    def test_the_gate_is_the_package_not_a_flat_module(self):
+        # What the script starts below are checked from (#2492 review 1, F1).
+        self.assertEqual(pathlib.Path(gate.__file__), ROOT / "diaktoros" / "gate" / "__init__.py")
+        self.assertEqual(list(gate.__path__), [str(ROOT / "diaktoros" / "gate")])
+        self.assertFalse((ROOT / "diaktoros" / "gate.py").exists())
+
+
 class ScriptsTheGateStarts(unittest.TestCase):
     def started(self, call, how: str) -> pathlib.Path:
         with mock.patch.object(gate.subprocess, how) as start:
