@@ -291,13 +291,42 @@ class Proof(unittest.TestCase):
                                       {"t.A.test_a": "t.A.test_a", "t.B.test_b": None})
         self.assertIn("ran the tests the fixer named", repro_proof.section(mixed))
 
+    def changed_tests_only(self, test, code=NEW_CODE):
+        """A NONE NAMED proof, run for real: no id named, ``widget.py`` changed to ``code`` and
+        one changed test file, ``test``."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            (base / "tests").mkdir(parents=True)
+            (base / "tests" / "__init__.py").write_text("")
+            (base / "widget.py").write_text(OLD_CODE)
+            proof = repro_proof.prove(base, manifest({"widget.py": code, "tests/test_it.py": test}),
+                                      [], run_unittest)
+        self.assertEqual(proof["hunk_tests"], ["tests.test_it"])
+        self.assertEqual(proof["hunks"], [])
+        return proof, repro_proof.section(proof)
+
     def test_changed_tests_failing_on_the_fix_promise_no_hunk_check(self):
-        # #2274: hunk_tests set but hunk_guard returned [] (the tests fail on the fix).
-        proof = dict(repro_proof.none_named(), hunk_tests=["tests.test_it"], hunks=[],
-                     hunk_why="the fix's changed tests do not all pass on the fix")
-        text = repro_proof.section(proof)
-        self.assertNotIn("which source hunks they notice", text)
+        # #2274 and the #2490 review: the changed tests fail on the fix, so hunk_guard returns
+        # [] and nothing in the whole section may say a hunk check ran.
+        proof, text = self.changed_tests_only(TEST.replace("value(), 2", "value(), 3"))
+        self.assertTrue(proof.get("hunk_why"))
         self.assertIn("they did not all pass there, so no hunk was checked", text)
+        self.assertIn('test files the fix changed, run against the fix only (no reproduction '
+                      'test was named): "tests.test_it"', text)
+        self.assertIn("- no hunk check: the fix's changed tests do not all pass on the fix", text)
+        for claim in ("hunk check ran", "which source hunks they notice", "hunk check below",
+                      "ran the tests the fixer named"):
+            self.assertNotIn(claim, text)
+
+    def test_a_test_only_fix_promises_no_hunk_check(self):
+        # The #2490 review: a fix that changes only tests has no source hunk; the section must
+        # not promise "the hunk check below" either.
+        proof, text = self.changed_tests_only(TEST.replace("value(), 2", "value(), 1"),
+                                              code=OLD_CODE)
+        self.assertFalse(proof.get("hunk_why"))
+        self.assertIn("the fix changes no source line, so there was no hunk to check", text)
+        for claim in ("hunk check ran", "which source hunks they notice", "hunk check below"):
+            self.assertNotIn(claim, text)
 
     def test_with_no_test_every_source_hunk_is_listed_past_the_cap(self):
         # Review on #1092 (F2, P1): the no-test fallback cut the list at HUNKS_MAX, and the rest

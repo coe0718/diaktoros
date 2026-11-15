@@ -442,6 +442,10 @@ def _introduction(proof: dict) -> str:
             return ("The fixer named no reproduction test, so nothing ran against the original "
                     "head. The host ran the test files the fix changed against the fix only, and "
                     "they did not all pass there, so no hunk was checked.\n")
+        if not proof.get("hunks"):
+            return ("The fixer named no reproduction test, so nothing ran against the original "
+                    "head. The host ran the test files the fix changed against the fix only; the "
+                    "fix changes no source line, so there was no hunk to check.\n")
         return ("The fixer named no reproduction test, so nothing ran against the original head. "
                 "For the hunk check below, the host ran the test files the fix changed against the "
                 "fix only: that shows which source hunks they notice, not that any test fails "
@@ -474,15 +478,16 @@ def section(proof: dict | None, fix_head: str = "", head: str = "") -> str:
     if proof.get("why"):
         text += f"- reason: {json.dumps(str(proof['why'])[:200])}\n"
     hunks = [h for h in proof.get("hunks") or [] if isinstance(h, dict)]
-    if proof.get("hunk_tests"):
-        text += ("- hunk check ran against the test files the fix changed (no reproduction test was "
-                 "named): " + ", ".join(json.dumps(str(t)[:80]) for t in proof["hunk_tests"][:6])
+    if proof.get("hunk_tests"):     # #2490 review: "hunk check ran" only when a hunk was checked
+        text += (("- hunk check ran against the test files the fix changed (no reproduction test "
+                  "was named): " if hunks else "- test files the fix changed, run against the fix "
+                  "only (no reproduction test was named): ") + ", ".join(json.dumps(str(t)[:80]) for t in proof["hunk_tests"][:6])
                  + "\n")
     if proof.get("hunk_no_tests"):
         text += ("- hunk check left out changed test files that hold no unittest test: "
                  + ", ".join(json.dumps(str(t)[:80]) for t in proof["hunk_no_tests"][:6]) + "\n")
     if proof.get("hunk_why"):
-        text += f"- hunk check: {proof['hunk_why']}\n"
+        text += f"- no hunk check: {proof['hunk_why']}\n"
     if hunks:
         tests_word = ("fix's changed tests" if proof.get("hunk_tests") else "named tests")
         nothing_ran = (proof.get("overall") == NONE_NAMED and not proof.get("hunk_tests"))
