@@ -277,6 +277,28 @@ class Proof(unittest.TestCase):
         self.assertNotIn("ran the tests the fixer named", text)
         self.assertIn("nothing ran against the original head or against the fix", text)
 
+    def test_a_proof_that_ran_nothing_does_not_say_the_named_tests_ran(self):
+        # #2270, #2274: NOT RUN, and ID NOT FOUND with no id resolved, ran nothing anywhere.
+        not_run = repro_proof.section(repro_proof.unavailable("no sandbox on this host"))
+        unfound = repro_proof.section(repro_proof.summarize(
+            ["tests.test_x.Case.test_y"], "", "", {"tests.test_x.Case.test_y": None}))
+        for text, why in ((not_run, "the host could not run the proof"),
+                          (unfound, "no id the fixer named matched a test file")):
+            self.assertNotIn("ran the tests the fixer named", text)
+            self.assertIn(f"Nothing ran against the original head or against the fix: {why}",
+                          text)
+        mixed = repro_proof.summarize(["t.A.test_a", "t.B.test_b"], "", "",
+                                      {"t.A.test_a": "t.A.test_a", "t.B.test_b": None})
+        self.assertIn("ran the tests the fixer named", repro_proof.section(mixed))
+
+    def test_changed_tests_failing_on_the_fix_promise_no_hunk_check(self):
+        # #2274: hunk_tests set but hunk_guard returned [] (the tests fail on the fix).
+        proof = dict(repro_proof.none_named(), hunk_tests=["tests.test_it"], hunks=[],
+                     hunk_why="the fix's changed tests do not all pass on the fix")
+        text = repro_proof.section(proof)
+        self.assertNotIn("which source hunks they notice", text)
+        self.assertIn("they did not all pass there, so no hunk was checked", text)
+
     def test_with_no_test_every_source_hunk_is_listed_past_the_cap(self):
         # Review on #1092 (F2, P1): the no-test fallback cut the list at HUNKS_MAX, and the rest
         # vanished from the proof. Nothing runs there, so every hunk is listed; the section shows

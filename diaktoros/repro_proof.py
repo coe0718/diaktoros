@@ -431,18 +431,28 @@ _WORDS = {
 
 def _introduction(proof: dict) -> str:
     """What the host actually ran (#1094): the named tests on both heads, or, with none named,
-    nothing on the original head and at most the fix's changed test files on the fix alone."""
-    if proof.get("overall") != NONE_NAMED:
-        return ("The host ran the tests the fixer named against the original head (with the fix's "
-                "test files applied) and against the fix. A test that passes on the original head "
-                "does not cover the fix: treat it as a missing test. The ids are the fixer's words.\n")
-    if proof.get("hunk_tests"):
+    nothing on the original head and at most the fix's changed test files on the fix alone.
+    A proof the host could not run, or whose named ids matched no test file, ran nothing (#2270,
+    #2274); changed tests that failed on the fix leave no hunk check to describe (#2274)."""
+    if proof.get("overall") == NONE_NAMED:
+        if not proof.get("hunk_tests"):
+            return ("The fixer named no reproduction test, so nothing ran against the original "
+                    "head or against the fix.\n")
+        if proof.get("hunk_why"):
+            return ("The fixer named no reproduction test, so nothing ran against the original "
+                    "head. The host ran the test files the fix changed against the fix only, and "
+                    "they did not all pass there, so no hunk was checked.\n")
         return ("The fixer named no reproduction test, so nothing ran against the original head. "
                 "For the hunk check below, the host ran the test files the fix changed against the "
                 "fix only: that shows which source hunks they notice, not that any test fails "
                 "without the fix.\n")
-    return ("The fixer named no reproduction test, so nothing ran against the original head or "
-            "against the fix.\n")
+    if not any(row.get("old") != NOT_FOUND for row in proof.get("ids") or []):
+        why = ("the host could not run the proof" if proof.get("overall") == UNAVAILABLE
+               else "no id the fixer named matched a test file in this checkout")
+        return f"Nothing ran against the original head or against the fix: {why}.\n"
+    return ("The host ran the tests the fixer named against the original head (with the fix's "
+            "test files applied) and against the fix. A test that passes on the original head "
+            "does not cover the fix: treat it as a missing test. The ids are the fixer's words.\n")
 
 
 def section(proof: dict | None, fix_head: str = "", head: str = "") -> str:
