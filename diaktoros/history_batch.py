@@ -6,7 +6,9 @@ The PRs are the ones the run ledger has a turn for since the date. Each is colle
 turns before the date included) and written only when GitHub says it merged; with ``--offline``
 the merge cannot be read, so a PR is written whether it merged or not and the listing says so.
 A write that fails stops the export there, keeping the files before it. Nothing is written
-outside ``DIR``; a file of the same name is replaced.
+outside ``DIR``; a file of the same name is replaced. With nothing to write, ``DIR`` is not made:
+a temporary file opened (and removed at once) in it or its nearest existing parent shows whether
+it could be.
 """
 from __future__ import annotations
 
@@ -79,54 +81,28 @@ def export(loop: dict, db: Path, since: float, out: Path, fmt: str, offline: boo
     return result
 
 
-def _make(out: Path) -> list[Path]:
-    """Make ``out`` and its missing parents the one way every export does, so a refusal reads the
-    same whether or not the window holds a PR (#2251); an ``out`` that is a file is "Not a
-    directory", as a parent that is a file is. One level at a time, so it knows which directories
-    it made itself: one another process made meanwhile is never counted, and a failure part way
-    removes what it made before raising. Returns the ones it made, deepest first."""
-    missing = []
-    for part in (out, *out.parents):
-        if part.is_dir():
-            break
-        missing.append(part)
-    made: list[Path] = []
+def _make(out: Path) -> None:
+    """Make ``out`` and its missing parents, as every export with a PR to write does. An ``out``
+    that is a file is "Not a directory", as a parent that is a file is, so the refusal reads the
+    same as ``_probe``'s (#2251)."""
     try:
-        for part in reversed(missing):
-            try:
-                part.mkdir()
-            except FileExistsError:
-                if not part.is_dir():
-                    raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR),
-                                             str(part)) from None
-                continue            # another process made it: not ours to remove
-            made.append(part)
-    except OSError:
-        _remove(made[::-1])
-        raise
-    return made[::-1]
-
-
-def _remove(made: list[Path]) -> None:
-    """Remove the directories ``_make`` made, deepest first; stop at one that is no longer empty
-    (something else wrote there meanwhile), leaving it and its parents as they are."""
-    for part in made:
-        try:
-            part.rmdir()
-        except OSError:
-            break
+        out.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(out)) from None
 
 
 def _probe(out: Path) -> None:
-    """Raise the OSError an export would for ``out``, leaving nothing behind: ``_make``, then a
-    nameless file written in it, so a read-only filesystem refuses too, which the permission bits
-    alone don't show (#2252). The directories it made are removed again."""
-    made = _make(out)
-    try:
-        with tempfile.TemporaryFile(dir=out) as probe:
-            probe.write(b"\n")
-    finally:
-        _remove(made)
+    """Raise the OSError ``_make`` and a write would raise for ``out``, creating and removing no
+    directory, so it can never touch one another process makes (#2489 review): its nearest
+    existing part must be a directory, and a nameless temporary file must open there. That write
+    is what catches a read-only filesystem the permission bits don't show (#2252)."""
+    for part in (out, *out.parents):
+        if part.exists():
+            if not part.is_dir():
+                raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(part))
+            with tempfile.TemporaryFile(dir=part) as probe:
+                probe.write(b"\n")
+            return
 
 
 def listing(result: dict, out: Path, offline: bool) -> str:
