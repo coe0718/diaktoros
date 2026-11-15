@@ -114,6 +114,30 @@ class Operator(ruling.Base):
         self.assertEqual(report["next"]["kind"], "fixer-push", report["next"])
         self.assertNotIn("your decision", report["next"]["action"])
 
+    def ruling_notice(self, author="fixer", verdict="REJECT", shown="s1"):
+        """#2258: the operator's ruling notice for the newest ruling, shown shadow review ``shown``."""
+        from diaktoros.run_supervisor import notices
+        self.ruled(verdict)
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("UPDATE rulings SET shadow_run=? WHERE run_id=?", (shown, f"r{self.n}"))
+            con.row_factory = sqlite3.Row
+            row = con.execute("SELECT * FROM rulings WHERE run_id=?", (f"r{self.n}",)).fetchone()
+        pr = {**fg.LIVE, "user": {"login": author}}
+        with mock.patch.object(gh, "pr", return_value=pr), \
+                mock.patch("diaktoros.config.by_repo", return_value=self.loop):
+            return notices.OperatorNotices()._ruling_message(row)
+
+    def test_the_ruling_notice_says_who_answers_an_upheld_review(self):
+        self.loop = {**self.loop, "unattended_fixer_push": True}
+        text = self.ruling_notice()
+        self.assertIn("so the fixer answers its findings", text)
+        self.assertNotIn("the decision is yours", text)
+        self.assertIn("never merges, pushes or reviews", text)
+        for kwargs in ({"author": "someone"}, {"verdict": "ACCEPT"}, {"shown": ""}):
+            self.assertIn("the decision is yours", self.ruling_notice(**kwargs), kwargs)
+        self.loop = {**self.loop, "unattended_fixer_push": False}
+        self.assertIn("the decision is yours", self.ruling_notice())               # push off
+
     def escalate_off(self):
         self.loop = {**self.loop, "unattended_fixer_push": True,
                      "shadow": {**self.loop["shadow"], "escalate": False}}

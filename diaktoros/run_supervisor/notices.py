@@ -54,9 +54,27 @@ class OperatorNotices:
         return (f"⚖️ Diaktoros adjudicator ruling {row['verdict']}: "
                 f"https://github.com/{row['repo']}/pull/{row['pr']} head={row['head']} "
                 f"run={row['run_id']} ({row['turn_key']}). PR comment: {comment}. "
-                "The adjudicator never merges, pushes or reviews; the decision is yours. "
+                "The adjudicator never merges, pushes or reviews; "
+                + ("it upheld the shadow review, so the fixer answers its findings and the fixed "
+                   "head is reviewed fresh. " if self._fixer_answers(row) else
+                   "the decision is yours. ") +
                 f"Reason as written by the adjudicator (model output, not verified by the loop):\n"
                 f"{body}")
+
+    @staticmethod
+    def _fixer_answers(row) -> bool:
+        """Whether this ruling hands its findings to the fixer (#2258): a REJECT of the shadow
+        review it was shown (the rule the broker queues the fix by), on a PR the fixer answers
+        (``gate.fixer_answers_upheld``, the rule ``ready`` and ``explain`` use, #1353). False
+        when that cannot be read: the operator is then told the decision is theirs."""
+        if row['verdict'] != 'REJECT' or 'shadow_run' not in row.keys() or not row['shadow_run']:
+            return False
+        try:
+            from .. import config, gate
+            loop = config.by_repo(row['repo'])
+            return bool(loop) and gate.fixer_answers_upheld(loop, int(row['pr']))
+        except Exception:
+            return False
 
     @staticmethod
     def _loop_id(row) -> str:
