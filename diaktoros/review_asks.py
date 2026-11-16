@@ -1,6 +1,7 @@
 """What the operator's ``hermes dk review`` asks beyond a plain review (split from
 ``one_shot_action``, #1369): another verdict on a review-only PR at its cap
-(``--another-round``), and the answer for a reconsider (#1334) the gate held instead of queuing.
+(``--another-round``, or with ``review_only_rerequest_grants`` a maintainer's GitHub re-request,
+#2496), and the answer for a reconsider (#1334) the gate held instead of queuing.
 Both read the reviews the reviewer gate itself decides from (``gate_reviews``, #1370)."""
 from __future__ import annotations
 
@@ -45,6 +46,29 @@ def grant_another_round(loop, args, pr, head, st, emit):
     else:
         emit(f"#{args.pr} @ {head[:7]}: another round granted — one more verdict")
     return None
+
+
+def rerequest_grants(loop) -> bool:
+    """Whether a maintainer's GitHub re-request at a review-only PR's cap grants another round,
+    as ``--another-round`` does (#2496, ``review_only_rerequest_grants``). Off unless set."""
+    return loop.get("review_only_rerequest_grants") is True
+
+
+def rerequest_can_grant(loop) -> bool:
+    """Whether a re-request can grant here, so the cap notice and ``explain`` may offer it: the
+    setting is on and GitHub can request the reviewer (not a GitHub App, ``reviewer_is_app``)."""
+    return rerequest_grants(loop) and not config.reviewer_is_app(loop)
+
+
+def grant_by_rerequest(loop, st, number, head, rounds, sender) -> bool:
+    """The reviewer gate's grant for a ``review_requested`` at a review-only PR's cap (#2496):
+    with ``rerequest_grants`` on, a maintainer's (``config.maintainers``) request grants one more
+    verdict at ``head``, under ``--another-round``'s rules: recorded against this head and verdict
+    count, so a repeated request changes nothing. The gate asks only for a head with no verdict
+    yet, as ``grant_another_round`` refuses one. True only when this call recorded the grant."""
+    if not rerequest_grants(loop) or sender not in config.maintainers(loop):
+        return False
+    return st.review_cap_grant(number, head, rounds)
 
 
 def reconsider_held(emit, st, hold, args, head, loop) -> int:

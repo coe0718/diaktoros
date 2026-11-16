@@ -71,6 +71,8 @@ def _switches(loop: dict, schema, rows: list, enable: str) -> None:
     what it needs to act says so: it is inert."""
     pushes = "" if config.unattended_fixer_push_enabled(loop) else f"unattended fixer pushes ({enable})"
     login = "" if config.adjudicator_login(loop) else "the adjudicator comment login (--adjudicator-login)"
+    asks = ("a reviewer GitHub can request, not a GitHub App" if config.reviewer_is_app(loop)
+            else "" if config.maintainers(loop) else "a maintainer (triage.maintainers or operator_agents)")
     for key, off, needs in (
             ("review_only_update", "a conflicting review-only PR gets a notice, no merge push", ""),
             ("review_after_ci", "a review starts at once, with whatever CI has finished", ""),
@@ -83,7 +85,9 @@ def _switches(loop: dict, schema, rows: list, enable: str) -> None:
             ("adjudicator_file_issues", "a ruling's follow-ups stay in its comment", ""),
             ("change_proof", "the reviewer proves the changed tests by hand", ""),
             ("main_flake_rerun", "every red main is a main_red notice", ""),
-            ("update_behind", "a behind loop PR waits for a person or the fixer", pushes)):
+            ("update_behind", "a behind loop PR waits for a person or the fixer", pushes),
+            ("review_only_rerequest_grants", "only `review --another-round` lifts a review-only "
+                                             "cap", asks)):
         schema(key, (key,), bool(loop[key]), on=bool(loop[key]), off=off)
         if loop[key] and needs:
             rows[-1].note = f"on, but inert: needs {needs}"

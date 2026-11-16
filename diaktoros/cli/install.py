@@ -931,6 +931,7 @@ def _init_switch_flags(init, d) -> None:  # noqa: ANN001
             ("--change-proof", "run each reviewed head's changed tests on its merge base and at the head, and show the reviewer"),
             ("--main-flake-rerun", "rerun main's failed CI jobs once when they look like a flake, before a red-main notice"),
             ("--update-behind", "merge the base into a loop PR that fell behind, keeping its approval when the merge touches nothing the PR changed"),
+            ("--review-only-rerequest-grants", "a maintainer's GitHub re-request of the reviewer at a review-only PR's cap grants one more verdict, as `review --another-round` does"),
             ("--attribution", "sign what the loop posts with 'Automated by Diaktoros'")):
         on = d[flag[2:].replace("-", "_")]
         init.add_argument(flag, choices=("on", "off"), default=None,

@@ -445,3 +445,35 @@ def check_update_behind(loop: dict, offline: bool = False) -> doctor.Check | Non
                         f"on — {login} merges {loop['base']} into a behind loop PR when the merge "
                         "is clean; an approved head's approval carries over only when the base's "
                         "new commits touch nothing the PR changed")
+
+
+def check_review_only_rerequest_grants(loop: dict) -> doctor.Check | None:
+    """A maintainer's GitHub re-request at a review-only PR's cap granting another round (#2496,
+    ``review_only_rerequest_grants``); ``None`` when the setting is off. On, it needs a reviewer
+    GitHub can request, a review-only author and a maintainer, and it says who can grant."""
+    from .. import review_asks   # here, not module level: review_asks imports the gate
+    if not review_asks.rerequest_grants(loop):
+        return None
+    off = f"`hermes dk set --loop {loop.get('id') or '<id>'} --review-only-rerequest-grants off`"
+    if config.reviewer_is_app(loop):
+        return doctor.Check("rerequest-grants", doctor.MISMATCH,
+                            "on, but the reviewer seat is a GitHub App, which GitHub cannot "
+                            "request as a reviewer, so only `review --another-round` grants a round",
+                            off)
+    if not config.review_only(loop):
+        return doctor.Check("rerequest-grants", doctor.MISMATCH,
+                            "on, but the loop lists no review-only author, so no PR has a "
+                            "review-only cap to lift", f"`hermes dk set --loop {loop.get('id')} "
+                            f"--review-only LOGIN`, or {off}")
+    who = sorted(config.maintainers(loop))
+    if not who:
+        return doctor.Check("rerequest-grants", doctor.MISMATCH,
+                            "on, but the loop names no maintainer (triage.maintainers or "
+                            "operator_agents), so no re-request grants a round",
+                            f"name your login in triage.maintainers, or {off}")
+    return doctor.Check("rerequest-grants", doctor.VERIFIED,
+                        f"on — a re-request of {loop.get('reviewer_seat')} by {', '.join(who)} at a "
+                        "review-only PR's cap grants one more verdict, as `review --another-round` "
+                        "does. GitHub cannot tell a person's click from a token's call: anything "
+                        "holding one of these logins' tokens (an agent posting as you) can grant "
+                        "a round too")

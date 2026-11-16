@@ -562,6 +562,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--change-proof` | `on` \| `off` |  | run each reviewed head's changed tests on its merge base and at the head, and show the reviewer (default: the plugin setting, off) |
 | `--main-flake-rerun` | `on` \| `off` |  | rerun main's failed CI jobs once when they look like a flake, before a red-main notice (default: the plugin setting, off) |
 | `--update-behind` | `on` \| `off` |  | merge the base into a loop PR that fell behind, keeping its approval when the merge touches nothing the PR changed (default: the plugin setting, off) |
+| `--review-only-rerequest-grants` | `on` \| `off` |  | a maintainer's GitHub re-request at a review-only PR's cap grants one more verdict (default: the plugin setting, off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default: the plugin setting, on) |
 | `--reviewer-profile` | `REVIEWER_PROFILE` |  | Hermes profile for the reviewer seat (default: the plugin setting) |
 | `--fixer-profile` | `FIXER_PROFILE` |  | Hermes profile for the fixer seat (default: the plugin setting) |
@@ -693,6 +694,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--change-proof` | `on` \| `off` |  | run each reviewed head's changed tests on its merge base and at the head, and show the reviewer (default off) |
 | `--main-flake-rerun` | `on` \| `off` |  | rerun main's failed CI jobs once when they look like a flake, before a red-main notice (default off) |
 | `--update-behind` | `on` \| `off` |  | merge the base into a loop PR that fell behind, keeping its approval when the merge touches nothing the PR changed (default off) |
+| `--review-only-rerequest-grants` | `on` \| `off` |  | a maintainer's GitHub re-request of the reviewer at a review-only PR's cap grants one more verdict, as `review --another-round` does (default off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default on) |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000 (default: the plugin setting, else the review cap) |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10 (default: the plugin setting, else 3) |
@@ -805,6 +807,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--change-proof` | `on` \| `off` |  | run each reviewed head's changed tests on its merge base and at the head, and show the reviewer; off stops it |
 | `--main-flake-rerun` | `on` \| `off` |  | rerun main's failed CI jobs once when they look like a flake, before a red-main notice; off stops it |
 | `--update-behind` | `on` \| `off` |  | merge the base into a loop PR that fell behind, keeping its approval when the merge touches nothing the PR changed; needs unattended fixer pushes; off stops it |
+| `--review-only-rerequest-grants` | `on` \| `off` |  | a maintainer's GitHub re-request of the reviewer at a review-only PR's cap grants one more verdict, as `review --another-round` does; off leaves only `--another-round` |
 | `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000; 0 = the review cap |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head waits for you, 1-10; 0 = the default (3) |
@@ -1841,7 +1844,8 @@ It's also refused when the verdict cap is spent (#1453): at a fixer PR with `cap
 changes-requested verdicts (say, a cap lowered after the approval) the gate would park the PR for
 adjudication instead of reviewing it, so a reconsider never reaches the gate there and never
 escalates a PR (`escalate` asks for a ruling). A review-only PR at its `review_only_cap` is
-refused too; `--another-round` is the way past that cap.
+refused too; `--another-round` is the way past that cap (or, with `review_only_rerequest_grants`
+on, a maintainer's re-request on GitHub).
 A reconsider has to be queued as a turn while you wait. If the gate can only hold it in the
 reviewer queue (for example, when the isolated worker runtime is unavailable), nothing replays
 it: the queue entry keeps no turn key, and a later delivery or drain at the reviewed head only
@@ -1958,7 +1962,8 @@ a ruling and has no turn running. For a review-only PR this is always a person's
 the ruling is advice to the operator, and the loop never pushes to or merges that branch. A
 maintainer's own PR is eligible only when the maintainer is also review-only, since only then does
 the reviewer give it a verdict to rule on (#1165).
-The review-only verdict cap still waits for `review --another-round`; it does not automatically
+The review-only verdict cap still waits for `review --another-round` (or, with
+`review_only_rerequest_grants` on, a maintainer's re-request on GitHub); it does not automatically
 escalate. Exit `1` means it was refused, and the line says why.
 
 **With a turn running on a fixer's PR** (#1246), the escalation can't be written yet, and with unattended fixer
