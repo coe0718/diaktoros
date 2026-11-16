@@ -436,7 +436,8 @@ class CleanupPoolTests(unittest.TestCase):
             with self.fail_eject():
                 w._cleanup()
             before = (pool.root / native_recovery.JOURNAL).read_bytes()
-            with mock.patch.object(run_supervisor, 'production_ledger', return_value=Path(directory) / 'ledger.sqlite'), \
+            with mock.patch.object(sys, 'platform', 'darwin'), \
+                    mock.patch.object(run_supervisor, 'production_ledger', return_value=Path(directory) / 'ledger.sqlite'), \
                     mock.patch.object(native_storage.Workspace, '_detach_owned') as detach:
                 check = doctor.check_native_cleanup()
             self.assertEqual(check.status, doctor.MISMATCH)

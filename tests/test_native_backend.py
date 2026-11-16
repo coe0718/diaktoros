@@ -180,6 +180,18 @@ print('NATIVE_PATCH_OK')
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('SPAWN_OK', result.stdout)
 
+    def test_corefoundation_initializes_without_host_user_lookup(self):
+        with native_backend.workspace(pool=self.root / 'pool', size_mib=64) as workspace:
+            with mock.patch.dict(os.environ, {'__CF_USER_TEXT_ENCODING': 'host-value-must-not-leak'}):
+                result = self.launch('''
+import ctypes, os
+assert os.environ['__CF_USER_TEXT_ENCODING'] == f'0x{os.getuid():X}:0:0'
+ctypes.CDLL('/System/Library/Frameworks/Foundation.framework/Foundation')
+print('FOUNDATION_READY')
+''', workspace)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('FOUNDATION_READY', result.stdout)
+
     def test_framework_python_keeps_virtualenv_packages(self):
         if not (Path(sys.base_prefix) / 'Resources/Python.app/Contents/MacOS/Python').is_file():
             self.skipTest('Framework Python fixture')

@@ -110,6 +110,8 @@ def _layout(paths, volume, host, checkout_writable):
            'CARGO_NET_OFFLINE': 'true', 'GIT_CONFIG_GLOBAL': '/dev/null',
            'GIT_CONFIG_SYSTEM': '/dev/null', 'GIT_TERMINAL_PROMPT': '0',
            'DIAKTOROS_WORK': str(volume.work), 'DIAKTOROS_EXPORT': str(paths['checkout'])}
+    # CoreFoundation must not fall back to the denied host user-directory service.
+    env['__CF_USER_TEXT_ENCODING'] = f'0x{os.getuid():X}:0:0'
     return reads, mapping, env
 
 

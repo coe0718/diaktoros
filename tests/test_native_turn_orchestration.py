@@ -241,10 +241,15 @@ class NativeOrchestration(unittest.TestCase):
         paths = {name: Path('/fixture') / name for name in
                  ('code', 'venv', 'runtime', 'home', 'rust', 'query')}
         with mock.patch.object(sys, 'platform', 'darwin'), \
+                mock.patch.object(native_backend, 'workspace') as workspace, \
                 mock.patch.object(native_backend, 'run', return_value=
                 subprocess.CompletedProcess([], 0, 'proof', '')) as run:
             output = trusted_turn.unittest_runner(**paths)(Path('/fixture/tree'), ['tests.test_one'])
         self.assertEqual(output, 'proof')
+        workspace.assert_called_once()
+        self.assertEqual(workspace.call_args.kwargs['pool'].name, 'native-proof-cleanup')
+        self.assertIs(run.call_args.kwargs['workspace'], workspace.return_value.__enter__.return_value)
+        workspace.return_value.__exit__.assert_called_once()
         entry = run.call_args.kwargs['entry']
         self.assertIn('/fixture/venv/bin/python', entry)
         self.assertNotIn('/opt/venv', ' '.join(entry))

@@ -44,7 +44,13 @@ jobs:
           if [ "$INSTRUMENTATION" = sync-delay ]; then flags+=(--sync-delay); fi
           if [ "$INSTRUMENTATION" = sync-unmount ]; then flags+=(--sync-unmount); fi
           if [ "$INSTRUMENTATION" = stress-timing ]; then flags+=(--stress-timing); fi
-          python tests/native_eject_forensics.py --cycles 128 --eventual-cleanup --require-natural-pending --forensic-precondition --output "$RUNNER_TEMP/eventual-eject-evidence" "${flags[@]}"
+          status=0
+          python tests/native_eject_forensics.py --cycles 128 --eventual-cleanup --require-natural-pending --forensic-precondition --output "$RUNNER_TEMP/eventual-eject-evidence" "${flags[@]}" || status=$?
+          if [ "$status" -eq 2 ]; then
+            echo '::warning::Inconclusive: no naturally pending image observed; recovery qualification remains unverified.'
+            echo 'Natural-recovery qualification was inconclusive: no naturally pending image was observed. See the uploaded evidence; this is not a confirmed cleanup failure.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
