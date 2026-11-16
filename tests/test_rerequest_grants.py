@@ -3,8 +3,10 @@ reviewer at a review-only PR's cap grants another round, as ``review --another-r
 
 The gate runs end to end (GitHub, the worker spawn and the observer mocked, as in
 ``test_review_only.Gates``): one more verdict per head and verdict count, never for a head that
-already has a verdict, only from a maintainer and only on ``review_requested``, and the hand-off
-notice says who granted it. Off, the cap declines as before. Then the setting's every path:
+already has a verdict, only from a maintainer and only on ``review_requested``. Each grant is an
+urgent ``granted`` notice, through the real observer: sent by the delivery that wrote it, so a
+concurrent delivery queuing the review can't lose it, and never held for a digest. Off, the cap
+declines as before. Then the setting's every path:
 the loop file, the form, ``init``, ``set``, ``setup``, ``show`` and ``doctor``.
 """
 from __future__ import annotations
@@ -24,7 +26,7 @@ import run_tests as t  # noqa: E402
 import test_doctor_environment  # noqa: E402
 import test_fixer_gating as fg  # noqa: E402
 import test_review_only as tro  # noqa: E402
-from diaktoros import config, doctor, review_asks, run_supervisor, show  # noqa: E402
+from diaktoros import config, doctor, observer, review_asks, routes, run_supervisor, show  # noqa: E402
 from diaktoros.cli import setup_command as cli_setup  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.doctor import identity_checks  # noqa: E402
@@ -55,6 +57,25 @@ class Gate(fg.Base):
         self.live = {**fg.LIVE, "user": {"login": OWNER}}
         self.cap = self.loop["cap"]
 
+    def feed(self, **observer_block):
+        """An observer feed on a registered delivery-only route; returns the mocked POST."""
+        subs = self.root / "subscriptions.json"
+        env = mock.patch.dict(os.environ, {"DIAKTOROS_SUBS": str(subs)})
+        env.start()
+        self.addCleanup(env.stop)
+        self.write(host="https://owner.example", observer={"route": "one-observe", **observer_block})
+        subs.write_text(json.dumps({"one-observe": {"host": "https://owner.example", "secret": "s",
+                                                    **observer.route_contract(self.loop)}}))
+        fire = mock.patch.object(routes, "fire", return_value=True)
+        self.addCleanup(fire.stop)
+        return fire.start()
+
+    @staticmethod
+    def sent(fire) -> list:
+        """(event, message) of each notice POSTed."""
+        return [(c.args[2]["_observer"]["event"], c.args[2]["_observer"]["message"])
+                for c in fire.call_args_list]
+
     def write(self, **extra):
         path = config.config_dir() / "one.json"
         path.write_text(json.dumps({**json.loads(path.read_text()), **extra}))
@@ -64,9 +85,12 @@ class Gate(fg.Base):
         """``count`` verdicts in all, the last of them at this head."""
         return self.verdicts(count - 1, OLD) + [fg.verdict(5 + count) | {"commit_id": HEAD}]
 
-    def ask(self, sender: str, reviews=None, action: str = "review_requested", notes=None):
+    def ask(self, sender: str, reviews=None, action: str = "review_requested", notes=None,
+            enqueue: str = ""):
         """Run the gate on ``action`` from ``sender``; by default the cap's verdicts are all on an
-        older head. Returns the mocked ``block_pr_agent`` (it ends the gate, as a claim would)."""
+        older head. Returns the mocked ``block_pr_agent`` (it ends the gate, as a claim would).
+        With ``enqueue``, the real ``block_pr_agent`` runs and the ledger answers ``enqueue``,
+        and with ``notes=False`` the real observer sends (``feed``)."""
         payload = {"action": action, "number": 7, "pull_request": self.live,
                    "repository": {"full_name": fg.REPO}, "sender": {"login": sender},
                    "requested_reviewer": {"login": "reviewer"}}
@@ -76,11 +100,15 @@ class Gate(fg.Base):
              mock.patch.object(gate_reviewer.gh, "pr", return_value=self.live), \
              mock.patch.object(gate_reviewer.gate, "fetch_reviews", return_value=reviews), \
              mock.patch.object(gate_reviewer.gate, "drain_seat"), \
-             mock.patch.object(gate_reviewer.gate, "block_pr_agent",
-                               side_effect=lambda *a, **kw: gate_reviewer.silence()) as block, \
-             mock.patch.object(gate_reviewer.observer, "notify",
-                               side_effect=lambda *a, **kw: (notes if notes is not None
-                                                             else []).append(kw)), \
+             mock.patch.object(gate_reviewer.gate, "enqueue_isolated", return_value=enqueue), \
+             mock.patch("diaktoros.merge_check.mark_pending", return_value=False), \
+             (contextlib.nullcontext(mock.Mock()) if enqueue else mock.patch.object(
+                 gate_reviewer.gate, "block_pr_agent",
+                 side_effect=lambda *a, **kw: gate_reviewer.silence())) as block, \
+             (contextlib.nullcontext() if notes is False else mock.patch.object(
+                 gate_reviewer.observer, "notify",
+                 side_effect=lambda *a, **kw: (notes if notes is not None
+                                               else []).append((a[2], kw)))), \
              contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
                 gate_reviewer.main()
@@ -94,30 +122,52 @@ class Gate(fg.Base):
         return notify
 
     def test_a_maintainers_rerequest_at_the_cap_grants_one_review_and_says_who(self):
-        block = self.ask(MAINT)
+        # A digest is set: the grant still goes out at once, with its head and who granted it,
+        # and only the ordinary hand-off waits for the digest (#2501, F2).
+        fire = self.feed(digest_min=30)
+        block = self.ask(MAINT, notes=False)
         block.assert_called_once()
         self.assertEqual(block.call_args.args[2:5], ("reviewer", 7, HEAD))
         self.assertTrue(self.st.review_cap_granted(7, HEAD, self.cap))
-        notify = self.handoff(block)
-        self.assertEqual(notify.call_args.args[2], "handoff")
-        kw = notify.call_args.kwargs
-        self.assertIn(f"another round granted on #7 @ {HEAD[:7]} by {MAINT}'s re-request",
-                      kw["outcome"])
-        self.assertEqual((kw["identity"], kw["actor"]), (f"another-round:{self.cap}", MAINT))
+        [(event, text)] = self.sent(fire)
+        self.assertEqual(event, "granted")
+        self.assertIn(f"#7 `{HEAD[:7]}` another round granted — {MAINT}'s re-request on GitHub",
+                      text)
+        self.assertIn(f"one more verdict at this head, {self.cap} spent ({MAINT})", text)
+        with contextlib.redirect_stderr(io.StringIO()):
+            block.call_args.kwargs["on_queued"]()
+        self.assertEqual(len(self.sent(fire)), 1)
+        self.assertEqual(observer.owed(self.st).get("queued"), 1)
         # That review's verdict lands at this head: the head is reviewed, so nothing more.
-        self.assertIsNone(self.ask(MAINT, self.at_head(self.cap + 1)).call_args)
+        self.assertIsNone(self.ask(MAINT, self.at_head(self.cap + 1), notes=False).call_args)
         self.assertFalse(self.st.review_cap_granted(7, HEAD, self.cap + 1))
+        self.assertEqual(len(self.sent(fire)), 1)
+
+    def test_the_grant_is_announced_when_another_delivery_queues_its_review(self):
+        # #2501 F1: two deliveries of the request interleave. The first writes the grant and its
+        # enqueue finds the turn already there ("duplicate running"), so block_pr_agent drops
+        # its on_queued; the second finds the grant and queues the review with an ordinary
+        # hand-off. The grant's notice came from the first, before its enqueue.
+        fire = self.feed()
+        self.ask(MAINT, notes=False, enqueue="duplicate running")
+        self.ask(MAINT, notes=False, enqueue="enqueued")
+        self.assertEqual([event for event, _ in self.sent(fire)], ["granted", "handoff"])
+        self.assertIn(f"another round granted — {MAINT}'s re-request", self.sent(fire)[0][1])
+        self.assertNotIn("granted", self.sent(fire)[1][1])
 
     def test_a_repeated_rerequest_at_the_same_head_and_count_grants_nothing_more(self):
-        self.ask(MAINT)
+        notes = []
+        self.ask(MAINT, notes=notes)
         entry = self.st.review_cap_entry(7)
-        block = self.ask(MAINT)
+        block = self.ask(MAINT, notes=notes)
         self.assertEqual(self.st.review_cap_entry(7), entry)
         # The first grant still covers this head's next verdict, as --another-round's would, but
         # this request granted nothing, and its notice doesn't say it did.
         block.assert_called_once()
+        self.assertEqual([(e, kw["identity"]) for e, kw in notes],
+                         [("granted", f"rerequest:{self.cap}")])
         kw = self.handoff(block).call_args.kwargs
-        self.assertEqual((kw["identity"], kw["outcome"]), ("review_requested", ""))
+        self.assertEqual((kw["identity"], kw.get("outcome", "")), ("review_requested", ""))
 
     def test_off_a_maintainers_rerequest_at_the_cap_is_declined(self):
         self.write(**{KEY: False})
@@ -150,7 +200,7 @@ class Gate(fg.Base):
     def test_the_cap_notice_and_explain_name_the_rerequest_only_when_on(self):
         notes = []
         self.ask(OWNER, notes=notes)
-        held = [n["outcome"] for n in notes if "review cap reached" in n.get("outcome", "")]
+        held = [kw["outcome"] for _, kw in notes if "review cap reached" in kw.get("outcome", "")]
         self.assertEqual(len(held), 1, notes)
         self.assertIn("--another-round` or re-request the reviewer on GitHub", held[0])
         self.assertIn("re-requests the reviewer on GitHub", self.explain()["next"]["action"])
@@ -168,7 +218,7 @@ class Gate(fg.Base):
                            self.explain(self.cap - 1)["next"]["action"]):
                 self.assertNotIn("re-request on GitHub", action)
                 self.assertNotIn("re-requests the reviewer on GitHub", action)
-        held = [n["outcome"] for n in notes if "review cap reached" in n.get("outcome", "")]
+        held = [kw["outcome"] for _, kw in notes if "review cap reached" in kw.get("outcome", "")]
         self.assertEqual(len(held), 1, notes)
         self.assertNotIn("re-request", held[0])
 

@@ -125,19 +125,23 @@ def breach_at_cap(loop: dict, st, number: int, head: str, rounds: int) -> None:
 
 
 def review_only_cap(loop: dict, st, number: int, head: str, rounds: int, reviews: list,
-                    action: str, sender: str) -> str:
+                    action: str, sender: str) -> None:
     """A review-only author's PR (#191) has its own verdict cap (review_only_cap, default `cap`).
     At the cap the gate declines with nothing spent, whoever asks: the author re-requesting their
     own PR is no bypass, so this ends the gate with ``silence``. Only a maintainer's
     --another-round (one verdict, this head) lifts it, or, with review_only_rerequest_grants on
     (#2496), a maintainer's GitHub re-request of a head with no verdict yet, which grants the same
-    one verdict. Returns what such a grant says for the hand-off notice, else ``""``."""
-    ro_cap, granted = config.review_only_cap(loop), ""
+    one verdict, announced at once by an urgent ``granted`` notice."""
+    ro_cap = config.review_only_cap(loop)
     if (rounds >= ro_cap and action == "review_requested"
             and not gate.reviewed_at_head(reviews, loop, head)
             and review_asks.grant_by_rerequest(loop, st, number, head, rounds, sender)):
-        granted = (f"another round granted on #{number} @ {head[:7]} by {sender}'s re-request "
-                   f"(review_only_rerequest_grants; {rounds} verdicts spent)")
+        # Announced by the delivery that wrote the grant, before anything is queued: a concurrent
+        # delivery may be the one whose review runs on it, and a hand-off can be digested.
+        observer.notify(loop, st, "granted", number, head, identity=f"rerequest:{rounds}",
+                        outcome=(f"{sender}'s re-request on GitHub (review_only_rerequest_grants)"
+                                 f": one more verdict at this head, {rounds} spent"),
+                        actor=sender, next_turn="the review of this head")
     if rounds >= ro_cap and not st.review_cap_granted(number, head, rounds):
         ask = (" or re-request the reviewer on GitHub" if review_asks.rerequest_can_grant(loop)
                else "")
@@ -151,7 +155,6 @@ def review_only_cap(loop: dict, st, number: int, head: str, rounds: int, reviews
                 next_turn="nothing — waiting for a maintainer")
         silence(f"review cap reached on #{number} ({rounds} verdicts) — no further review "
                 "until a maintainer grants another round")
-    return granted
 
 
 @refreshes_declined_head
@@ -307,9 +310,8 @@ def decide(payload: dict, reconsider: str | None = None) -> None:
     rounds = len(gate.verdicts(reviews, loop))
     # A review-only author's PR (#191) spends no fixer rounds and is never adjudicated: the author
     # answers each verdict by pushing and asking again, up to its own verdict cap (review_only_cap).
-    granted = ""
     if author in config.review_only(loop):
-        granted = review_only_cap(loop, st, number, head, rounds, reviews, action, sender)
+        review_only_cap(loop, st, number, head, rounds, reviews, action, sender)
     elif rounds >= loop["cap"]:
         breach_at_cap(loop, st, number, head, rounds)
 
@@ -329,8 +331,7 @@ def decide(payload: dict, reconsider: str | None = None) -> None:
         loop, st, seat, number, head, turn_key=turn_key,
         on_queued=lambda: observer.notify(
             loop, st, "handoff" if action == "review_requested" else "opened", number, head,
-            identity=f"another-round:{rounds}" if granted else action, outcome=granted,
-            actor=sender if action == "review_requested" else author,
+            identity=action, actor=sender if action == "review_requested" else author,
             next_turn="reviewer queued", round_no=rounds + 1))
 
 
