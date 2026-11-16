@@ -581,14 +581,13 @@ class TrustedFetchTests(unittest.TestCase):
         from _tarball_redirect_fixture import ApiServer, CodeloadServer
         from unittest import mock
 
-        # The allowed origin is 127.0.0.1; the API redirects to a DIFFERENT loopback
-        # host, 127.0.0.2. Distinct IPs so the host check has something to catch —
-        # a single 127.0.0.1 stand-in would match the allowed origin and pass.
+        # Distinct hostnames exercise the host check without requiring a macOS
+        # loopback alias. The disallowed target must not receive even one request.
         allowed = CodeloadServer(body=self.tarball, host="127.0.0.1")   # never contacted
         self.addCleanup(allowed.close)
-        other = CodeloadServer(body=b"stolen", host="127.0.0.2")        # the disallowed target
+        other = CodeloadServer(body=b"stolen", host="127.0.0.1")
         self.addCleanup(other.close)
-        api = ApiServer(location=f"{other.base}/steal.tar.gz")
+        api = ApiServer(location=f"http://localhost:{other.port}/steal.tar.gz")
         self.addCleanup(api.close)
 
         with mock.patch.object(trusted_fetch.gh, "token", return_value="dummy-token"), \

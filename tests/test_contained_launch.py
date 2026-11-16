@@ -101,6 +101,9 @@ REAL_UNAVAILABLE = contained.unavailable
 
 class Base(unittest.TestCase):
     def setUp(self):
+        # These are Linux argv contracts, even when their spies run on a Mac.
+        self.enterContext(mock.patch.object(sys, 'platform', 'linux'))
+        self.enterContext(mock.patch.object(tempfile, 'gettempdir', return_value='/tmp'))
         # These pin the argv and env our code builds, so they run on a host with no bubblewrap
         # too: its presence check is answered here, and pinned on its own below.
         present = mock.patch.object(contained, "unavailable", return_value="")

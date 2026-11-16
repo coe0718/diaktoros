@@ -78,6 +78,9 @@ def _chosen_node(args, current: dict | None, detected: dict) -> tuple[str | None
 def _setup_runtime(args, interactive: bool) -> bool:
     """Step 1: keep the runtime file's working paths, detect the rest, write it 0600."""
     from .. import runtime_detect, seat_model
+    if sys.platform == "darwin" and (why := runtime_detect.native_unavailable()):
+        print(f"   ❌ native prerequisites: {why}")
+        return False
     file = runtime_detect.path()
     print(f"\n1. Runtime paths — {file}")
     current, why = runtime_detect.read()
@@ -120,7 +123,7 @@ def _setup_runtime(args, interactive: bool) -> bool:
         print(f"   ✅ node     {node} ({origin['node']})")
     else:
         how = f" ({origin['node']})" if origin["node"] else ""
-        print(f"   ➖ node     none{how}: seats get no Node beyond /usr")
+        print(f"   ➖ node     none{how}: no extra Node runtime")
     if left:
         print("   not written: every path must check out first (the file is all or nothing)")
         return False
@@ -324,6 +327,8 @@ def cmd_setup(args) -> int:
           "in place is kept." + (" Dry run: nothing is written." if args.dry_run else ""))
 
     runtime_ok = _setup_runtime(args, interactive)
+    if sys.platform == "darwin" and not runtime_ok:
+        return 1
 
     rc, admin = _setup_loop(args, repo, loop_id, interactive)
     if rc is not None:

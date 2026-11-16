@@ -111,6 +111,10 @@ def alive(pid):
         with open(f'/proc/{pid}/stat') as f:
             return f.read().split(')')[-1].split()[0] != 'Z'
     except OSError:
+        if sys.platform == 'darwin':
+            status = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'stat='],
+                                    capture_output=True, text=True, check=False).stdout.strip()
+            return bool(status) and not status.startswith('Z')
         return False
 
 

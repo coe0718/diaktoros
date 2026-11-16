@@ -400,6 +400,7 @@ class BrokerClaimTests(unittest.TestCase):
         self.assertTrue(any(name == "CHECKOUT_SIZE" and raw == "sixteen" and why
                             for name, raw, why in contained.IGNORED_SIZE_OVERRIDES))
 
+    @mock.patch("sys.platform", "linux")
     def test_doctor_reports_the_caps_and_the_worst_case(self):
         """The caps are tmpfs, so they are a memory budget, not a disk one."""
         from diaktoros import doctor

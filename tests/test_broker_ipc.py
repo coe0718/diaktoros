@@ -1,6 +1,7 @@
 """Scoped broker IPC: real UDS, strict frames, mocked GitHub REST and optional bwrap."""
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import _ci_green  # noqa: E402  CI reads as green unless a test says otherwise
+import errno
 import json
 import os
 from pathlib import Path
@@ -74,7 +75,11 @@ class BrokerIPCTests(unittest.TestCase):
             client.settimeout(6)
             client.connect(str(server.socket_path))
             client.sendall(raw)
-            client.shutdown(socket.SHUT_WR)
+            try:
+                client.shutdown(socket.SHUT_WR)
+            except OSError as exc:
+                if exc.errno != errno.ENOTCONN:
+                    raise
             return json.loads(client.recv(16384))
 
     def review(self):
@@ -463,7 +468,7 @@ class BrokerIPCTests(unittest.TestCase):
         staged = self.root / "client" / "diaktoros"
         staged.mkdir(parents=True)
         (staged / "__init__.py").touch()
-        for name in ("broker_client.py", "wire.py"):
+        for name in ("broker_client.py", "wire.py", "envnames.py"):
             shutil.copyfile(ROOT / "diaktoros" / name, staged / name)
         body = self.root / "body.txt"
         body.write_text("verified\nNot verified: nothing")

@@ -394,8 +394,31 @@ class WorkerLifecycle:
         except OSError:
             return None
 
+    def _turn_gone(self, row) -> bool:
+        """Worker absence proves Linux namespace exit, not native descendant exit."""
+        # shortcut: no durable run/workspace binding yet; native crash quarantine
+        # stays occupied until exact per-attempt drained evidence is implemented.
+        return (sys.platform != 'darwin' or self.fixture_mode) and _worker_gone(row)
+
+    def _recover_native_storage(self):
+        if sys.platform == 'darwin' and not self.fixture_mode and not in_worker():
+            from .. import native_cleanup
+            for name in ('native-cleanup', 'native-proof-cleanup'):
+                root = self.db.parent.resolve() / name
+                attribute = name.replace('-', '_')
+                setattr(self, attribute + '_parent', root)
+                if not (root.exists() or root.is_symlink()):
+                    continue
+                try:
+                    result = native_cleanup.bounded_sweep(root)
+                except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                    result = {'status': 'unverified', 'results': [], 'reason': str(exc)}
+                    util.log(f'{name} sweep unverified; receipts retained: {exc}')
+                setattr(self, attribute + '_results', result)
+
     def recover(self) -> str:
         """Sweep lost claims and ambiguous launches; schedule waiting work."""
+        self._recover_native_storage()
         now = time.time()
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
@@ -417,7 +440,8 @@ class WorkerLifecycle:
                 # worker, and the sandbox's PID namespace with bwrap. Drop either flag, or put
                 # a process between the worker and bwrap, and this ends a run whose sandbox
                 # still runs.
-                if process_state(lost['pid'], lost['launch_intent']) != 'gone':
+                if ((sys.platform == 'darwin' and not self.fixture_mode)
+                        or process_state(lost['pid'], lost['launch_intent']) != 'gone'):
                     continue
                 wrote = run_supervisor.write_records(con, lost['id'])
                 if wrote is None:
@@ -586,7 +610,7 @@ class WorkerLifecycle:
         with self._connect() as con:
             row = con.execute("SELECT pid,launch_intent FROM runs WHERE id=?",
                               (run_id,)).fetchone()
-        return row is not None and _worker_gone(row)
+        return row is not None and self._turn_gone(row)
 
     def reconcile_uncertain(self, run_id: str, *, reason: str,
                             acknowledge_no_live_worker: bool = False) -> bool:
@@ -605,6 +629,8 @@ class WorkerLifecycle:
             if row is None or row['state'] != 'uncertain':
                 con.execute('COMMIT')
                 return False
+            if sys.platform == 'darwin' and not self.fixture_mode:
+                raise ValueError('native process completion unverified; cannot release uncertain run')
             if row['pid'] is not None:
                 found = process_state(row['pid'], row['launch_intent'])
                 if found == 'unknown':
@@ -639,7 +665,7 @@ class WorkerLifecycle:
             if (row is None or row['state'] != 'uncertain' or row['seat'] != 'fixer'
                     or not error.startswith(run_supervisor.PUSH_QUARANTINE)
                     or error.startswith(run_supervisor.PUSH_QUARANTINE + 'published')
-                    or row['push_confirmed'] is not None or not _worker_gone(row)):
+                    or row['push_confirmed'] is not None or not self._turn_gone(row)):
                 con.execute('COMMIT')
                 return False
             con.execute("UPDATE runs SET state='failed', error=?, lease=NULL, push_intent=NULL, "

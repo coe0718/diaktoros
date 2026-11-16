@@ -113,6 +113,7 @@ class SelftestBase(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k != "DIAKTOROS_GH_STUB"}
         env["HERMES_HOME"] = str(self.fx.home)
         patches = [
+            mock.patch.object(sys, "platform", "linux"),  # This fixture emulates bubblewrap.
             mock.patch.dict(os.environ, env, clear=True),
             mock.patch.object(gh, "fetch", side_effect=self.fx.fetch),
             mock.patch.object(selftest.shutil, "which", return_value="/usr/bin/bwrap"),

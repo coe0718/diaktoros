@@ -166,7 +166,8 @@ class ShadowTriageConcurrency(Base):
     def sandbox_caps(self, loop, available_gib):
         from unittest import mock
         from diaktoros import contained, doctor
-        with mock.patch.object(contained, "IGNORED_SIZE_OVERRIDES", []), \
+        with mock.patch("sys.platform", "linux"), \
+                mock.patch.object(contained, "IGNORED_SIZE_OVERRIDES", []), \
                 mock.patch.object(doctor, "_host_memory",
                                   return_value=(available_gib * 1024 ** 3, 64 * 1024 ** 3)):
             return doctor.check_sandbox_caps(loop)

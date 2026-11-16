@@ -1,0 +1,58 @@
+name: Native cleanup 200-turn soak
+
+on:
+  pull_request:
+    paths:
+      - diaktoros/native_cleanup.py
+      - diaktoros/native_recovery.py
+      - diaktoros/native_lifecycle.py
+      - diaktoros/native_anchor.py
+      - diaktoros/native_storage.py
+      - diaktoros/seatbelt.py
+      - tests/native_cleanup_soak.py
+      - tests/test_native_cleanup_soak.py
+      - tests/test_native_cleanup.py
+      - .github/workflows/native-cleanup-soak.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-cleanup-soak-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      DIAKTOROS_REQUIRE_SEATBELT: '1'
+      DIAKTOROS_REQUIRE_NATIVE_STORAGE: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Record runtime and require cleanup preconditions
+        shell: bash
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/native-soak-evidence"
+          sw_vers | tee "$RUNNER_TEMP/native-soak-evidence/runtime.txt"
+          uname -m | tee -a "$RUNNER_TEMP/native-soak-evidence/runtime.txt"
+          python tests/leakguard.py discover -v -s tests -p 'test_native_cleanup.py' 2>&1 | tee "$RUNNER_TEMP/native-soak-evidence/precondition.txt"
+      - name: Run 200 guarded turns with adversarial background helpers
+        run: python tests/native_cleanup_soak.py --turns 200 --output "$RUNNER_TEMP/native-soak-evidence"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-cleanup-soak-${{ matrix.runner }}
+          path: ${{ runner.temp }}/native-soak-evidence
+          retention-days: 14
+          if-no-files-found: error

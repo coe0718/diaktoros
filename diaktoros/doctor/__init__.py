@@ -45,6 +45,7 @@ import pathlib
 import re
 import shlex
 import subprocess
+import sys
 from typing import NamedTuple
 
 from .. import ci, config, gh, isolation, route_intent
@@ -334,6 +335,7 @@ def check_runtime_paths(loop: dict) -> list[Check]:
                       f"{path}: {exc}",
                       f"repair {path}; `hermes dk selftest` shows each problem")]
     checks: list[Check] = []
+    native = runtime_detect.problems(settings) if sys.platform == "darwin" else {}
     for key in ("source", "venv", "runtime", "rust"):
         raw = settings.get(key)
         if not raw:
@@ -347,6 +349,9 @@ def check_runtime_paths(loop: dict) -> list[Check]:
                                 f"{key} = {raw} does not exist",
                                 f"update {key} in {path} to the current path (a Hermes "
                                 "upgrade may have moved it)"))
+        elif key in native:
+            checks.append(Check(f"runtime:{key}", MISMATCH, native[key],
+                                f"choose a dedicated {key} path with `hermes dk setup --{key} PATH`"))
         elif key == "source" and (not (p / "run_agent.py").is_file()
                                   or not (p / ".git").exists()):
             # Same requirement as `selftest`: every isolated turn snapshots this directory
@@ -625,6 +630,38 @@ def _host_memory() -> tuple[int, int] | None:
     return fields.get("MemAvailable", 0) + fields.get("SwapFree", 0), total + fields.get("SwapTotal", 0)
 
 
+def check_native_cleanup() -> Check | None:
+    if sys.platform != "darwin":
+        return None
+    from .. import native_cleanup, run_supervisor
+    status = native_cleanup.ledger_status(run_supervisor.production_ledger())
+    if status is None:
+        return None
+    state = MISMATCH if status['paused'] else UNKNOWN if status['uncertain_notices'] else VERIFIED
+    return Check("native:cleanup", state, status['detail'],
+                 "inspect the reported owned cleanup pool; do not delete retained images or clear quarantine")
+
+
+def check_native_platform() -> list[Check]:
+    """Read-only native prerequisites; a successful probe is not a boundary test."""
+    if sys.platform != "darwin":
+        return []
+    import platform
+    from .. import contained, runtime_detect
+    reason = contained.unavailable()
+    tools, tool_problem = runtime_detect.native_tools()
+    problem = reason or tool_problem
+    checks = [Check("native:prerequisites", MISMATCH if problem else VERIFIED,
+                    problem or f"Seatbelt/APFS tools present; SDK {tools['sdk']}",
+                    "install Apple Command Line Tools, then run `hermes dk selftest`")]
+    arm = platform.machine() == "arm64"
+    checks.append(Check("native:architecture", VERIFIED if arm else UNKNOWN,
+                        "Apple Silicon native target" if arm else
+                        "Intel/Rosetta native target has not been verified for this integration",
+                        "use Apple Silicon or qualify this architecture with the native boundary suite"))
+    return checks
+
+
 def check_sandbox_caps(loop: dict) -> Check:
     """What the seats' writable mounts can reach, against the memory that has to back them.
 
@@ -645,6 +682,18 @@ def check_sandbox_caps(loop: dict) -> Check:
         return Check("sandbox:caps", MISMATCH, f"{detail} — with an override refused: {refused}",
                      "fix the value (an integer 1..1024 GiB) and restart the gateway: the launcher "
                      "reads it once, when the supervisor imports it")
+    if sys.platform == "darwin":
+        import shutil
+        base = pathlib.Path(loop["state_dir"]).expanduser().resolve()
+        while not base.exists() and base != base.parent:
+            base = base.parent
+        try:
+            free = shutil.disk_usage(base).free
+        except OSError as exc:
+            return Check("sandbox:caps", UNKNOWN, f"APFS workspace disk availability unknown: {exc}")
+        return Check("sandbox:caps", MISMATCH if worst > free else VERIFIED,
+                     f"bounded APFS work/scratch: {detail}; {_gib(free)} host disk free (not tmpfs/RAM)",
+                     "free disk space or lower workspace caps/concurrency; retained images also consume disk")
     memory = _host_memory()
     if memory is None:
         return Check("sandbox:caps", VERIFIED, f"{detail} (host memory unreadable here)")
@@ -1106,6 +1155,9 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     from . import (backup_checks, cron_checks, hook_checks,   # here, not module level (#676)
                    identity_checks, route_checks, seat_checks)
     checks = [check_config(loop), check_turn_budget(loop), check_host_names()]
+    checks.extend(check_native_platform())
+    if cleanup := check_native_cleanup():
+        checks.append(cleanup)
     duplicate = check_duplicate_repo(loop)
     if duplicate:
         checks.append(duplicate)

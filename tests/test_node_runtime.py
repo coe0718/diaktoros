@@ -18,6 +18,9 @@ from test_sandbox_limits import bwrap_works  # noqa: E402
 
 class NodeRuntime(unittest.TestCase):
     def setUp(self):
+        linux = mock.patch.object(sys, "platform", "linux")  # The /opt/node mount contract.
+        linux.start()
+        self.addCleanup(linux.stop)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.home = Path(tmp.name).resolve()
@@ -73,6 +76,7 @@ class NodeRuntime(unittest.TestCase):
         self.assertEqual(check.status, doctor.SKIPPED)
         self.assertFalse(check.failed)
 
+    @unittest.skipUnless(bwrap_works(), "requires real unprivileged bubblewrap")
     def test_doctor_reports_version_through_the_runtime_checks(self):
         root = self.install(self.home / ".hermes" / "node", "v20.1.0")
         check = doctor.check_node({"node": str(root)})
@@ -170,6 +174,7 @@ class NodeRuntime(unittest.TestCase):
             roots[name] = root
         return roots
 
+    @unittest.skipUnless(bwrap_works(), "requires real unprivileged bubblewrap")
     def test_a_bin_node_a_seat_cannot_follow_is_refused_everywhere(self):
         # #2478 review 2, F5: an absolute link to a file inside the root passed and ran on the
         # host, but not in the seat, where the root alone is bound at /opt/node: doctor and
@@ -386,6 +391,7 @@ class NodeRuntime(unittest.TestCase):
         self.assertIn("v18.19.0", detail)
         self.assertIn("already visible", detail)
 
+    @unittest.skipUnless(bwrap_works(), "requires real unprivileged bubblewrap")
     def test_selftest_checks_the_node_the_runtime_file_records(self):
         # #1149: selftest, like doctor, reads Node the way the worker does.
         root = self.install(self.home / ".hermes" / "node")
