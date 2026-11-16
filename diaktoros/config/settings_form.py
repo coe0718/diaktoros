@@ -216,7 +216,9 @@ SETTINGS_SCHEMA: dict = {
                                                    "call, so anything holding a maintainer's token "
                                                    "(an agent posting as you) can grant a round. "
                                                    "Needs a reviewer GitHub can request (not a "
-                                                   "GitHub App)"},
+                                                   "GitHub App), and an observer feed whose "
+                                                   "events include granted: without one, a "
+                                                   "re-request grants nothing"},
     "observer_weekly_report": {"label": "Weekly report (weekday and UTC time)", "type": "str",
                                "default": "",
                                "description": "When the observer feed gets the week's report: a "

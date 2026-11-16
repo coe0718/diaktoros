@@ -71,8 +71,11 @@ def _switches(loop: dict, schema, rows: list, enable: str) -> None:
     what it needs to act says so: it is inert."""
     pushes = "" if config.unattended_fixer_push_enabled(loop) else f"unattended fixer pushes ({enable})"
     login = "" if config.adjudicator_login(loop) else "the adjudicator comment login (--adjudicator-login)"
+    from . import review_asks   # here, not module level: review_asks imports the gate
     asks = ("a reviewer GitHub can request, not a GitHub App" if config.reviewer_is_app(loop)
-            else "" if config.maintainers(loop) else "a maintainer (triage.maintainers or operator_agents)")
+            else "a maintainer (triage.maintainers or operator_agents)" if not config.maintainers(loop)
+            else (f"an observer feed that sends granted ({why})" if (why := review_asks.unannounced(loop))
+                  else ""))
     for key, off, needs in (
             ("review_only_update", "a conflicting review-only PR gets a notice, no merge push", ""),
             ("review_after_ci", "a review starts at once, with whatever CI has finished", ""),

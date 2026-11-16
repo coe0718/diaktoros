@@ -5,7 +5,7 @@
 Both read the reviews the reviewer gate itself decides from (``gate_reviews``, #1370)."""
 from __future__ import annotations
 
-from . import config, gate, gh, transition
+from . import config, gate, gh, observer, transition
 
 
 def gate_reviews(loop, st, number, head):
@@ -54,21 +54,49 @@ def rerequest_grants(loop) -> bool:
     return loop.get("review_only_rerequest_grants") is True
 
 
+def unannounced(loop) -> str:
+    """Why a re-request's grant could not be announced on this loop, or ``""`` (#2501 review, F3):
+    no observer feed, a muted one, or ``observer.events`` without ``granted``. The grant is made
+    away from the terminal, and its notice is how the maintainer sees it, so without one the
+    re-request grants nothing."""
+    reason = observer.configured(loop)
+    if not reason and not observer.subscribes(loop, "granted"):
+        reason = "observer.events leaves out granted"
+    return reason
+
+
 def rerequest_can_grant(loop) -> bool:
     """Whether a re-request can grant here, so the cap notice and ``explain`` may offer it: the
-    setting is on and GitHub can request the reviewer (not a GitHub App, ``reviewer_is_app``)."""
-    return rerequest_grants(loop) and not config.reviewer_is_app(loop)
+    setting is on, GitHub can request the reviewer (not a GitHub App, ``reviewer_is_app``), and
+    the grant's notice has a feed that sends it (``unannounced``)."""
+    return rerequest_grants(loop) and not config.reviewer_is_app(loop) and not unannounced(loop)
 
 
 def grant_by_rerequest(loop, st, number, head, rounds, sender) -> bool:
     """The reviewer gate's grant for a ``review_requested`` at a review-only PR's cap (#2496):
-    with ``rerequest_grants`` on, a maintainer's (``config.maintainers``) request grants one more
-    verdict at ``head``, under ``--another-round``'s rules: recorded against this head and verdict
-    count, so a repeated request changes nothing. The gate asks only for a head with no verdict
-    yet, as ``grant_another_round`` refuses one. True only when this call recorded the grant."""
-    if not rerequest_grants(loop) or sender not in config.maintainers(loop):
+    where a re-request can grant (``rerequest_can_grant``), a maintainer's (``config.maintainers``)
+    request grants one more verdict at ``head``, under ``--another-round``'s rules: recorded
+    against this head and verdict count, so a repeated request changes nothing. The gate asks
+    only for a head with no verdict yet, as ``grant_another_round`` refuses one. The grantor is
+    written with the grant, for ``announce_grant``. True only when this call recorded it."""
+    if not rerequest_can_grant(loop) or sender not in config.maintainers(loop):
         return False
-    return st.review_cap_grant(number, head, rounds)
+    return st.review_cap_grant(number, head, rounds, by=sender)
+
+
+def announce_grant(loop, st, number, head, rounds) -> None:
+    """The urgent ``granted`` notice for a re-request's grant covering the next verdict at
+    ``head``; nothing for ``--another-round``'s (no grantor recorded). The gate calls it on every
+    pass that finds the grant, not only the one that wrote it (#2501 review, F4): a gate stopped
+    between the grant and its notice, or a concurrent delivery that queues the review, still
+    leads to the notice, and its observer key (``rerequest:<rounds>`` at the head) keeps it one."""
+    by = st.review_cap_entry(number).get("by")
+    if not by or not st.review_cap_granted(number, head, rounds):
+        return
+    observer.notify(loop, st, "granted", number, head, identity=f"rerequest:{rounds}",
+                    outcome=(f"{by}'s re-request on GitHub (review_only_rerequest_grants): one "
+                             f"more verdict at this head, {rounds} spent"),
+                    actor=by, next_turn="the review of this head")
 
 
 def reconsider_held(emit, st, hold, args, head, loop) -> int:

@@ -4,9 +4,10 @@ reviewer at a review-only PR's cap grants another round, as ``review --another-r
 The gate runs end to end (GitHub, the worker spawn and the observer mocked, as in
 ``test_review_only.Gates``): one more verdict per head and verdict count, never for a head that
 already has a verdict, only from a maintainer and only on ``review_requested``. Each grant is an
-urgent ``granted`` notice, through the real observer: sent by the delivery that wrote it, so a
-concurrent delivery queuing the review can't lose it, and never held for a digest. Off, the cap
-declines as before. Then the setting's every path:
+urgent ``granted`` notice, through the real observer: sent before anything is queued by every
+pass that finds the grant (so neither a concurrent delivery nor a gate stopped between the grant
+and its notice loses it, and the observer ledger keeps it one), never held for a digest, and no
+grant is made where the feed can't send it. Off, the cap declines as before. Then the setting's every path:
 the loop file, the form, ``init``, ``set``, ``setup``, ``show`` and ``doctor``.
 """
 from __future__ import annotations
@@ -33,6 +34,7 @@ from diaktoros.doctor import identity_checks  # noqa: E402
 from scripts import gate_reviewer  # noqa: E402
 
 HEAD = fg.HEAD
+FEED = {"route": "one-observe"}
 OLD = "c" * 40
 OWNER = tro.OWNER
 MAINT = "maint-human"
@@ -53,7 +55,8 @@ class Gate(fg.Base):
     def setUp(self):
         super().setUp()
         # A maintainer, as config.maintainers reads one: an operator agent (#757) counts too.
-        self.write(review_only=[OWNER], operator_agents=[MAINT], **{KEY: True})
+        # And a feed for the grant's notice (#2501 review, F3); ``feed`` registers its route.
+        self.write(review_only=[OWNER], operator_agents=[MAINT], observer=FEED, **{KEY: True})
         self.live = {**fg.LIVE, "user": {"login": OWNER}}
         self.cap = self.loop["cap"]
 
@@ -86,11 +89,12 @@ class Gate(fg.Base):
         return self.verdicts(count - 1, OLD) + [fg.verdict(5 + count) | {"commit_id": HEAD}]
 
     def ask(self, sender: str, reviews=None, action: str = "review_requested", notes=None,
-            enqueue: str = ""):
+            enqueue: str = "", ends=SystemExit):
         """Run the gate on ``action`` from ``sender``; by default the cap's verdicts are all on an
         older head. Returns the mocked ``block_pr_agent`` (it ends the gate, as a claim would).
         With ``enqueue``, the real ``block_pr_agent`` runs and the ledger answers ``enqueue``,
-        and with ``notes=False`` the real observer sends (``feed``)."""
+        and with ``notes=False`` the real observer sends (``feed``). ``ends``: the exception the
+        gate ends with (``silence``'s SystemExit, else a simulated termination)."""
         payload = {"action": action, "number": 7, "pull_request": self.live,
                    "repository": {"full_name": fg.REPO}, "sender": {"login": sender},
                    "requested_reviewer": {"login": "reviewer"}}
@@ -110,9 +114,10 @@ class Gate(fg.Base):
                  side_effect=lambda *a, **kw: (notes if notes is not None
                                                else []).append((a[2], kw)))), \
              contextlib.redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit):
+            with self.assertRaises(ends):
                 gate_reviewer.main()
-        self.assertEqual(out.getvalue().strip(), "[SILENT]")
+        if ends is SystemExit:
+            self.assertEqual(out.getvalue().strip(), "[SILENT]")
         return block
 
     def handoff(self, block) -> mock.Mock:
@@ -156,18 +161,59 @@ class Gate(fg.Base):
         self.assertNotIn("granted", self.sent(fire)[1][1])
 
     def test_a_repeated_rerequest_at_the_same_head_and_count_grants_nothing_more(self):
-        notes = []
-        self.ask(MAINT, notes=notes)
+        fire = self.feed()
+        self.ask(MAINT, notes=False)
         entry = self.st.review_cap_entry(7)
-        block = self.ask(MAINT, notes=notes)
+        block = self.ask(MAINT, notes=False)
         self.assertEqual(self.st.review_cap_entry(7), entry)
         # The first grant still covers this head's next verdict, as --another-round's would, but
-        # this request granted nothing, and its notice doesn't say it did.
+        # this request granted nothing: still the one notice, and its hand-off grants nothing.
         block.assert_called_once()
-        self.assertEqual([(e, kw["identity"]) for e, kw in notes],
-                         [("granted", f"rerequest:{self.cap}")])
+        self.assertEqual([event for event, _ in self.sent(fire)], ["granted"])
         kw = self.handoff(block).call_args.kwargs
         self.assertEqual((kw["identity"], kw.get("outcome", "")), ("review_requested", ""))
+
+    def test_a_gate_stopped_between_the_grant_and_its_notice_leaves_it_to_the_next_pass(self):
+        # #2501 review, F4: the grantor is written with the grant, so the redelivery (or the
+        # watchdog's re-drive of the failed gate) that queues the review sends the notice first,
+        # and a third pass sends nothing more.
+        fire = self.feed()
+
+        class Killed(BaseException):
+            pass
+
+        with mock.patch.object(review_asks, "announce_grant", side_effect=Killed):
+            self.ask(MAINT, notes=False, enqueue="enqueued", ends=Killed)
+        self.assertTrue(self.st.review_cap_granted(7, HEAD, self.cap))
+        self.assertEqual(self.st.review_cap_entry(7)["by"], MAINT)
+        self.assertEqual(self.sent(fire), [])
+        self.ask(MAINT, notes=False, enqueue="enqueued")
+        self.assertEqual([event for event, _ in self.sent(fire)], ["granted", "handoff"])
+        self.assertIn(f"another round granted — {MAINT}'s re-request", self.sent(fire)[0][1])
+        self.ask(MAINT, notes=False, enqueue="duplicate running")
+        self.assertEqual(len(self.sent(fire)), 2)
+
+    def test_another_rounds_grant_sends_no_rerequest_notice(self):
+        # The terminal grant names no grantor: the operator ran it, and nothing claims a re-request.
+        fire = self.feed()
+        self.assertTrue(self.st.review_cap_grant(7, HEAD, self.cap))
+        self.ask(OWNER, notes=False, enqueue="enqueued")
+        self.assertEqual([event for event, _ in self.sent(fire)], ["handoff"])
+
+    def test_no_grant_where_its_notice_could_not_be_sent(self):
+        # #2501 review, F3: no feed, a muted one, or one whose events leave out the new
+        # ``granted`` (an existing explicit list): the re-request grants nothing, and nothing runs.
+        for name, block_ in (("no feed", None), ("muted", {**FEED, "mute": True}),
+                             ("filtered", {**FEED, "events": ["held", "verdict"]})):
+            with self.subTest(name):
+                self.setUp()
+                fire = self.feed(**(block_ or {}))
+                if block_ is None:
+                    self.write(observer={})
+                self.assertIsNone(self.ask(MAINT, notes=False).call_args)
+                self.assertFalse(self.st.review_cap_granted(7, HEAD, self.cap))
+                self.assertNotIn("granted", [event for event, _ in self.sent(fire)])
+                self.assertNotIn("re-request", self.explain()["next"]["action"])
 
     def test_off_a_maintainers_rerequest_at_the_cap_is_declined(self):
         self.write(**{KEY: False})
@@ -225,7 +271,7 @@ class Gate(fg.Base):
 
 def loop_with(**extra) -> dict:
     return {"id": "w", "reviewer_seat": "rev", "review_only": [OWNER],
-            "triage": triage(MAINT), KEY: True, **extra}
+            "triage": triage(MAINT), "observer": FEED, KEY: True, **extra}
 
 
 class Doctor(unittest.TestCase):
@@ -245,7 +291,11 @@ class Doctor(unittest.TestCase):
     def test_on_but_inert_says_why(self):
         for extra, said in (({"apps": {"rev": {"app_id": 1}}}, "is a GitHub App"),
                             ({"review_only": []}, "no review-only author"),
-                            ({"triage": {}}, "no maintainer")):
+                            ({"triage": {}}, "no maintainer"),
+                            ({"observer": {}}, "no observer configured"),
+                            ({"observer": {**FEED, "mute": True}}, "muted"),
+                            ({"observer": {**FEED, "events": ["held"]}},
+                             "observer.events leaves out granted")):
             with self.subTest(said):
                 got = self.check(**extra)
                 self.assertEqual(got.status, doctor.MISMATCH)
@@ -258,7 +308,8 @@ class Preflight(test_doctor_environment.Environment):
 
     def test_the_loop_preflight_says_who_can_grant(self):
         self.assertNotIn("rerequest-grants", self.run_check())
-        self.loop.update({KEY: True, "review_only": [OWNER], "triage": triage(MAINT)})
+        self.loop.update({KEY: True, "review_only": [OWNER], "triage": triage(MAINT),
+                          "observer": FEED})
         got = self.run_check()["rerequest-grants"]
         self.assertEqual(got.status, doctor.VERIFIED)
         self.assertIn(MAINT, got.detail)
@@ -283,7 +334,14 @@ class Setting(unittest.TestCase):
             return rows[KEY]
         self.assertEqual(row(**{KEY: True}).note, "on, but inert: needs a maintainer "
                                                   "(triage.maintainers or operator_agents)")
-        self.assertEqual(row(**{KEY: True}, operator_agents=[MAINT]).note, "")
+        self.assertEqual(row(**{KEY: True}, operator_agents=[MAINT]).note,
+                         "on, but inert: needs an observer feed that sends granted "
+                         "(no observer configured)")
+        self.assertEqual(row(**{KEY: True}, operator_agents=[MAINT],
+                             observer={**FEED, "events": ["held"]}).note,
+                         "on, but inert: needs an observer feed that sends granted "
+                         "(observer.events leaves out granted)")
+        self.assertEqual(row(**{KEY: True}, operator_agents=[MAINT], observer=FEED).note, "")
         self.assertEqual(row().note, "")
 
 

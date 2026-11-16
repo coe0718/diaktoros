@@ -137,7 +137,8 @@ current head with `hermes dk review --loop "<loop-id>" --pr N --another-round`. 
 `review_only_rerequest_grants` on (#2496, off by default), a maintainer's re-request of the
 reviewer on GitHub, from the web or the mobile app, grants that verdict too, under the same rules
 (one per head, and never for a head that already has a verdict); an urgent `granted` notice names
-who granted it, at once, even with a digest set. Anything holding a maintainer's token can re-request, so turn it on only when every
+who granted it, at once, even with a digest set. A feed must send it: with none, a muted one, or
+an `observer.events` list without `granted`, a re-request grants nothing (`doctor` says so). Anything holding a maintainer's token can re-request, so turn it on only when every
 such agent is one you trust to grant a round.
 `review_only_daily` (off by default) caps reviewer turns per local day on review-only PRs;
 it is a separate pool from the reviewer's `daily_turns` (neither spends the other; with both

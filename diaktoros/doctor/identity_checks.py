@@ -450,7 +450,8 @@ def check_update_behind(loop: dict, offline: bool = False) -> doctor.Check | Non
 def check_review_only_rerequest_grants(loop: dict) -> doctor.Check | None:
     """A maintainer's GitHub re-request at a review-only PR's cap granting another round (#2496,
     ``review_only_rerequest_grants``); ``None`` when the setting is off. On, it needs a reviewer
-    GitHub can request, a review-only author and a maintainer, and it says who can grant."""
+    GitHub can request, a review-only author, a maintainer and an observer feed that sends the
+    ``granted`` notice, and it says who can grant."""
     from .. import review_asks   # here, not module level: review_asks imports the gate
     if not review_asks.rerequest_grants(loop):
         return None
@@ -471,6 +472,14 @@ def check_review_only_rerequest_grants(loop: dict) -> doctor.Check | None:
                             "on, but the loop names no maintainer (triage.maintainers or "
                             "operator_agents), so no re-request grants a round",
                             f"name your login in triage.maintainers, or {off}")
+    feed = review_asks.unannounced(loop)
+    if feed:
+        return doctor.Check("rerequest-grants", doctor.MISMATCH,
+                            f"on, but a grant's urgent `granted` notice has nowhere to go ({feed}), "
+                            "so no re-request grants a round",
+                            "an observer feed whose events include granted (`hermes dk set "
+                            f"--loop {loop.get('id')} --observer-events ...,granted`, or blank for "
+                            f"all), or {off}")
     return doctor.Check("rerequest-grants", doctor.VERIFIED,
                         f"on — a re-request of {loop.get('reviewer_seat')} by {', '.join(who)} at a "
                         "review-only PR's cap grants one more verdict, as `review --another-round` "

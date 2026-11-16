@@ -131,17 +131,14 @@ def review_only_cap(loop: dict, st, number: int, head: str, rounds: int, reviews
     own PR is no bypass, so this ends the gate with ``silence``. Only a maintainer's
     --another-round (one verdict, this head) lifts it, or, with review_only_rerequest_grants on
     (#2496), a maintainer's GitHub re-request of a head with no verdict yet, which grants the same
-    one verdict, announced at once by an urgent ``granted`` notice."""
+    one verdict, announced by an urgent ``granted`` notice, and only where one can be sent."""
     ro_cap = config.review_only_cap(loop)
     if (rounds >= ro_cap and action == "review_requested"
-            and not gate.reviewed_at_head(reviews, loop, head)
-            and review_asks.grant_by_rerequest(loop, st, number, head, rounds, sender)):
-        # Announced by the delivery that wrote the grant, before anything is queued: a concurrent
-        # delivery may be the one whose review runs on it, and a hand-off can be digested.
-        observer.notify(loop, st, "granted", number, head, identity=f"rerequest:{rounds}",
-                        outcome=(f"{sender}'s re-request on GitHub (review_only_rerequest_grants)"
-                                 f": one more verdict at this head, {rounds} spent"),
-                        actor=sender, next_turn="the review of this head")
+            and not gate.reviewed_at_head(reviews, loop, head)):
+        review_asks.grant_by_rerequest(loop, st, number, head, rounds, sender)
+    # Before anything is queued, on every pass that finds a re-request's grant: the notice is
+    # urgent (never digested), and one pass's crash or lost callback leaves it to the next.
+    review_asks.announce_grant(loop, st, number, head, rounds)
     if rounds >= ro_cap and not st.review_cap_granted(number, head, rounds):
         ask = (" or re-request the reviewer on GitHub" if review_asks.rerequest_can_grant(loop)
                else "")
@@ -153,8 +150,11 @@ def review_only_cap(loop: dict, st, number: int, head: str, rounds: int, reviews
                          f"`hermes dk review --loop {loop['id']} --pr {number} "
                          f"--another-round`{ask}"),
                 next_turn="nothing — waiting for a maintainer")
+        why = (review_asks.unannounced(loop) if review_asks.rerequest_grants(loop)
+               and action == "review_requested" and sender in config.maintainers(loop) else "")
         silence(f"review cap reached on #{number} ({rounds} verdicts) — no further review "
-                "until a maintainer grants another round")
+                "until a maintainer grants another round"
+                + (f"; a re-request grants nothing here: {why}" if why else ""))
 
 
 @refreshes_declined_head
