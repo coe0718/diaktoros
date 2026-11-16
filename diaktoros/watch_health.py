@@ -10,7 +10,8 @@ from __future__ import annotations
 import re
 import time
 
-from diaktoros import gate_failures, gh, watch_mode
+from diaktoros import gh, watch_mode
+from diaktoros.gate import failures as gate_failures
 from diaktoros import state as state_mod
 
 # A 401/403 is a verdict about the token and alerts at once; a 5xx or no answer at all can be a

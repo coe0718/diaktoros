@@ -420,7 +420,8 @@ def group_fixer_gate() -> None:
 
 def group_decisions() -> None:
     section("gate decisions (#209) — a declining gate says why, on disk")
-    from diaktoros import config, explain, gate, gate_decisions
+    from diaktoros import config, explain, gate
+    from diaktoros.gate import decisions as gate_decisions
 
     def lines():
         path = state_file("gate-decisions.jsonl")

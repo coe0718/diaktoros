@@ -8,7 +8,9 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
-from . import base_merge, config, gate, gate_decisions, gate_failures, gh, pr_hold, review_kick
+from . import base_merge, config, gate, gh, pr_hold, review_kick
+from .gate import decisions as gate_decisions
+from .gate import failures as gate_failures
 from . import run_supervisor
 from . import drain, explain_next, situation, transition
 from . import state as state_mod

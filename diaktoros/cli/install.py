@@ -14,11 +14,11 @@ import subprocess
 
 from .. import (
     config,
-    gate_shims,
     route_intent,
     routes,
     util,
 )
+from ..gate import shims as gate_shims
 from . import common as cli_common
 from . import seat_flags
 from ..config import credentials

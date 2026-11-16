@@ -9,7 +9,6 @@ from .. import (
     ci,
     config,
     doctor,
-    gate_shims,
     observer,
     protection,
     route_intent,
@@ -17,6 +16,7 @@ from .. import (
     state as state_mod,
     util,
 )
+from ..gate import shims as gate_shims
 from . import common as cli_common
 from . import route_sync
 from ..config import credentials

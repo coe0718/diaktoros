@@ -20,7 +20,8 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 
-from diaktoros import config, explain, gate_failures, gh, one_shot_action as actions, util  # noqa: E402
+from diaktoros import config, explain, gh, one_shot_action as actions, util  # noqa: E402
+from diaktoros.gate import failures as gate_failures  # noqa: E402
 from diaktoros.one_shot_action import RECONSIDER_MAX  # noqa: E402
 from diaktoros.run_supervisor import RECONSIDER_KEY  # noqa: E402
 import test_dispute_next_step as dn  # noqa: E402  the reviewer verdict at fg.HEAD

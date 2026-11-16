@@ -18,7 +18,8 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import attribution, cli, config, gate_shims  # noqa: E402
+from diaktoros import attribution, cli, config  # noqa: E402
+from diaktoros.gate import shims as gate_shims  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
 
 OLD_FOOTER = ("\n\n---\n<sub>🤖 Automated by [hermes-review-loop]"

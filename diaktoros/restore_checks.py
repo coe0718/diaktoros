@@ -13,7 +13,8 @@ import pathlib
 import shlex
 import tarfile
 
-from . import config, gate_shims, route_intent, routes
+from . import config, route_intent, routes
+from .gate import shims as gate_shims
 
 
 def outside_state_dirs(manifest: dict) -> list[str]:

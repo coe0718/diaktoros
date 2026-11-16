@@ -20,11 +20,11 @@ import sys
 from .. import (
     config,
     doctor,
-    gate_shims,
     gh,
     route_intent,
     routes,
 )
+from ..gate import shims as gate_shims
 from ..doctor import hook_checks
 from . import common as cli_common
 from .common import SHARED_JOB_NAME, SHARED_JOB_NAMES, SHIM

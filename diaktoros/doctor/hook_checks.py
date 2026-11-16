@@ -436,7 +436,7 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> docto
 
 def latest_decision(loop: dict, seat: str) -> str:
     """The route's gate's latest recorded decision (#209), as a suffix for the hook line."""
-    from .. import gate_decisions
+    from ..gate import decisions as gate_decisions
     try:
         entry = gate_decisions.latest_per_gate(loop).get(f"gate_{seat}")
     except Exception:  # noqa: BLE001 - a diagnostic line never fails the check

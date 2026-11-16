@@ -218,7 +218,7 @@ class GatewayResolvesEveryRoute(Base):
     def test_local_resolver_matches_hermes_on_the_edge_cases(self):
         """The copy doctor uses must fail exactly where the gateway fails."""
         require_real_resolver(self)
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         scripts = self.hermes / "profiles" / "critic" / "scripts"
         scripts.mkdir(parents=True)
         (scripts / "real.py").write_text("print(1)\n")
@@ -259,7 +259,7 @@ class GatewayResolvesEveryRoute(Base):
         self.assertEqual(self.loop_routes(), {})
 
     def test_init_is_idempotent_and_rewrites_a_stale_shim(self):
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         self.install()
         shim = self.hermes / "profiles/critic/scripts/gate_reviewer.py"
         before = shim.stat()
@@ -309,7 +309,7 @@ class ShimRunsUnderTheLoopsHome(Base):
         return probe
 
     def run_shim(self, env: dict) -> dict:
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         with patch.object(gate_shims, "plugin_script", return_value=self.probe()):
             text = gate_shims.render("gate_reviewer.py")
         shim = self.hermes / "profiles" / "critic" / "scripts" / "gate_reviewer.py"
@@ -392,7 +392,7 @@ class ShimRunsThePluginScript(Base):
         self.assertEqual(json.loads(narrowed.stdout)["_observer"]["message"], "PR #7 opened")
 
     def test_file_path_argv_cwd_stdin_and_exit_code(self):
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         plugin = self.tmp / "plugin" / "scripts"
         plugin.mkdir(parents=True)
         probe = plugin / "probe.py"
@@ -416,7 +416,7 @@ class ShimRunsThePluginScript(Base):
         self.assertEqual(json.loads(direct.stdout)["file"], str(probe))
 
     def test_missing_plugin_script_fails_loudly(self):
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         shim = self.tmp / "shim.py"
         shim.write_text(gate_shims.SHIM.format(marker=gate_shims.MARKER,
                                                target=str(self.tmp / "gone.py"),
@@ -664,7 +664,7 @@ class DoctorApplyUninstall(Base):
         self.assertIn("loop config says critic/gate_reviewer.py", check.detail)
         self.assertIn("hermes dk doctor --loop widgets --repair", check.fix)
         # Never silent: install writes the shim the gateway will run *and* says the two disagree.
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         lines = gate_shims.install(config.load_id("widgets"))
         self.assertIn(f"gate shim wrote: {self.hermes / 'profiles/arbiter/scripts/gate_reviewer.py'}",
                       lines)
@@ -704,7 +704,7 @@ class DoctorApplyUninstall(Base):
     def test_blank_config_profile_is_a_mismatch_and_its_remedy_works(self):
         """A seat with no profile: the loader refuses such a file, so this is the in-memory shape a
         pre-validation loop has. The registry still routes the seat, so the gateway still runs it."""
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         self.install()
         loop = config.load_id("widgets")
         loop["seats"]["reviewer"]["profile"] = ""
@@ -790,7 +790,7 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(routes.route("widgets-review")["profile"], "arbiter")
 
     def test_init_dry_run_raises_no_false_alarm_for_routes_it_would_create(self):
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         rc, out = self.run_cli(self.init_argv("acme/widgets", "--dry-run"))
         self.assertEqual(rc, 0, out)
         self.assertNotIn("⚠️", out)
@@ -800,7 +800,7 @@ class DoctorApplyUninstall(Base):
         self.assertNotIn(gate_shims.GATEWAY_404_TAIL, out)
         # #172: companion assertion — the literal must still exist in the source so a rename
         # fails loudly rather than silently disarming this test.
-        gate_shims_src = ROOT / "diaktoros" / "gate_shims.py"
+        gate_shims_src = ROOT / "diaktoros" / "gate" / "shims.py"
         self.assertIn(gate_shims.GATEWAY_404_TAIL, gate_shims_src.read_text())
         # On an existing loop a real disagreement is still named.
         self.install()
@@ -1301,7 +1301,7 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(critic.read_text(), "print('hand edited')\n")
 
     def test_watchdog_heal_restores_a_deleted_shim(self):
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         self.install()
         shim = self.hermes / "profiles/coder/scripts/gate_fixer.py"
         shim.unlink()
@@ -1316,7 +1316,7 @@ class DoctorApplyUninstall(Base):
         self.assertFalse(shim.exists())
 
     def test_watchdog_sweep_heals_its_own_shim(self):
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         self.install()
         loop = config.load_id("widgets")
         shim = doctor.shim_path()
@@ -1386,7 +1386,7 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(foreign.read_text(), "print('arbiter owns this')\n")
 
     def test_heal_says_what_the_gateway_does_for_each_refusal(self):
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         self.install()
         shim = self.hermes / "profiles/critic/scripts/gate_reviewer.py"
         shim.write_text("print('someone else')\n")
@@ -1402,7 +1402,7 @@ class DoctorApplyUninstall(Base):
         self.assertNotIn("instead of the gate", lines)
 
     def test_gate_names_agree(self):
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         self.assertEqual(gate_shims.GATE_SCRIPT, cli.GATE_SCRIPT)
 
 
@@ -1414,7 +1414,8 @@ class ObserverApply(Base):
         loop = config.load_id("widgets")
         self.assertEqual(routes.route("widgets-observe")["profile"], "arbiter")
         self.assertEqual(config.seat_profile(loop, "observer"), "arbiter")
-        from diaktoros import gate_shims, observer
+        from diaktoros import observer
+        from diaktoros.gate import shims as gate_shims
         self.assertIn(("arbiter", "observe.py"), gate_shims.wanted(loop))
         self.assertEqual(observer.route_contract(loop)["profile"], "arbiter")
         self.assertEqual(route_sync._route_binds(loop, set(cli_common._routes_of(loop))), {})
@@ -1921,7 +1922,7 @@ class ObserverStatusDoctor(Base):
                 self.assertEqual((rc, "already matches" in out), (0, True), out)
 
     def test_a_refused_registry_profile_is_not_no_profile(self):
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         self.install()
         for bad in ("", "  ", None, 7):
             with self.subTest(profile=bad):
@@ -1998,7 +1999,7 @@ class ObserverStatusDoctor(Base):
 
     def test_the_gate_event_rule_has_one_answer(self):
         # contract_drift (apply) and doctor's route checks must agree on each gate's event.
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         for seat in ("reviewer", "fixer"):
             self.assertEqual(gate_shims._GATE_EVENT[seat], doctor.GATE_EVENT[seat])
         self.assertEqual(gate_shims._GATE_EVENT["adjudicator"], "pull_request")

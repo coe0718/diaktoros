@@ -19,8 +19,10 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_main_check import FakeState  # noqa: E402
-from diaktoros import (app_ingress, ci, config, gate_decisions, gate_shims, gh, observer,  # noqa: E402
+from diaktoros import (app_ingress, ci, config, gh, observer,  # noqa: E402
                        protection_event, route_intent)
+from diaktoros.gate import decisions as gate_decisions
+from diaktoros.gate import shims as gate_shims
 
 LOOP = {"id": "w", "repo": "acme/widgets", "base": "main", "read_token": "reader",
         "required_checks": ["tests", "lint"], "merge_check": "off", "protection_webhook": True}

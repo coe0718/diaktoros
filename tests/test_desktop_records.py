@@ -9,7 +9,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from diaktoros import broker, config, desktop_api, gate_failures, gh, main_check, observer, safe_push, state
+from diaktoros import broker, config, desktop_api, gh, main_check, observer, safe_push, state
+from diaktoros.gate import failures as gate_failures
 
 
 def watchdog_writer():

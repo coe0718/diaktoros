@@ -18,7 +18,8 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
-from diaktoros import config, doctor, gate_shims, prompts, route_intent, routes  # noqa: E402
+from diaktoros import config, doctor, prompts, route_intent, routes  # noqa: E402
+from diaktoros.gate import shims as gate_shims  # noqa: E402
 from test_gate_shims import Base  # noqa: E402
 
 OLD_REVIEWER = "the previous reviewer prompt"

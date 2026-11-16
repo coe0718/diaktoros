@@ -109,7 +109,7 @@ class Flow(app_cli.Base):
         self.assertNotIn("seat routes are active repo hooks", out)
 
     def test_arm_refuses_while_the_routes_script_cannot_run_and_apply_writes_it(self):
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         entry = routes.route("dk-app-acme-reader")
         found, _ = gate_shims.resolve(gate_shims.home_for(entry["profile"]), entry["script"])
         found.unlink()
@@ -181,7 +181,7 @@ class Flow(app_cli.Base):
         self.assertTrue({"pull_request", "pull_request_review", "issues"} <= set(entry["events"]))
 
     def test_an_app_route_missing_an_event_is_drift(self):
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         entry = dict(routes.route("dk-app-acme-reader"))
         self.assertEqual(gate_shims.contract_drift(self.loop(), "app", entry), [])
         for event in ("pull_request", "pull_request_review", "issues"):
@@ -225,7 +225,7 @@ class Flow(app_cli.Base):
         # loop whose events come through the App. Run the real script the way the gateway does.
         import os
         import subprocess
-        from diaktoros import gate_failures
+        from diaktoros.gate import failures as gate_failures
         root = Path(__file__).resolve().parents[1]
         payload = json.dumps({"action": "opened", "number": 7, "pull_request": {
             "number": 7, "head": {"sha": "a" * 40}, "base": {"ref": "main"},
@@ -251,7 +251,7 @@ class Flow(app_cli.Base):
         # #1297: a delivery the dispatcher took before `arm --pause`, whose gate then failed, is
         # re-driven by the sweep straight through gate_reviewer.py, past the dispatcher's check.
         import os
-        from diaktoros import gate_failures
+        from diaktoros.gate import failures as gate_failures
         root = Path(__file__).resolve().parents[1]
         raw = json.dumps({"action": "opened", "number": 7, "pull_request": {
             "number": 7, "head": {"sha": "a" * 40}, "base": {"ref": "main"},
@@ -280,7 +280,7 @@ class Flow(app_cli.Base):
         # is dropped by gate.context; its exit must not reach that refresh either. Driven through
         # the decorated entry point, gate_reviewer.main, as the re-drive subprocess runs it.
         import os
-        from diaktoros import gate_failures
+        from diaktoros.gate import failures as gate_failures
         from scripts import gate_reviewer
         payload = json.dumps({"action": "synchronize", "number": 7, "pull_request": {
             "number": 7, "head": {"sha": "a" * 40}, "base": {"ref": "main"},
@@ -314,7 +314,7 @@ class Flow(app_cli.Base):
         # right after that read, the delivery is still dropped and its exit must not refresh the
         # merge check. The drop is carried on the exit, not decided again from the flag.
         import os
-        from diaktoros import gate_failures
+        from diaktoros.gate import failures as gate_failures
         from scripts import gate_reviewer
         payload = json.dumps({"action": "synchronize", "number": 7, "pull_request": {
             "number": 7, "head": {"sha": "a" * 40}, "base": {"ref": "main"},
@@ -349,7 +349,8 @@ class Flow(app_cli.Base):
         # was started cannot be told: the delivery is dropped (fail closed), not acted on.
         import os
         import subprocess
-        from diaktoros import gate_failures, util
+        from diaktoros import util
+        from diaktoros.gate import failures as gate_failures
         root = Path(__file__).resolve().parents[1]
         payload = json.dumps({"action": "opened", "number": 7, "pull_request": {
             "number": 7, "head": {"sha": "a" * 40}, "base": {"ref": "main"},
@@ -361,7 +362,7 @@ class Flow(app_cli.Base):
         code = ("import runpy, sys\n"
                 f"sys.path.insert(0, {str(root)!r})\n"
                 f"gate = runpy.run_path({str(script)!r}, run_name='embedded')\n"
-                "from diaktoros import gate_failures\n"
+                "from diaktoros.gate import failures as gate_failures\n"
                 "gate_failures.run('gate_reviewer', gate['main'])\n")
         env = {k: v for k, v in os.environ.items() if k != gate_failures.REDRIVE_ENV}
         proc = subprocess.run([sys.executable, "-c", code], input=payload, capture_output=True,
@@ -485,7 +486,7 @@ class Switch(app_cli.Base):
         from diaktoros import route_intent
         self.assertIn("dk-app-acme-reader", json.dumps(route_intent.load(config.load_id("widgets"))))
         self.assertIn("route written: dk-app-acme-reader", out)
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         found, why = gate_shims.resolve(gate_shims.home_for(entry["profile"]), entry["script"])
         self.assertIsNotNone(found, why)               # the gateway can run the route's script
         self.assertEqual([c for c in gate_shims.live_checks(config.load_id("widgets"))
@@ -553,7 +554,7 @@ class Dispatch(unittest.TestCase):
         with mock.patch.object(gate_app.sys, "stdin", io.StringIO(json.dumps(payload))), \
                 mock.patch.object(gate_app.config, "loop_for_repo", return_value=loop), \
                 mock.patch.object(gate_app.gate_failures if hasattr(gate_app, "gate_failures")
-                                  else __import__("diaktoros.gate_failures").gate_failures,
+                                  else __import__("diaktoros.gate.failures").gate.failures,
                                   "run") as run, \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()), \
                 self.assertRaises(SystemExit) if loop is None or not config.app_ingress(loop) \
@@ -652,7 +653,7 @@ class Dispatch(unittest.TestCase):
     def test_the_dispatcher_says_unknown_apart_from_paused(self):
         """#1295 review F4: a damaged flag's drop is logged and recorded as unknown, with the
         repair, and a real pause still as an ordinary pause."""
-        from diaktoros import gate_decisions
+        from diaktoros.gate import decisions as gate_decisions
         loop = self.app_loop()
         st = state_mod.state_for(loop)
         (st.dir / app_ingress.FILE).write_text("{not json")

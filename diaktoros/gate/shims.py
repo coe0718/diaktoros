@@ -34,8 +34,8 @@ from __future__ import annotations
 import os
 import pathlib
 
-from . import config, route_intent, routes
-from .util import atomic_write
+from .. import config, route_intent, routes
+from ..util import atomic_write
 
 GATE_SCRIPT = route_intent.GATE_SCRIPT
 MARKER = "# diaktoros gate shim"
@@ -91,7 +91,7 @@ class ShimError(config.ConfigError):
 
 
 def plugin_script(script: str) -> pathlib.Path:
-    return pathlib.Path(__file__).resolve().parents[1] / "scripts" / script
+    return pathlib.Path(__file__).resolve().parents[2] / "scripts" / script
 
 
 def render(script: str) -> str:
@@ -203,7 +203,7 @@ def contract_drift(loop: dict, role: str, entry: dict) -> list[str]:
     if host and stored and stored != host:
         wrong.append("host")
     if role in ("observer", "observer_urgent"):
-        from . import observer
+        from .. import observer
         return [key for key in routes.contract_mismatch(
                     entry, observer.route_contract(loop, role == "observer_urgent"))
                 if key not in ("profile", "script")] + wrong
@@ -443,7 +443,7 @@ def heal_watchdog_shim() -> list[str]:
     and differs from it rendered for this plugin's watchdog. A foreign file or a symlink is never
     written or followed, only reported; a missing shim is not the sweep's to create.
     """
-    from . import cli, doctor
+    from .. import cli, doctor
     path = config.watchdog_shim()
     if not os.path.lexists(path):
         return []

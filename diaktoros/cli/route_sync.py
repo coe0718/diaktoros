@@ -6,11 +6,11 @@ from __future__ import annotations
 
 from .. import (
     config,
-    gate_shims,
     gh,
     route_intent,
     routes,
 )
+from ..gate import shims as gate_shims
 from . import common as cli_common
 from ..config import credentials
 from .common import GATE_SCRIPT

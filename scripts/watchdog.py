@@ -55,8 +55,6 @@ from diaktoros import (  # noqa: E402
     envnames,
     fix_hold,
     gate,
-    gate_failures,
-    gate_shims,
     gh,
     hostdirs,
     main_check,
@@ -76,6 +74,8 @@ from diaktoros import (  # noqa: E402
     watch_mode,
     watch_stacked,
 )
+from diaktoros.gate import failures as gate_failures
+from diaktoros.gate import shims as gate_shims
 from diaktoros.util import age_min, epoch, log, now_iso  # noqa: E402
 
 # #532: how long a head may sit with a pending, unannounced review request before the sweep
