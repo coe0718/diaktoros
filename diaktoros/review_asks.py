@@ -81,17 +81,21 @@ def grant_by_rerequest(loop, st, number, head, rounds, sender) -> str:
     ledger records that notice delivered (#2501 review, F5). So no review starts on a grant nobody
     was told of: a failed, uncertain or unfinished POST grants nothing yet, and the first gate
     pass that finds it delivered (after the sweep's retry, a settled one, or a gate stopped after
-    the receipt) writes the grant. ``sender``: '' when the pass is no re-request. Returns why a
-    re-request's grant still waits for its notice, else ''."""
+    the receipt) writes the grant. A maintainer's re-request also resends a notice whose POST
+    definitely failed (``observer.resend``), however many attempts the sweep spent, so a repaired
+    route recovers without the terminal (F7). ``sender``: '' when the pass is no re-request.
+    Returns why a re-request's grant still waits for its notice, else ''."""
     if not rerequest_grants(loop) or st.review_cap_granted(number, head, rounds):
         return ""
     identity = f"rerequest:{rounds}"
+    key = observer.key_for(loop, number, head, "granted", identity)
     if sender in config.maintainers(loop) and rerequest_can_grant(loop):
+        # A failed one first: a notice this pass sends and fails is the next request's to resend.
+        observer.resend(loop, st, key)
         observer.notify(loop, st, "granted", number, head, identity=identity,
                         outcome=(f"{sender}'s re-request on GitHub (review_only_rerequest_grants): "
                                  f"one more verdict at this head, {rounds} spent"),
                         actor=sender, next_turn="the review of this head")
-    key = observer.key_for(loop, number, head, "granted", identity)
     notice = observer.recorded(st, key)
     status = notice.get("status")
     if status == "delivered":
@@ -99,11 +103,14 @@ def grant_by_rerequest(loop, st, number, head, rounds, sender) -> str:
         return ""
     if not status:
         return ""
+    if status == "failed":
+        return (f"a re-request's grant waits for its granted notice, failed "
+                f"({notice.get('error') or 'delivery failed'}): once the route works, a "
+                f"maintainer's re-request resends it (the watchdog sweep does too, up to "
+                f"{observer.MAX_ATTEMPTS} attempts)")
     if status == "uncertain":
         then = (f"check the chat, then `hermes dk observer --loop {loop['id']} --settle {key} "
                 "--delivered` (or `--not-delivered` to have the sweep send it once)")
-    elif status == "failed":
-        then = f"the watchdog sweep resends it ({notice.get('error') or 'delivery failed'})"
     else:
         then = "it is being sent, or its sender stopped and the sweep settles it"
     return (f"a re-request's grant waits for its granted notice, {status}: {then}; "

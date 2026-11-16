@@ -982,6 +982,23 @@ def retry(loop: dict, st) -> int:
     return _resend(loop, st, pending, now)
 
 
+def resend(loop: dict, st, key: str) -> bool:
+    """Send one notice whose POST definitely failed again, now, at a person's request (#2501
+    review, F7): only a ``failed`` entry marked ``retryable`` (it never reached the gateway, so
+    no copy can land twice), not a digest's, and whatever its attempts, so a route fixed after
+    ``retry`` gave up still gets it. An ``uncertain`` one is never replayed. True if delivered."""
+    now = time.time()
+    with _lock(st.observations):
+        data = _read(st.observations)
+        entry = data["entries"].get(key)
+        if (not isinstance(entry, dict) or entry.get("status") != "failed"
+                or entry.get("retryable") is not True or entry.get("batch")):
+            return False
+        data["entries"][key] = claim = {**_claim(entry), "at": now}
+        _save(st.observations, data)
+    return _resend(loop, st, [(key, claim)], now) == 1
+
+
 def _resend(loop: dict, st, pending: list, now: float) -> int:
     """Send each entry ``retry`` claimed again (``pending``: ``(key, entry)``); how many were
     delivered."""

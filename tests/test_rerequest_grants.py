@@ -209,15 +209,18 @@ class Gate(fg.Base):
         # #2501 review, F5: a feed that passed the preflight can still fail at the POST. Nothing
         # is granted or queued then, and the gate's decision says what the notice is waiting on.
         fire = self.feed()
+        key = observer.key_for(self.loop, 7, HEAD, "granted", f"rerequest:{self.cap}")
         # A definite failure (here the route gone by the POST): the sweep resends it, and the
         # re-request after that grants, with no second notice.
         with mock.patch.object(observer, "_post", return_value=(False, "route gone", False)):
             self.assertIsNone(self.ask(MAINT, notes=False).call_args)
-        self.assertFalse(self.st.review_cap_granted(7, HEAD, self.cap))
-        self.assertEqual(self.ledger_rows(), [])
-        self.assertIn("waits for its granted notice, failed: the watchdog sweep resends it "
-                      "(route gone); re-request again once it is delivered", self.said)
-        self.assertIsNone(self.ask(MAINT, notes=False).call_args)     # still failed: still waits
+            self.assertFalse(self.st.review_cap_granted(7, HEAD, self.cap))
+            self.assertEqual(self.ledger_rows(), [])
+            self.assertIn("waits for its granted notice, failed (route gone): once the route "
+                          "works, a maintainer's re-request resends it (the watchdog sweep does "
+                          "too, up to 3 attempts)", self.said)
+            self.assertIsNone(self.ask(MAINT, notes=False).call_args)   # resent, failed again
+        self.assertEqual(observer.recorded(self.st, key)["attempts"], 2)
         self.assertEqual(self.events(fire, "granted"), [])
         with contextlib.redirect_stderr(io.StringIO()):
             observer.retry(self.loop, self.st)
@@ -225,6 +228,31 @@ class Gate(fg.Base):
         self.ask(MAINT, notes=False).assert_called_once()
         self.assertTrue(self.st.review_cap_granted(7, HEAD, self.cap))
         self.assertEqual(len(self.events(fire, "granted")), 1)
+
+    def test_a_re_request_resends_a_failed_notice_after_the_sweep_gave_up(self):
+        # #2501 review, F7: the sweep stops at MAX_ATTEMPTS, and ``settle`` takes only an
+        # uncertain entry. A definite failure never reached the gateway, so a maintainer's
+        # re-request, once the route is repaired, resends it, however many attempts were spent.
+        fire = self.feed()
+        key = observer.key_for(self.loop, 7, HEAD, "granted", f"rerequest:{self.cap}")
+        with mock.patch.object(observer, "_post", return_value=(False, "route gone", False)), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertIsNone(self.ask(MAINT, notes=False).call_args)
+            for _ in range(observer.MAX_ATTEMPTS):
+                observer.retry(self.loop, self.st)
+        self.assertEqual(observer.recorded(self.st, key)["attempts"], observer.MAX_ATTEMPTS)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(observer.retry(self.loop, self.st), 0)     # the sweep has given up
+        with self.assertRaises(observer.SettleError):
+            observer.settle(self.st, key, delivered=False)
+        self.assertEqual(self.events(fire, "granted"), [])
+        # Repaired. A pass that is no re-request resends nothing; the maintainer's does.
+        self.assertIsNone(self.ask(OWNER, notes=False, action="ready_for_review").call_args)
+        self.assertEqual(self.events(fire, "granted"), [])
+        self.ask(MAINT, notes=False).assert_called_once()
+        self.assertTrue(self.st.review_cap_granted(7, HEAD, self.cap))
+        self.assertEqual(self.events(fire, "granted"), ["granted"])
+        self.assertEqual(observer.recorded(self.st, key)["status"], "delivered")
 
     def test_an_uncertain_notice_is_never_replayed_and_grants_once_settled(self):
         fire = self.feed()
