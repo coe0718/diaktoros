@@ -38,7 +38,7 @@ def top_level(path: pathlib.Path) -> set[str]:
 
 class OneHome(unittest.TestCase):
     def test_each_moved_name_is_defined_in_explain_only(self):
-        gate, explain = top_level(ROOT / "diaktoros/gate.py"), top_level(ROOT / "diaktoros/explain.py")
+        gate, explain = top_level(ROOT / "diaktoros/gate/__init__.py"), top_level(ROOT / "diaktoros/explain.py")
         for name in MOVED:
             with self.subTest(name):
                 self.assertIn(name, explain)
