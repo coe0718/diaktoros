@@ -534,6 +534,13 @@ class Ruled(Base):
         self.assertTrue(gate.reviewed_at_head(self.reviews, self.loop, new))
         self.assertEqual(ruled_approval.unsettled(self.loop, 7, new, self.reviews), "")
         # A second merge follows the chain back to the ruled head, the approval moving again.
+        second = self.merge_again(new)
+        self.assertEqual((self.carried(second)["from"], self.carried(second)["review"]), (new, 21))
+        self.moved(second)
+        self.assertEqual(self.latest_id(second), 21)
+
+    def merge_again(self, new):
+        """The base moves on again and the host merges it into ``new``: the next merged head."""
         (self.src / "d.py").write_text("d\n")
         git("-C", str(self.src), "add", "-A")
         git("-C", str(self.src), "commit", "-qm", "Yet another (#431)")
@@ -541,10 +548,44 @@ class Ruled(Base):
         self.tip = git("-C", str(self.src), "rev-parse", "HEAD")
         self.head = new
         self.live["head"]["sha"] = new
-        second = self.update()
-        self.assertEqual((self.carried(second)["from"], self.carried(second)["review"]), (new, 21))
+        return self.update()
+
+    def test_a_verdict_left_at_the_old_head_after_the_approval_voids_it_where_it_moved(self):
+        # #2503 review, F1: a change request submitted at the old head after the approval stays
+        # there when GitHub moves the approval. At the old head it would have superseded the
+        # approval, so the merged head must not read as approved either.
+        self.settle()
+        new = self.update()
+        late = approval(self.head, review_id=30, state="CHANGES_REQUESTED", at="2026-11-10T03:00:00Z")
+        self.reviews.append(late)
+        self.moved(new)
+        self.assertEqual(gate.ruled_approvals(self.reviews, self.loop, new), [])
+        self.assertIsNone(self.latest_id(new))
+        self.assertFalse(gate.reviewed_at_head(self.reviews, self.loop, new))
+        # The adjudicator's own later change request there, or one whose order can't be told.
+        for changed in ({"user": {"login": "adj", "id": 3}}, {"submitted_at": None}):
+            self.reviews[-1] = {**late, **changed}
+            self.assertIsNone(self.latest_id(new), changed)
+        # Only a verdict after the approval: one before it, or a later comment, leaves it.
+        for changed in ({"submitted_at": "2026-11-10T01:45:00Z"}, {"state": "COMMENTED"},
+                        {"user": {"login": "someone", "id": 4}}):
+            self.reviews[-1] = {**late, **changed}
+            self.assertEqual(self.latest_id(new), 21, changed)
+
+    def test_a_verdict_left_at_a_head_between_two_merges_voids_the_moved_approval(self):
+        # The same at an intermediate link: after the second merge moved the approval on, a
+        # request lands at the first merged head (a review that began before the merge).
+        self.settle()
+        new = self.update()
+        self.moved(new)
+        second = self.merge_again(new)
+        self.assertEqual(self.carried(second)["from"], new)
         self.moved(second)
         self.assertEqual(self.latest_id(second), 21)
+        self.reviews.append(approval(new, review_id=30, state="CHANGES_REQUESTED",
+                                     at="2026-11-10T03:00:00Z"))
+        self.assertEqual(gate.ruled_approvals(self.reviews, self.loop, second), [])
+        self.assertFalse(gate.reviewed_at_head(self.reviews, self.loop, second))
 
     def test_a_moved_approval_counts_only_through_its_own_carry_record_and_ruling(self):
         self.settle()

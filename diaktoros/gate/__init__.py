@@ -997,7 +997,7 @@ def ruled_approvals(reviews: list, loop: dict, head: str) -> list:
         return []
     from ..run_supervisor import views
     ruling = views.ruling_row(config.host_path("ledger"), loop["repo"], number) or {}
-    return [newest] if base_merge.ruled_at(loop, number, ruling, head, newest) else []
+    return [newest] if base_merge.ruled_at(loop, reviews, ruling, head, newest) else []
 
 
 def _review_when(review: dict) -> tuple | None:
