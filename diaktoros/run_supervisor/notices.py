@@ -16,8 +16,21 @@ from .. import run_supervisor
 from . import views
 
 
+FEED_YOU = "you — the adjudicator never merges"
+FEED_FIXER = "fixer — it answers the upheld shadow review; the adjudicator never merges"
+
+
 class OperatorNotices:
     """The operator-notice methods of :class:`~diaktoros.run_supervisor.Supervisor`."""
+
+    def ruling_next_turn(self, run_id: str) -> str:
+        """The observer feed's next-turn clause for a recorded ruling (#2495): the fixer exactly
+        when the ruling notice says the fixer answers (``_fixer_answers``), otherwise you."""
+        try:
+            rows = self.rulings(run_id=run_id)
+        except Exception:
+            rows = []
+        return FEED_FIXER if rows and self._fixer_answers(rows[0]) else FEED_YOU
 
     def _dispute_message(self, row) -> str:
         comment = row['comment']

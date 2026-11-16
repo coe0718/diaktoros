@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 import test_shadow_escalate_ruling as ruling  # noqa: E402
 from diaktoros import broker, gate, gh, run_supervisor, safe_push  # noqa: E402
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 
 
@@ -127,12 +128,22 @@ class Operator(ruling.Base):
                         (newest[0] if shown is None else shown, f"r{self.n}"))
             con.row_factory = sqlite3.Row
             row = con.execute("SELECT * FROM rulings WHERE run_id=?", (f"r{self.n}",)).fetchone()
-        sender = notices.OperatorNotices()
-        sender.db = self.db
+        sender = run_supervisor.Supervisor(self.db)
         pr = {**fg.LIVE, "user": {"login": author}, **live}
+        scope = broker_ipc.RunScope(fg.REPO, 7, row["head"], "adjudicator", "fix-7",
+                                    row["run_id"], str(self.db))
         with mock.patch.object(gh, "pr", return_value=pr), \
-                mock.patch("diaktoros.config.by_repo", return_value=self.loop):
-            return sender._ruling_message(row)
+                mock.patch("diaktoros.config.by_repo", return_value=self.loop), \
+                mock.patch("diaktoros.config.adjudicator_login", return_value=None), \
+                mock.patch("diaktoros.observer.notify", return_value=True) as notify:
+            text = sender._ruling_message(row)
+            # #2495: the feed line, as the broker sends it when it delivers this ruling.
+            broker_ipc._deliver_ruling(self.loop, scope, sender, "breach:1", verdict, "because")
+        self.feed = notify.call_args.kwargs["next_turn"]
+        # #2495: the observer feed names the fixer exactly when the notice does.
+        self.assertEqual(self.feed, notices.FEED_FIXER if "so the fixer answers" in text
+                         else notices.FEED_YOU)
+        return text
 
     def test_the_ruling_notice_says_who_answers_an_upheld_review(self):
         self.shadow("REQUEST_CHANGES")
@@ -142,6 +153,7 @@ class Operator(ruling.Base):
         self.assertIn("so the fixer answers its findings", text)
         self.assertNotIn("the decision is yours", text)
         self.assertIn("never merges, pushes or reviews", text)
+        self.assertTrue(self.feed.startswith("fixer — "), self.feed)          # #2495
         for kwargs in ({"author": "someone"}, {"verdict": "ACCEPT"}, {"shown": ""}):
             self.assertIn("the decision is yours", self.ruling_notice(**kwargs), kwargs)
         on = self.loop
