@@ -6,9 +6,9 @@ The PRs are the ones the run ledger has a turn for since the date. Each is colle
 turns before the date included) and written only when GitHub says it merged; with ``--offline``
 the merge cannot be read, so a PR is written whether it merged or not and the listing says so.
 A write that fails stops the export there, keeping the files before it. Nothing is written
-outside ``DIR``; a file of the same name is replaced. With nothing to write, ``DIR`` is not made:
-a temporary file opened (and removed at once) in it or its nearest existing parent shows whether
-it could be.
+outside ``DIR``; a file of the same name is replaced. With no PR turn in the window, ``DIR`` is
+not made: a temporary file opened (and removed at once) in it or its nearest existing parent shows
+whether it could be. A PR with a turn there makes it, even one then skipped as not merged (#2494).
 """
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def export(loop: dict, db: Path, since: float, out: Path, fmt: str, offline: boo
     numbers, gap = prs_since(db, loop["repo"], since)
     result: dict = {"written": [], "skipped": [], "failed": None, "gap": gap}
     if not numbers:
-        _probe(out)         # an unwritable DIR refuses even when there is nothing to write (#2204)
+        _probe(out)         # an unwritable DIR refuses even with no PR in the window (#2204)
         return result
     _make(out)
     for number in numbers:
@@ -95,9 +95,10 @@ def _probe(out: Path) -> None:
     """Raise the OSError ``_make`` and a write would raise for ``out``, creating and removing no
     directory, so it can never touch one another process makes (#2489 review): its nearest
     existing part must be a directory, and a nameless temporary file must open there. That write
-    is what catches a read-only filesystem the permission bits don't show (#2252)."""
+    is what catches a read-only filesystem the permission bits don't show (#2252). A link to
+    nothing counts as existing, as ``mkdir`` finds it, so it is "Not a directory" here too (#2493)."""
     for part in (out, *out.parents):
-        if part.exists():
+        if os.path.lexists(part):
             if not part.is_dir():
                 raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(part))
             with tempfile.TemporaryFile(dir=part) as probe:
