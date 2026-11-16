@@ -5,10 +5,10 @@ from __future__ import annotations
 
 from .. import (
     config,
-    gate_shims,
     route_intent,
     routes,
 )
+from ..gate import shims as gate_shims
 from . import common as cli_common
 from ..config import credentials
 from ..config import settings_form

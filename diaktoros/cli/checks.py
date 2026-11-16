@@ -12,11 +12,11 @@ from .. import (
     arm_action,
     config,
     doctor,
-    gate_shims,
     onboarding,
     onboarding_record,
     route_intent,
 )
+from ..gate import shims as gate_shims
 from ..doctor import hook_checks
 
 

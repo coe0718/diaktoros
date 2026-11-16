@@ -112,7 +112,7 @@ def _waits(loop: dict, st, number: int, head: str, live: dict, reviews) -> str:
         return "unattended fixer pushes are off"
     if (pr_head.get("repo") or {}).get("full_name") != loop["repo"] or not pr_head.get("ref"):
         return "a fork branch, which the host cannot push"
-    busy = _in_flight(loop, number)
+    busy = in_flight(loop, number)
     if busy:
         return busy
     if isinstance(st.human_hold(number, head), dict):
@@ -135,9 +135,9 @@ def _waits(loop: dict, st, number: int, head: str, live: dict, reviews) -> str:
                                     ruled=gate.is_ruled_approval(latest, loop))
 
 
-def _in_flight(loop: dict, number: int) -> str:
+def in_flight(loop: dict, number: int) -> str:
     """'' when no turn of this PR is queued or in flight, else what is (an unreadable ledger
-    is not idle)."""
+    is not idle). The review-only update waits on it too (#2468)."""
     from .run_supervisor import production_ledger, views
     path = production_ledger()
     if not path.exists():
@@ -152,6 +152,45 @@ def _in_flight(loop: dict, number: int) -> str:
     finally:
         con.close()
     return f"a {row[0]} turn is {row[1]}" if row else ""
+
+
+class TurnHold:
+    """A merge push's hold on its PR (``run_supervisor.merge_hold``, #2468). ``take`` is the
+    push's ``before_push``: it holds the PR in the one transaction that finds no turn of it
+    queued or in flight, so none is claimed until the push is done; or it stops the push
+    (``BrokerDenied``: the next sweep tries again). ``release`` after the push, whatever came
+    of it; a hold never released expires on its own."""
+
+    def __init__(self, loop: dict, number: int, head: str):
+        self.loop, self.number, self.head, self.token = loop, number, head, ""
+
+    def take(self, *_push) -> None:
+        from .run_supervisor import Supervisor, merge_hold, production_ledger
+        path = production_ledger()
+        # The host's own open, as a gate enqueue or the watchdog's sweep makes it: it creates a
+        # missing ledger (one may be created and claimed before the push) or brings one from
+        # before an upgrade up to date (``merge_holds``), so the hold serializes with any claim.
+        # A worker never does this; every worker is spawned by a host that already has.
+        try:
+            Supervisor(path)
+        except Exception as exc:
+            raise broker.BrokerDenied(f"the run ledger could not be opened ({type(exc).__name__}): "
+                                      "the merge waits for it") from exc
+        self.token, busy = merge_hold.take(path, self.loop["repo"], self.number, self.head,
+                                           IN_FLIGHT)
+        if busy:
+            raise broker.BrokerDenied(f"{busy}: the merge waits for it")
+
+    def release(self) -> None:
+        if not self.token:
+            return
+        from .run_supervisor import merge_hold, production_ledger
+        try:
+            merge_hold.release(production_ledger(), self.loop["repo"], self.number, self.token)
+        except Exception as exc:
+            log(f"#{self.number}: merge hold not released ({type(exc).__name__}); it expires "
+                f"in {merge_hold.HOLD_S // 60} minutes")
+        self.token = ""
 
 
 def source(loop: dict, st, head: str, live: dict, raw, reviews):
@@ -187,8 +226,10 @@ def update(loop: dict, st, number: int, head: str, live: dict) -> str:
         return ""
     approval, no_carry = source(loop, st, head, live, raw, reviews)
     carry: dict = {}
+    hold = TurnHold(loop, number, head)
 
     def record(new_head: str, base: str, identity: str) -> None:
+        hold.take()
         if approval is not None and not identity:
             _record(st, new_head, {"number": number, "from": head, "review": approval.get("id"),
                                    "base": base, "at": time.time()})
@@ -207,6 +248,8 @@ def update(loop: dict, st, number: int, head: str, live: dict) -> str:
     except broker.BrokerDenied as exc:       # a PushFailure too: the next sweep tries again
         log(f"#{number} @ {head[:7]} behind {loop['base']}, merge push stopped: {exc}")
         return ""
+    finally:
+        hold.release()
     new = done["new_head"]
     log(f"#{number} @ {head[:7]} merged {loop['base']} in: {new[:7]}"
         + (" (approval carried over)" if carry.get("done") else ""))

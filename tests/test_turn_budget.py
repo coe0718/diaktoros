@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import closing, redirect_stdout
+from contextlib import ExitStack, closing, redirect_stdout
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -671,6 +671,51 @@ class SeatClockFollowsTheRecordedBudget(unittest.TestCase):
         self.assertEqual(config.seat_ttl_s(loop, recorded=60), config.seat_ttl_s(loop))  # never shorter
 
 
+class LedgerAndWorkerTeardown(unittest.TestCase):
+    """#1511: ``LedgerAndWorker``'s temp dir is removed only once no worker naming it is left
+    (#1432's wait), so a worker still writing after its row went terminal can't race it."""
+
+    def test_the_temp_dir_is_removed_only_after_its_workers_exit(self):
+        case = LedgerAndWorker("test_the_rows_budget_reaches_the_child_not_the_worker_default")
+        case.setUp()
+        self.addCleanup(case.doCleanups)        # a skip below still removes its dir and patches
+        # A stand-in for the detached worker, still running when the test has its answer: like
+        # the worker, it names the test's root on its command line. It has no deadline of its
+        # own: it runs until its stdin closes, which happens only once a look for processes
+        # naming the root has seen it, so no stall of this test can end it before the cleanups
+        # look. This test's own cleanups kill it if it is still running (and were this process
+        # to die, its end of the pipe would close).
+        stand_in = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()",
+                                     str(case.root)], stdin=subprocess.PIPE, start_new_session=True)
+        self.addCleanup(stand_in.stdin.close)
+        self.addCleanup(stand_in.wait, 10)
+        self.addCleanup(lambda: stand_in.poll() is None and stand_in.kill())
+        # The check rests on seeing the stand-in. Where processes can't be listed (no /proc),
+        # the wait and the removal both see none, and [{}] would be a false green (#2480 review 3).
+        if stand_in.pid not in worker_wait.processes_naming(str(case.root)):
+            self.skipTest("processes can't be listed here (no /proc): the removal can't be checked")
+        naming = worker_wait.processes_naming
+
+        def looked(marker):
+            live = naming(marker)
+            if stand_in.pid in live:
+                stand_in.stdin.close()
+            return live
+        seen, watch = worker_wait.removal_watch(case.root)
+        with watch, mock.patch.object(worker_wait, "processes_naming", looked):
+            case.doCleanups()
+        self.assertEqual(seen, [{}], "removed while a process naming it was running")
+        self.assertFalse(case.root.exists())
+
+    def test_without_process_listing_the_check_is_skipped_never_passed(self):
+        # #2480 review 3, F3: off Linux, processes_naming returns {} for every root, as here.
+        result = unittest.TestResult()
+        with mock.patch.object(worker_wait, "processes_naming", return_value={}):
+            LedgerAndWorkerTeardown("test_the_temp_dir_is_removed_only_after_its_workers_exit").run(result)
+        self.assertEqual((result.testsRun, len(result.skipped), result.failures, result.errors),
+                         (1, 1, [], []))
+
+
 class LedgerAndWorker(unittest.TestCase):
     """A real Supervisor, its real detached worker process, and a fixture child."""
 
@@ -753,21 +798,90 @@ class LedgerAndWorker(unittest.TestCase):
         # command line names the root, as every real worker's does) that writes there late.
         case = type(self)("test_bad_budgets_are_refused_at_enqueue")
         case.setUp()
+        self.addCleanup(case.doCleanups)        # a skip below still removes its dir
+        # It writes once its stdin closes, which happens only when a look for processes naming
+        # the root (the cleanups' wait) has seen it: no deadline of its own, so no stall of this
+        # test lets it write before the cleanups are reached, or after a removal that didn't wait
+        # (#2480 review 5, F5). Its stdin closes after the cleanups in any case.
         late = subprocess.Popen([sys.executable, "-c",
-                                 "import sys,time,pathlib; time.sleep(1.5); "
+                                 "import sys,pathlib; sys.stdin.read(); "
                                  "pathlib.Path(sys.argv[1], 'late.log').write_text('x')",
-                                 str(case.root)],
+                                 str(case.root)], stdin=subprocess.PIPE,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 start_new_session=True)
-        try:
+        self.addCleanup(late.stdin.close)
+        self.addCleanup(late.wait, 10)
+        self.addCleanup(lambda: late.poll() is None and late.kill())
+        if late.pid not in worker_wait.processes_naming(str(case.root)):
+            # Unlisted: either processes can't be listed here (no /proc), or it has already
+            # ended, which proves nothing and is a failure, never a skip (#2480 review 7, F6).
+            # ``wait(0)``, not ``poll()``, which the meta-test below holds at None.
+            try:
+                late.wait(timeout=0)
+            except subprocess.TimeoutExpired:
+                self.skipTest("processes can't be listed here (no /proc): the wait can't be checked")
+            self.fail("the stand-in ended before the cleanups looked for it")
+        naming = worker_wait.processes_naming
+
+        def looked(marker):
+            live = naming(marker)
+            if late.pid in live:
+                late.stdin.close()
+            return live
+        with mock.patch.object(worker_wait, "processes_naming", looked):
             case.doCleanups()
-            self.assertIsNotNone(late.poll(), "the temp dir was removed under a live worker")
-            self.assertEqual(late.returncode, 0)
-            self.assertFalse(case.root.exists())
-        finally:
-            if late.poll() is None:
-                late.kill()
-            late.wait()
+        late.stdin.close()
+        # Its late write is the proof: it fails if the dir went first. Not ``poll()``: an
+        # exiting process's command line reads empty before it can be reaped (#2483).
+        self.assertEqual(late.wait(10), 0, "the temp dir was removed under a live worker")
+        self.assertFalse(case.root.exists())
+
+    def test_a_worker_gone_from_the_scan_but_not_yet_reaped_is_no_failure(self):
+        # #2480 review 4, F4 (#2483): hold open the window where the cleanup's scan no longer
+        # sees the exiting stand-in but ``poll()`` still says it runs. The test passes there, and
+        # still fails when the cleanups don't wait for it at all. Review 5, F5: a parent stalled
+        # after starting the stand-in (2 s, past the 1.5 s it once slept) changes neither.
+        name = "test_cleanup_waits_for_a_worker_still_writing_in_the_temp_dir"
+        start = subprocess.Popen.__init__
+
+        def stalled(popen, *args, **kwargs):
+            start(popen, *args, **kwargs)
+            time.sleep(2)
+        poll = (subprocess.Popen, "poll", mock.Mock(return_value=None))
+        no_wait = (worker_wait, "wait_for_workers", mock.Mock())
+        stall = (subprocess.Popen, "__init__", stalled)
+        for label, patches, failed in (("poll window", [poll], 0), ("no wait", [no_wait], 1),
+                                       ("stalled", [stall], 0),
+                                       ("stalled, no wait", [stall, no_wait], 1)):
+            with self.subTest(label), ExitStack() as stack:
+                for target, attr, new in patches:
+                    stack.enter_context(mock.patch.object(target, attr, new))
+                result = unittest.TestResult()
+                type(self)(name).run(result)
+                if result.skipped:              # processes can't be listed here
+                    self.skipTest(result.skipped[0][1])
+                self.assertEqual((result.testsRun, len(result.failures), result.errors),
+                                 (1, failed, []), result.failures)
+
+    def test_a_stand_in_unlisted_because_it_ended_fails_and_only_a_live_one_skips(self):
+        # #2480 review 8, F7: a stand-in the first scan can't list is a skip only while it still
+        # runs (processes can't be listed here). One that ended before that scan is a failure.
+        name = "test_cleanup_waits_for_a_worker_still_writing_in_the_temp_dir"
+        start = subprocess.Popen.__init__
+
+        def ended(popen, *args, **kwargs):
+            start(popen, *args, **kwargs)
+            popen.stdin.close()
+            popen.wait(10)
+        for label, target, attr, new, outcome in (
+                ("ended", subprocess.Popen, "__init__", ended, (1, 0)),
+                ("live, unlisted", worker_wait, "processes_naming", mock.Mock(return_value={}),
+                 (0, 1))):
+            with self.subTest(label), mock.patch.object(target, attr, new):
+                result = unittest.TestResult()
+                type(self)(name).run(result)
+                self.assertEqual((result.testsRun, len(result.failures), len(result.skipped),
+                                  result.errors), (1, *outcome, []), result.failures)
 
     def test_bad_budgets_are_refused_at_enqueue(self):
         sup = self.sup(0)

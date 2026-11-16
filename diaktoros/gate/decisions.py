@@ -12,8 +12,8 @@ from __future__ import annotations
 import json
 import sys
 
-from . import config, util
-from .util import LOG_PREFIX, register_lock
+from .. import config, util
+from ..util import LOG_PREFIX, register_lock
 
 KEEP = 200
 LIMIT = 300

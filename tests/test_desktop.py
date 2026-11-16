@@ -943,6 +943,11 @@ class Surface(unittest.TestCase):
             "actions: stale dependency confirmation (409) is not success and needs a fresh preview",
             "actions: malformed dependency previews are rejected before confirmation",
             "actions: a dependency preview needs both issue numbers and invalid input never reads",
+            # Waivers and the drawer's issue dependencies (#1301).
+            "deps: waivers list who waived and when; an unreadable or older-host history is never none waived",
+            "deps: a malformed or partial waiver group is rejected before cache",
+            "drawer: an issue or its fix PR lists that issue dependencies and waivers from the cached read, starting no read",
+            "drawer: unknown or no issue context, an unread, unavailable or cut list are said, never guessed",
         ):
             self.assertRegex(done.stdout, rf"(?m)^ok \d+ - {re.escape(name)}$")
         # #2149: the stale-409 wording for escalate and both dependency actions, by name.

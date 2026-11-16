@@ -175,8 +175,11 @@ class EndLingeringWorkers(unittest.TestCase):
     def test_a_worker_leaving_its_wait_cannot_work_until_an_authorised_signal_lands(self):
         # #1830 F1: the signaler has checked the held mark; the worker now tries to leave. It
         # must stay in _leave (on the gate's lock) until the signal is sent, never reach work.
+        # Its GATE_WAIT is far past the 1 s watched below (#2481): at the default 1 s, a loaded
+        # machine let it end itself in its wait (#1842) first, and that EOF read as early.
         code = ("import os, sys, time; from pathlib import Path\n"
                 "from diaktoros.run_supervisor import workers\n"
+                "workers.GATE_WAIT = 30\n"
                 "with workers.lingering(Path(sys.argv[1])):\n"
                 "    print('marked', flush=True)\n"
                 "    while not os.path.exists(sys.argv[1] + '.wake'): time.sleep(0.01)\n"

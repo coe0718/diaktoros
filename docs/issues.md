@@ -454,7 +454,14 @@ minute) can therefore lose triage turns. Two things cover it:
 
 A dropped review or fix wake (a burst of PR events) has no listing sweep like triage's. The
 watchdog delivers a pending review request that has no review to the reviewer gate after 15
-minutes (#532), and other dropped wakes show as stall alerts.
+minutes (#532). It does the same for a review that was queued but cancelled because the head
+moved before it started: a review-only author's push, or a base merge by the host or by
+"Update branch". Only the fixer's own push asks for the next review, so without this the new head
+would wait with no verdict and nothing queued (#2468). Unlike a pending request, this covers a
+head that was already there when the loop was armed: the cancelled turn in the run ledger shows a
+review was asked for, and the 15 minutes count from when the loop first saw the head (from
+arming, for a watchdog record too old to say). Other
+dropped wakes show as stall alerts.
 
 ## Current limits
 

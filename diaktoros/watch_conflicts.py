@@ -108,6 +108,12 @@ def _review_only_next(loop: dict, st: state_mod.LoopState, number: int, head: st
     # The cause, the files and the commands (a dry merge on the host, nothing pushed);
     # with review_only_update on, a clean merge is pushed first, once, under a lease.
     tried = ""
+    # #2468: a merge pushed under a queued or running turn cancels the review (the head moved
+    # before it started) or strands it: wait for it, as update_behind does (base_merge._waits).
+    busy = base_merge.in_flight(loop, number) if config.review_only_update(loop) else ""
+    if busy and (conflict_live.get(number) or {}).get("mergeable_state") == "behind":
+        log(f"#{number} @ {head[:7]} behind {loop['base']}, not merged in: {busy}")
+        return None
     try:
         # The dry merge, and an attempt that stopped, are kept per (head, base tip): a
         # sweep that sees the same pair again reads them instead of fetching (#504).
@@ -124,7 +130,7 @@ def _review_only_next(loop: dict, st: state_mod.LoopState, number: int, head: st
         pushed = ""
         # A stop that is not a fact about the pair (pushes off, a broker refusal, a
         # failed push) keeps the dry merge but is attempted again (shadow on #1151).
-        if attempt:
+        if attempt and not busy:
             pushed, tried = review_only_conflict.update(loop, number, head, facts)
             if not pushed and key[2] and "clean" in facts:   # the dry merge ran
                 st.review_only_conflict_set(

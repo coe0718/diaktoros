@@ -21,7 +21,8 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
-from diaktoros import config, explain, gate, gate_failures, state as state_mod  # noqa: E402
+from diaktoros import config, explain, gate, state as state_mod  # noqa: E402
+from diaktoros.gate import failures as gate_failures  # noqa: E402
 from diaktoros import watch_mode  # noqa: E402
 from diaktoros import watch_health  # noqa: E402
 from diaktoros.util import iso_at  # noqa: E402
@@ -780,7 +781,7 @@ class GateFailureTest(unittest.TestCase):
         script = t.TMP / "stopped_gate.py"
         script.write_text(
             f"import sys\nsys.path.insert(0, {str(t.ROOT)!r})\n"
-            "from diaktoros import gate_failures\n"
+            "from diaktoros.gate import failures as gate_failures\n"
             "def main():\n    import time\n    print('ready', file=sys.stderr, flush=True)\n"
             "    time.sleep(60)\n"
             "gate_failures.run('gate_reviewer', main)\n")
@@ -812,7 +813,8 @@ class GateFailureTest(unittest.TestCase):
         script = t.TMP / "claiming_gate.py"
         script.write_text(
             f"import sys\nsys.path.insert(0, {str(t.ROOT)!r})\n"
-            "from diaktoros import config, gate_failures, state\n"
+            "from diaktoros import config, state\n"
+            "from diaktoros.gate import failures as gate_failures\n"
             "def main():\n"
             "    st = state.state_for(config.load_id('widgets'))\n"
             f"    st.acquire('reviewer', {t.REPO + '#7'!r}, {t.HEAD_A!r}, 'test claim')\n"
@@ -1033,7 +1035,8 @@ class GateFailureTest(unittest.TestCase):
         script = t.TMP / "fault_gate.py"
         script.write_text(
             f"import sys\nsys.path.insert(0, {str(t.ROOT)!r})\n"
-            "from diaktoros import config, gate_failures, gh, state\n"
+            "from diaktoros import config, gh, state\n"
+            "from diaktoros.gate import failures as gate_failures\n"
             f"{patch}\n"
             f"def main():\n    {body}\n"
             "gate_failures.run('gate_reviewer', main)\n")

@@ -17,7 +17,6 @@ from .. import (
     config,
     doctor,
     envnames,
-    gate_shims,
     gh,
     github_app,
     prompts,
@@ -25,6 +24,7 @@ from .. import (
     routes,
     util,
 )
+from ..gate import shims as gate_shims
 from ..doctor import hook_checks
 from ..config import host_guards
 

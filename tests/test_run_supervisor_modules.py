@@ -26,7 +26,7 @@ from diaktoros import run_supervisor  # noqa: E402
 PACKAGE = pathlib.Path(run_supervisor.__file__).resolve().parent
 ROOT = PACKAGE.parents[1]
 SUBMODULES = ("pr_facts", "turn_prompts", "records", "views", "notices", "intake", "workers", "claims",
-              "issue_inputs", "ledger_schema", "waits")
+              "issue_inputs", "ledger_schema", "waits", "merge_hold")
 # Every real submodule, for the shadow rules. ``turns`` is not in SUBMODULES: the package
 # deliberately re-exports its state classes (_ClaimRead, _Turn, _Launch), so the one-home rules
 # check it through ONE_HOME_SUBMODULES with those three exempt (#1332), and a local named

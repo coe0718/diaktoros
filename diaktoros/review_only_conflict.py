@@ -8,7 +8,7 @@ the host first tries a clean merge of the base into the head and pushes it with 
 """
 from __future__ import annotations
 
-from . import broker, config, pr_refs, safe_push
+from . import base_merge, broker, config, pr_refs, safe_push
 
 SHOWN = 5
 
@@ -109,11 +109,15 @@ def update(loop: dict, number: int, head: str, facts: dict, remote: str | None =
         return "", "the base changed workflow files"
     if facts.get("conflicted"):
         return "", "a real conflict: a person resolves it"
+    hold = base_merge.TurnHold(loop, number, head)
     try:
         done = safe_push.update_branch(loop, repo=loop["repo"], number=number, head=head,
-                                       branch=facts["branch"], remote=remote)
+                                       branch=facts["branch"], remote=remote,
+                                       before_push=hold.take)
     except safe_push.NotClean as exc:
         return "", str(exc)
     except broker.BrokerDenied as exc:          # a PushFailure too
         return "", Retry(str(exc))
+    finally:
+        hold.release()
     return done["new_head"], ""

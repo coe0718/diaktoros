@@ -250,9 +250,30 @@ class Waits(Base):
         con.commit()
         con.close()
         with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=db):
-            self.assertEqual(base_merge._in_flight(self.loop, 7), "a reviewer turn is running")
-            self.assertEqual(base_merge._in_flight(self.loop, 8), "")
+            self.assertEqual(base_merge.in_flight(self.loop, 7), "a reviewer turn is running")
+            self.assertEqual(base_merge.in_flight(self.loop, 8), "")
             self.assert_waits()
+
+    def test_a_turn_queued_while_the_merge_is_built_stops_the_push(self):
+        # #2468 review: idle at the sweep's look (``_waits``), a reviewer queued before the push.
+        # The push's hold (``TurnHold.take``, its ``before_push``) is taken only where no turn is
+        # in flight, so it sees the turn; nothing is pushed or carried, and nothing stays held.
+        from diaktoros import run_supervisor
+        db = self.root / "runs.sqlite"
+        run_supervisor.Supervisor(db)
+        now = time.time()
+        with sqlite3.connect(db) as con:
+            con.execute("INSERT INTO runs (id, delivery, repo, pr, head, seat, state, created, "
+                        "updated) VALUES ('r', 'd', ?, 7, ?, 'reviewer', 'pending', ?, ?)",
+                        (REPO, self.head, now, now))
+        con.close()
+        with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=db), \
+                mock.patch.object(base_merge, "in_flight", return_value=""):
+            self.assert_waits()
+        self.assertIsNone(self.carried(self.remote_head()))
+        with sqlite3.connect(db) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM merge_holds").fetchone()[0], 0)
+        con.close()
 
     def test_a_change_request_at_the_head_or_unread_reviews_wait(self):
         # Whether the fixer owes it or a ruling does at the cap: the head must not move under it.

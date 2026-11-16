@@ -7,7 +7,6 @@ import pathlib
 
 from .. import (
     config,
-    gate_shims,
     observer,
     prompts,
     route_intent,
@@ -15,6 +14,7 @@ from .. import (
     state as state_mod,
     util,
 )
+from ..gate import shims as gate_shims
 from . import common as cli_common
 from . import identity_command
 from . import set_adjudication

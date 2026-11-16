@@ -99,7 +99,7 @@ def _intent_overlay(loop: dict, data: dict, checks: list[doctor.Check]) -> list[
 def _missing_route_fix(loop: dict) -> str:
     """``init`` refuses an existing loop, so a lost route is written back by ``apply``. (With an
     intent record, ``_intent_overlay`` replaces this with ``doctor --repair``, same secret.)"""
-    from .. import gate_shims
+    from ..gate import shims as gate_shims
     return gate_shims.recreate_fix(loop)
 
 
@@ -142,7 +142,7 @@ def _prompt_fix(loop: dict, name: str) -> str:
     """The remedy for a route whose prompt no longer proves it is ours: the same one apply prints
     (``gate_shims.divergence``) — repair from the record when it holds the real prompt, else
     move the entry aside and recreate it."""
-    from .. import gate_shims
+    from ..gate import shims as gate_shims
     found = gate_shims.divergence(loop, contract=True).get(name)
     return found[1] if found else REPAIR_FIX
 

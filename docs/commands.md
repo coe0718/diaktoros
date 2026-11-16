@@ -497,7 +497,8 @@ later with `set --adjudicator-profile P` / `set --adjudicator off`
 **Defaults and limits.** Seat/login/host defaults come from the form; missing answers are
 prompted interactively. Token paths default to the form or a suggested key-file path. Runtime
 `--source` (Hermes checkout), `--venv` (its Python environment), `--runtime` (Python base install)
-and `--rust` (toolchain root) override detection. `--admin-token` is a login; its separate file
+and `--rust` (toolchain root) override detection, and so does `--node` (the optional Node root
+seats get; `--node ""` for none). `--admin-token` is a login; its separate file
 flag maps it. `--observer-profile` names a destination profile, not a model seat. The setup
 example uses `--repo` to select a repository and `--dry-run` to preview every step. Re-running
 keeps an existing loop; it does not automatically repair every missing hook/route. Check output.
@@ -576,6 +577,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--venv` | `VENV` |  | runtime file's venv path (default: detected) |
 | `--runtime` | `RUNTIME` |  | runtime file's runtime path (default: detected) |
 | `--rust` | `RUST` |  | runtime file's rust path (default: detected) |
+| `--node` | `NODE` |  | runtime file's node: the Node install root seats get at /opt/node, "" for none (default: detected, else kept) |
 <!-- /flags -->
 
 ### init
@@ -1645,7 +1647,10 @@ GitHub and the loop's state and shows:
   a turn the PR waits for, so a queued or failed one is not listed among the PR's turns. Another
   `shadow:` line says whether the current head gets a shadow review and why: sampled by
   `shadow.every`, or chosen by the paths it changes (`shadow.always_paths`, `shadow.never_paths`,
-  #1788).
+  #1788);
+- when the number is an issue, a `depends:` line for each dependency it declares and each waiver,
+  the same sentences [`depends --issue N`](#depends) lists (#1301), and the line `the issue
+  dependency record could not be read ...` when it cannot be read, never "none".
 
 Read-only.
 
@@ -1708,8 +1713,10 @@ hermes dk history --loop "<loop-id>" --since 2026-11-01 --out cycles --format js
 `pr-N.txt`, each exactly what `--pr N` prints in that format, with the PR's whole cycle (turns
 before the date included). It lists what it wrote and which PRs it skipped as not merged. With
 `--offline` the merge is not read, so a PR with a turn in the window is written whether it merged or
-not. A file of the
-same name in `DIR` is replaced; nothing is written anywhere else. Use it to publish several cycles
+not, unless a write fails first (see below). A file of the same name in `DIR` is replaced; nothing
+is written anywhere else. With no PR turn in the window, `DIR` is not created: a temporary file
+opened and removed at once in it, or in its nearest existing parent, checks that it could be. A PR
+with a turn there creates it, even one then skipped as not merged. Use it to publish several cycles
 to the site's run viewer at once.
 
 `--format markdown` gives the same timeline as a document, for a PR comment, a write-up or an
@@ -1721,7 +1728,7 @@ as a failed turn's output tail, is cut to its last part (`…/state.json`). A pa
 before it with it. `--offline` leaves GitHub out and
 lists what that leaves missing. It exits `2` when no loop can be chosen, or when it gets neither
 or both of `--pr` and `--since`, or `--since` without `--out`, or when `--out` cannot be written
-(it names a file, say). A file that fails to write stops the export there: the listing names it and
+(it names a file or a link to nothing, say). A file that fails to write stops the export there: the listing names it and
 says the export is partial, the files before it are kept, and it exits `2`.
 
 <!-- flags:history -->
@@ -1869,7 +1876,9 @@ hermes dk depends --loop "<loop-id>" --issue 42 --waive 41
 ```
 
 - **Declaring** checks that both numbers are issues of this repository, that 42 isn't 41, and
-  that it closes no cycle (`a cycle: #42 → #41 → #40 → #42`). It holds 42's next hand-off; a fix
+  that it closes no cycle (`a cycle: #42 → #41 → #40 → #42`). A number GitHub answers with another
+  repository's issue (a transferred one) is refused (`is an issue of another repository`, exit
+  `1`), and a prerequisite that now lives elsewhere is never read as met. It holds 42's next hand-off; a fix
   turn already queued is held at claim, launch and the broker's publish check until 41 is merged
   or waived (an unreadable dependency holds too, and `--waive` releases it); one already running
   isn't recalled.
@@ -1880,20 +1889,42 @@ hermes dk depends --loop "<loop-id>" --issue 42 --waive 41
   `status` shows the wait. The watchdog sweep queues 42's fix from the base's current commit
   once every prerequisite is done, after re-checking that 42 is still eligible, and only once.
 - **With no `--on` or `--waive`** it lists every dependency (or one issue's, with `--issue`) and
-  whether it's met, and why.
-- **`--waive`** removes a dependency; the next sweep releases 42 if nothing else holds it.
+  whether it's met, and why, then every waiver as `#42 no longer waits on #41 — waived by
+  operator at <time>` (`desktop` when it was waived from the Desktop page).
+- **`--waive`** removes a dependency and records who waived it and when; the next sweep releases
+  42 if nothing else holds it. A waiver never holds anything. Declaring the same dependency again
+  holds 42 again and clears that waiver.
 
-Dependencies and waits are kept in the loop's state directory and survive a restart. Exit `1`
-means it was refused, and the line says why; `2` that it couldn't be answered.
+Dependencies, waivers and waits are kept in the loop's state directory and survive a restart. Exit
+`1` means it was refused, and the line says why; `2` that it couldn't be answered.
+
+An unreadable dependency record (#2150), including valid JSON malformed anywhere inside it (a key
+that is not a positive issue number, an entry that is not a `{by, at}` record), is never read as
+"none declared" or with that part left out: every issue's fix is
+held (no comment is posted for it; `status` names the unreadable record) until the record can be
+read again, and this command says `the issue dependency record could not be read` and exits `2`
+without listing or writing anything. An unreadable waiver history only adds the line `waiver
+history could not be read` to the list, and refuses a `--waive` (exit `2`) without removing the
+dependency. A waive records the waiver first and removes the dependency after it, and a waiver is
+never listed while the same dependency is declared, so an interrupted waive lists either nothing
+or that waiver. If the removal cannot be written nothing is waived (exit `2`); if only the history
+write fails, the waive is done and its line ends `the waiver could not be recorded in its
+history` — unless the history still holds an older waiver of the same dependency (one a
+redeclaration could not clear), when nothing is waived (exit `2`), so that older waiver is never
+listed as this one.
 
 The Desktop page shows the same list under **Issue dependencies** (`GET /deps`, #1301): each
 row is met, waiting or unknown, with why. It reads GitHub for each prerequisite, so the page reads
 it when you select the loop and when you press Refresh, and never polls it. Declaring or waiving
 one there is the confirmed `depends` / `waive` action (`GET`/`POST /actions` with `on`), which
-runs the same checks as this command. A refusal (itself, a cycle, a pull request, an issue it
-can't read) is shown in the preview and writes nothing. The confirmation is bound to the issue's
+runs the same checks as this command. A refusal (itself, a cycle, a pull request, an issue of
+another repository, an issue it can't read) is shown in the preview and writes nothing. The confirmation is bound to the issue's
 dependency record, so if that record changes before you confirm, nothing is written. A waiver
-deletes the record, so who waived a dependency isn't kept.
+removes the dependency and is listed below the dependencies with who waived it and when, exactly as
+this command lists it. The PR drawer shows the same rows for its issue: the number itself when the
+issue fixer worked it, or the issue the ledger recorded a fix PR for. It shows them from the page's
+read and never starts another one; when the ledger names no issue, it says so and shows none.
+`hermes dk explain --pr N` prints the same sentences for issue N on its `depends:` lines.
 
 <!-- flags:depends -->
 | flag | value | default | what it does |

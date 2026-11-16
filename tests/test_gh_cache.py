@@ -200,7 +200,7 @@ class Cache(unittest.TestCase):
                        [*(root / "diaktoros").rglob("*.py"), *(root / "scripts").glob("*.py")]
                        if re.search(r"gh_cache\.enable_writes\(\)", f.read_text()))
         # The gates through gate.context, and the watchdog; a worker is one by its env.
-        self.assertEqual(found, ["diaktoros/gate.py", "scripts/watchdog.py"])
+        self.assertEqual(found, ["diaktoros/gate/__init__.py", "scripts/watchdog.py"])
 
     def test_a_worker_never_creates_the_cache_directory(self):
         from diaktoros import hostdirs

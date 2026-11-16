@@ -4,8 +4,9 @@
 // Writes require confirmation: Retry re-arms an eligible run; Pause/Resume changes webhook
 // delivery only; one-shot escalation and cancel require an independent host preview and opaque
 // confirmation (a cancel's confirmation binds the exact runs its preview listed).
-// Issue dependencies (#1301) are listed from their own GitHub-reading read (never polled) and are
-// declared or waived through that same preview and confirmation.
+// Issue dependencies (#1301) are listed from their own GitHub-reading read (never polled), with
+// who waived each removed one, and are declared or waived through that same preview and
+// confirmation. The drawer shows its issue's rows from that cached read and never starts one.
 // Re-review and drain are refused here: the core binds the confirmed head and queue, but the page's
 // controls for them are not wired yet.
 // Plain ESM, loaded uncompiled: jsx() calls, not JSX syntax, and only the three specifiers the
@@ -398,6 +399,9 @@ function usePr(loop, pr) {
         !data.rulings.every(row => object(row) && head(row.head) && typeof row.verdict === 'string' && stamp(row.created)) ||
         !object(data.verdicts) || !Object.values(data.verdicts).every(count) ||
         !['turns_total', 'rulings_total'].every(key => count(data[key])) ||
+        // The issue this number speaks for (#1301): absent when the ledger could not say.
+        !(data.issue === undefined || data.issue === null || (Number.isSafeInteger(data.issue) && data.issue > 0)) ||
+        (!data.ledger_available && data.issue !== undefined) ||
         (!data.ledger_available && (data.stuck.length || data.turns.length || data.rulings.length ||
           data.turns_total || data.rulings_total || Object.keys(data.verdicts).length))) throw invalidResponse('pr')
       return data
@@ -810,6 +814,7 @@ function Drawer({ loop, pr, onClose }) {
                 d && !d.ledger_available ? jsx(Muted, { text: 'Run ledger unavailable in the last successful backend read. Run counts, turns and verdicts are unknown, not zero.' }) : null,
                 jsx(Pacing, { pacing: d && d.pacing }),
                 jsx(Section, { title: 'Why it is not moving', children: why }),
+                d ? jsx(DrawerDeps, { loop, pr, d }) : null,
                 jsxs(Section, {
                   title: 'Findings (' + openFindings.length + ' open of ' + findings.length + ')',
                   children: findingsBlock
@@ -1571,7 +1576,7 @@ function ActionsControl({ loop, discoveryCurrent, discoveryReading = false }) {
       jsx(Muted, { text: action === 'depends'
         ? 'Declaring records that the waiting issue\'s fix is held until the prerequisite\'s implementation is merged into the loop\'s base. The host refuses a self-dependency, a cycle, a pull request or an issue it cannot read in this repository, and writes nothing. Confirmation is bound to the issue\'s current dependency record.'
         : action === 'waive'
-          ? 'Waiving removes a declared dependency; the next watchdog sweep releases the waiting issue if nothing else holds it. The record is deleted, so who waived it is not kept. Confirmation is bound to the issue\'s current dependency record.'
+          ? 'Waiving removes a declared dependency and records the waiver as desktop, with when; the next watchdog sweep releases the waiting issue if nothing else holds it. Confirmation is bound to the issue\'s current dependency record.'
           : cancelling
             ? 'Cancel stops exactly the runs the preview lists: queued runs end at once and a running turn is asked to stop. Only Retry re-arms a cancelled run. If any of those runs starts, ends or appears after the preview, the confirmation is refused and nothing is cancelled.'
             : 'Escalation parks this head against further review and fix, and spends an adjudicator turn to request a ruling. Confirmation names the exact head. The core already binds a confirmed head (re-review) and queue (drain), but the page\'s controls for them are not wired yet; hermes dk review and hermes dk drain still run them.' }),
@@ -1598,7 +1603,7 @@ function actionDialogText(offer) {
   if (t.action === 'depends') return { title: 'Declare this dependency?', confirmLabel: 'Record dependency', cancelLabel: 'Cancel',
     description: where + depsLine(t) + '. Records that issue ' + t.pr + '\'s fix waits until issue ' + t.on + '\'s implementation is merged into the loop\'s base. A fix turn already queued for it is held at launch and publish until then; one already running is not recalled. A waiver releases it. If the issue\'s dependency record changes before you confirm, nothing is written. Equivalent CLI: hermes dk depends --loop ' + t.loop + ' --issue ' + t.pr + ' --on ' + t.on + '.' }
   if (t.action === 'waive') return { title: 'Waive this dependency?', confirmLabel: 'Remove dependency', cancelLabel: 'Cancel',
-    description: where + depsLine(t) + '. Removes the declared dependency; the next watchdog sweep releases issue ' + t.pr + ' if nothing else holds it. The record is deleted, so who waived it is not kept. If the issue\'s dependency record changes before you confirm, nothing is written. Equivalent CLI: hermes dk depends --loop ' + t.loop + ' --issue ' + t.pr + ' --waive ' + t.on + '.' }
+    description: where + depsLine(t) + '. Removes the declared dependency and records the waiver as desktop, with when; the next watchdog sweep releases issue ' + t.pr + ' if nothing else holds it. If the issue\'s dependency record changes before you confirm, nothing is written. Equivalent CLI: hermes dk depends --loop ' + t.loop + ' --issue ' + t.pr + ' --waive ' + t.on + '.' }
   if (t.action === 'cancel') return { title: 'Cancel these runs?', confirmLabel: 'Cancel runs', cancelLabel: 'Keep runs',
     description: where + 'PR #' + t.pr + ' · head ' + offer.data.head + ' · ' + (t.seat ? 'seat ' + t.seat : 'every seat') + '. ' +
       actionReason(offer.data.reason) + '. Queued runs end at once; a running turn is asked to stop, and a partial result means the stop was requested, not finished. Only Retry re-arms a cancelled run. If any of these runs changed since the preview, nothing is cancelled. Equivalent CLI: hermes dk cancel --loop ' + t.loop + ' --pr ' + t.pr + (t.seat ? ' --seat ' + t.seat : '') + '.' }
@@ -1615,28 +1620,60 @@ function validateDeps(data, loop) {
   const issue = v => Number.isSafeInteger(v) && v > 0
   const line = v => typeof v === 'string' && v.length > 0 && v.length <= 240 &&
     !/[\x00-\x1f\x7f/\\]|gh[pousr]_|github_pat_|bearer|token/i.test(v)
+  const who = v => v === null || (typeof v === 'string' && /^[a-z][a-z0-9_-]{0,31}$/.test(v))
+  const when = v => v === null || (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(v))
+  // Waivers (#1301) arrive as a group or not at all (an older host); never half of one.
+  const waivers = ['waivers', 'waivers_available', 'waivers_total'].filter(key => data?.[key] !== undefined).length
+  if (object(data) && waivers && (waivers !== 3 || typeof data.waivers_available !== 'boolean' ||
+      !count(data.waivers_total) || !Array.isArray(data.waivers) || data.waivers.length !== Math.min(data.waivers_total, 50) ||
+      (!data.waivers_available && data.waivers_total !== 0) || data.waivers.some(w => !object(w) || !issue(w.issue) ||
+      !issue(w.on) || w.issue === w.on || !who(w.by) || !when(w.at)))) throw invalidResponse('deps')
   if (!object(data) || data.loop !== loop || typeof data.repo !== 'string' || !data.repo ||
       typeof data.available !== 'boolean' || !count(data.total) || !Array.isArray(data.deps) ||
       data.deps.length !== Math.min(data.total, 50) || typeof data.read_at !== 'number' ||
       !Number.isFinite(data.read_at) || data.read_at < 0 || (!data.available && data.total !== 0)) throw invalidResponse('deps')
   for (const row of data.deps) {
     if (!object(row) || !issue(row.issue) || !issue(row.on) || row.issue === row.on ||
-        !['met', 'waiting', 'unknown'].includes(row.state) || !line(row.why) ||
-        !(row.by === null || (typeof row.by === 'string' && /^[a-z][a-z0-9_-]{0,31}$/.test(row.by))) ||
-        !(row.at === null || (typeof row.at === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(row.at)))) throw invalidResponse('deps')
+        !['met', 'waiting', 'unknown'].includes(row.state) || !line(row.why) || !who(row.by) || !when(row.at)) throw invalidResponse('deps')
   }
   return data
+}
+
+// One query for the dependency list: the page section reads it, the drawer only subscribes.
+function depsQuery(loop, enabled) {
+  return { queryKey: [ID, 'deps', loop || ''], enabled,
+    queryFn: async () => validateDeps(await call('/deps?loop=' + encodeURIComponent(loop)), loop),
+    staleTime: DEPS_STALE_MS, refetchOnWindowFocus: false }
+}
+
+const DEPS_TONE = { met: 'success', waiting: 'muted', unknown: 'warn' }
+
+function depsRows(rows) {
+  return jsx('div', { className: 'flex min-w-0 flex-col gap-2', children: rows.map(row => jsxs('div', {
+    className: 'flex min-w-0 flex-wrap items-center gap-2 border-t border-(--ui-stroke-secondary) pt-2 text-xs', children: [
+      jsx(Badge, { size: 'xs', variant: DEPS_TONE[row.state], children: row.state }),
+      jsx('span', { className: 'font-medium', children: '#' + row.issue + ' waits on #' + row.on }),
+      jsx('span', { className: 'min-w-0 flex-1 break-words text-(--ui-text-secondary)', children: row.why }),
+      jsx('span', { className: 'text-(--ui-text-tertiary)', children: 'Declared by ' + (row.by || 'not recorded') + (row.at ? ' · ' + row.at : '') })] }, row.issue + ':' + row.on)) })
+}
+
+// A waiver as the CLI lists it: who waived it and when, or that either was not recorded.
+function waiverLine(w) {
+  return '#' + w.issue + ' no longer waits on #' + w.on + ' — waived by ' + (w.by || 'not recorded') + ' at ' + (w.at || 'a time not recorded')
+}
+
+function waiverRows(waivers) {
+  return jsx('div', { className: 'flex min-w-0 flex-col gap-1', children: waivers.map(w =>
+    jsx('div', { className: 'break-words text-xs text-(--ui-text-secondary)', children: waiverLine(w) }, 'waived:' + w.issue + ':' + w.on)) })
 }
 
 function Dependencies({ loop, known }) {
   // Its own key and policy: GitHub is read per prerequisite, so no polling, no socket
   // invalidation (not in SERVER_QUERIES) and no focus refetch; Refresh asks again.
-  const query = useQuery({ queryKey: [ID, 'deps', loop || ''], enabled: !!loop && known,
-    queryFn: async () => validateDeps(await call('/deps?loop=' + encodeURIComponent(loop)), loop),
-    staleTime: DEPS_STALE_MS, refetchOnWindowFocus: false })
+  const query = useQuery(depsQuery(loop, !!loop && known))
   const data = known && query.data?.loop === loop ? query.data : null
   const state = useViewState(query, !!data && data.available && data.total === 0, DEPS_STALE_MS)
-  const tone = { met: 'success', waiting: 'muted', unknown: 'warn' }
+  const waived = data && data.waivers_available ? data.waivers : []
   return jsx(Section, { title: 'Issue dependencies', children: jsxs('div', { role: 'region', 'aria-label': 'Issue dependencies', className: 'flex min-w-0 flex-col gap-2', children: [
     jsx(Muted, { text: 'Declared by an operator: the waiting issue\'s fix is held until the prerequisite\'s implementation is merged into the base. Each row reads GitHub, so this list is read when the loop is selected and on Refresh, never polled. Unknown means GitHub could not answer, and it holds the issue too.' }),
     loop && known ? jsx(QueryStatus, { query, state, label: 'Issue dependencies' }) : jsx(Muted, { text: 'Issue dependencies: unavailable · no readable selected identity; not read.' }),
@@ -1645,14 +1682,46 @@ function Dependencies({ loop, known }) {
     data && !data.available ? jsx(Muted, { text: 'Dependency record unavailable · not read. This is not a claim that none are declared.' }) : null,
     data && data.available && !data.total ? jsx(Muted, { text: state === 'verified-empty' ? 'No issue dependencies declared for this loop.' : 'No issue dependencies were declared in the last good read; not current.' }) : null,
     data && data.deps.length < data.total ? jsx(Muted, { text: 'Showing ' + data.deps.length + ' of ' + data.total + ' declared dependencies.' }) : null,
-    data && data.deps.length ? jsx('div', { className: 'flex min-w-0 flex-col gap-2', children: data.deps.map(row => jsxs('div', {
-      className: 'flex min-w-0 flex-wrap items-center gap-2 border-t border-(--ui-stroke-secondary) pt-2 text-xs', children: [
-        jsx(Badge, { size: 'xs', variant: tone[row.state], children: row.state }),
-        jsx('span', { className: 'font-medium', children: '#' + row.issue + ' waits on #' + row.on }),
-        jsx('span', { className: 'min-w-0 flex-1 break-words text-(--ui-text-secondary)', children: row.why }),
-        jsx('span', { className: 'text-(--ui-text-tertiary)', children: 'Declared by ' + (row.by || 'not recorded') + (row.at ? ' · ' + row.at : '') })] }, row.issue + ':' + row.on)) }) : null,
-    jsx(Muted, { text: 'A waiver removes the record, so a waived dependency is not listed and who waived it is not recorded. Declare or waive one under One-shot actions.' })
+    data && data.deps.length ? depsRows(data.deps) : null,
+    data && data.waivers_available === false ? jsx(Muted, { text: 'Waiver history unavailable · not read. This is not a claim that none were waived.' }) : null,
+    waived.length ? waiverRows(waived) : null,
+    data && waived.length < (data.waivers_total || 0) ? jsx(Muted, { text: 'Showing ' + waived.length + ' of ' + data.waivers_total + ' waivers.' }) : null,
+    data && data.waivers_available === undefined ? jsx(Muted, { text: 'Waivers are not reported by this host version.' }) : null,
+    jsx(Muted, { text: 'A waiver removes the dependency and keeps who waived it and when. Declare or waive one under One-shot actions.' })
   ] }) })
+}
+
+/** The drawer's issue dependencies (#1301): the issue this number speaks for, as the host's
+ *  ledger says (the number itself for an issue the fixer worked, or the issue a fix PR was opened
+ *  for), and its rows from the page's dependency read. The drawer subscribes to that cached read
+ *  and never starts one, so opening it reads GitHub no more than the page already did. */
+function DrawerDeps({ loop, pr, d }) {
+  const query = useQuery(depsQuery(loop, false))
+  const data = query.data?.loop === loop ? query.data : null
+  const state = useViewState(query, false, DEPS_STALE_MS)
+  const n = d.issue
+  const body = []
+  if (n === undefined) body.push(jsx(Muted, { text: 'Issue context unknown: the ledger did not say which issue #' + pr + ' belongs to, so no issue dependencies are shown.' }, 'unknown'))
+  else if (n === null) body.push(jsx(Muted, { text: 'No issue context: the ledger records no issue fix for #' + pr + ', so no issue dependencies are shown.' }, 'none'))
+  else {
+    body.push(jsx(Muted, { text: (n === pr ? 'Issue #' + n + ', worked by the issue fixer.' : 'This PR is the issue fix for #' + n + ', as the ledger recorded it.') }, 'context'))
+    const involved = rows => rows.filter(row => row.issue === n || row.on === n)
+    if (!data) body.push(jsx(Muted, { text: 'Dependencies for #' + n + ': not read · the page section Issue dependencies reads them; the drawer does not start a read.' }, 'unread'))
+    else {
+      body.push(jsx(Muted, { text: state === 'stale' ? 'From the last good dependency read; not current. Refresh under Issue dependencies.'
+        : 'From the page dependency read · read ' + ago(data.read_at) }, 'read'))
+      const rows = data.available ? involved(data.deps) : []
+      if (!data.available) body.push(jsx(Muted, { text: 'Dependency record unavailable · not read. This is not a claim that #' + n + ' has none.' }, 'unavailable'))
+      else if (rows.length) body.push(jsx('div', { children: depsRows(rows) }, 'rows'))
+      else if (data.deps.length === data.total) body.push(jsx(Muted, { text: 'No declared dependency involves #' + n + '.' }, 'empty'))
+      else body.push(jsx(Muted, { text: 'None of the ' + data.deps.length + ' dependencies read involve #' + n + '; ' + (data.total - data.deps.length) + ' more were not read.' }, 'partial'))
+      if (rows.length && data.deps.length < data.total) body.push(jsx(Muted, { text: 'Only ' + data.deps.length + ' of ' + data.total + ' dependencies were read; #' + n + ' may have more.' }, 'cut'))
+      const waived = data.waivers_available ? involved(data.waivers) : []
+      if (data.waivers_available === false) body.push(jsx(Muted, { text: 'Waiver history unavailable · not read.' }, 'waivers-unavailable'))
+      if (waived.length) body.push(jsx('div', { children: waiverRows(waived) }, 'waivers'))
+    }
+  }
+  return jsx(Section, { title: 'Issue dependencies', children: jsx('div', { role: 'region', 'aria-label': 'Drawer issue dependencies', className: 'flex min-w-0 flex-col gap-2', children: body }) })
 }
 
 /** Passive strip: independent discovery and the exact page query, never page action rows.

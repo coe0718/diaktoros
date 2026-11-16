@@ -338,6 +338,7 @@ class Ruling(Base):
         args, kwargs = observer.notify.call_args
         self.assertEqual(args[2:5], ("ruling", 7, HEAD))
         self.assertEqual(kwargs["identity"], "breach:3")
+        self.assertEqual(kwargs["next_turn"], "you — the adjudicator never merges")   # #2495
         self.assertNotIn("src/x.rs", json.dumps([args[2:], kwargs]))  # no model text in the feed
         self.assertEqual(self.send(server, self.ruling("REJECT"))["error"], "run capability already used")
         self.assertEqual(len(self.recorded()), 1)

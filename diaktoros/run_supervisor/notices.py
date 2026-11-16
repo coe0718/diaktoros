@@ -16,8 +16,21 @@ from .. import run_supervisor
 from . import views
 
 
+FEED_YOU = "you — the adjudicator never merges"
+FEED_FIXER = "fixer — it answers the upheld shadow review; the adjudicator never merges"
+
+
 class OperatorNotices:
     """The operator-notice methods of :class:`~diaktoros.run_supervisor.Supervisor`."""
+
+    def ruling_next_turn(self, run_id: str) -> str:
+        """The observer feed's next-turn clause for a recorded ruling (#2495): the fixer exactly
+        when the ruling notice says the fixer answers (``_fixer_answers``), otherwise you."""
+        try:
+            rows = self.rulings(run_id=run_id)
+        except Exception:
+            rows = []
+        return FEED_FIXER if rows and self._fixer_answers(rows[0]) else FEED_YOU
 
     def _dispute_message(self, row) -> str:
         comment = row['comment']
@@ -54,9 +67,38 @@ class OperatorNotices:
         return (f"⚖️ Diaktoros adjudicator ruling {row['verdict']}: "
                 f"https://github.com/{row['repo']}/pull/{row['pr']} head={row['head']} "
                 f"run={row['run_id']} ({row['turn_key']}). PR comment: {comment}. "
-                "The adjudicator never merges, pushes or reviews; the decision is yours. "
+                "The adjudicator never merges, pushes or reviews; "
+                + ("it upheld the shadow review, so the fixer answers its findings and the fixed "
+                   "head is reviewed fresh. " if self._fixer_answers(row) else
+                   "the decision is yours. ") +
                 f"Reason as written by the adjudicator (model output, not verified by the loop):\n"
                 f"{body}")
+
+    def _fixer_answers(self, row) -> bool:
+        """Whether this ruling hands its findings to the fixer (#2258), by the rules ``ready`` and
+        ``explain`` use (``gate.shadow_fix_owed``, #1353): shadow escalation on, this REJECT the
+        ruling that upholds the head's newest shadow review (``gate.upheld_shadow_ruling``: a newer
+        review landing during the turn supersedes it), and a PR the fixer answers
+        (``gate.fixer_answers_upheld``), still open at the ruled head when the notice goes out (the
+        outbox may send late, and the fixer's claim supersedes a moved or closed PR: #2491 review
+        F3). False when any of that cannot be read: the operator is then told the decision is
+        theirs."""
+        if row['verdict'] != 'REJECT' or 'shadow_run' not in row.keys() or not row['shadow_run']:
+            return False
+        try:
+            from .. import config, gate, gh
+            loop = config.by_repo(row['repo'])
+            if not loop or not config.shadow_escalate(loop):
+                return False
+            live = gh.pr(loop, int(row['pr']))
+            if (not isinstance(live, dict) or live.get('state') != 'open'
+                    or (live.get('head') or {}).get('sha') != row['head']):
+                return False
+            ruled = gate.upheld_shadow_ruling(loop, int(row['pr']), row['head'], db=self.db)
+            return (ruled is not None and ruled == float(row['created'])
+                    and gate.fixer_answers_upheld(loop, int(row['pr'])))
+        except Exception:
+            return False
 
     @staticmethod
     def _loop_id(row) -> str:

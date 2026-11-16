@@ -375,26 +375,21 @@ def check_runtime_paths(loop: dict) -> list[Check]:
                                 f"point {key} at the Rust toolchain directory"))
         else:
             checks.append(Check(f"runtime:{key}", VERIFIED, f"{key} = {raw}"))
-    checks.append(check_node())
+    checks.append(check_node(settings))
     return checks
 
 
-def check_node() -> Check:
-    """#685: the host Node the sandbox mounts at /opt/node, with its version.
+def check_node(settings: dict | None = None) -> Check:
+    """#685, #1149: the Node seats get, from the runtime file ``settings`` as the worker reads it.
 
-    Optional, so an absent Node is a reported skip, never a failure: a seat then has no ``node``
-    and JavaScript suites stay unverified, as before.
+    Optional, so no Node is a reported skip, never a failure: a seat then has no ``node`` and
+    JavaScript suites stay unverified. A recorded Node that is gone, or a host Node the file does
+    not record, is a warning: seats get none while the host has one.
     """
     from .. import runtime_detect
-    root, version = runtime_detect.node_version()
-    if root is None:
-        return Check("runtime:node", SKIPPED,
-                     f"skipped: {version}; seats cannot run `node` and JavaScript test suites "
-                     "stay unverified",
-                     "install Node under the operator's home (e.g. ~/.hermes/node) or on PATH")
-    where = ("mounted at /opt/node" if runtime_detect.node_mounted(root)
-             else "system install, already visible in the sandbox")
-    return Check("runtime:node", VERIFIED, f"node {version} at {root}, {where}")
+    state, detail, fix = runtime_detect.node_report(settings or {})
+    status = {"ok": VERIFIED, "warn": UNKNOWN, "none": SKIPPED}[state]
+    return Check("runtime:node", status, detail if state != "none" else f"skipped: {detail}", fix)
 
 
 def check_scripts() -> Check:
@@ -436,7 +431,7 @@ def check_gate_timeouts(loop: dict) -> list[Check]:
     same setting (the smaller one, when either the host or the profile's own gateway may serve
     the route) and shrink their budget to fit, so a low value is safe but starves them of time.
     """
-    from .. import gate_failures as gf
+    from ..gate import failures as gf
     checks = []
     for profile, roles in gate_timeout_profiles(loop).items():
         name = f"gate:timeout:{profile}"
@@ -501,7 +496,7 @@ def _rate_limit_hosts(loop: dict) -> tuple[dict[pathlib.Path, str], list[str]]:
     and the host's. Its own one is judged only when it runs, or when that cannot be told
     (``gate_failures.profile_gateway_runs``); then its label says so. Raises what the reads raise.
     """
-    from .. import gate_failures as gf
+    from ..gate import failures as gf
     hosts: dict[pathlib.Path, str] = {}
     notes: list[str] = []
     for profile in gate_timeout_profiles(loop):
@@ -532,7 +527,7 @@ def check_gateway_rate_limit(loop: dict) -> Check:
     it, and ``setup``/``arm`` cannot. The watchdog's triage sweep (``triage_sweep``) re-queues an
     issue whose delivery was dropped; a dropped review or fix wake has no such backstop yet.
     """
-    from .. import gate_failures as gf
+    from ..gate import failures as gf
     try:
         hosts, skipped = _rate_limit_hosts(loop)
     except Exception as exc:  # noqa: BLE001 - one unreadable profile must not stop doctor
@@ -870,7 +865,7 @@ def check_roots(loop: dict) -> Check:
 def check_gateway_scripts(loop: dict) -> list[Check]:
     """Each installed route's script, resolved exactly as the gateway resolves it (issue #105):
     under the serving profile's ``scripts/``, a real file inside it, and this plugin's shim."""
-    from .. import gate_shims
+    from ..gate import shims as gate_shims
     status_of = {"ok": VERIFIED, "absent": ABSENT, "mismatch": MISMATCH}
     return [Check(name, status_of[status], detail, fix)
             for name, status, detail, fix in gate_shims.live_checks(loop)]

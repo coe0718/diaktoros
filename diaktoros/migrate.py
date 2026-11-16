@@ -35,7 +35,8 @@ import time
 
 from .ledger import LOCK_WAIT_S
 from .config import settings_form
-from . import config, gh, gate_shims, state as state_mod
+from . import config, gh, state as state_mod
+from .gate import shims as gate_shims
 from . import envnames
 
 OLD_PLUGIN = "hermes-review-loop"

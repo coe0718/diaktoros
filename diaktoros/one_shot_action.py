@@ -210,6 +210,8 @@ def _deps_plan(loop, action, issue, seat, on, out):
     out["pr"] = issue
     try:
         st, record = _deps_record(loop, issue)
+        if action == "waive":
+            st.issue_dep_waivers(strict=True)          # the waiver is recorded there too
     except Exception:
         out["reason"] = "dependency record unavailable; nothing authorized"
         return out
@@ -217,8 +219,8 @@ def _deps_plan(loop, action, issue, seat, on, out):
         if on not in record:
             out["reason"] = f"#{issue} does not depend on #{on}; nothing to waive"
             return out
-        reason = (f"removes #{issue}'s dependency on #{on}; the next watchdog sweep releases "
-                  f"#{issue} if nothing else holds it")
+        reason = (f"removes #{issue}'s dependency on #{on} and records the waiver as desktop; "
+                  f"the next watchdog sweep releases #{issue} if nothing else holds it")
     else:
         if on in record:
             out["reason"] = f"#{issue} already depends on #{on}; nothing to record"
@@ -251,7 +253,7 @@ def _deps_perform(loop, action, issue, on):
             if code:
                 return _result("refused", "the host refused the dependency; preview again")
         else:
-            changed = issue_deps.waive(st, issue, on)
+            changed = issue_deps.waive(st, issue, on, by=issue_deps.BY_DESKTOP)
     except Exception:
         return _result("unknown", "operation interrupted; inspect state before retrying")
     if not changed:
@@ -264,7 +266,8 @@ def _deps_perform(loop, action, issue, on):
     if action == "depends" and on in record:
         return _result("verified", f"#{issue} waits on #{on}", ok=True)
     if action == "waive" and on not in record:
-        return _result("verified", f"#{issue} no longer waits on #{on}", ok=True)
+        return _result("verified", f"#{issue} no longer waits on #{on}" + (
+            "" if changed == "waived" else "; the waiver could not be recorded in its history"), ok=True)
     return _result("unknown", "the dependency record could not be verified; inspect before retrying")
 
 
@@ -341,7 +344,8 @@ def _run_reviewer(payload, reconsider=None, holds=None) -> list[str]:
     Raises ``gh.GateBudgetExceeded`` when the budget runs out, and ``SystemExit`` with a
     non-zero code when the gate refused its input.
     """
-    from . import gate_failures, util
+    from . import util
+    from .gate import failures as gate_failures
     try:
         limit, _rows = gate_failures.effective_timeout()
     except Exception:  # noqa: BLE001 - never let the fit check stop the gate
@@ -581,7 +585,7 @@ def _gate_unfinished(emit, args, payload, exc, started, what):
     """The gate crashed, refused its input or ran out of budget in-process: record it in the
     gate-failure ledger, as the webhook path's ``gate_failures.run`` does (#1455), and say so
     (#1046 review F1: named by its type, never its text). Returns the exit code."""
-    from . import gate_failures
+    from .gate import failures as gate_failures
     where = gate_failures.record_in_process("gate_reviewer", payload, exc, started)
     saved = ("recorded in the gate-failure ledger" if where
              else "could NOT be recorded in the gate-failure ledger")
@@ -654,7 +658,7 @@ def _ask_gate(loop, args, st, key, head, before, queued, payload, emit) -> int:
     except Exception as exc:  # noqa: BLE001 - a crashed gate is an answer too, never a traceback
         return _gate_unfinished(emit, args, payload, exc, started,
                                 f"it crashed ({type(exc).__name__})")
-    from . import gate_failures
+    from .gate import failures as gate_failures
     gate_failures.resolve_in_process("gate_reviewer", payload, started)
     reasons = logged(gate_lines if isinstance(gate_lines, list) else [])
     return _review_outcome(loop, args, st, key, head, before, queued, holds, reasons, emit)

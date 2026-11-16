@@ -18,7 +18,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import cli, config, gate_shims, gh, ledger, migrate, run_supervisor  # noqa: E402
+from diaktoros import cli, config, gh, ledger, migrate, run_supervisor  # noqa: E402
+from diaktoros.gate import shims as gate_shims  # noqa: E402
 from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402

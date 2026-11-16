@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import argparse
+import errno
 import io
 import json
+import os
 import sys
 import unittest
 from contextlib import redirect_stdout
@@ -127,6 +129,77 @@ class Batch(fg.Base):
             self.assertEqual(rc, 2, out)
             self.assertIn(f"cannot write to {out_dir}: Not a directory", out)
         self.assertEqual(self.out.read_text(), "not a directory")
+
+    def test_an_out_that_is_a_file_reads_the_same_with_or_without_a_pr(self):
+        """#2251: both windows refuse a file-named --out with the same words."""
+        self.out.write_text("not a directory")
+        messages = []
+        for since in ("1d", SINCE):
+            if since == SINCE:
+                self.cycle()
+            rc, out = self.run_cli("--since", since, "--out", str(self.out))
+            self.assertEqual(rc, 2, out)
+            messages.append(out.split(f"cannot write to {self.out}: ")[1].splitlines()[0])
+        self.assertEqual(messages, ["Not a directory"] * 2)
+
+    def test_a_link_to_nothing_reads_the_same_with_or_without_a_pr(self):
+        """#2493: an --out that is a link to nothing, or under one, refuses in both windows; the
+        empty window used to look past it to its parent and succeed."""
+        self.cycle()
+        self.out.mkdir()
+        link = self.out / "link"
+        link.symlink_to(self.out / "missing")
+        for target in (link, link / "child"):
+            messages = []
+            for since in ("1d", SINCE):
+                rc, out = self.run_cli("--since", since, "--out", str(target))
+                self.assertEqual(rc, 2, out)
+                messages.append(out.split(f"cannot write to {target}: ")[1].splitlines()[0])
+            self.assertEqual(messages, ["Not a directory"] * 2, target)
+            self.assertFalse((self.out / "missing").exists())
+
+    def test_a_pr_skipped_as_not_merged_still_makes_the_directory(self):
+        """#2494, as the docs now say: only a window with no PR turn leaves DIR uncreated."""
+        self.other_pr(8, th.T + 700)
+        rc, out = self.run_cli("--since", SINCE, "--out", str(self.out))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("skipped #8: not merged (open)", out)
+        self.assertEqual(list(self.out.iterdir()), [])
+
+    def test_an_unwritable_filesystem_refuses_with_nothing_in_the_window(self):
+        """#2252: the empty window writes for real, so a read-only mount (which permission bits
+        don't show) exits 2, with no directory made."""
+        refuse = OSError(errno.EROFS, os.strerror(errno.EROFS))
+        target = self.out / "a" / "b"
+        with mock.patch.object(history_batch.tempfile, "TemporaryFile", side_effect=refuse):
+            rc, out = self.run_cli("--since", "1d", "--out", str(target))
+        self.assertEqual(rc, 2, out)
+        self.assertIn(f"cannot write to {target}: Read-only file system", out)
+        self.assertFalse(self.out.exists())
+
+    def test_the_empty_window_makes_and_removes_no_directory(self):
+        """#2489 review F1-F3: with nothing to write, the probe creates no directory and removes
+        none, so it can never take one another process made or moved into place."""
+        target = self.out / "a" / "b"
+        self.out.mkdir()
+        refuse = AssertionError("the empty window must not make or remove a directory")
+        with mock.patch.object(Path, "mkdir", side_effect=refuse), \
+                mock.patch.object(Path, "rmdir", side_effect=refuse), \
+                mock.patch.object(os, "rmdir", side_effect=refuse):
+            rc, out = self.run_cli("--since", "1d", "--out", str(target))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(list(self.out.iterdir()), [])
+
+    def test_an_unwritable_parent_refuses_with_nothing_in_the_window(self):
+        """#2489 review F2: the refusal for the nearest existing directory, and nothing made."""
+        target = self.out / "a" / "b"
+        self.out.mkdir()
+        refuse = PermissionError(errno.EACCES, os.strerror(errno.EACCES))
+        with mock.patch.object(history_batch.tempfile, "TemporaryFile", side_effect=refuse):
+            rc, out = self.run_cli("--since", "1d", "--out", str(target))
+        self.assertEqual(rc, 2, out)
+        self.assertIn(f"cannot write to {target}: Permission denied", out)
+        self.assertEqual(list(self.out.iterdir()), [])
 
     def test_a_write_that_fails_midway_says_the_export_is_partial(self):
         """#2200: the files before the failure are kept and listed, and the exit is 2."""

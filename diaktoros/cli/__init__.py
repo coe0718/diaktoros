@@ -28,7 +28,6 @@ from .. import (
     doctor,
     envnames,
     gate,
-    gate_shims,
     gh,
     observer,
     pr_hold,
@@ -37,6 +36,7 @@ from .. import (
     routes,
     state as state_mod,
 )
+from ..gate import shims as gate_shims
 from . import checks as cli_checks
 from . import install as cli_install
 from . import lifecycle as cli_lifecycle

@@ -589,7 +589,7 @@ class OldSpellingIsRead(unittest.TestCase):
     def run_gate(self, **values):
         """``gate_failures.run`` with a gate that completes: the ``redrive`` it settles with."""
         import io
-        from diaktoros import gate_failures
+        from diaktoros.gate import failures as gate_failures
         settled = []
         with self.env(**values), \
                 mock.patch.object(gate_failures, "signal"), \

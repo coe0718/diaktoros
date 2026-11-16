@@ -31,9 +31,9 @@ import subprocess
 import sys
 import time
 
-from . import base_merge, config, gh, isolation, observer, stale_approval, state as state_mod
-from .util import log, note_gate_hold, now_iso, silence
-from . import envnames
+from .. import base_merge, config, gh, isolation, observer, stale_approval, state as state_mod
+from ..util import log, note_gate_hold, now_iso, silence
+from .. import envnames
 
 
 def payload_loop(payload: dict) -> dict:
@@ -56,10 +56,10 @@ def context(payload: dict):
     loop = payload_loop(payload)
     # A gate's failed GitHub read ends in [SILENT]; keep it on disk for the watchdog and explain.
     gh.record_failures()
-    from . import gh_cache
+    from .. import gh_cache
     gh_cache.enable_writes()            # #1646: a gate is a writer process: it keeps the GET cache
     _record_decisions(loop, payload)
-    from . import app_ingress
+    from .. import app_ingress
     if config.app_ingress(loop) and app_ingress.woken_by_repo_hook():
         silence(f"{loop['id']} takes its events from {loop.get('ingress_app')}'s webhook: this "
                 "delivery came from a leftover repo hook and is dropped (delete the repo's hooks "
@@ -76,9 +76,10 @@ def context(payload: dict):
 def _record_decisions(loop: dict, payload: dict) -> None:
     """From here on, every ``silence(reason)`` in this process is appended to the loop's
     gate-decisions.jsonl (#209)."""
-    from . import gate_decisions, util
+    from .. import util
+    from . import decisions
     name = pathlib.Path(sys.argv[0] or "gate").stem or "gate"
-    util.set_decision_recorder(lambda reason, decision: gate_decisions.record(
+    util.set_decision_recorder(lambda reason, decision: decisions.record(
         loop, name, payload, decision, reason))
 
 
@@ -121,8 +122,8 @@ def isolated_supervisor(loop: dict):
 
     Raises when the private runtime file is missing or invalid (a fail-closed hold).
     """
-    from . import seat_model
-    from .run_supervisor import SEATS, Supervisor, presence_marker
+    from .. import seat_model
+    from ..run_supervisor import SEATS, Supervisor, presence_marker
 
     # presence= defaults to the config-dir marker for this (the production) ledger path.
     supervisor = Supervisor(
@@ -218,7 +219,7 @@ def shadow_sampled(loop: dict, number: int, head: str, turn_key: str = "") -> bo
     the loop names paths (#1788), else one in ``shadow.every``; chosen once per PR, head and
     reviewer turn, so a redelivery or a re-queued turn chooses the same, and a new turn at the
     same head (a retarget's fresh review) chooses again from its own diff (``shadow_choice``)."""
-    from . import shadow_choice
+    from .. import shadow_choice
     return shadow_choice.choose(loop, number, head, turn_key)["shadow"]
 
 
@@ -340,7 +341,7 @@ def shadow_open_heads(repo: str, db=None) -> set[tuple[int, str]]:
     ledger does not exist yet; raises when it exists but cannot be read — a corrupt file, or a
     path that is not a regular file (a directory) — so the caller never evicts on a guess, and
     ``shadow_state`` holds on the same ledger."""
-    from . import run_supervisor
+    from .. import run_supervisor
     path = pathlib.Path(db or run_supervisor.production_ledger())
     if not path.exists():
         return set()
@@ -364,7 +365,7 @@ def shadow_row_exists(repo: str, number: int, head: str, turn_key: str = "", db=
     key (the identity ``Supervisor.submit`` deduplicates on). False when the ledger does not
     exist yet; raises when it exists but cannot be read, so the caller never decides on a
     guess."""
-    from . import run_supervisor
+    from .. import run_supervisor
     path = pathlib.Path(db or run_supervisor.production_ledger())
     if not path.exists():
         return False
@@ -406,7 +407,7 @@ def shadow_state(loop: dict, number: int, head: str, db=None,
         return "", "", ""
     import sqlite3
     from pathlib import Path
-    from . import run_supervisor
+    from .. import run_supervisor
     short = str(head)[:7]
     path = Path(db or run_supervisor.production_ledger())
     if not path.exists():
@@ -510,7 +511,7 @@ def upheld_shadow_ruling(loop: dict, number: int, head: str, db=None) -> float |
     ledger cannot be read. One rule for queueing the fix, launching it, and its push."""
     import sqlite3
     from pathlib import Path
-    from . import run_supervisor
+    from .. import run_supervisor
     path = Path(db or run_supervisor.production_ledger())
     if not path.exists():
         return None
@@ -534,7 +535,7 @@ def queue_shadow_fix(loop: dict, number: int, head: str, db=None) -> str:
     """Hand an upheld shadow review's findings to the fixer (#1004 part 3), once per ruling: the
     turn key is ``shadow:<ruling time>``, so a redelivery or a second sweep dedups. What happened:
     ``""`` (nothing upheld), ``push off``, ``not a fixer PR``, or the ledger's enqueue outcome."""
-    from . import run_supervisor
+    from .. import run_supervisor
     ruled = upheld_shadow_ruling(loop, number, head, db=db)
     if ruled is None:
         return ""
@@ -561,7 +562,7 @@ def _shadow_review_and_ruling(loop: dict, number: int, head: str, marker, db=Non
     ledger; the ruling is None unless the marker is this head's shadow escalation, or none is in
     yet. None when the ledger cannot be read."""
     import sqlite3
-    from . import run_supervisor
+    from .. import run_supervisor
     mine = (isinstance(marker, dict) and marker.get("head") == head
             and (marker.get("escalated") or {}).get("by") == SHADOW_ESCALATION)
     try:
@@ -661,7 +662,7 @@ def snapshot_shadow(loop: dict, number: int, head: str, turn_key: str = "", db=N
         st = state_mod.state_for(loop)
         with st.locked():
             if shadow_snapshot_gone(st, loop["repo"], number, head, turn_key, db):
-                from .run_supervisor import intake
+                from ..run_supervisor import intake
                 log(f"#{number}: no shadow findings snapshot taken: {intake.SHADOW_SNAPSHOT_GONE}")
                 return False
             try:
@@ -716,7 +717,7 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
             # is looked up in the ledger this supervisor submits to, not only the production one.
             ledger_db = _ledger_of(supervisor)
             if shadow_snapshot_gone(st, loop["repo"], number, head, turn_key, ledger_db):
-                from .run_supervisor import intake
+                from ..run_supervisor import intake
                 log(f"#{number}: shadow not queued again: {intake.SHADOW_SNAPSHOT_GONE}")
                 return "snapshot gone"
             if not snapshot_shadow(loop, number, head, turn_key, ledger_db):
@@ -772,8 +773,8 @@ def fixer_push_denial(loop: dict, context: str = "") -> str:
     unreadable policy read returns ``""`` — it must never drop the enable command or the hold
     itself — and ``context`` prefixes the diagnostic.
     """
-    from .broker import ipc as broker_ipc
-    from .run_supervisor import FIXER_PUSH_OFF
+    from ..broker import ipc as broker_ipc
+    from ..run_supervisor import FIXER_PUSH_OFF
     try:
         denial = broker_ipc.policy_hold_reason(loop)
     except Exception as exc:
@@ -821,7 +822,7 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
     A fixer turn on a loop without unattended pushes is held instead (``hold_fixer_push_off``),
     and ``on_push_off`` (when given) is the notice sent in place of ``on_queued``.
     """
-    from .run_supervisor import RECONSIDER_KEY, FixerPushDisabled
+    from ..run_supervisor import RECONSIDER_KEY, FixerPushDisabled
 
     key = seat_key(loop, number)
     queued = st.queue_items(seat).get(key)
@@ -846,7 +847,7 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
                                         declined_reason(seat, outcome))
             final = (f"{seat} turn {outcome}", "accepted" if scheduled else "declined")
             if scheduled and seat == "reviewer":
-                from . import merge_check          # #1242: the check shows at once, pending
+                from .. import merge_check          # #1242: the check shows at once, pending
                 merge_check.mark_pending(loop, st, number, head, "review queued")
             if outcome == "enqueued":
                 log(f"#{number} @ {head[:7]} {seat} enqueued for isolated worker")
@@ -993,7 +994,7 @@ def ruled_approvals(reviews: list, loop: dict, head: str) -> list:
     number = _review_pr(newest, loop["repo"])
     if gh.review_state(newest) != "APPROVED" or number is None:
         return []
-    from .run_supervisor import views
+    from ..run_supervisor import views
     ruling = views.ruling_row(config.host_path("ledger"), loop["repo"], number) or {}
     return [newest] if (ruling.get("head"), ruling.get("verdict")) == (head, "ACCEPT") else []
 
@@ -1100,7 +1101,7 @@ def hooks_read(loop: dict) -> tuple[bool | None, str]:
     watchdog's sweep starts nothing for it (#1295).
     """
     if config.app_ingress(loop):
-        from . import app_ingress
+        from .. import app_ingress
         flag = app_ingress.pause_flag(state_mod.state_for(loop))
         if flag is None:    # #1295: the dispatcher drops on it, but "paused" is not claimed
             return None, (f"the pause flag ({app_ingress.FILE}) cannot be read or is malformed; "
@@ -1110,7 +1111,7 @@ def hooks_read(loop: dict) -> tuple[bool | None, str]:
     hooks, error = gh.hooks_read(loop)      # every page: a full first page is not the whole list
     if error or not isinstance(hooks, list):
         return None, error or "GitHub returned no hook list"
-    from .doctor import hook_checks   # arm's and apply's matchers too; imported late (it is big)
+    from ..doctor import hook_checks   # arm's and apply's matchers too; imported late (it is big)
     missing = []
     for seat in ("reviewer", "fixer"):
         # The seat's URL is the one `arm` credits (doctor.seat_route_target: the registry route,
@@ -1187,7 +1188,7 @@ def drain_seat(loop: dict, seat: str) -> None:
         return
     env = {**os.environ, envnames.name("WATCHDOG_BUDGET_S"): f"{max(0.5, timeout - 0.5):.1f}"}
     try:
-        subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve().parents[1]
+        subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve().parents[2]
                                             / "scripts" / "watchdog.py"),
                         "--loop", loop["id"], "--drain", "--seat", seat],
                        capture_output=True, text=True, timeout=timeout, env=env)
@@ -1198,10 +1199,10 @@ def drain_seat(loop: dict, seat: str) -> None:
 def schedule_conflict_scan(loop: dict, st) -> None:
     """A merge into the base: ask for a conflict check shortly (``conflict_scan``) and start the
     detached scanner that waits for it. Best effort; the watchdog's sweep is the fallback."""
-    from . import conflict_scan
+    from .. import conflict_scan
     try:
         conflict_scan.request(st)
-        subprocess.Popen([sys.executable, str(pathlib.Path(__file__).resolve().parents[1]
+        subprocess.Popen([sys.executable, str(pathlib.Path(__file__).resolve().parents[2]
                                               / "scripts" / "watchdog.py"),
                           "--loop", loop["id"], "--conflicts"],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -1215,7 +1216,7 @@ def reclaim(loop: dict, number: int, state: str) -> None:
     """A finished PR gives back its disk: worktrees, build dirs, locks, counters."""
     log(f"PR #{number} {state} — reclaiming local review artifacts")
     try:
-        proc = subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve().parents[1]
+        proc = subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve().parents[2]
                                                    / "scripts" / "cleanup.py"),
                                "--loop", loop["id"], "--pr", str(number), "--quiet"],
                               capture_output=True, text=True, timeout=1800)

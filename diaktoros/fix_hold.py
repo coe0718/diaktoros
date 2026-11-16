@@ -123,9 +123,13 @@ def status_lines(loop: dict, st) -> list[str]:
     lines += [ask_line(issue_no, ask) for issue_no, ask in sorted(st.fix_ask_open().items())]
     from . import fix_reply
     lines += fix_reply.status_lines(st)
-    declared = st.issue_deps()
+    try:
+        declared = st.issue_deps(strict=True)
+    except Exception:                             # #2150: held, and said so; never "?"
+        declared = None
     for issue_no in st.dep_waits():
-        names = ", ".join(f"#{a}" for a in sorted(declared.get(issue_no) or {})) or "?"
+        names = ("its unreadable dependency record" if declared is None else
+                 ", ".join(f"#{a}" for a in sorted(declared.get(issue_no) or {})) or "?")
         lines.append(f"issue #{issue_no} fix waits for prerequisite {names} "
                      f"(`hermes dk depends --loop {loop['id']} --issue {issue_no}` says why)")
     lines += [fix_declined.line(loop, issue_no, entry)
@@ -141,6 +145,15 @@ def explain_lines(st, number: int) -> list[str]:
     waiting = st.kv_get(st.dir / fix_reply.WAITING, {})
     return ([ask_line(number, ask)] if ask else []) + (
         [fix_reply.line(number)] if isinstance(waiting, dict) and str(number) in waiting else [])
+
+
+def explain_rows(loop: dict, st, number: int) -> list[tuple[str, str]]:
+    """``explain``'s ``(label, line)`` rows when ``number`` may be an issue: ``held:`` for an ask
+    or reply it waits on (``explain_lines``), then ``depends:`` for its declared dependencies and
+    waivers, the same sentences ``hermes dk depends --issue N`` prints (#1301)."""
+    from . import issue_deps
+    return ([("held:", line) for line in explain_lines(st, number)]
+            + [("depends:", line) for line in issue_deps.explain_lines(loop, st, number)])
 
 
 def check_ask(st, number: int) -> None:
@@ -437,10 +450,9 @@ def hand_off(loop: dict, number: int, issue: dict, auto: bool) -> tuple[str, str
             return "dropped", f"PR #{origin} closed unmerged; finding is moot", "", ""
         st.fix_hold_drop(number)
     blockers = issue_deps.blocking(loop, st, number)   # #671: declared prerequisites
-    if blockers:
+    if blockers:                                        # (#2150: an unreadable record holds)
         issue_deps.wait(loop, st, number, blockers)
-        names = ", ".join(f"#{a}" for a, _ in blockers)
-        return "held", f"waits for prerequisite {names}", "", ""
+        return "held", f"waits for prerequisite {issue_deps.names(blockers)}", "", ""
     st.dep_wait_drop(number)
     if auto and _capped(loop):
         return "capped", f"daily cap ({config.auto_fix_daily(loop)}) reached", "", ""

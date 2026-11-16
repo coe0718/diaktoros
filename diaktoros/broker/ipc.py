@@ -1191,7 +1191,7 @@ def _deliver_ruling(launch_loop: dict, scope: RunScope, supervisor, turn_key: st
     # to the operator outbox and, when configured, the PR. See observer.notify's contract.
     sent = observer.notify(loop, state_mod.state_for(loop), "ruling", scope.number, scope.head,
                            identity=turn_key, outcome=f"{verdict} · {rounds}/{loop['cap']} verdicts",
-                           next_turn="you — the adjudicator never merges")
+                           next_turn=supervisor.ruling_next_turn(scope.run_id))   # #2495
     supervisor.ruling_status(scope.run_id, observer="sent" if sent else "unsent")
     if not config.adjudicator_login(loop):
         supervisor.ruling_status(scope.run_id, comment="none")

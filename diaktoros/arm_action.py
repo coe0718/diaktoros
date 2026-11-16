@@ -189,7 +189,7 @@ def perform(loop: dict, active: bool, token_login: str | None = None, *,
                     f"the gates (`hermes dk doctor --loop {loop['id']} --repair` restores it)"], False
         if active:
             # Nor while the gateway cannot resolve the route's script: it drops every delivery.
-            from . import gate_shims
+            from .gate import shims as gate_shims
             entry = routes.route(route) or {}
             found, why = gate_shims.resolve(gate_shims.home_for(entry.get("profile")),
                                             entry.get("script"))

@@ -139,7 +139,7 @@ class GateHold(Base):
     def test_duplicate_of_a_terminal_turn_keeps_the_queue_entry_and_says_nothing_queued(self):
         """#729: ``duplicate failed`` scheduled nothing, so the gate neither drops its queue
         entry, nor announces "fixer queued", nor records a queued decision."""
-        from diaktoros import gate_decisions
+        from diaktoros.gate import decisions as gate_decisions
         self.set_push(True)
         key = f"{REPO}#7"
         self.st.queue_add("fixer", key, HEAD, "url", "waiting for a slot")
