@@ -1,6 +1,8 @@
-"""The gate package (#1082): ``gate.py`` is ``gate/__init__.py``, one level down.
+"""The gate package (#1082): ``gate.py`` is ``gate/__init__.py``, and ``gate_decisions``,
+``gate_failures`` and ``gate_shims`` are ``gate/decisions.py``, ``failures.py`` and ``shims.py``.
 
-The gate starts repository scripts by path, found from its own file. Each start is best effort
+The gate starts repository scripts by path, found from its own file, and so do the shims the
+host installs (``shims.plugin_script``) and the failure re-drives (``failures.SCRIPTS_DIR``). Each start is best effort
 (a failure is only logged), so a path left pointing at the old flat layout would fail quietly.
 """
 from __future__ import annotations
@@ -13,7 +15,9 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import conflict_scan, gate  # noqa: E402
+from diaktoros import conflict_scan, gate, route_intent  # noqa: E402
+from diaktoros.gate import failures as gate_failures  # noqa: E402
+from diaktoros.gate import shims as gate_shims  # noqa: E402
 
 
 class Package(unittest.TestCase):
@@ -22,6 +26,16 @@ class Package(unittest.TestCase):
         self.assertEqual(pathlib.Path(gate.__file__), ROOT / "diaktoros" / "gate" / "__init__.py")
         self.assertEqual(list(gate.__path__), [str(ROOT / "diaktoros" / "gate")])
         self.assertFalse((ROOT / "diaktoros" / "gate.py").exists())
+
+    def test_the_gates_modules_are_the_packages_own(self):
+        # #1082 step 2: each lives in the package, and no flat copy is left to shadow it.
+        from diaktoros.gate import decisions
+        for name, module in (("decisions", decisions), ("failures", gate_failures),
+                             ("shims", gate_shims)):
+            with self.subTest(name):
+                self.assertEqual(pathlib.Path(module.__file__), ROOT / "diaktoros" / "gate" / f"{name}.py")
+                self.assertIs(getattr(gate, name), module)
+                self.assertFalse((ROOT / "diaktoros" / f"gate_{name}.py").exists())
 
 
 class ScriptsTheGateStarts(unittest.TestCase):
@@ -44,6 +58,14 @@ class ScriptsTheGateStarts(unittest.TestCase):
                                                   ROOT / "scripts" / "cleanup.py"])
         for path in (drain, scan, cleanup):
             self.assertTrue(path.is_file(), path)
+
+    def test_the_shims_and_redrives_run_the_repositorys_scripts(self):
+        # An installed shim runs plugin_script(<gate script>); a failure re-drive looks there too.
+        self.assertEqual(gate_failures.SCRIPTS_DIR, ROOT / "scripts")
+        for script in sorted(set(route_intent.GATE_SCRIPT.values())):
+            with self.subTest(script):
+                self.assertEqual(gate_shims.plugin_script(script), ROOT / "scripts" / script)
+                self.assertTrue(gate_shims.plugin_script(script).is_file())
 
 
 if __name__ == "__main__":

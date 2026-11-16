@@ -25,7 +25,8 @@ reports gates, as everywhere else. GitHub branch protection is not read; ``merge
 """
 from __future__ import annotations
 
-from . import ci, config, explain, gate, gate_failures, gh, stale_approval, transition
+from . import ci, config, explain, gate, gh, stale_approval, transition
+from .gate import failures as gate_failures
 
 # GitHub mergeable_state values that leave a PR mergeable (``unstable`` is only a non-required
 # check failing; the required ones are judged by ``ci.gating`` above).

@@ -68,13 +68,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from _sources import ROOT, python_sources  # noqa: E402
-from diaktoros import corpus, gate_decisions, state  # noqa: E402
+from diaktoros import corpus, state  # noqa: E402
+from diaktoros.gate import decisions as gate_decisions  # noqa: E402
 
 APPENDS = {
     "diaktoros/state.py::LoopState.note":
         "watchdog.log: past LOG_PRUNE_BYTES, cut to its last LOG_KEEP lines that fit in that many "
         "bytes, under _log_lock (LoopState._prune_log)",
-    "diaktoros/gate_decisions.py::record":
+    "diaktoros/gate/decisions.py::record":
         "gate-decisions.jsonl: pruned to its last KEEP (200) lines under its flock "
         "(util.append_keeping)",
     "diaktoros/corpus.py::record":
@@ -96,7 +97,7 @@ APPENDS = {
 # The behaviour test that writes past each APPENDS entry's bound and asserts it held.
 PROOF = {
     "diaktoros/state.py::LoopState.note": "test_append_bounds.Bounds.test_watchdog_log_is_pruned",
-    "diaktoros/gate_decisions.py::record": "test_append_bounds.Bounds.test_gate_decisions_are_pruned",
+    "diaktoros/gate/decisions.py::record": "test_append_bounds.Bounds.test_gate_decisions_are_pruned",
     "diaktoros/corpus.py::record": "test_append_bounds.Bounds.test_corpus_scores_are_pruned",
     "diaktoros/util.py::append_keeping": "test_append_bounds.Bounds.test_append_keeping_prunes",
     "diaktoros/run_supervisor/workers.py::WorkerLifecycle._worker_log":
@@ -118,7 +119,7 @@ UNBOUNDED = {
 
 NOT_LOGS = {
     "diaktoros/state.py::LoopState._transition_write": "stack-transitions.lock: a flock file, empty",
-    "diaktoros/gate_failures.py::Ledger._locked": "the gate-failure ledger's flock file, empty",
+    "diaktoros/gate/failures.py::Ledger._locked": "the gate-failure ledger's flock file, empty",
     "diaktoros/seat_model.py::profile_lock": "a per-profile flock file in diaktoros-seat-locks/",
     "diaktoros/app_tokens.py::held": "an App token file's flock file, empty",
     "diaktoros/config/__init__.py::push_policy_lock": ".fixer-push-policy.lock: a flock file, empty",

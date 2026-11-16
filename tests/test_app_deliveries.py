@@ -16,9 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_app_cli as app_cli  # noqa: E402
 import test_token_file_settings as tfs  # noqa: E402
 from diaktoros import (  # noqa: E402
-    app_deliveries, config, doctor, gate_failures, gh, github_app, hook_ping, routes, selftest,
+    app_deliveries, config, doctor, gh, github_app, hook_ping, routes, selftest,
     trace,
 )
+from diaktoros.gate import failures as gate_failures
 from diaktoros.doctor import hook_checks  # noqa: E402
 
 READ_APP = "acme-reader[bot]"

@@ -306,7 +306,8 @@ class Routing(unittest.TestCase):
         self.assertEqual(config.hook_events(self.LOOP, "fixer"), ["pull_request_review"])
 
     def test_a_triage_route_without_the_event_is_drift_only_when_on(self):
-        from diaktoros import gate_shims, route_intent
+        from diaktoros import route_intent
+        from diaktoros.gate import shims as gate_shims
         entry = {"prompt": route_intent.ROUTE_PROMPT["triage"], "events": ["issues"]}
         self.assertIn("events", gate_shims.contract_drift(self.LOOP, "triage", entry))
         self.assertNotIn("events", gate_shims.contract_drift({}, "triage", entry))
@@ -314,7 +315,8 @@ class Routing(unittest.TestCase):
         self.assertNotIn("events", gate_shims.contract_drift(self.LOOP, "triage", entry))
 
     def test_an_apps_issue_comment_goes_to_triage_and_is_needed_only_when_on(self):
-        from diaktoros import app_ingress, config, gate_shims
+        from diaktoros import app_ingress, config
+        from diaktoros.gate import shims as gate_shims
         comment = {"action": "created", "comment": {}, "issue": {"number": 12},
                    "repository": {"full_name": REPO}}
         self.assertEqual(app_ingress.gate_for(comment), ("gate_triage", ""))
@@ -324,7 +326,7 @@ class Routing(unittest.TestCase):
             self.assertNotIn("issue_comment", app_ingress.events_needed({}))
 
     def test_the_decision_record_names_the_event(self):
-        from diaktoros import gate_decisions
+        from diaktoros.gate import decisions as gate_decisions
         entry = gate_decisions._entry("gate_triage", {"action": "created", "comment": {},
                                                       "issue": {"number": 12}}, "accepted", "x")
         self.assertEqual((entry["event"], entry["number"]), ("issue_comment", 12))

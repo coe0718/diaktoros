@@ -344,7 +344,8 @@ def _run_reviewer(payload, reconsider=None, holds=None) -> list[str]:
     Raises ``gh.GateBudgetExceeded`` when the budget runs out, and ``SystemExit`` with a
     non-zero code when the gate refused its input.
     """
-    from . import gate_failures, util
+    from . import util
+    from .gate import failures as gate_failures
     try:
         limit, _rows = gate_failures.effective_timeout()
     except Exception:  # noqa: BLE001 - never let the fit check stop the gate
@@ -584,7 +585,7 @@ def _gate_unfinished(emit, args, payload, exc, started, what):
     """The gate crashed, refused its input or ran out of budget in-process: record it in the
     gate-failure ledger, as the webhook path's ``gate_failures.run`` does (#1455), and say so
     (#1046 review F1: named by its type, never its text). Returns the exit code."""
-    from . import gate_failures
+    from .gate import failures as gate_failures
     where = gate_failures.record_in_process("gate_reviewer", payload, exc, started)
     saved = ("recorded in the gate-failure ledger" if where
              else "could NOT be recorded in the gate-failure ledger")
@@ -657,7 +658,7 @@ def _ask_gate(loop, args, st, key, head, before, queued, payload, emit) -> int:
     except Exception as exc:  # noqa: BLE001 - a crashed gate is an answer too, never a traceback
         return _gate_unfinished(emit, args, payload, exc, started,
                                 f"it crashed ({type(exc).__name__})")
-    from . import gate_failures
+    from .gate import failures as gate_failures
     gate_failures.resolve_in_process("gate_reviewer", payload, started)
     reasons = logged(gate_lines if isinstance(gate_lines, list) else [])
     return _review_outcome(loop, args, st, key, head, before, queued, holds, reasons, emit)

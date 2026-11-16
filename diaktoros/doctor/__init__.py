@@ -431,7 +431,7 @@ def check_gate_timeouts(loop: dict) -> list[Check]:
     same setting (the smaller one, when either the host or the profile's own gateway may serve
     the route) and shrink their budget to fit, so a low value is safe but starves them of time.
     """
-    from .. import gate_failures as gf
+    from ..gate import failures as gf
     checks = []
     for profile, roles in gate_timeout_profiles(loop).items():
         name = f"gate:timeout:{profile}"
@@ -496,7 +496,7 @@ def _rate_limit_hosts(loop: dict) -> tuple[dict[pathlib.Path, str], list[str]]:
     and the host's. Its own one is judged only when it runs, or when that cannot be told
     (``gate_failures.profile_gateway_runs``); then its label says so. Raises what the reads raise.
     """
-    from .. import gate_failures as gf
+    from ..gate import failures as gf
     hosts: dict[pathlib.Path, str] = {}
     notes: list[str] = []
     for profile in gate_timeout_profiles(loop):
@@ -527,7 +527,7 @@ def check_gateway_rate_limit(loop: dict) -> Check:
     it, and ``setup``/``arm`` cannot. The watchdog's triage sweep (``triage_sweep``) re-queues an
     issue whose delivery was dropped; a dropped review or fix wake has no such backstop yet.
     """
-    from .. import gate_failures as gf
+    from ..gate import failures as gf
     try:
         hosts, skipped = _rate_limit_hosts(loop)
     except Exception as exc:  # noqa: BLE001 - one unreadable profile must not stop doctor
@@ -865,7 +865,7 @@ def check_roots(loop: dict) -> Check:
 def check_gateway_scripts(loop: dict) -> list[Check]:
     """Each installed route's script, resolved exactly as the gateway resolves it (issue #105):
     under the serving profile's ``scripts/``, a real file inside it, and this plugin's shim."""
-    from .. import gate_shims
+    from ..gate import shims as gate_shims
     status_of = {"ok": VERIFIED, "absent": ABSENT, "mismatch": MISMATCH}
     return [Check(name, status_of[status], detail, fix)
             for name, status, detail, fix in gate_shims.live_checks(loop)]

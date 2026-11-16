@@ -55,9 +55,9 @@ import time
 import traceback
 from collections.abc import Callable
 
-from . import config, gh
-from .util import flock_held, iso_at, log, register_lock
-from . import envnames
+from .. import config, gh
+from ..util import flock_held, iso_at, log, register_lock
+from .. import envnames
 
 LEDGER = "gate-failures.json"
 PAYLOADS = "gate-failures"
@@ -81,7 +81,7 @@ DEFERRED = "deferred"
 def _migration() -> dict | None:
     """The migration marker's facts, or ``None``; never raises (an unreadable check acts)."""
     try:
-        from . import migrate
+        from .. import migrate
         return migrate.migrating()
     except Exception as err:  # noqa: BLE001
         log(f"migration marker check failed: {type(err).__name__}: {err}")
@@ -621,7 +621,7 @@ class Ledger:
         return data
 
     def _save(self, data: dict) -> None:
-        from .state import _atomic_write
+        from ..state import _atomic_write
         if UNREADABLE in data:
             raise LedgerUnreadable("refusing to write the unreadable-ledger stand-in")
         _atomic_write(self.path, data)
@@ -1020,7 +1020,7 @@ def _settle_github_read(repo, key: str, how: str, not_after: float | None = None
         loop = _loop_for({"repository": {"full_name": repo}})
         if not loop or not loop.get("state_dir"):
             return
-        from . import state as state_mod
+        from .. import state as state_mod
         st = state_mod.state_for(loop)
         failure = st.github_failure()
         if failure.get("owned_by") != f"gate-failures:{key}":
@@ -1078,7 +1078,7 @@ def _claim_github_read(payload, key: str, since: float, held_in: str = "") -> No
         return
     owner = f"gate-failures:{key}"
     try:
-        from . import state as state_mod
+        from .. import state as state_mod
         st = state_mod.state_for(loop)
         # Two tries, the second checking that the first landed: this runs last in the record
         # phase, after a busy loop ledger has used up half of it, so on a slow disk the record
@@ -1124,8 +1124,8 @@ def _route_of(gate: str, payload) -> str:
     """The loop's route for ``gate`` (for the re-deliver hint); empty when it cannot be told. A
     loop on its App's webhook got the event through the App's route (#1239), not the seat's."""
     try:
-        from . import config
-        from .route_intent import routes_of
+        from .. import config
+        from ..route_intent import routes_of
         loop = _loop_for(payload)
         if loop and config.app_ingress(loop):
             return config.app_route(loop)
@@ -1292,7 +1292,7 @@ def run(gate: str, main: Callable[[], None]) -> None:
         message = "; ".join(f"{m} {p}: {e}" for m, p, e in failed_reads[:4])
         trace = ""
     elif kind == DEFERRED:
-        from . import migrate
+        from .. import migrate
         error_type = "MigrationInProgress"
         message = f"deferred: {migrate.describe(paused)}"
         trace = ""
@@ -1342,7 +1342,7 @@ def run(gate: str, main: Callable[[], None]) -> None:
     if kind in ("crash", "timeout", "stopped"):
         # A gate that claimed a seat and then died must not hold it until the TTL: the
         # re-drive (or the next event) has to find the seat free.
-        from . import state as state_mod
+        from .. import state as state_mod
         try:
             freed = state_mod.release_process_claims()
         except Exception as err:  # noqa: BLE001
@@ -1379,7 +1379,7 @@ def redeliver_hint(entry: dict) -> str:
     route = str(entry.get("route") or "") or f"<the loop's {seat} route>"
     what = " ".join(x for x in (str(entry.get("action") or ""),
                                 f"#{entry['pr']}" if entry.get("pr") else "") if x)
-    from .config import APP_ROUTE_PREFIX
+    from ..config import APP_ROUTE_PREFIX
     if route.startswith(APP_ROUTE_PREFIX):
         # #1239: an App's webhook has no repo hook; its log is in the App's own settings.
         return (f"re-deliver it from GitHub: the {route.removeprefix(APP_ROUTE_PREFIX)} App's "
@@ -1389,7 +1389,7 @@ def redeliver_hint(entry: dict) -> str:
             f"/webhooks/{route} → Recent Deliveries → the {what or 'failed'} delivery → Redeliver")
 
 
-SCRIPTS_DIR = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+SCRIPTS_DIR = pathlib.Path(__file__).resolve().parents[2] / "scripts"
 
 
 def explain_status(entry: dict) -> str:

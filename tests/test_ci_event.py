@@ -19,8 +19,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_main_check import FakeState  # noqa: E402
-from diaktoros import (app_ingress, ci, ci_event, ci_fix, config, gate_decisions, gh, ledger,  # noqa: E402
+from diaktoros import (app_ingress, ci, ci_event, ci_fix, config, gh, ledger,  # noqa: E402
                        main_check, observer, review_kick)
+from diaktoros.gate import decisions as gate_decisions
 from diaktoros.run_supervisor import CI_HOLD, Supervisor  # noqa: E402
 
 HEAD, OLD, MAIN = "a" * 40, "b" * 40, "c" * 40

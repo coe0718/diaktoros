@@ -7,12 +7,12 @@ import pathlib
 
 from .. import (
     config,
-    gate_shims,
     gh,
     route_intent,
     routes,
     util,
 )
+from ..gate import shims as gate_shims
 from ..doctor import hook_checks
 from . import common as cli_common
 from . import route_sync

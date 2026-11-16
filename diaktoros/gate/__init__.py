@@ -76,9 +76,10 @@ def context(payload: dict):
 def _record_decisions(loop: dict, payload: dict) -> None:
     """From here on, every ``silence(reason)`` in this process is appended to the loop's
     gate-decisions.jsonl (#209)."""
-    from .. import gate_decisions, util
+    from .. import util
+    from . import decisions
     name = pathlib.Path(sys.argv[0] or "gate").stem or "gate"
-    util.set_decision_recorder(lambda reason, decision: gate_decisions.record(
+    util.set_decision_recorder(lambda reason, decision: decisions.record(
         loop, name, payload, decision, reason))
 
 

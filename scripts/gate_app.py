@@ -30,9 +30,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from diaktoros import (  # noqa: E402
     app_ingress,
     config,
-    gate_decisions,
     state as state_mod,
 )
+from diaktoros.gate import decisions as gate_decisions
 from diaktoros.util import log  # noqa: E402
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
@@ -86,7 +86,7 @@ def main() -> None:
     # The gate names itself from argv[0] (gate._record_decisions): it is that gate, not this one.
     sys.argv[0] = str(path)
     sys.stdin = io.StringIO(raw)
-    from diaktoros import gate_failures
+    from diaktoros.gate import failures as gate_failures
     gate_failures.run(name, module.main)
 
 

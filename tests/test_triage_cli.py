@@ -17,7 +17,8 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
-from diaktoros import cli, config, doctor, gate_shims, gh, routes  # noqa: E402
+from diaktoros import cli, config, doctor, gh, routes  # noqa: E402
+from diaktoros.gate import shims as gate_shims  # noqa: E402
 from diaktoros.doctor import route_checks, seat_checks  # noqa: E402
 from diaktoros.cli import route_sync  # noqa: E402
 from diaktoros.cli import common as cli_common  # noqa: E402

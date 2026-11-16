@@ -18,7 +18,8 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from diaktoros import doctor, gate_failures, util  # noqa: E402
+from diaktoros import doctor, util  # noqa: E402
+from diaktoros.gate import failures as gate_failures  # noqa: E402
 
 
 class RateLimitDoctor(unittest.TestCase):

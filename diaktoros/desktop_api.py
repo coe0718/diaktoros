@@ -39,8 +39,9 @@ import re
 import stat
 import time
 
-from . import (arm_action, config, doctor, findings, gate_decisions, pacing, retry_action, route_intent,
+from . import (arm_action, config, doctor, findings, pacing, retry_action, route_intent,
                run_supervisor, stats, util)
+from .gate import decisions as gate_decisions
 from .run_supervisor import views
 from .config import settings_form
 
@@ -410,7 +411,7 @@ def _record_enum(value, allowed):
 
 
 def _record_failures(loop):
-    from . import gate_failures
+    from .gate import failures as gate_failures
     home, spare = gate_failures.loop_ledger(loop), gate_failures.fallback_ledger()
     # The same owner rules ``open_for`` (so ``explain`` and ``ready``) applies: the fallback is
     # read only when it is another file, and a fallback entry is shown unless the home copy is

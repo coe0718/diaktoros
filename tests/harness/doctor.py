@@ -168,7 +168,7 @@ def install_doctor_fixture() -> dict:
     ]
     save_world()
     # The gate shims the gateway runs from each serving profile's scripts/ (issue #105).
-    from diaktoros import gate_shims
+    from diaktoros.gate import shims as gate_shims
     gate_shims.install(config.load_id("widgets"))
     loop = config.load_id("widgets")
     # #67's two checks belong to "a complete, correct installation": a healthy host has a watchdog

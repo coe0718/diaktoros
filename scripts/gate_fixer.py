@@ -314,5 +314,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     # Crash, overrun or a silence after a failed read is recorded for the watchdog (#75).
-    from diaktoros import gate_failures  # noqa: E402
+    from diaktoros.gate import failures as gate_failures  # noqa: E402
     gate_failures.run("gate_fixer", main)

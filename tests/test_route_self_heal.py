@@ -370,7 +370,7 @@ class PromptUpgrade(Fixture):
                                                        "[x]"), (set(), ""))
 
     def test_doctor_names_the_repair_for_a_recorded_route(self):
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         self.old_install()
         self.loop["seats"]["reviewer"]["profile"] = "rev"
         fix = gate_shims.divergence(self.loop, contract=True).get("widgets-review")
@@ -421,7 +421,7 @@ class PromptUpgrade(Fixture):
 
     def test_doctor_does_not_name_the_repair_when_the_record_has_another_profile(self):
         # #1418 review F2: the repair would restore the recorded (wrong) profile.
-        from diaktoros import gate_shims
+        from diaktoros.gate import shims as gate_shims
         # The state that matters (shadow review, F3): the record holds THIS version's prompt
         # but a stale profile; the live route has the configured profile and the old prompt.
         # Main's old check (record prompt == this version's) recommended the repair here, and
