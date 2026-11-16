@@ -63,15 +63,19 @@ class Gate(fg.Base):
         self.cap = self.loop["cap"]
         self.feed()
 
-    def feed(self, **observer_block):
-        """An observer feed on a registered delivery-only route; returns the mocked POST."""
+    def feed(self, urgent: dict | None = None, **observer_block):
+        """An observer feed on a registered delivery-only route; returns the mocked POST.
+        ``urgent``: more routes registered under the urgent contract, ``{name: overrides}``."""
         subs = self.root / "subscriptions.json"
         env = mock.patch.dict(os.environ, {"DIAKTOROS_SUBS": str(subs)})
         env.start()
         self.addCleanup(env.stop)
         self.write(host="https://owner.example", observer={"route": "one-observe", **observer_block})
-        subs.write_text(json.dumps({"one-observe": {"host": "https://owner.example", "secret": "s",
-                                                    **observer.route_contract(self.loop)}}))
+        entry = {"host": "https://owner.example", "secret": "s"}
+        subs.write_text(json.dumps({
+            "one-observe": {**entry, **observer.route_contract(self.loop)},
+            **{name: {**entry, **observer.route_contract(self.loop, urgent=True), **changed}
+               for name, changed in (urgent or {}).items()}}))
         fire = mock.patch.object(routes, "fire", return_value=True)
         self.addCleanup(fire.stop)
         return fire.start()
@@ -275,6 +279,33 @@ class Gate(fg.Base):
                 self.assertNotIn("granted", [event for event, _ in self.sent(fire)])
                 self.assertNotIn("re-request", self.explain()["next"]["action"])
 
+    def test_the_grant_goes_by_the_urgent_route_which_must_be_able_to_deliver_it(self):
+        # #2501 review, F6: ``granted`` is urgent, so with ``urgent_route`` set it goes there,
+        # not to ``route``. That is the route the preflight must check.
+        fire = self.feed(urgent={"one-urgent": {}}, urgent_route="one-urgent")
+        self.ask(MAINT, notes=False).assert_called_once()
+        self.assertTrue(self.st.review_cap_granted(7, HEAD, self.cap))
+        self.assertEqual([c.args[0] for c in fire.call_args_list
+                          if c.args[2]["_observer"]["event"] == "granted"], ["one-urgent"])
+        # Missing from the gateway, or registered under another contract: no grant, no offer.
+        for name, urgent in (("missing", {}), ("off contract", {"one-urgent": {"deliver": "x"}})):
+            with self.subTest(name):
+                self.setUp()
+                fire = self.feed(urgent=urgent, urgent_route="one-urgent")
+                self.assertIn("route 'one-urgent' is missing", review_asks.unannounced(self.loop))
+                self.assertIsNone(self.ask(MAINT, notes=False).call_args)
+                self.assertFalse(self.st.review_cap_granted(7, HEAD, self.cap))
+                self.assertEqual(self.events(fire, "granted"), [])
+                self.assertIn("a re-request grants nothing here: route 'one-urgent'", self.said)
+                self.assertNotIn("re-request", self.explain()["next"]["action"])
+                self.setUp()
+                self.feed(urgent=urgent, urgent_route="one-urgent")
+                notes = []
+                self.ask(OWNER, notes=notes)
+                held = [kw["outcome"] for _, kw in notes if "review cap reached" in kw["outcome"]]
+                self.assertEqual(len(held), 1, notes)
+                self.assertNotIn("re-request", held[0])
+
     def test_off_a_maintainers_rerequest_at_the_cap_is_declined(self):
         self.write(**{KEY: False})
         self.assertIsNone(self.ask(MAINT).call_args)
@@ -372,6 +403,8 @@ class Doctor(unittest.TestCase):
                             ({"observer": {**FEED, "mute": True}}, "muted"),
                             ({"observer": {"route": "elsewhere"}},
                              "missing from the gateway's subscriptions"),
+                            ({"observer": {**FEED, "urgent_route": "elsewhere"}},     # F6
+                             "route 'elsewhere' is missing from the gateway's subscriptions"),
                             ({"observer": {**FEED, "events": ["held"]}},
                              "observer.events leaves out granted")):
             with self.subTest(said):
@@ -424,9 +457,9 @@ class Setting(unittest.TestCase):
                          "on, but inert: needs an observer feed that sends granted "
                          "(observer.events leaves out granted)")
         self.assertEqual(row(**{KEY: True}, operator_agents=[MAINT], observer=FEED).note, "")
-        self.assertIn("needs an observer feed that sends granted (route 'elsewhere' is missing",
-                      row(**{KEY: True}, operator_agents=[MAINT],
-                          observer={"route": "elsewhere"}).note)
+        for feed in ({"route": "elsewhere"}, {**FEED, "urgent_route": "elsewhere"}):   # F5, F6
+            self.assertIn("needs an observer feed that sends granted (route 'elsewhere' is "
+                          "missing", row(**{KEY: True}, operator_agents=[MAINT], observer=feed).note)
         self.assertEqual(row().note, "")
 
 

@@ -139,7 +139,7 @@ reviewer on GitHub, from the web or the mobile app, grants that verdict too, und
 (one per head, and never for a head that already has a verdict); an urgent `granted` notice names
 who granted it, at once, even with a digest set, and the grant takes effect only once that notice
 is recorded delivered. A feed must send it: with none, a muted one, a route the gateway can't
-deliver to, or an `observer.events` list without `granted`, a re-request grants nothing (`doctor`
+deliver to (`urgent_route` when set), or an `observer.events` list without `granted`, a re-request grants nothing (`doctor`
 says so). Anything holding a maintainer's token can re-request, so turn it on only when every
 such agent is one you trust to grant a round.
 `review_only_daily` (off by default) caps reviewer turns per local day on review-only PRs;

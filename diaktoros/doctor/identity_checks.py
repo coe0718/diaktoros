@@ -477,7 +477,7 @@ def check_review_only_rerequest_grants(loop: dict) -> doctor.Check | None:
         return doctor.Check("rerequest-grants", doctor.MISMATCH,
                             f"on, but a grant's urgent `granted` notice has nowhere to go ({feed}), "
                             "so no re-request grants a round",
-                            "an observer feed on a route the gateway delivers to (`hermes dk doctor`'s "
+                            "an observer feed on a route the gateway delivers to (its `urgent_route` when set; `doctor`'s "
                             "observer checks), whose events include granted (`hermes dk set "
                             f"--loop {loop.get('id')} --observer-events ...,granted`, or blank for "
                             f"all), or {off}")

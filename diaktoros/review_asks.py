@@ -56,11 +56,11 @@ def rerequest_grants(loop) -> bool:
 
 def unannounced(loop) -> str:
     """Why a re-request's grant could not be announced on this loop, or ``""`` (#2501 review, F3,
-    F5): no observer feed, a muted one, a route the gateway can't deliver to
-    (``observer.unusable``), or ``observer.events`` without ``granted``. The grant is made away
-    from the terminal, and its notice is how the maintainer sees it, so without one the re-request
-    grants nothing."""
-    reason = observer.unusable(loop)
+    F5, F6): no observer feed, a muted one, a route the gateway can't deliver to
+    (``observer.unusable``: the urgent one, ``urgent_route`` when set, since ``granted`` is
+    urgent), or ``observer.events`` without ``granted``. The grant is made away from the terminal,
+    and its notice is how the maintainer sees it, so without one the re-request grants nothing."""
+    reason = observer.unusable(loop, urgent=observer.is_urgent("granted"))
     if not reason and not observer.subscribes(loop, "granted"):
         reason = "observer.events leaves out granted"
     return reason

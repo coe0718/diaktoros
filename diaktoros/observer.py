@@ -154,19 +154,22 @@ def configured(loop: dict) -> str:
     return ""
 
 
-def unusable(loop: dict) -> str:
+def unusable(loop: dict, urgent: bool = False) -> str:
     """Why this loop's feed cannot deliver, or ``""`` when it can.
 
     Everything :func:`configured` knows, plus the registry: whether the route the gateway needs
     is actually there and carries a secret and a URL. Local reads only (no network, no lock), so
-    ``status`` and every call site can afford to ask.
+    ``status`` and every call site can afford to ask. ``urgent``: the route an urgent notice
+    takes, ``urgent_route`` when one is set (as :func:`_post` picks it, #2501 review, F6).
     """
     reason = configured(loop)
     if reason:
         return reason
     observer = loop.get("observer") or {}
-    if _target(loop) is None:
-        return (f"route {observer.get('route')!r} is missing from the gateway's subscriptions, "
+    urgent = bool(urgent and observer.get("urgent_route"))
+    if _target(loop, urgent) is None:
+        route = observer.get("urgent_route" if urgent else "route")
+        return (f"route {route!r} is missing from the gateway's subscriptions, "
                 f"has no secret/url, or does not match the observer delivery-only contract")
     return ""
 
