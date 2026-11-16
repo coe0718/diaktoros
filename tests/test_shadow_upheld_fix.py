@@ -114,6 +114,54 @@ class Operator(ruling.Base):
         self.assertEqual(report["next"]["kind"], "fixer-push", report["next"])
         self.assertNotIn("your decision", report["next"]["action"])
 
+    def ruling_notice(self, author="fixer", verdict="REJECT", shown=None, **live):
+        """#2258: the operator's ruling notice for a new ruling that was shown shadow review
+        ``shown`` (default: the newest one recorded), with the live PR changed by ``live``."""
+        from diaktoros.run_supervisor import notices
+        with closing(sqlite3.connect(self.db)) as con:
+            newest = con.execute("SELECT run_id FROM shadow_reviews ORDER BY created DESC "
+                                 "LIMIT 1").fetchone()
+        self.ruled(verdict)
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("UPDATE rulings SET shadow_run=? WHERE run_id=?",
+                        (newest[0] if shown is None else shown, f"r{self.n}"))
+            con.row_factory = sqlite3.Row
+            row = con.execute("SELECT * FROM rulings WHERE run_id=?", (f"r{self.n}",)).fetchone()
+        sender = notices.OperatorNotices()
+        sender.db = self.db
+        pr = {**fg.LIVE, "user": {"login": author}, **live}
+        with mock.patch.object(gh, "pr", return_value=pr), \
+                mock.patch("diaktoros.config.by_repo", return_value=self.loop):
+            return sender._ruling_message(row)
+
+    def test_the_ruling_notice_says_who_answers_an_upheld_review(self):
+        self.shadow("REQUEST_CHANGES")
+        first = f"s{self.n}"
+        self.loop = {**self.loop, "unattended_fixer_push": True}
+        text = self.ruling_notice()
+        self.assertIn("so the fixer answers its findings", text)
+        self.assertNotIn("the decision is yours", text)
+        self.assertIn("never merges, pushes or reviews", text)
+        for kwargs in ({"author": "someone"}, {"verdict": "ACCEPT"}, {"shown": ""}):
+            self.assertIn("the decision is yours", self.ruling_notice(**kwargs), kwargs)
+        on = self.loop
+        self.loop = {**on, "unattended_fixer_push": False}
+        self.assertIn("the decision is yours", self.ruling_notice())               # push off
+        # #2491 review F2: escalation turned off after the turn started, as ready says.
+        self.loop = {**on, "shadow": {**on["shadow"], "escalate": False}}
+        self.assertIn("the decision is yours", self.ruling_notice())
+        self.loop = on
+        # #2491 review F1: a newer shadow review landed during the turn; this REJECT of the
+        # older one upholds nothing, so no fixer is queued and none is promised.
+        self.shadow("REQUEST_CHANGES")
+        self.assertIn("the decision is yours", self.ruling_notice(shown=first))
+        self.assertIn("so the fixer answers its findings", self.ruling_notice())
+        # #2491 review F3: the notice went out after the PR moved on or closed; the fixer's claim
+        # supersedes that head, so no fixer is promised.
+        moved = {**fg.LIVE["head"], "sha": "b" * 40}
+        for live in ({"head": moved}, {"state": "closed"}):
+            self.assertIn("the decision is yours", self.ruling_notice(**live), live)
+
     def escalate_off(self):
         self.loop = {**self.loop, "unattended_fixer_push": True,
                      "shadow": {**self.loop["shadow"], "escalate": False}}
