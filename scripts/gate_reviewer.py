@@ -131,14 +131,12 @@ def review_only_cap(loop: dict, st, number: int, head: str, rounds: int, reviews
     own PR is no bypass, so this ends the gate with ``silence``. Only a maintainer's
     --another-round (one verdict, this head) lifts it, or, with review_only_rerequest_grants on
     (#2496), a maintainer's GitHub re-request of a head with no verdict yet, which grants the same
-    one verdict, announced by an urgent ``granted`` notice, and only where one can be sent."""
+    one verdict once its urgent ``granted`` notice is delivered, and only where one can be sent."""
     ro_cap = config.review_only_cap(loop)
-    if (rounds >= ro_cap and action == "review_requested"
-            and not gate.reviewed_at_head(reviews, loop, head)):
-        review_asks.grant_by_rerequest(loop, st, number, head, rounds, sender)
-    # Before anything is queued, on every pass that finds a re-request's grant: the notice is
-    # urgent (never digested), and one pass's crash or lost callback leaves it to the next.
-    review_asks.announce_grant(loop, st, number, head, rounds)
+    waits = ""
+    if rounds >= ro_cap and not gate.reviewed_at_head(reviews, loop, head):
+        waits = review_asks.grant_by_rerequest(
+            loop, st, number, head, rounds, sender if action == "review_requested" else "")
     if rounds >= ro_cap and not st.review_cap_granted(number, head, rounds):
         ask = (" or re-request the reviewer on GitHub" if review_asks.rerequest_can_grant(loop)
                else "")
@@ -154,7 +152,8 @@ def review_only_cap(loop: dict, st, number: int, head: str, rounds: int, reviews
                and action == "review_requested" and sender in config.maintainers(loop) else "")
         silence(f"review cap reached on #{number} ({rounds} verdicts) — no further review "
                 "until a maintainer grants another round"
-                + (f"; a re-request grants nothing here: {why}" if why else ""))
+                + (f"; {waits}" if waits else f"; a re-request grants nothing here: {why}" if why
+                   else ""))
 
 
 @refreshes_declined_head

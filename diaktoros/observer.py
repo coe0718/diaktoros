@@ -345,6 +345,13 @@ def owed_entries(st) -> list:
     return sorted(rows, key=lambda row: state.mark_at(row[1]) or 0)
 
 
+def recorded(st, key: str) -> dict:
+    """A copy of the ledger's entry for ``key``, or ``{}``: what became of that notice."""
+    with _lock(st.observations):
+        entry = _read(st.observations)["entries"].get(key)
+    return dict(entry) if isinstance(entry, dict) else {}
+
+
 class SettleError(ValueError):
     """The entry cannot be settled; the message names why."""
 
