@@ -84,6 +84,12 @@ global.fetch = (url) => {
     return Promise.resolve({ ok: false, status: 403 });
   }
   if (url === 'data.json') {
+    // The shipped-snapshot scenario serves the real checked-in
+    // data.json (passed as argv[4]) instead of synthetic values, so
+    // the test proves the page actually uses the snapshot it ships.
+    if (scenario === 'live-fail-shipped-snapshot') {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(JSON.parse(process.argv[4])) });
+    }
     if (scenario === 'live-fail-snapshot-ok' || scenario === 'live-mixed') {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(
         { version: 'v1.2.3-test', loop_prs_merged: 7, prs_merged: 21,
@@ -318,7 +324,7 @@ def stale_fallbacks(html, data):
 
 
 class SiteRefreshTests(unittest.TestCase):
-    def run_scenario(self, scenario):
+    def run_scenario(self, scenario, extra_args=()):
         tmpdir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmpdir, True)
         script_path = pathlib.Path(tmpdir) / "page.js"
@@ -326,7 +332,7 @@ class SiteRefreshTests(unittest.TestCase):
         harness_path = pathlib.Path(tmpdir) / "harness.js"
         harness_path.write_text(HARNESS)
         proc = subprocess.run(
-            ["node", str(harness_path), str(script_path), scenario],
+            ["node", str(harness_path), str(script_path), scenario, *extra_args],
             capture_output=True, text=True, timeout=30)
         self.assertEqual(proc.returncode, 0, f"node harness failed: {proc.stderr}")
         return json.loads(proc.stdout)
@@ -418,6 +424,40 @@ class SiteRefreshTests(unittest.TestCase):
         self.assertTrue(hardcoded_fallbacks(html), "no hardcoded data-site values found in index.html")
         stale = stale_fallbacks(html, data)
         self.assertFalse(stale, "hardcoded fallbacks disagree with data.json:\n" + "\n".join(stale))
+
+    def test_shipped_snapshot_pins_current_release(self):
+        """The checked-in snapshot and both pre-JS version displays must
+        name the current release (v0.6.1, released 2026-11-12). The
+        consistency guard above only checks the HTML and JSON agree with
+        each other, so a snapshot left at the previous release passes it
+        — this test pins the release itself, and moves with each release
+        bump (Vex F1, PR #2485)."""
+        data = json.loads((SITE / "data.json").read_text())
+        self.assertEqual(data["version"], "v0.6.1")
+        self.assertEqual(data["version_url"],
+                         "https://github.com/coe0718/diaktoros/releases/tag/v0.6.1")
+        self.assertEqual(data["released"], "2026-11-12")
+        html = (SITE / "index.html").read_text()
+        versions = [text for key, text in hardcoded_fallbacks(html)
+                    if key == "version"]
+        self.assertEqual(versions, ["v0.6.1", "v0.6.1"],
+                         "both pre-JS version displays (hero, stats) must read v0.6.1")
+
+    @unittest.skipUnless(shutil.which("node"), "node unavailable")
+    def test_live_failure_uses_shipped_snapshot_release(self):
+        """With the live API failing, the page must display the release
+        from the actual checked-in data.json — not the synthetic values
+        the other fallback tests use, and not the hardcoded paint. The
+        version proves it: the synthetic snapshot reads v1.2.3-test and
+        the hardcoded value v0.0.0-test, so only the real snapshot can
+        show v0.6.1 (Vex F1, PR #2485)."""
+        data = json.loads((SITE / "data.json").read_text())
+        out = self.run_scenario(
+            "live-fail-shipped-snapshot", [(SITE / "data.json").read_text()])
+        self.assertEqual(out["version"], "v0.6.1")
+        self.assertEqual(out["generated"], data["generated"])
+        self.assertEqual(out["generated"], "2026-11-03")
+        self.assertEqual(out["loop_prs_merged"], f'{data["loop_prs_merged"]:,}')
 
     def test_fallback_check_sees_attributes_after_data_site(self):
         """An element whose data-site is followed by another attribute must
