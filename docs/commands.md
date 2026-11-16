@@ -1714,8 +1714,9 @@ hermes dk history --loop "<loop-id>" --since 2026-11-01 --out cycles --format js
 before the date included). It lists what it wrote and which PRs it skipped as not merged. With
 `--offline` the merge is not read, so a PR with a turn in the window is written whether it merged or
 not, unless a write fails first (see below). A file of the same name in `DIR` is replaced; nothing
-is written anywhere else. With no PR to write, `DIR` is not created: a temporary file opened and
-removed at once in it, or in its nearest existing parent, checks that it could be. Use it to publish several cycles
+is written anywhere else. With no PR turn in the window, `DIR` is not created: a temporary file
+opened and removed at once in it, or in its nearest existing parent, checks that it could be. A PR
+with a turn there creates it, even one then skipped as not merged. Use it to publish several cycles
 to the site's run viewer at once.
 
 `--format markdown` gives the same timeline as a document, for a PR comment, a write-up or an
@@ -1727,7 +1728,7 @@ as a failed turn's output tail, is cut to its last part (`…/state.json`). A pa
 before it with it. `--offline` leaves GitHub out and
 lists what that leaves missing. It exits `2` when no loop can be chosen, or when it gets neither
 or both of `--pr` and `--since`, or `--since` without `--out`, or when `--out` cannot be written
-(it names a file, say). A file that fails to write stops the export there: the listing names it and
+(it names a file or a link to nothing, say). A file that fails to write stops the export there: the listing names it and
 says the export is partial, the files before it are kept, and it exits `2`.
 
 <!-- flags:history -->
