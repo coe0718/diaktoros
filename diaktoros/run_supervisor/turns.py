@@ -69,6 +69,37 @@ class _Launch(NamedTuple):
     merged: dict | None = None
 
 
+CI_HOLD_READS = "ci-hold-reads.json"     # {run id: when the light poll last read the hold}
+
+
+def _ci_poll_hold_due(row, st, now: float | None = None) -> bool:
+    """Whether the CI light poll reads the maintainer hold live this time (#1708): once the row
+    has been queued ``run_supervisor.CI_HOLD_READ_S``, then once per that period, timed by the
+    loop's ``ci-hold-reads.json`` (the poll's own record: the ledger's ``updated`` is reset
+    each time the worker re-queues the row). A due read is recorded here; records older than
+    a day are dropped, so the file stays as small as the set of rows held for CI."""
+    now = time.time() if now is None else now
+    path = st.dir / CI_HOLD_READS
+    raw = st.kv_get(path, {})
+    reads = {k: float(v) for k, v in (raw.items() if isinstance(raw, dict) else ())
+             if isinstance(v, (int, float)) and now - float(v) < 86400}
+    last = max(reads.get(row['id'], 0.0), float(row['created'] or 0))
+    if now - last < run_supervisor.CI_HOLD_READ_S:
+        return False
+    reads[row['id']] = now
+    st.kv_set(path, reads)
+    return True
+
+
+def _ci_poll_live_hold(row, loop: dict) -> bool:
+    """The live maintainer-hold read (``pr_hold.read``, two GitHub calls) for the CI light poll:
+    True, sending the row to the full claim, when the PR is held or the read failed (an
+    unreadable hold is not "not held"); the full claim then parks it or backs it off."""
+    from .. import pr_hold
+    hold, error = pr_hold.read(loop, row['pr'])
+    return bool(hold or error)
+
+
 def ci_wait_expired(row) -> bool:
     """Past ``run_supervisor.CI_WAIT_MAX_S`` from when the run was queued (#241): only a red
     hold remains. The turn's hold and the claim's light poll both ask it here."""
@@ -830,14 +861,20 @@ class ClaimAndLaunch:
         its head is escalated for a ruling (the claim's own ``_claim_read_escalated``, which
         then retires it), or the watchdog sweep has recorded a maintainer's hold on the PR
         (``pr_holds``, #477), which the claim's live ``pr_hold.read`` then decides. Both are
-        local reads, so the light poll stays light. A hold placed since the last sweep is seen
-        at the sweep after it, or by the full claim once CI settles."""
+        local reads, so the light poll stays light. The sweep's record is a cache that can lag
+        (no sweep yet, a failed read, a first sweep that stops before the hold scan), so once
+        every ``run_supervisor.CI_HOLD_READ_S`` of the hold the poll also asks GitHub itself
+        (``_ci_poll_hold_due``, two calls): a hold the sweep has not recorded is seen within
+        that bound, so a red hold with no time limit cannot hide one indefinitely."""
         from .. import state as state_mod
         read = _ClaimRead()
         self._claim_read_escalated(row, read)
         if read.superseded or read.read_error:
             return True
-        return row['pr'] in state_mod.state_for(loop).pr_holds()
+        st = state_mod.state_for(loop)
+        if row['pr'] in st.pr_holds():
+            return True
+        return _ci_poll_hold_due(row, st) and _ci_poll_live_hold(row, loop)
 
     def _shadow_escalation(self, turn: _Turn) -> None:
         """Right after a shadow review is recorded (#1004 part 2): if it disagrees with the
