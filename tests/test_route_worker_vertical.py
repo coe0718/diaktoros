@@ -21,7 +21,7 @@ import unittest
 
 from tests.test_turn_vertical import SOURCE, RUST
 from tests.hermes_prereqs import needs
-from diaktoros import ledger
+from diaktoros.state import ledger
 from diaktoros.inference_proxy import PATH
 
 ROOT = Path(__file__).resolve().parents[1]

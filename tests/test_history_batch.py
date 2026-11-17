@@ -18,7 +18,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 import test_history as th  # noqa: E402
-from diaktoros import cli, gh, history_batch, ledger  # noqa: E402
+from diaktoros import cli, gh, history_batch  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 
 SINCE = "2026-09-21"                               # th.T is 2026-09-21 14:13 UTC
 OPEN = {"number": 8, "state": "open", "merged_at": None}

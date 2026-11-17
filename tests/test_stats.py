@@ -21,7 +21,8 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 import test_seat_models as sm  # noqa: E402
-from diaktoros import gh, ledger, run_supervisor, stats  # noqa: E402
+from diaktoros import gh, run_supervisor, stats  # noqa: E402
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 REPO = "acme/widgets"

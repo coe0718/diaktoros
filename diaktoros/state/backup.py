@@ -61,8 +61,8 @@ import time
 import zlib
 
 from .ledger import LOCK_WAIT_S, read_only
-from .config import credentials
-from . import config, route_intent, routes, run_supervisor, util
+from ..config import credentials
+from .. import config, route_intent, routes, run_supervisor, util
 
 VERSION = 1
 MANIFEST = "manifest.json"
@@ -182,15 +182,15 @@ def prune(keep: int, protect: pathlib.Path | None = None) -> list[pathlib.Path]:
 # ``register_lock(``: found by that call, not by a list here, so a new writer needs nothing else.
 # Exact names, not a ``*.lock`` pattern: a user's ``user.lock`` is state (#1060).
 def _load_writers() -> frozenset[str]:
-    root = pathlib.Path(__file__).resolve().parent
+    root = pathlib.Path(__file__).resolve().parents[1]   # the plugin, not this state/ package
     for path in sorted(root.rglob("*.py")):
         parts = path.relative_to(root).with_suffix("").parts
         if parts[-1] == "__main__" or "register_lock(" not in path.read_text(errors="replace"):
             continue
         if parts[-1] == "__init__":
             parts = parts[:-1]
-        if parts and parts != ("util",) and parts != ("backup",):
-            importlib.import_module("." + ".".join(parts), __package__)
+        if parts and parts != ("util",) and parts != ("state", "backup"):
+            importlib.import_module("." + ".".join(parts), __package__.rpartition(".")[0])
     return frozenset(util.LOCK_NAMES)
 
 
@@ -228,7 +228,7 @@ def _regular_files(root: pathlib.Path, skipped: list[str] | None = None) -> list
         return []
     if root.is_file():
         return [root]
-    from . import app_tokens
+    from .. import app_tokens
     shared = app_tokens.directory().resolve()
     found = []
     for path in sorted(root.rglob("*")):
@@ -259,8 +259,8 @@ def _snapshot_ledger(src: pathlib.Path, dest: pathlib.Path) -> None:
 
 def watchdog_job() -> dict | None:
     """The shared watchdog job's schedule and delivery target, as the scheduler stores them."""
-    from . import doctor
-    from .cli import common as cli_common  # noqa: PLC0415 - heavy modules
+    from .. import doctor
+    from ..cli import common as cli_common  # noqa: PLC0415 - heavy modules
     jobs, _ = cli_common._cron_jobs({"id": ""})
     for job in jobs or []:
         if str(job.get("name") or "").strip() in cli_common.SHARED_JOB_NAMES:
