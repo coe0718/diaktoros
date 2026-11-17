@@ -21,7 +21,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_app_cli as app_cli  # noqa: E402
 import test_token_file_settings as tfs  # noqa: E402
-from diaktoros import backup, config, doctor, envnames, gh, github_app, selftest  # noqa: E402
+from diaktoros import config, doctor, envnames, gh, github_app, selftest  # noqa: E402
+from diaktoros.state import backup  # noqa: E402
 from diaktoros.config import credentials, loop_checks  # noqa: E402
 from diaktoros.doctor import hook_checks, identity_checks, seat_checks  # noqa: E402
 
