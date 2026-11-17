@@ -30,7 +30,7 @@ from types import SimpleNamespace
 from . import (cancel_action, escalate_action, gate, gh, issue_deps, review_asks, run_supervisor,
                state as state_mod)
 from .run_supervisor import views
-from .ledger import read_only
+from .state.ledger import read_only
 from .util import logged
 
 _LOCK = threading.RLock()
@@ -478,7 +478,7 @@ def drain_confirmed(loop, seat, expected):
 def _drain_refusal(loop, seat, expected) -> str:
     """Why a confirmed drain starts nothing, or "": checked in this order, each only once the one
     before it passed, so a refused request never reads the hooks."""
-    from . import migrate
+    from .state import migrate
     if not _snapshot_shape(expected):
         # None is the unconfirmed sweep's (#1407 review, F2): never a confirmation.
         return "no confirmed queue snapshot"
@@ -595,7 +595,7 @@ def _gate_unfinished(emit, args, payload, exc, started, what):
 
 
 def _review(loop, args, emit=print):
-    from . import migrate
+    from .state import migrate
     if migrate.migrating() is not None:
         # A migration holds the install (#431): no gate acts under names being moved.
         emit(f"#{args.pr}: a migration holds the install — nothing started; ask again after it")

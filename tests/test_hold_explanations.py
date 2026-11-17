@@ -10,7 +10,8 @@ import unittest
 import uuid
 from unittest import mock
 
-from diaktoros import config, desktop_api, ledger, run_supervisor, stats
+from diaktoros import config, desktop_api, run_supervisor, stats
+from diaktoros.state import ledger
 from diaktoros.run_supervisor import views
 from diaktoros.cli import operations
 
