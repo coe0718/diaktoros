@@ -8,35 +8,7 @@ operator would touch by hand, so `hermes dk uninstall` is really just the invers
 
 from __future__ import annotations
 
-import argparse
-import json
-import os
-import pathlib
-import shlex
-import shutil
-import sqlite3
-import subprocess
-import sys
-import time
-import tempfile
-
-from ..state.ledger import LOCK_WAIT_S
 from ..config import settings_form
-from .. import (
-    attribution,
-    config,
-    doctor,
-    envnames,
-    gate,
-    gh,
-    observer,
-    pr_hold,
-    prompts,
-    route_intent,
-    routes,
-    state as state_mod,
-)
-from ..gate import shims as gate_shims
 from . import checks as cli_checks
 from . import install as cli_install
 from . import lifecycle as cli_lifecycle
@@ -49,7 +21,6 @@ from . import settings as cli_settings
 from . import setup_parser
 from . import triage_command
 from . import update as cli_update
-from ..util import logged
 # Every command lives in its own module with its parser (#676): register_cli below lists them in
 # help order. `cli.cmd_*` stays usable through these re-exports; the parser dispatches to the
 # module's own function, so patch a command there, never here.
@@ -65,7 +36,7 @@ from .common import (  # noqa: F401
     _ROUTE_PROMPT,
     _hook_route_name,
 )
-from .checks import (
+from .checks import (  # noqa: F401
     cmd_app_webhook,
     cmd_arm,
     cmd_create_apps,
@@ -74,17 +45,17 @@ from .checks import (
     cmd_doctor,
     cmd_onboard,
     cmd_selftest,
-)  # noqa: F401
+)
 from .install import cmd_init  # noqa: F401
 from .setup_command import cmd_setup  # noqa: F401
 from .update import cmd_update  # noqa: F401
-from .lifecycle import (
+from .lifecycle import (  # noqa: F401
     cmd_backup,
     cmd_migrate,
     cmd_restore,
     cmd_uninstall,
-)  # noqa: F401
-from .operations import (
+)
+from .operations import (  # noqa: F401
     cmd_cancel,
     cmd_cleanup,
     cmd_depends,
@@ -100,14 +71,14 @@ from .operations import (
     cmd_review,
     cmd_status,
 )
-from .reports import (
+from .reports import (  # noqa: F401
     cmd_calls,
     cmd_history,
     cmd_models,
     cmd_report,
     cmd_stats,
     cmd_trace,
-)  # noqa: F401
+)
 from .apply_command import cmd_apply  # noqa: F401
 from .identity_command import (  # noqa: F401
     cmd_fixer_push,

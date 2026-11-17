@@ -355,7 +355,7 @@ def check_runtime(report: Report, path: Path) -> dict | None:
     if missing:
         usable = False
         report.add(step, "runtime:venv", FAIL, f"{venv} lacks {', '.join(missing)}",
-                   f"point venv at the virtualenv Hermes is installed in (it must hold bin/hermes)")
+                   "point venv at the virtualenv Hermes is installed in (it must hold bin/hermes)")
     else:
         report.add(step, "runtime:venv", PASS, f"{venv} (bin/python, bin/hermes)")
 
@@ -543,7 +543,7 @@ def check_bwrap(report: Report, loop: dict, settings: dict | None, runtime_file:
                        "no secret-shaped name or value in the exported snapshot")
         if advisories:
             report.add(step, "sandbox:secret-text", WARN,
-                       f"credential-shaped text in exported code: " + "; ".join(advisories[:3])
+                       "credential-shaped text in exported code: " + "; ".join(advisories[:3])
                        + (f" (+{len(advisories) - 3} more)" if len(advisories) > 3 else ""),
                        "confirm these are fixtures: the sandbox imports this code, so the snapshot "
                        "filter cannot drop it (unset the variables/values in the committed tree)")

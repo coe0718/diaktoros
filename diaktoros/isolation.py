@@ -31,7 +31,6 @@ import os
 import pathlib
 import shutil
 import subprocess
-import sys
 
 from . import config
 from .config import host_guards

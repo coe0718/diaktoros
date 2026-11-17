@@ -9,6 +9,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import corpus  # noqa: E402
+from diaktoros import config  # noqa: E402
 
 CASE = {"id": "c1", "pr": 7, "findings": [{"id": "sql", "pattern": "sql injection"},
                                           {"id": "race", "pattern": r"race\s+condition"}]}
@@ -59,10 +60,10 @@ class Corpus(unittest.TestCase):
             self.assertEqual(bad, [2])
             out = io.StringIO()
             args = SimpleNamespace(loop="x", dir=None, history=True)
-            with mock.patch.object(cli.config, "load_id", return_value={}), \
+            with mock.patch.object(config, "load_id", return_value={}), \
                     mock.patch.object(corpus, "corpus_dir", return_value=d), \
                     mock.patch.object(corpus, "load", return_value=[]), \
-                    mock.patch.object(cli.config, "state_dir", return_value=d), \
+                    mock.patch.object(config, "state_dir", return_value=d), \
                     redirect_stdout(out):
                 rc = cli.cmd_corpus(args)
         self.assertEqual(rc, 0)

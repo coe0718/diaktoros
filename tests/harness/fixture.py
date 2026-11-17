@@ -11,25 +11,25 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import argparse
 import atexit
 import contextlib
-import importlib.util
+import importlib.util  # noqa: F401 - the harness namespace (area modules import *)
 import hashlib
 import hmac
 import io
 import json
 import os
 import pathlib
-import re
+import re  # noqa: F401 - the harness namespace (area modules import *)
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
-import time
-from datetime import datetime, timezone
+import time  # noqa: F401 - the harness namespace (area modules import *)
+from datetime import datetime, timezone  # noqa: F401 - the harness namespace (area modules import *)
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from types import SimpleNamespace
 from typing import Any
-from unittest import mock
+from unittest import mock  # noqa: F401 - the harness namespace (area modules import *)
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -441,7 +441,7 @@ def reset(hooks_active: bool = True, prs: dict | None = None) -> dict:
     write_profiles("reviewer-profile", "fixer-profile", "coder", "critic", "arbiter")
     make_clone()
     cfg = write_loop()
-    subs = write_subs()
+    write_subs()
     DATA["world"] = world(prs or {}, hooks_active)
     WORLD_FILE.write_text(json.dumps(DATA["world"]))
     STUB.write_text(STUB_SRC)

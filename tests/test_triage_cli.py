@@ -8,7 +8,6 @@ profile, refusals write nothing, and the repo hooks it plans include the issues 
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
-import json
 import os
 import pathlib
 import sys
@@ -17,7 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
-from diaktoros import cli, config, doctor, gh, routes  # noqa: E402
+from diaktoros import config, doctor, gh, routes  # noqa: E402
 from diaktoros.gate import shims as gate_shims  # noqa: E402
 from diaktoros.doctor import route_checks, seat_checks  # noqa: E402
 from diaktoros.cli import route_sync  # noqa: E402

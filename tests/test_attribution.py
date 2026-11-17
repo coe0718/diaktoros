@@ -91,7 +91,6 @@ class Unsign(unittest.TestCase):
             self.assertEqual(attribution.unsign(body), body)
 
     def test_the_review_record_shows_the_words_not_the_label(self):
-        from diaktoros import run_supervisor
         lp = {"reviewers": ["rev"], "fixers": ["fix"], "seats": {"fixer": {"login": "fix"}}}
         review = {"user": {"login": "rev"}, "state": "CHANGES_REQUESTED", "commit_id": BASE,
                   "submitted_at": "2026-10-01T00:00:00Z",

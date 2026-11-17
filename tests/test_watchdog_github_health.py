@@ -89,7 +89,7 @@ class Health(unittest.TestCase):
         self.assertFalse(any("hook state unreadable" in line for line in again), again)
         listing.assert_called_once()        # still sweeping, just not repeating itself
         later, *_ = self.sweep(hooks=hooks, probe=OK, at=self.now + 6 * 3600 + 60)
-        self.assertEqual(len([l for l in later if "hook state unreadable" in l]), 1, later)
+        self.assertEqual(len([ln for ln in later if "hook state unreadable" in ln]), 1, later)
 
     def test_active_sweeps_without_the_unknown_warning(self):
         lines, _, listing, _ = self.sweep(hooks=(True, ""), probe=OK)

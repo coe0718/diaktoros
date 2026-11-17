@@ -182,7 +182,7 @@ class Deps(GateFixture):
     def test_a_close_beyond_the_page_bound_is_unknown_not_met(self):
         api = self._busy_close({4: [{"event": "reopened"},
                                     {"event": "closed", "commit_id": None}]})
-        with mock.patch.object(gh, "fetch", lambda l, p, login=None: (api(l, p), "")), \
+        with mock.patch.object(gh, "fetch", lambda loop, p, login=None: (api(loop, p), "")), \
                 mock.patch.object(gh, "api", api):
             done, why = issue_deps.met(self.loop, 5)
         self.assertIsNone(done)
@@ -191,7 +191,7 @@ class Deps(GateFixture):
     def test_an_unreadable_final_page_holds_the_dependent(self):
         api = self._busy_close({3: None})                 # the last page read fails
         self.depends(12, on=5)
-        with mock.patch.object(gh, "fetch", lambda l, p, login=None: (api(l, p), "")), \
+        with mock.patch.object(gh, "fetch", lambda loop, p, login=None: (api(loop, p), "")), \
                 mock.patch.object(gh, "api", api):
             blockers = issue_deps.blocking(self.loop, self.st, 12)
         self.assertEqual([b[0] for b in blockers], [5])

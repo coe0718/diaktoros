@@ -17,7 +17,6 @@ from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.cli import setup_command as cli_setup  # noqa: E402
 import run_tests as t  # noqa: E402
 import test_partial_view_no_approve as pv  # noqa: E402
-from diaktoros import cli  # noqa: E402
 
 FILES = f"/repos/{pv.REPO}/pulls/7/files?per_page=100"
 

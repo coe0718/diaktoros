@@ -21,6 +21,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import cli, doctor, prompts, route_intent, routes  # noqa: E402
+from diaktoros import config  # noqa: E402
 from diaktoros import watch_mode  # noqa: E402
 from diaktoros.doctor import route_checks  # noqa: E402
 from scripts import watchdog  # noqa: E402
@@ -188,7 +189,7 @@ class OperatorIntentTest(Fixture):
     def test_uninstall_through_the_plugin_is_not_undone(self):
         self.install()
         args = SimpleNamespace(loop="widgets", keep_config=True, keep_hooks=True)
-        with mock.patch.object(cli.config, "load_id", return_value=self.loop), \
+        with mock.patch.object(config, "load_id", return_value=self.loop), \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(cli.cmd_uninstall(args), 0)
         self.assertEqual(set(self.live()), {"other-plugin"})

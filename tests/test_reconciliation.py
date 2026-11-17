@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Failure injection across profile-bound routes, GitHub hooks, and loop config."""
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
-import json
 import pathlib
 import sys
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t
-from diaktoros import cli, config, gh, routes
+from diaktoros import config, gh, routes
+from diaktoros import prompts
 
 
 def main():
@@ -88,13 +88,13 @@ def main():
     assert_old('unreadable hook listing fails closed', rc)
 
     # Publication must not truncate the installed config when the write fails.
-    original_replace = cli.os.replace
+    original_replace = os.replace
     def fail_publish(src, dst):
         if pathlib.Path(dst) == config_path:
             raise OSError('disk full during config publication')
         return original_replace(src, dst)
     with mock.patch.object(gh, 'api', side_effect=api), \
-            mock.patch.object(cli.os, 'replace', side_effect=fail_publish):
+            mock.patch.object(os, 'replace', side_effect=fail_publish):
         rc, out = t.run_cli(apply)
     assert_old('config publication failure preserves prior bytes', rc)
     assert 'config unchanged' in out, out
@@ -174,7 +174,7 @@ def main():
     stable_form = {'reviewer_profile': 'reviewer-profile', 'fixer_profile': 'fixer-profile',
                    'reviewer_login': t.REVIEWER, 'fixer_login': t.FIXER}
     unchanged_apply = t.parser_for(stable_form).parse_args(['apply', '--loop', 'reconcile'])
-    routes.new_route('reconcile-review', profile='critic', prompt=cli.prompts.REVIEWER,
+    routes.new_route('reconcile-review', profile='critic', prompt=prompts.REVIEWER,
                      events=['pull_request'], script='gate_reviewer.py', host=t.HOST,
                      deliver='discord')
     old_config = config_path.read_bytes()
@@ -225,7 +225,7 @@ def main():
 
     # A stale profile is not permission to overwrite a route with another gate's script.
     foreign = routes.route('reconcile-review')
-    routes.new_route('reconcile-review', profile='critic', prompt=cli.prompts.FIXER,
+    routes.new_route('reconcile-review', profile='critic', prompt=prompts.FIXER,
                      events=['pull_request_review'], script='gate_fixer.py', host=t.HOST,
                      deliver='discord')
     foreign_snapshot = routes.route('reconcile-review')

@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import (broker, broker_client, config, gh, prompts,  # noqa: E402
                        run_supervisor)
-from diaktoros.state import ledger
+from diaktoros.state import ledger  # noqa: E402
 from diaktoros.broker import filing as broker_filing  # noqa: E402
 from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros.config import blocks  # noqa: E402

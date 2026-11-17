@@ -20,7 +20,6 @@ import time
 import unittest
 
 from tests.test_turn_vertical import SOURCE, RUST
-from tests.hermes_prereqs import needs
 from diaktoros.state import ledger
 from diaktoros.inference_proxy import PATH
 

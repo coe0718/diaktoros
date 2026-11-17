@@ -15,7 +15,6 @@ from __future__ import annotations
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 
 import contextlib
-import glob
 import json
 import os
 import pathlib
@@ -30,8 +29,8 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import contained, run_supervisor
-from diaktoros.broker import ipc as broker_ipc
+from diaktoros import contained, run_supervisor  # noqa: E402
+from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 
 MiB = 1024 * 1024
 # Small enough to prove enforcement inside a test, larger than anything the probe stages.

@@ -278,7 +278,7 @@ def _move_watchdog_job(*, dry_run: bool) -> list[str]:
         if failed or not any(str(job.get("name") or "").strip() == SHARED_JOB_NAME
                              for job in after or []):
             new_shim.unlink(missing_ok=True)
-            return [f"watchdog: NOT FINISHED — the new job was not created"
+            return ["watchdog: NOT FINISHED — the new job was not created"
                     + (f" ({failed})" if failed else "") + f"; the old job keeps running. "
                     f"Run it yourself, then migrate again: {shlex.join(cmd)}"]
         lines.append(f"watchdog: job {SHARED_JOB_NAME!r} created ({schedule}, deliver {deliver})")
@@ -823,7 +823,7 @@ def _uninstall_refused(loop: dict, reasons: list[str], left_hooks: list[int],
         print("they may be this install's or another install's (same repo, same route names): "
               "look at each one's URL before deleting anything:")
         print(f"  {_hook_find_command(loop)}   # the ids")
-        print(f"  gh api {shlex.quote(f'repos/' + loop['repo'] + '/hooks/<id>')} --jq .config.url"
+        print(f"  gh api {shlex.quote('repos/' + loop['repo'] + '/hooks/<id>')} --jq .config.url"
               "   # where each posts")
         print("then either set this loop's host (`hermes dk set --loop "
               f"{lid} --host https://your-gateway.example`) so uninstall can tell its own hooks "
@@ -851,7 +851,7 @@ def _uninstall_refused(loop: dict, reasons: list[str], left_hooks: list[int],
               "which hooks exist; nothing was deleted on a guess. Look first — check each one's "
               "URL before deleting anything:")
         print(f"  {_hook_find_command(loop)}   # the ids")
-        print(f"  gh api {shlex.quote(f'repos/' + loop['repo'] + '/hooks/<id>')} --jq .config.url"
+        print(f"  gh api {shlex.quote('repos/' + loop['repo'] + '/hooks/<id>')} --jq .config.url"
               "   # where each posts")
     if any(reason.startswith("cron") for reason in reasons):
         jobs, _ = cli_common._cron_jobs(loop)

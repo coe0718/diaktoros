@@ -246,7 +246,10 @@ def check_seat_extras(loop: dict) -> list[doctor.Check]:
             f"{explain.get(e, '')}".rstrip()
             for e in maybe_missing)
         because = "; ".join(explain[e] for e in needed if explain.get(e))
-        install = lambda extras: " and ".join(f"`hermes pm install --extra {e}`" for e in extras)
+
+        def install(extras) -> str:
+            return " and ".join(f"`hermes pm install --extra {e}`" for e in extras)
+
         where = (f"it installs into the venv Hermes selects, so if that is not {venv}, install the "
                  f"extra into {venv} or point `venv` in {runtime} at the venv that has it")
         if missing:

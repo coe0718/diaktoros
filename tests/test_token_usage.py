@@ -15,7 +15,7 @@ from contextlib import closing
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from diaktoros import config, request_trace, show, stats, trusted_turn  # noqa: E402
+from diaktoros import config, request_trace, stats, trusted_turn  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.inference_proxy import PATH, InferenceCapability, UsageMeter, _UnixHTTP  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402

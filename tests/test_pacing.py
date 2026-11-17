@@ -21,7 +21,7 @@ from contextlib import closing
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from diaktoros import (config, gate, gh, inference_proxy, pacing, run_supervisor,  # noqa: E402
+from diaktoros import (config, gate, gh, pacing, run_supervisor,  # noqa: E402
                          seat_model, trusted_turn)
 from diaktoros.run_supervisor import views
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
@@ -455,7 +455,7 @@ class ProductionWorker(ProductionBase):
         until = pacing.hold_unavailable(self.account, "empty stream with no finish_reason")
         loop = config.normalize({**self.raw, "seats": {"reviewer": {"profile": "rev", "route": "r"},
                                                         "fixer": {"profile": "fix", "route": "f"}}})
-        line = [l for l in operations._pacing_lines(loop) if l.startswith("held:")][0]
+        line = [ln for ln in operations._pacing_lines(loop) if ln.startswith("held:")][0]
         self.assertIn("provider unavailable (empty stream with no finish_reason)", line)
         self.assertIn(f"resumes {pacing.when(until)}", line)
 
@@ -570,7 +570,7 @@ class ProductionWorker(ProductionBase):
     def test_review_only_daily_counts_review_only_turns_and_leaves_a_fixer_pr_alone(self):
         loop = self.review_only_loop()
         pacing.count_turn("widgets", pacing.REVIEW_ONLY_SEAT)
-        row = self.run_production(lambda *a, **k: 1, loop, seat="reviewer", author="fixer")
+        self.run_production(lambda *a, **k: 1, loop, seat="reviewer", author="fixer")
         self.assertEqual(self.turns, 1, "a fixer PR's review is not held by the review-only cap")
         self.assertEqual(pacing.turns_today("widgets", pacing.REVIEW_ONLY_SEAT), 1)
         loop = self.review_only_loop(daily=5)

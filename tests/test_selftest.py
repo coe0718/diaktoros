@@ -295,7 +295,7 @@ class ChecklistTests(SelftestBase):
         rc, text = self.run_selftest()
         self.assertEqual(rc, 1)
         self.assertRegex(text, r"❌ runtime:key_file .*not UTF-8")
-        self.assertIn(f"fix: rewrite the key file as text", text)
+        self.assertIn("fix: rewrite the key file as text", text)
         self.assertIn(str(key), text)
 
     def test_production_reader_refuses_non_utf8_key_file_cleanly(self):

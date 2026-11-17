@@ -19,7 +19,7 @@ import run_tests as t  # noqa: E402
 from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
-from diaktoros import cli, config, prompts  # noqa: E402
+from diaktoros import config, prompts  # noqa: E402
 from diaktoros.run_supervisor import issue_inputs  # noqa: E402
 from diaktoros.config import lists  # noqa: E402
 from diaktoros.cli import setup_command as cli_setup  # noqa: E402

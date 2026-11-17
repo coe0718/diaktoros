@@ -114,7 +114,7 @@ class IsolatedConcurrency(unittest.TestCase):
             helps = [a.help for a in sub._actions if "--concurrency" in a.option_strings]
             self.assertEqual(len(helps), 1, verb)
             self.assertIn("runtime file", helps[0], verb)
-        rows = [l for l in docs.splitlines() if l.startswith("| `--concurrency`")]
+        rows = [ln for ln in docs.splitlines() if ln.startswith("| `--concurrency`")]
         self.assertTrue(rows)
         for row in rows:
             self.assertIn("runtime file", row)
@@ -125,8 +125,8 @@ class IsolatedConcurrency(unittest.TestCase):
         commands = " ".join((docs / "commands.md").read_text().split())
         start = commands.index("Concurrency above 1 needs a `--clone`")
         self.assertIn("runtime file", commands[start:start + 250])
-        rows = [l for l in (docs / "getting-started.md").read_text().splitlines()
-                if l.startswith("| `--reviewer-concurrency")]
+        rows = [ln for ln in (docs / "getting-started.md").read_text().splitlines()
+                if ln.startswith("| `--reviewer-concurrency")]
         self.assertTrue(rows)
         for row in rows:
             self.assertIn("runtime file", row)

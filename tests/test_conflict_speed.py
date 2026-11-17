@@ -13,7 +13,6 @@ import fcntl
 import os
 import sys
 import tempfile
-import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -178,7 +177,6 @@ class ScanFilters(Detection):
         self.assertEqual(found, 0)
         queued.assert_not_called()
         with mock.patch.object(gh, "open_prs", return_value=None):
-            from scripts import watchdog
             with mock.patch.object(watch_mode, "TEST", True), \
                     mock.patch.object(gh, "pr", side_effect=AssertionError("no PR read")):
                 self.assertEqual(watch_conflicts.scan_conflicts(self.loop, self.st), 0)

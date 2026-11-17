@@ -19,8 +19,8 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from hermes_prereqs import skip_or_fail
-from diaktoros import config, desktop_api, run_supervisor
+from hermes_prereqs import skip_or_fail  # noqa: E402
+from diaktoros import config, desktop_api, run_supervisor  # noqa: E402
 
 
 class ReadRoutes(unittest.TestCase):

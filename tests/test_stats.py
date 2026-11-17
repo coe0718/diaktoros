@@ -270,8 +270,9 @@ class Ledger(unittest.TestCase):
     def test_the_report_counts_the_hunk_check_of_the_windows_fixes(self):
         # #1043: each fix's stored proof carries its per-hunk check; the report totals it.
         import json as json_
-        hunks = lambda *states: json_.dumps({"overall": "proven", "ids": [],
-                                             "hunks": [{"status": s} for s in states]})
+        def hunks(*states):
+            return json_.dumps({"overall": "proven", "ids": [],
+                                "hunks": [{"status": s} for s in states]})
         a = self.proposal(20, "pr", 120, NOW - 4000)
         b = self.proposal(21, "pr", 121, NOW - 3000)
         old = self.proposal(22, "pr", 122, NOW - 30 * DAY)               # outside the window

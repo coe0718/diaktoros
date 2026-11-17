@@ -125,7 +125,8 @@ class Junk(unittest.TestCase):
         the stored integer's exact arithmetic, so a persisted turn is not renamed (a float would
         round ``10**16 + 1``) and a large finite integer is not an ``OverflowError`` either. A
         float whose milliseconds overflow is unnamable, the same skip as any unreadable time."""
-        name = lambda at: transition.turn_key({"at": at, "from_base": "parent"})
+        def name(at):
+            return transition.turn_key({"at": at, "from_base": "parent"})
         self.assertEqual(name(10 ** 16 + 1), "retarget:parent:10000000000000001000")
         self.assertEqual(name(10 ** 307), f"retarget:parent:{10 ** 310}")
         self.assertEqual(name(1.5), "retarget:parent:1500")

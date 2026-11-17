@@ -229,11 +229,11 @@ class NotStarted(Base):
             parent.parse_args(['cancel', '--help'])
         self.assertIn('blocked', ' '.join(out.getvalue().split()))
         self.assertIn('blocked', ' '.join(operations.cmd_cancel.__doc__.split()).split('(#')[0])
-        readme = [l for l in (root / 'README.md').read_text().splitlines() if '`hermes dk cancel`' in l]
+        readme = [ln for ln in (root / 'README.md').read_text().splitlines() if '`hermes dk cancel`' in ln]
         self.assertTrue(readme)
-        self.assertTrue(all('blocked' in l for l in readme), readme)
+        self.assertTrue(all('blocked' in ln for ln in readme), readme)
         text = (root / 'docs' / 'commands.md').read_text()
-        row = [l for l in text.splitlines() if l.endswith('[`cancel`](#cancel) |')]
+        row = [ln for ln in text.splitlines() if ln.endswith('[`cancel`](#cancel) |')]
         self.assertEqual(len(row), 1)
         self.assertIn('blocked', row[0])
         section = text.split('### cancel\n', 1)[1].split('\n\n', 1)[0]
