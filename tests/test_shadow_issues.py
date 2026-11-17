@@ -486,6 +486,29 @@ class FilePending(unittest.TestCase):
                                          "run_id=?", (run,)).fetchone()[:], ("posted", 101))
         self.assertEqual(self.file()[1], [])
 
+    def test_a_failed_audit_of_the_confirmed_issue_keeps_it_and_still_adds_its_labels(self):
+        # #1640: the first audit line (the issue POST's) can't be written after GitHub
+        # confirmed the issue. Its number is kept, the labels are still added, and the audit
+        # failure is said on stderr, not turned into an uncertain filing.
+        import io
+        run = self.recorded("A finding")
+        failing = {"side_effect": [OSError("audit disk full"), None]}
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "stderr", stderr):
+            filed, posts = self.file(labelled=lambda names: ([{"name": x} for x in names], ""),
+                                     audit=failing)
+        self.assertEqual(filed, [101])
+        self.assertEqual([path for path, _body, _login in posts],
+                         [f"/repos/{REPO}/issues", f"/repos/{REPO}/issues/101/labels"])
+        self.assertEqual((self.state(run), self.error(run)), ("posted", None))
+        with ledger.connect(self.db) as con:
+            row = con.execute("SELECT state, issue_number FROM filed_issues WHERE run_id=?",
+                              (run,)).fetchone()
+        self.assertEqual(tuple(row), ("posted", 101))
+        self.assertIn("audit record file_shadow_issue not written for #7: OSError: "
+                      "audit disk full", stderr.getvalue())
+        self.assertEqual(self.file()[1], [])                   # never filed again
+
     def test_an_unlabelled_filing_counts_toward_the_daily_cap(self):
         self.loop = {**self.loop, "shadow": {**self.loop["shadow"], "issues_daily": 1}}
         self.recorded("A finding")

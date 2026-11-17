@@ -212,6 +212,9 @@ class Onboard(_Loop):
         return out, sent, violations
 
     def app_reader(self):
+        # A readable key file: an unreadable credential never reads current (#1714), and the
+        # stages after it would then be stale without reading GitHub. ``jwt`` is stubbed.
+        (self.root / "k.pem").write_text("app-key-for-the-stubbed-jwt")
         return dict(self.loop, read_token="reader-app",
                     apps={"reader-app": {"app_id": 7, "key_file": str(self.root / "k.pem")}})
 

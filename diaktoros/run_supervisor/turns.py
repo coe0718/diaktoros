@@ -71,6 +71,37 @@ class _Launch(NamedTuple):
     merged: dict | None = None
 
 
+CI_HOLD_READS = "ci-hold-reads.json"     # {run id: when the light poll last read the hold}
+
+
+def _ci_poll_hold_due(row, st, now: float | None = None) -> bool:
+    """Whether the CI light poll reads the maintainer hold live this time (#1708): once the row
+    has been queued ``run_supervisor.CI_HOLD_READ_S``, then once per that period, timed by the
+    loop's ``ci-hold-reads.json`` (the poll's own record: the ledger's ``updated`` is reset
+    each time the worker re-queues the row). A due read is recorded here; records older than
+    a day are dropped, so the file stays as small as the set of rows held for CI."""
+    now = time.time() if now is None else now
+    path = st.dir / CI_HOLD_READS
+    raw = st.kv_get(path, {})
+    reads = {k: float(v) for k, v in (raw.items() if isinstance(raw, dict) else ())
+             if isinstance(v, (int, float)) and now - float(v) < 86400}
+    last = max(reads.get(row['id'], 0.0), float(row['created'] or 0))
+    if now - last < run_supervisor.CI_HOLD_READ_S:
+        return False
+    reads[row['id']] = now
+    st.kv_set(path, reads)
+    return True
+
+
+def _ci_poll_live_hold(row, loop: dict) -> bool:
+    """The live maintainer-hold read (``pr_hold.read``, two GitHub calls) for the CI light poll:
+    True, sending the row to the full claim, when the PR is held or the read failed (an
+    unreadable hold is not "not held"); the full claim then parks it or backs it off."""
+    from .. import pr_hold
+    hold, error = pr_hold.read(loop, row['pr'])
+    return bool(hold or error)
+
+
 def ci_wait_expired(row) -> bool:
     """Past ``run_supervisor.CI_WAIT_MAX_S`` from when the run was queued (#241): only a red
     hold remains. The turn's hold and the claim's light poll both ask it here."""
@@ -308,29 +339,7 @@ class ClaimAndLaunch:
         """The production claim's live reads, in order: an escalated head, a maintainer's
         hold, the adjudicator's facts, the fixer's verdict. Each may add to ``read``."""
         if row['seat'] in ('reviewer', 'fixer') and not read.superseded:
-            # The operator escalated this head (#459): it waits for a ruling, so a review or
-            # fix queued for it is retired, as a spent cap would have stopped it.
-            from .. import config, gate, state as state_mod
-            try:
-                escalated_loop = config.by_repo(row['repo'])
-                marker = (state_mod.state_for(escalated_loop).breach_get(row['pr'])
-                          if escalated_loop is not None else None)
-                # A head the sweep escalated because of a dispute (#894) still takes the
-                # maintainer's requested re-review: an approval then supersedes the ruling.
-                rereview = (str(row['turn_key'] or '').startswith(run_supervisor.DISPUTE_KEY)
-                            and ((marker or {}).get('escalated') or {}).get('by') == 'dispute')
-                # Nor is the fix of a shadow review the adjudicator upheld (#1004 part 3): that
-                # ruling is why it exists, and its marker stays at the head. Whether the ruling
-                # still stands is _claim_read_fixer's (upheld_shadow_ruling).
-                upheld = (row['seat'] == 'fixer'
-                          and str(row['turn_key'] or '').startswith(run_supervisor.SHADOW_FIX_KEY)
-                          and ((marker or {}).get('escalated') or {}).get('by')
-                          == gate.SHADOW_ESCALATION)
-                if (escalated_loop is not None and not rereview and not upheld
-                        and gate.escalated(marker, row['head'])):
-                    read.superseded = 'escalated to adjudication at this head'
-            except Exception as exc:
-                read.read_error = read.read_error or f'{type(exc).__name__}: {exc}'[:200]
+            self._claim_read_escalated(row, read)
         if row['seat'] in claims.PR_HOLD_SEATS and not read.superseded:
             # A maintainer holds this PR (#477): the row waits, pending, like a draft's, and
             # starts after release. An unreadable hold is not "not held": it waits too.
@@ -357,6 +366,33 @@ class ClaimAndLaunch:
                     read.retry_read = True
             except Exception:
                 read.retry_read = True
+
+    def _claim_read_escalated(self, row, read: _ClaimRead) -> None:
+        """The operator escalated this head (#459): it waits for a ruling, so a review or fix
+        queued for it is retired (``read.superseded``), as a spent cap would have stopped it.
+        A local read (the breach marker). The full claim asks it, and so does the CI light
+        poll (``_ci_poll``, #1708), which sends an escalated row to the full claim."""
+        from .. import config, gate, state as state_mod
+        try:
+            escalated_loop = config.by_repo(row['repo'])
+            marker = (state_mod.state_for(escalated_loop).breach_get(row['pr'])
+                      if escalated_loop is not None else None)
+            # A head the sweep escalated because of a dispute (#894) still takes the
+            # maintainer's requested re-review: an approval then supersedes the ruling.
+            rereview = (str(row['turn_key'] or '').startswith(run_supervisor.DISPUTE_KEY)
+                        and ((marker or {}).get('escalated') or {}).get('by') == 'dispute')
+            # Nor is the fix of a shadow review the adjudicator upheld (#1004 part 3): that
+            # ruling is why it exists, and its marker stays at the head. Whether the ruling
+            # still stands is _claim_read_fixer's (upheld_shadow_ruling).
+            upheld = (row['seat'] == 'fixer'
+                      and str(row['turn_key'] or '').startswith(run_supervisor.SHADOW_FIX_KEY)
+                      and ((marker or {}).get('escalated') or {}).get('by')
+                      == gate.SHADOW_ESCALATION)
+            if (escalated_loop is not None and not rereview and not upheld
+                    and gate.escalated(marker, row['head'])):
+                read.superseded = 'escalated to adjudication at this head'
+        except Exception as exc:
+            read.read_error = read.read_error or f'{type(exc).__name__}: {exc}'[:200]
 
     def _claim_read_adjudicator(self, row, read: _ClaimRead) -> None:
         from .. import config
@@ -395,7 +431,7 @@ class ClaimAndLaunch:
             elif str(row['turn_key'] or '').startswith(run_supervisor.SHADOW_FIX_KEY):
                 # #1004 part 3: no reviewer verdict either (the head is approved); the
                 # adjudicator's upholding ruling is its work order, and it must still stand.
-                ruled = gate.upheld_shadow_ruling(loop, row['pr'], row['head'], db=self.db)
+                ruled = gate.shadows.upheld_shadow_ruling(loop, row['pr'], row['head'], db=self.db)
                 if ruled is None or row['turn_key'] != f"{run_supervisor.SHADOW_FIX_KEY}{int(ruled)}":
                     read.superseded = 'upheld shadow ruling no longer current'
             elif str(row['turn_key'] or '').startswith(run_supervisor.CONFLICT_KEY):
@@ -826,6 +862,8 @@ class ClaimAndLaunch:
         from .. import config, gh
         try:
             loop = config.by_repo(row['repo'])
+            if loop is not None and self._ci_poll_defers(row, loop):
+                return False
             queued = (gh.api(loop, f"/repos/{row['repo']}/pulls/{row['pr']}",
                              login=loop['read_token']) if loop is not None else None)
             if (not isinstance(queued, dict) or queued.get('number') != row['pr']
@@ -847,6 +885,26 @@ class ClaimAndLaunch:
             self.failure_notice(row['id'], 'waiting')   # once per kind, as a held turn's is
         return True
 
+    def _ci_poll_defers(self, row, loop: dict) -> bool:
+        """Whether a held-for-CI row must take the full claim now, whatever CI says (#1708):
+        its head is escalated for a ruling (the claim's own ``_claim_read_escalated``, which
+        then retires it), or the watchdog sweep has recorded a maintainer's hold on the PR
+        (``pr_holds``, #477), which the claim's live ``pr_hold.read`` then decides. Both are
+        local reads, so the light poll stays light. The sweep's record is a cache that can lag
+        (no sweep yet, a failed read, a first sweep that stops before the hold scan), so once
+        every ``run_supervisor.CI_HOLD_READ_S`` of the hold the poll also asks GitHub itself
+        (``_ci_poll_hold_due``, two calls): a hold the sweep has not recorded is seen within
+        that bound, so a red hold with no time limit cannot hide one indefinitely."""
+        from .. import state as state_mod
+        read = _ClaimRead()
+        self._claim_read_escalated(row, read)
+        if read.superseded or read.read_error:
+            return True
+        st = state_mod.state_for(loop)
+        if row['pr'] in st.pr_holds():
+            return True
+        return _ci_poll_hold_due(row, st) and _ci_poll_live_hold(row, loop)
+
     def _shadow_escalation(self, turn: _Turn) -> None:
         """Right after a shadow review is recorded (#1004 part 2): if it disagrees with the
         reviewer's approval at the head, send the head for a ruling now. Best effort: the
@@ -858,7 +916,8 @@ class ClaimAndLaunch:
         st = state_mod.state_for(loop)
         reviews = transition.effective_reviews(loop, st, row['pr'], row['head'],
                                                gh.reviews(loop, row['pr']))
-        outcome = gate.shadow_escalation(loop, st, row['pr'], row['head'], reviews, db=self.db)
+        outcome = gate.shadows.shadow_escalation(loop, st, row['pr'], row['head'], reviews,
+                                                 db=self.db)
         if outcome == "new":
             util.log(f"#{row['pr']} @ {row['head'][:7]} shadow review disagrees with the "
                      "approval: sent for a ruling")
@@ -985,7 +1044,7 @@ class ClaimAndLaunch:
         from .. import gate, gh, prompts
         from ..broker import ipc as broker_ipc
         row, loop = turn.row, turn.loop
-        ruled = gate.upheld_shadow_ruling(loop, row['pr'], row['head'], db=self.db)
+        ruled = gate.shadows.upheld_shadow_ruling(loop, row['pr'], row['head'], db=self.db)
         if ruled is None or row['turn_key'] != f"{run_supervisor.SHADOW_FIX_KEY}{int(ruled)}":
             raise ValueError('upheld shadow ruling no longer current')
         if self._policy_hold(turn):
@@ -1239,9 +1298,9 @@ class ClaimAndLaunch:
 
         A shadow run (#1786): the check says "waiting on the shadow review" for as long as the
         ledger shows the run open, so it is refreshed once the run has ended; one still open
-        (``gate.SHADOW_OPEN``: held for CI, waiting to retry) changes nothing. Any other PR turn
-        (#753): the check names the turn (``views.turn_note``), so it is refreshed when the turn
-        launches and when it ends, except a turn that never launched and waits again with the
+        (``gate.shadows.SHADOW_OPEN``: held for CI, waiting to retry) changes nothing. Any other PR
+        turn (#753): the check names the turn (``views.turn_note``), so it is refreshed when the
+        turn launches and when it ends, except a turn that never launched and waits again with the
         reason it was claimed with: a CI hold re-polled unchanged costs no refresh. ``state``
         None means this owner no longer holds the run. A ``loop`` of None is looked up from the
         row's repo. Best effort, like every refresh after an event."""
@@ -1251,7 +1310,7 @@ class ClaimAndLaunch:
             if (row is None or state is None
                     or row['seat'] not in (*claims.PR_HOLD_SEATS, run_supervisor.SHADOW)):
                 return                  # an issue fix's or a triage's number is an issue's
-            if row['seat'] == run_supervisor.SHADOW and state in gate.SHADOW_OPEN:
+            if row['seat'] == run_supervisor.SHADOW and state in gate.shadows.SHADOW_OPEN:
                 return
             if row['seat'] != run_supervisor.SHADOW and state == 'waiting' and not launched:
                 with self._connect() as con:

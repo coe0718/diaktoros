@@ -203,7 +203,7 @@ def _held_for_a_ruling(loop: dict, st, number: int, head: str, reviews,
     spent = len(gate.verdicts(reviews, loop)) if isinstance(reviews, list) else None
     if not gate.is_ruled_approval(latest, loop):   # #905: approved on the ACCEPT, no person waits
         why.extend(_escalation(loop, number, head, marker, spent))
-    shadow_kind, shadow_held, _note = gate.shadow_state(loop, number, head, marker=marker)
+    shadow_kind, shadow_held, _note = gate.shadows.shadow_state(loop, number, head, marker=marker)
     if shadow_held:
         why.append((shadow_kind or PENDING, "shadow review: " + shadow_held))
     return why
@@ -252,9 +252,9 @@ def _escalation(loop: dict, number: int, head: str, marker,
     dismissed verdict or a raised cap ends it, as in the watchdog and ``explain``. ``spent`` is
     the live verdict count, ``None`` when the reviews are unreadable: the marker then still
     holds, since nothing shows it has expired. An operator's escalation stands either way."""
-    if gate.shadow_overruled(loop, marker, head):        # #1004: ACCEPT, approval stands
+    if gate.shadows.shadow_overruled(loop, marker, head):        # #1004: ACCEPT, approval stands
         return []
-    if gate.shadow_fix_owed(loop, marker, head):         # #1004 part 3: REJECT, the fixer answers
+    if gate.shadows.shadow_fix_owed(loop, marker, head):   # #1004 part 3: REJECT, the fixer answers
         return []
     parked = gate.breach_delivery_status(marker if isinstance(marker, dict) else {}, head) in {
         "awaiting-adjudication", "adjudicating"}

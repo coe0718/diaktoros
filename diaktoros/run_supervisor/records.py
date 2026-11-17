@@ -122,8 +122,8 @@ class LedgerRecords:
         """Durably record the one ruling a live adjudicator run may make.
 
         ``shadow_run`` is the run id of the shadow review its prompt showed ('' for none), so
-        ``gate.shadow_hold`` counts an ACCEPT against that review only (#1112); None (a caller
-        that does not know) records NULL, which reads by time as before.
+        ``gate.shadows.shadow_hold`` counts an ACCEPT against that review only (#1112); None (a
+        caller that does not know) records NULL, which reads by time as before.
 
         This commit is the ruling's acknowledgement: it happens before any notice or GitHub
         write, so a failed transport can never lose it, and the run ID primary key makes a

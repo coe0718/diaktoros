@@ -34,11 +34,13 @@ SCANNED = ("diaktoros", "scripts", "dashboard", "desktop")
 _UNKNOWN = "\0"                       # a part of a string only known at run time
 # An endpoint, not a sentence: one run of non-blank text, matched whole, that ends in ``/user`` and
 # goes on only into a subpath, a query or a part run time fills. What comes before it is nothing, a
-# ``scheme://host`` or bare host, or a run that holds a part only run time knows (``f"{base}/user"``,
-# ``f"/{version}/user"``). So ``/user``, ``/user/emails``, ``/user?x`` and
-# ``https://api.github.com/user`` are found; ``/users/x`` is not, and neither is prose that merely
-# names it (``GET /user``, ``could not read /user``) or a file path (``/home/user``).
-_USER_ENDPOINT = re.compile(r"(?:[^/\s]*://[^/\s]*|(?:[\w-]+\.)+[\w-]+(?::\d+)?|\S*\0\S*)?/user(?:[/?#\0]\S*)?")
+# ``scheme://host`` with or without a path after the host (``https://github.example/api/v3``, as on
+# GitHub Enterprise), a bare host, or a run that holds a part only run time knows
+# (``f"{base}/user"``, ``f"/{version}/user"``). So ``/user``, ``/user/emails``, ``/user?x``,
+# ``https://api.github.com/user`` and ``https://github.example/api/v3/user`` are found; ``/users/x``
+# is not, and neither is prose that merely names it (``GET /user``, ``could not read /user``) or a
+# file path with no scheme (``/home/user``).
+_USER_ENDPOINT = re.compile(r"(?:[^/\s]*://\S*|(?:[\w-]+\.)+[\w-]+(?::\d+)?|\S*\0\S*)?/user(?:[/?#\0]\S*)?")
 
 
 _NOT_STATIC = object()                # an interpolated expression that is not a constant or a spelled string
@@ -124,8 +126,12 @@ def user_reads(source: str) -> list[int]:
     built in an f-string, a concatenation or a join. The whole expression is read, never its
     fragments on their own; an interpolation or operand that is not a string (a call) is searched
     for its own paths. Message text that names the endpoint (``"GET /user"``, anything with a blank
-    in it) is not an endpoint, and a bare string statement (a docstring) is prose, not a call. A
-    path assembled from a variable or a call's result is out of its reach."""
+    in it) is not an endpoint, and a bare string statement (a docstring) is prose, not a call.
+
+    Spellings it still cannot see: a ``/user`` that only a variable or a call's result spells
+    (``user_paths`` follows names bound to literals); a URL whose ``/user``
+    is followed by text it does not read as a subpath, query or fragment; and a URL with a blank
+    in it (read as prose)."""
     tree = ast.parse(source)
     prose = {id(node.value) for node in ast.walk(tree)
              if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)}
@@ -144,9 +150,13 @@ def user_reads(source: str) -> list[int]:
 
 
 # What the /user scan below reads as a call on the authenticated user: the path itself, with an
-# optional sub-path or query after it (``/user/emails``) or a host before it
-# (``https://api.github.com/user``); never ``/users/<login>`` or ``/userinfo``.
-USER_PATH = re.compile(r"(?:https?://[^/]+)?/user(?:[/?#].*)?\Z", re.DOTALL)
+# optional sub-path or query after it (``/user/emails``) or a host before it, with or without a
+# path after the host (``https://api.github.com/user``, ``https://github.example/api/v3/user``);
+# never ``/users/<login>`` or ``/userinfo``. The whole URL holds no blank, so a sentence that
+# opens with a URL and names ``/user`` later (``"https://x is documented at /api/v3/user"``) or
+# goes on after it (``"https://x/api/v3/user? see the docs"``) is prose here, as it is to
+# ``_USER_ENDPOINT``.
+USER_PATH = re.compile(r"(?:https?://[^/\s]+\S*)?/user(?:[/?#]\S*)?\Z")
 CANDIDATES = 64     # most strings the scan tracks for one expression or name
 
 
@@ -338,6 +348,9 @@ class UserReads(unittest.TestCase):
         "a version segment before it": 'api(loop, f"/{version}/user")',
         "two run time segments before it": 'api(loop, f"{base}/{version}/user")',
         "a host with no scheme": 'get("api.github.com/user")',
+        "a full URL with a path before it": 'api(loop, "https://github.example/api/v3/user")',
+        "a full URL with a path and the segment interpolated":
+            "api(loop, f\"https://github.example/api/v3/{'user'}\")",
     }
     CLEAN = {
         "the users endpoint": 'api(loop, "/users/someone")',
@@ -364,6 +377,8 @@ class UserReads(unittest.TestCase):
         "a literal quoted by its conversion": "api(loop, f\"/{'user'!r}\")",
         "a number after it": 'api(loop, f"/user{1}")',
         "a spec that pads it": "api(loop, f\"/{'user':_<6}\")",
+        "a users path under a full URL with a path": 'api(loop, "https://x/api/v3/users/alice")',
+        "a message naming a full URL with a path": 'say("see https://x/api/v3/user now")',
     }
 
     def test_every_form_of_a_user_read_is_caught(self):
@@ -409,6 +424,17 @@ class UserReads(unittest.TestCase):
             (Path(tmp) / "scripts" / "watchdog.py").write_text(source)
             self.assertEqual(user_calls(Path(tmp)), ['scripts/watchdog.py:4: url = base + "/user"'])
 
+    def test_a_sentence_that_opens_with_a_url_is_not_a_finding_in_a_scanned_file(self):
+        """Both detectors feed ``user_calls``: a sentence with a URL first and ``/user`` later is
+        prose to each of them, while the same URL written whole beside it is still found."""
+        source = ('say("https://github.example is documented at /api/v3/user")\n'
+                  'url = "https://github.example/api/v3/user"\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "scripts").mkdir()
+            (Path(tmp) / "scripts" / "demo.py").write_text(source)
+            self.assertEqual(user_calls(Path(tmp)),
+                             ['scripts/demo.py:2: url = "https://github.example/api/v3/user"'])
+
 
 class UserScan(unittest.TestCase):
     """The scan behind ``test_no_identity_check_calls_user_directly`` (#1175): a ``/user`` that
@@ -430,8 +456,13 @@ class UserScan(unittest.TestCase):
         'gh.api(loop, "/{k}".format(k="user"), login=login)',
         'gh.api(loop, "/user/emails", login=login)',
         'gh.api(loop, "https://api.github.com/user", login=login)',
+        'gh.api(loop, "https://github.example/api/v3/user", login=login)',
+        'gh.api(loop, f"https://github.example/api/v3/{\'user\'}", login=login)',
     )
     LEFT_ALONE = (
+        'gh.api(loop, "https://x/api/v3/users/alice")',
+        'say("https://github.example is documented at /api/v3/user")',
+        'say("https://github.example/api/v3/user? see the docs")',
         'gh.api(loop, f"/users/{login}", login=login)',
         'gh.api(loop, "/users/" + login)',
         'gh.api(loop, "/userinfo")',

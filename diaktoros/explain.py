@@ -99,7 +99,7 @@ def _ruled(loop: dict, number: int, head: str, marker=None) -> str | None:
     """The adjudicator's verdict at this head, if it has ruled (the watchdog reads the same).
 
     On a shadow escalation at this head (``marker``) whose newest shadow review requested
-    changes, only the ruling that answers that review counts (``gate.shadow_dissent_ruling``,
+    changes, only the ruling that answers that review counts (``gate.shadows.shadow_dissent_ruling``,
     #1144): an ACCEPT of an earlier review, shown before a second one landed mid-turn, leaves
     this one awaiting its own ruling, as the shadow hold says.
     """
@@ -107,8 +107,8 @@ def _ruled(loop: dict, number: int, head: str, marker=None) -> str | None:
     m = marker if isinstance(marker, dict) else {}
     if str(m.get("head") or "") == head and (
             (m.get("escalated") or {}).get("by") == gate.SHADOW_ESCALATION):
-        dissent, ruling = gate.shadow_dissent_ruling(loop, number, head,
-                                                     db=config.host_path("ledger"))
+        dissent, ruling = gate.shadows.shadow_dissent_ruling(loop, number, head,
+                                                             db=config.host_path("ledger"))
         if dissent:
             return str(ruling[0]) if ruling is not None else None
     return views.ruling_at(config.host_path("ledger"), loop["repo"], number, head)
@@ -328,7 +328,7 @@ def explain_facts(loop: dict, number: int) -> dict:
         breach_marker = state_mod.state_for(loop).breach_get(number)
     except Exception:
         breach_marker = None               # no marker read: an unruled hold, never an error
-    shadow = (gate.shadow_hold(loop, number, head, marker=breach_marker)
+    shadow = (gate.shadows.shadow_hold(loop, number, head, marker=breach_marker)
               if isinstance(head, str) and head else ("", ""))
     from . import shadow_choice
     choice = shadow_choice.explain_line(loop, number, head) if isinstance(head, str) else ""
@@ -583,7 +583,7 @@ def _local_state(c) -> None:
         c.parked, c.ruled = False, None
     # #1004 part 3 (#1353): an upheld shadow review the fixer answers waits on no person; the
     # shadow hold says the fixer answers it, and the next event is the fixer's.
-    c.shadow_fix = gate.shadow_fix_owed(c.loop, c.marker, c.head)
+    c.shadow_fix = gate.shadows.shadow_fix_owed(c.loop, c.marker, c.head)
     if c.shadow_fix:
         c.parked, c.ruled = False, None
 

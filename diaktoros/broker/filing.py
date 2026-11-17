@@ -111,7 +111,9 @@ def _file_as_reader(loop: dict, *, repo: str, number: int, head: str, title: str
             # GitHub rejected the request (no Issues write, a bad label): no issue was created.
             raise broker.BrokerNotSent(broker._denied("GitHub refused the issue write", why).args[0])
         raise broker._denied("GitHub issue write did not return a successful response", why)
-    broker._audit(loop, repo, number, head, "", "reader", operation, login)
+    # GitHub confirmed the issue: an audit failure here is said, never raised, so the issue's
+    # number is kept and its labels are still added (#1640).
+    _audit_confirmed(loop, repo, number, head, operation, login)
     return result["number"], _shadow_labels(loop, repo, number, head, result, payload["labels"],
                                             login, operation.removeprefix("file_"))
 

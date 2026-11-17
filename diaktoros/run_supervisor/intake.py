@@ -50,7 +50,7 @@ def redelivery_refusal(con, prior, *, admitted: bool, production: bool, seat: st
 
 
 # Why a shadow run is not re-armed once its findings snapshot is gone (#1013, #1139). One text
-# for ``retry`` and for ``gate.enqueue_shadow``, the two ways a shadow row can be re-armed.
+# for ``retry`` and for ``gate.shadows.enqueue_shadow``, the two ways a shadow row can be re-armed.
 SHADOW_SNAPSHOT_GONE = (
     "the findings snapshot this shadow was queued with is gone (evicted, or never taken), so it "
     "would be judged on the live findings ledger, which the real review may have changed "
@@ -62,7 +62,7 @@ def shadow_snapshot_refusal(st, run) -> str:
     or ``''``: the findings snapshot kept for its own reviewer turn is gone (#1013, #1139). ``st``
     is the loop's state, None when it cannot be read. Snapshots are kept per reviewer turn, so one
     another turn took at the same head, or one from before turns were keyed, does not count, as
-    in ``gate.enqueue_shadow``."""
+    in ``gate.shadows.enqueue_shadow``."""
     if st is None or st.shadow_findings_get(run['pr'], run['head'], run['turn_key'] or '') is None:
         return f"refused: {SHADOW_SNAPSHOT_GONE}"
     return ''
@@ -163,7 +163,7 @@ class RunIntake:
         reviewer row is ever visible without the shadow it owes, so neither an APPROVE posted
         before a second submit nor that submit failing can leave ``shadow.escalate`` with
         nothing to wait for. A failure rolls both back. A shadow row already at the identity
-        is left as it is, for ``gate.enqueue_shadow`` to re-arm or refuse."""
+        is left as it is, for ``gate.shadows.enqueue_shadow`` to re-arm or refuse."""
         repo, pr, head, turn_key = identity
         if shadow is not None and not con.execute(
                 "SELECT 1 FROM runs WHERE delivery=? OR (repo=? AND pr=? AND head=? AND "

@@ -25,7 +25,7 @@ class Stall(ser.Base):
         from diaktoros import gh, pr_hold
         from scripts import watchdog
         with mock.patch.object(watch_mode, "TEST", True), \
-             mock.patch.object(gate, "shadow_escalation", return_value="already"), \
+             mock.patch.object(gate.shadows, "shadow_escalation", return_value="already"), \
              mock.patch.object(gate, "hooks_armed", return_value=True), \
              mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
              mock.patch.object(gh, "open_prs", return_value=[fg.LIVE]), \
@@ -92,11 +92,12 @@ class Reopen(ser.Base):
                 mock.patch.object(gate.observer, "notify"), \
                 mock.patch.object(gate, "wake_adjudicator", return_value=True) as wake:
             stale = self.st.breach_get(7)
-            first = gate.shadow_escalation(self.loop, self.st, 7, fg.HEAD, ser.APPROVED, db=self.db)
+            first = gate.shadows.shadow_escalation(self.loop, self.st, 7, fg.HEAD, ser.APPROVED,
+                                                   db=self.db)
             # The second caller read the marker before the first re-armed it.
             with mock.patch.object(self.st, "breach_get", return_value=stale):
-                second = gate.shadow_escalation(self.loop, self.st, 7, fg.HEAD, ser.APPROVED,
-                                                db=self.db)
+                second = gate.shadows.shadow_escalation(self.loop, self.st, 7, fg.HEAD,
+                                                        ser.APPROVED, db=self.db)
         self.assertEqual((first, second), ("new", "already"))
         wake.assert_called_once()
         self.assertEqual(self.st.breach_get(7)["rounds"], 2)

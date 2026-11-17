@@ -67,10 +67,31 @@ def selftest_command(loop: dict, *, pr, model: bool, live_turn: bool) -> str:
     return f"hermes dk selftest --loop {loop['id']}{flags}" + (" --live-turn" if live_turn else "")
 
 
+def inputs_before(loop: dict, *, runtime_file: Path, resolver=None) -> dict:
+    """``{stage: fingerprint}`` for the stages selftest checks, taken before its checks run
+    (#1714). ``record_selftest`` hands each to ``onboarding.record`` as ``inputs``, so a token,
+    key, setting or runtime file that changes during the run is never credited as checked.
+    ``""`` (cannot be computed) never matches, so that stage is not recorded as current."""
+    return {stage: onboarding.fingerprint_now(loop, stage, runtime_file=runtime_file,
+                                              resolver=resolver)
+            for stage in ("identities", "loop", "model")}
+
+
+def changed_during_run(loop: dict, inputs: dict, *, runtime_file: Path, resolver=None) -> list:
+    """The stages in ``inputs`` (``inputs_before``'s answer) whose inputs no longer hash to it:
+    a token, key, setting or runtime file that changed while the checks ran (#1714 review F3).
+    The checks saw the old inputs, so the run must not end as a pass on the new ones."""
+    now = inputs_before(loop, runtime_file=runtime_file, resolver=resolver)
+    return [stage for stage, before in inputs.items() if now.get(stage) != before]
+
+
 def record_selftest(loop: dict, report, *, say, pr: int | None, live_pr: dict | None,
                     model: bool, live_turn: bool, seats: dict | None,
-                    runtime_file: Path, resolver=None) -> list:
-    """Record the stages this selftest run covers; returns the stages written, in order."""
+                    runtime_file: Path, resolver=None, inputs: dict | None = None) -> list:
+    """Record the stages this selftest run covers; returns the stages written, in order.
+
+    ``inputs`` is ``inputs_before``'s answer from the start of the run; ``None`` (a caller that
+    took none) records against the inputs as they are now."""
     results = report.results
     checks = onboarding.report_checks(results)
     command = selftest_command(loop, pr=pr, model=model, live_turn=live_turn)
@@ -87,6 +108,8 @@ def record_selftest(loop: dict, report, *, say, pr: int | None, live_pr: dict | 
         head = str((live_pr.get("head") or {}).get("sha") or "")
         plan.append(("live_turn", onboarding.PASSED, {"pr": (live_pr.get("number"), head)}))
     for stage, status, extra in plan:
+        if inputs is not None and stage in inputs:
+            extra = {**extra, "inputs": inputs[stage]}
         if attempt(say, loop, stage, status, command, _summary(results, stage),
                    checks=checks, **common, **extra):
             written.append(stage)

@@ -107,10 +107,10 @@ class Enqueue(unittest.TestCase):
                 self.assertEqual([c.args[4] for c in sup.submit.call_args_list], [seat])
         loop = self.loop(profile="grok", every=1000)
         heads = [f"{i:040x}" for i in range(40)]
-        picked = [h for h in heads if gate.shadow_sampled(loop, 8, h)]
+        picked = [h for h in heads if gate.shadows.shadow_sampled(loop, 8, h)]
         self.assertLess(len(picked), 5)
         # The choice is the same on every redelivery.
-        self.assertEqual(picked, [h for h in heads if gate.shadow_sampled(loop, 8, h)])
+        self.assertEqual(picked, [h for h in heads if gate.shadows.shadow_sampled(loop, 8, h)])
 
     def test_a_duplicate_reviewer_delivery_queues_no_second_shadow(self):
         sup = mock.Mock()
@@ -733,7 +733,7 @@ class ProductionTurn(unittest.TestCase):
                 self.assertEqual(row["state"], "cancelled", row["error"])
                 self.assertEqual(row["error"], "shadow review superseded: PR closed or head moved")
                 # No longer open, so its findings snapshot is evictable again.
-                self.assertNotIn((8, HEAD), gate.shadow_open_heads("acme/widgets", sup.db))
+                self.assertNotIn((8, HEAD), gate.shadows.shadow_open_heads("acme/widgets", sup.db))
 
     def kinds(self):
         pr = {"number": 8, "draft": False, "user": {"login": "fixer"}, "base": {"ref": "main"},
@@ -779,9 +779,9 @@ class ProductionTurn(unittest.TestCase):
 
         def second_submit(loop, supervisor, number, head, **kw):
             # What a reviewer that already approved finds, the moment its own row exists ...
-            seen.append(gate.shadow_state(self.loop, 8, HEAD, supervisor.db))
+            seen.append(gate.shadows.shadow_state(self.loop, 8, HEAD, supervisor.db))
             return "error"                 # ... and the old second submit failing outright
-        with mock.patch.object(gate, "enqueue_shadow", side_effect=second_submit):
+        with mock.patch.object(gate.shadows, "enqueue_shadow", side_effect=second_submit):
             sup = self.queue_shadow()
         self.assertEqual([kind for kind, _hold, _note in seen], ["pending"], seen)
         self.reviewer_is(sup, ("confirmed", "APPROVED"), "succeeded")

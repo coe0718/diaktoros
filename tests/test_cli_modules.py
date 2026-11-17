@@ -27,7 +27,7 @@ MODULES = ("reports", "operations", "lifecycle", "install", "setup_command", "ch
 SHARED = ("common", "route_sync", "set_adjudication", "seat_flags")  # helper modules: no commands, never import cli
 # Parser-only modules (#1457): an add_* registrar and no cmd_*, so no verb of their own to check
 # in MODULES, but they import the command modules and so get the same import guard.
-PARSERS = ("set_parser",)
+PARSERS = ("set_parser", "setup_parser")
 
 
 def _defined(path: pathlib.Path) -> set[str]:
@@ -100,6 +100,17 @@ class Split(unittest.TestCase):
         for path in sorted([*(ROOT / "tests").rglob("*.py"), *(ROOT / "diaktoros").rglob("*.py")]):
             with self.subTest(file=path.name):
                 self.assertIsNone(reach.search(path.read_text()), "use setup_command.<name>")
+
+    def test_the_setup_parser_has_one_home(self):
+        # setup's parser left setup_command at its size limit, as set's left set_command (#1457):
+        # cli registers setup_parser.add_setup, and no copy is left in the command module.
+        from diaktoros.cli import setup_command, setup_parser
+        parser = _defined(PACKAGE / "setup_parser.py")
+        self.assertIn("add_setup", parser)
+        for name in sorted(parser):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(setup_command, name), f"setup_command binds {name}")
+        self.assertIn(setup_parser.add_setup, cli._COMMANDS)
 
     def test_every_cli_module_is_listed(self):
         # A new cli module must join one of the lists above (#1457), or none of these guards

@@ -578,6 +578,20 @@ class NoCredentialInTheError(unittest.TestCase):
         ("Authorization value with no scheme", "sent authorization=s3cr3t;", "s3cr3t"),
         ("quoted Authorization header", 'headers {"Authorization": "Bearer s3cr3t"}', "s3cr3t"),
         ("short token value with a digit", "bad token abc123xyz", "abc123xyz"),
+        ("bare Basic value (#1899)", "denied by proxy: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+        ("bare basic value in lower case", "denied: basic YWRtaW46aHVudGVyMg==",
+         "YWRtaW46aHVudGVyMg"),
+        # #2516 F1: base64 of ``j:ajga``, all lower-case letters, short: known by its ``:``.
+        ("short lower-case Basic value", "denied by proxy: Basic ajphamdh", "ajphamdh"),
+        # #2516 F2: each value below holds one selection condition only and does not decode to
+        # ``user:password``, so each case fails when its own condition is removed.
+        ("Basic value with a digit only", "denied: Basic abc1defg", "abc1defg"),
+        ("Basic value with a plus only", "denied: Basic abc+defg", "abc+defg"),
+        ("Basic value with a slash only", "denied: Basic abc/defg", "abc/defg"),
+        ("Basic value with padding only", "denied: Basic abcdefg= now", "abcdefg"),
+        ("Basic value with an inner capital only", "denied: Basic abcDefgh", "abcDefgh"),
+        ("Basic value of 20 lower-case letters", "denied: Basic abcdefghijklmnopqrst",
+         "abcdefghijklmnopqrst"),
         ("app JWT", "bad jwt eyJhbGciOiJSUzI1NiJ9.eyJpYXQiOjE2MDAwMDAwMDB9.c2lnbmF0dXJlLWJ5dGVz",
          "eyJhbGciOiJSUzI1NiJ9"),
         ("private key", "key -----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n"
@@ -601,7 +615,8 @@ class NoCredentialInTheError(unittest.TestCase):
 
     def test_plain_words_around_token_and_authorization_are_kept(self):
         """The Authorization/Bearer/token patterns must not eat ordinary sentences."""
-        said = "A JSON web token could not be decoded; Authorization failed for this request"
+        said = ("A JSON web token could not be decoded; Authorization failed for this request;"
+                " Basic authentication failed; Basic Authentication is disabled")
         _, lines = run_main(Refusing(app_answer=(401, {"message": said})))
         self.assertEqual(lines[-1]["error"], f"reader GET /app: {said}")
 

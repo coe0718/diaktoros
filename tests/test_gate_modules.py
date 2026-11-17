@@ -37,6 +37,32 @@ class Package(unittest.TestCase):
                 self.assertIs(getattr(gate, name), module)
                 self.assertFalse((ROOT / "diaktoros" / f"gate_{name}.py").exists())
 
+    def test_the_shadow_rules_live_only_in_their_module(self):
+        # #1144: the shadow review's rules left gate/__init__.py for gate/shadows.py. One home
+        # each, so a caller or a patch on the old name fails loudly instead of missing the code.
+        from diaktoros.gate import shadows
+        self.assertEqual(pathlib.Path(shadows.__file__), ROOT / "diaktoros" / "gate" / "shadows.py")
+        self.assertIs(gate.shadows, shadows)
+        own = [name for name, value in vars(shadows).items()
+               if getattr(value, "__module__", None) == shadows.__name__]
+        self.assertIn("shadow_state", own)
+        self.assertIn("enqueue_shadow", own)
+        self.assertEqual([name for name in own if hasattr(gate, name)], [])
+
+    def test_the_shadow_rules_read_the_gate_core_through_gate(self):
+        # So a test that patches a core rule on ``gate`` (``breach``, ``enqueue_isolated``…)
+        # patches it for the shadow rules too: no core function is copied into their module.
+        from diaktoros.gate import shadows
+        copied = [name for name, value in vars(shadows).items()
+                  if getattr(value, "__module__", None) == gate.__name__]
+        self.assertEqual(copied, [])
+        with mock.patch.object(gate, "enqueue_isolated", return_value="enqueued") as enqueue, \
+                mock.patch.object(shadows, "upheld_shadow_ruling", return_value=1.0), \
+                mock.patch.object(shadows.config, "unattended_fixer_push_enabled", return_value=True), \
+                mock.patch.object(shadows, "_review_only_pr", return_value=False):
+            outcome = shadows.queue_shadow_fix({"repo": "acme/widgets", "id": "w"}, 7, "a" * 40)
+        self.assertEqual((outcome, enqueue.call_args.args[1:3]), ("enqueued", ("fixer", 7)))
+
 
 class ScriptsTheGateStarts(unittest.TestCase):
     def started(self, call, how: str) -> pathlib.Path:

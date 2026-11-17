@@ -375,8 +375,11 @@ approval, a dismissed review, or a verdict at an earlier head writes none. A mer
 each sweep while it is within the 7 days when its reviews cannot be read or ordered, when no
 verdict is proved current at the merged head, or when the reviewer has a pending review there
 (GitHub shows a pending review only to its author, so the host cannot tell it from no review);
-one never proved by then is not recorded. The report lists them by the day of the merge, with a
-count per model and per category of the findings still open (each blocking finding carries one of
+one never proved by then is not recorded. Since the host cannot see a pending review beside a
+verdict either, a merge after an approval is also read again each sweep for one day after the
+merge (#1761), so a changes-requested the reviewer held pending at that head and submits within
+that day is recorded; one submitted later is not. The report lists them by the day of the merge,
+with a count per model and per category of the findings still open (each blocking finding carries one of
 `correctness`, `test`, `requirement`, `docs`, `security` or `other`, tagged by the reviewer as
 `F1 [test]: …`). Nothing changes behaviour. Not recorded yet: a dismissed review, a reversed
 ruling, or a reverted fixer push (so zero is not zero overrides). Detection needs the watchdog
@@ -486,6 +489,15 @@ Resuming reads the onboarding record, which `selftest` and `arm` write (#1617). 
 checks were never recorded (verified by hand, or before #1617) runs every step as before. The
 record does not know about `doctor`: a `runtime:*` problem `doctor` alone finds is not seen
 while the record is current, so run `hermes dk doctor` yourself after changing the host.
+What does make the record stale (#1714): a change to the loop's own settings (a `set` or an
+edit of the loop file: `host`, `base`, `required_checks`, `hook_admin`, `fixer_check`, ...)
+makes `loop` stale, and a new token or App key written into the same credential file makes
+`identities` stale (only a hash of the file is kept, never its contents). A change outside the
+loop file, the runtime file, the credential files and the seats' models (a gateway that moved
+while `host` stayed the same, a token revoked on GitHub) is not seen. If a token, key, setting
+or the runtime file changes while `selftest` runs, it fails `inputs:changed` and exits `1`
+(what passed was the old input), so `setup` stops before arming; that stage is not recorded
+as current.
 `setup` never changes `unattended_fixer_push`.
 
 `setup` asks "Adjudicate a PR whose rounds are spent? Profile [blank = no]" (or takes
@@ -1435,7 +1447,8 @@ record (`onboarding.json` in the loop's state directory) that the checks leave. 
 `loop`, `model`, `live_turn` and `armed` it shows the status (`passed`, `failed`, `skipped`,
 `stale` or `not_attempted`), when it was recorded, the command that recorded it and its one-line
 summary. A `stale` stage also says what changed: which stage's fingerprint (its inputs: the
-identities, the runtime file, a seat's model, the PR head, the hook state), or that an earlier
+identities and a hash of each credential file's contents, the loop's settings and the runtime
+file, a seat's model, the PR head, the hook state), or that an earlier
 stale stage is the cause. A stage whose inputs cannot be read now is stale, never passed.
 
 ```bash

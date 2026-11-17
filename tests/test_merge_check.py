@@ -49,7 +49,7 @@ class KindsBase(unittest.TestCase):
         self.pr = {"number": 7, "draft": False, "user": {"login": "fix"},
                    "base": {"ref": "main"}, "head": {"sha": HEAD, "ref": "b7"}}
         for patch in (mock.patch.object(ready.gate_failures, "open_for", return_value=[]),
-                      mock.patch.object(gate, "shadow_state", return_value=("", "", ""))):
+                      mock.patch.object(gate.shadows, "shadow_state", return_value=("", "", ""))):
             patch.start()
             self.addCleanup(patch.stop)
 
@@ -209,7 +209,8 @@ class Kinds(KindsBase):
     def test_the_shadow_states_kind_is_carried(self):
         for kind in (ready.PENDING, ready.FAILURE):
             with self.subTest(kind=kind), \
-                    mock.patch.object(gate, "shadow_state", return_value=(kind, "held", "")):
+                    mock.patch.object(gate.shadows, "shadow_state",
+                                      return_value=(kind, "held", "")):
                 self.assertEqual(self.kind_of("shadow review: held"), kind)
 
     def test_a_draft_is_pending_and_a_stranger_is_outside(self):
@@ -317,11 +318,12 @@ class OnePR(KindsBase):
 
 
 class ShadowKinds(__import__("test_shadow_escalate_ruling").Base):
-    """Shadow review of #1225 (F1): ``gate.shadow_state``'s kinds on a real run ledger."""
+    """Shadow review of #1225 (F1): ``gate.shadows.shadow_state``'s kinds on a real run ledger."""
 
     def state(self):
         import test_fixer_gating as fg
-        return gate.shadow_state(self.loop, 7, fg.HEAD, db=self.db, marker=self.st.breach_get(7))
+        return gate.shadows.shadow_state(self.loop, 7, fg.HEAD, db=self.db,
+                                         marker=self.st.breach_get(7))
 
     def test_a_shadow_hold_not_escalated_is_a_failure(self):
         self.shadow("REQUEST_CHANGES")
