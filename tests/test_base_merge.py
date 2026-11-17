@@ -508,11 +508,128 @@ class Ruled(Base):
     def test_the_watchdog_judges_the_carried_head_approved_and_raises_no_breach(self):
         # F4: at the cap, a head with no verdict is handed to adjudication again (#2354's second
         # ruling); the carried approval is what the sweep reads instead.
+        self.judge(moved=False)
+
+    def test_moved_by_github_the_watchdog_still_judges_the_head_approved(self):
+        # #2402: the same, with the approval at the merged head as GitHub reports it.
+        self.judge(moved=True)
+
+    def moved(self, new):
+        """The reviews as GitHub reports them after a clean base merge (#2402): every approval's
+        ``commit_id`` moves to the merged head; a change request (dismissed or not) stays."""
+        self.reviews = [{**r, "commit_id": new} if r["state"] == "APPROVED" else r
+                        for r in self.reviews]
+
+    def test_an_approval_github_moved_to_the_merged_head_still_counts_there(self):
+        # #2402: the ruling stays at the old head and the approval reads at the new one, so
+        # ``carried`` (the approval at the old head) and a ruling-at-this-head match both missed
+        # it, and the merged head counted no verdict. The carry record links the two.
+        self.settle()
+        new = self.update()
+        self.moved(new)
+        self.assertEqual(gate.ruled_approvals(self.reviews, self.loop, new), [self.reviews[1]])
+        latest = gate.latest_effective_review_at_head(self.reviews, self.loop, new)
+        self.assertEqual((latest["id"], latest["commit_id"], gh.review_state(latest)),
+                         (21, new, "APPROVED"))
+        self.assertTrue(gate.reviewed_at_head(self.reviews, self.loop, new))
+        self.assertEqual(ruled_approval.unsettled(self.loop, 7, new, self.reviews), "")
+        # A second merge follows the chain back to the ruled head, the approval moving again.
+        second = self.merge_again(new)
+        self.assertEqual((self.carried(second)["from"], self.carried(second)["review"]), (new, 21))
+        self.moved(second)
+        self.assertEqual(self.latest_id(second), 21)
+
+    def merge_again(self, new):
+        """The base moves on again and the host merges it into ``new``: the next merged head."""
+        (self.src / "d.py").write_text("d\n")
+        git("-C", str(self.src), "add", "-A")
+        git("-C", str(self.src), "commit", "-qm", "Yet another (#431)")
+        git("-C", str(self.src), "push", "-q", self.remote, "main")
+        self.tip = git("-C", str(self.src), "rev-parse", "HEAD")
+        self.head = new
+        self.live["head"]["sha"] = new
+        return self.update()
+
+    def test_a_verdict_left_at_the_old_head_after_the_approval_voids_it_where_it_moved(self):
+        # #2503 review, F1: a change request submitted at the old head after the approval stays
+        # there when GitHub moves the approval. At the old head it would have superseded the
+        # approval, so the merged head must not read as approved either.
+        self.settle()
+        new = self.update()
+        late = approval(self.head, review_id=30, state="CHANGES_REQUESTED", at="2026-11-10T03:00:00Z")
+        self.reviews.append(late)
+        self.moved(new)
+        self.assertEqual(gate.ruled_approvals(self.reviews, self.loop, new), [])
+        self.assertIsNone(self.latest_id(new))
+        self.assertFalse(gate.reviewed_at_head(self.reviews, self.loop, new))
+        # The adjudicator's own later change request there, or one whose order can't be told.
+        for changed in ({"user": {"login": "adj", "id": 3}}, {"submitted_at": None}):
+            self.reviews[-1] = {**late, **changed}
+            self.assertIsNone(self.latest_id(new), changed)
+        # Only a verdict after the approval: one before it, or a later comment, leaves it.
+        for changed in ({"submitted_at": "2026-11-10T01:45:00Z"}, {"state": "COMMENTED"},
+                        {"user": {"login": "someone", "id": 4}}):
+            self.reviews[-1] = {**late, **changed}
+            self.assertEqual(self.latest_id(new), 21, changed)
+
+    def test_a_verdict_left_at_a_head_between_two_merges_voids_the_moved_approval(self):
+        # The same at an intermediate link: after the second merge moved the approval on, a
+        # request lands at the first merged head (a review that began before the merge).
+        self.settle()
+        new = self.update()
+        self.moved(new)
+        second = self.merge_again(new)
+        self.assertEqual(self.carried(second)["from"], new)
+        self.moved(second)
+        self.assertEqual(self.latest_id(second), 21)
+        self.reviews.append(approval(new, review_id=30, state="CHANGES_REQUESTED",
+                                     at="2026-11-10T03:00:00Z"))
+        self.assertEqual(gate.ruled_approvals(self.reviews, self.loop, second), [])
+        self.assertFalse(gate.reviewed_at_head(self.reviews, self.loop, second))
+
+    def test_a_moved_approval_counts_only_through_its_own_carry_record_and_ruling(self):
+        self.settle()
+        ruled_head, new = self.head, self.update()
+        self.moved(new)
+        # Another adjudicator approval at the merged head: not the one the record carried.
+        other = {**self.reviews[1], "id": 22, "submitted_at": "2026-11-10T03:00:00Z"}
+        self.assertEqual(gate.ruled_approvals([self.reviews[0], other], self.loop, new), [])
+        # The record is another PR's.
+        records = base_merge._records(self.loop)
+        base_merge._record(self.st, new, {**records[new], "number": 8})
+        self.assertIsNone(self.latest_id(new))
+        base_merge._record(self.st, new, records[new])
+        self.assertEqual(self.latest_id(new), 21)
+        # A later ruling at the old head, or the newest ruling at an unrelated head, voids it.
+        for ruling in ({"head": ruled_head, "verdict": "REJECT", "run_id": "r2"},
+                       {"head": "f" * 40, "verdict": "ACCEPT", "run_id": "r2"}):
+            self.ruling = ruling
+            self.assertIsNone(self.latest_id(new))
+        # No record at all: a merge the host didn't make (a person's) carries nothing.
+        self.ruling = {"head": ruled_head, "verdict": "ACCEPT", "run_id": "r1"}
+        self.assertEqual(gate.ruled_approvals(self.reviews, self.loop, "9" * 40), [])
+
+    def test_a_dismissal_posted_on_red_ci_lets_the_base_merge_go(self):
+        # #2402 (1): the sweep dismisses the overruled request without waiting for green
+        # (test_ruled_approval_sweep), so the merge that may turn the head green isn't held. A
+        # red head is not ready but for being behind: nothing carries, and the merged head is
+        # reviewed as usual.
+        self.assertEqual(self.update(), "")                 # the dismissal still pending: waits
+        self.settle()
+        self.left = ["required checks not green: tests"]
+        new = self.update()
+        self.assertEqual(new, self.remote_head())
+        self.assertIsNone(self.carried(new))
+        self.assertIn("review resumes", self.notices[-1][1]["outcome"])
+
+    def judge(self, moved: bool):
         import watchdog
         self.loop["cap"] = 1
         self.loop["adjudicator"] = {"route": "adj"}    # a spent cap is handed off
         self.settle()
         new = self.update()
+        if moved:
+            self.moved(new)
         # The verdict that spent the cap, at the head before the one ruled on.
         self.reviews.insert(0, approval("e" * 40, review_id=5, state="CHANGES_REQUESTED",
                                         at="2026-11-09T01:00:00Z"))

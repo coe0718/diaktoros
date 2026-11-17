@@ -974,11 +974,12 @@ NOT_VERDICTS = frozenset({"DISMISSED", "COMMENTED", "PENDING"})
 
 def ruled_approvals(reviews: list, loop: dict, head: str) -> list:
     """The adjudicator's approval at this head, when its ACCEPT ruling on that PR backs it (#905):
-    it counts as a verdict, like the reviewer's. Only that login's newest verdict at the head
-    counts, so a later change request from it withdraws the approval. The ruling is the newest on
-    the PR the review names (``pull_request_url``), and it must be at this head: a ruling on another
-    PR at the same commit backs or cancels nothing, and a later one on this PR's other head voids it. A bare approval, one whose PR can't be told,
-    or any when the ledger can't be read counts for nothing."""
+    a verdict, like the reviewer's. Only that login's newest verdict at the head counts, so its
+    later change request withdraws the approval. The ruling is the newest on the PR the review
+    names (``pull_request_url``), at this head or one the host's base merges carried this
+    approval from (``base_merge.ruled_at``, #2402): a ruling on another PR at the same commit backs
+    or cancels nothing, and a later one voids it. A bare approval, an unknown PR or an unreadable
+    ledger counts for nothing."""
     login = config.adjudicator_login(loop).lower()
     if not login or login in set(loop["reviewers"]):
         return []
@@ -996,7 +997,7 @@ def ruled_approvals(reviews: list, loop: dict, head: str) -> list:
         return []
     from ..run_supervisor import views
     ruling = views.ruling_row(config.host_path("ledger"), loop["repo"], number) or {}
-    return [newest] if (ruling.get("head"), ruling.get("verdict")) == (head, "ACCEPT") else []
+    return [newest] if base_merge.ruled_at(loop, reviews, ruling, head, newest) else []
 
 
 def _review_when(review: dict) -> tuple | None:
