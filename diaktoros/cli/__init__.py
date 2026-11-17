@@ -46,7 +46,7 @@ from . import apply_command
 from . import identity_command
 from . import set_parser
 from . import settings as cli_settings
-from . import setup_command as cli_setup
+from . import setup_parser
 from . import triage_command
 from . import update as cli_update
 from ..util import logged
@@ -126,7 +126,7 @@ from .triage_command import cmd_triage  # noqa: F401
 # Every ``hermes dk`` command after ``list`` and ``init`` (those two need the settings), in the
 # order help lists them: a new command adds its registrar here, and ``register_cli`` stays as is.
 _COMMANDS = (
-    cli_setup.add_setup, cli_operations.add_status, cli_reports.add_stats, cli_reports.add_calls,
+    setup_parser.add_setup, cli_operations.add_status, cli_reports.add_stats, cli_reports.add_calls,
     cli_reports.add_report,
     cli_operations.add_review, cli_operations.add_escalate, cli_operations.add_depends,
     cli_operations.add_regression, cli_operations.add_explain, cli_reports.add_history,
