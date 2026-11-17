@@ -18,7 +18,8 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import (broker, cli, contained, doctor, gh,  # noqa: E402
-                         inference_proxy, review_receipt, selftest, trusted_fetch, trusted_turn)
+                         inference_proxy, review_receipt, selftest, selftest_inference,
+                         trusted_fetch, trusted_turn)
 from diaktoros.broker import ipc as broker_ipc  # noqa: E402
 from diaktoros.doctor import cron_checks, hook_checks  # noqa: E402
 
@@ -213,7 +214,8 @@ class ChecklistTests(SelftestBase):
         [entry] = [e for e in entries if e[:2] == ["/opt/venv/bin/python", "-c"]]
         program = entry[2]
         compile(program, "probe", "exec")          # a SyntaxError here is the original bug
-        prompt = json.loads(selftest.probe_body("chat_completions"))["messages"][0]["content"]
+        body = selftest_inference.probe_body("chat_completions")
+        prompt = json.loads(body)["messages"][0]["content"]
         self.assertNotEqual(program.strip(), prompt.strip())
         self.assertNotIn(prompt, program)
         self.assertIn("json.dumps", program)        # it answers with the facts JSON step 2 parses
@@ -419,12 +421,12 @@ class ChecklistTests(SelftestBase):
 
     def test_empty_reply_reason_names_the_cap_actually_sent(self):
         for mode in ("chat_completions", "anthropic_messages"):
-            body = json.loads(selftest.probe_body(mode))
+            body = json.loads(selftest_inference.probe_body(mode))
             self.assertEqual(body["max_tokens"], 16)
-            self.assertIn("16-token limit", selftest.empty_reply_reason(mode))
-        body = json.loads(selftest.probe_body("codex_responses"))
+            self.assertIn("16-token limit", selftest_inference.empty_reply_reason(mode))
+        body = json.loads(selftest_inference.probe_body("codex_responses"))
         self.assertNotIn("max_output_tokens", body)
-        self.assertNotIn("16", selftest.empty_reply_reason("codex_responses"))
+        self.assertNotIn("16", selftest_inference.empty_reply_reason("codex_responses"))
 
     def test_shared_principal_and_wrong_login_fail(self):
         self.fx.ids["fixer"] = 2
@@ -891,7 +893,7 @@ class ProbeReasoningReply(unittest.TestCase):
         report = selftest.Report(out)
         with mock.patch.object(inference_proxy, "InferenceCapability", return_value=capability), \
                 mock.patch.object(inference_proxy, "_UnixHTTP", Conn):
-            selftest._one_completion(report, "reviewer", _FakeProbeInference(mode))
+            selftest_inference._one_completion(report, "reviewer", _FakeProbeInference(mode))
         return report.results[-1], out.getvalue()
 
     def test_reasoning_only_replies_pass_and_empty_ones_warn(self):
@@ -913,8 +915,9 @@ class ProbeReasoningReply(unittest.TestCase):
                     'event: message_stop\ndata: {"type": "message_stop"}\n\n')
         for mode, stream in (("chat_completions", chat), ("anthropic_messages", messages)):
             with self.subTest(mode):
-                self.assertEqual(selftest.probe_reply(mode, "text/event-stream", stream.encode()),
-                                 ("", True))
+                self.assertEqual(
+                    selftest_inference.probe_reply(mode, "text/event-stream", stream.encode()),
+                    ("", True))
 
     @staticmethod
     def sse(*events):
@@ -960,8 +963,8 @@ class ProbeReasoningReply(unittest.TestCase):
         }
         for name, (mode, label, reasoning, plain) in cases.items():
             with self.subTest(name):
-                self.assertEqual(selftest.probe_reply(mode, label, reasoning), ("", True))
-                self.assertEqual(selftest.probe_reply(mode, label, plain), ("", False))
+                self.assertEqual(selftest_inference.probe_reply(mode, label, reasoning), ("", True))
+                self.assertEqual(selftest_inference.probe_reply(mode, label, plain), ("", False))
 
     def test_a_streamed_reasoning_only_reply_passes_through_the_completion_check(self):
         stream = self.sse({"type": "content_block_delta",
@@ -993,14 +996,15 @@ class ProbeReasoningReply(unittest.TestCase):
             report = selftest.Report(io.StringIO())
             with mock.patch.object(inference_proxy, "InferenceCapability", return_value=capability), \
                     mock.patch.object(inference_proxy, "_UnixHTTP", Conn):
-                selftest._one_completion(report, "reviewer", _FakeProbeInference("anthropic_messages"))
+                selftest_inference._one_completion(report, "reviewer",
+                                                   _FakeProbeInference("anthropic_messages"))
             self.assertEqual(report.results[-1][2], want)
             self.assertIn(text, report.results[-1][3])
 
 
 class ProbeAnswer(unittest.TestCase):
     def test_a_codex_stream_labelled_json_is_still_an_answer(self):
-        from diaktoros import selftest as st
+        from diaktoros import selftest_inference as st
         events = [{'type': 'response.output_text.delta', 'delta': 'OK'},
                   {'type': 'response.completed', 'response': {'status': 'completed'}}]
         stream = ''.join('event: ' + e['type'] + '\ndata: ' + json.dumps(e) + '\n\n'
@@ -1012,6 +1016,38 @@ class ProbeAnswer(unittest.TestCase):
         body = json.dumps({'output': [{'type': 'message', 'content': [{'text': 'OK'}]}]}).encode()
         self.assertEqual(st.probe_answer('codex_responses', 'application/json', body), 'OK')
         self.assertIsNone(st.probe_answer('codex_responses', 'application/json', b'<html>'))
+
+
+def _top_level_names(path: pathlib.Path) -> set[str]:
+    import ast
+    names = set()
+    for node in ast.parse(path.read_text()).body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    return names
+
+
+class InferenceStepModule(unittest.TestCase):
+    def test_the_inference_step_lives_only_in_its_module(self):
+        # Step 3 left selftest.py for selftest_inference.py at selftest's size limit. One home
+        # each, so a caller or a patch on the old selftest.<name> fails loudly instead of
+        # missing the code.
+        own = _top_level_names(ROOT / "diaktoros" / "selftest_inference.py")
+        for name in ("check_seats", "check_model", "probe_reply", "_one_completion"):
+            self.assertIn(name, own)
+        self.assertIs(selftest.selftest_inference, selftest_inference)
+        self.assertEqual(sorted(name for name in own if hasattr(selftest, name)), [])
+
+    def test_the_inference_step_reads_the_selftest_core_through_selftest(self):
+        # So a patch of a core name on selftest (Report, PASS…) reaches step 3 too: nothing of
+        # the core is defined again in selftest_inference.
+        core = _top_level_names(ROOT / "diaktoros" / "selftest.py")
+        own = _top_level_names(ROOT / "diaktoros" / "selftest_inference.py")
+        self.assertIn("Report", core)
+        self.assertEqual(sorted(core & own), [])
+
 
 if __name__ == "__main__":
     unittest.main()
