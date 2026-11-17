@@ -152,8 +152,11 @@ def user_reads(source: str) -> list[int]:
 # What the /user scan below reads as a call on the authenticated user: the path itself, with an
 # optional sub-path or query after it (``/user/emails``) or a host before it, with or without a
 # path after the host (``https://api.github.com/user``, ``https://github.example/api/v3/user``);
-# never ``/users/<login>`` or ``/userinfo``.
-USER_PATH = re.compile(r"(?:https?://[^/]+\S*)?/user(?:[/?#].*)?\Z", re.DOTALL)
+# never ``/users/<login>`` or ``/userinfo``. The whole URL holds no blank, so a sentence that
+# opens with a URL and names ``/user`` later (``"https://x is documented at /api/v3/user"``) or
+# goes on after it (``"https://x/api/v3/user? see the docs"``) is prose here, as it is to
+# ``_USER_ENDPOINT``.
+USER_PATH = re.compile(r"(?:https?://[^/\s]+\S*)?/user(?:[/?#]\S*)?\Z")
 CANDIDATES = 64     # most strings the scan tracks for one expression or name
 
 
@@ -421,6 +424,17 @@ class UserReads(unittest.TestCase):
             (Path(tmp) / "scripts" / "watchdog.py").write_text(source)
             self.assertEqual(user_calls(Path(tmp)), ['scripts/watchdog.py:4: url = base + "/user"'])
 
+    def test_a_sentence_that_opens_with_a_url_is_not_a_finding_in_a_scanned_file(self):
+        """Both detectors feed ``user_calls``: a sentence with a URL first and ``/user`` later is
+        prose to each of them, while the same URL written whole beside it is still found."""
+        source = ('say("https://github.example is documented at /api/v3/user")\n'
+                  'url = "https://github.example/api/v3/user"\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "scripts").mkdir()
+            (Path(tmp) / "scripts" / "demo.py").write_text(source)
+            self.assertEqual(user_calls(Path(tmp)),
+                             ['scripts/demo.py:2: url = "https://github.example/api/v3/user"'])
+
 
 class UserScan(unittest.TestCase):
     """The scan behind ``test_no_identity_check_calls_user_directly`` (#1175): a ``/user`` that
@@ -447,6 +461,8 @@ class UserScan(unittest.TestCase):
     )
     LEFT_ALONE = (
         'gh.api(loop, "https://x/api/v3/users/alice")',
+        'say("https://github.example is documented at /api/v3/user")',
+        'say("https://github.example/api/v3/user? see the docs")',
         'gh.api(loop, f"/users/{login}", login=login)',
         'gh.api(loop, "/users/" + login)',
         'gh.api(loop, "/userinfo")',
