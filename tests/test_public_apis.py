@@ -22,9 +22,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 # private attribute -> the files allowed to use it (its own module)
 PRIVATE = {
-    "_load": {"diaktoros/state.py"},
-    "_save": {"diaktoros/state.py"},
-    "_save_strict": {"diaktoros/state.py"},
+    "_load": {"diaktoros/state/__init__.py"},
+    "_save": {"diaktoros/state/__init__.py"},
+    "_save_strict": {"diaktoros/state/__init__.py"},
     "_breach_lock": set(),
     "_minutes": set(),
     "_form_int": set(),

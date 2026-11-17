@@ -60,8 +60,8 @@ CALLERS = {
     "diaktoros/gh_cache.py::store", "diaktoros/gh_calls.py::flush",
     "diaktoros/observer.py::_save", "diaktoros/onboarding.py::record", "diaktoros/pacing.py::_save",
     "diaktoros/route_intent.py::_write", "diaktoros/run_supervisor/__init__.py::Supervisor.__init__",
-    "diaktoros/runtime_detect.py::write", "diaktoros/state.py::_atomic_publish",
-    "diaktoros/state.py::LoopState._transition_write",
+    "diaktoros/runtime_detect.py::write", "diaktoros/state/__init__.py::_atomic_publish",
+    "diaktoros/state/__init__.py::LoopState._transition_write",
     # The shared append-then-prune (#2302): gate_decisions.record and corpus.record publish
     # their pruned files through it.
     "diaktoros/util.py::append_keeping",
